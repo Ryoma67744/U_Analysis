@@ -23,7 +23,9 @@
       "Bash(git add:*)",
       "Bash(git commit -m \"$\\(cat <<''EOF''\nFix: all callbacks unresponsive due to Dash duplicate output errors\n\nDash 2.18''s callback grouping merges chained callback outputs,\ncausing \"Duplicate callback outputs\" errors on the frontend that\nsilently blocked ALL callback dispatch.\n\n- Add allow_duplicate=True to all outputs involved in callback chains\n- Merge update_selected_path_display into open_file_browser and\n  handle_fb_item_click to eliminate grouping conflicts\n- Add missing callbacks: apply_desi_defaults, apply_tims_defaults,\n  apply_output_defaults\n- Add switch_to_history_tab for sidebar load_session button\n- Add prevent_initial_call=True to update_result_folders\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(git push:*)",
-      "Bash(git commit -m \"$\\(cat <<''EOF''\n2025/02/15 01:12 出力フォルダ構造の変更と進捗監視機能の追加\n\n- R解析結果を出力フォルダー直下に出力するよう変更（プロジェクトサブフォルダ廃止）\n- Pythonログファイル\\(analysis_log.txt等\\)をlog/サブフォルダに格納\n- 解析中のステップ進捗表示・残り時間表示・完了ステータス表示を追加\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git commit -m \"$\\(cat <<''EOF''\n2025/02/15 01:12 出力フォルダ構造の変更と進捗監視機能の追加\n\n- R解析結果を出力フォルダー直下に出力するよう変更（プロジェクトサブフォルダ廃止）\n- Pythonログファイル\\(analysis_log.txt等\\)をlog/サブフォルダに格納\n- 解析中のステップ進捗表示・残り時間表示・完了ステータス表示を追加\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\n2025/02/15 01:21 解析完了時の進捗バー非表示とログヘッダーの動的表示を追加\n\n- 解析完了/エラー/停止時に進捗バーを非表示にする\n- ログヘッダーを解析状態に応じて変更（解析中→完了/エラー/停止）\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(ls:*)"
     ]
   }
 }

@@ -171,7 +171,7 @@ def handle_delete_session(n_clicks, selected_rows, table_data):
 # ---------------------------------------------------------------------------
 
 @callback(
-    Output("main_tabs", "active_tab"),
+    Output("main_tabs", "active_tab", allow_duplicate=True),
     Input("load_session", "n_clicks"),
     prevent_initial_call=True,
 )

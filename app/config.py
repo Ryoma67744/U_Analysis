@@ -56,6 +56,10 @@ CLUSTER_FILTER_PATH = DESI_CLUSTER_FILTER_PATH
 # セッションディレクトリ
 SESSIONS_DIR = APP_BASE_DIR / "app" / "sessions"
 
+# プロジェクトディレクトリ・ファイル
+PROJECTS_DIR = APP_BASE_DIR / "app" / "projects"
+PROJECTS_FILE = PROJECTS_DIR / "projects.json"
+
 # Seuratブリッジ キャッシュディレクトリ
 SEURAT_CACHE_DIR = APP_BASE_DIR / "app" / ".seurat_cache"
 

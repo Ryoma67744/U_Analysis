@@ -31,6 +31,7 @@ from app.callbacks import analysis_callbacks  # noqa: E402, F401
 from app.callbacks import results_callbacks  # noqa: E402, F401
 from app.callbacks import session_callbacks  # noqa: E402, F401
 from app.callbacks import interactive_callbacks  # noqa: E402, F401
+from app.callbacks import project_callbacks  # noqa: E402, F401
 
 
 if __name__ == "__main__":
