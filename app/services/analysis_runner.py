@@ -156,11 +156,12 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
             lines, "DEFAULT_TOLERANCE_MZ", str(params["tolerance_mz"])
         )
 
-    # 一時ファイルに保存
+    # 一時ファイルをlog/サブフォルダに保存
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     config_filename = f"v8_runtime_{timestamp}.R"
-    config_path = Path(output_dir) / config_filename
-    config_path.parent.mkdir(parents=True, exist_ok=True)
+    log_dir = Path(output_dir) / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    config_path = log_dir / config_filename
 
     with open(config_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -216,11 +217,12 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
             lines, "EXPORT_DATA_DIR", _r_str(params["export_data_dir"])
         )
 
-    # 一時ファイルに保存
+    # 一時ファイルをlog/サブフォルダに保存
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     config_filename = f"cluster_filter_runtime_{timestamp}.R"
-    config_path = Path(output_dir) / config_filename
-    config_path.parent.mkdir(parents=True, exist_ok=True)
+    log_dir = Path(output_dir) / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    config_path = log_dir / config_filename
 
     with open(config_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -252,10 +254,12 @@ def start_analysis_process(
         }
 
     output_path = Path(output_dir)
-    progress_file = output_path / "analysis_progress.txt"
-    log_file = output_path / "analysis_log.txt"
-    pid_file = output_path / "analysis_pid.txt"
-    status_file = output_path / "analysis_status.txt"
+    log_dir = output_path / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    progress_file = log_dir / "analysis_progress.txt"
+    log_file = log_dir / "analysis_log.txt"
+    pid_file = log_dir / "analysis_pid.txt"
+    status_file = log_dir / "analysis_status.txt"
 
     # 初期化
     progress_file.write_text("0|準備中|0|1", encoding="utf-8")
@@ -372,7 +376,7 @@ def stop_analysis_process(
     """解析プロセスを停止。
     改善点: psutilでプロセスツリーごと終了（R版の taskkill /IM Rscript.exe /F より安全）
     """
-    status_file = Path(output_dir) / "analysis_status.txt"
+    status_file = Path(output_dir) / "log" / "analysis_status.txt"
     status_file.write_text("stopped", encoding="utf-8")
 
     if log_file_handle:

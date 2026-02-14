@@ -208,6 +208,8 @@ def run_analysis(
             "log_file": result["log_file"],
             "status_file": result["status_file"],
             "full_output_dir": full_output_dir,
+            "start_time": datetime.now().isoformat(),
+            "analysis_type": analysis_type,
         }
 
         return (
@@ -230,6 +232,136 @@ def run_analysis(
 # 進捗監視（2秒ごと）
 # ---------------------------------------------------------------------------
 
+# 解析タイプ別のステップ定義リスト
+# 各ステップ: (表示名, 検出キーワード) — ログにキーワードが出現したらそのステップに到達
+_STEP_DEFINITIONS = {
+    "desi_v8": [
+        ("Loading", "reading desi data"),
+        ("Filtering", "spot filtering"),
+        ("PCA", "pca"),
+        ("UMAP", "umap"),
+        ("Clustering", "findclusters"),
+        ("Harmony/RPCA", "harmony"),
+        ("DEG", "deg"),
+        ("Heatmap", "heatmap"),
+        ("Volcano", "volcano"),
+        ("MSI Images", "msi"),
+        ("Saving", "saving"),
+        ("Done", "all done"),
+    ],
+    "tims_v8": [
+        ("Loading", "reading parquet"),
+        ("Preprocessing", "preprocessing"),
+        ("Clustering", "findclusters"),
+        ("Markers", "finding markers"),
+        ("Annotation", "annotating"),
+        ("Heatmap", "heatmap"),
+        ("Volcano", "volcano"),
+        ("MSI Images", "msi images"),
+        ("TIC Overlay", "tic overlay"),
+        ("RPCA", "running rpca"),
+        ("Saving", "saving"),
+        ("Done", "all done"),
+    ],
+    "desi_cluster_filter": [
+        ("Loading", "loading"),
+        ("Filtering", "filter"),
+        ("DEG", "deg"),
+        ("Heatmap", "heatmap"),
+        ("Volcano", "volcano"),
+        ("MSI Images", "msi"),
+        ("Saving", "saving"),
+        ("Done", "done"),
+    ],
+    "tims_cluster_filter": [
+        ("Loading", "loading"),
+        ("Filtering", "filter"),
+        ("Markers", "finding markers"),
+        ("Heatmap", "heatmap"),
+        ("Volcano", "volcano"),
+        ("MSI Images", "msi"),
+        ("Saving", "saving"),
+        ("Done", "done"),
+    ],
+}
+
+
+def _detect_current_step(log_text: str, analysis_type: str):
+    """ログテキストからステップ定義に基づいて現在のステップを検出する。
+    Returns: (step_number, total_steps, step_name)
+    step_number は 1始まり。未検出なら (0, total, "準備中")
+    """
+    steps = _STEP_DEFINITIONS.get(analysis_type, _STEP_DEFINITIONS["desi_v8"])
+    total = len(steps)
+    log_lower = log_text.lower()
+
+    # 後ろから探して最後に到達したステップを見つける
+    current_idx = -1
+    for i in range(len(steps) - 1, -1, -1):
+        _, keyword = steps[i]
+        if keyword in log_lower:
+            current_idx = i
+            break
+
+    if current_idx < 0:
+        return 0, total, "準備中"
+
+    step_name = steps[current_idx][0]
+    return current_idx + 1, total, step_name
+
+
+def _format_remaining_time(start_time_iso: str, step_current: int, step_total: int) -> str:
+    """経過時間と現在のステップ位置から残り時間を推定する。
+    ステップが進むたびに毎回再計算されるため、動的に精度が向上する。
+    """
+    if step_current <= 0:
+        return "残り時間: 計算中..."
+
+    try:
+        start_time = datetime.fromisoformat(start_time_iso)
+    except (ValueError, TypeError):
+        return "残り時間: 計算中..."
+
+    elapsed = (datetime.now() - start_time).total_seconds()
+    if elapsed < 1:
+        return "残り時間: 計算中..."
+
+    progress_ratio = step_current / step_total
+    if progress_ratio >= 1.0:
+        return "残り時間: まもなく完了"
+
+    remaining_sec = elapsed / progress_ratio * (1 - progress_ratio)
+
+    if remaining_sec >= 3600:
+        h = int(remaining_sec // 3600)
+        m = int((remaining_sec % 3600) // 60)
+        return f"残り約 {h}時間{m}分"
+    elif remaining_sec >= 60:
+        m = int(remaining_sec // 60)
+        return f"残り約 {m}分"
+    else:
+        return "残り約 1分未満"
+
+
+def _format_elapsed_time(start_time_iso: str) -> str:
+    """開始時刻からの経過時間を「所要時間」として整形する。"""
+    try:
+        start_time = datetime.fromisoformat(start_time_iso)
+    except (ValueError, TypeError):
+        return ""
+
+    elapsed = (datetime.now() - start_time).total_seconds()
+    if elapsed >= 3600:
+        h = int(elapsed // 3600)
+        m = int((elapsed % 3600) // 60)
+        return f"所要時間: {h}時間{m}分"
+    elif elapsed >= 60:
+        m = int(elapsed // 60)
+        return f"所要時間: {m}分"
+    else:
+        return "所要時間: 1分未満"
+
+
 @callback(
     [Output("analysis_log", "children"),
      Output("analysis_progress_bar", "value"),
@@ -251,6 +383,8 @@ def update_progress(n_intervals, app_state):
     log_file = app_state.get("log_file")
     status_file = app_state.get("status_file")
     output_dir = app_state.get("full_output_dir")
+    start_time_iso = app_state.get("start_time", "")
+    analysis_type = app_state.get("analysis_type", "desi_v8")
 
     # ログ取得
     log_text = get_analysis_log(log_file, last_n=50) if log_file else ""
@@ -265,28 +399,27 @@ def update_progress(n_intervals, app_state):
     # ステータス確認
     status = get_analysis_status(status_file) if status_file else "unknown"
 
-    # 出力ファイル数で進捗推定
+    # 出力ファイル数
     file_count = 0
     if output_dir and Path(output_dir).is_dir():
         for ext in ("*.png", "*.csv", "*.rds"):
             file_count += len(list(Path(output_dir).rglob(ext)))
 
-    # ヒューリスティック進捗計算
-    progress = min(95, file_count * 2)
+    # ステップ検出（ステップ定義リストに基づく）
+    step_current, step_total, step_name = _detect_current_step(log_text, analysis_type)
 
-    # キーワードによるステップ検出
-    step_keywords = [
-        "Loading", "Normalizing", "PCA", "UMAP",
-        "Harmony", "Cluster", "Marker", "DEG", "Saving",
-        "Volcano", "Heatmap", "MSI",
-    ]
-    current_step = "処理中"
-    for kw in reversed(step_keywords):
-        if kw.lower() in log_text.lower():
-            current_step = kw
-            break
+    # 進捗バーをステップベースで計算
+    if step_current > 0:
+        progress = min(95, int(step_current / step_total * 100))
+    else:
+        progress = min(95, file_count * 2)  # ステップ未検出時はファイル数ベース
 
-    section_text = f"出力: {file_count} ファイル | ステップ: {current_step}"
+    # 残り時間を毎回再計算
+    remaining_text = _format_remaining_time(start_time_iso, step_current, step_total)
+
+    # 表示テキスト組み立て
+    step_display = f"{step_name} ({step_current}/{step_total})" if step_current > 0 else "準備中"
+    section_text = f"出力: {file_count} ファイル | ステップ: {step_display} | {remaining_text}"
 
     if status in ("finished", "error") or completed_status:
         final_status = completed_status or status
@@ -294,7 +427,14 @@ def update_progress(n_intervals, app_state):
         _process_state["log_file_handle"] = None
 
         app_state["is_running"] = False
-        msg = "解析が完了しました" if final_status == "finished" else "解析でエラーが発生しました"
+        elapsed_text = _format_elapsed_time(start_time_iso)
+
+        if final_status == "finished":
+            msg = "解析が完了しました"
+            section_text = f"出力: {file_count} ファイル | ✅ 完了 ({step_total}/{step_total}) | {elapsed_text}"
+        else:
+            msg = "解析でエラーが発生しました"
+            section_text = f"出力: {file_count} ファイル | ❌ エラー ({step_current}/{step_total}) | {elapsed_text}"
 
         return (
             log_text, 100, "100%", section_text,
@@ -307,6 +447,8 @@ def update_progress(n_intervals, app_state):
         _process_state["process"] = None
         _process_state["log_file_handle"] = None
         app_state["is_running"] = False
+        elapsed_text = _format_elapsed_time(start_time_iso)
+        section_text = f"出力: {file_count} ファイル | ⏹ 停止 ({step_current}/{step_total}) | {elapsed_text}"
 
         return (
             log_text, progress, f"{progress}%", section_text,

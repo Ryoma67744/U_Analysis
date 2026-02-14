@@ -1600,7 +1600,8 @@ cat("  Done.\n")
 # ============================================================
 
 today <- format(Sys.Date(), "%Y%m%d")
-od <- file.path(OUTPUT_DIR, paste0(PROJECT_LABEL, "_", today))
+# 出力先 = OUTPUT_DIR 直下（アプリ側でフォルダを指定済み）
+od <- OUTPUT_DIR
 dir.create(od, recursive = TRUE, showWarnings = FALSE)
 
 # ★要望①: RDSファイル保存フォルダ "RDS_Files"

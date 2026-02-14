@@ -1076,7 +1076,8 @@ if (isTRUE(ENABLE_REUMAP_REPLACE)) {
     today <- format(Sys.Date(), "%Y%m%d")
     suffix_run <- paste0("keep_", paste(TARGET_CLUSTERS, collapse = "-"))
     project_label <- paste0(V13_PROJECT_LABEL_PREFIX, suffix_run, "_")
-    od_run <- file.path(V13_OUTPUT_DIR, paste0(project_label, "_", today))
+    # 出力先 = V13_OUTPUT_DIR 直下（アプリ側でフォルダを指定済み）
+    od_run <- V13_OUTPUT_DIR
     rerun_rds <- file.path(od_run, "RDS_Files", basename(RDS_RESOLVED))
   }
 

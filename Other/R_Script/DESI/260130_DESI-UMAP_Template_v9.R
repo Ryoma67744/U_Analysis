@@ -183,17 +183,8 @@ MRM_FILE_PATH <- "C:\\Users\\Cciia\\Biochem Dropbox\\Biochem's shared workspace\
 
 today <- format(Sys.Date(), "%Y%m%d")
 
-# 出力フォルダ名の生成
-# 例: "251130_Embryo_E14-P0_1_YYYYMMDD"
-# Resume時: "251130_Embryo_E14-P0_1_YYYYMMDD_Re-Analysis"
-folder_name_base <- paste0(PROJECT_NAME_PREFIX, today)
-
-if (RESUME_FROM_RDS) {
-  folder_name_base <- paste0(folder_name_base, "_Re-Analysis")
-}
-
-od <- file.path(output_dir, folder_name_base)
-# 出力ディレクトリ作成
+# 出力先 = output_dir 直下（アプリ側でフォルダを指定済み）
+od <- output_dir
 dir.create(od, recursive = TRUE, showWarnings = FALSE)
 
 # RDS保存用ディレクトリ作成
