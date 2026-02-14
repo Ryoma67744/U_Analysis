@@ -342,7 +342,7 @@ def _create_run_button():
             className="progress-container",
             style={"marginTop": "20px", "display": "none"},
             children=[
-                html.H5("⏳ 解析中..."),
+                html.H5("⏳ 解析中...", id="log_header"),
                 html.Pre(
                     id="analysis_log",
                     className="progress-log",

@@ -44,6 +44,7 @@ _process_state = {
      Output("stop_button_container", "style", allow_duplicate=True),
      Output("progress_container", "style"),
      Output("log_container", "style"),
+     Output("log_header", "children", allow_duplicate=True),
      Output("notification_toast", "children", allow_duplicate=True),
      Output("notification_toast", "is_open", allow_duplicate=True)],
     Input("run_analysis", "n_clicks"),
@@ -89,7 +90,7 @@ def run_analysis(
     app_state,
 ):
     if not n_clicks:
-        return no_update, no_update, no_update, no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
     # 現在の設定を自動保存（次回起動時に復元される）
     try:
@@ -194,6 +195,7 @@ def run_analysis(
             return (
                 app_state, True,
                 {"display": "none"}, {"display": "none"}, {"display": "none"},
+                no_update,
                 f"解析開始に失敗: {result['message']}", True,
             )
 
@@ -217,6 +219,7 @@ def run_analysis(
             {"flex": "0 0 auto"},  # 停止ボタン表示
             {"flex": "1"},         # 進捗バー表示
             {"marginTop": "20px"}, # ログ表示
+            "⏳ 解析中...",        # ログヘッダーリセット
             "解析を開始しました", True,
         )
 
@@ -224,6 +227,7 @@ def run_analysis(
         return (
             app_state, True,
             {"display": "none"}, {"display": "none"}, {"display": "none"},
+            no_update,
             f"エラー: {e}", True,
         )
 
@@ -370,6 +374,8 @@ def _format_elapsed_time(start_time_iso: str) -> str:
      Output("app_state", "data", allow_duplicate=True),
      Output("progress_interval", "disabled", allow_duplicate=True),
      Output("stop_button_container", "style", allow_duplicate=True),
+     Output("progress_container", "style", allow_duplicate=True),
+     Output("log_header", "children"),
      Output("notification_toast", "children", allow_duplicate=True),
      Output("notification_toast", "is_open", allow_duplicate=True)],
     Input("progress_interval", "n_intervals"),
@@ -378,7 +384,7 @@ def _format_elapsed_time(start_time_iso: str) -> str:
 )
 def update_progress(n_intervals, app_state):
     if not app_state or not app_state.get("is_running"):
-        return (no_update,) * 9
+        return (no_update,) * 11
 
     log_file = app_state.get("log_file")
     status_file = app_state.get("status_file")
@@ -432,14 +438,18 @@ def update_progress(n_intervals, app_state):
         if final_status == "finished":
             msg = "解析が完了しました"
             section_text = f"出力: {file_count} ファイル | ✅ 完了 ({step_total}/{step_total}) | {elapsed_text}"
+            log_header = "✅ 解析完了"
         else:
             msg = "解析でエラーが発生しました"
             section_text = f"出力: {file_count} ファイル | ❌ エラー ({step_current}/{step_total}) | {elapsed_text}"
+            log_header = "❌ エラー発生"
 
         return (
             log_text, 100, "100%", section_text,
             app_state, True,  # Interval 無効化
-            {"display": "none"},
+            {"display": "none"},  # 停止ボタン非表示
+            {"display": "none"},  # 進捗バー非表示
+            log_header,
             msg, True,
         )
 
@@ -453,7 +463,9 @@ def update_progress(n_intervals, app_state):
         return (
             log_text, progress, f"{progress}%", section_text,
             app_state, True,
-            {"display": "none"},
+            {"display": "none"},  # 停止ボタン非表示
+            {"display": "none"},  # 進捗バー非表示
+            "⏹ 解析停止",
             "解析を停止しました", True,
         )
 
@@ -461,6 +473,8 @@ def update_progress(n_intervals, app_state):
         log_text, progress, f"{progress}%", section_text,
         no_update, no_update,
         no_update,
+        no_update,  # progress_container: 変更なし
+        no_update,  # log_header: 変更なし
         no_update, no_update,
     )
 
