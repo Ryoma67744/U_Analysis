@@ -23,6 +23,7 @@ from app.services.analysis_runner import (
     stop_analysis_process,
 )
 from app.services.session_manager import save_last_settings
+from app.services.project_manager import save_sub_project_settings
 
 
 # アプリケーションレベルの状態（サブプロセス参照など）
@@ -72,7 +73,9 @@ _process_state = {
      State("desi_cluster_filter_script_path", "value"),
      State("tims_v8_script_path", "value"),
      State("tims_cluster_filter_script_path", "value"),
-     State("app_state", "data")],
+     State("app_state", "data"),
+     State("selected_project", "data"),
+     State("current_sub_project_id", "data")],
     prevent_initial_call=True,
 )
 def run_analysis(
@@ -88,6 +91,7 @@ def run_analysis(
     desi_v8_script, desi_cluster_script,
     tims_v8_script, tims_cluster_script,
     app_state,
+    selected_project, current_sub_project_id,
 ):
     if not n_clicks:
         return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
@@ -119,6 +123,35 @@ def run_analysis(
             "tims_v8_script_path": tims_v8_script,
             "tims_cluster_filter_script_path": tims_cluster_script,
         })
+    except Exception:
+        pass  # 保存失敗しても解析は続行
+
+    # サブプロジェクトに解析設定を紐づけて保存
+    try:
+        if selected_project and current_sub_project_id:
+            project_id = selected_project.get("id", "")
+            if project_id:
+                save_sub_project_settings(project_id, current_sub_project_id, {
+                    "analysis_method": desi_method,
+                    "analysis_method_tims": tims_method,
+                    "data_folder": data_folder,
+                    "output_dir": output_dir,
+                    "mrm_path": mrm_path,
+                    "p_thresh": p_thresh,
+                    "logfc_thresh": logfc_thresh,
+                    "ion_mode": ion_mode,
+                    "tolerance_mz": tolerance_mz,
+                    "resume_rds": resume_rds,
+                    "rds_folder": rds_folder,
+                    "reanalysis_data_folder": reanalysis_data_folder,
+                    "rds_path": rds_path,
+                    "filter_mode": filter_mode,
+                    "target_clusters": target_clusters,
+                    "reanalysis_p_thresh": reanalysis_p_thresh,
+                    "reanalysis_logfc_thresh": reanalysis_logfc_thresh,
+                    "reanalysis_ion_mode": reanalysis_ion_mode,
+                    "reanalysis_tolerance_mz": reanalysis_tolerance_mz,
+                })
     except Exception:
         pass  # 保存失敗しても解析は続行
 

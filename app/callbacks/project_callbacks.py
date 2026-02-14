@@ -17,6 +17,7 @@ from app.services.project_manager import (
     create_sub_project,
     update_sub_project,
     delete_sub_project,
+    get_sub_project_settings,
 )
 
 
@@ -427,31 +428,99 @@ def render_sub_project_cards(
 # サブプロジェクト アクション: 新規解析 → 解析画面 (settings タブ)
 # =========================================================================
 
+# 復元対象の設定フィールド一覧
+_ANALYSIS_SETTINGS_KEYS = [
+    "analysis_method",
+    "analysis_method_tims",
+    "data_folder",
+    "output_dir",
+    "mrm_path",
+    "p_thresh",
+    "logfc_thresh",
+    "ion_mode",
+    "tolerance_mz",
+    "resume_rds",
+    "rds_folder",
+    "reanalysis_data_folder",
+    "rds_path",
+    "filter_mode",
+    "target_clusters",
+    "reanalysis_p_thresh",
+    "reanalysis_logfc_thresh",
+    "reanalysis_ion_mode",
+    "reanalysis_tolerance_mz",
+]
+
+
 @callback(
     [Output("current_page", "data", allow_duplicate=True),
      Output("main_tabs", "active_tab", allow_duplicate=True),
+     Output("current_sub_project_id", "data"),
      Output("data_folder", "value", allow_duplicate=True),
-     Output("output_dir", "value", allow_duplicate=True)],
+     Output("output_dir", "value", allow_duplicate=True),
+     Output("analysis_method", "value", allow_duplicate=True),
+     Output("analysis_method_tims", "value", allow_duplicate=True),
+     Output("mrm_path", "value", allow_duplicate=True),
+     Output("p_thresh", "value", allow_duplicate=True),
+     Output("logfc_thresh", "value", allow_duplicate=True),
+     Output("ion_mode", "value", allow_duplicate=True),
+     Output("tolerance_mz", "value", allow_duplicate=True),
+     Output("resume_rds", "value", allow_duplicate=True),
+     Output("rds_folder", "value", allow_duplicate=True),
+     Output("reanalysis_data_folder", "value", allow_duplicate=True),
+     Output("rds_path", "value", allow_duplicate=True),
+     Output("filter_mode", "value", allow_duplicate=True),
+     Output("target_clusters", "value", allow_duplicate=True),
+     Output("reanalysis_p_thresh", "value", allow_duplicate=True),
+     Output("reanalysis_logfc_thresh", "value", allow_duplicate=True),
+     Output("reanalysis_ion_mode", "value", allow_duplicate=True),
+     Output("reanalysis_tolerance_mz", "value", allow_duplicate=True)],
     Input({"type": "sub_action_analysis", "index": ALL}, "n_clicks"),
     State("selected_project", "data"),
     prevent_initial_call=True,
 )
 def sub_action_new_analysis(clicks, project):
-    """サブプロジェクト「解析」→ 解析設定画面に遷移"""
+    """サブプロジェクト「解析」→ 解析設定画面に遷移 + 前回設定を復元"""
+    _n_outputs = 22
     if not ctx.triggered_id or not any(c for c in clicks if c):
-        return no_update, no_update, no_update, no_update
+        return (no_update,) * _n_outputs
 
     sub_id = ctx.triggered_id["index"]
     project_id = project.get("id", "") if project else ""
     sub = get_sub_project(project_id, sub_id)
     if not sub:
-        return no_update, no_update, no_update, no_update
+        return (no_update,) * _n_outputs
+
+    # 保存済み解析設定を取得
+    settings = get_sub_project_settings(project_id, sub_id) or {}
+
+    # data_folder / output_dir はサブプロジェクト本体の値を優先
+    data_folder = sub.get("data_folder", "") or settings.get("data_folder", "")
+    output_dir = sub.get("output_dir", "") or settings.get("output_dir", "")
 
     return (
-        "analysis",
-        "settings",
-        sub.get("data_folder", "") or no_update,
-        sub.get("output_dir", "") or no_update,
+        "analysis",                                             # current_page
+        "settings",                                             # main_tabs
+        sub_id,                                                 # current_sub_project_id
+        data_folder or no_update,                               # data_folder
+        output_dir or no_update,                                # output_dir
+        settings.get("analysis_method") or no_update,           # analysis_method
+        settings.get("analysis_method_tims") or no_update,      # analysis_method_tims
+        settings.get("mrm_path", "") if settings else no_update,  # mrm_path
+        settings.get("p_thresh") if settings else no_update,    # p_thresh
+        settings.get("logfc_thresh") if settings else no_update,  # logfc_thresh
+        settings.get("ion_mode") or no_update,                  # ion_mode
+        settings.get("tolerance_mz") if settings else no_update,  # tolerance_mz
+        settings.get("resume_rds") if settings else no_update,  # resume_rds
+        settings.get("rds_folder", "") if settings else no_update,  # rds_folder
+        settings.get("reanalysis_data_folder", "") if settings else no_update,
+        settings.get("rds_path", "") if settings else no_update,
+        settings.get("filter_mode") or no_update,               # filter_mode
+        settings.get("target_clusters", "") if settings else no_update,
+        settings.get("reanalysis_p_thresh") if settings else no_update,
+        settings.get("reanalysis_logfc_thresh") if settings else no_update,
+        settings.get("reanalysis_ion_mode") or no_update,
+        settings.get("reanalysis_tolerance_mz") if settings else no_update,
     )
 
 

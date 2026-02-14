@@ -180,6 +180,34 @@ def update_sub_project(
     return None
 
 
+def save_sub_project_settings(
+    project_id: str, sub_id: str, settings: dict
+) -> bool:
+    """サブプロジェクトに解析設定を保存"""
+    data = _load_all()
+    for p in data["projects"]:
+        if p["id"] == project_id:
+            for s in p.get("sub_projects", []):
+                if s["id"] == sub_id:
+                    s["last_analysis_settings"] = settings
+                    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                    s["last_modified"] = now
+                    p["last_modified"] = now
+                    _save_all(data)
+                    return True
+    return False
+
+
+def get_sub_project_settings(
+    project_id: str, sub_id: str
+) -> Optional[dict]:
+    """サブプロジェクトに保存された解析設定を取得"""
+    sub = get_sub_project(project_id, sub_id)
+    if sub:
+        return sub.get("last_analysis_settings")
+    return None
+
+
 def delete_sub_project(project_id: str, sub_id: str) -> bool:
     """サブプロジェクトを削除"""
     data = _load_all()

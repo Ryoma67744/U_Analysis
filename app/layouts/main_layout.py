@@ -27,6 +27,7 @@ def create_main_layout():
         dcc.Store(id="sub_project_list_refresh", data=0),
         dcc.Store(id="edit_target_project_id", data=""),
         dcc.Store(id="edit_target_sub_project_id", data=""),
+        dcc.Store(id="current_sub_project_id", data=""),
 
         # ========== Page 1: Landing (プロジェクト一覧) ==========
         create_landing_page(),
