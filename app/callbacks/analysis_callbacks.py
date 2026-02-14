@@ -1,0 +1,316 @@
+# =============================================================================
+# MSI Analysis Application - Analysis Execution Callbacks
+# 解析実行・進捗監視 コールバック
+# =============================================================================
+
+import re
+from datetime import datetime
+from pathlib import Path
+
+from dash import Input, Output, State, callback, ctx, no_update
+
+from app.config import (
+    DESI_V8_TEMPLATE_PATH, DESI_CLUSTER_FILTER_PATH,
+    TIMS_V8_TEMPLATE_PATH, TIMS_CLUSTER_FILTER_PATH,
+)
+from app.services.analysis_runner import (
+    generate_v8_config,
+    generate_cluster_filter_config,
+    start_analysis_process,
+    get_analysis_log,
+    get_analysis_status,
+    check_process_completion,
+    stop_analysis_process,
+)
+
+
+# アプリケーションレベルの状態（サブプロセス参照など）
+# Dash の dcc.Store はシリアライズ可能な値しか保持できないため、
+# process オブジェクトはモジュールレベルで保持する
+_process_state = {
+    "process": None,
+    "log_file_handle": None,
+}
+
+
+# ---------------------------------------------------------------------------
+# 解析実行
+# ---------------------------------------------------------------------------
+
+@callback(
+    [Output("app_state", "data"),
+     Output("progress_interval", "disabled"),
+     Output("stop_button_container", "style"),
+     Output("progress_container", "style"),
+     Output("log_container", "style"),
+     Output("notification_toast", "children", allow_duplicate=True),
+     Output("notification_toast", "is_open", allow_duplicate=True)],
+    Input("run_analysis", "n_clicks"),
+    [State("analysis_method", "value"),
+     State("analysis_method_tims", "value"),
+     State("data_folder", "value"),
+     State("mrm_path", "value"),
+     State("p_thresh", "value"),
+     State("logfc_thresh", "value"),
+     State("resume_rds", "value"),
+     State("rds_folder", "value"),
+     State("output_subfolder", "value"),
+     State("output_dir", "value"),
+     State("rds_path", "value"),
+     State("reanalysis_data_folder", "value"),
+     State("filter_mode", "value"),
+     State("target_clusters", "value"),
+     State("ion_mode", "value"),
+     State("tolerance_mz", "value"),
+     State("reanalysis_p_thresh", "value"),
+     State("reanalysis_logfc_thresh", "value"),
+     State("reanalysis_ion_mode", "value"),
+     State("reanalysis_tolerance_mz", "value"),
+     State("desi_v8_script_path", "value"),
+     State("desi_cluster_filter_script_path", "value"),
+     State("tims_v8_script_path", "value"),
+     State("tims_cluster_filter_script_path", "value"),
+     State("app_state", "data")],
+    prevent_initial_call=True,
+)
+def run_analysis(
+    n_clicks,
+    desi_method, tims_method,
+    data_folder, mrm_path, p_thresh, logfc_thresh,
+    resume_rds, rds_folder,
+    output_subfolder, output_dir,
+    rds_path, reanalysis_data_folder, filter_mode, target_clusters,
+    ion_mode, tolerance_mz,
+    reanalysis_p_thresh, reanalysis_logfc_thresh,
+    reanalysis_ion_mode, reanalysis_tolerance_mz,
+    desi_v8_script, desi_cluster_script,
+    tims_v8_script, tims_cluster_script,
+    app_state,
+):
+    if not n_clicks:
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update
+
+    analysis_type = desi_method or tims_method or "desi_v8"
+    full_output_dir = str(Path(output_dir) / output_subfolder)
+    Path(full_output_dir).mkdir(parents=True, exist_ok=True)
+
+    try:
+        if analysis_type in ("desi_v8", "tims_v8"):
+            # UMAP解析
+            if analysis_type == "desi_v8":
+                template = desi_v8_script or str(DESI_V8_TEMPLATE_PATH)
+            else:
+                template = tims_v8_script or str(TIMS_V8_TEMPLATE_PATH)
+
+            # サンプル名は data_folder 内の .txt ファイル名（UI上の選択状態は
+            # selected_samples チェックリストから取得すべきだが、
+            # Dash の動的コンポーネントの制約により、ここでは data_folder 全体を対象にする）
+            from app.services.data_manager import list_msi_files
+            sample_names = list_msi_files(data_folder)
+
+            params = {
+                "template_path": template,
+                "data_folder": data_folder,
+                "sample_names": sample_names,
+                "mrm_path": mrm_path or "",
+                "p_thresh": float(p_thresh) if p_thresh else 0.05,
+                "logfc_thresh": float(logfc_thresh) if logfc_thresh else 0.10,
+                "resume_from_rds": bool(resume_rds),
+                "resume_rds_paths": [],
+            }
+
+            if resume_rds and rds_folder:
+                rds_files = sorted(Path(rds_folder).glob("*.rds"))
+                params["resume_rds_paths"] = [str(f) for f in rds_files]
+
+            # TIMS固有パラメータ
+            if analysis_type == "tims_v8":
+                params["ion_mode"] = ion_mode or "Positive"
+                params["tolerance_mz"] = float(tolerance_mz) if tolerance_mz else 0.01
+
+            config_path = generate_v8_config(params, full_output_dir)
+
+        else:
+            # 再解析（クラスターフィルタ）
+            if analysis_type == "desi_cluster_filter":
+                template = desi_cluster_script or str(DESI_CLUSTER_FILTER_PATH)
+            else:
+                template = tims_cluster_script or str(TIMS_CLUSTER_FILTER_PATH)
+
+            # target_clusters をパース
+            clusters = []
+            if target_clusters:
+                clusters = [int(c.strip()) for c in target_clusters.split(",") if c.strip().isdigit()]
+
+            from app.services.data_manager import list_msi_files
+            sample_names = list_msi_files(reanalysis_data_folder)
+
+            params = {
+                "template_path": template,
+                "rds_path": rds_path or "",
+                "original_data_folder": reanalysis_data_folder or data_folder,
+                "filter_mode": filter_mode or "exclude",
+                "target_clusters": clusters,
+                "sample_names": sample_names,
+            }
+
+            config_path = generate_cluster_filter_config(params, full_output_dir)
+
+        # サブプロセス開始
+        result = start_analysis_process(config_path, full_output_dir)
+
+        if not result["success"]:
+            return (
+                app_state, True,
+                {"display": "none"}, {"display": "none"}, {"display": "none"},
+                f"解析開始に失敗: {result['message']}", True,
+            )
+
+        # プロセス参照をモジュールレベルで保持
+        _process_state["process"] = result["process"]
+        _process_state["log_file_handle"] = result.get("log_file_handle")
+
+        new_state = {
+            "is_running": True,
+            "process_pid": result["pid"],
+            "progress_file": result["progress_file"],
+            "log_file": result["log_file"],
+            "status_file": result["status_file"],
+            "full_output_dir": full_output_dir,
+        }
+
+        return (
+            new_state, False,  # Interval 有効化
+            {"flex": "0 0 auto"},  # 停止ボタン表示
+            {"flex": "1"},         # 進捗バー表示
+            {"marginTop": "20px"}, # ログ表示
+            "解析を開始しました", True,
+        )
+
+    except Exception as e:
+        return (
+            app_state, True,
+            {"display": "none"}, {"display": "none"}, {"display": "none"},
+            f"エラー: {e}", True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# 進捗監視（2秒ごと）
+# ---------------------------------------------------------------------------
+
+@callback(
+    [Output("analysis_log", "children"),
+     Output("analysis_progress_bar", "value"),
+     Output("analysis_progress_bar", "label"),
+     Output("section_progress_text", "children"),
+     Output("app_state", "data", allow_duplicate=True),
+     Output("progress_interval", "disabled", allow_duplicate=True),
+     Output("stop_button_container", "style", allow_duplicate=True),
+     Output("notification_toast", "children", allow_duplicate=True),
+     Output("notification_toast", "is_open", allow_duplicate=True)],
+    Input("progress_interval", "n_intervals"),
+    State("app_state", "data"),
+    prevent_initial_call=True,
+)
+def update_progress(n_intervals, app_state):
+    if not app_state or not app_state.get("is_running"):
+        return (no_update,) * 9
+
+    log_file = app_state.get("log_file")
+    status_file = app_state.get("status_file")
+    output_dir = app_state.get("full_output_dir")
+
+    # ログ取得
+    log_text = get_analysis_log(log_file, last_n=50) if log_file else ""
+
+    # プロセス完了チェック
+    process = _process_state.get("process")
+    log_fh = _process_state.get("log_file_handle")
+    completed_status = None
+    if process:
+        completed_status = check_process_completion(process, status_file, log_fh)
+
+    # ステータス確認
+    status = get_analysis_status(status_file) if status_file else "unknown"
+
+    # 出力ファイル数で進捗推定
+    file_count = 0
+    if output_dir and Path(output_dir).is_dir():
+        for ext in ("*.png", "*.csv", "*.rds"):
+            file_count += len(list(Path(output_dir).rglob(ext)))
+
+    # ヒューリスティック進捗計算
+    progress = min(95, file_count * 2)
+
+    # キーワードによるステップ検出
+    step_keywords = [
+        "Loading", "Normalizing", "PCA", "UMAP",
+        "Harmony", "Cluster", "Marker", "DEG", "Saving",
+        "Volcano", "Heatmap", "MSI",
+    ]
+    current_step = "処理中"
+    for kw in reversed(step_keywords):
+        if kw.lower() in log_text.lower():
+            current_step = kw
+            break
+
+    section_text = f"出力: {file_count} ファイル | ステップ: {current_step}"
+
+    if status in ("finished", "error") or completed_status:
+        final_status = completed_status or status
+        _process_state["process"] = None
+        _process_state["log_file_handle"] = None
+
+        app_state["is_running"] = False
+        msg = "解析が完了しました" if final_status == "finished" else "解析でエラーが発生しました"
+
+        return (
+            log_text, 100, "100%", section_text,
+            app_state, True,  # Interval 無効化
+            {"display": "none"},
+            msg, True,
+        )
+
+    if status == "stopped":
+        _process_state["process"] = None
+        _process_state["log_file_handle"] = None
+        app_state["is_running"] = False
+
+        return (
+            log_text, progress, f"{progress}%", section_text,
+            app_state, True,
+            {"display": "none"},
+            "解析を停止しました", True,
+        )
+
+    return (
+        log_text, progress, f"{progress}%", section_text,
+        no_update, no_update,
+        no_update,
+        no_update, no_update,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 解析停止
+# ---------------------------------------------------------------------------
+
+@callback(
+    [Output("notification_toast", "children", allow_duplicate=True),
+     Output("notification_toast", "is_open", allow_duplicate=True)],
+    Input("stop_analysis", "n_clicks"),
+    State("app_state", "data"),
+    prevent_initial_call=True,
+)
+def handle_stop(n_clicks, app_state):
+    if not n_clicks:
+        return no_update, no_update
+
+    process = _process_state.get("process")
+    log_fh = _process_state.get("log_file_handle")
+    output_dir = app_state.get("full_output_dir", "")
+
+    stop_analysis_process(process, output_dir, log_fh)
+
+    return "停止リクエストを送信しました", True

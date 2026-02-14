@@ -1,0 +1,14 @@
+# データフォルダ
+DESI/Data/
+TIMS/Data/
+Analysis_*/
+
+# Python キャッシュ
+__pycache__/
+*.pyc
+
+# 一時ファイル
+*.tmp.*
+
+# Rセッション
+Other/sessions/

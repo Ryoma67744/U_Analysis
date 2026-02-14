@@ -1,0 +1,250 @@
+# =============================================================================
+# MSI Analysis Application - Sidebar UI
+# サイドバーUI
+# =============================================================================
+
+from dash import html, dcc
+import dash_bootstrap_components as dbc
+
+from app.config import (
+    DESI_V8_TEMPLATE_PATH, DESI_CLUSTER_FILTER_PATH,
+    TIMS_V8_TEMPLATE_PATH, TIMS_CLUSTER_FILTER_PATH,
+    DEFAULT_DESI_DATA_FOLDER, DEFAULT_MRM_FILE_PATH,
+    DEFAULT_TIMS_DATA_FOLDER, DEFAULT_ANNOTATION_CSV_PATH,
+    DESI_DATA_DIR, TIMS_DATA_DIR, APP_BASE_DIR,
+)
+
+
+def _path_input_row(input_id: str, btn_id: str, value: str, placeholder: str):
+    """テキスト入力 + 参照ボタンの行"""
+    return html.Div(
+        style={"display": "flex", "gap": "5px"},
+        children=[
+            dbc.Input(
+                id=input_id, value=value, placeholder=placeholder,
+                size="sm", style={"flex": "1"},
+            ),
+            dbc.Button(
+                "...", id=btn_id, size="sm", outline=True, color="secondary",
+            ),
+        ],
+    )
+
+
+def create_sidebar():
+    return html.Div(className="sidebar", children=[
+        # 解析手法選択
+        html.H4(["🧪 解析手法"]),
+
+        # DESI セクション
+        html.Div(
+            "【DESI】",
+            style={
+                "color": "#667eea", "fontWeight": "bold", "fontSize": "14px",
+                "marginBottom": "5px", "borderBottom": "1px solid #667eea",
+                "paddingBottom": "2px",
+            },
+        ),
+        dbc.RadioItems(
+            id="analysis_method",
+            options=[
+                {"label": html.Span("UMAP解析", style={"marginLeft": "15px"}), "value": "desi_v8"},
+                {"label": html.Span("再解析", style={"marginLeft": "15px"}), "value": "desi_cluster_filter"},
+            ],
+            value="desi_v8",
+        ),
+
+        # TIMS セクション
+        html.Div(
+            "【TIMS】",
+            style={
+                "color": "#f093fb", "fontWeight": "bold", "fontSize": "14px",
+                "marginTop": "10px", "marginBottom": "5px",
+                "borderBottom": "1px solid #f093fb", "paddingBottom": "2px",
+            },
+        ),
+        dbc.RadioItems(
+            id="analysis_method_tims",
+            options=[
+                {"label": html.Span("UMAP解析", style={"marginLeft": "15px"}), "value": "tims_v8"},
+                {"label": html.Span("再解析", style={"marginLeft": "15px"}), "value": "tims_cluster_filter"},
+            ],
+            value=None,
+        ),
+
+        # スクリプト設定（折りたたみ）
+        _create_script_settings(),
+        html.Hr(),
+
+        # DESI初期設定
+        _create_desi_settings(),
+
+        # TIMS初期設定
+        _create_tims_settings(),
+
+        # 出力設定
+        _create_output_settings(),
+        html.Hr(),
+
+        # セッション管理
+        html.H4(["💾 セッション"]),
+        html.Div(
+            style={"display": "flex", "gap": "10px"},
+            children=[
+                dbc.Button(
+                    ["💾 保存"], id="save_session",
+                    size="sm", color="success",
+                ),
+                dbc.Button(
+                    ["📂 読込"], id="load_session",
+                    size="sm", color="info",
+                ),
+            ],
+        ),
+    ])
+
+
+def _create_script_settings():
+    return html.Details([
+        html.Summary(
+            "⚙ スクリプト設定",
+            style={"cursor": "pointer", "color": "#666", "fontSize": "12px", "marginTop": "10px"},
+        ),
+        html.Div(
+            style={"background": "#f8f9fa", "padding": "10px", "borderRadius": "5px", "marginTop": "5px"},
+            children=[
+                # DESI
+                html.H5("DESI", style={"color": "#667eea", "marginBottom": "8px", "fontWeight": "bold",
+                                        "borderBottom": "1px solid #667eea", "paddingBottom": "3px"}),
+                html.H6("UMAP解析 (v8 Template)"),
+                _path_input_row("desi_v8_script_path", "browse_desi_v8_script",
+                                str(DESI_V8_TEMPLATE_PATH), "DESI v8スクリプトのパス"),
+
+                html.H6("再解析 (Cluster Filter)", style={"marginTop": "10px"}),
+                _path_input_row("desi_cluster_filter_script_path", "browse_desi_cluster_script",
+                                str(DESI_CLUSTER_FILTER_PATH), "DESI Cluster Filterスクリプトのパス"),
+
+                # TIMS
+                html.H5("TIMS", style={"color": "#f093fb", "marginTop": "15px", "marginBottom": "8px",
+                                        "fontWeight": "bold", "borderBottom": "1px solid #f093fb",
+                                        "paddingBottom": "3px"}),
+                html.H6("UMAP解析"),
+                _path_input_row("tims_v8_script_path", "browse_tims_v8_script",
+                                str(TIMS_V8_TEMPLATE_PATH), "TIMS UMAPスクリプトのパス"),
+
+                html.H6("再解析 (Cluster Filter)", style={"marginTop": "10px"}),
+                _path_input_row("tims_cluster_filter_script_path", "browse_tims_cluster_script",
+                                str(TIMS_CLUSTER_FILTER_PATH), "TIMS Cluster Filterスクリプトのパス"),
+
+                html.Div(
+                    style={"marginTop": "10px", "textAlign": "right"},
+                    children=[
+                        dbc.Button("デフォルトに戻す", id="reset_script_paths",
+                                   size="sm", outline=True, color="secondary"),
+                    ],
+                ),
+            ],
+        ),
+    ])
+
+
+def _create_desi_settings():
+    return html.Details([
+        html.Summary(
+            "⚙ DESI初期設定",
+            style={"cursor": "pointer", "color": "#666", "fontSize": "12px"},
+        ),
+        html.Div(
+            style={"background": "#f8f9fa", "padding": "10px", "borderRadius": "5px", "marginTop": "5px"},
+            children=[
+                html.H6("デフォルトデータフォルダ"),
+                _path_input_row("default_desi_data_folder", "browse_default_desi_folder",
+                                DEFAULT_DESI_DATA_FOLDER, "DESIデータフォルダ"),
+
+                html.H6("MRMファイル (.xlsx)", style={"marginTop": "10px"}),
+                _path_input_row("default_mrm_file", "browse_default_mrm",
+                                DEFAULT_MRM_FILE_PATH, "MRMファイルのパス"),
+
+                html.H6("デフォルト出力先", style={"marginTop": "10px"}),
+                _path_input_row("default_desi_output_dir", "browse_default_desi_output",
+                                str(DESI_DATA_DIR), "DESI出力先フォルダ"),
+
+                html.Div(
+                    style={"marginTop": "10px", "textAlign": "right"},
+                    children=[
+                        dbc.Button("リセット", id="reset_desi_defaults",
+                                   size="sm", outline=True, color="secondary"),
+                        dbc.Button("適用", id="apply_desi_defaults",
+                                   size="sm", color="primary", style={"marginLeft": "5px"}),
+                    ],
+                ),
+            ],
+        ),
+    ])
+
+
+def _create_tims_settings():
+    return html.Details(
+        style={"marginTop": "10px"},
+        children=[
+            html.Summary(
+                "⚙ TIMS初期設定",
+                style={"cursor": "pointer", "color": "#666", "fontSize": "12px"},
+            ),
+            html.Div(
+                style={"background": "#f8f9fa", "padding": "10px", "borderRadius": "5px", "marginTop": "5px"},
+                children=[
+                    html.H6("デフォルトデータフォルダ"),
+                    _path_input_row("default_tims_data_folder", "browse_default_tims_folder",
+                                    DEFAULT_TIMS_DATA_FOLDER, "TIMSデータフォルダ"),
+
+                    html.H6("アノテーションファイル (.csv)", style={"marginTop": "10px"}),
+                    _path_input_row("default_annotation_csv", "browse_default_annotation",
+                                    DEFAULT_ANNOTATION_CSV_PATH, "アノテーションファイルのパス"),
+
+                    html.H6("デフォルト出力先", style={"marginTop": "10px"}),
+                    _path_input_row("default_tims_output_dir", "browse_default_tims_output",
+                                    str(TIMS_DATA_DIR), "TIMS出力先フォルダ"),
+
+                    html.Div(
+                        style={"marginTop": "10px", "textAlign": "right"},
+                        children=[
+                            dbc.Button("リセット", id="reset_tims_defaults",
+                                       size="sm", outline=True, color="secondary"),
+                            dbc.Button("適用", id="apply_tims_defaults",
+                                       size="sm", color="primary", style={"marginLeft": "5px"}),
+                        ],
+                    ),
+                ],
+            ),
+        ],
+    )
+
+
+def _create_output_settings():
+    return html.Details(
+        style={"marginTop": "10px"},
+        children=[
+            html.Summary(
+                "📁 出力設定",
+                style={"cursor": "pointer", "color": "#666", "fontSize": "12px"},
+            ),
+            html.Div(
+                style={"background": "#f8f9fa", "padding": "10px", "borderRadius": "5px", "marginTop": "5px"},
+                children=[
+                    html.H6("デフォルト出力先"),
+                    _path_input_row("default_output_dir", "browse_default_output",
+                                    str(APP_BASE_DIR), "出力先フォルダのパス"),
+                    html.Div(
+                        style={"marginTop": "10px", "textAlign": "right"},
+                        children=[
+                            dbc.Button("リセット", id="reset_output_defaults",
+                                       size="sm", outline=True, color="secondary"),
+                            dbc.Button("適用", id="apply_output_defaults",
+                                       size="sm", color="primary", style={"marginLeft": "5px"}),
+                        ],
+                    ),
+                ],
+            ),
+        ],
+    )

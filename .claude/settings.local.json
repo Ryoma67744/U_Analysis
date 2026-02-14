@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(pip install:*)",
+      "Bash(timeout /t 5)",
+      "Bash(cd:*)",
+      "Bash(grep:*)",
+      "Bash(timeout:*)",
+      "Bash(ping:*)",
+      "Bash(curl:*)",
+      "Bash(taskkill:*)",
+      "Bash(powershell -Command:*)",
+      "Bash(powershell -NoProfile -Command:*)",
+      "Bash(netstat:*)",
+      "Bash(findstr:*)",
+      "Bash(dir \"C:\\\\Users\\\\Cciia\\\\Biochem Dropbox\\\\木津亮馬\\\\UMAP_Claudecode\\\\nul\")",
+      "Bash(git --version:*)",
+      "Bash(dir:*)"
+    ]
+  }
+}
