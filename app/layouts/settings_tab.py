@@ -9,9 +9,11 @@ from dash import html, dcc
 import dash_bootstrap_components as dbc
 
 from app.config import DEFAULT_DESI_DATA_FOLDER, APP_BASE_DIR
+from app.services.session_manager import load_last_settings
 
 
 def create_settings_tab():
+    ls = load_last_settings()  # 前回の設定を復元
     return html.Div(className="card", style={"marginTop": "15px"}, children=[
         # UMAP解析設定（DESI/TIMS共通）
         html.Div(
@@ -25,7 +27,8 @@ def create_settings_tab():
                             html.Div(
                                 style={"display": "flex", "gap": "5px", "marginBottom": "10px"},
                                 children=[
-                                    dbc.Input(id="data_folder", value=DEFAULT_DESI_DATA_FOLDER,
+                                    dbc.Input(id="data_folder",
+                                              value=ls.get("data_folder", DEFAULT_DESI_DATA_FOLDER),
                                               placeholder="データフォルダのパス"),
                                     dbc.Button("参照...", id="browse_folder", size="sm", color="secondary"),
                                 ],
@@ -37,7 +40,8 @@ def create_settings_tab():
                     dbc.Col(width=6, children=[
                         html.Div(className="param-group", children=[
                             html.H5("MRMファイル (オプション)"),
-                            dbc.Input(id="mrm_path", placeholder="MRM.xlsx のパス"),
+                            dbc.Input(id="mrm_path", value=ls.get("mrm_path", ""),
+                                      placeholder="MRM.xlsx のパス"),
                             dbc.Button("参照...", id="browse_mrm", size="sm", color="secondary",
                                        style={"marginTop": "5px"}),
                         ]),
@@ -54,11 +58,11 @@ def create_settings_tab():
                                             {"label": "Positive", "value": "Positive"},
                                             {"label": "Negative", "value": "Negative"},
                                         ],
-                                        value="Positive", inline=True,
+                                        value=ls.get("ion_mode", "Positive"), inline=True,
                                     ),
                                     html.H5("m/z許容誤差", style={"marginTop": "10px"}),
                                     dbc.Input(id="tolerance_mz", type="number",
-                                              value=0.01, min=0, step=0.001,
+                                              value=ls.get("tolerance_mz", 0.01), min=0, step=0.001,
                                               style={"width": "50%"}),
                                     html.H5("Adductフィルター", style={"marginTop": "10px"}),
                                     dbc.Checklist(
@@ -91,12 +95,12 @@ def create_settings_tab():
                                 dbc.Col(width=6, children=[
                                     dbc.Label("p値閾値"),
                                     dbc.Input(id="p_thresh", type="number",
-                                              value=0.05, min=0, max=1, step=0.01),
+                                              value=ls.get("p_thresh", 0.05), min=0, max=1, step=0.01),
                                 ]),
                                 dbc.Col(width=6, children=[
                                     dbc.Label("log2FC閾値"),
                                     dbc.Input(id="logfc_thresh", type="number",
-                                              value=0.10, min=0, step=0.05),
+                                              value=ls.get("logfc_thresh", 0.10), min=0, step=0.05),
                                 ]),
                             ]),
                         ],
@@ -108,12 +112,14 @@ def create_settings_tab():
                     dbc.Col(width=12, children=[
                         html.Div(className="param-group", children=[
                             html.H5("RDSファイル"),
-                            dbc.Checkbox(id="resume_rds", label="途中再開 (RDSから)", value=False),
+                            dbc.Checkbox(id="resume_rds", label="途中再開 (RDSから)",
+                                        value=ls.get("resume_rds", False)),
                             html.Div(
                                 id="resume_rds_panel",
                                 style={"display": "none", "marginTop": "10px"},
                                 children=[
-                                    dbc.Input(id="rds_folder", placeholder="RDSファイルが入っているフォルダ"),
+                                    dbc.Input(id="rds_folder", value=ls.get("rds_folder", ""),
+                                              placeholder="RDSファイルが入っているフォルダ"),
                                     dbc.Button("参照...", id="browse_rds_folder", size="sm", color="secondary",
                                                style={"marginTop": "5px"}),
                                     html.Div(style={"marginTop": "10px"}, children=[
@@ -142,7 +148,8 @@ def create_settings_tab():
                             html.Div(
                                 style={"display": "flex", "gap": "5px", "marginBottom": "10px"},
                                 children=[
-                                    dbc.Input(id="reanalysis_data_folder", value=DEFAULT_DESI_DATA_FOLDER,
+                                    dbc.Input(id="reanalysis_data_folder",
+                                              value=ls.get("reanalysis_data_folder", DEFAULT_DESI_DATA_FOLDER),
                                               placeholder="データフォルダのパス"),
                                     dbc.Button("参照...", id="browse_reanalysis_folder",
                                                size="sm", color="secondary"),
@@ -155,7 +162,8 @@ def create_settings_tab():
                     dbc.Col(width=6, children=[
                         html.Div(className="param-group", children=[
                             html.H5("RDSファイル"),
-                            dbc.Input(id="rds_path", placeholder="解析済みRDSファイルのパス"),
+                            dbc.Input(id="rds_path", value=ls.get("rds_path", ""),
+                                      placeholder="解析済みRDSファイルのパス"),
                             dbc.Button("参照...", id="browse_rds", size="sm", color="secondary",
                                        style={"marginTop": "5px"}),
                         ]),
@@ -172,11 +180,12 @@ def create_settings_tab():
                                             {"label": "Positive", "value": "Positive"},
                                             {"label": "Negative", "value": "Negative"},
                                         ],
-                                        value="Positive", inline=True,
+                                        value=ls.get("reanalysis_ion_mode", "Positive"), inline=True,
                                     ),
                                     html.H5("m/z許容誤差", style={"marginTop": "10px"}),
                                     dbc.Input(id="reanalysis_tolerance_mz", type="number",
-                                              value=0.01, min=0, step=0.001, style={"width": "50%"}),
+                                              value=ls.get("reanalysis_tolerance_mz", 0.01),
+                                              min=0, step=0.001, style={"width": "50%"}),
                                     html.H5("Adductフィルター", style={"marginTop": "10px"}),
                                     dbc.Checklist(
                                         id="reanalysis_adduct_filter",
@@ -204,14 +213,15 @@ def create_settings_tab():
                                     {"label": "除外 (exclude)", "value": "exclude"},
                                     {"label": "抽出 (keep)", "value": "keep"},
                                 ],
-                                value="exclude", inline=True,
+                                value=ls.get("filter_mode", "exclude"), inline=True,
                             ),
                         ]),
                     ]),
                     dbc.Col(width=6, children=[
                         html.Div(className="param-group", children=[
                             html.H5("対象クラスタ"),
-                            dbc.Input(id="target_clusters", placeholder="例: 0, 1, 5, 7", value=""),
+                            dbc.Input(id="target_clusters", placeholder="例: 0, 1, 5, 7",
+                                      value=ls.get("target_clusters", "")),
                             dbc.FormText("カンマ区切りでクラスタ番号を入力"),
                         ]),
                     ]),
@@ -229,12 +239,14 @@ def create_settings_tab():
                                 dbc.Col(width=6, children=[
                                     dbc.Label("p値閾値"),
                                     dbc.Input(id="reanalysis_p_thresh", type="number",
-                                              value=0.05, min=0, max=1, step=0.01),
+                                              value=ls.get("reanalysis_p_thresh", 0.05),
+                                              min=0, max=1, step=0.01),
                                 ]),
                                 dbc.Col(width=6, children=[
                                     dbc.Label("log2FC閾値"),
                                     dbc.Input(id="reanalysis_logfc_thresh", type="number",
-                                              value=0.10, min=0, step=0.05),
+                                              value=ls.get("reanalysis_logfc_thresh", 0.10),
+                                              min=0, step=0.05),
                                 ]),
                             ]),
                         ],
@@ -257,7 +269,7 @@ def create_settings_tab():
             ]),
             dbc.Col(width=4, children=[
                 html.H6("出力先"),
-                dbc.Input(id="output_dir", value=str(APP_BASE_DIR)),
+                dbc.Input(id="output_dir", value=ls.get("output_dir", str(APP_BASE_DIR))),
             ]),
             dbc.Col(width=4, children=[
                 dbc.Button("参照...", id="browse_output", size="sm", color="secondary",

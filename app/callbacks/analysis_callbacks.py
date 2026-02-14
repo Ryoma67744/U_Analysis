@@ -22,6 +22,7 @@ from app.services.analysis_runner import (
     check_process_completion,
     stop_analysis_process,
 )
+from app.services.session_manager import save_last_settings
 
 
 # アプリケーションレベルの状態（サブプロセス参照など）
@@ -89,6 +90,36 @@ def run_analysis(
 ):
     if not n_clicks:
         return no_update, no_update, no_update, no_update, no_update, no_update, no_update
+
+    # 現在の設定を自動保存（次回起動時に復元される）
+    try:
+        save_last_settings({
+            "analysis_method": desi_method,
+            "analysis_method_tims": tims_method,
+            "data_folder": data_folder,
+            "mrm_path": mrm_path,
+            "p_thresh": p_thresh,
+            "logfc_thresh": logfc_thresh,
+            "resume_rds": resume_rds,
+            "rds_folder": rds_folder,
+            "output_dir": output_dir,
+            "rds_path": rds_path,
+            "reanalysis_data_folder": reanalysis_data_folder,
+            "filter_mode": filter_mode,
+            "target_clusters": target_clusters,
+            "ion_mode": ion_mode,
+            "tolerance_mz": tolerance_mz,
+            "reanalysis_p_thresh": reanalysis_p_thresh,
+            "reanalysis_logfc_thresh": reanalysis_logfc_thresh,
+            "reanalysis_ion_mode": reanalysis_ion_mode,
+            "reanalysis_tolerance_mz": reanalysis_tolerance_mz,
+            "desi_v8_script_path": desi_v8_script,
+            "desi_cluster_filter_script_path": desi_cluster_script,
+            "tims_v8_script_path": tims_v8_script,
+            "tims_cluster_filter_script_path": tims_cluster_script,
+        })
+    except Exception:
+        pass  # 保存失敗しても解析は続行
 
     analysis_type = desi_method or tims_method or "desi_v8"
     full_output_dir = str(Path(output_dir) / output_subfolder)

@@ -8,6 +8,58 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from app.config import SESSIONS_DIR
+
+
+# ---------------------------------------------------------------------------
+# 前回設定の自動保存・復元
+# ---------------------------------------------------------------------------
+
+_LAST_SETTINGS_FILE = SESSIONS_DIR / "last_settings.json"
+
+# 自動保存対象のキー一覧
+_AUTO_SAVE_KEYS = [
+    "analysis_method", "analysis_method_tims",
+    "data_folder", "mrm_path", "output_dir",
+    "p_thresh", "logfc_thresh",
+    "resume_rds", "rds_folder",
+    "reanalysis_data_folder", "rds_path",
+    "filter_mode", "target_clusters",
+    "ion_mode", "tolerance_mz",
+    "reanalysis_ion_mode", "reanalysis_tolerance_mz",
+    "reanalysis_p_thresh", "reanalysis_logfc_thresh",
+    # サイドバー設定
+    "desi_v8_script_path", "desi_cluster_filter_script_path",
+    "tims_v8_script_path", "tims_cluster_filter_script_path",
+    "default_desi_data_folder", "default_mrm_file", "default_desi_output_dir",
+    "default_tims_data_folder", "default_annotation_csv", "default_tims_output_dir",
+    "default_output_dir",
+]
+
+
+def save_last_settings(settings: dict) -> None:
+    """前回の設定を自動保存（既存の保存済みデータとマージ）"""
+    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    # 既存データを読み込んでマージ
+    existing = load_last_settings()
+    for k, v in settings.items():
+        if k in _AUTO_SAVE_KEYS:
+            existing[k] = v
+    existing["_saved_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    with open(_LAST_SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(existing, f, indent=2, ensure_ascii=False)
+
+
+def load_last_settings() -> dict:
+    """前回の設定を読み込み（なければ空辞書）"""
+    if not _LAST_SETTINGS_FILE.exists():
+        return {}
+    try:
+        with open(_LAST_SETTINGS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
 
 def save_session(
     session_data: dict,

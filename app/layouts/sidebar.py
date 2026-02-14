@@ -13,6 +13,7 @@ from app.config import (
     DEFAULT_TIMS_DATA_FOLDER, DEFAULT_ANNOTATION_CSV_PATH,
     DESI_DATA_DIR, TIMS_DATA_DIR, APP_BASE_DIR,
 )
+from app.services.session_manager import load_last_settings
 
 
 def _path_input_row(input_id: str, btn_id: str, value: str, placeholder: str):
@@ -32,6 +33,7 @@ def _path_input_row(input_id: str, btn_id: str, value: str, placeholder: str):
 
 
 def create_sidebar():
+    ls = load_last_settings()  # 前回の設定を復元
     return html.Div(className="sidebar", children=[
         # 解析手法選択
         html.H4(["🧪 解析手法"]),
@@ -51,7 +53,7 @@ def create_sidebar():
                 {"label": html.Span("UMAP解析", style={"marginLeft": "15px"}), "value": "desi_v8"},
                 {"label": html.Span("再解析", style={"marginLeft": "15px"}), "value": "desi_cluster_filter"},
             ],
-            value="desi_v8",
+            value=ls.get("analysis_method", "desi_v8"),
         ),
 
         # TIMS セクション
@@ -69,21 +71,21 @@ def create_sidebar():
                 {"label": html.Span("UMAP解析", style={"marginLeft": "15px"}), "value": "tims_v8"},
                 {"label": html.Span("再解析", style={"marginLeft": "15px"}), "value": "tims_cluster_filter"},
             ],
-            value=None,
+            value=ls.get("analysis_method_tims", None),
         ),
 
         # スクリプト設定（折りたたみ）
-        _create_script_settings(),
+        _create_script_settings(ls),
         html.Hr(),
 
         # DESI初期設定
-        _create_desi_settings(),
+        _create_desi_settings(ls),
 
         # TIMS初期設定
-        _create_tims_settings(),
+        _create_tims_settings(ls),
 
         # 出力設定
-        _create_output_settings(),
+        _create_output_settings(ls),
         html.Hr(),
 
         # セッション管理
@@ -104,7 +106,9 @@ def create_sidebar():
     ])
 
 
-def _create_script_settings():
+def _create_script_settings(ls: dict = None):
+    if ls is None:
+        ls = {}
     return html.Details([
         html.Summary(
             "⚙ スクリプト設定",
@@ -118,11 +122,13 @@ def _create_script_settings():
                                         "borderBottom": "1px solid #667eea", "paddingBottom": "3px"}),
                 html.H6("UMAP解析 (v8 Template)"),
                 _path_input_row("desi_v8_script_path", "browse_desi_v8_script",
-                                str(DESI_V8_TEMPLATE_PATH), "DESI v8スクリプトのパス"),
+                                ls.get("desi_v8_script_path", str(DESI_V8_TEMPLATE_PATH)),
+                                "DESI v8スクリプトのパス"),
 
                 html.H6("再解析 (Cluster Filter)", style={"marginTop": "10px"}),
                 _path_input_row("desi_cluster_filter_script_path", "browse_desi_cluster_script",
-                                str(DESI_CLUSTER_FILTER_PATH), "DESI Cluster Filterスクリプトのパス"),
+                                ls.get("desi_cluster_filter_script_path", str(DESI_CLUSTER_FILTER_PATH)),
+                                "DESI Cluster Filterスクリプトのパス"),
 
                 # TIMS
                 html.H5("TIMS", style={"color": "#f093fb", "marginTop": "15px", "marginBottom": "8px",
@@ -130,11 +136,13 @@ def _create_script_settings():
                                         "paddingBottom": "3px"}),
                 html.H6("UMAP解析"),
                 _path_input_row("tims_v8_script_path", "browse_tims_v8_script",
-                                str(TIMS_V8_TEMPLATE_PATH), "TIMS UMAPスクリプトのパス"),
+                                ls.get("tims_v8_script_path", str(TIMS_V8_TEMPLATE_PATH)),
+                                "TIMS UMAPスクリプトのパス"),
 
                 html.H6("再解析 (Cluster Filter)", style={"marginTop": "10px"}),
                 _path_input_row("tims_cluster_filter_script_path", "browse_tims_cluster_script",
-                                str(TIMS_CLUSTER_FILTER_PATH), "TIMS Cluster Filterスクリプトのパス"),
+                                ls.get("tims_cluster_filter_script_path", str(TIMS_CLUSTER_FILTER_PATH)),
+                                "TIMS Cluster Filterスクリプトのパス"),
 
                 html.Div(
                     style={"marginTop": "10px", "textAlign": "right"},
@@ -148,7 +156,9 @@ def _create_script_settings():
     ])
 
 
-def _create_desi_settings():
+def _create_desi_settings(ls: dict = None):
+    if ls is None:
+        ls = {}
     return html.Details([
         html.Summary(
             "⚙ DESI初期設定",
@@ -159,15 +169,18 @@ def _create_desi_settings():
             children=[
                 html.H6("デフォルトデータフォルダ"),
                 _path_input_row("default_desi_data_folder", "browse_default_desi_folder",
-                                DEFAULT_DESI_DATA_FOLDER, "DESIデータフォルダ"),
+                                ls.get("default_desi_data_folder", DEFAULT_DESI_DATA_FOLDER),
+                                "DESIデータフォルダ"),
 
                 html.H6("MRMファイル (.xlsx)", style={"marginTop": "10px"}),
                 _path_input_row("default_mrm_file", "browse_default_mrm",
-                                DEFAULT_MRM_FILE_PATH, "MRMファイルのパス"),
+                                ls.get("default_mrm_file", DEFAULT_MRM_FILE_PATH),
+                                "MRMファイルのパス"),
 
                 html.H6("デフォルト出力先", style={"marginTop": "10px"}),
                 _path_input_row("default_desi_output_dir", "browse_default_desi_output",
-                                str(DESI_DATA_DIR), "DESI出力先フォルダ"),
+                                ls.get("default_desi_output_dir", str(DESI_DATA_DIR)),
+                                "DESI出力先フォルダ"),
 
                 html.Div(
                     style={"marginTop": "10px", "textAlign": "right"},
@@ -183,7 +196,9 @@ def _create_desi_settings():
     ])
 
 
-def _create_tims_settings():
+def _create_tims_settings(ls: dict = None):
+    if ls is None:
+        ls = {}
     return html.Details(
         style={"marginTop": "10px"},
         children=[
@@ -196,15 +211,18 @@ def _create_tims_settings():
                 children=[
                     html.H6("デフォルトデータフォルダ"),
                     _path_input_row("default_tims_data_folder", "browse_default_tims_folder",
-                                    DEFAULT_TIMS_DATA_FOLDER, "TIMSデータフォルダ"),
+                                    ls.get("default_tims_data_folder", DEFAULT_TIMS_DATA_FOLDER),
+                                    "TIMSデータフォルダ"),
 
                     html.H6("アノテーションファイル (.csv)", style={"marginTop": "10px"}),
                     _path_input_row("default_annotation_csv", "browse_default_annotation",
-                                    DEFAULT_ANNOTATION_CSV_PATH, "アノテーションファイルのパス"),
+                                    ls.get("default_annotation_csv", DEFAULT_ANNOTATION_CSV_PATH),
+                                    "アノテーションファイルのパス"),
 
                     html.H6("デフォルト出力先", style={"marginTop": "10px"}),
                     _path_input_row("default_tims_output_dir", "browse_default_tims_output",
-                                    str(TIMS_DATA_DIR), "TIMS出力先フォルダ"),
+                                    ls.get("default_tims_output_dir", str(TIMS_DATA_DIR)),
+                                    "TIMS出力先フォルダ"),
 
                     html.Div(
                         style={"marginTop": "10px", "textAlign": "right"},
@@ -221,7 +239,9 @@ def _create_tims_settings():
     )
 
 
-def _create_output_settings():
+def _create_output_settings(ls: dict = None):
+    if ls is None:
+        ls = {}
     return html.Details(
         style={"marginTop": "10px"},
         children=[
@@ -234,7 +254,8 @@ def _create_output_settings():
                 children=[
                     html.H6("デフォルト出力先"),
                     _path_input_row("default_output_dir", "browse_default_output",
-                                    str(APP_BASE_DIR), "出力先フォルダのパス"),
+                                    ls.get("default_output_dir", str(APP_BASE_DIR)),
+                                    "出力先フォルダのパス"),
                     html.Div(
                         style={"marginTop": "10px", "textAlign": "right"},
                         children=[

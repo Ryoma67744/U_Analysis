@@ -19,6 +19,7 @@ from app.layouts.file_browser_modal import (
     get_available_drives, list_directory, build_breadcrumb_parts,
 )
 from app.services.data_manager import list_msi_files
+from app.services.session_manager import save_last_settings
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +272,14 @@ def reset_output_defaults(n):
 def apply_desi_defaults(n, desi_folder, mrm_file, desi_output):
     if not n:
         return no_update, no_update, no_update
+    try:
+        save_last_settings({
+            "default_desi_data_folder": desi_folder,
+            "default_mrm_file": mrm_file,
+            "default_desi_output_dir": desi_output,
+        })
+    except Exception:
+        pass
     return desi_folder or no_update, mrm_file or no_update, desi_output or no_update
 
 
@@ -285,6 +294,13 @@ def apply_desi_defaults(n, desi_folder, mrm_file, desi_output):
 def apply_tims_defaults(n, tims_folder, tims_output):
     if not n:
         return no_update, no_update
+    try:
+        save_last_settings({
+            "default_tims_data_folder": tims_folder,
+            "default_tims_output_dir": tims_output,
+        })
+    except Exception:
+        pass
     return tims_folder or no_update, tims_output or no_update
 
 
@@ -297,6 +313,10 @@ def apply_tims_defaults(n, tims_folder, tims_output):
 def apply_output_defaults(n, output_dir):
     if not n:
         return no_update
+    try:
+        save_last_settings({"default_output_dir": output_dir})
+    except Exception:
+        pass
     return output_dir or no_update
 
 
@@ -329,6 +349,16 @@ _BROWSE_BUTTONS = {
     "browse_default_output": ("folder", "default_output_dir"),
 }
 
+# 全対象入力フィールドIDの一覧（_BROWSE_BUTTONSのvalue[1]を収集）
+_ALL_TARGET_IDS = list(dict.fromkeys(v[1] for v in _BROWSE_BUTTONS.values()))
+
+# dcc.Store は "data" プロパティ、dbc.Input/dcc.Input は "value" プロパティ
+_STORE_TARGETS = {"result_folder_manual"}
+
+def _target_property(tid):
+    return "data" if tid in _STORE_TARGETS else "value"
+
+
 # すべてのブラウズボタンからモーダルを開く
 @callback(
     [Output("file_browser_modal", "is_open", allow_duplicate=True),
@@ -336,11 +366,16 @@ _BROWSE_BUTTONS = {
      Output("fb_drive_selector", "options"),
      Output("fb_selected_path", "children", allow_duplicate=True)],
     [Input(btn_id, "n_clicks") for btn_id in _BROWSE_BUTTONS],
-    [State("fb_state", "data")],
+    [State("fb_state", "data")]
+    + [State(tid, _target_property(tid)) for tid in _ALL_TARGET_IDS],
     prevent_initial_call=True,
 )
 def open_file_browser(*args):
-    state = args[-1]
+    # args: [btn_clicks..., fb_state, target_values...]
+    n_buttons = len(_BROWSE_BUTTONS)
+    state = args[n_buttons]  # fb_state
+    target_values = args[n_buttons + 1:]  # 各ターゲット入力欄の現在値
+
     triggered = ctx.triggered_id
     if triggered is None:
         return no_update, no_update, no_update, no_update
@@ -348,7 +383,21 @@ def open_file_browser(*args):
     if triggered in _BROWSE_BUTTONS:
         mode, target_id = _BROWSE_BUTTONS[triggered]
         drives = get_available_drives()
+
+        # 対応する入力欄の現在値を取得し、初期ディレクトリを決定
         initial_dir = str(APP_BASE_DIR)
+        try:
+            idx = _ALL_TARGET_IDS.index(target_id)
+            current_val = target_values[idx]
+            if current_val:
+                p = Path(current_val)
+                if p.is_dir():
+                    initial_dir = str(p)
+                elif p.parent.is_dir():
+                    # ファイルパスの場合は親ディレクトリを使用
+                    initial_dir = str(p.parent)
+        except (ValueError, IndexError):
+            pass
 
         new_state = {
             "current_dir": initial_dir,
@@ -460,15 +509,6 @@ def handle_fb_item_click(clicks, state):
 # Dashでは動的にOutput先を変えることが難しいため、
 # fb_state の caller_id を使って全対象フィールドの Output を一括定義し、
 # 該当する1つだけ値を更新、残りは no_update を返す。
-
-# 全対象入力フィールドIDの一覧（_BROWSE_BUTTONSのvalue[1]を収集）
-_ALL_TARGET_IDS = list(dict.fromkeys(v[1] for v in _BROWSE_BUTTONS.values()))
-
-# dcc.Store は "data" プロパティ、dbc.Input/dcc.Input は "value" プロパティ
-_STORE_TARGETS = {"result_folder_manual"}
-
-def _target_property(tid):
-    return "data" if tid in _STORE_TARGETS else "value"
 
 @callback(
     [Output(tid, _target_property(tid), allow_duplicate=True) for tid in _ALL_TARGET_IDS]
