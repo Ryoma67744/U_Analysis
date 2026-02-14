@@ -164,3 +164,18 @@ def handle_delete_session(n_clicks, selected_rows, table_data):
     if delete_session(session_path):
         return f"セッションを削除しました: {row.get('name', '')}", True
     return "削除に失敗しました", True
+
+
+# ---------------------------------------------------------------------------
+# サイドバーの「読込」ボタン → 履歴タブに切り替え
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("main_tabs", "active_tab"),
+    Input("load_session", "n_clicks"),
+    prevent_initial_call=True,
+)
+def switch_to_history_tab(n_clicks):
+    if not n_clicks:
+        return no_update
+    return "history"

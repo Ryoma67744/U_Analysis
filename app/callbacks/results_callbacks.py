@@ -21,9 +21,10 @@ from app.services.results_viewer import (
 # ---------------------------------------------------------------------------
 
 @callback(
-    Output("result_folder_selector", "options"),
+    Output("result_folder_selector", "options", allow_duplicate=True),
     [Input("main_tabs", "active_tab"),
      Input("output_dir", "value")],
+    prevent_initial_call=True,
 )
 def update_result_folders(active_tab, output_dir):
     if active_tab != "results" or not output_dir:

@@ -38,9 +38,9 @@ _process_state = {
 # ---------------------------------------------------------------------------
 
 @callback(
-    [Output("app_state", "data"),
-     Output("progress_interval", "disabled"),
-     Output("stop_button_container", "style"),
+    [Output("app_state", "data", allow_duplicate=True),
+     Output("progress_interval", "disabled", allow_duplicate=True),
+     Output("stop_button_container", "style", allow_duplicate=True),
      Output("progress_container", "style"),
      Output("log_container", "style"),
      Output("notification_toast", "children", allow_duplicate=True),

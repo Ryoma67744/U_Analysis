@@ -26,7 +26,7 @@ from app.services.data_manager import list_msi_files
 # ---------------------------------------------------------------------------
 
 @callback(
-    Output("analysis_method_tims", "value"),
+    Output("analysis_method_tims", "value", allow_duplicate=True),
     Input("analysis_method", "value"),
     prevent_initial_call=True,
 )
@@ -38,7 +38,7 @@ def clear_tims_on_desi_select(desi_val):
 
 
 @callback(
-    Output("analysis_method", "value"),
+    Output("analysis_method", "value", allow_duplicate=True),
     Input("analysis_method_tims", "value"),
     prevent_initial_call=True,
 )
@@ -160,7 +160,7 @@ def update_rds_file_selector(rds_folder):
 # ---------------------------------------------------------------------------
 
 @callback(
-    Output("data_folder", "value"),
+    Output("data_folder", "value", allow_duplicate=True),
     [Input("analysis_method", "value"),
      Input("analysis_method_tims", "value")],
     [State("default_desi_data_folder", "value"),
@@ -207,10 +207,10 @@ def auto_switch_reanalysis_adduct(ion_mode):
 # ---------------------------------------------------------------------------
 
 @callback(
-    [Output("desi_v8_script_path", "value"),
-     Output("desi_cluster_filter_script_path", "value"),
-     Output("tims_v8_script_path", "value"),
-     Output("tims_cluster_filter_script_path", "value")],
+    [Output("desi_v8_script_path", "value", allow_duplicate=True),
+     Output("desi_cluster_filter_script_path", "value", allow_duplicate=True),
+     Output("tims_v8_script_path", "value", allow_duplicate=True),
+     Output("tims_cluster_filter_script_path", "value", allow_duplicate=True)],
     Input("reset_script_paths", "n_clicks"),
     prevent_initial_call=True,
 )
@@ -255,6 +255,52 @@ def reset_output_defaults(n):
 
 
 # ---------------------------------------------------------------------------
+# デフォルト設定適用
+# ---------------------------------------------------------------------------
+
+@callback(
+    [Output("data_folder", "value", allow_duplicate=True),
+     Output("mrm_path", "value", allow_duplicate=True),
+     Output("output_dir", "value", allow_duplicate=True)],
+    Input("apply_desi_defaults", "n_clicks"),
+    [State("default_desi_data_folder", "value"),
+     State("default_mrm_file", "value"),
+     State("default_desi_output_dir", "value")],
+    prevent_initial_call=True,
+)
+def apply_desi_defaults(n, desi_folder, mrm_file, desi_output):
+    if not n:
+        return no_update, no_update, no_update
+    return desi_folder or no_update, mrm_file or no_update, desi_output or no_update
+
+
+@callback(
+    [Output("data_folder", "value", allow_duplicate=True),
+     Output("output_dir", "value", allow_duplicate=True)],
+    Input("apply_tims_defaults", "n_clicks"),
+    [State("default_tims_data_folder", "value"),
+     State("default_tims_output_dir", "value")],
+    prevent_initial_call=True,
+)
+def apply_tims_defaults(n, tims_folder, tims_output):
+    if not n:
+        return no_update, no_update
+    return tims_folder or no_update, tims_output or no_update
+
+
+@callback(
+    Output("output_dir", "value", allow_duplicate=True),
+    Input("apply_output_defaults", "n_clicks"),
+    State("default_output_dir", "value"),
+    prevent_initial_call=True,
+)
+def apply_output_defaults(n, output_dir):
+    if not n:
+        return no_update
+    return output_dir or no_update
+
+
+# ---------------------------------------------------------------------------
 # ファイルブラウザモーダル
 # ---------------------------------------------------------------------------
 
@@ -285,9 +331,10 @@ _BROWSE_BUTTONS = {
 
 # すべてのブラウズボタンからモーダルを開く
 @callback(
-    [Output("file_browser_modal", "is_open"),
-     Output("fb_state", "data"),
-     Output("fb_drive_selector", "options")],
+    [Output("file_browser_modal", "is_open", allow_duplicate=True),
+     Output("fb_state", "data", allow_duplicate=True),
+     Output("fb_drive_selector", "options"),
+     Output("fb_selected_path", "children", allow_duplicate=True)],
     [Input(btn_id, "n_clicks") for btn_id in _BROWSE_BUTTONS],
     [State("fb_state", "data")],
     prevent_initial_call=True,
@@ -296,7 +343,7 @@ def open_file_browser(*args):
     state = args[-1]
     triggered = ctx.triggered_id
     if triggered is None:
-        return no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update
 
     if triggered in _BROWSE_BUTTONS:
         mode, target_id = _BROWSE_BUTTONS[triggered]
@@ -309,9 +356,9 @@ def open_file_browser(*args):
             "caller_id": target_id,
             "selected_path": "",
         }
-        return True, new_state, drives
+        return True, new_state, drives, ""
 
-    return no_update, no_update, no_update
+    return no_update, no_update, no_update, no_update
 
 
 # ディレクトリ内容の表示
@@ -388,14 +435,15 @@ def update_file_browser(state, drive_val, go_clicks, path_input):
 
 # ファイルブラウザ内のアイテムクリック
 @callback(
-    Output("fb_state", "data", allow_duplicate=True),
+    [Output("fb_state", "data", allow_duplicate=True),
+     Output("fb_selected_path", "children", allow_duplicate=True)],
     Input({"type": "fb_item", "path": ALL}, "n_clicks"),
     State("fb_state", "data"),
     prevent_initial_call=True,
 )
 def handle_fb_item_click(clicks, state):
     if not ctx.triggered_id or not any(c for c in clicks if c):
-        return no_update
+        return no_update, no_update
 
     clicked_path = ctx.triggered_id["path"]
     path = Path(clicked_path)
@@ -405,19 +453,7 @@ def handle_fb_item_click(clicks, state):
         state["selected_path"] = str(path)
     else:
         state["selected_path"] = str(path)
-    return state
-
-
-# fb_state の selected_path 変更 → 選択パス表示を更新
-@callback(
-    Output("fb_selected_path", "children"),
-    Input("fb_state", "data"),
-    prevent_initial_call=True,
-)
-def update_selected_path_display(state):
-    if not state:
-        return ""
-    return state.get("selected_path", "")
+    return state, state.get("selected_path", "")
 
 
 # モーダルの「選択」ボタン → 対応するInputに値を設定
