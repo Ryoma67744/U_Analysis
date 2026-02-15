@@ -21,7 +21,21 @@ if (!file.exists(rds_path)) {
 suppressPackageStartupMessages(library(Seurat))
 
 obj <- readRDS(rds_path)
-expr_data <- GetAssayData(obj, slot = "data")
+
+# Seurat v5 では JoinLayers() が必要（複数レイヤー対応）
+tryCatch({
+  obj <- JoinLayers(obj)
+}, error = function(e) NULL)
+# v5: LayerData()、v4 fallback: GetAssayData(layer=...)
+expr_data <- tryCatch({
+  LayerData(obj, layer = "data")
+}, error = function(e) {
+  tryCatch({
+    GetAssayData(obj, layer = "data")
+  }, error = function(e2) {
+    GetAssayData(obj, slot = "data")
+  })
+})
 
 if (!(feature_name %in% rownames(expr_data))) {
   stop("Feature not found: ", feature_name)

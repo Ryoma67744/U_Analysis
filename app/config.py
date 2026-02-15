@@ -4,6 +4,7 @@
 # =============================================================================
 
 import os
+import tempfile
 from pathlib import Path
 
 # アプリケーションのベースディレクトリ
@@ -61,7 +62,8 @@ PROJECTS_DIR = APP_BASE_DIR / "app" / "projects"
 PROJECTS_FILE = PROJECTS_DIR / "projects.json"
 
 # Seuratブリッジ キャッシュディレクトリ
-SEURAT_CACHE_DIR = APP_BASE_DIR / "app" / ".seurat_cache"
+# 日本語パスを含むとRscript.exeが文字化けするため、tempdir（ASCII安全）を使用
+SEURAT_CACHE_DIR = Path(tempfile.gettempdir()) / "msi_seurat_cache"
 
 # アプリケーション設定
 APP_VERSION = "2.0.0"

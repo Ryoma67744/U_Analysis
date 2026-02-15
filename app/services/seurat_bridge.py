@@ -5,6 +5,7 @@
 
 import hashlib
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -40,8 +41,11 @@ class SeuratBridge:
         return self._get_cache_dir(rds_path)
 
     def _is_cached(self, cache_dir: Path) -> bool:
-        """キャッシュ済みかチェック"""
-        return (cache_dir / "extraction_meta.json").exists()
+        """キャッシュ済みかチェック（必須ファイルが全て揃っているか）"""
+        required = ["extraction_meta.json", "cluster_stats.csv"]
+        # plot_data は parquet or csv のどちらか
+        has_plot = (cache_dir / "plot_data.parquet").exists() or (cache_dir / "plot_data.csv").exists()
+        return has_plot and all((cache_dir / f).exists() for f in required)
 
     def extract_data(self, rds_path: str) -> dict:
         """Seurat RDS からデータを抽出。キャッシュがあればそれを使用。
@@ -60,7 +64,15 @@ class SeuratBridge:
         if not self._is_cached(cache_dir):
             self._run_extraction(rds_path, cache_dir)
 
-        result = self._load_extracted_data(cache_dir)
+        try:
+            result = self._load_extracted_data(cache_dir)
+        except Exception:
+            # キャッシュ破損の可能性 → 削除して再抽出
+            shutil.rmtree(cache_dir, ignore_errors=True)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            self._run_extraction(rds_path, cache_dir)
+            result = self._load_extracted_data(cache_dir)
+
         result["cache_dir"] = cache_dir
         return result
 
@@ -107,12 +119,16 @@ class SeuratBridge:
             str(script), rds_path, str(output_dir),
         ]
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=600,
+            cmd, capture_output=True, timeout=600,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode != 0:
+            # 不完全なキャッシュファイルを削除
+            if output_dir.exists():
+                shutil.rmtree(output_dir, ignore_errors=True)
+            stderr_text = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
             raise RuntimeError(
-                f"Seurat extraction failed:\n{result.stderr[:2000]}"
+                f"Seurat extraction failed:\n{stderr_text[:2000]}"
             )
 
     def _run_feature_extraction(
@@ -129,27 +145,34 @@ class SeuratBridge:
             str(script), rds_path, feature_name, str(output_path),
         ]
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=300,
+            cmd, capture_output=True, timeout=300,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode != 0:
+            stderr_text = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
             raise RuntimeError(
-                f"Feature extraction failed:\n{result.stderr[:2000]}"
+                f"Feature extraction failed:\n{stderr_text[:2000]}"
             )
 
     def _load_extracted_data(self, cache_dir: Path) -> dict:
         """キャッシュディレクトリからデータを読み込み"""
         # plot_data: Parquet優先、CSV fallback
-        plot_data_path = cache_dir / "plot_data.parquet"
-        if plot_data_path.exists():
-            plot_data = pd.read_parquet(plot_data_path)
+        plot_parquet = cache_dir / "plot_data.parquet"
+        plot_csv = cache_dir / "plot_data.csv"
+        if plot_parquet.exists():
+            plot_data = pd.read_parquet(plot_parquet)
+        elif plot_csv.exists():
+            plot_data = pd.read_csv(plot_csv)
         else:
-            plot_data = pd.read_csv(cache_dir / "plot_data.csv")
+            raise FileNotFoundError(f"plot_data が見つかりません: {cache_dir}")
 
         # cluster_stats
-        cluster_stats = pd.read_csv(cache_dir / "cluster_stats.csv")
+        cs_path = cache_dir / "cluster_stats.csv"
+        if not cs_path.exists():
+            raise FileNotFoundError(f"cluster_stats.csv が見つかりません: {cache_dir}")
+        cluster_stats = pd.read_csv(cs_path)
 
-        # features_list
+        # features_list（任意 — なくても空リストで続行）
         features_file = cache_dir / "features_list.txt"
         features_list = []
         if features_file.exists():
@@ -157,6 +180,8 @@ class SeuratBridge:
 
         # meta
         meta_file = cache_dir / "extraction_meta.json"
+        if not meta_file.exists():
+            raise FileNotFoundError(f"extraction_meta.json が見つかりません: {cache_dir}")
         with open(meta_file, "r", encoding="utf-8") as f:
             meta = json.load(f)
 

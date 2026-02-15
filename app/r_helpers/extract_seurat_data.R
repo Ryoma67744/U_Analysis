@@ -85,7 +85,23 @@ write.csv(cluster_counts, file.path(output_dir, "cluster_stats.csv"), row.names 
 cat("Wrote cluster_stats.csv\n")
 
 # --- Features list ---
-expr_data <- GetAssayData(obj, slot = "data")
+# Seurat v5 では JoinLayers() が必要（複数レイヤー対応）
+tryCatch({
+  obj <- JoinLayers(obj)
+}, error = function(e) {
+  # v4 以前では JoinLayers が存在しないため無視
+  NULL
+})
+# v5: LayerData()、v4 fallback: GetAssayData(layer=...)
+expr_data <- tryCatch({
+  LayerData(obj, layer = "data")
+}, error = function(e) {
+  tryCatch({
+    GetAssayData(obj, layer = "data")
+  }, error = function(e2) {
+    GetAssayData(obj, slot = "data")
+  })
+})
 features <- rownames(expr_data)
 writeLines(features, file.path(output_dir, "features_list.txt"))
 cat("Wrote features_list.txt (", length(features), " features)\n")
