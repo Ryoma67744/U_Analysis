@@ -25,7 +25,17 @@
       "Bash(git push:*)",
       "Bash(git commit -m \"$\\(cat <<''EOF''\n2025/02/15 01:12 出力フォルダ構造の変更と進捗監視機能の追加\n\n- R解析結果を出力フォルダー直下に出力するよう変更（プロジェクトサブフォルダ廃止）\n- Pythonログファイル\\(analysis_log.txt等\\)をlog/サブフォルダに格納\n- 解析中のステップ進捗表示・残り時間表示・完了ステータス表示を追加\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(git commit -m \"$\\(cat <<''EOF''\n2025/02/15 01:21 解析完了時の進捗バー非表示とログヘッダーの動的表示を追加\n\n- 解析完了/エラー/停止時に進捗バーを非表示にする\n- ログヘッダーを解析状態に応じて変更（解析中→完了/エラー/停止）\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\n2026/02/15 02:30 プロジェクト管理・サブプロジェクト管理機能を追加\n\n- プロジェクト一覧ランディングページの追加\n- サブプロジェクト（測定）管理機能の追加\n- プロジェクト・サブプロジェクトのCRUD（作成・編集・削除）\n- 並び替え機能（更新日/名前/作成日 × 昇順/降順）\n- 名前検索機能\n- 作成直後にカード一覧に反映されないバグの修正（refresh Store パターン）\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\n2026/02/15 03:00 サブプロジェクトごとの解析設定の保存・復元機能を追加\n\n- 解析実行時に設定をサブプロジェクトに紐づけて自動保存\n- サブプロジェクト「解析」ボタンで前回の設定を全フィールドに自動復元\n- projects.json内のlast_analysis_settingsに保存\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\n2026-02-15 18:07 インタラクティブ解析・結果閲覧の機能拡張\n\n- プロジェクト/サブプロジェクト選択Dropdownをインタラクティブ・結果閲覧タブに追加\n- サブプロジェクト選択時にフォルダパス自動入力（連鎖コールバック）\n- 統合手法RadioItems（Harmony/RPCA）を結果エリア上部に移動\n- 解析完了時にlast_result_dirをサブプロジェクトに永続保存\n- フォルダ未設定時の警告メッセージ表示\n- Parquet高速読み込み対応（seurat_bridge/extract_seurat_data.R）\n- CLAUDE.md ルール書作成\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(where Rscript:*)",
+      "Bash(test:*)",
+      "Bash(\"C:/Program Files/R/R-4.4.2/bin/Rscript.exe\" --vanilla -e \"\noutput_dir <- ''C:\\\\Users\\\\Cciia\\\\AppData\\\\Local\\\\Temp\\\\msi_seurat_cache\\\\test_dir''\ncat\\(''output_dir:'', output_dir, ''\\\\n''\\)\ndir.create\\(output_dir, recursive = TRUE, showWarnings = TRUE\\)\ncat\\(''exists:'', file.exists\\(output_dir\\), ''\\\\n''\\)\nfp <- file.path\\(output_dir, ''test.csv''\\)\ncat\\(''file.path:'', fp, ''\\\\n''\\)\nwrite.csv\\(data.frame\\(a=1\\), fp, row.names=FALSE\\)\ncat\\(''success\\\\n''\\)\n\")",
+      "Bash(\"C:/Program Files/R/R-4.4.2/bin/Rscript.exe\" --vanilla test_r_path.R \"C:/Users/Cciia/AppData/Local/Temp/msi_seurat_cache/test_dir\")",
+      "Bash(\"C:/Program Files/R/R-4.4.2/bin/Rscript.exe\" --vanilla test_r_path.R \"C:\\\\Users\\\\Cciia\\\\AppData\\\\Local\\\\Temp\\\\msi_seurat_cache\\\\test_dir2\")",
+      "Bash(\"C:/Program Files/R/R-4.4.2/bin/Rscript.exe\" --vanilla test_rds_load.R \"C:\\\\Users\\\\Cciia\\\\Biochem Dropbox\\\\木津亮馬\\\\UMAP_Claudecode\\\\DESI\\\\Data\\\\250621_Ohashi-Test\\\\260214-test\\\\Analysis_20260214_235204_20260214\\\\RDS_Files\\\\DESI_SeuratCombined_harmony.rds\" \"C:\\\\Users\\\\Cciia\\\\AppData\\\\Local\\\\Temp\\\\msi_seurat_cache\\\\e1edab93bfcbee97\")",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\n2026-02-15 20:24 Seurat v5互換対応とR連携のエンコーディング修正\n\n- Seurat v5のGetAssayData廃止に対応（JoinLayers + LayerData）\n- キャッシュディレクトリを日本語パスを含まないtempdirに移動\n- subprocess出力のUTF-8デコード対応（CP932デコードエラー解消）\n- 不完全キャッシュの検出・クリーンアップ・再試行ロジック追加\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   }
 }

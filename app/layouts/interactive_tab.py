@@ -100,9 +100,24 @@ def create_interactive_tab():
                     # UMAP プロット
                     dbc.Col(width=7, children=[
                         html.Div(className="card", children=[
-                            html.H5("UMAP"),
-                            dbc.Row([
-                                dbc.Col(width=4, children=[
+                            html.Div(className="d-flex justify-content-between align-items-center", children=[
+                                html.H5("UMAP", className="mb-0"),
+                                dbc.Button("⤢", id="expand_umap_btn", size="sm", color="light",
+                                           style={"fontSize": "1.2rem", "padding": "2px 8px", "lineHeight": "1"}),
+                            ]),
+                            dbc.Row(className="mt-2", children=[
+                                dbc.Col(width=2, children=[
+                                    dbc.Label("表示"),
+                                    dbc.RadioItems(
+                                        id="umap_display_mode",
+                                        options=[
+                                            {"label": "統合", "value": "integrated"},
+                                            {"label": "サンプル別", "value": "per_sample"},
+                                        ],
+                                        value="integrated", inline=True,
+                                    ),
+                                ]),
+                                dbc.Col(width=2, children=[
                                     dbc.Label("色分け"),
                                     dbc.RadioItems(
                                         id="umap_color_by",
@@ -113,7 +128,7 @@ def create_interactive_tab():
                                         value="Cluster", inline=True,
                                     ),
                                 ]),
-                                dbc.Col(width=6, children=[
+                                dbc.Col(width=4, children=[
                                     dbc.Label("ハイライト"),
                                     dcc.Dropdown(
                                         id="umap_highlight_cluster",
@@ -121,13 +136,40 @@ def create_interactive_tab():
                                     ),
                                 ]),
                                 dbc.Col(width=2, children=[
+                                    dbc.Checkbox(id="umap_show_labels", label="ラベル", value=False),
+                                ]),
+                                dbc.Col(width=2, children=[
                                     dbc.Checkbox(id="umap_show_legend", label="凡例", value=True),
                                 ]),
                             ]),
-                            dcc.Loading(
-                                dcc.Graph(id="interactive_umap_plot",
-                                          style={"height": "450px"},
-                                          config={"scrollZoom": True}),
+                            html.Div(
+                                style={"display": "flex", "gap": "10px"},
+                                children=[
+                                    html.Div(style={"flex": "1"}, children=[
+                                        html.Div(id="umap_integrated_wrapper", children=[
+                                            dcc.Loading(
+                                                dcc.Graph(id="interactive_umap_plot",
+                                                          style={"height": "450px"},
+                                                          config={
+                                                              "scrollZoom": True,
+                                                              "toImageButtonOptions": {
+                                                                  "format": "png",
+                                                                  "filename": "UMAP_plot",
+                                                                  "scale": 3,
+                                                              },
+                                                          }),
+                                            ),
+                                        ]),
+                                        # サンプル別 UMAP 表示コンテナ
+                                        html.Div(id="umap_per_sample_container"),
+                                    ]),
+                                    html.Div(
+                                        id="umap_cluster_legend_panel",
+                                        style={"width": "140px", "flexShrink": "0",
+                                               "borderLeft": "1px solid #dee2e6",
+                                               "paddingLeft": "8px"},
+                                    ),
+                                ],
                             ),
                         ]),
                     ]),
@@ -165,12 +207,55 @@ def create_interactive_tab():
                     ]),
                 ]),
 
-                # Feature プロット + Spatial
+                # Spatial Mapping（全幅 — 複数切片を横並びで表示）
+                dbc.Row(className="mt-3", children=[
+                    dbc.Col(width=12, children=[
+                        html.Div(className="card", children=[
+                            html.Div(className="d-flex justify-content-between align-items-center", children=[
+                                html.H5("Spatial Mapping", className="mb-0"),
+                                dbc.Button("⤢", id="expand_spatial_btn", size="sm", color="light",
+                                           style={"fontSize": "1.2rem", "padding": "2px 8px", "lineHeight": "1"}),
+                            ]),
+                            dbc.Row(className="mt-2 align-items-center", children=[
+                                dbc.Col(width=3, children=[
+                                    dcc.Dropdown(id="interactive_sample",
+                                                 placeholder="サンプル（空=全表示）",
+                                                 clearable=True),
+                                ]),
+                                dbc.Col(width=2, children=[
+                                    dbc.Checkbox(id="spatial_show_labels", label="番号", value=False),
+                                ]),
+                            ]),
+                            html.Div(id="spatial_controls_container"),
+                            html.Div(
+                                style={"display": "flex", "gap": "10px"},
+                                children=[
+                                    html.Div(
+                                        style={"flex": "1"},
+                                        children=[dcc.Loading(html.Div(id="spatial_plots_container"))],
+                                    ),
+                                    html.Div(
+                                        id="spatial_cluster_legend_panel",
+                                        style={"width": "140px", "flexShrink": "0",
+                                               "borderLeft": "1px solid #dee2e6",
+                                               "paddingLeft": "8px"},
+                                    ),
+                                ],
+                            ),
+                        ]),
+                    ]),
+                ]),
+
+                # Feature プロット
                 dbc.Row(className="mt-3", children=[
                     dbc.Col(width=6, children=[
                         html.Div(className="card", children=[
-                            html.H5("Feature Plot"),
-                            dbc.Row([
+                            html.Div(className="d-flex justify-content-between align-items-center", children=[
+                                html.H5("Feature Plot", className="mb-0"),
+                                dbc.Button("⤢", id="expand_feature_btn", size="sm", color="light",
+                                           style={"fontSize": "1.2rem", "padding": "2px 8px", "lineHeight": "1"}),
+                            ]),
+                            dbc.Row(className="mt-2", children=[
                                 dbc.Col(width=8, children=[
                                     dcc.Dropdown(
                                         id="feature_select",
@@ -186,22 +271,14 @@ def create_interactive_tab():
                             dcc.Loading(
                                 dcc.Graph(id="feature_plot",
                                           style={"height": "350px"},
-                                          config={"scrollZoom": True}),
-                            ),
-                        ]),
-                    ]),
-                    dbc.Col(width=6, children=[
-                        html.Div(className="card", children=[
-                            html.H5("Spatial Mapping"),
-                            dbc.Row([
-                                dbc.Col(width=6, children=[
-                                    dcc.Dropdown(id="interactive_sample", placeholder="サンプル"),
-                                ]),
-                            ]),
-                            dcc.Loading(
-                                dcc.Graph(id="spatial_mapping_plot",
-                                          style={"height": "350px"},
-                                          config={"scrollZoom": True}),
+                                          config={
+                                              "scrollZoom": True,
+                                              "toImageButtonOptions": {
+                                                  "format": "png",
+                                                  "filename": "Feature_plot",
+                                                  "scale": 3,
+                                              },
+                                          }),
                             ),
                         ]),
                     ]),
@@ -215,7 +292,11 @@ def create_interactive_tab():
                             className="card",
                             style={"display": "none"},
                             children=[
-                                html.H5("DEG マーカー"),
+                                html.Div(className="d-flex justify-content-between align-items-center", children=[
+                                    html.H5("DEG マーカー", className="mb-0"),
+                                    dbc.Button("⤢", id="expand_deg_btn", size="sm", color="light",
+                                               style={"fontSize": "1.2rem", "padding": "2px 8px", "lineHeight": "1"}),
+                                ]),
                                 html.P(
                                     "クラスタを選択すると、マーカー遺伝子/m/z の一覧を表示します。"
                                     "行をクリックすると Feature Plot に表示されます。",
@@ -286,6 +367,15 @@ def create_interactive_tab():
             ],
         ),
 
+        # フルスクリーン拡大モーダル
+        dbc.Modal(
+            id="fullscreen_plot_modal", size="xl", fullscreen="xl-down", centered=True,
+            children=[
+                dbc.ModalHeader(dbc.ModalTitle(id="fullscreen_modal_title"), close_button=True),
+                dbc.ModalBody(id="fullscreen_modal_body", style={"padding": "10px"}),
+            ],
+        ),
+
         # Seuratブリッジのキャッシュパスを保持
         dcc.Store(id="seurat_cache_dir_store"),
         dcc.Store(id="seurat_rds_path_store"),
@@ -293,6 +383,10 @@ def create_interactive_tab():
         dcc.Store(id="interactive_rds_map", data=None),
         # DEGデータのキャッシュ
         dcc.Store(id="deg_data_store", data=None),
+        # Spatial代表figureの保持（HTMLエクスポート用）
+        dcc.Store(id="last_spatial_figure_store", data=None),
+        # Spatial回転角度の保持（サンプル別）
+        dcc.Store(id="spatial_rotation_store", data={}),
         # CSVダウンロード用
         dcc.Download(id="download_csv"),
         dcc.Download(id="download_html"),

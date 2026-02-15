@@ -65,6 +65,21 @@ PROJECTS_FILE = PROJECTS_DIR / "projects.json"
 # 日本語パスを含むとRscript.exeが文字化けするため、tempdir（ASCII安全）を使用
 SEURAT_CACHE_DIR = Path(tempfile.gettempdir()) / "msi_seurat_cache"
 
+# クラスタ色パレット（Rスクリプト UMAP_DISTINCT_COLORS_50 と同一）
+DESI_COLORS_50 = [
+    "#FF2D2D", "#1E5BFF", "#00A650", "#B000FF", "#FF8C00",
+    "#00D5FF", "#A52A2A", "#FF1493", "#7A7A7A", "#00C27A",
+    "#FFD400", "#2F4F4F", "#8B4513", "#00FF00", "#000000",
+    "#FF00FF", "#00FFFF", "#800000", "#008000", "#000080",
+    "#808000", "#800080", "#008080", "#FF4500", "#17BECF",
+    "#BCBD22", "#9467BD", "#8C564B", "#2CA02C", "#1F77B4",
+    "#D62728", "#AEC7E8", "#98DF8A", "#FF9896", "#C49C94",
+    "#F7B6D2", "#C7C7C7", "#DBDB8D", "#9EDAE5", "#E41A1C",
+    "#377EB8", "#4DAF4A", "#984EA3", "#FF7F00", "#FFFF33",
+    "#A65628", "#F781BF", "#999999", "#66A61E", "#E6AB02",
+]
+HIGHLIGHT_GRAY = "#D9D9D9"
+
 # アプリケーション設定
 APP_VERSION = "2.0.0"
 APP_PORT = 3838
