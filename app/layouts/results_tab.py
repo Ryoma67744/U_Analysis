@@ -12,6 +12,28 @@ def create_results_tab():
         html.Div(className="card", children=[
             html.H4(className="card-title", children=["🖼 結果閲覧"]),
 
+            # プロジェクト / サブプロジェクト選択（主な選択手段）
+            dbc.Row(className="mb-3", children=[
+                dbc.Col(width=5, children=[
+                    dbc.Label("プロジェクト", className="small fw-bold"),
+                    dcc.Dropdown(
+                        id="results_project_select",
+                        placeholder="プロジェクトを選択",
+                        clearable=True,
+                    ),
+                ]),
+                dbc.Col(width=5, children=[
+                    dbc.Label("サブプロジェクト", className="small fw-bold"),
+                    dcc.Dropdown(
+                        id="results_sub_project_select",
+                        placeholder="サブプロジェクトを選択",
+                        clearable=True,
+                    ),
+                ]),
+            ]),
+            html.Hr(className="my-2"),
+            html.Div(id="results_project_info", className="text-muted small mb-2"),
+
             # ファイルブラウザからの値を受け取るStore
             dcc.Store(id="result_folder_manual", data=""),
 

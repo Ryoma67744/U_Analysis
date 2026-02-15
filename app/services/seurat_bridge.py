@@ -35,6 +35,10 @@ class SeuratBridge:
         cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir
 
+    def get_cache_dir(self, rds_path: str) -> Path:
+        """外部からキャッシュディレクトリを参照（Parquet直接読み込み用）"""
+        return self._get_cache_dir(rds_path)
+
     def _is_cached(self, cache_dir: Path) -> bool:
         """キャッシュ済みかチェック"""
         return (cache_dir / "extraction_meta.json").exists()
@@ -48,6 +52,7 @@ class SeuratBridge:
                 "cluster_stats": pd.DataFrame,
                 "features_list": list[str],
                 "meta": dict,
+                "cache_dir": Path,
             }
         """
         cache_dir = self._get_cache_dir(rds_path)
@@ -55,12 +60,14 @@ class SeuratBridge:
         if not self._is_cached(cache_dir):
             self._run_extraction(rds_path, cache_dir)
 
-        return self._load_extracted_data(cache_dir)
+        result = self._load_extracted_data(cache_dir)
+        result["cache_dir"] = cache_dir
+        return result
 
     def get_feature_expression(
         self, rds_path: str, feature_name: str
     ) -> pd.Series:
-        """単一 Feature の発現量を取得"""
+        """単一 Feature の発現量を取得（R subprocess fallback）"""
         cache_dir = self._get_cache_dir(rds_path)
         feature_file = cache_dir / f"feature_{feature_name}.csv"
 
@@ -69,6 +76,24 @@ class SeuratBridge:
 
         df = pd.read_csv(feature_file, header=None)
         return df.iloc[:, 0]
+
+    def get_feature_expression_fast(
+        self, cache_dir: Path, feature_name: str
+    ) -> Optional[pd.Series]:
+        """Parquet 発現量マトリクスから単一 Feature を高速取得。
+
+        expression_matrix.parquet が存在する場合、指定カラムのみ読み込む。
+        存在しない場合は None を返す（呼び出し元で R fallback を使用）。
+        """
+        expr_path = cache_dir / "expression_matrix.parquet"
+        if not expr_path.exists():
+            return None
+
+        try:
+            df = pd.read_parquet(expr_path, columns=[feature_name])
+            return df[feature_name]
+        except (KeyError, Exception):
+            return None
 
     def _run_extraction(self, rds_path: str, output_dir: Path):
         """R ヘルパースクリプトで Seurat データを抽出"""

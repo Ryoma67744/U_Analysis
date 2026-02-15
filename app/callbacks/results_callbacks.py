@@ -247,3 +247,59 @@ def apply_manual_result_folder(manual_path, current_options):
     if manual_path not in existing_values:
         current_options.append({"label": Path(manual_path).name, "value": manual_path})
     return current_options, manual_path
+
+
+# ---------------------------------------------------------------------------
+# プロジェクト / サブプロジェクト選択コールバック
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("results_project_select", "options"),
+    [Input("main_tabs", "active_tab"),
+     Input("current_page", "data")],
+    prevent_initial_call=True,
+)
+def populate_results_projects(active_tab, current_page):
+    """resultsタブがアクティブになった時にプロジェクト一覧を取得"""
+    if current_page != "analysis" or active_tab != "results":
+        return no_update
+    from app.services.project_manager import list_projects
+    projects = list_projects()
+    return [{"label": p["name"], "value": p["id"]} for p in projects]
+
+
+@callback(
+    [Output("results_sub_project_select", "options", allow_duplicate=True),
+     Output("results_sub_project_select", "value", allow_duplicate=True)],
+    Input("results_project_select", "value"),
+    prevent_initial_call=True,
+)
+def populate_results_sub_projects(project_id):
+    """プロジェクト選択時にサブプロジェクト一覧を取得し、先頭を自動選択"""
+    if not project_id:
+        return [], None
+    from app.services.project_manager import list_sub_projects
+    subs = list_sub_projects(project_id)
+    options = [{"label": s["name"], "value": s["id"]} for s in subs]
+    first_value = options[0]["value"] if options else None
+    return options, first_value
+
+
+@callback(
+    [Output("result_folder_manual", "data", allow_duplicate=True),
+     Output("results_project_info", "children", allow_duplicate=True)],
+    Input("results_sub_project_select", "value"),
+    State("results_project_select", "value"),
+    prevent_initial_call=True,
+)
+def set_results_folder_from_sub_project(sub_id, project_id):
+    """サブプロジェクト選択時に結果フォルダを自動設定"""
+    if not sub_id or not project_id:
+        return no_update, no_update
+    from app.services.project_manager import get_sub_project
+    sub = get_sub_project(project_id, sub_id)
+    if not sub:
+        return no_update, no_update
+    result_dir = sub.get("last_result_dir") or sub.get("output_dir", "")
+    msg = "⚠ 結果フォルダが未設定です" if not result_dir else ""
+    return result_dir, msg

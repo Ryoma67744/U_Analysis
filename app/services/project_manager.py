@@ -208,6 +208,24 @@ def get_sub_project_settings(
     return None
 
 
+def save_sub_project_result_dir(
+    project_id: str, sub_id: str, result_dir: str
+) -> bool:
+    """サブプロジェクトに最新の解析結果ディレクトリを保存"""
+    data = _load_all()
+    for p in data["projects"]:
+        if p["id"] == project_id:
+            for s in p.get("sub_projects", []):
+                if s["id"] == sub_id:
+                    s["last_result_dir"] = result_dir
+                    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                    s["last_modified"] = now
+                    p["last_modified"] = now
+                    _save_all(data)
+                    return True
+    return False
+
+
 def delete_sub_project(project_id: str, sub_id: str) -> bool:
     """サブプロジェクトを削除"""
     data = _load_all()

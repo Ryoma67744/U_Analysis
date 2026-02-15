@@ -23,7 +23,7 @@ from app.services.analysis_runner import (
     stop_analysis_process,
 )
 from app.services.session_manager import save_last_settings
-from app.services.project_manager import save_sub_project_settings
+from app.services.project_manager import save_sub_project_settings, save_sub_project_result_dir
 
 
 # アプリケーションレベルの状態（サブプロセス参照など）
@@ -245,6 +245,8 @@ def run_analysis(
             "full_output_dir": full_output_dir,
             "start_time": datetime.now().isoformat(),
             "analysis_type": analysis_type,
+            "project_id": selected_project.get("id", "") if selected_project else "",
+            "sub_project_id": current_sub_project_id or "",
         }
 
         return (
@@ -472,6 +474,15 @@ def update_progress(n_intervals, app_state):
             msg = "解析が完了しました"
             section_text = f"出力: {file_count} ファイル | ✅ 完了 ({step_total}/{step_total}) | {elapsed_text}"
             log_header = "✅ 解析完了"
+
+            # 解析結果ディレクトリをサブプロジェクトに保存
+            try:
+                proj_id = app_state.get("project_id")
+                sub_id = app_state.get("sub_project_id")
+                if proj_id and sub_id and output_dir:
+                    save_sub_project_result_dir(proj_id, sub_id, output_dir)
+            except Exception:
+                pass
         else:
             msg = "解析でエラーが発生しました"
             section_text = f"出力: {file_count} ファイル | ❌ エラー ({step_current}/{step_total}) | {elapsed_text}"

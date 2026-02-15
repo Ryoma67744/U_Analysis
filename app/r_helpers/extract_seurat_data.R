@@ -90,6 +90,22 @@ features <- rownames(expr_data)
 writeLines(features, file.path(output_dir, "features_list.txt"))
 cat("Wrote features_list.txt (", length(features), " features)\n")
 
+# --- Expression matrix (for fast Python-side feature queries) ---
+tryCatch({
+  suppressPackageStartupMessages(library(arrow))
+  cat("Exporting expression matrix to Parquet...\n")
+  expr_dense <- as.matrix(expr_data)
+  expr_df <- as.data.frame(t(expr_dense), check.names = FALSE)
+  expr_df$CellID <- cell_ids
+  # CellID を先頭カラムに
+  expr_df <- expr_df[, c("CellID", setdiff(names(expr_df), "CellID"))]
+  arrow::write_parquet(expr_df, file.path(output_dir, "expression_matrix.parquet"))
+  cat("Wrote expression_matrix.parquet (", ncol(expr_df) - 1, " features)\n")
+}, error = function(e) {
+  cat("Warning: expression matrix export failed:", conditionMessage(e), "\n")
+  cat("Feature queries will fall back to R subprocess.\n")
+})
+
 # --- Metadata JSON ---
 samples <- unique(as.character(meta$orig.ident))
 meta_info <- list(

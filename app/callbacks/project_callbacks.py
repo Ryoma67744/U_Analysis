@@ -531,7 +531,9 @@ def sub_action_new_analysis(clicks, project):
 @callback(
     [Output("current_page", "data", allow_duplicate=True),
      Output("main_tabs", "active_tab", allow_duplicate=True),
-     Output("result_folder_manual", "data", allow_duplicate=True)],
+     Output("result_folder_manual", "data", allow_duplicate=True),
+     Output("results_project_select", "value", allow_duplicate=True),
+     Output("results_sub_project_select", "value", allow_duplicate=True)],
     Input({"type": "sub_action_results", "index": ALL}, "n_clicks"),
     State("selected_project", "data"),
     prevent_initial_call=True,
@@ -539,19 +541,22 @@ def sub_action_new_analysis(clicks, project):
 def sub_action_view_results(clicks, project):
     """サブプロジェクト「結果閲覧」→ 結果閲覧タブに遷移"""
     if not ctx.triggered_id or not any(c for c in clicks if c):
-        return no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update
 
     sub_id = ctx.triggered_id["index"]
     project_id = project.get("id", "") if project else ""
     sub = get_sub_project(project_id, sub_id)
     if not sub:
-        return no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update
 
-    output_dir = sub.get("output_dir", "")
+    # last_result_dir を優先、なければ output_dir にフォールバック
+    result_dir = sub.get("last_result_dir") or sub.get("output_dir", "")
     return (
         "analysis",
         "results",
-        output_dir or no_update,
+        result_dir or no_update,
+        project_id,
+        sub_id,
     )
 
 
@@ -562,7 +567,10 @@ def sub_action_view_results(clicks, project):
 @callback(
     [Output("current_page", "data", allow_duplicate=True),
      Output("main_tabs", "active_tab", allow_duplicate=True),
-     Output("interactive_result_folder", "value", allow_duplicate=True)],
+     Output("interactive_result_folder", "value", allow_duplicate=True),
+     Output("interactive_msi_folder", "value", allow_duplicate=True),
+     Output("interactive_project_select", "value", allow_duplicate=True),
+     Output("interactive_sub_project_select", "value", allow_duplicate=True)],
     Input({"type": "sub_action_interactive", "index": ALL}, "n_clicks"),
     State("selected_project", "data"),
     prevent_initial_call=True,
@@ -570,19 +578,25 @@ def sub_action_view_results(clicks, project):
 def sub_action_interactive(clicks, project):
     """サブプロジェクト「インタラクティブ」→ インタラクティブ解析タブに遷移"""
     if not ctx.triggered_id or not any(c for c in clicks if c):
-        return no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update, no_update
 
     sub_id = ctx.triggered_id["index"]
     project_id = project.get("id", "") if project else ""
     sub = get_sub_project(project_id, sub_id)
     if not sub:
-        return no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update, no_update
 
-    output_dir = sub.get("output_dir", "")
+    # last_result_dir を優先、なければ output_dir にフォールバック
+    result_dir = sub.get("last_result_dir") or sub.get("output_dir", "")
+    # MSIデータフォルダもサブプロジェクトから自動セット
+    data_folder = sub.get("data_folder", "")
     return (
         "analysis",
         "interactive",
-        output_dir or no_update,
+        result_dir or no_update,
+        data_folder or no_update,
+        project_id,
+        sub_id,
     )
 
 

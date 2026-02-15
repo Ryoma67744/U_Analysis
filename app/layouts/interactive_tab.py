@@ -13,6 +13,27 @@ def create_interactive_tab():
         html.Div(className="card", children=[
             html.H4(className="card-title", children=["🔬 インタラクティブ解析"]),
 
+            # プロジェクト / サブプロジェクト選択（主な選択手段）
+            dbc.Row(className="mb-3", children=[
+                dbc.Col(width=5, children=[
+                    dbc.Label("プロジェクト", className="small fw-bold"),
+                    dcc.Dropdown(
+                        id="interactive_project_select",
+                        placeholder="プロジェクトを選択",
+                        clearable=True,
+                    ),
+                ]),
+                dbc.Col(width=5, children=[
+                    dbc.Label("サブプロジェクト", className="small fw-bold"),
+                    dcc.Dropdown(
+                        id="interactive_sub_project_select",
+                        placeholder="サブプロジェクトを選択",
+                        clearable=True,
+                    ),
+                ]),
+            ]),
+            html.Hr(className="my-2"),
+
             dbc.Row([
                 dbc.Col(width=6, children=[
                     html.Div(className="param-group", children=[
@@ -26,11 +47,6 @@ def create_interactive_tab():
                                 dbc.Button("スキャン", id="scan_result_folder",
                                            size="sm", color="info"),
                             ],
-                        ),
-                        dcc.Dropdown(
-                            id="interactive_rds_select",
-                            placeholder="RDSファイルを選択",
-                            style={"marginTop": "10px"},
                         ),
                     ]),
                 ]),
@@ -63,6 +79,23 @@ def create_interactive_tab():
             id="interactive_viz_container",
             style={"display": "none"},
             children=[
+                # 統合手法ヘッダーバー（結果エリア上部）
+                html.Div(
+                    className="card mb-2",
+                    style={"padding": "10px 15px", "display": "flex",
+                           "flexDirection": "row", "alignItems": "center", "gap": "15px"},
+                    children=[
+                        html.H5("統合手法", className="mb-0",
+                                style={"whiteSpace": "nowrap"}),
+                        dbc.RadioItems(
+                            id="interactive_integration_method",
+                            options=[],
+                            value=None,
+                            inline=True,
+                        ),
+                    ],
+                ),
+
                 dbc.Row(className="mt-3", children=[
                     # UMAP プロット
                     dbc.Col(width=7, children=[
@@ -141,7 +174,8 @@ def create_interactive_tab():
                                 dbc.Col(width=8, children=[
                                     dcc.Dropdown(
                                         id="feature_select",
-                                        placeholder="m/z Feature を選択",
+                                        placeholder="m/z Feature を検索・選択",
+                                        search_value="",
                                     ),
                                 ]),
                                 dbc.Col(width=4, children=[
@@ -172,10 +206,94 @@ def create_interactive_tab():
                         ]),
                     ]),
                 ]),
+
+                # DEG 結果テーブル
+                dbc.Row(className="mt-3", children=[
+                    dbc.Col(width=12, children=[
+                        html.Div(
+                            id="deg_results_section",
+                            className="card",
+                            style={"display": "none"},
+                            children=[
+                                html.H5("DEG マーカー"),
+                                html.P(
+                                    "クラスタを選択すると、マーカー遺伝子/m/z の一覧を表示します。"
+                                    "行をクリックすると Feature Plot に表示されます。",
+                                    className="text-muted small",
+                                ),
+                                html.Div(
+                                    id="deg_table_container",
+                                    style={"maxHeight": "300px", "overflowY": "auto"},
+                                    children=[
+                                        dash_table.DataTable(
+                                            id="deg_results_table",
+                                            columns=[
+                                                {"name": "Gene/m/z", "id": "gene"},
+                                                {"name": "Cluster", "id": "cluster"},
+                                                {"name": "avg_log2FC", "id": "avg_log2FC"},
+                                                {"name": "p_val_adj", "id": "p_val_adj"},
+                                                {"name": "pct.1", "id": "pct.1"},
+                                                {"name": "pct.2", "id": "pct.2"},
+                                            ],
+                                            data=[],
+                                            row_selectable="single",
+                                            sort_action="native",
+                                            filter_action="native",
+                                            style_table={"overflowX": "auto"},
+                                            style_cell={
+                                                "textAlign": "left",
+                                                "padding": "6px",
+                                                "fontSize": "0.8rem",
+                                            },
+                                            style_header={
+                                                "backgroundColor": "#f8f9fa",
+                                                "fontWeight": "600",
+                                            },
+                                            page_size=20,
+                                        ),
+                                    ],
+                                ),
+                            ],
+                        ),
+                    ]),
+                ]),
+
+                # HTML エクスポート
+                dbc.Row(className="mt-3 mb-3", children=[
+                    dbc.Col(width=12, children=[
+                        html.Div(className="card", children=[
+                            html.H5("エクスポート"),
+                            dbc.Row([
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button(
+                                        "📄 HTML レポート出力",
+                                        id="export_html_report",
+                                        color="success", size="sm",
+                                    ),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button(
+                                        "📊 データ CSV 出力",
+                                        id="export_csv_data",
+                                        color="info", size="sm",
+                                    ),
+                                ]),
+                            ]),
+                            html.Div(id="export_status", className="mt-2 text-muted"),
+                        ]),
+                    ]),
+                ]),
             ],
         ),
 
         # Seuratブリッジのキャッシュパスを保持
         dcc.Store(id="seurat_cache_dir_store"),
         dcc.Store(id="seurat_rds_path_store"),
+        # 統合手法 → RDSパスのマッピング
+        dcc.Store(id="interactive_rds_map", data=None),
+        # DEGデータのキャッシュ
+        dcc.Store(id="deg_data_store", data=None),
+        # CSVダウンロード用
+        dcc.Download(id="download_csv"),
+        dcc.Download(id="download_html"),
     ])
