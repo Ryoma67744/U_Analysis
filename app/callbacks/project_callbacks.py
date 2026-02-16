@@ -3,7 +3,7 @@
 # プロジェクト管理・サブプロジェクト管理・ページ遷移 コールバック
 # =============================================================================
 
-from dash import Input, Output, State, callback, ctx, no_update, html, ALL
+from dash import Input, Output, State, callback, ctx, no_update, html, dcc, ALL
 import dash_bootstrap_components as dbc
 
 from app.services.project_manager import (
@@ -18,6 +18,13 @@ from app.services.project_manager import (
     update_sub_project,
     delete_sub_project,
     get_sub_project_settings,
+)
+from app.services.share_manager import (
+    create_share,
+    list_shares,
+    delete_share,
+    build_share_url,
+    cleanup_expired,
 )
 
 
@@ -49,15 +56,18 @@ def _sort_items(items, sort_order):
 @callback(
     [Output("page_landing", "style"),
      Output("page_action", "style"),
-     Output("page_analysis", "style")],
+     Output("page_analysis", "style"),
+     Output("page_shared", "style")],
     Input("current_page", "data"),
 )
 def toggle_pages(current_page):
     """current_page Store の値に応じてページの表示/非表示を切り替え"""
+    hide = {"display": "none"}
     pages = {
-        "landing": [{}, {"display": "none"}, {"display": "none"}],
-        "action": [{"display": "none"}, {}, {"display": "none"}],
-        "analysis": [{"display": "none"}, {"display": "none"}, {}],
+        "landing": [{}, hide, hide, hide],
+        "action": [hide, {}, hide, hide],
+        "analysis": [hide, hide, {}, hide],
+        "shared": [hide, hide, hide, {}],
     }
     return pages.get(current_page, pages["landing"])
 
@@ -410,6 +420,15 @@ def render_sub_project_cards(
                                             "index": s["id"],
                                         },
                                         color="info",
+                                        outline=True,
+                                    ),
+                                    dbc.Button(
+                                        "共有",
+                                        id={
+                                            "type": "sub_action_share",
+                                            "index": s["id"],
+                                        },
+                                        color="warning",
                                         outline=True,
                                     ),
                                 ],
@@ -1006,3 +1025,208 @@ def handle_edit_sub_project(
     })
 
     return (refresh or 0) + 1
+
+
+# =========================================================================
+# 共有リンク管理 コールバック
+# =========================================================================
+
+# --- 共有ボタンクリック → モーダル表示 ---
+@callback(
+    [Output("share_create_modal", "is_open", allow_duplicate=True),
+     Output("share_target_sub_id", "data"),
+     Output("share_target_info", "children"),
+     Output("share_result_area", "style", allow_duplicate=True),
+     Output("share_generated_url", "children", allow_duplicate=True)],
+    Input({"type": "sub_action_share", "index": ALL}, "n_clicks"),
+    State("selected_project", "data"),
+    prevent_initial_call=True,
+)
+def open_share_modal(clicks, project):
+    if not ctx.triggered_id or not any(c for c in clicks if c):
+        return no_update, no_update, no_update, no_update, no_update
+
+    sub_id = ctx.triggered_id["index"]
+    project_id = project.get("id", "") if project else ""
+    sub = get_sub_project(project_id, sub_id)
+    if not sub:
+        return no_update, no_update, no_update, no_update, no_update
+
+    project_data = get_project(project_id) or {}
+    info = html.Div([
+        html.Strong(f"プロジェクト: {project_data.get('name', '')}"),
+        html.Br(),
+        html.Span(f"サブプロジェクト: {sub.get('name', '')}"),
+    ])
+
+    return True, sub_id, info, {"display": "none"}, ""
+
+
+# --- 共有リンク生成 ---
+@callback(
+    [Output("share_result_area", "style"),
+     Output("share_generated_url", "children"),
+     Output("share_links_container", "children", allow_duplicate=True)],
+    Input("generate_share_link", "n_clicks"),
+    [State("share_target_sub_id", "data"),
+     State("selected_project", "data"),
+     State("share_expiry_days", "value"),
+     State("share_integration_method", "value"),
+     State("share_memo", "value")],
+    prevent_initial_call=True,
+)
+def generate_share_link(n_clicks, sub_id, project, expiry_days,
+                        integration_method, memo):
+    if not n_clicks or not sub_id or not project:
+        return no_update, no_update, no_update
+
+    project_id = project.get("id", "") if project else ""
+    project_data = get_project(project_id) or {}
+    sub = get_sub_project(project_id, sub_id)
+    if not sub:
+        return no_update, no_update, no_update
+
+    result_dir = sub.get("last_result_dir") or sub.get("output_dir", "")
+
+    # RDSパスを結果フォルダから自動検索
+    rds_path = ""
+    if result_dir:
+        from app.callbacks.interactive_callbacks import _detect_integration_methods
+        rds_map = _detect_integration_methods(result_dir)
+        rds_path = rds_map.get(integration_method, "")
+        if not rds_path:
+            # integration_method に該当するRDSがなければ最初のものを使用
+            if rds_map:
+                rds_path = next(iter(rds_map.values()))
+
+    share = create_share(
+        project_id=project_id,
+        sub_project_id=sub_id,
+        project_name=project_data.get("name", ""),
+        sub_project_name=sub.get("name", ""),
+        result_dir=result_dir,
+        rds_path=rds_path,
+        integration_method=integration_method or "Harmony",
+        expires_days=int(expiry_days) if expiry_days else None,
+        memo=memo or "",
+    )
+
+    url = build_share_url(share["token"])
+
+    # 共有リンク一覧も更新
+    links_ui = _render_share_links(project_id)
+
+    return {}, url, links_ui
+
+
+# --- モーダルを閉じる ---
+@callback(
+    Output("share_create_modal", "is_open"),
+    Input("close_share_modal", "n_clicks"),
+    prevent_initial_call=True,
+)
+def close_share_modal(n_clicks):
+    if n_clicks:
+        return False
+    return no_update
+
+
+# --- 共有リンク一覧のレンダリング ---
+@callback(
+    Output("share_links_container", "children"),
+    [Input("current_page", "data"),
+     Input("selected_project", "data")],
+)
+def render_share_links(current_page, project):
+    if current_page != "action" or not project:
+        return "共有リンクはありません"
+    project_id = project.get("id", "")
+    return _render_share_links(project_id)
+
+
+def _render_share_links(project_id):
+    """プロジェクトに属する共有リンクをレンダリング"""
+    cleanup_expired()
+    all_shares = list_shares()
+    project_shares = [s for s in all_shares if s.get("project_id") == project_id]
+
+    if not project_shares:
+        return html.Div("共有リンクはありません", className="text-muted small")
+
+    rows = []
+    for s in project_shares:
+        expired_badge = dbc.Badge("期限切れ", color="danger", className="ms-2") \
+            if s.get("is_expired") else dbc.Badge("有効", color="success", className="ms-2")
+
+        url = build_share_url(s["token"])
+        rows.append(
+            html.Div(
+                className="d-flex justify-content-between align-items-center "
+                          "border rounded p-2 mb-2",
+                children=[
+                    html.Div([
+                        html.Strong(s.get("sub_project_name", ""), className="me-2"),
+                        expired_badge,
+                        html.Br(),
+                        html.Code(url, style={"fontSize": "0.8rem", "wordBreak": "break-all"}),
+                        html.Br(),
+                        html.Small(
+                            f"統合: {s.get('integration_method', '')} | "
+                            f"期限: {s.get('expires_at', '')}"
+                            + (f" | メモ: {s.get('memo', '')}" if s.get("memo") else ""),
+                            className="text-muted",
+                        ),
+                    ]),
+                    dbc.Button(
+                        "削除",
+                        id={"type": "delete_share_btn", "token": s["token"]},
+                        color="outline-danger",
+                        size="sm",
+                    ),
+                ],
+            )
+        )
+    return html.Div(rows)
+
+
+# --- 共有リンク削除確認モーダル ---
+@callback(
+    [Output("share_delete_modal", "is_open", allow_duplicate=True),
+     Output("share_delete_target_token", "data")],
+    Input({"type": "delete_share_btn", "token": ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+def open_share_delete_modal(clicks):
+    if not ctx.triggered_id or not any(c for c in clicks if c):
+        return no_update, no_update
+    token = ctx.triggered_id["token"]
+    return True, token
+
+
+# --- 共有リンク削除実行 ---
+@callback(
+    [Output("share_delete_modal", "is_open"),
+     Output("share_links_container", "children", allow_duplicate=True)],
+    Input("confirm_delete_share", "n_clicks"),
+    [State("share_delete_target_token", "data"),
+     State("selected_project", "data")],
+    prevent_initial_call=True,
+)
+def confirm_delete_share_link(n_clicks, token, project):
+    if not n_clicks or not token:
+        return no_update, no_update
+    delete_share(token)
+    project_id = project.get("id", "") if project else ""
+    return False, _render_share_links(project_id)
+
+
+# --- 共有リンク削除キャンセル ---
+@callback(
+    Output("share_delete_modal", "is_open", allow_duplicate=True),
+    Input("cancel_delete_share", "n_clicks"),
+    prevent_initial_call=True,
+)
+def cancel_delete_share_link(n_clicks):
+    if n_clicks:
+        return False
+    return no_update

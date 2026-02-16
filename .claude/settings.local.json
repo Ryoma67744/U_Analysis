@@ -39,7 +39,8 @@
       "Bash(git commit -m \"$\\(cat <<''EOF''\n2026-02-15 23:16 Spatial Mapping機能改修（色ずれ根本修正・凡例拡大・折りたたみコントロール・フルスクリーン対応・TIC背景）\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(find:*)",
       "Bash(git commit -m \"$\\(cat <<''EOF''\nUMAP・Spatial操作性向上（ハイライト独立化・マーカーサイズ・除去クラスタ・ラベル編集・位置永続保存） 2026-02-16 15:24\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
-      "Bash(git commit -m \"$\\(cat <<''EOF''\n2026-02-16 16:00 UMAP・Spatial Mappingのコントロール配置を整理（Dropdown/スライダー/チェックボックスの論理グループ化）\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git commit -m \"$\\(cat <<''EOF''\n2026-02-16 16:00 UMAP・Spatial Mappingのコントロール配置を整理（Dropdown/スライダー/チェックボックスの論理グループ化）\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\n2026-02-16 18:36 Tooltip・凡例・UI改善（?バッジ修正、Spatial/UMAPコントロール追加、Plotly凡例統一、Rスクリプト修正）\n\n- ?バッジにIDを付与しTooltip表示を修正（tooltips.pyに集約）\n- Spatial Mappingに「番号」「ラベル位置保存」コントロールを追加\n- UMAPの凡例を「Cluster X」形式に統一（Spatialと同じ形式）\n- 外側HTML凡例パネルを削除（Plotly内蔵凡例に統一）\n- extract_seurat_data.R: meta$sampleを優先するSample識別改善\n- DESI-UMAP_Template_v9.R: p_val_adj=0のdouble精度補正追加\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   }
 }

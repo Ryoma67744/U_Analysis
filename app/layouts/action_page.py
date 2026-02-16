@@ -116,6 +116,15 @@ def create_action_page():
 
                     # サブプロジェクトカード一覧（コールバックで動的レンダリング）
                     html.Div(id="sub_project_cards_container"),
+
+                    # 共有リンク管理セクション
+                    html.Hr(className="my-4"),
+                    html.Div(id="share_links_section", children=[
+                        html.H5("共有リンク管理"),
+                        html.Div(id="share_links_container",
+                                 className="text-muted small",
+                                 children="共有リンクはありません"),
+                    ]),
                 ],
             ),
 
@@ -127,6 +136,12 @@ def create_action_page():
 
             # サブプロジェクト削除確認モーダル
             _create_sub_delete_confirm_modal(),
+
+            # 共有リンク作成モーダル
+            _create_share_modal(),
+
+            # 共有リンク削除確認モーダル
+            _create_share_delete_modal(),
         ],
     )
 
@@ -365,6 +380,112 @@ def _create_sub_delete_confirm_modal():
                 dbc.Button(
                     "削除",
                     id="confirm_delete_sub_project",
+                    color="danger",
+                ),
+            ]),
+        ],
+    )
+
+
+def _create_share_modal():
+    """共有リンク作成モーダル"""
+    return dbc.Modal(
+        id="share_create_modal",
+        centered=True,
+        size="lg",
+        children=[
+            dbc.ModalHeader(dbc.ModalTitle("共有リンク作成")),
+            dbc.ModalBody([
+                # 共有対象サブプロジェクトID（非表示ストア）
+                dcc.Store(id="share_target_sub_id", data=""),
+
+                html.Div(id="share_target_info", className="mb-3"),
+
+                dbc.Row([
+                    dbc.Col(width=6, children=[
+                        dbc.Label("有効期限"),
+                        dbc.Select(
+                            id="share_expiry_days",
+                            options=[
+                                {"label": "7日", "value": "7"},
+                                {"label": "14日", "value": "14"},
+                                {"label": "30日（デフォルト）", "value": "30"},
+                                {"label": "90日", "value": "90"},
+                            ],
+                            value="30",
+                        ),
+                    ]),
+                    dbc.Col(width=6, children=[
+                        dbc.Label("統合手法"),
+                        dbc.Select(
+                            id="share_integration_method",
+                            options=[
+                                {"label": "Harmony", "value": "Harmony"},
+                                {"label": "RPCA", "value": "RPCA"},
+                                {"label": "PCA", "value": "PCA"},
+                            ],
+                            value="Harmony",
+                        ),
+                    ]),
+                ], className="mb-3"),
+
+                dbc.Label("メモ（任意）"),
+                dbc.Textarea(
+                    id="share_memo",
+                    placeholder="共有メモ（任意）",
+                    style={"height": "60px"},
+                    className="mb-3",
+                ),
+
+                # 生成結果（URLの表示エリア）
+                html.Div(
+                    id="share_result_area",
+                    style={"display": "none"},
+                    children=[
+                        dbc.Alert([
+                            html.Strong("共有URL:"),
+                            html.Br(),
+                            html.Code(id="share_generated_url",
+                                      style={"wordBreak": "break-all",
+                                             "fontSize": "0.9rem"}),
+                        ], color="success", className="mt-2"),
+                    ],
+                ),
+            ]),
+            dbc.ModalFooter([
+                dbc.Button(
+                    "閉じる",
+                    id="close_share_modal",
+                    color="secondary",
+                ),
+                dbc.Button(
+                    "共有リンクを生成",
+                    id="generate_share_link",
+                    color="primary",
+                ),
+            ]),
+        ],
+    )
+
+
+def _create_share_delete_modal():
+    """共有リンク削除確認モーダル"""
+    return dbc.Modal(
+        id="share_delete_modal",
+        centered=True,
+        children=[
+            dcc.Store(id="share_delete_target_token", data=""),
+            dbc.ModalHeader(dbc.ModalTitle("共有リンク削除確認")),
+            dbc.ModalBody("この共有リンクを削除しますか？"),
+            dbc.ModalFooter([
+                dbc.Button(
+                    "キャンセル",
+                    id="cancel_delete_share",
+                    color="secondary",
+                ),
+                dbc.Button(
+                    "削除",
+                    id="confirm_delete_share",
                     color="danger",
                 ),
             ]),

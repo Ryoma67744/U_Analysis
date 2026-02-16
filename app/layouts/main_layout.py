@@ -14,6 +14,7 @@ from app.layouts.interactive_tab import create_interactive_tab
 from app.layouts.file_browser_modal import create_file_browser_modal
 from app.layouts.landing_page import create_landing_page
 from app.layouts.action_page import create_action_page
+from app.layouts.shared_view import create_shared_view_layout
 from app.layouts.tooltips import (
     get_sidebar_tooltips, get_settings_tooltips,
     get_interactive_tooltips, get_results_tooltips,
@@ -22,6 +23,10 @@ from app.layouts.tooltips import (
 
 def create_main_layout():
     return html.Div([
+        # ========== URLルーティング ==========
+        dcc.Location(id="url_bar", refresh=False),
+        dcc.Store(id="share_token", data=""),
+
         # ========== ページ状態管理 ==========
         dcc.Store(id="current_page", data="landing"),
         dcc.Store(id="selected_project", data={}),
@@ -166,6 +171,20 @@ def create_main_layout():
                         *get_interactive_tooltips(),
                         *get_results_tooltips(),
                     ],
+                ),
+            ],
+        ),
+
+        # ========== Page 4: Shared View (共有専用・読み取り専用) ==========
+        html.Div(
+            id="page_shared",
+            style={"display": "none"},
+            children=[
+                dbc.Container(
+                    fluid=True,
+                    className="main-container",
+                    style={"maxWidth": "1400px", "padding": "20px"},
+                    children=[create_shared_view_layout()],
                 ),
             ],
         ),

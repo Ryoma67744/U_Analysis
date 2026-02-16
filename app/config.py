@@ -61,6 +61,19 @@ SESSIONS_DIR = APP_BASE_DIR / "app" / "sessions"
 PROJECTS_DIR = APP_BASE_DIR / "app" / "projects"
 PROJECTS_FILE = PROJECTS_DIR / "projects.json"
 
+# 共有リンク管理
+SHARES_DIR = APP_BASE_DIR / "app" / "shares"
+SHARES_FILE = SHARES_DIR / "shares.json"
+DEFAULT_SHARE_EXPIRY_DAYS = 30
+# 共有URL生成用ベースURL
+# - 空の場合: LAN IPを自動検出（LAN内共有用）
+# - Cloudflare Tunnel使用時:
+#     1. cloudflared をインストール: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
+#     2. Quick Tunnel: cloudflared tunnel --url http://localhost:3838
+#     3. 表示されたURLをここに設定: "https://xxxx.trycloudflare.com"
+#     4. 固定ドメインの場合: cloudflared tunnel run --url http://localhost:3838 <tunnel-name>
+SHARE_BASE_URL = " https://administered-exercises-dude-give.trycloudflare.com"
+
 # Seuratブリッジ キャッシュディレクトリ
 # 日本語パスを含むとRscript.exeが文字化けするため、tempdir（ASCII安全）を使用
 SEURAT_CACHE_DIR = Path(tempfile.gettempdir()) / "msi_seurat_cache"
@@ -83,4 +96,4 @@ HIGHLIGHT_GRAY = "#D9D9D9"
 # アプリケーション設定
 APP_VERSION = "2.0.0"
 APP_PORT = 3838
-APP_HOST = "127.0.0.1"
+APP_HOST = "0.0.0.0"  # LAN + Cloudflare Tunnel 対応
