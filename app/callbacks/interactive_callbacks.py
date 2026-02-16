@@ -4,6 +4,8 @@
 # =============================================================================
 
 import io
+import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -42,6 +44,69 @@ def _get_cluster_color_map(clusters):
     str_cls = list(set(str(c) for c in clusters))
     str_cls.sort(key=_cluster_sort_key)
     return {cl: DESI_COLORS_50[i % len(DESI_COLORS_50)] for i, cl in enumerate(str_cls)}
+
+
+def _get_label_positions_path():
+    """label_positions.json のパスを返す（RDSと同ディレクトリ）"""
+    rds_path = _interactive_data.get("rds_path")
+    if not rds_path:
+        return None
+    return Path(rds_path).parent / "label_positions.json"
+
+
+def _load_label_positions():
+    """label_positions.json を読み込んで dict を返す。ファイルなし or エラー時は空dict"""
+    path = _get_label_positions_path()
+    if path and path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _extract_annotation_positions(relayout_data):
+    """relayoutDataからアノテーション位置を抽出 → {インデックス文字列: {"x": v, "y": v}}"""
+    if not relayout_data:
+        return {}
+    positions = {}
+    for key, val in relayout_data.items():
+        if key.startswith("annotations["):
+            m = re.match(r"annotations\[(\d+)\]\.([xy])", key)
+            if m:
+                idx = m.group(1)
+                attr = m.group(2)
+                if idx not in positions:
+                    positions[idx] = {}
+                positions[idx][attr] = val
+    return positions
+
+
+def _get_cluster_colorscale(clusters):
+    """Scattergl用: 数値インデックスベースのcolorscale情報を返す。
+
+    HEX文字列配列をmarker.colorに渡すとWebGL内部処理で色ミスマッチが
+    生じるため、数値+colorscaleで確実に色を指定する。
+
+    Returns:
+        cluster_to_idx: dict[str, int] — クラスタ文字列→0-based数値インデックス
+        discrete_colorscale: list — Plotly colorscale形式
+    """
+    str_cls = list(set(str(c) for c in clusters))
+    str_cls.sort(key=_cluster_sort_key)
+    n = max(len(str_cls), 1)
+    cluster_to_idx = {cl: i for i, cl in enumerate(str_cls)}
+
+    # discrete colorscale: 各色が均等な範囲を占める
+    colorscale = []
+    for i, cl in enumerate(str_cls):
+        low = i / n
+        high = (i + 1) / n
+        color = DESI_COLORS_50[i % len(DESI_COLORS_50)]
+        colorscale.append([low, color])
+        colorscale.append([high, color])
+
+    return cluster_to_idx, colorscale
 
 
 def _build_cluster_legend(color_map):
@@ -228,20 +293,23 @@ def auto_scan_msi_files(folder_path):
      Output("seurat_rds_path_store", "data"),
      Output("seurat_cache_dir_store", "data"),
      Output("deg_data_store", "data"),
-     Output("deg_results_section", "style")],
+     Output("deg_results_section", "style"),
+     Output("spatial_exclude_cluster", "options"),
+     Output("spatial_highlight_cluster", "options"),
+     Output("umap_exclude_cluster", "options")],
     [Input("load_interactive_data", "n_clicks"),
-     Input("interactive_integration_method", "value")],
-    [State("interactive_rds_map", "data"),
-     State("interactive_result_folder", "value")],
+     Input("interactive_integration_method", "value"),
+     Input("interactive_rds_map", "data")],
+    [State("interactive_result_folder", "value")],
     prevent_initial_call=True,
 )
 def load_interactive_data(n_clicks, integration_method, rds_map, result_folder):
-    _n_out = 9
+    _n_out = 12
     if not integration_method or not rds_map:
         return (
             "統合手法を選択してください（結果フォルダをスキャンしてください）",
             {"display": "none"}, [], [], [], None, None, None,
-            {"display": "none"},
+            {"display": "none"}, [], [], [],
         )
 
     rds_path = rds_map.get(integration_method)
@@ -249,7 +317,7 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder):
         return (
             f"RDSファイルが見つかりません: {integration_method}",
             {"display": "none"}, [], [], [], None, None, None,
-            {"display": "none"},
+            {"display": "none"}, [], [], [],
         )
 
     try:
@@ -307,13 +375,16 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder):
             str(result.get("cache_dir", "")),
             deg_data,
             deg_style,
+            cluster_options,  # spatial_exclude_cluster用
+            cluster_options,  # spatial_highlight_cluster用
+            cluster_options,  # umap_exclude_cluster用
         )
 
     except Exception as e:
         return (
             f"読み込みエラー: {e}",
             {"display": "none"}, [], [], [], None, None, None,
-            {"display": "none"},
+            {"display": "none"}, [], [], [],
         )
 
 
@@ -376,6 +447,9 @@ def _load_deg_results(
                     if col in df.columns:
                         df[col] = pd.to_numeric(df[col], errors="coerce")
                         if col == "p_val_adj":
+                            # Volcano Plot用に元の数値を保持
+                            df["p_val_adj_raw"] = df[col].copy()
+                            # テーブル表示用に科学記数法文字列へ変換
                             df[col] = df[col].map(
                                 lambda x: f"{x:.2e}" if pd.notna(x) else ""
                             )
@@ -418,9 +492,21 @@ def filter_features(search_value):
 # ---------------------------------------------------------------------------
 
 def _build_umap_integrated_fig(df, color_by, highlight_clusters,
-                                show_legend, show_labels, title=None):
+                                show_legend, show_labels, title=None,
+                                marker_size=2, exclude_clusters=None,
+                                label_size=14, saved_positions=None):
     """統合UMAPのgo.Figureを生成（メイン/フルスクリーン共用）"""
     fig = go.Figure()
+
+    # 除外クラスタのフィルタリング
+    if exclude_clusters:
+        exclude_set = set(str(c) for c in exclude_clusters)
+        df = df[~df["Cluster"].astype(str).isin(exclude_set)]
+        if df.empty:
+            fig.add_annotation(text="全クラスタが除外されています", showarrow=False,
+                               xref="paper", yref="paper", x=0.5, y=0.5)
+            return fig
+
     color_map = _get_cluster_color_map(df["Cluster"])
 
     if highlight_clusters and len(highlight_clusters) > 0:
@@ -431,7 +517,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                 x=df.loc[mask_bg, "UMAP_1"],
                 y=df.loc[mask_bg, "UMAP_2"],
                 mode="markers",
-                marker=dict(size=2, color=HIGHLIGHT_GRAY, opacity=0.1),
+                marker=dict(size=max(1, marker_size - 1), color=HIGHLIGHT_GRAY, opacity=0.1),
                 name="Other", showlegend=False, hoverinfo="skip",
             ))
         for cl in highlight_clusters:
@@ -441,7 +527,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                     x=df.loc[mask, "UMAP_1"],
                     y=df.loc[mask, "UMAP_2"],
                     mode="markers",
-                    marker=dict(size=3, color=color_map.get(str(cl), "#999999")),
+                    marker=dict(size=marker_size + 1, color=color_map.get(str(cl), "#999999")),
                     name=f"Cluster {cl}",
                     text=df.loc[mask, "CellID"],
                     hovertemplate="Cluster: %{meta}<br>%{text}<extra></extra>",
@@ -457,7 +543,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                 x=df.loc[mask, "UMAP_1"],
                 y=df.loc[mask, "UMAP_2"],
                 mode="markers",
-                marker=dict(size=2, color=cat_color_map.get(str(cat), "#999999")),
+                marker=dict(size=marker_size, color=cat_color_map.get(str(cat), "#999999")),
                 name=str(cat),
                 text=df.loc[mask, "CellID"],
                 hovertemplate=f"{color_col}: {cat}<br>" + "%{text}<extra></extra>",
@@ -468,11 +554,14 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
             cx=("UMAP_1", "mean"), cy=("UMAP_2", "mean"),
         ).reset_index()
         for _, row in centroids.iterrows():
+            cl_str = str(row["Cluster"])
+            pos = (saved_positions or {}).get(cl_str, {})
             fig.add_annotation(
-                x=row["cx"], y=row["cy"],
-                text=str(row["Cluster"]),
+                x=pos.get("x", row["cx"]),
+                y=pos.get("y", row["cy"]),
+                text=cl_str,
                 showarrow=False,
-                font=dict(size=14, color="black", family="Arial Black"),
+                font=dict(size=label_size, color="black", family="Arial Black"),
                 bgcolor="rgba(255,255,255,0.7)", borderpad=2,
             )
 
@@ -490,8 +579,17 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
 
 
 def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
-                                   show_labels, graph_height="300px"):
+                                   show_labels, graph_height="300px",
+                                   marker_size=2, exclude_clusters=None,
+                                   label_size=11, saved_positions=None):
     """サンプル別UMAPのhtml.Divリストを生成（メイン/フルスクリーン共用）"""
+    # 除外クラスタのフィルタリング
+    if exclude_clusters:
+        exclude_set = set(str(c) for c in exclude_clusters)
+        df = df[~df["Cluster"].astype(str).isin(exclude_set)]
+        if df.empty:
+            return [html.Div("全クラスタが除外されています", className="text-muted small mt-2")]
+
     samples = sorted(df["Sample"].unique())
     if len(samples) <= 1:
         return [html.Div("サンプルが1つのみです", className="text-muted small mt-2")]
@@ -507,7 +605,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                 x=df.loc[mask_other, "UMAP_1"],
                 y=df.loc[mask_other, "UMAP_2"],
                 mode="markers",
-                marker=dict(size=1, color=HIGHLIGHT_GRAY, opacity=0.1),
+                marker=dict(size=max(1, marker_size - 1), color=HIGHLIGHT_GRAY, opacity=0.1),
                 name="Other", showlegend=False, hoverinfo="skip",
             ))
 
@@ -521,7 +619,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                     x=df_s.loc[mask_bg_s, "UMAP_1"],
                     y=df_s.loc[mask_bg_s, "UMAP_2"],
                     mode="markers",
-                    marker=dict(size=2, color=HIGHLIGHT_GRAY, opacity=0.3),
+                    marker=dict(size=marker_size, color=HIGHLIGHT_GRAY, opacity=0.3),
                     name="Other", showlegend=False, hoverinfo="skip",
                 ))
             for cl in highlight_clusters:
@@ -531,7 +629,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                         x=df_s.loc[mask_cl, "UMAP_1"],
                         y=df_s.loc[mask_cl, "UMAP_2"],
                         mode="markers",
-                        marker=dict(size=3, color=color_map.get(str(cl), "#999999")),
+                        marker=dict(size=marker_size + 1, color=color_map.get(str(cl), "#999999")),
                         name=f"Cluster {cl}", showlegend=False,
                     ))
         else:
@@ -541,20 +639,24 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                     x=df_s.loc[mask_cl, "UMAP_1"],
                     y=df_s.loc[mask_cl, "UMAP_2"],
                     mode="markers",
-                    marker=dict(size=2, color=color_map.get(str(cl), "#999999")),
+                    marker=dict(size=marker_size, color=color_map.get(str(cl), "#999999")),
                     name=str(cl), showlegend=False,
                 ))
 
         if show_labels:
+            sample_pos = (saved_positions or {}).get(s, {})
             centroids = df_s.groupby("Cluster").agg(
                 cx=("UMAP_1", "mean"), cy=("UMAP_2", "mean"),
             ).reset_index()
             for _, row in centroids.iterrows():
+                cl_str = str(row["Cluster"])
+                pos = sample_pos.get(cl_str, {})
                 fig.add_annotation(
-                    x=row["cx"], y=row["cy"],
-                    text=str(row["Cluster"]),
+                    x=pos.get("x", row["cx"]),
+                    y=pos.get("y", row["cy"]),
+                    text=cl_str,
                     showarrow=False,
-                    font=dict(size=11, color="black", family="Arial Black"),
+                    font=dict(size=label_size, color="black", family="Arial Black"),
                     bgcolor="rgba(255,255,255,0.7)", borderpad=1,
                 )
 
@@ -575,7 +677,8 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                 children=[
                     html.H6(s, className="text-center mb-1",
                              style={"fontSize": "0.85rem", "fontWeight": "600"}),
-                    dcc.Graph(figure=fig, style={"height": graph_height}, config=cfg),
+                    dcc.Graph(id={"type": "umap_per_sample_graph", "index": s},
+                              figure=fig, style={"height": graph_height}, config=cfg),
                 ],
             )
         )
@@ -592,18 +695,26 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
      Input("umap_highlight_cluster", "value"),
      Input("umap_show_legend", "value"),
      Input("umap_show_labels", "value"),
-     Input("umap_display_mode", "value")],
-    State("seurat_rds_path_store", "data"),
+     Input("umap_display_mode", "value"),
+     Input("umap_marker_size", "value"),
+     Input("umap_exclude_cluster", "value"),
+     Input("umap_label_size", "value"),
+     Input("seurat_rds_path_store", "data")],
 )
 def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
-                     display_mode, rds_path):
+                     display_mode, marker_size, exclude_clusters, label_size, rds_path):
     if display_mode == "per_sample":
         return go.Figure()
     df = _interactive_data.get("plot_data")
     if df is None:
         return go.Figure()
+    all_pos = _load_label_positions()
     return _build_umap_integrated_fig(df, color_by, highlight_clusters,
-                                       show_legend, show_labels)
+                                       show_legend, show_labels,
+                                       marker_size=marker_size or 2,
+                                       exclude_clusters=exclude_clusters,
+                                       label_size=label_size or 14,
+                                       saved_positions=all_pos.get("umap_integrated"))
 
 
 # ---------------------------------------------------------------------------
@@ -627,6 +738,7 @@ def toggle_umap_integrated_visibility(mode):
 
 _UMAP_PER_SAMPLE_CONFIG = {
     "scrollZoom": True,
+    "edits": {"annotationPosition": True},
     "toImageButtonOptions": {"format": "png", "scale": 3},
 }
 
@@ -635,10 +747,14 @@ _UMAP_PER_SAMPLE_CONFIG = {
     Output("umap_per_sample_container", "children"),
     [Input("umap_display_mode", "value"),
      Input("umap_highlight_cluster", "value"),
-     Input("umap_show_labels", "value")],
-    State("seurat_rds_path_store", "data"),
+     Input("umap_show_labels", "value"),
+     Input("umap_marker_size", "value"),
+     Input("umap_exclude_cluster", "value"),
+     Input("umap_label_size", "value"),
+     Input("seurat_rds_path_store", "data")],
 )
-def update_umap_per_sample(display_mode, highlight_clusters, show_labels, rds_path):
+def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
+                            marker_size, exclude_clusters, label_size, rds_path):
     """表示モード「サンプル別」の場合、各サンプルのUMAPを並列表示"""
     if display_mode != "per_sample":
         return ""
@@ -646,8 +762,13 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels, rds_pa
     if df is None:
         return ""
     color_map = _get_cluster_color_map(df["Cluster"])
+    all_pos = _load_label_positions()
     graphs = _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
-                                            show_labels, graph_height="300px")
+                                            show_labels, graph_height="300px",
+                                            marker_size=marker_size or 2,
+                                            exclude_clusters=exclude_clusters,
+                                            label_size=label_size or 11,
+                                            saved_positions=all_pos.get("umap_per_sample"))
     return html.Div(
         style={"display": "flex", "flexWrap": "wrap", "gap": "15px", "marginTop": "10px"},
         children=graphs,
@@ -768,8 +889,20 @@ def _transform_coords(x, y, angle_deg, flip_h=False, flip_v=False):
 def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                                selected_cell_ids, rotation_deg=0,
                                show_labels=False, flip_h=False, flip_v=False,
-                               title=None, embed_legend=False):
+                               title=None, embed_legend=False,
+                               cluster_to_idx=None, discrete_cscale=None,
+                               marker_size=4, exclude_clusters=None,
+                               label_size=10, saved_positions=None):
     """単一サンプルのSpatial Mapping figureを生成"""
+    # 除外クラスタのフィルタリング
+    if exclude_clusters:
+        exclude_set = set(str(c) for c in exclude_clusters)
+        df_sample = df_sample[~df_sample["Cluster"].astype(str).isin(exclude_set)]
+        if df_sample.empty:
+            fig = go.Figure()
+            fig.add_annotation(text="全クラスタが除外されています", showarrow=False,
+                               xref="paper", yref="paper", x=0.5, y=0.5)
+            return fig
     fig = go.Figure()
 
     # 座標の取得と変換適用（反転+回転）
@@ -778,17 +911,37 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
     plot_x, plot_y = _transform_coords(raw_x, raw_y, rotation_deg,
                                         flip_h=flip_h, flip_v=flip_v)
 
+    # marker_size=0 の場合、データ密度ベースで自動計算（点間距離ゼロ）
+    if marker_size <= 0 and len(plot_x) > 1:
+        sorted_ux = np.sort(np.unique(plot_x))
+        if len(sorted_ux) > 1:
+            min_spacing = float(np.min(np.diff(sorted_ux)))
+            x_range = float(plot_x.max() - plot_x.min())
+            y_range = float(plot_y.max() - plot_y.min()) if len(plot_y) > 1 else 1.0
+            # scaleanchor="x" のため、描画幅は高さ×アスペクト比で決定
+            # コンテナ高さ350px - margin(t=30+b=10)=40px → 有効高さ310px
+            effective_h = 310
+            if y_range > 0 and x_range > 0:
+                effective_w = effective_h * (x_range / y_range)
+                marker_size = max(2, round(min_spacing * effective_w / x_range * 1.3))
+            else:
+                marker_size = 4
+        else:
+            marker_size = 4
+    elif marker_size <= 0:
+        marker_size = 4
+
     if selected_cell_ids:
         mask_selected = df_sample["CellID"].isin(selected_cell_ids).values
         mask_bg = ~mask_selected
         if mask_bg.any():
             if "TotalCount" in df_sample.columns:
                 tc_values = df_sample["TotalCount"].values[mask_bg]
-                bg_marker = dict(size=3, color=tc_values, colorscale="Greys",
+                bg_marker = dict(size=marker_size, color=tc_values, colorscale="Greys",
                                  opacity=0.5, showscale=False)
                 bg_name = "TIC"
             else:
-                bg_marker = dict(size=3, color=HIGHLIGHT_GRAY, opacity=0.2)
+                bg_marker = dict(size=marker_size, color=HIGHLIGHT_GRAY, opacity=0.2)
                 bg_name = "Other"
             fig.add_trace(go.Scattergl(
                 x=plot_x[mask_bg],
@@ -802,7 +955,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 x=plot_x[mask_selected],
                 y=plot_y[mask_selected],
                 mode="markers",
-                marker=dict(size=5, color="red"),
+                marker=dict(size=marker_size + 1, color="red"),
                 name=f"Selected ({mask_selected.sum()})",
             ))
     elif highlight_clusters and len(highlight_clusters) > 0:
@@ -812,11 +965,11 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
         if mask_bg.values.any():
             if "TotalCount" in df_sample.columns:
                 tc_values = df_sample["TotalCount"].values[mask_bg.values]
-                bg_marker = dict(size=3, color=tc_values, colorscale="Greys",
+                bg_marker = dict(size=marker_size, color=tc_values, colorscale="Greys",
                                  opacity=0.5, showscale=False)
                 bg_name = "TIC"
             else:
-                bg_marker = dict(size=3, color=HIGHLIGHT_GRAY, opacity=0.2)
+                bg_marker = dict(size=marker_size, color=HIGHLIGHT_GRAY, opacity=0.2)
                 bg_name = "Other"
             fig.add_trace(go.Scattergl(
                 x=plot_x[mask_bg.values],
@@ -833,21 +986,41 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                     x=plot_x[mask],
                     y=plot_y[mask],
                     mode="markers",
-                    marker=dict(size=5, color=color_map.get(str(cl), "#999999")),
+                    marker=dict(size=marker_size + 1, color=color_map.get(str(cl), "#999999")),
                     name=f"Cluster {cl}",
                 ))
     else:
-        # 全ポイントに個別色を割り当て（単一トレース - WebGL重なり問題を回避）
-        point_colors = [color_map.get(str(cl), "#999999") for cl in df_sample["Cluster"]]
-        fig.add_trace(go.Scattergl(
-            x=plot_x,
-            y=plot_y,
-            mode="markers",
-            marker=dict(size=4, color=point_colors),
-            text=[f"Cluster {cl}" for cl in df_sample["Cluster"]],
-            hovertemplate="%{text}<extra></extra>",
-            showlegend=False,
-        ))
+        # 数値インデックス + discrete colorscale 方式
+        # （HEX文字列配列のWebGL処理問題を回避）
+        if cluster_to_idx is not None and discrete_cscale is not None:
+            n_clusters = max(len(cluster_to_idx), 1)
+            point_values = np.array(
+                [cluster_to_idx.get(str(cl), 0) for cl in df_sample["Cluster"]]
+            )
+            point_normalized = (point_values + 0.5) / n_clusters
+            fig.add_trace(go.Scattergl(
+                x=plot_x, y=plot_y, mode="markers",
+                marker=dict(
+                    size=marker_size,
+                    color=point_normalized,
+                    colorscale=discrete_cscale,
+                    cmin=0, cmax=1,
+                    showscale=False,
+                ),
+                text=[f"Cluster {cl}" for cl in df_sample["Cluster"]],
+                hovertemplate="%{text}<extra></extra>",
+                showlegend=False,
+            ))
+        else:
+            # フォールバック: HEX文字列配列方式
+            point_colors = [color_map.get(str(cl), "#999999") for cl in df_sample["Cluster"]]
+            fig.add_trace(go.Scattergl(
+                x=plot_x, y=plot_y, mode="markers",
+                marker=dict(size=marker_size, color=point_colors),
+                text=[f"Cluster {cl}" for cl in df_sample["Cluster"]],
+                hovertemplate="%{text}<extra></extra>",
+                showlegend=False,
+            ))
         # 凡例用ダミートレース（大きいマーカーで見やすく）
         if embed_legend:
             for cl in sorted(df_sample["Cluster"].unique(), key=_cluster_sort_key):
@@ -866,12 +1039,16 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
         for cl in sorted(df_sample["Cluster"].unique(), key=_cluster_sort_key):
             mask = (df_sample["Cluster"] == cl).values
             if mask.any():
-                cx = plot_x[mask].mean()
-                cy = plot_y[mask].mean()
+                cx_default = plot_x[mask].mean()
+                cy_default = plot_y[mask].mean()
+                cl_str = str(cl)
+                pos = (saved_positions or {}).get(cl_str, {})
                 fig.add_annotation(
-                    x=cx, y=cy, text=str(cl),
+                    x=pos.get("x", cx_default),
+                    y=pos.get("y", cy_default),
+                    text=cl_str,
                     showarrow=False,
-                    font=dict(size=10, color="black"),
+                    font=dict(size=label_size, color="black"),
                     bgcolor="rgba(255,255,255,0.7)",
                 )
 
@@ -890,6 +1067,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
 
 _SPATIAL_IMG_CONFIG = {
     "scrollZoom": True,
+    "edits": {"annotationPosition": True},
     "toImageButtonOptions": {
         "format": "png", "scale": 3,
     },
@@ -1010,14 +1188,18 @@ def update_rotation_store_from_per_sample(rotations, flip_hs, flip_vs, current_s
     [Output("spatial_plots_container", "children"),
      Output("last_spatial_figure_store", "data")],
     [Input("interactive_sample", "value"),
-     Input("umap_highlight_cluster", "value"),
+     Input("spatial_highlight_cluster", "value"),
      Input("interactive_umap_plot", "selectedData"),
      Input("spatial_rotation_store", "data"),
-     Input("spatial_show_labels", "value")],
-    State("seurat_rds_path_store", "data"),
+     Input("spatial_show_labels", "value"),
+     Input("spatial_marker_size", "value"),
+     Input("spatial_exclude_cluster", "value"),
+     Input("spatial_label_size", "value"),
+     Input("seurat_rds_path_store", "data")],
 )
 def update_spatial_plots(sample, highlight_clusters, selected_data,
-                         rotation_store, show_labels, rds_path):
+                         rotation_store, show_labels, marker_size,
+                         exclude_clusters, label_size, rds_path):
     df = _interactive_data.get("plot_data")
     if df is None or "SpatialX" not in df.columns:
         return html.Div("空間座標データがありません", className="text-muted p-3"), None
@@ -1033,6 +1215,9 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
                 selected_cell_ids.add(pt["text"])
 
     color_map = _get_cluster_color_map(df["Cluster"])
+    cluster_to_idx, discrete_cscale = _get_cluster_colorscale(df["Cluster"])
+    all_pos = _load_label_positions()
+    spatial_pos = all_pos.get("spatial", {})
 
     # 表示対象サンプル
     if sample:
@@ -1057,7 +1242,13 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
                                          rotation_deg=rotation_deg,
                                          show_labels=show_labels,
                                          flip_h=flip_h, flip_v=flip_v,
-                                         title=s, embed_legend=True)
+                                         title=s, embed_legend=True,
+                                         cluster_to_idx=cluster_to_idx,
+                                         discrete_cscale=discrete_cscale,
+                                         marker_size=marker_size or 0,
+                                         exclude_clusters=exclude_clusters,
+                                         label_size=label_size or 10,
+                                         saved_positions=spatial_pos.get(s))
         if representative_fig is None:
             representative_fig = fig
         cfg = dict(_SPATIAL_IMG_CONFIG)
@@ -1073,7 +1264,8 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
                 children=[
                     html.H6(s, className="text-center mb-1",
                              style={"fontSize": "0.85rem", "fontWeight": "600"}),
-                    dcc.Graph(figure=fig, style={"height": "350px"}, config=cfg),
+                    dcc.Graph(id={"type": "spatial_graph", "index": s},
+                              figure=fig, style={"height": "350px"}, config=cfg),
                 ],
             )
         )
@@ -1411,6 +1603,7 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
     fs_graph_style = {"height": "80vh"}
     fs_config = {
         "scrollZoom": True,
+        "edits": {"annotationPosition": True},
         "toImageButtonOptions": {"format": "png", "scale": 3},
     }
 
@@ -1450,16 +1643,59 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                                             {"label": "Sample", "value": "Sample"}],
                                    value="Cluster", inline=True),
                 ]),
-                dbc.Col(width=3, children=[
+                dbc.Col(width=2, children=[
                     dcc.Dropdown(id="fs_umap_highlight_cluster",
                                  options=cluster_opts, multi=True,
                                  placeholder="ハイライト"),
                 ]),
-                dbc.Col(width=2, children=[
+                dbc.Col(width=1, children=[
+                    dbc.Label("点サイズ", className="small mb-0"),
+                    dcc.Slider(
+                        id="fs_umap_marker_size",
+                        min=1, max=10, step=1, value=2,
+                        marks={1: "1", 5: "5", 10: "10"},
+                        tooltip={"placement": "bottom", "always_visible": False},
+                    ),
+                ]),
+                dbc.Col(width=1, children=[
                     dbc.Checkbox(id="fs_umap_show_labels", label="ラベル", value=False),
                 ]),
-                dbc.Col(width=2, children=[
+                dbc.Col(width=1, children=[
                     dbc.Checkbox(id="fs_umap_show_legend", label="凡例", value=True),
+                ]),
+                dbc.Col(width=1, children=[
+                    dbc.Label("高さ", className="small mb-0"),
+                    dcc.Slider(
+                        id="fs_umap_height_slider",
+                        min=40, max=95, step=5, value=78,
+                        marks={40: "40", 78: "78", 95: "95"},
+                        tooltip={"placement": "bottom", "always_visible": False},
+                    ),
+                ]),
+                dbc.Col(width=1, children=[
+                    dbc.Label("横幅", className="small mb-0"),
+                    dcc.Slider(
+                        id="fs_umap_width_slider",
+                        min=40, max=100, step=5, value=95,
+                        marks={40: "40", 70: "70", 95: "95"},
+                        tooltip={"placement": "bottom", "always_visible": False},
+                    ),
+                ]),
+            ]),
+            dbc.Row(className="mt-1", children=[
+                dbc.Col(width=4, children=[
+                    dcc.Dropdown(id="fs_umap_exclude_cluster",
+                                 options=cluster_opts, multi=True,
+                                 placeholder="除去するクラスタ"),
+                ]),
+                dbc.Col(width=3, children=[
+                    dbc.Label("ラベルサイズ", className="small mb-0"),
+                    dcc.Slider(
+                        id="fs_umap_label_size",
+                        min=6, max=24, step=1, value=14,
+                        marks={6: "6", 14: "14", 24: "24"},
+                        tooltip={"placement": "bottom", "always_visible": False},
+                    ),
                 ]),
             ]),
             html.Div(
@@ -1496,6 +1732,7 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
         clusters = sorted(df["Cluster"].unique(), key=_cluster_sort_key)
         cluster_opts = [{"label": f"Cluster {c}", "value": str(c)} for c in clusters]
         color_map = _get_cluster_color_map(df["Cluster"])
+        cluster_to_idx, discrete_cscale = _get_cluster_colorscale(df["Cluster"])
 
         # 初期グラフ（全サンプル、rotation_store適用）
         if not rotation_store:
@@ -1511,7 +1748,9 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                                              rotation_deg=transform.get("angle", 0),
                                              flip_h=transform.get("flip_h", False),
                                              flip_v=transform.get("flip_v", False),
-                                             title=s, embed_legend=True)
+                                             title=s, embed_legend=True,
+                                             cluster_to_idx=cluster_to_idx,
+                                             discrete_cscale=discrete_cscale)
             n = len(samples)
             flex_basis = f"{max(30, 90 // n)}%"
             init_cfg = dict(fs_config)
@@ -1577,10 +1816,51 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                 dbc.Col(width=1, children=[
                     dbc.Checkbox(id="fs_spatial_show_labels", label="番号", value=False),
                 ]),
-                dbc.Col(width=4, children=[
+                dbc.Col(width=2, children=[
                     dcc.Dropdown(id="fs_spatial_highlight_cluster",
                                  options=cluster_opts, multi=True,
                                  placeholder="ハイライト"),
+                ]),
+                dbc.Col(width=2, children=[
+                    dcc.Dropdown(id="fs_spatial_exclude_cluster",
+                                 options=cluster_opts, multi=True,
+                                 placeholder="除去"),
+                ]),
+                dbc.Col(width=1, children=[
+                    dbc.Label("マーカー", className="small mb-0"),
+                    dcc.Slider(
+                        id="fs_spatial_marker_size",
+                        min=0, max=15, step=1, value=0,
+                        marks={0: "自動", 8: "8", 15: "15"},
+                        tooltip={"placement": "bottom", "always_visible": False},
+                    ),
+                ]),
+                dbc.Col(width=1, children=[
+                    dbc.Label("高さ", className="small mb-0"),
+                    dcc.Slider(
+                        id="fs_spatial_height_slider",
+                        min=30, max=85, step=5, value=60,
+                        marks={30: "30", 60: "60", 85: "85"},
+                        tooltip={"placement": "bottom", "always_visible": False},
+                    ),
+                ]),
+                dbc.Col(width=2, children=[
+                    dbc.Label("横幅", className="small mb-0"),
+                    dcc.Slider(
+                        id="fs_spatial_width_slider",
+                        min=40, max=100, step=5, value=95,
+                        marks={40: "40", 70: "70", 95: "95"},
+                        tooltip={"placement": "bottom", "always_visible": False},
+                    ),
+                ]),
+                dbc.Col(width=1, children=[
+                    dbc.Label("ラベル", className="small mb-0"),
+                    dcc.Slider(
+                        id="fs_spatial_label_size",
+                        min=6, max=24, step=1, value=10,
+                        marks={6: "6", 14: "14", 24: "24"},
+                        tooltip={"placement": "bottom", "always_visible": False},
+                    ),
                 ]),
             ]),
             dbc.Accordion(
@@ -1602,26 +1882,45 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
         ])
         return True, "Spatial Mapping", body
 
-    # ===== DEG テーブル =====
+    # ===== DEG テーブル + Volcano + Heatmap =====
     if trigger == "expand_deg_btn" and deg_data:
-        table = dash_table.DataTable(
-            columns=[
-                {"name": "Gene/m/z", "id": "gene"},
-                {"name": "Cluster", "id": "cluster"},
-                {"name": "avg_log2FC", "id": "avg_log2FC"},
-                {"name": "p_val_adj", "id": "p_val_adj"},
-                {"name": "pct.1", "id": "pct.1"},
-                {"name": "pct.2", "id": "pct.2"},
-            ],
-            data=deg_data,
-            sort_action="native",
-            filter_action="native",
-            style_table={"overflowX": "auto"},
-            style_cell={"textAlign": "left", "padding": "6px", "fontSize": "0.85rem"},
-            style_header={"backgroundColor": "#f8f9fa", "fontWeight": "600"},
-            page_size=50,
+        # クラスタ選択肢
+        deg_clusters = sorted(
+            set(str(r.get("cluster", "")) for r in deg_data),
+            key=_cluster_sort_key,
         )
-        return True, "DEG マーカー", table
+        deg_cluster_opts = [{"label": f"Cluster {c}", "value": c} for c in deg_clusters]
+
+        fs_deg_body = dbc.Tabs(active_tab="fs_deg_table_tab", children=[
+            dbc.Tab(label="テーブル", tab_id="fs_deg_table_tab", children=[
+                dash_table.DataTable(
+                    columns=[
+                        {"name": "Gene/m/z", "id": "gene"},
+                        {"name": "Cluster", "id": "cluster"},
+                        {"name": "avg_log2FC", "id": "avg_log2FC"},
+                        {"name": "p_val_adj", "id": "p_val_adj"},
+                        {"name": "pct.1", "id": "pct.1"},
+                        {"name": "pct.2", "id": "pct.2"},
+                    ],
+                    data=deg_data,
+                    sort_action="native",
+                    filter_action="native",
+                    style_table={"overflowX": "auto"},
+                    style_cell={"textAlign": "left", "padding": "6px", "fontSize": "0.85rem"},
+                    style_header={"backgroundColor": "#f8f9fa", "fontWeight": "600"},
+                    page_size=50,
+                ),
+            ]),
+            dbc.Tab(label="Volcano Plot", tab_id="fs_deg_volcano_tab", children=[
+                html.P("メイン画面のVolcano Plotタブで操作してください。",
+                       className="text-muted small mt-2"),
+            ]),
+            dbc.Tab(label="Heatmap", tab_id="fs_deg_heatmap_tab", children=[
+                html.P("メイン画面のHeatmapタブで操作してください。",
+                       className="text-muted small mt-2"),
+            ]),
+        ])
+        return True, "DEG マーカー", fs_deg_body
 
     return False, "", ""
 
@@ -1636,15 +1935,24 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
      Input("fs_umap_color_by", "value"),
      Input("fs_umap_highlight_cluster", "value"),
      Input("fs_umap_show_labels", "value"),
-     Input("fs_umap_show_legend", "value")],
+     Input("fs_umap_show_legend", "value"),
+     Input("fs_umap_height_slider", "value"),
+     Input("fs_umap_width_slider", "value"),
+     Input("fs_umap_marker_size", "value"),
+     Input("fs_umap_exclude_cluster", "value"),
+     Input("fs_umap_label_size", "value")],
     prevent_initial_call=True,
 )
-def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend):
+def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
+                   height_val, width_val, marker_size, exclude_clusters, label_size):
+    height_val = height_val or 78
+    width_val = width_val or 95
     df = _interactive_data.get("plot_data")
     if df is None:
         return ""
     color_map = _get_cluster_color_map(df["Cluster"])
-    fs_config = {"scrollZoom": True, "toImageButtonOptions": {"format": "png", "scale": 3}}
+    fs_config = {"scrollZoom": True, "edits": {"annotationPosition": True}, "toImageButtonOptions": {"format": "png", "scale": 3}}
+    all_pos = _load_label_positions()
 
     # タイトル（RDSファイル名から生成）
     rds_path = _interactive_data.get("rds_path", "")
@@ -1652,16 +1960,29 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend):
 
     if display_mode == "integrated":
         fig = _build_umap_integrated_fig(df, color_by, highlight, show_legend, show_labels,
-                                          title=umap_title)
+                                          title=umap_title,
+                                          marker_size=marker_size or 2,
+                                          exclude_clusters=exclude_clusters,
+                                          label_size=label_size or 14,
+                                          saved_positions=all_pos.get("umap_integrated"))
         fs_cfg = dict(fs_config)
         fs_cfg["toImageButtonOptions"] = dict(fs_cfg["toImageButtonOptions"],
                                                filename=f"UMAP_{umap_title}")
-        return dcc.Graph(figure=fig, style={"height": "78vh"}, config=fs_cfg)
-    else:
-        graphs = _build_umap_per_sample_graphs(df, color_map, highlight,
-                                                show_labels, graph_height="35vh")
         return html.Div(
-            style={"display": "flex", "flexWrap": "wrap", "gap": "15px"},
+            style={"width": f"{width_val}vw", "margin": "0 auto"},
+            children=[dcc.Graph(figure=fig, style={"height": f"{height_val}vh"}, config=fs_cfg)],
+        )
+    else:
+        per_h = max(height_val // 2, 25)
+        graphs = _build_umap_per_sample_graphs(df, color_map, highlight,
+                                                show_labels, graph_height=f"{per_h}vh",
+                                                marker_size=marker_size or 2,
+                                                exclude_clusters=exclude_clusters,
+                                                label_size=label_size or 11,
+                                                saved_positions=all_pos.get("umap_per_sample"))
+        return html.Div(
+            style={"display": "flex", "flexWrap": "wrap", "gap": "15px",
+                   "width": f"{width_val}vw", "margin": "0 auto"},
             children=graphs,
         )
 
@@ -1675,14 +1996,26 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend):
     [Input("fs_spatial_sample", "value"),
      Input("spatial_rotation_store", "data"),
      Input("fs_spatial_show_labels", "value"),
-     Input("fs_spatial_highlight_cluster", "value")],
+     Input("fs_spatial_highlight_cluster", "value"),
+     Input("fs_spatial_exclude_cluster", "value"),
+     Input("fs_spatial_marker_size", "value"),
+     Input("fs_spatial_height_slider", "value"),
+     Input("fs_spatial_width_slider", "value"),
+     Input("fs_spatial_label_size", "value")],
     prevent_initial_call=True,
 )
-def update_fs_spatial(sample, rotation_store, show_labels, highlight):
+def update_fs_spatial(sample, rotation_store, show_labels, highlight,
+                      exclude_clusters, marker_size, height_val, width_val,
+                      label_size):
+    height_val = height_val or 60
+    width_val = width_val or 95
     df = _interactive_data.get("plot_data")
     if df is None or "SpatialX" not in df.columns:
         return ""
     color_map = _get_cluster_color_map(df["Cluster"])
+    cluster_to_idx, discrete_cscale = _get_cluster_colorscale(df["Cluster"])
+    all_pos = _load_label_positions()
+    spatial_pos = all_pos.get("spatial", {})
     if not rotation_store:
         rotation_store = {}
 
@@ -1691,7 +2024,7 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight):
     else:
         samples_to_show = sorted(df["Sample"].unique())
 
-    fs_config = {"scrollZoom": True, "toImageButtonOptions": {"format": "png", "scale": 3}}
+    fs_config = {"scrollZoom": True, "edits": {"annotationPosition": True}, "toImageButtonOptions": {"format": "png", "scale": 3}}
     graphs = []
     for s in samples_to_show:
         df_s = df[df["Sample"] == s]
@@ -1704,7 +2037,13 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight):
                                          show_labels=show_labels,
                                          flip_h=transform.get("flip_h", False),
                                          flip_v=transform.get("flip_v", False),
-                                         title=s, embed_legend=True)
+                                         title=s, embed_legend=True,
+                                         cluster_to_idx=cluster_to_idx,
+                                         discrete_cscale=discrete_cscale,
+                                         marker_size=marker_size or 0,
+                                         exclude_clusters=exclude_clusters,
+                                         label_size=label_size or 10,
+                                         saved_positions=spatial_pos.get(s))
         n = len(samples_to_show)
         flex_basis = f"{max(30, 90 // n)}%"
         fs_cfg = dict(fs_config)
@@ -1717,11 +2056,404 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight):
                         "padding": "5px", "backgroundColor": "#fff"},
                 children=[
                     html.H6(s, className="text-center mb-1", style={"fontWeight": "600"}),
-                    dcc.Graph(figure=fig, style={"height": "60vh"}, config=fs_cfg),
+                    dcc.Graph(id={"type": "fs_spatial_graph", "index": s},
+                              figure=fig, style={"height": f"{height_val}vh"}, config=fs_cfg),
                 ],
             )
         )
     return html.Div(
-        style={"display": "flex", "flexWrap": "wrap", "gap": "15px"},
+        style={"display": "flex", "flexWrap": "wrap", "gap": "15px",
+               "width": f"{width_val}vw", "margin": "0 auto"},
         children=graphs,
     )
+
+
+
+# ---------------------------------------------------------------------------
+# ラベル位置の永続保存
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("label_pos_save_status", "data"),
+    Input("save_label_pos_btn", "n_clicks"),
+    [State("interactive_umap_plot", "relayoutData"),
+     State({"type": "umap_per_sample_graph", "index": ALL}, "relayoutData"),
+     State({"type": "spatial_graph", "index": ALL}, "relayoutData")],
+    prevent_initial_call=True,
+)
+def save_label_positions(n_clicks, umap_relayout, umap_ps_relayouts, spatial_relayouts):
+    """全グラフのアノテーション位置をJSONファイルに永続保存する"""
+    path = _get_label_positions_path()
+    if not path:
+        return no_update
+
+    df = _interactive_data.get("plot_data")
+    if df is None:
+        return no_update
+
+    clusters = sorted(df["Cluster"].unique(), key=_cluster_sort_key)
+
+    # 既存データを読み込み（マージ）
+    existing = _load_label_positions()
+
+    # 1) UMAP統合
+    umap_pos = _extract_annotation_positions(umap_relayout)
+    if umap_pos:
+        umap_saved = existing.get("umap_integrated", {})
+        for idx_str, pos in umap_pos.items():
+            idx = int(idx_str)
+            if idx < len(clusters):
+                cl = str(clusters[idx])
+                if cl not in umap_saved:
+                    umap_saved[cl] = {}
+                umap_saved[cl].update(pos)
+        existing["umap_integrated"] = umap_saved
+
+    # 2) サンプル別UMAP
+    if umap_ps_relayouts:
+        umap_ps_saved = existing.get("umap_per_sample", {})
+        inputs_list = ctx.inputs_list[1]  # 2番目のState
+        for i, rd in enumerate(umap_ps_relayouts):
+            if i < len(inputs_list):
+                sample_name = inputs_list[i]["id"]["index"]
+                ps_pos = _extract_annotation_positions(rd)
+                if ps_pos:
+                    sample_saved = umap_ps_saved.get(sample_name, {})
+                    sample_clusters = sorted(
+                        df[df["Sample"] == sample_name]["Cluster"].unique(),
+                        key=_cluster_sort_key)
+                    for idx_str, pos in ps_pos.items():
+                        idx = int(idx_str)
+                        if idx < len(sample_clusters):
+                            cl = str(sample_clusters[idx])
+                            if cl not in sample_saved:
+                                sample_saved[cl] = {}
+                            sample_saved[cl].update(pos)
+                    umap_ps_saved[sample_name] = sample_saved
+        existing["umap_per_sample"] = umap_ps_saved
+
+    # 3) Spatial
+    if spatial_relayouts:
+        spatial_saved = existing.get("spatial", {})
+        inputs_list = ctx.inputs_list[2]  # 3番目のState
+        for i, rd in enumerate(spatial_relayouts):
+            if i < len(inputs_list):
+                sample_name = inputs_list[i]["id"]["index"]
+                sp_pos = _extract_annotation_positions(rd)
+                if sp_pos:
+                    sample_saved = spatial_saved.get(sample_name, {})
+                    sample_clusters = sorted(
+                        df[df["Sample"] == sample_name]["Cluster"].unique(),
+                        key=_cluster_sort_key)
+                    for idx_str, pos in sp_pos.items():
+                        idx = int(idx_str)
+                        if idx < len(sample_clusters):
+                            cl = str(sample_clusters[idx])
+                            if cl not in sample_saved:
+                                sample_saved[cl] = {}
+                            sample_saved[cl].update(pos)
+                    spatial_saved[sample_name] = sample_saved
+        existing["spatial"] = spatial_saved
+
+    # JSON書き込み
+    path.write_text(json.dumps(existing, indent=2, ensure_ascii=False),
+                    encoding="utf-8")
+
+    return datetime.now().isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Volcano Plot（DEG インタラクティブ可視化）
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("volcano_cluster_select", "options"),
+    Input("deg_data_store", "data"),
+    prevent_initial_call=True,
+)
+def update_volcano_cluster_options(deg_data):
+    """DEGデータからVolcano Plotのクラスタ選択肢を生成"""
+    if not deg_data:
+        return []
+    clusters = sorted(
+        set(str(r.get("cluster", "")) for r in deg_data),
+        key=_cluster_sort_key,
+    )
+    return [{"label": f"Cluster {c}", "value": c} for c in clusters]
+
+
+@callback(
+    Output("volcano_plot", "figure"),
+    [Input("volcano_cluster_select", "value"),
+     Input("volcano_fc_threshold", "value"),
+     Input("volcano_p_threshold", "value"),
+     Input("volcano_y_max", "value"),
+     Input("volcano_marker_size", "value")],
+    State("deg_data_store", "data"),
+    prevent_initial_call=True,
+)
+def update_volcano_plot(cluster, fc_thresh, p_thresh, y_max, marker_size, deg_data):
+    """DEGデータからVolcano Plotを生成"""
+    if not deg_data:
+        return go.Figure()
+
+    df = pd.DataFrame(deg_data)
+    # p_val_adj_raw があればそちらを使用（文字列変換前の精度を保持）
+    if "p_val_adj_raw" in df.columns:
+        df["p_num"] = pd.to_numeric(df["p_val_adj_raw"], errors="coerce")
+    else:
+        df["p_num"] = pd.to_numeric(df["p_val_adj"], errors="coerce")
+    # p=0 は 1e-50 にclip（-log10 = 50 に集約、300集中を回避）
+    df["neg_log10_p"] = -np.log10(df["p_num"].clip(lower=1e-50))
+    df["avg_log2FC"] = pd.to_numeric(df["avg_log2FC"], errors="coerce")
+
+    if cluster:
+        df = df[df["cluster"].astype(str) == str(cluster)]
+
+    fc_thresh = fc_thresh or 0.5
+    p_thresh = p_thresh or 1.3
+    marker_size = marker_size or 8
+
+    fig = go.Figure()
+    for reg, color, label in [
+        ("Up", "#FF2D2D", "Up-regulated"),
+        ("Down", "#1E5BFF", "Down-regulated"),
+        ("NS", "#7A7A7A", "Not significant"),
+    ]:
+        if reg == "Up":
+            mask = (df["neg_log10_p"] >= p_thresh) & (df["avg_log2FC"] >= fc_thresh)
+        elif reg == "Down":
+            mask = (df["neg_log10_p"] >= p_thresh) & (df["avg_log2FC"] <= -fc_thresh)
+        else:
+            mask = ~(
+                (df["neg_log10_p"] >= p_thresh)
+                & (df["avg_log2FC"].abs() >= fc_thresh)
+            )
+        sub = df[mask]
+        if len(sub) > 0:
+            fig.add_trace(go.Scattergl(
+                x=sub["avg_log2FC"],
+                y=sub["neg_log10_p"],
+                mode="markers",
+                marker=dict(size=marker_size, color=color, opacity=0.7),
+                name=label,
+                text=sub["gene"],
+                hovertemplate=(
+                    "<b>%{text}</b><br>"
+                    "log2FC: %{x:.3f}<br>"
+                    "-log10(p): %{y:.2f}<extra></extra>"
+                ),
+            ))
+
+    # 閾値ライン
+    fig.add_hline(y=p_thresh, line_dash="dash", line_color="gray", opacity=0.5)
+    fig.add_vline(x=fc_thresh, line_dash="dash", line_color="gray", opacity=0.5)
+    fig.add_vline(x=-fc_thresh, line_dash="dash", line_color="gray", opacity=0.5)
+
+    title = (f"Volcano Plot - Cluster {cluster}" if cluster
+             else "Volcano Plot (全クラスタ)")
+    yaxis_opts = {}
+    if y_max is not None and y_max > 0:
+        yaxis_opts["range"] = [0, y_max]
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=14), x=0.5),
+        xaxis_title="avg_log2FC",
+        yaxis_title="-log10(p_val_adj)",
+        yaxis=yaxis_opts,
+        template="plotly_white",
+        margin=dict(l=50, r=20, t=40, b=40),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Heatmap（DEG Top N マーカーのクラスタ別平均発現量）
+# ---------------------------------------------------------------------------
+
+def _build_mz_to_compound_map(mrm_path_str, tolerance=0.1):
+    """MRMファイルから m/z値 → 化合物名 のマッピング辞書を構築する。
+
+    Parent m/z と Daughter m/z の両方を対象にマッチングを行う。
+    Returns:
+        dict[float, str] — m/z数値 → 化合物名
+    """
+    if not mrm_path_str:
+        return {}
+    from app.services.data_manager import load_mrm_file
+    mrm_df = load_mrm_file(mrm_path_str)
+    if mrm_df is None or mrm_df.empty:
+        return {}
+
+    # カラム名の正規化（R側と同様のロジック）
+    col_map = {}
+    for col in mrm_df.columns:
+        cl = col.lower().replace(" ", ".").replace("_", ".")
+        if cl in ("compound", "name", "metabolite", "metabolite.name",
+                  "analyte", "analyte.name"):
+            col_map[col] = "Compound"
+        elif cl in ("parent.m.z", "parent.mz", "parent", "precursor",
+                    "q1", "q1.m.z", "precursor.m.z", "precursor.mz"):
+            col_map[col] = "Parent_mz"
+        elif cl in ("daughter.m.z", "daughter.mz", "daughter", "product",
+                    "q3", "q3.m.z", "product.m.z", "product.mz"):
+            col_map[col] = "Daughter_mz"
+    mrm_df = mrm_df.rename(columns=col_map)
+
+    if "Compound" not in mrm_df.columns:
+        return {}
+
+    # m/z → 化合物名 マッピング (Parent と Daughter 両方)
+    mz_map = {}
+    for _, row in mrm_df.iterrows():
+        name = str(row.get("Compound", "")).strip()
+        if not name:
+            continue
+        for mz_col in ("Parent_mz", "Daughter_mz"):
+            if mz_col in mrm_df.columns:
+                try:
+                    mz_val = float(row[mz_col])
+                    mz_map[mz_val] = name
+                except (ValueError, TypeError):
+                    continue
+    return mz_map
+
+
+def _annotate_gene_labels(gene_list, mz_to_compound, tolerance=0.1):
+    """遺伝子/m/zラベルリストに化合物名を付与して返す。
+
+    Returns:
+        list[str] — アノテーション済みラベル（例: "mz_123.456 (Compound A)"）
+    """
+    if not mz_to_compound:
+        return gene_list
+
+    mrm_mz_values = np.array(sorted(mz_to_compound.keys()))
+    annotated = []
+    for g in gene_list:
+        label = g
+        # m/z数値を抽出（"mz_123.456" や "123.456" 形式に対応）
+        import re
+        match = re.search(r"(\d+\.\d+)", str(g))
+        if match and len(mrm_mz_values) > 0:
+            mz_val = float(match.group(1))
+            # 最近傍マッチ
+            idx = np.argmin(np.abs(mrm_mz_values - mz_val))
+            if abs(mrm_mz_values[idx] - mz_val) <= tolerance:
+                compound = mz_to_compound[mrm_mz_values[idx]]
+                label = f"{g} ({compound})"
+        annotated.append(label)
+    return annotated
+
+
+@callback(
+    Output("heatmap_plot", "figure"),
+    [Input("heatmap_top_n", "value"),
+     Input("heatmap_scale", "value"),
+     Input("heatmap_annotation_switch", "value")],
+    [State("deg_data_store", "data"),
+     State("seurat_cache_dir_store", "data"),
+     State("mrm_path", "value")],
+    prevent_initial_call=True,
+)
+def update_heatmap(top_n, scale, annotation_on, deg_data, cache_dir_str, mrm_path_str):
+    """DEG Top N マーカーのクラスタ別平均発現量ヒートマップを生成"""
+    if not deg_data or not cache_dir_str:
+        return go.Figure()
+
+    top_n = top_n or 5
+    df_deg = pd.DataFrame(deg_data)
+    df_deg["p_num"] = pd.to_numeric(df_deg["p_val_adj"], errors="coerce")
+
+    # 各クラスタの Top N マーカーを抽出
+    top_markers = df_deg.sort_values("p_num").groupby("cluster").head(top_n)
+    genes = top_markers["gene"].unique().tolist()
+
+    if not genes:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="マーカーが見つかりません", showarrow=False,
+            xref="paper", yref="paper", x=0.5, y=0.5,
+        )
+        return fig
+
+    # expression_matrix.parquet から発現量取得
+    cache_dir = Path(cache_dir_str)
+    expr_path = cache_dir / "expression_matrix.parquet"
+    if not expr_path.exists():
+        fig = go.Figure()
+        fig.add_annotation(
+            text="発現量データがありません", showarrow=False,
+            xref="paper", yref="paper", x=0.5, y=0.5,
+        )
+        return fig
+
+    # 利用可能な遺伝子のみ読み込み
+    available = []
+    for g in genes:
+        try:
+            pd.read_parquet(expr_path, columns=[g])
+            available.append(g)
+        except Exception:
+            continue
+
+    if not available:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="発現量カラムが見つかりません", showarrow=False,
+            xref="paper", yref="paper", x=0.5, y=0.5,
+        )
+        return fig
+
+    expr_df = pd.read_parquet(expr_path, columns=["CellID"] + available)
+
+    # クラスタ情報を結合
+    plot_data = _interactive_data.get("plot_data")
+    if plot_data is None:
+        return go.Figure()
+    merged = expr_df.merge(
+        plot_data[["CellID", "Cluster"]], on="CellID", how="inner"
+    )
+
+    # クラスタ別平均発現量
+    cluster_means = merged.groupby("Cluster")[available].mean()
+    cluster_means = cluster_means.reindex(
+        sorted(cluster_means.index, key=_cluster_sort_key)
+    )
+
+    # Z-score 変換（scipy なしで手動計算）
+    z_data = cluster_means.values.copy()
+    if scale == "zscore":
+        col_mean = z_data.mean(axis=0)
+        col_std = z_data.std(axis=0)
+        col_std[col_std == 0] = 1
+        z_data = (z_data - col_mean) / col_std
+
+    # Y軸ラベル: アノテーションがONかつMRMファイルがある場合は化合物名を付与
+    y_labels = available
+    if annotation_on and mrm_path_str:
+        mz_to_compound = _build_mz_to_compound_map(mrm_path_str, tolerance=0.1)
+        y_labels = _annotate_gene_labels(available, mz_to_compound, tolerance=0.1)
+
+    fig = go.Figure(go.Heatmap(
+        z=z_data.T,
+        x=[f"C{c}" for c in cluster_means.index],
+        y=y_labels,
+        colorscale="RdBu_r",
+        zmid=0 if scale == "zscore" else None,
+        hovertemplate=(
+            "Cluster: %{x}<br>Gene: %{y}<br>"
+            "Value: %{z:.3f}<extra></extra>"
+        ),
+    ))
+    # Y軸ラベルの余白を動的に調整
+    max_label_len = max(len(str(l)) for l in y_labels) if y_labels else 10
+    left_margin = min(max(max_label_len * 7, 120), 350)
+    fig.update_layout(
+        title=dict(text=f"Top {top_n} DEG Heatmap", font=dict(size=14), x=0.5),
+        xaxis_title="Cluster",
+        yaxis_title="Gene / m/z",
+        template="plotly_white",
+        margin=dict(l=left_margin, r=20, t=40, b=40),
+        yaxis=dict(autorange="reversed"),
+    )
+    return fig
