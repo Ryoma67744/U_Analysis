@@ -1648,7 +1648,20 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                                  options=cluster_opts, multi=True,
                                  placeholder="ハイライト"),
                 ]),
+                dbc.Col(width=3, children=[
+                    dcc.Dropdown(id="fs_umap_exclude_cluster",
+                                 options=cluster_opts, multi=True,
+                                 placeholder="除去するクラスタ"),
+                ]),
                 dbc.Col(width=1, children=[
+                    dbc.Checkbox(id="fs_umap_show_labels", label="ラベル", value=False),
+                ]),
+                dbc.Col(width=1, children=[
+                    dbc.Checkbox(id="fs_umap_show_legend", label="凡例", value=True),
+                ]),
+            ]),
+            dbc.Row(className="mt-1 align-items-center", children=[
+                dbc.Col(width=2, children=[
                     dbc.Label("点サイズ", className="small mb-0"),
                     dcc.Slider(
                         id="fs_umap_marker_size",
@@ -1657,13 +1670,16 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                         tooltip={"placement": "bottom", "always_visible": False},
                     ),
                 ]),
-                dbc.Col(width=1, children=[
-                    dbc.Checkbox(id="fs_umap_show_labels", label="ラベル", value=False),
+                dbc.Col(width=2, children=[
+                    dbc.Label("ラベルサイズ", className="small mb-0"),
+                    dcc.Slider(
+                        id="fs_umap_label_size",
+                        min=6, max=24, step=1, value=14,
+                        marks={6: "6", 14: "14", 24: "24"},
+                        tooltip={"placement": "bottom", "always_visible": False},
+                    ),
                 ]),
-                dbc.Col(width=1, children=[
-                    dbc.Checkbox(id="fs_umap_show_legend", label="凡例", value=True),
-                ]),
-                dbc.Col(width=1, children=[
+                dbc.Col(width=2, children=[
                     dbc.Label("高さ", className="small mb-0"),
                     dcc.Slider(
                         id="fs_umap_height_slider",
@@ -1672,28 +1688,12 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                         tooltip={"placement": "bottom", "always_visible": False},
                     ),
                 ]),
-                dbc.Col(width=1, children=[
+                dbc.Col(width=2, children=[
                     dbc.Label("横幅", className="small mb-0"),
                     dcc.Slider(
                         id="fs_umap_width_slider",
                         min=40, max=100, step=5, value=95,
                         marks={40: "40", 70: "70", 95: "95"},
-                        tooltip={"placement": "bottom", "always_visible": False},
-                    ),
-                ]),
-            ]),
-            dbc.Row(className="mt-1", children=[
-                dbc.Col(width=4, children=[
-                    dcc.Dropdown(id="fs_umap_exclude_cluster",
-                                 options=cluster_opts, multi=True,
-                                 placeholder="除去するクラスタ"),
-                ]),
-                dbc.Col(width=3, children=[
-                    dbc.Label("ラベルサイズ", className="small mb-0"),
-                    dcc.Slider(
-                        id="fs_umap_label_size",
-                        min=6, max=24, step=1, value=14,
-                        marks={6: "6", 14: "14", 24: "24"},
                         tooltip={"placement": "bottom", "always_visible": False},
                     ),
                 ]),
@@ -1813,9 +1813,6 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                     dcc.Dropdown(id="fs_spatial_sample", options=sample_opts,
                                  placeholder="サンプル(空=全表示)", clearable=True),
                 ]),
-                dbc.Col(width=1, children=[
-                    dbc.Checkbox(id="fs_spatial_show_labels", label="番号", value=False),
-                ]),
                 dbc.Col(width=2, children=[
                     dcc.Dropdown(id="fs_spatial_highlight_cluster",
                                  options=cluster_opts, multi=True,
@@ -1827,6 +1824,11 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                                  placeholder="除去"),
                 ]),
                 dbc.Col(width=1, children=[
+                    dbc.Checkbox(id="fs_spatial_show_labels", label="番号", value=False),
+                ]),
+            ]),
+            dbc.Row(className="mt-1 align-items-center", children=[
+                dbc.Col(width=2, children=[
                     dbc.Label("マーカー", className="small mb-0"),
                     dcc.Slider(
                         id="fs_spatial_marker_size",
@@ -1835,7 +1837,16 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                         tooltip={"placement": "bottom", "always_visible": False},
                     ),
                 ]),
-                dbc.Col(width=1, children=[
+                dbc.Col(width=2, children=[
+                    dbc.Label("ラベル", className="small mb-0"),
+                    dcc.Slider(
+                        id="fs_spatial_label_size",
+                        min=6, max=24, step=1, value=10,
+                        marks={6: "6", 14: "14", 24: "24"},
+                        tooltip={"placement": "bottom", "always_visible": False},
+                    ),
+                ]),
+                dbc.Col(width=2, children=[
                     dbc.Label("高さ", className="small mb-0"),
                     dcc.Slider(
                         id="fs_spatial_height_slider",
@@ -1850,15 +1861,6 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                         id="fs_spatial_width_slider",
                         min=40, max=100, step=5, value=95,
                         marks={40: "40", 70: "70", 95: "95"},
-                        tooltip={"placement": "bottom", "always_visible": False},
-                    ),
-                ]),
-                dbc.Col(width=1, children=[
-                    dbc.Label("ラベル", className="small mb-0"),
-                    dcc.Slider(
-                        id="fs_spatial_label_size",
-                        min=6, max=24, step=1, value=10,
-                        marks={6: "6", 14: "14", 24: "24"},
                         tooltip={"placement": "bottom", "always_visible": False},
                     ),
                 ]),

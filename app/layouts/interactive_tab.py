@@ -135,6 +135,21 @@ def create_interactive_tab():
                                         multi=True, placeholder="クラスタを選択",
                                     ),
                                 ]),
+                                dbc.Col(width=3, children=[
+                                    dcc.Dropdown(
+                                        id="umap_exclude_cluster",
+                                        multi=True,
+                                        placeholder="除去するクラスタ",
+                                    ),
+                                ]),
+                                dbc.Col(width=1, children=[
+                                    dbc.Checkbox(id="umap_show_labels", label="ラベル", value=False),
+                                ]),
+                                dbc.Col(width=1, children=[
+                                    dbc.Checkbox(id="umap_show_legend", label="凡例", value=True),
+                                ]),
+                            ]),
+                            dbc.Row(className="mt-1", children=[
                                 dbc.Col(width=2, children=[
                                     dbc.Label("マーカーサイズ", className="small mb-0"),
                                     dcc.Slider(
@@ -144,22 +159,7 @@ def create_interactive_tab():
                                         tooltip={"placement": "bottom", "always_visible": False},
                                     ),
                                 ]),
-                                dbc.Col(width=1, children=[
-                                    dbc.Checkbox(id="umap_show_labels", label="ラベル", value=False),
-                                ]),
                                 dbc.Col(width=2, children=[
-                                    dbc.Checkbox(id="umap_show_legend", label="凡例", value=True),
-                                ]),
-                            ]),
-                            dbc.Row(className="mt-1", children=[
-                                dbc.Col(width=4, children=[
-                                    dcc.Dropdown(
-                                        id="umap_exclude_cluster",
-                                        multi=True,
-                                        placeholder="除去するクラスタ",
-                                    ),
-                                ]),
-                                dbc.Col(width=3, children=[
                                     dbc.Label("ラベルサイズ", className="small mb-0"),
                                     dcc.Slider(
                                         id="umap_label_size",
@@ -254,18 +254,6 @@ def create_interactive_tab():
                                                  placeholder="サンプル（空=全表示）",
                                                  clearable=True),
                                 ]),
-                                dbc.Col(width=1, children=[
-                                    dbc.Checkbox(id="spatial_show_labels", label="番号", value=False),
-                                ]),
-                                dbc.Col(width=2, children=[
-                                    dbc.Label("マーカーサイズ", className="small mb-0"),
-                                    dcc.Slider(
-                                        id="spatial_marker_size",
-                                        min=0, max=15, step=1, value=0,
-                                        marks={0: "自動", 4: "4", 8: "8", 15: "15"},
-                                        tooltip={"placement": "bottom", "always_visible": False},
-                                    ),
-                                ]),
                                 dbc.Col(width=3, children=[
                                     dcc.Dropdown(
                                         id="spatial_highlight_cluster",
@@ -280,9 +268,21 @@ def create_interactive_tab():
                                         placeholder="除去するクラスタ",
                                     ),
                                 ]),
+                                dbc.Col(width=1, children=[
+                                    dbc.Checkbox(id="spatial_show_labels", label="番号", value=False),
+                                ]),
+                                dbc.Col(width=2, children=[
+                                    dbc.Label("マーカーサイズ", className="small mb-0"),
+                                    dcc.Slider(
+                                        id="spatial_marker_size",
+                                        min=0, max=15, step=1, value=0,
+                                        marks={0: "自動", 4: "4", 8: "8", 15: "15"},
+                                        tooltip={"placement": "bottom", "always_visible": False},
+                                    ),
+                                ]),
                             ]),
                             dbc.Row(className="mt-1 align-items-center", children=[
-                                dbc.Col(width=3, children=[
+                                dbc.Col(width=2, children=[
                                     dbc.Label("ラベルサイズ", className="small mb-0"),
                                     dcc.Slider(
                                         id="spatial_label_size",
