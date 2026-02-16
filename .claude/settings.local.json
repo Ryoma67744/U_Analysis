@@ -35,7 +35,11 @@
       "Bash(\"C:/Program Files/R/R-4.4.2/bin/Rscript.exe\" --vanilla test_r_path.R \"C:/Users/Cciia/AppData/Local/Temp/msi_seurat_cache/test_dir\")",
       "Bash(\"C:/Program Files/R/R-4.4.2/bin/Rscript.exe\" --vanilla test_r_path.R \"C:\\\\Users\\\\Cciia\\\\AppData\\\\Local\\\\Temp\\\\msi_seurat_cache\\\\test_dir2\")",
       "Bash(\"C:/Program Files/R/R-4.4.2/bin/Rscript.exe\" --vanilla test_rds_load.R \"C:\\\\Users\\\\Cciia\\\\Biochem Dropbox\\\\木津亮馬\\\\UMAP_Claudecode\\\\DESI\\\\Data\\\\250621_Ohashi-Test\\\\260214-test\\\\Analysis_20260214_235204_20260214\\\\RDS_Files\\\\DESI_SeuratCombined_harmony.rds\" \"C:\\\\Users\\\\Cciia\\\\AppData\\\\Local\\\\Temp\\\\msi_seurat_cache\\\\e1edab93bfcbee97\")",
-      "Bash(git commit -m \"$\\(cat <<''EOF''\n2026-02-15 20:24 Seurat v5互換対応とR連携のエンコーディング修正\n\n- Seurat v5のGetAssayData廃止に対応（JoinLayers + LayerData）\n- キャッシュディレクトリを日本語パスを含まないtempdirに移動\n- subprocess出力のUTF-8デコード対応（CP932デコードエラー解消）\n- 不完全キャッシュの検出・クリーンアップ・再試行ロジック追加\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git commit -m \"$\\(cat <<''EOF''\n2026-02-15 20:24 Seurat v5互換対応とR連携のエンコーディング修正\n\n- Seurat v5のGetAssayData廃止に対応（JoinLayers + LayerData）\n- キャッシュディレクトリを日本語パスを含まないtempdirに移動\n- subprocess出力のUTF-8デコード対応（CP932デコードエラー解消）\n- 不完全キャッシュの検出・クリーンアップ・再試行ロジック追加\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\n2026-02-15 23:16 Spatial Mapping機能改修（色ずれ根本修正・凡例拡大・折りたたみコントロール・フルスクリーン対応・TIC背景）\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(find:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nUMAP・Spatial操作性向上（ハイライト独立化・マーカーサイズ・除去クラスタ・ラベル編集・位置永続保存） 2026-02-16 15:24\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\n2026-02-16 16:00 UMAP・Spatial Mappingのコントロール配置を整理（Dropdown/スライダー/チェックボックスの論理グループ化）\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   }
 }

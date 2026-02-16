@@ -2067,6 +2067,15 @@ if (length(seu_list) == 1) {
   # DEG & Heatmap
   cat("DEG計算中...\n")
   deg_markers <- FindAllMarkers(seu_single, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "wilcox")
+  # p_val_adj=0 補正（double精度の限界で丸められた0をCSV出力前に補正）
+  if (any(deg_markers$p_val_adj == 0, na.rm = TRUE)) {
+    min_nz <- suppressWarnings(min(deg_markers$p_val_adj[deg_markers$p_val_adj > 0], na.rm = TRUE))
+    if (is.finite(min_nz)) {
+      deg_markers$p_val_adj[deg_markers$p_val_adj == 0] <- min_nz * 0.1
+    } else {
+      deg_markers$p_val_adj[deg_markers$p_val_adj == 0] <- .Machine$double.xmin
+    }
+  }
   write.csv(deg_markers, file.path(od_pca, "analysis_deg_all_markers_single.csv"), row.names = FALSE)
   
   top5_markers <- deg_markers %>% dplyr::group_by(cluster) %>% dplyr::top_n(n = 5, wt = avg_log2FC)
@@ -2498,6 +2507,15 @@ dims_use_rpca <- get_safe_dims_for_rpca(seu_list_pca, max_dims = 30, reduction =
   
   # DEG & Heatmap (RPCA)
   deg_markers <- FindAllMarkers(seu_rpca, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "wilcox")
+  # p_val_adj=0 補正（double精度の限界で丸められた0をCSV出力前に補正）
+  if (any(deg_markers$p_val_adj == 0, na.rm = TRUE)) {
+    min_nz <- suppressWarnings(min(deg_markers$p_val_adj[deg_markers$p_val_adj > 0], na.rm = TRUE))
+    if (is.finite(min_nz)) {
+      deg_markers$p_val_adj[deg_markers$p_val_adj == 0] <- min_nz * 0.1
+    } else {
+      deg_markers$p_val_adj[deg_markers$p_val_adj == 0] <- .Machine$double.xmin
+    }
+  }
   top5_markers <- deg_markers %>% dplyr::group_by(cluster) %>% dplyr::top_n(n = 5, wt = avg_log2FC)
   top_genes <- unique(top5_markers$gene)
   

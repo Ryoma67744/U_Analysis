@@ -41,13 +41,25 @@ clusters <- as.character(Idents(obj))
 meta <- obj@meta.data
 cell_ids <- rownames(meta)
 
+# --- Sample identification ---
+# meta$sample を優先（複数切片のマージ時に orig.ident が単一値になるケースがある）
+# フォールバック: orig.ident
+sample_col <- as.character(meta$orig.ident)
+if ("sample" %in% colnames(meta)) {
+  sample_candidate <- as.character(meta$sample)
+  if (length(unique(sample_candidate)) > length(unique(sample_col))) {
+    sample_col <- sample_candidate
+    cat("Using meta$sample for Sample column (", length(unique(sample_col)), " samples)\n")
+  }
+}
+
 # --- Build plot_data ---
 plot_data <- data.frame(
   CellID   = cell_ids,
   UMAP_1   = umap_coords[, 1],
   UMAP_2   = umap_coords[, 2],
   Cluster  = clusters,
-  Sample   = as.character(meta$orig.ident),
+  Sample   = sample_col,
   stringsAsFactors = FALSE
 )
 
@@ -123,7 +135,7 @@ tryCatch({
 })
 
 # --- Metadata JSON ---
-samples <- unique(as.character(meta$orig.ident))
+samples <- unique(sample_col)
 meta_info <- list(
   n_cells    = nrow(plot_data),
   n_clusters = length(unique(clusters)),

@@ -6,6 +6,9 @@
 from dash import html, dcc, dash_table
 import dash_bootstrap_components as dbc
 
+from app.layouts.tooltips import help_badge
+
+
 
 def create_interactive_tab():
     return html.Div(style={"marginTop": "15px"}, children=[
@@ -107,7 +110,7 @@ def create_interactive_tab():
                             ]),
                             dbc.Row(className="mt-2", children=[
                                 dbc.Col(width=2, children=[
-                                    dbc.Label("表示"),
+                                    dbc.Label(["表示", help_badge("umap_display_mode")]),
                                     dbc.RadioItems(
                                         id="umap_display_mode",
                                         options=[
@@ -118,7 +121,7 @@ def create_interactive_tab():
                                     ),
                                 ]),
                                 dbc.Col(width=2, children=[
-                                    dbc.Label("色分け"),
+                                    dbc.Label(["色分け", help_badge("umap_color_by")]),
                                     dbc.RadioItems(
                                         id="umap_color_by",
                                         options=[
@@ -129,13 +132,14 @@ def create_interactive_tab():
                                     ),
                                 ]),
                                 dbc.Col(width=3, children=[
-                                    dbc.Label("ハイライト"),
+                                    dbc.Label(["ハイライト", help_badge("umap_highlight_cluster")]),
                                     dcc.Dropdown(
                                         id="umap_highlight_cluster",
                                         multi=True, placeholder="クラスタを選択",
                                     ),
                                 ]),
                                 dbc.Col(width=3, children=[
+                                    dbc.Label(["除去", help_badge("umap_exclude_cluster")]),
                                     dcc.Dropdown(
                                         id="umap_exclude_cluster",
                                         multi=True,
@@ -173,36 +177,25 @@ def create_interactive_tab():
                                                size="sm", color="secondary", className="mb-1"),
                                 ]),
                             ]),
-                            html.Div(
-                                style={"display": "flex", "gap": "10px"},
-                                children=[
-                                    html.Div(style={"flex": "1"}, children=[
-                                        html.Div(id="umap_integrated_wrapper", children=[
-                                            dcc.Loading(
-                                                dcc.Graph(id="interactive_umap_plot",
-                                                          style={"height": "450px"},
-                                                          config={
-                                                              "scrollZoom": True,
-                                                              "edits": {"annotationPosition": True},
-                                                              "toImageButtonOptions": {
-                                                                  "format": "png",
-                                                                  "filename": "UMAP_plot",
-                                                                  "scale": 3,
-                                                              },
-                                                          }),
-                                            ),
-                                        ]),
-                                        # サンプル別 UMAP 表示コンテナ
-                                        html.Div(id="umap_per_sample_container"),
-                                    ]),
-                                    html.Div(
-                                        id="umap_cluster_legend_panel",
-                                        style={"width": "140px", "flexShrink": "0",
-                                               "borderLeft": "1px solid #dee2e6",
-                                               "paddingLeft": "8px"},
+                            html.Div(children=[
+                                html.Div(id="umap_integrated_wrapper", children=[
+                                    dcc.Loading(
+                                        dcc.Graph(id="interactive_umap_plot",
+                                                  style={"height": "450px"},
+                                                  config={
+                                                      "scrollZoom": True,
+                                                      "edits": {"annotationPosition": True},
+                                                      "toImageButtonOptions": {
+                                                          "format": "png",
+                                                          "filename": "UMAP_plot",
+                                                          "scale": 3,
+                                                      },
+                                                  }),
                                     ),
-                                ],
-                            ),
+                                ]),
+                                # サンプル別 UMAP 表示コンテナ
+                                html.Div(id="umap_per_sample_container"),
+                            ]),
                         ]),
                     ]),
 
@@ -250,11 +243,13 @@ def create_interactive_tab():
                             ]),
                             dbc.Row(className="mt-2 align-items-center", children=[
                                 dbc.Col(width=2, children=[
+                                    dbc.Label(["サンプル", help_badge("interactive_sample")]),
                                     dcc.Dropdown(id="interactive_sample",
                                                  placeholder="サンプル（空=全表示）",
                                                  clearable=True),
                                 ]),
                                 dbc.Col(width=3, children=[
+                                    dbc.Label(["ハイライト", help_badge("spatial_highlight_cluster")]),
                                     dcc.Dropdown(
                                         id="spatial_highlight_cluster",
                                         multi=True,
@@ -262,6 +257,7 @@ def create_interactive_tab():
                                     ),
                                 ]),
                                 dbc.Col(width=3, children=[
+                                    dbc.Label(["除去", help_badge("spatial_exclude_cluster")]),
                                     dcc.Dropdown(
                                         id="spatial_exclude_cluster",
                                         multi=True,
@@ -272,7 +268,7 @@ def create_interactive_tab():
                                     dbc.Checkbox(id="spatial_show_labels", label="番号", value=False),
                                 ]),
                                 dbc.Col(width=2, children=[
-                                    dbc.Label("マーカーサイズ", className="small mb-0"),
+                                    dbc.Label(["マーカーサイズ", help_badge("spatial_marker_size")], className="small mb-0"),
                                     dcc.Slider(
                                         id="spatial_marker_size",
                                         min=0, max=15, step=1, value=0,
@@ -291,23 +287,13 @@ def create_interactive_tab():
                                         tooltip={"placement": "bottom", "always_visible": False},
                                     ),
                                 ]),
+                                dbc.Col(width=2, className="d-flex align-items-end", children=[
+                                    dbc.Button("ラベル位置保存", id="save_spatial_label_pos_btn",
+                                               size="sm", color="secondary", className="mb-1"),
+                                ]),
                             ]),
                             html.Div(id="spatial_controls_container"),
-                            html.Div(
-                                style={"display": "flex", "gap": "10px"},
-                                children=[
-                                    html.Div(
-                                        style={"flex": "1"},
-                                        children=[dcc.Loading(html.Div(id="spatial_plots_container"))],
-                                    ),
-                                    html.Div(
-                                        id="spatial_cluster_legend_panel",
-                                        style={"width": "140px", "flexShrink": "0",
-                                               "borderLeft": "1px solid #dee2e6",
-                                               "paddingLeft": "8px"},
-                                    ),
-                                ],
-                            ),
+                            dcc.Loading(html.Div(id="spatial_plots_container")),
                         ]),
                     ]),
                 ]),
@@ -414,12 +400,12 @@ def create_interactive_tab():
                                                 ),
                                             ]),
                                             dbc.Col(width=2, children=[
-                                                dbc.Label("FC 閾値", className="small mb-0"),
+                                                dbc.Label(["FC 閾値", help_badge("volcano_fc_threshold")], className="small mb-0"),
                                                 dbc.Input(id="volcano_fc_threshold", type="number",
                                                           value=0.5, step=0.1, size="sm"),
                                             ]),
                                             dbc.Col(width=2, children=[
-                                                dbc.Label("-log10(p) 閾値", className="small mb-0"),
+                                                dbc.Label(["-log10(p) 閾値", help_badge("volcano_p_threshold")], className="small mb-0"),
                                                 dbc.Input(id="volcano_p_threshold", type="number",
                                                           value=1.3, step=0.1, size="sm"),
                                             ]),
@@ -462,7 +448,7 @@ def create_interactive_tab():
                                                           value=5, min=1, max=20, step=1, size="sm"),
                                             ]),
                                             dbc.Col(width=3, children=[
-                                                dbc.Label("スケール", className="small mb-0"),
+                                                dbc.Label(["スケール", help_badge("heatmap_scale")], className="small mb-0"),
                                                 dbc.RadioItems(
                                                     id="heatmap_scale",
                                                     options=[
@@ -475,7 +461,7 @@ def create_interactive_tab():
                                             dbc.Col(width=3, children=[
                                                 dbc.Switch(
                                                     id="heatmap_annotation_switch",
-                                                    label="化合物名アノテーション",
+                                                    label=html.Span(["化合物名アノテーション", help_badge("heatmap_annotation_switch")]),
                                                     value=True,
                                                 ),
                                             ]),

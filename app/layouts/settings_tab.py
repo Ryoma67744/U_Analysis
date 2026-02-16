@@ -10,6 +10,8 @@ import dash_bootstrap_components as dbc
 
 from app.config import DEFAULT_DESI_DATA_FOLDER, APP_BASE_DIR
 from app.services.session_manager import load_last_settings
+from app.layouts.tooltips import help_badge
+
 
 
 def create_settings_tab():
@@ -51,7 +53,7 @@ def create_settings_tab():
                             style={"display": "none", "marginTop": "15px"},
                             children=[
                                 html.Div(className="param-group", children=[
-                                    html.H5("イオンモード"),
+                                    html.H5(["イオンモード", help_badge("ion_mode")]),
                                     dbc.RadioItems(
                                         id="ion_mode",
                                         options=[
@@ -60,11 +62,11 @@ def create_settings_tab():
                                         ],
                                         value=ls.get("ion_mode", "Positive"), inline=True,
                                     ),
-                                    html.H5("m/z許容誤差", style={"marginTop": "10px"}),
+                                    html.H5(["m/z許容誤差", help_badge("tolerance_mz")], style={"marginTop": "10px"}),
                                     dbc.Input(id="tolerance_mz", type="number",
                                               value=ls.get("tolerance_mz", 0.01), min=0, step=0.001,
                                               style={"width": "50%"}),
-                                    html.H5("Adductフィルター", style={"marginTop": "10px"}),
+                                    html.H5(["Adductフィルター", help_badge("adduct_filter")], style={"marginTop": "10px"}),
                                     dbc.Checklist(
                                         id="adduct_filter",
                                         options=[
@@ -93,12 +95,12 @@ def create_settings_tab():
                         children=[
                             dbc.Row([
                                 dbc.Col(width=6, children=[
-                                    dbc.Label("p値閾値"),
+                                    dbc.Label(["p値閾値", help_badge("p_thresh")]),
                                     dbc.Input(id="p_thresh", type="number",
                                               value=ls.get("p_thresh", 0.05), min=0, max=1, step=0.01),
                                 ]),
                                 dbc.Col(width=6, children=[
-                                    dbc.Label("log2FC閾値"),
+                                    dbc.Label(["log2FC閾値", help_badge("logfc_thresh")]),
                                     dbc.Input(id="logfc_thresh", type="number",
                                               value=ls.get("logfc_thresh", 0.10), min=0, step=0.05),
                                 ]),
@@ -112,7 +114,7 @@ def create_settings_tab():
                     dbc.Col(width=12, children=[
                         html.Div(className="param-group", children=[
                             html.H5("RDSファイル"),
-                            dbc.Checkbox(id="resume_rds", label="途中再開 (RDSから)",
+                            dbc.Checkbox(id="resume_rds", label=html.Span(["途中再開 (RDSから)", help_badge("resume_rds")]),
                                         value=ls.get("resume_rds", False)),
                             html.Div(
                                 id="resume_rds_panel",
@@ -206,7 +208,7 @@ def create_settings_tab():
                 dbc.Row([
                     dbc.Col(width=6, children=[
                         html.Div(className="param-group", children=[
-                            html.H5("フィルタモード"),
+                            html.H5(["フィルタモード", help_badge("filter_mode")]),
                             dbc.RadioItems(
                                 id="filter_mode",
                                 options=[
@@ -260,7 +262,7 @@ def create_settings_tab():
         html.H5(["📁 出力設定"]),
         dbc.Row([
             dbc.Col(width=4, children=[
-                html.H6("出力フォルダー"),
+                html.H6(["出力フォルダー", help_badge("output_subfolder")]),
                 dbc.Input(
                     id="output_subfolder",
                     value=datetime.now().strftime("Analysis_%Y%m%d_%H%M%S"),

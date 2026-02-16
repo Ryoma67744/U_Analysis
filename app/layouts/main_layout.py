@@ -14,6 +14,10 @@ from app.layouts.interactive_tab import create_interactive_tab
 from app.layouts.file_browser_modal import create_file_browser_modal
 from app.layouts.landing_page import create_landing_page
 from app.layouts.action_page import create_action_page
+from app.layouts.tooltips import (
+    get_sidebar_tooltips, get_settings_tooltips,
+    get_interactive_tooltips, get_results_tooltips,
+)
 
 
 def create_main_layout():
@@ -155,6 +159,12 @@ def create_main_layout():
                                 "zIndex": 9999,
                             },
                         ),
+
+                        # ツールチップ（タブ外に配置して常にDOM上に存在させる）
+                        *get_sidebar_tooltips(),
+                        *get_settings_tooltips(),
+                        *get_interactive_tooltips(),
+                        *get_results_tooltips(),
                     ],
                 ),
             ],

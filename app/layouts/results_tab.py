@@ -6,6 +6,9 @@
 from dash import html, dcc
 import dash_bootstrap_components as dbc
 
+from app.layouts.tooltips import help_badge
+
+
 
 def create_results_tab():
     return html.Div(style={"marginTop": "15px"}, children=[
@@ -40,7 +43,7 @@ def create_results_tab():
             # フォルダ選択
             dbc.Row(className="mb-3", children=[
                 dbc.Col(width=4, children=[
-                    dbc.Label("結果フォルダ"),
+                    dbc.Label(["結果フォルダ", help_badge("result_folder_selector")]),
                     dcc.Dropdown(id="result_folder_selector", placeholder="結果フォルダを選択"),
                 ]),
                 dbc.Col(width=2, children=[
@@ -53,7 +56,7 @@ def create_results_tab():
                     dcc.Dropdown(id="subfolder_selector", placeholder="サブフォルダ"),
                 ]),
                 dbc.Col(width=3, children=[
-                    dbc.Label("カテゴリ"),
+                    dbc.Label(["カテゴリ", help_badge("image_category")]),
                     dcc.Dropdown(
                         id="image_category",
                         options=[

@@ -109,33 +109,6 @@ def _get_cluster_colorscale(clusters):
     return cluster_to_idx, colorscale
 
 
-def _build_cluster_legend(color_map):
-    """クラスタ番号 + カラー凡例パネルを生成する共通ヘルパー"""
-    if not color_map:
-        return html.Div()
-    items = []
-    for cluster_id, hex_color in color_map.items():
-        items.append(
-            html.Div(
-                style={"display": "flex", "alignItems": "center", "gap": "6px",
-                       "marginBottom": "2px"},
-                children=[
-                    html.Span(style={
-                        "display": "inline-block", "width": "14px", "height": "14px",
-                        "backgroundColor": hex_color,
-                        "border": "1px solid #ccc", "flexShrink": "0",
-                    }),
-                    html.Span(f"{cluster_id}",
-                              style={"fontSize": "0.8rem", "whiteSpace": "nowrap"}),
-                ],
-            )
-        )
-    return html.Div(
-        style={"maxHeight": "400px", "overflowY": "auto", "padding": "8px"},
-        children=items,
-    )
-
-
 # ---------------------------------------------------------------------------
 # 統合手法検出ヘルパー
 # ---------------------------------------------------------------------------
@@ -539,12 +512,14 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
         cat_color_map = _get_cluster_color_map(categories)
         for cat in categories:
             mask = df[color_col] == cat
+            rank = _cluster_sort_key(cat)[0] if str(cat).isdigit() else 1000
             fig.add_trace(go.Scattergl(
                 x=df.loc[mask, "UMAP_1"],
                 y=df.loc[mask, "UMAP_2"],
                 mode="markers",
                 marker=dict(size=marker_size, color=cat_color_map.get(str(cat), "#999999")),
-                name=str(cat),
+                name=f"Cluster {cat}",
+                legendrank=rank,
                 text=df.loc[mask, "CellID"],
                 hovertemplate=f"{color_col}: {cat}<br>" + "%{text}<extra></extra>",
             ))
@@ -568,6 +543,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
     layout_opts = dict(
         dragmode="select",
         showlegend=bool(show_legend),
+        legend=dict(itemsizing="constant", font=dict(size=12), tracegroupgap=2),
         margin=dict(l=40, r=10, t=40 if title else 30, b=40),
         xaxis_title="UMAP_1", yaxis_title="UMAP_2",
         template="plotly_white",
@@ -773,34 +749,6 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
         style={"display": "flex", "flexWrap": "wrap", "gap": "15px", "marginTop": "10px"},
         children=graphs,
     )
-
-
-# ---------------------------------------------------------------------------
-# クラスタ凡例パネル（UMAP / Spatial 共通）
-# ---------------------------------------------------------------------------
-
-@callback(
-    Output("umap_cluster_legend_panel", "children"),
-    Input("seurat_rds_path_store", "data"),
-)
-def update_umap_cluster_legend(rds_path):
-    df = _interactive_data.get("plot_data")
-    if df is None:
-        return ""
-    color_map = _get_cluster_color_map(df["Cluster"])
-    return _build_cluster_legend(color_map)
-
-
-@callback(
-    Output("spatial_cluster_legend_panel", "children"),
-    Input("seurat_rds_path_store", "data"),
-)
-def update_spatial_cluster_legend(rds_path):
-    df = _interactive_data.get("plot_data")
-    if df is None:
-        return ""
-    color_map = _get_cluster_color_map(df["Cluster"])
-    return _build_cluster_legend(color_map)
 
 
 # ---------------------------------------------------------------------------
@@ -1697,18 +1645,12 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                         tooltip={"placement": "bottom", "always_visible": False},
                     ),
                 ]),
+                dbc.Col(width=2, className="d-flex align-items-end", children=[
+                    dbc.Button("ラベル位置保存", id="fs_save_label_pos_btn",
+                               size="sm", color="secondary", className="mb-1"),
+                ]),
             ]),
-            html.Div(
-                style={"display": "flex", "gap": "10px"},
-                children=[
-                    html.Div(id="fs_umap_graph_container", style={"flex": "1"},
-                             children=[init_graph]),
-                    html.Div(id="fs_umap_legend",
-                             style={"width": "140px", "flexShrink": "0",
-                                    "borderLeft": "1px solid #dee2e6", "paddingLeft": "8px"},
-                             children=_build_cluster_legend(color_map)),
-                ],
-            ),
+            html.Div(id="fs_umap_graph_container", children=[init_graph]),
         ])
         return True, "UMAP", body
 
@@ -1864,23 +1806,17 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                         tooltip={"placement": "bottom", "always_visible": False},
                     ),
                 ]),
+                dbc.Col(width=2, className="d-flex align-items-end", children=[
+                    dbc.Button("ラベル位置保存", id="fs_save_spatial_label_pos_btn",
+                               size="sm", color="secondary", className="mb-1"),
+                ]),
             ]),
             dbc.Accordion(
                 fs_accordion_items, start_collapsed=True,
                 flush=True, always_open=True,
                 style={"marginBottom": "8px"},
             ),
-            html.Div(
-                style={"display": "flex", "gap": "10px"},
-                children=[
-                    html.Div(id="fs_spatial_graph_container", style={"flex": "1"},
-                             children=[init_container]),
-                    html.Div(id="fs_spatial_legend",
-                             style={"width": "140px", "flexShrink": "0",
-                                    "borderLeft": "1px solid #dee2e6", "paddingLeft": "8px"},
-                             children=_build_cluster_legend(color_map)),
-                ],
-            ),
+            html.Div(id="fs_spatial_graph_container", children=[init_container]),
         ])
         return True, "Spatial Mapping", body
 
@@ -2077,13 +2013,18 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
 
 @callback(
     Output("label_pos_save_status", "data"),
-    Input("save_label_pos_btn", "n_clicks"),
+    [Input("save_label_pos_btn", "n_clicks"),
+     Input("save_spatial_label_pos_btn", "n_clicks"),
+     Input("fs_save_label_pos_btn", "n_clicks"),
+     Input("fs_save_spatial_label_pos_btn", "n_clicks")],
     [State("interactive_umap_plot", "relayoutData"),
      State({"type": "umap_per_sample_graph", "index": ALL}, "relayoutData"),
-     State({"type": "spatial_graph", "index": ALL}, "relayoutData")],
+     State({"type": "spatial_graph", "index": ALL}, "relayoutData"),
+     State({"type": "fs_spatial_graph", "index": ALL}, "relayoutData")],
     prevent_initial_call=True,
 )
-def save_label_positions(n_clicks, umap_relayout, umap_ps_relayouts, spatial_relayouts):
+def save_label_positions(n1, n2, n3, n4, umap_relayout, umap_ps_relayouts,
+                         spatial_relayouts, fs_spatial_relayouts):
     """全グラフのアノテーション位置をJSONファイルに永続保存する"""
     path = _get_label_positions_path()
     if not path:
@@ -2114,7 +2055,7 @@ def save_label_positions(n_clicks, umap_relayout, umap_ps_relayouts, spatial_rel
     # 2) サンプル別UMAP
     if umap_ps_relayouts:
         umap_ps_saved = existing.get("umap_per_sample", {})
-        inputs_list = ctx.inputs_list[1]  # 2番目のState
+        inputs_list = ctx.inputs_list[5]  # State index 5 (Input 4つ + State[0]=umap, [1]=per_sample)
         for i, rd in enumerate(umap_ps_relayouts):
             if i < len(inputs_list):
                 sample_name = inputs_list[i]["id"]["index"]
@@ -2134,11 +2075,14 @@ def save_label_positions(n_clicks, umap_relayout, umap_ps_relayouts, spatial_rel
                     umap_ps_saved[sample_name] = sample_saved
         existing["umap_per_sample"] = umap_ps_saved
 
-    # 3) Spatial
-    if spatial_relayouts:
+    # 3) Spatial (通常 + FS)
+    all_spatial_relayouts = (spatial_relayouts or []) + (fs_spatial_relayouts or [])
+    spatial_inputs = (ctx.inputs_list[6] if len(ctx.inputs_list) > 6 else []) + \
+                     (ctx.inputs_list[7] if len(ctx.inputs_list) > 7 else [])
+    if all_spatial_relayouts:
         spatial_saved = existing.get("spatial", {})
-        inputs_list = ctx.inputs_list[2]  # 3番目のState
-        for i, rd in enumerate(spatial_relayouts):
+        inputs_list = spatial_inputs
+        for i, rd in enumerate(all_spatial_relayouts):
             if i < len(inputs_list):
                 sample_name = inputs_list[i]["id"]["index"]
                 sp_pos = _extract_annotation_positions(rd)
