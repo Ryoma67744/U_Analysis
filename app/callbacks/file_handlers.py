@@ -18,7 +18,7 @@ from app.config import (
 from app.layouts.file_browser_modal import (
     get_available_drives, list_directory, build_breadcrumb_parts,
 )
-from app.services.data_manager import list_msi_files
+from app.services.data_manager import list_msi_files, list_tims_files
 from app.services.session_manager import save_last_settings
 
 
@@ -97,13 +97,20 @@ def toggle_resume_panel(resume):
 
 @callback(
     Output("sample_selector", "children"),
-    Input("data_folder", "value"),
+    [Input("data_folder", "value"),
+     Input("analysis_method", "value"),
+     Input("analysis_method_tims", "value")],
 )
-def update_sample_selector(data_folder):
+def update_sample_selector(data_folder, desi_method, tims_method):
     if not data_folder or not Path(data_folder).is_dir():
         return html.Div("データフォルダを指定してください", className="text-muted")
 
-    samples = list_msi_files(data_folder)
+    active = desi_method or tims_method or "desi_v8"
+    if active in ("tims_v8", "tims_cluster_filter"):
+        samples = list_tims_files(data_folder)
+    else:
+        samples = list_msi_files(data_folder)
+
     if not samples:
         return html.Div("対応ファイルが見つかりません", className="text-warning")
 
@@ -116,13 +123,20 @@ def update_sample_selector(data_folder):
 
 @callback(
     Output("sample_selector_reanalysis", "children"),
-    Input("reanalysis_data_folder", "value"),
+    [Input("reanalysis_data_folder", "value"),
+     Input("analysis_method", "value"),
+     Input("analysis_method_tims", "value")],
 )
-def update_reanalysis_sample_selector(data_folder):
+def update_reanalysis_sample_selector(data_folder, desi_method, tims_method):
     if not data_folder or not Path(data_folder).is_dir():
         return html.Div("データフォルダを指定してください", className="text-muted")
 
-    samples = list_msi_files(data_folder)
+    active = desi_method or tims_method or "desi_v8"
+    if active in ("tims_v8", "tims_cluster_filter"):
+        samples = list_tims_files(data_folder)
+    else:
+        samples = list_msi_files(data_folder)
+
     if not samples:
         return html.Div("対応ファイルが見つかりません", className="text-warning")
 
@@ -285,23 +299,26 @@ def apply_desi_defaults(n, desi_folder, mrm_file, desi_output):
 
 @callback(
     [Output("data_folder", "value", allow_duplicate=True),
+     Output("mrm_path", "value", allow_duplicate=True),
      Output("output_dir", "value", allow_duplicate=True)],
     Input("apply_tims_defaults", "n_clicks"),
     [State("default_tims_data_folder", "value"),
+     State("default_annotation_csv", "value"),
      State("default_tims_output_dir", "value")],
     prevent_initial_call=True,
 )
-def apply_tims_defaults(n, tims_folder, tims_output):
+def apply_tims_defaults(n, tims_folder, annotation_csv, tims_output):
     if not n:
-        return no_update, no_update
+        return no_update, no_update, no_update
     try:
         save_last_settings({
             "default_tims_data_folder": tims_folder,
+            "default_annotation_csv": annotation_csv,
             "default_tims_output_dir": tims_output,
         })
     except Exception:
         pass
-    return tims_folder or no_update, tims_output or no_update
+    return tims_folder or no_update, annotation_csv or no_update, tims_output or no_update
 
 
 @callback(

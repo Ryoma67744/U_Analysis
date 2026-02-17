@@ -9,6 +9,8 @@ __pycache__/
 
 # 一時ファイル
 *.tmp.*
+app_output.log
+nul
 
 # Rセッション
 Other/sessions/

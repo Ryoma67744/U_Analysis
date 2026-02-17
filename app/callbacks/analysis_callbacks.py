@@ -167,11 +167,15 @@ def run_analysis(
             else:
                 template = tims_v8_script or str(TIMS_V8_TEMPLATE_PATH)
 
-            # サンプル名は data_folder 内の .txt ファイル名（UI上の選択状態は
+            # サンプル名は data_folder 内のファイル名（UI上の選択状態は
             # selected_samples チェックリストから取得すべきだが、
             # Dash の動的コンポーネントの制約により、ここでは data_folder 全体を対象にする）
-            from app.services.data_manager import list_msi_files
-            sample_names = list_msi_files(data_folder)
+            if analysis_type == "tims_v8":
+                from app.services.data_manager import list_tims_files
+                sample_names = list_tims_files(data_folder)
+            else:
+                from app.services.data_manager import list_msi_files
+                sample_names = list_msi_files(data_folder)
 
             params = {
                 "template_path": template,
@@ -207,8 +211,12 @@ def run_analysis(
             if target_clusters:
                 clusters = [int(c.strip()) for c in target_clusters.split(",") if c.strip().isdigit()]
 
-            from app.services.data_manager import list_msi_files
-            sample_names = list_msi_files(reanalysis_data_folder)
+            if analysis_type == "tims_cluster_filter":
+                from app.services.data_manager import list_tims_files
+                sample_names = list_tims_files(reanalysis_data_folder)
+            else:
+                from app.services.data_manager import list_msi_files
+                sample_names = list_msi_files(reanalysis_data_folder)
 
             params = {
                 "template_path": template,

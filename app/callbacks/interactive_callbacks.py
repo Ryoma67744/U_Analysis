@@ -157,8 +157,11 @@ def _build_msi_samples_ui(folder_path: str):
     if not folder_path or not Path(folder_path).is_dir():
         return html.Div("MSIフォルダが見つかりません", className="text-muted")
 
-    from app.services.data_manager import list_msi_files
+    from app.services.data_manager import list_msi_files, list_tims_files
     samples = list_msi_files(folder_path)
+    # .txtが見つからない場合はTIMS形式(.parquet等)を試行
+    if not samples:
+        samples = list_tims_files(folder_path)
     if not samples:
         return html.Div("MSIファイルが見つかりません", className="text-warning")
 
