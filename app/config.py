@@ -93,6 +93,42 @@ DESI_COLORS_50 = [
 ]
 HIGHLIGHT_GRAY = "#D9D9D9"
 
+# クラスタ色プリセットパレット（科学論文向け30色、白なし）
+# NPG, JCO, ColorBrewer Dark2/Set1/Set2 から選定
+# インタラクティブ解析のデフォルト配色としても使用
+CLUSTER_PRESET_COLORS = [
+    "#E64B35",  # NPG赤
+    "#4DBBD5",  # NPGシアン
+    "#00A087",  # NPGティール
+    "#3C5488",  # NPGネイビー
+    "#F39B7F",  # NPGサーモン
+    "#8491B4",  # NPGスレートブルー
+    "#91D1C2",  # NPGミント
+    "#DC9600",  # NPGゴールド
+    "#7E6148",  # NPGブラウン
+    "#B09C85",  # NPGトープ
+    "#0073C2",  # JCOブルー
+    "#EFC000",  # JCOイエロー
+    "#CD534C",  # JCOレッド
+    "#7AA6DC",  # JCOライトブルー
+    "#003C67",  # JCOダークブルー
+    "#8F7700",  # JCOオリーブ
+    "#A73030",  # JCOダークレッド
+    "#4A6990",  # JCOスチールブルー
+    "#E7298A",  # Dark2ピンク
+    "#66A61E",  # Dark2グリーン
+    "#E6AB02",  # Dark2アンバー
+    "#A6761D",  # Dark2シエナ
+    "#1B9E77",  # Dark2ティールグリーン
+    "#D95F02",  # Dark2オレンジ
+    "#7570B3",  # Dark2パープル
+    "#984EA3",  # Set1パープル
+    "#66C2A5",  # Set2ティール
+    "#FC8D62",  # Set2コーラル
+    "#377EB8",  # Set1ブルー
+    "#4DAF4A",  # Set1グリーン
+]
+
 # アプリケーション設定
 APP_VERSION = "2.0.0"
 APP_PORT = 3838

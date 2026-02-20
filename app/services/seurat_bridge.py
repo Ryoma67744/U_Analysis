@@ -24,10 +24,13 @@ class SeuratBridge:
         self._cache_base = SEURAT_CACHE_DIR
 
     def _get_cache_key(self, rds_path: str) -> str:
-        """RDSファイルパス + 更新日時からキャッシュキーを生成"""
+        """RDSファイルパス + 更新日時 + Rスクリプト更新日時からキャッシュキーを生成"""
         p = Path(rds_path)
         mtime = p.stat().st_mtime if p.exists() else 0
-        raw = f"{rds_path}|{mtime}"
+        # Rスクリプト更新時にもキャッシュを再生成するため、スクリプトのmtimeも含める
+        r_script = R_HELPERS_DIR / "extract_seurat_data.R"
+        r_mtime = r_script.stat().st_mtime if r_script.exists() else 0
+        raw = f"{rds_path}|{mtime}|{r_mtime}"
         return hashlib.md5(raw.encode()).hexdigest()[:16]
 
     def _get_cache_dir(self, rds_path: str) -> Path:

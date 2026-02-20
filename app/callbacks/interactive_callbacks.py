@@ -3,6 +3,7 @@
 # インタラクティブ解析 コールバック
 # =============================================================================
 
+import base64
 import io
 import json
 import re
@@ -15,8 +16,9 @@ import plotly.graph_objects as go
 import plotly.io as pio
 import dash_bootstrap_components as dbc
 from dash import Input, Output, State, callback, ctx, no_update, html, dcc, dash_table, ALL
+from dash.exceptions import PreventUpdate
 
-from app.config import DESI_COLORS_50, HIGHLIGHT_GRAY
+from app.config import CLUSTER_PRESET_COLORS, DESI_COLORS_50, HIGHLIGHT_GRAY
 from app.services.seurat_bridge import SeuratBridge
 
 # Seuratブリッジのシングルトン
@@ -39,11 +41,15 @@ def _cluster_sort_key(x):
     return (int(s) if s.isdigit() else float("inf"), s)
 
 
-def _get_cluster_color_map(clusters):
-    """クラスタ値のリストから、ソート済みの色マップ dict を返す"""
+def _get_cluster_color_map(clusters, custom_colors=None):
+    """クラスタ値のリストから、ソート済みの色マップ dict を返す。
+    custom_colors が指定された場合、デフォルト色をカスタム色で上書きする。"""
     str_cls = list(set(str(c) for c in clusters))
     str_cls.sort(key=_cluster_sort_key)
-    return {cl: DESI_COLORS_50[i % len(DESI_COLORS_50)] for i, cl in enumerate(str_cls)}
+    cmap = {cl: CLUSTER_PRESET_COLORS[i % len(CLUSTER_PRESET_COLORS)] for i, cl in enumerate(str_cls)}
+    if custom_colors:
+        cmap.update(custom_colors)
+    return cmap
 
 
 def _get_label_positions_path():
@@ -82,7 +88,7 @@ def _extract_annotation_positions(relayout_data):
     return positions
 
 
-def _get_cluster_colorscale(clusters):
+def _get_cluster_colorscale(clusters, custom_colors=None):
     """Scattergl用: 数値インデックスベースのcolorscale情報を返す。
 
     HEX文字列配列をmarker.colorに渡すとWebGL内部処理で色ミスマッチが
@@ -102,7 +108,9 @@ def _get_cluster_colorscale(clusters):
     for i, cl in enumerate(str_cls):
         low = i / n
         high = (i + 1) / n
-        color = DESI_COLORS_50[i % len(DESI_COLORS_50)]
+        color = CLUSTER_PRESET_COLORS[i % len(CLUSTER_PRESET_COLORS)]
+        if custom_colors and cl in custom_colors:
+            color = custom_colors[cl]
         colorscale.append([low, color])
         colorscale.append([high, color])
 
@@ -128,26 +136,53 @@ def _detect_integration_methods(folder_path: str) -> dict:
     rds_dir = base / "RDS_Files"
     search_dirs = [rds_dir, base] if rds_dir.is_dir() else [base]
 
+    # data.frame 型 RDS を除外するプレフィックス
+    _EXCLUDE_PREFIXES = ("umap_", "deg_", "plotdata_", "feature_")
+
+    # 第1段階: TIMS ver13 の Step2/Step3 ファイルを優先マッチ
     for search_dir in search_dirs:
         for rds_file in search_dir.glob("*.rds"):
             name_lower = rds_file.name.lower()
-            if "harmony" in name_lower and "Harmony" not in rds_map:
+            if "step2" in name_lower and "harmony" in name_lower:
                 rds_map["Harmony"] = str(rds_file)
-            elif "rpca" in name_lower and "RPCA" not in rds_map:
+            elif "step3" in name_lower and "rpca" in name_lower:
                 rds_map["RPCA"] = str(rds_file)
             elif "single" in name_lower and "PCA" not in rds_map:
                 rds_map["PCA"] = str(rds_file)
 
-    # rglob でサブフォルダも検索（上記で見つからない場合のフォールバック）
-    if not rds_map:
-        for rds_file in base.rglob("*.rds"):
+    # 第2段階: 第1段階で見つからなかったキーのみ、従来マッチ（data.frame除外）
+    for search_dir in search_dirs:
+        for rds_file in search_dir.glob("*.rds"):
             name_lower = rds_file.name.lower()
+            if any(name_lower.startswith(p) for p in _EXCLUDE_PREFIXES):
+                continue
             if "harmony" in name_lower and "Harmony" not in rds_map:
                 rds_map["Harmony"] = str(rds_file)
             elif "rpca" in name_lower and "RPCA" not in rds_map:
                 rds_map["RPCA"] = str(rds_file)
+
+    # rglob でサブフォルダも検索（上記で見つからない場合のフォールバック）
+    if not rds_map:
+        # 第1段階: Step2/Step3 優先
+        for rds_file in base.rglob("*.rds"):
+            name_lower = rds_file.name.lower()
+            if "step2" in name_lower and "harmony" in name_lower:
+                rds_map["Harmony"] = str(rds_file)
+            elif "step3" in name_lower and "rpca" in name_lower:
+                rds_map["RPCA"] = str(rds_file)
             elif "single" in name_lower and "PCA" not in rds_map:
                 rds_map["PCA"] = str(rds_file)
+
+        # 第2段階: 従来マッチ（data.frame除外）
+        if "Harmony" not in rds_map or "RPCA" not in rds_map:
+            for rds_file in base.rglob("*.rds"):
+                name_lower = rds_file.name.lower()
+                if any(name_lower.startswith(p) for p in _EXCLUDE_PREFIXES):
+                    continue
+                if "harmony" in name_lower and "Harmony" not in rds_map:
+                    rds_map["Harmony"] = str(rds_file)
+                elif "rpca" in name_lower and "RPCA" not in rds_map:
+                    rds_map["RPCA"] = str(rds_file)
 
     return rds_map
 
@@ -257,6 +292,24 @@ def auto_scan_msi_files(folder_path):
 
 
 # ---------------------------------------------------------------------------
+# 解析手法セクション 展開/折りたたみ
+# ---------------------------------------------------------------------------
+
+@callback(
+    [Output("integration_method_collapse", "is_open"),
+     Output("toggle_integration_method", "children")],
+    Input("toggle_integration_method", "n_clicks"),
+    State("integration_method_collapse", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_integration_method(n, is_open):
+    """解析手法セクションの展開/折りたたみを切り替え"""
+    new_state = not is_open
+    label = "解析手法 \u25bc" if new_state else "解析手法 \u25b6"
+    return new_state, label
+
+
+# ---------------------------------------------------------------------------
 # データ読み込み（Seuratブリッジ経由）
 # ---------------------------------------------------------------------------
 
@@ -272,7 +325,8 @@ def auto_scan_msi_files(folder_path):
      Output("deg_results_section", "style"),
      Output("spatial_exclude_cluster", "options"),
      Output("spatial_highlight_cluster", "options"),
-     Output("umap_exclude_cluster", "options")],
+     Output("umap_exclude_cluster", "options"),
+     Output("feature_sample_select", "options")],
     [Input("load_interactive_data", "n_clicks"),
      Input("interactive_integration_method", "value"),
      Input("interactive_rds_map", "data")],
@@ -280,12 +334,12 @@ def auto_scan_msi_files(folder_path):
     prevent_initial_call=True,
 )
 def load_interactive_data(n_clicks, integration_method, rds_map, result_folder):
-    _n_out = 12
+    _n_out = 13
     if not integration_method or not rds_map:
         return (
             "統合手法を選択してください（結果フォルダをスキャンしてください）",
             {"display": "none"}, [], [], [], None, None, None,
-            {"display": "none"}, [], [], [],
+            {"display": "none"}, [], [], [], [],
         )
 
     rds_path = rds_map.get(integration_method)
@@ -293,7 +347,7 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder):
         return (
             f"RDSファイルが見つかりません: {integration_method}",
             {"display": "none"}, [], [], [], None, None, None,
-            {"display": "none"}, [], [], [],
+            {"display": "none"}, [], [], [], [],
         )
 
     try:
@@ -354,13 +408,14 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder):
             cluster_options,  # spatial_exclude_cluster用
             cluster_options,  # spatial_highlight_cluster用
             cluster_options,  # umap_exclude_cluster用
+            sample_options,   # feature_sample_select用
         )
 
     except Exception as e:
         return (
             f"読み込みエラー: {e}",
             {"display": "none"}, [], [], [], None, None, None,
-            {"display": "none"}, [], [], [],
+            {"display": "none"}, [], [], [], [],
         )
 
 
@@ -445,13 +500,18 @@ def _load_deg_results(
 @callback(
     Output("feature_select", "options", allow_duplicate=True),
     Input("feature_select", "search_value"),
+    State("feature_mz_filtered_list", "data"),
     prevent_initial_call=True,
 )
-def filter_features(search_value):
+def filter_features(search_value, mz_filtered):
     """フィーチャードロップダウンの検索値に基づいてオプションをフィルタ"""
     features = _interactive_data.get("features_list")
     if not features:
         return []
+
+    # m/zフィルタ適用済みリストがあればそれをベースにする
+    if mz_filtered:
+        features = mz_filtered
 
     if not search_value:
         # 検索なしの場合は全件（最大500件）
@@ -464,13 +524,146 @@ def filter_features(search_value):
 
 
 # ---------------------------------------------------------------------------
+# m/z 範囲フィルタ
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("feature_mz_filtered_list", "data"),
+    Input("apply_feature_mz_filter", "n_clicks"),
+    [State("feature_mz_min", "value"),
+     State("feature_mz_max", "value")],
+    prevent_initial_call=True,
+)
+def apply_mz_filter(n_clicks, mz_min, mz_max):
+    """m/z最小値・最大値で feature リストを絞り込み、Storeに保存"""
+    features = _interactive_data.get("features_list")
+    if not features:
+        return None
+    if mz_min is None and mz_max is None:
+        return None  # フィルタなし → 全件に戻す
+
+    filtered = []
+    for f in features:
+        # feature名から数値部分を抽出（例: "mz_123.456" → 123.456）
+        match = re.search(r"(\d+\.?\d*)", f)
+        if match:
+            val = float(match.group(1))
+            if mz_min is not None and val < mz_min:
+                continue
+            if mz_max is not None and val > mz_max:
+                continue
+        filtered.append(f)
+    return filtered
+
+
+@callback(
+    Output("feature_select", "options", allow_duplicate=True),
+    Input("feature_mz_filtered_list", "data"),
+    prevent_initial_call=True,
+)
+def update_feature_options_on_mz_filter(mz_filtered):
+    """m/zフィルタ適用後、ドロップダウンの選択肢を即時更新"""
+    if mz_filtered is None:
+        # フィルタ解除 → 全件に戻す
+        features = _interactive_data.get("features_list")
+        if not features:
+            return []
+        return [{"label": f, "value": f} for f in features[:500]]
+
+    return [{"label": f, "value": f} for f in mz_filtered[:500]]
+
+
+# ---------------------------------------------------------------------------
+# 表示名ヘルパー
+# ---------------------------------------------------------------------------
+
+def _display_name(original: str, name_map: dict | None) -> str:
+    """元のサンプル名をユーザー指定の表示名に変換する。マップが空なら元名をそのまま返す。"""
+    if not name_map:
+        return original
+    return name_map.get(original, original)
+
+
+def _compact_sci(v):
+    """数値をコンパクトな指数表記に変換: 280000 → '2.8e5'"""
+    if v == 0:
+        return "0"
+    exp = int(np.floor(np.log10(abs(v))))
+    coeff = v / (10 ** exp)
+    return f"{coeff:.1f}e{exp}"
+
+
+def _generate_umap_arrow_image():
+    """参照画像と同じスタイルのL字型UMAP軸画像をbase64 PNGで生成する（キャッシュ付き）"""
+    if hasattr(_generate_umap_arrow_image, "_cache"):
+        return _generate_umap_arrow_image._cache
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig_mpl, ax = plt.subplots(figsize=(1.6, 1.6), dpi=150)
+    ax.set_xlim(-0.35, 1.15)
+    ax.set_ylim(-0.35, 1.15)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    fig_mpl.patch.set_alpha(0.0)
+    ax.patch.set_alpha(0.0)
+
+    lw = 3.5
+    hl = 0.08   # 矢印ヘッドの長さ
+    hw = 0.06   # 矢印ヘッドの幅
+
+    # 水平矢印（UMAP1）
+    ax.annotate("", xy=(1.0, 0.0), xytext=(0.0, 0.0),
+                arrowprops=dict(arrowstyle="->, head_length={}, head_width={}".format(hl * 3, hw * 3),
+                                lw=lw, color="black"))
+    # 垂直矢印（UMAP2）
+    ax.annotate("", xy=(0.0, 1.0), xytext=(0.0, 0.0),
+                arrowprops=dict(arrowstyle="->, head_length={}, head_width={}".format(hl * 3, hw * 3),
+                                lw=lw, color="black"))
+
+    # ラベル
+    ax.text(1.0, -0.18, "UMAP1", fontsize=14, fontweight="bold",
+            ha="center", va="top", color="black")
+    ax.text(-0.18, 1.0, "UMAP2", fontsize=14, fontweight="bold",
+            ha="center", va="center", rotation=90, color="black")
+
+    buf = io.BytesIO()
+    fig_mpl.savefig(buf, format="png", bbox_inches="tight",
+                    transparent=True, pad_inches=0.05)
+    plt.close(fig_mpl)
+    buf.seek(0)
+    b64 = base64.b64encode(buf.read()).decode()
+    data_uri = f"data:image/png;base64,{b64}"
+
+    _generate_umap_arrow_image._cache = data_uri
+    return data_uri
+
+
+def _add_umap_arrows(fig):
+    """UMAPプロットの左下にL字型 UMAP1/UMAP2 軸画像を埋め込む"""
+    arrow_src = _generate_umap_arrow_image()
+    fig.add_layout_image(
+        source=arrow_src,
+        x=-0.02, y=-0.02,
+        xref="paper", yref="paper",
+        sizex=0.22, sizey=0.22,
+        xanchor="left", yanchor="bottom",
+        layer="above",
+        opacity=1.0,
+    )
+
+
+# ---------------------------------------------------------------------------
 # UMAP プロット — ヘルパー関数
 # ---------------------------------------------------------------------------
 
 def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                                 show_legend, show_labels, title=None,
                                 marker_size=2, exclude_clusters=None,
-                                label_size=14, saved_positions=None):
+                                label_size=14, saved_positions=None,
+                                custom_colors=None):
     """統合UMAPのgo.Figureを生成（メイン/フルスクリーン共用）"""
     fig = go.Figure()
 
@@ -483,7 +676,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                                xref="paper", yref="paper", x=0.5, y=0.5)
             return fig
 
-    color_map = _get_cluster_color_map(df["Cluster"])
+    color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
 
     if highlight_clusters and len(highlight_clusters) > 0:
         highlight_set = set(str(c) for c in highlight_clusters)
@@ -512,7 +705,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
     else:
         color_col = color_by if color_by in df.columns else "Cluster"
         categories = sorted(df[color_col].unique(), key=_cluster_sort_key)
-        cat_color_map = _get_cluster_color_map(categories)
+        cat_color_map = _get_cluster_color_map(categories, custom_colors)
         for cat in categories:
             mask = df[color_col] == cat
             rank = _cluster_sort_key(cat)[0] if str(cat).isdigit() else 1000
@@ -547,20 +740,25 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
         dragmode="select",
         showlegend=bool(show_legend),
         legend=dict(itemsizing="constant", font=dict(size=12), tracegroupgap=2),
-        margin=dict(l=40, r=10, t=40 if title else 30, b=40),
-        xaxis_title="UMAP_1", yaxis_title="UMAP_2",
-        template="plotly_white",
+        margin=dict(l=60, r=10, t=40 if title else 30, b=60),
+        xaxis=dict(showgrid=False, showline=False, zeroline=False,
+                   showticklabels=False, title=""),
+        yaxis=dict(showgrid=False, showline=False, zeroline=False,
+                   showticklabels=False, title=""),
+        plot_bgcolor="white",
     )
     if title:
         layout_opts["title"] = dict(text=title, font=dict(size=14), x=0.5)
     fig.update_layout(**layout_opts)
+    _add_umap_arrows(fig)
     return fig
 
 
 def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                                    show_labels, graph_height="300px",
                                    marker_size=2, exclude_clusters=None,
-                                   label_size=11, saved_positions=None):
+                                   label_size=11, saved_positions=None,
+                                   show_legend=True, name_map=None):
     """サンプル別UMAPのhtml.Divリストを生成（メイン/フルスクリーン共用）"""
     # 除外クラスタのフィルタリング
     if exclude_clusters:
@@ -622,6 +820,16 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                     name=str(cl), showlegend=False,
                 ))
 
+        # 凡例用ダミートレース（全クラスタ共通で統一凡例を表示）
+        if show_legend:
+            for cl in sorted(df["Cluster"].unique(), key=_cluster_sort_key):
+                rank = _cluster_sort_key(cl)[0] if str(cl).isdigit() else 1000
+                fig.add_trace(go.Scattergl(
+                    x=[None], y=[None], mode="markers",
+                    marker=dict(size=10, color=color_map.get(str(cl), "#999999")),
+                    name=f"Cluster {cl}", showlegend=True, legendrank=rank,
+                ))
+
         if show_labels:
             sample_pos = (saved_positions or {}).get(s, {})
             centroids = df_s.groupby("Cluster").agg(
@@ -639,23 +847,29 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                     bgcolor="rgba(255,255,255,0.7)", borderpad=1,
                 )
 
+        display_s = _display_name(s, name_map)
         fig.update_layout(
-            margin=dict(l=30, r=10, t=10, b=30),
-            xaxis_title="", yaxis_title="",
-            template="plotly_white", showlegend=False,
+            margin=dict(l=50, r=10, t=30, b=50),
+            title=dict(text=display_s, font=dict(size=12), x=0.5),
+            xaxis=dict(showgrid=False, showline=False, zeroline=False,
+                       showticklabels=False, title=""),
+            yaxis=dict(showgrid=False, showline=False, zeroline=False,
+                       showticklabels=False, title=""),
+            plot_bgcolor="white",
+            showlegend=bool(show_legend),
+            legend=dict(itemsizing="constant", font=dict(size=9), tracegroupgap=1),
         )
+        _add_umap_arrows(fig)
 
         cfg = dict(_UMAP_PER_SAMPLE_CONFIG)
         cfg["toImageButtonOptions"] = dict(cfg["toImageButtonOptions"],
-                                           filename=f"UMAP_{s}")
+                                           filename=f"UMAP_{display_s}")
         graphs.append(
             html.Div(
                 style={"flex": "1 1 46%", "minWidth": "280px", "maxWidth": "50%",
                         "border": "1px solid #dee2e6", "borderRadius": "6px",
                         "padding": "5px", "backgroundColor": "#fff"},
                 children=[
-                    html.H6(s, className="text-center mb-1",
-                             style={"fontSize": "0.85rem", "fontWeight": "600"}),
                     dcc.Graph(id={"type": "umap_per_sample_graph", "index": s},
                               figure=fig, style={"height": graph_height}, config=cfg),
                 ],
@@ -678,10 +892,13 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
      Input("umap_marker_size", "value"),
      Input("umap_exclude_cluster", "value"),
      Input("umap_label_size", "value"),
-     Input("seurat_rds_path_store", "data")],
+     Input("seurat_rds_path_store", "data"),
+     Input("fullscreen_closed_trigger", "data"),
+     Input("custom_color_map_store", "data")],
 )
 def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
-                     display_mode, marker_size, exclude_clusters, label_size, rds_path):
+                     display_mode, marker_size, exclude_clusters, label_size,
+                     rds_path, _fs_trigger, custom_colors):
     if display_mode == "per_sample":
         return go.Figure()
     df = _interactive_data.get("plot_data")
@@ -693,7 +910,8 @@ def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
                                        marker_size=marker_size or 2,
                                        exclude_clusters=exclude_clusters,
                                        label_size=label_size or 14,
-                                       saved_positions=all_pos.get("umap_integrated"))
+                                       saved_positions=all_pos.get("umap_integrated"),
+                                       custom_colors=custom_colors)
 
 
 # ---------------------------------------------------------------------------
@@ -730,24 +948,31 @@ _UMAP_PER_SAMPLE_CONFIG = {
      Input("umap_marker_size", "value"),
      Input("umap_exclude_cluster", "value"),
      Input("umap_label_size", "value"),
-     Input("seurat_rds_path_store", "data")],
+     Input("seurat_rds_path_store", "data"),
+     Input("umap_show_legend", "value"),
+     Input("sample_name_map_store", "data"),
+     Input("fullscreen_closed_trigger", "data"),
+     Input("custom_color_map_store", "data")],
 )
 def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
-                            marker_size, exclude_clusters, label_size, rds_path):
+                            marker_size, exclude_clusters, label_size, rds_path,
+                            show_legend, name_map, _fs_trigger, custom_colors):
     """表示モード「サンプル別」の場合、各サンプルのUMAPを並列表示"""
     if display_mode != "per_sample":
         return ""
     df = _interactive_data.get("plot_data")
     if df is None:
         return ""
-    color_map = _get_cluster_color_map(df["Cluster"])
+    color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
     all_pos = _load_label_positions()
     graphs = _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                                             show_labels, graph_height="300px",
                                             marker_size=marker_size or 2,
                                             exclude_clusters=exclude_clusters,
                                             label_size=label_size or 11,
-                                            saved_positions=all_pos.get("umap_per_sample"))
+                                            saved_positions=all_pos.get("umap_per_sample"),
+                                            show_legend=bool(show_legend),
+                                            name_map=name_map)
     return html.Div(
         style={"display": "flex", "flexWrap": "wrap", "gap": "15px", "marginTop": "10px"},
         children=graphs,
@@ -942,7 +1167,6 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 ))
     else:
         # 数値インデックス + discrete colorscale 方式
-        # （HEX文字列配列のWebGL処理問題を回避）
         if cluster_to_idx is not None and discrete_cscale is not None:
             n_clusters = max(len(cluster_to_idx), 1)
             point_values = np.array(
@@ -1004,9 +1228,12 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 )
 
     layout_opts = dict(
-        yaxis=dict(scaleanchor="x"),
+        xaxis=dict(showgrid=False, showline=False, zeroline=False,
+                   showticklabels=False, title="", visible=False),
+        yaxis=dict(scaleanchor="x", showgrid=False, showline=False, zeroline=False,
+                   showticklabels=False, title="", visible=False),
         margin=dict(l=10, r=10, t=30 if title else 10, b=10),
-        template="plotly_white",
+        plot_bgcolor="white",
         showlegend=embed_legend,
         legend=dict(itemsizing="constant", font=dict(size=12), tracegroupgap=2),
     )
@@ -1032,59 +1259,325 @@ _SPATIAL_IMG_CONFIG = {
 @callback(
     Output("spatial_controls_container", "children"),
     Input("seurat_rds_path_store", "data"),
-    State("spatial_rotation_store", "data"),
+    [State("spatial_rotation_store", "data"),
+     State("sample_name_map_store", "data"),
+     State("custom_color_map_store", "data")],
 )
-def create_spatial_controls(rds_path, rotation_store):
-    """データ読み込み後、サンプル別の回転/反転コントロールを生成"""
+def create_spatial_controls(rds_path, rotation_store, name_map, custom_color_map):
+    """データ読み込み後、サンプル別の回転/反転 + サンプル名変更コントロールを生成"""
     df = _interactive_data.get("plot_data")
     if df is None or "SpatialX" not in df.columns:
         return ""
     if not rotation_store:
         rotation_store = {}
+    if not name_map:
+        name_map = {}
+    if not custom_color_map:
+        custom_color_map = {}
 
+    # ==================== 回転/反転 ====================
     samples = sorted(df["Sample"].unique())
-    controls = []
-    for s in samples:
+    sample_options = [{"label": s, "value": s} for s in samples]
+    first_sample = samples[0] if samples else None
+
+    sample_blocks = []
+    for i, s in enumerate(samples):
         transform = rotation_store.get(
             s, rotation_store.get("__all__", {"angle": 0, "flip_h": False, "flip_v": False}))
         if isinstance(transform, (int, float)):
             transform = {"angle": int(transform), "flip_h": False, "flip_v": False}
 
-        controls.append(
-            html.Div(
-                style={"padding": "4px 8px"},
-                children=[
-                    dcc.Slider(
-                        id={"type": "per_sample_rotation", "index": s},
-                        min=0, max=270, step=90,
-                        value=transform.get("angle", 0),
-                        marks={0: "0°", 90: "90°", 180: "180°", 270: "270°"},
-                    ),
-                    html.Div(className="d-flex gap-2 justify-content-center", children=[
-                        dbc.Checkbox(
-                            id={"type": "per_sample_flip_h", "index": s},
-                            label="↔ 左右", value=transform.get("flip_h", False),
-                        ),
-                        dbc.Checkbox(
-                            id={"type": "per_sample_flip_v", "index": s},
-                            label="↕ 上下", value=transform.get("flip_v", False),
+        display_s = _display_name(s, name_map)
+        is_first = (i == 0)
+        block = html.Div(
+            id={"type": "sample_block", "index": s},
+            style={"padding": "4px 8px",
+                   "display": "block" if is_first else "none"},
+            children=[
+                dbc.Row(className="align-items-center mb-1", children=[
+                    dbc.Col(width=3, children=[
+                        html.Label(s, className="fw-bold small mb-0",
+                                   style={"whiteSpace": "nowrap", "overflow": "hidden",
+                                          "textOverflow": "ellipsis"}),
+                    ]),
+                    dbc.Col(width=4, children=[
+                        dbc.Input(
+                            id={"type": "sample_rename_input", "index": s},
+                            value=display_s if display_s != s else "",
+                            placeholder=s,
+                            size="sm", debounce=True,
                         ),
                     ]),
-                ],
+                    dbc.Col(width=5, children=[
+                        html.Div(className="d-flex gap-2 align-items-center", children=[
+                            dbc.Checkbox(
+                                id={"type": "per_sample_flip_h", "index": s},
+                                label="↔ 左右", value=transform.get("flip_h", False),
+                            ),
+                            dbc.Checkbox(
+                                id={"type": "per_sample_flip_v", "index": s},
+                                label="↕ 上下", value=transform.get("flip_v", False),
+                            ),
+                        ]),
+                    ]),
+                ]),
+                dcc.Slider(
+                    id={"type": "per_sample_rotation", "index": s},
+                    min=0, max=270, step=90,
+                    value=transform.get("angle", 0),
+                    marks={0: "0°", 90: "90°", 180: "180°", 270: "270°"},
+                ),
+            ],
+        )
+        sample_blocks.append(block)
+
+    rotation_section = [
+        dbc.Select(
+            id="spatial_sample_selector",
+            options=sample_options,
+            value=first_sample,
+            size="sm",
+            className="mb-2",
+        ),
+        *sample_blocks,
+    ]
+
+    # ==================== クラスタ色変更 ====================
+    clusters = sorted(df["Cluster"].unique(), key=_cluster_sort_key)
+    cluster_options = [{"label": f"Cluster {c}", "value": str(c)} for c in clusters]
+    first_cluster = str(clusters[0]) if clusters else None
+
+    # 現在使用中の色マップを構築（デフォルト + カスタム）
+    current_cmap = _get_cluster_color_map(df["Cluster"], custom_color_map)
+    # 各クラスタが使用中の色 → {色: クラスタ} のマップ
+    color_usage = {}
+    for cl_key, col_val in current_cmap.items():
+        upper_col = col_val.upper()
+        if upper_col not in color_usage:
+            color_usage[upper_col] = cl_key
+
+    cluster_blocks = []
+    for idx, cl in enumerate(clusters):
+        cl_str = str(cl)
+        default_color = current_cmap.get(cl_str, "#999999")
+        is_first = (idx == 0)
+
+        swatches = []
+        for pc in CLUSTER_PRESET_COLORS:
+            # 他のクラスタで使用中ならグレーアウト
+            owner = color_usage.get(pc.upper())
+            used_by_other = (owner is not None and owner != cl_str)
+            swatch_style = {
+                "width": "18px", "height": "18px",
+                "backgroundColor": pc,
+                "border": "2px solid #aaa",
+                "borderRadius": "3px",
+                "display": "inline-block",
+            }
+            if used_by_other:
+                swatch_style.update({
+                    "opacity": "0.25",
+                    "cursor": "not-allowed",
+                    "pointerEvents": "none",
+                })
+            else:
+                swatch_style["cursor"] = "pointer"
+
+            swatches.append(
+                html.Div(
+                    style=swatch_style,
+                    id={"type": "cluster_color_swatch",
+                        "index": cl_str, "color": pc},
+                    n_clicks=0,
+                )
             )
+
+        block = html.Div(
+            id={"type": "cluster_block", "index": cl_str},
+            style={"display": "block" if is_first else "none"},
+            className="mb-2",
+            children=[
+                html.Label(f"Cluster {cl}", className="small mb-1 fw-bold"),
+                html.Div(
+                    style={"display": "flex", "alignItems": "center", "gap": "6px"},
+                    children=[
+                        html.Div(
+                            style={"display": "flex", "flexWrap": "wrap", "gap": "3px"},
+                            children=swatches,
+                        ),
+                        dbc.Input(
+                            type="color",
+                            id={"type": "cluster_color_picker", "index": cl_str},
+                            value=default_color,
+                            style={"width": "32px", "height": "24px", "padding": "1px",
+                                   "border": "1px solid #ccc", "cursor": "pointer",
+                                   "flexShrink": "0"},
+                        ),
+                    ],
+                ),
+            ],
         )
-    accordion_items = []
-    for s, ctrl in zip(samples, controls):
-        accordion_items.append(
-            dbc.AccordionItem(title=f"回転/反転: {s}", children=[ctrl])
-        )
+        cluster_blocks.append(block)
+
+    color_section = [
+        dbc.Select(
+            id="spatial_cluster_selector",
+            options=cluster_options,
+            value=first_cluster,
+            size="sm",
+            className="mb-2",
+        ),
+        *cluster_blocks,
+    ]
+
     return dbc.Accordion(
-        accordion_items,
+        [
+            dbc.AccordionItem(title="回転/反転", children=rotation_section),
+            dbc.AccordionItem(title="クラスタ色変更", children=color_section),
+        ],
         start_collapsed=True,
         flush=True,
         always_open=True,
         style={"marginBottom": "8px"},
     )
+
+
+# ---------------------------------------------------------------------------
+# サンプル/クラスタ ブロック表示切替
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output({"type": "sample_block", "index": ALL}, "style"),
+    Input("spatial_sample_selector", "value"),
+    prevent_initial_call=True,
+)
+def toggle_sample_rotation_visibility(selected):
+    """ドロップダウンで選択されたサンプルのみ表示"""
+    styles = []
+    for item in ctx.outputs_list:
+        idx = item["id"]["index"]
+        vis = "block" if idx == selected else "none"
+        styles.append({"padding": "4px 8px", "display": vis})
+    return styles
+
+
+@callback(
+    Output({"type": "cluster_block", "index": ALL}, "style"),
+    Input("spatial_cluster_selector", "value"),
+    prevent_initial_call=True,
+)
+def toggle_cluster_color_visibility(selected):
+    """ドロップダウンで選択されたクラスタのみ表示"""
+    styles = []
+    for item in ctx.outputs_list:
+        idx = item["id"]["index"]
+        vis = "block" if idx == selected else "none"
+        styles.append({"display": vis})
+    return styles
+
+
+# ---------------------------------------------------------------------------
+# スウォッチの使用済み色グレーアウト
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output({"type": "cluster_color_swatch", "index": ALL, "color": ALL}, "style"),
+    Input("custom_color_map_store", "data"),
+    prevent_initial_call=True,
+)
+def update_swatch_disabled_state(custom_colors):
+    """色マップ変更時に、他クラスタで使用中のスウォッチをグレーアウトする"""
+    if not custom_colors:
+        custom_colors = {}
+    df = _interactive_data.get("plot_data")
+    if df is None:
+        raise PreventUpdate
+
+    # 現在の全色マップ（デフォルト＋カスタム）
+    current_cmap = _get_cluster_color_map(df["Cluster"], custom_colors)
+    # {色(大文字) → クラスタID} の逆引き
+    color_usage = {}
+    for cl_key, col_val in current_cmap.items():
+        upper_col = col_val.upper()
+        if upper_col not in color_usage:
+            color_usage[upper_col] = cl_key
+
+    styles = []
+    for item in ctx.outputs_list:
+        swatch_cluster = item["id"]["index"]
+        swatch_color = item["id"]["color"]
+
+        base_style = {
+            "width": "18px", "height": "18px",
+            "backgroundColor": swatch_color,
+            "border": "2px solid #aaa",
+            "borderRadius": "3px",
+            "display": "inline-block",
+        }
+
+        owner = color_usage.get(swatch_color.upper())
+        if owner is not None and owner != swatch_cluster:
+            base_style.update({
+                "opacity": "0.25",
+                "cursor": "not-allowed",
+                "pointerEvents": "none",
+            })
+        else:
+            base_style["cursor"] = "pointer"
+
+        styles.append(base_style)
+    return styles
+
+
+# ---------------------------------------------------------------------------
+# クラスタ色 Store 管理 (パターンマッチング)
+# ---------------------------------------------------------------------------
+
+@callback(
+    [Output("custom_color_map_store", "data"),
+     Output({"type": "cluster_color_picker", "index": ALL}, "value")],
+    [Input({"type": "cluster_color_picker", "index": ALL}, "value"),
+     Input({"type": "cluster_color_swatch", "index": ALL, "color": ALL}, "n_clicks")],
+    State("custom_color_map_store", "data"),
+    prevent_initial_call=True,
+)
+def update_custom_color_map(picker_values, swatch_clicks, current_store):
+    """カラーピッカーまたはスウォッチクリックでカスタム色マップStoreを更新する"""
+    current_store = current_store or {}
+
+    # トリガーされたコンポーネントの判定
+    triggered = ctx.triggered_id
+    if not triggered:
+        raise PreventUpdate
+
+    # カラーピッカーのIDリストを取得（Output用の順序と一致させる）
+    picker_ids = ctx.inputs_list[0]
+    picker_cluster_order = [item["id"]["index"] for item in picker_ids]
+
+    if isinstance(triggered, dict) and triggered.get("type") == "cluster_color_swatch":
+        # --- スウォッチがクリックされた場合 ---
+        cl = str(triggered["index"])
+        color = triggered["color"]
+        current_store[cl] = color
+        # カラーピッカーの表示色も同期
+        updated_picker_values = []
+        for c_id in picker_cluster_order:
+            if c_id == cl:
+                updated_picker_values.append(color)
+            else:
+                # 既存のピッカー値を維持
+                idx = picker_cluster_order.index(c_id)
+                updated_picker_values.append(picker_values[idx])
+        return current_store, updated_picker_values
+    else:
+        # --- カラーピッカーが変更された場合 ---
+        custom = {}
+        for item in picker_ids:
+            cl = item["id"]["index"]
+            val = item.get("value")
+            if val:
+                custom[str(cl)] = val
+        return custom, picker_values
 
 
 # ---------------------------------------------------------------------------
@@ -1135,6 +1628,125 @@ def update_rotation_store_from_per_sample(rotations, flip_hs, flip_vs, current_s
     return current_store
 
 
+# ---------------------------------------------------------------------------
+# サンプル名マップ管理 (パターンマッチング)
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("sample_name_map_store", "data"),
+    [Input({"type": "sample_rename_input", "index": ALL}, "value"),
+     Input({"type": "umap_sample_rename_input", "index": ALL}, "value")],
+    prevent_initial_call=True,
+)
+def update_sample_name_map(spatial_values, umap_values):
+    """サンプル名変更入力（Spatial側 + UMAP側）から表示名マッピングを更新。
+    両側の値をマージし、トリガーされた側の値を高優先とする。"""
+    triggered = ctx.triggered_id
+    triggered_type = triggered.get("type", "") if isinstance(triggered, dict) else ""
+
+    name_map = {}
+
+    def _collect(inputs_list_idx):
+        result = {}
+        for inp in ctx.inputs_list[inputs_list_idx]:
+            original = inp.get("id", {}).get("index", "")
+            display_val = inp.get("value", "") or ""
+            display_val = display_val.strip()
+            if display_val and display_val != original:
+                result[original] = display_val
+        return result
+
+    if triggered_type == "umap_sample_rename_input":
+        # 非トリガー側（Spatial）を先に読み込み（低優先）
+        name_map.update(_collect(0))
+        # トリガー側（UMAP）で上書き（高優先）
+        name_map.update(_collect(1))
+    else:
+        # 非トリガー側（UMAP）を先に読み込み（低優先）
+        name_map.update(_collect(1))
+        # トリガー側（Spatial）で上書き（高優先）
+        name_map.update(_collect(0))
+
+    # フルスクリーン用にも参照できるようモジュール変数にも保持
+    _interactive_data["_name_map"] = name_map
+    return name_map
+
+
+@callback(
+    [Output("interactive_sample", "options", allow_duplicate=True),
+     Output("feature_sample_select", "options", allow_duplicate=True)],
+    Input("sample_name_map_store", "data"),
+    prevent_initial_call=True,
+)
+def update_sample_dropdown_labels(name_map):
+    """サンプル名変更時にSpatial Mapping & Feature Plotサンプルドロップダウンのラベルを更新"""
+    df = _interactive_data.get("plot_data")
+    if df is None:
+        return no_update, no_update
+    if not name_map:
+        name_map = {}
+    samples = sorted(df["Sample"].unique())
+    opts = [{"label": _display_name(s, name_map), "value": s} for s in samples]
+    return opts, opts
+
+
+# ---------------------------------------------------------------------------
+# UMAP側サンプル名変更コントロール生成
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("umap_name_controls_container", "children"),
+    Input("seurat_rds_path_store", "data"),
+    State("sample_name_map_store", "data"),
+)
+def create_umap_name_controls(rds_path, name_map):
+    """データ読み込み後、UMAP側にサンプル名変更UIを生成"""
+    df = _interactive_data.get("plot_data")
+    if df is None:
+        return ""
+    if not name_map:
+        name_map = {}
+
+    samples = sorted(df["Sample"].unique())
+    if len(samples) <= 1:
+        return ""
+
+    controls = []
+    for i, s in enumerate(samples):
+        display_s = _display_name(s, name_map)
+        controls.append(
+            html.Div(
+                style={"padding": "2px 8px"},
+                children=[
+                    dbc.Row(className="align-items-center", children=[
+                        dbc.Col(width=4, children=[
+                            html.Label(s, className="fw-bold small mb-0",
+                                       style={"whiteSpace": "nowrap", "overflow": "hidden",
+                                              "textOverflow": "ellipsis"}),
+                        ]),
+                        dbc.Col(width=8, children=[
+                            dbc.Input(
+                                id={"type": "umap_sample_rename_input", "index": s},
+                                value=display_s if display_s != s else "",
+                                placeholder=s,
+                                size="sm", debounce=True,
+                            ),
+                        ]),
+                    ]),
+                    html.Hr(className="my-1") if i < len(samples) - 1 else html.Div(),
+                ],
+            )
+        )
+
+    return dbc.Accordion(
+        [dbc.AccordionItem(title="サンプル名変更", children=controls)],
+        start_collapsed=True,
+        flush=True,
+        always_open=True,
+        style={"marginBottom": "8px"},
+    )
+
+
 @callback(
     [Output("spatial_plots_container", "children"),
      Output("last_spatial_figure_store", "data")],
@@ -1146,17 +1758,23 @@ def update_rotation_store_from_per_sample(rotations, flip_hs, flip_vs, current_s
      Input("spatial_marker_size", "value"),
      Input("spatial_exclude_cluster", "value"),
      Input("spatial_label_size", "value"),
-     Input("seurat_rds_path_store", "data")],
+     Input("seurat_rds_path_store", "data"),
+     Input("sample_name_map_store", "data"),
+     Input("fullscreen_closed_trigger", "data"),
+     Input("custom_color_map_store", "data")],
 )
 def update_spatial_plots(sample, highlight_clusters, selected_data,
                          rotation_store, show_labels, marker_size,
-                         exclude_clusters, label_size, rds_path):
+                         exclude_clusters, label_size, rds_path, name_map,
+                         _fs_trigger, custom_colors):
     df = _interactive_data.get("plot_data")
     if df is None or "SpatialX" not in df.columns:
         return html.Div("空間座標データがありません", className="text-muted p-3"), None
 
     if not rotation_store:
         rotation_store = {}
+    if not name_map:
+        name_map = {}
 
     # UMAP選択セルID
     selected_cell_ids = set()
@@ -1165,8 +1783,8 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
             if pt.get("text"):
                 selected_cell_ids.add(pt["text"])
 
-    color_map = _get_cluster_color_map(df["Cluster"])
-    cluster_to_idx, discrete_cscale = _get_cluster_colorscale(df["Cluster"])
+    color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
+    cluster_to_idx, discrete_cscale = _get_cluster_colorscale(df["Cluster"], custom_colors)
     all_pos = _load_label_positions()
     spatial_pos = all_pos.get("spatial", {})
 
@@ -1188,12 +1806,13 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
         rotation_deg = transform.get("angle", 0)
         flip_h = transform.get("flip_h", False)
         flip_v = transform.get("flip_v", False)
+        display_s = _display_name(s, name_map)
         fig = _create_single_spatial_fig(df_s, color_map, highlight_clusters,
                                          selected_cell_ids,
                                          rotation_deg=rotation_deg,
                                          show_labels=show_labels,
                                          flip_h=flip_h, flip_v=flip_v,
-                                         title=s, embed_legend=True,
+                                         title=display_s, embed_legend=True,
                                          cluster_to_idx=cluster_to_idx,
                                          discrete_cscale=discrete_cscale,
                                          marker_size=marker_size or 0,
@@ -1204,7 +1823,7 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
             representative_fig = fig
         cfg = dict(_SPATIAL_IMG_CONFIG)
         cfg["toImageButtonOptions"] = dict(cfg["toImageButtonOptions"],
-                                           filename=f"Spatial_{s}")
+                                           filename=f"Spatial_{display_s}")
         n_samples = len(samples_to_show)
         flex_basis = f"{max(30, 90 // n_samples)}%"
         graphs.append(
@@ -1213,8 +1832,6 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
                         "border": "1px solid #dee2e6", "borderRadius": "6px",
                         "padding": "5px", "backgroundColor": "#fff"},
                 children=[
-                    html.H6(s, className="text-center mb-1",
-                             style={"fontSize": "0.85rem", "fontWeight": "600"}),
                     dcc.Graph(id={"type": "spatial_graph", "index": s},
                               figure=fig, style={"height": "350px"}, config=cfg),
                 ],
@@ -1231,24 +1848,50 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
 
 
 # ---------------------------------------------------------------------------
-# Feature プロット（Parquet高速読み込み優先 → R fallback）
+# Feature プロット（Spatial表示、Parquet高速読み込み優先 → R fallback）
 # ---------------------------------------------------------------------------
 
+_FEATURE_IMG_CONFIG = {
+    "scrollZoom": True,
+    "toImageButtonOptions": {
+        "format": "png", "scale": 3,
+    },
+}
+
+
 @callback(
-    Output("feature_plot", "figure"),
-    Input("show_feature_plot", "n_clicks"),
+    Output("feature_plot_container", "children"),
+    [Input("show_feature_plot", "n_clicks"),
+     Input("sample_name_map_store", "data"),
+     Input("fullscreen_closed_trigger", "data")],
     [State("feature_select", "value"),
+     State("feature_sample_select", "value"),
      State("seurat_rds_path_store", "data"),
-     State("seurat_cache_dir_store", "data")],
+     State("seurat_cache_dir_store", "data"),
+     State("spatial_rotation_store", "data"),
+     State("feature_marker_size", "value")],
     prevent_initial_call=True,
 )
-def update_feature_plot(n_clicks, feature_name, rds_path, cache_dir_str):
+def update_feature_plot(n_clicks, name_map, _fs_trigger, feature_name, sample,
+                        rds_path, cache_dir_str, rotation_store, marker_size):
+    # 名前変更・フルスクリーン閉鎖トリガーだがFeature未選択 → スキップ
+    if ctx.triggered_id in ("sample_name_map_store", "fullscreen_closed_trigger") and not feature_name:
+        return no_update
+
     if not feature_name or not rds_path:
-        return go.Figure()
+        return html.Div("m/z Feature を選択してください", className="text-muted p-3")
 
     df = _interactive_data.get("plot_data")
     if df is None:
-        return go.Figure()
+        return html.Div("データが読み込まれていません", className="text-muted p-3")
+
+    if "SpatialX" not in df.columns:
+        return html.Div("空間座標データがありません", className="text-muted p-3")
+
+    if not rotation_store:
+        rotation_store = {}
+    if not name_map:
+        name_map = {}
 
     try:
         # Parquet からの高速読み込みを優先
@@ -1263,34 +1906,111 @@ def update_feature_plot(n_clicks, feature_name, rds_path, cache_dir_str):
         if expression is None:
             expression = _bridge.get_feature_expression(rds_path, feature_name)
 
-        fig = go.Figure(go.Scattergl(
-            x=df["UMAP_1"],
-            y=df["UMAP_2"],
-            mode="markers",
-            marker=dict(
-                size=2,
-                color=expression,
-                colorscale="Plasma",
-                colorbar=dict(title=feature_name),
-                showscale=True,
-            ),
-            text=df["CellID"],
-            hovertemplate=f"{feature_name}: " + "%{marker.color:.4f}<br>%{text}<extra></extra>",
-        ))
+        # expression を df に結合（CellID順で対応）
+        df_plot = df.copy()
+        df_plot["_expression"] = expression
 
-        fig.update_layout(
-            margin=dict(l=40, r=10, t=30, b=40),
-            xaxis_title="UMAP_1",
-            yaxis_title="UMAP_2",
-            template="plotly_white",
+        # 表示対象サンプル
+        if sample:
+            samples_to_show = [sample]
+        else:
+            samples_to_show = sorted(df_plot["Sample"].unique())
+
+        # 全サンプル共通のカラースケール範囲を計算
+        expr_vals = df_plot.loc[
+            df_plot["Sample"].isin(samples_to_show), "_expression"
+        ].values
+        global_min = float(np.nanmin(expr_vals))
+        global_max = float(np.nanmax(expr_vals))
+
+        m_size = marker_size or 3
+
+        graphs = []
+        for s in samples_to_show:
+            df_s = df_plot[df_plot["Sample"] == s]
+            display_s = _display_name(s, name_map)
+
+            # 変換設定を取得
+            transform = rotation_store.get(
+                s, rotation_store.get("__all__", {"angle": 0, "flip_h": False, "flip_v": False}))
+            if isinstance(transform, (int, float)):
+                transform = {"angle": int(transform), "flip_h": False, "flip_v": False}
+
+            raw_x = df_s["SpatialX"].values
+            raw_y = -df_s["SpatialY"].values  # Y軸反転
+            plot_x, plot_y = _transform_coords(
+                raw_x, raw_y,
+                transform.get("angle", 0),
+                flip_h=transform.get("flip_h", False),
+                flip_v=transform.get("flip_v", False),
+            )
+
+            # 最後のサンプルのみカラーバーを表示
+            is_last = (s == samples_to_show[-1])
+            marker_opts = dict(
+                size=m_size,
+                color=df_s["_expression"].values,
+                colorscale="Plasma",
+                cmin=global_min,
+                cmax=global_max,
+                showscale=is_last,
+            )
+            if is_last:
+                marker_opts["colorbar"] = dict(
+                    title=dict(text="Intensity", side="right"),
+                    tickvals=[global_min, global_max],
+                    ticktext=[
+                        "0" if global_min == 0 else _compact_sci(global_min),
+                        _compact_sci(global_max),
+                    ],
+                    len=0.8,
+                    thickness=15,
+                )
+
+            fig = go.Figure(go.Scatter(
+                x=plot_x,
+                y=plot_y,
+                mode="markers",
+                marker=marker_opts,
+                text=df_s["CellID"],
+                hovertemplate=f"{feature_name}: " + "%{marker.color:.4f}<br>%{text}<extra></extra>",
+                showlegend=False,
+            ))
+
+            r_margin = 80 if is_last else 10
+            fig.update_layout(
+                title=dict(text=display_s, font=dict(size=14), x=0.5),
+                xaxis=dict(showgrid=False, showline=False, zeroline=False,
+                           showticklabels=False, title="", visible=False),
+                yaxis=dict(scaleanchor="x", showgrid=False, showline=False, zeroline=False,
+                           showticklabels=False, title="", visible=False),
+                margin=dict(l=10, r=r_margin, t=30, b=10),
+                plot_bgcolor="white",
+            )
+
+            cfg = dict(_FEATURE_IMG_CONFIG)
+            cfg["toImageButtonOptions"] = dict(cfg["toImageButtonOptions"],
+                                               filename=f"Feature_{feature_name}_{display_s}")
+            n_samples = len(samples_to_show)
+            flex_basis = f"{max(30, 90 // n_samples)}%"
+            graphs.append(
+                html.Div(
+                    style={"flex": f"1 1 {flex_basis}", "minWidth": "300px",
+                            "border": "1px solid #dee2e6", "borderRadius": "6px",
+                            "padding": "5px", "backgroundColor": "#fff"},
+                    children=[
+                        dcc.Graph(figure=fig, style={"height": "350px"}, config=cfg),
+                    ],
+                )
+            )
+
+        return html.Div(
+            style={"display": "flex", "flexWrap": "wrap", "gap": "15px"},
+            children=graphs,
         )
-        return fig
 
     except Exception as e:
-        fig = go.Figure()
-        fig.add_annotation(text=f"エラー: {e}", showarrow=False,
-                           xref="paper", yref="paper", x=0.5, y=0.5)
-        return fig
+        return html.Div(f"エラー: {e}", className="text-danger p-3")
 
 
 # ---------------------------------------------------------------------------
@@ -1360,11 +2080,10 @@ def deg_row_to_feature(selected_rows, table_data):
     Input("export_html_report", "n_clicks"),
     [State("interactive_umap_plot", "figure"),
      State("last_spatial_figure_store", "data"),
-     State("feature_plot", "figure"),
      State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def export_html_report(n_clicks, umap_fig, spatial_fig, feature_fig, rds_path):
+def export_html_report(n_clicks, umap_fig, spatial_fig, rds_path):
     if not n_clicks:
         return no_update, no_update
 
@@ -1402,15 +2121,6 @@ def export_html_report(n_clicks, umap_fig, spatial_fig, feature_fig, rds_path):
             fig = go.Figure(spatial_fig)
             if fig.data:  # 空でなければ
                 parts.append("<h2>Spatial Mapping</h2>")
-                parts.append(pio.to_html(
-                    fig, include_plotlyjs=False, full_html=False,
-                ))
-
-        # Feature
-        if feature_fig:
-            fig = go.Figure(feature_fig)
-            if fig.data:
-                parts.append("<h2>Feature Plot</h2>")
                 parts.append(pio.to_html(
                     fig, include_plotlyjs=False, full_html=False,
                 ))
@@ -1538,15 +2248,16 @@ def set_interactive_folders_from_sub_project(sub_id, project_id):
      Input("expand_spatial_btn", "n_clicks"),
      Input("expand_deg_btn", "n_clicks")],
     [State("interactive_umap_plot", "figure"),
-     State("feature_plot", "figure"),
+     State("feature_plot_container", "children"),
      State("last_spatial_figure_store", "data"),
      State("deg_data_store", "data"),
-     State("spatial_rotation_store", "data")],
+     State("spatial_rotation_store", "data"),
+     State("custom_color_map_store", "data")],
     prevent_initial_call=True,
 )
 def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
-                      umap_fig, feat_fig, spatial_fig_data, deg_data,
-                      rotation_store):
+                      umap_fig, feat_container_children, spatial_fig_data, deg_data,
+                      rotation_store, custom_colors):
     trigger = ctx.triggered_id
     if not trigger:
         return False, "", ""
@@ -1566,7 +2277,7 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
 
         clusters = sorted(df["Cluster"].unique(), key=_cluster_sort_key)
         cluster_opts = [{"label": f"Cluster {c}", "value": str(c)} for c in clusters]
-        color_map = _get_cluster_color_map(df["Cluster"])
+        color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
 
         # タイトル（RDSファイル名から生成）
         rds_path = _interactive_data.get("rds_path", "")
@@ -1574,7 +2285,8 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
 
         # 初期グラフ（統合モード）
         init_fig = _build_umap_integrated_fig(df, "Cluster", None, True, False,
-                                               title=umap_title)
+                                               title=umap_title,
+                                               custom_colors=custom_colors)
         init_fs_config = dict(fs_config)
         init_fs_config["toImageButtonOptions"] = dict(init_fs_config["toImageButtonOptions"],
                                                        filename=f"UMAP_{umap_title}")
@@ -1657,13 +2369,11 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
         ])
         return True, "UMAP", body
 
-    # ===== Feature Plot (静的) =====
-    if trigger == "expand_feature_btn" and feat_fig:
-        fig = go.Figure(feat_fig)
-        fig.update_layout(height=None)
+    # ===== Feature Plot (コンテナごと拡大) =====
+    if trigger == "expand_feature_btn" and feat_container_children:
         return (
             True, "Feature Plot",
-            dcc.Graph(figure=fig, style=fs_graph_style, config=fs_config),
+            html.Div(feat_container_children),
         )
 
     # ===== Spatial Mapping (インタラクティブ) =====
@@ -1673,17 +2383,19 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
             return False, "", ""
 
         samples = sorted(df["Sample"].unique())
-        sample_opts = [{"label": s, "value": s} for s in samples]
+        name_map = _interactive_data.get("_name_map") or {}
+        sample_opts = [{"label": _display_name(s, name_map), "value": s} for s in samples]
         clusters = sorted(df["Cluster"].unique(), key=_cluster_sort_key)
         cluster_opts = [{"label": f"Cluster {c}", "value": str(c)} for c in clusters]
-        color_map = _get_cluster_color_map(df["Cluster"])
-        cluster_to_idx, discrete_cscale = _get_cluster_colorscale(df["Cluster"])
+        color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
+        cluster_to_idx, discrete_cscale = _get_cluster_colorscale(df["Cluster"], custom_colors)
 
         # 初期グラフ（全サンプル、rotation_store適用）
         if not rotation_store:
             rotation_store = {}
         init_graphs = []
         for s in samples:
+            display_s = _display_name(s, name_map)
             df_s = df[df["Sample"] == s]
             transform = rotation_store.get(
                 s, rotation_store.get("__all__", {"angle": 0, "flip_h": False, "flip_v": False}))
@@ -1693,22 +2405,20 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                                              rotation_deg=transform.get("angle", 0),
                                              flip_h=transform.get("flip_h", False),
                                              flip_v=transform.get("flip_v", False),
-                                             title=s, embed_legend=True,
+                                             title=display_s, embed_legend=True,
                                              cluster_to_idx=cluster_to_idx,
                                              discrete_cscale=discrete_cscale)
             n = len(samples)
             flex_basis = f"{max(30, 90 // n)}%"
             init_cfg = dict(fs_config)
             init_cfg["toImageButtonOptions"] = dict(init_cfg["toImageButtonOptions"],
-                                                     filename=f"Spatial_{s}")
+                                                     filename=f"Spatial_{display_s}")
             init_graphs.append(
                 html.Div(
                     style={"flex": f"1 1 {flex_basis}", "minWidth": "350px",
                             "border": "1px solid #dee2e6", "borderRadius": "6px",
                             "padding": "5px", "backgroundColor": "#fff"},
                     children=[
-                        html.H6(s, className="text-center mb-1",
-                                 style={"fontWeight": "600"}),
                         dcc.Graph(figure=fig, style={"height": "60vh"}, config=init_cfg),
                     ],
                 )
@@ -1718,39 +2428,41 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
             children=init_graphs,
         )
 
-        # フルスクリーン用サンプル別コントロール（Accordion）
-        fs_accordion_items = []
-        for s in samples:
+        # フルスクリーン用サンプル別コントロール（1つのAccordionItemに統合）
+        name_map = _interactive_data.get("_name_map") or {}
+        fs_all_controls = []
+        for i, s in enumerate(samples):
             t = rotation_store.get(
                 s, rotation_store.get("__all__", {"angle": 0, "flip_h": False, "flip_v": False}))
             if isinstance(t, (int, float)):
                 t = {"angle": int(t), "flip_h": False, "flip_v": False}
-            fs_accordion_items.append(
-                dbc.AccordionItem(
-                    title=f"回転/反転: {s}",
-                    children=[html.Div(
-                        style={"padding": "4px 8px"},
-                        children=[
-                            dcc.Slider(
-                                id={"type": "per_sample_rotation", "index": s},
-                                min=0, max=270, step=90,
-                                value=t.get("angle", 0),
-                                marks={0: "0°", 90: "90°", 180: "180°", 270: "270°"},
+            display_s = _display_name(s, name_map)
+            fs_all_controls.append(
+                html.Div(
+                    style={"padding": "4px 8px"},
+                    children=[
+                        html.Label(display_s or s, className="fw-bold small mb-1"),
+                        dcc.Slider(
+                            id={"type": "per_sample_rotation", "index": s},
+                            min=0, max=270, step=90,
+                            value=t.get("angle", 0),
+                            marks={0: "0°", 90: "90°", 180: "180°", 270: "270°"},
+                        ),
+                        html.Div(className="d-flex gap-2 justify-content-center", children=[
+                            dbc.Checkbox(
+                                id={"type": "per_sample_flip_h", "index": s},
+                                label="↔ 左右", value=t.get("flip_h", False),
                             ),
-                            html.Div(className="d-flex gap-2 justify-content-center", children=[
-                                dbc.Checkbox(
-                                    id={"type": "per_sample_flip_h", "index": s},
-                                    label="↔ 左右", value=t.get("flip_h", False),
-                                ),
-                                dbc.Checkbox(
-                                    id={"type": "per_sample_flip_v", "index": s},
-                                    label="↕ 上下", value=t.get("flip_v", False),
-                                ),
-                            ]),
-                        ],
-                    )],
+                            dbc.Checkbox(
+                                id={"type": "per_sample_flip_v", "index": s},
+                                label="↕ 上下", value=t.get("flip_v", False),
+                            ),
+                        ]),
+                        html.Hr(className="my-1") if i < len(samples) - 1 else html.Div(),
+                    ],
                 )
             )
+        fs_accordion_items = [dbc.AccordionItem(title="回転/反転", children=fs_all_controls)]
 
         body = html.Div([
             dbc.Row(className="mb-2 align-items-center", children=[
@@ -1867,6 +2579,24 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
 
 
 # ---------------------------------------------------------------------------
+# フルスクリーン閉鎖 → メインプロット再描画トリガー
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("fullscreen_closed_trigger", "data"),
+    Input("fullscreen_plot_modal", "is_open"),
+    State("fullscreen_closed_trigger", "data"),
+    prevent_initial_call=True,
+)
+def on_fullscreen_close(is_open, current_val):
+    """フルスクリーンモーダルが閉じた時にトリガー値をインクリメントし、
+    メインプロットの再描画をトリガーする"""
+    if not is_open:
+        return (current_val or 0) + 1
+    return no_update
+
+
+# ---------------------------------------------------------------------------
 # フルスクリーン UMAP インタラクティブ更新
 # ---------------------------------------------------------------------------
 
@@ -1882,16 +2612,19 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
      Input("fs_umap_marker_size", "value"),
      Input("fs_umap_exclude_cluster", "value"),
      Input("fs_umap_label_size", "value")],
+    [State("custom_color_map_store", "data")],
     prevent_initial_call=True,
 )
 def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
-                   height_val, width_val, marker_size, exclude_clusters, label_size):
+                   height_val, width_val, marker_size, exclude_clusters, label_size,
+                   custom_color_map):
     height_val = height_val or 78
     width_val = width_val or 95
     df = _interactive_data.get("plot_data")
     if df is None:
         return ""
-    color_map = _get_cluster_color_map(df["Cluster"])
+    custom_colors = custom_color_map if custom_color_map else None
+    color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
     fs_config = {"scrollZoom": True, "edits": {"annotationPosition": True}, "toImageButtonOptions": {"format": "png", "scale": 3}}
     all_pos = _load_label_positions()
 
@@ -1905,7 +2638,8 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
                                           marker_size=marker_size or 2,
                                           exclude_clusters=exclude_clusters,
                                           label_size=label_size or 14,
-                                          saved_positions=all_pos.get("umap_integrated"))
+                                          saved_positions=all_pos.get("umap_integrated"),
+                                          custom_colors=custom_colors)
         fs_cfg = dict(fs_config)
         fs_cfg["toImageButtonOptions"] = dict(fs_cfg["toImageButtonOptions"],
                                                filename=f"UMAP_{umap_title}")
@@ -1915,12 +2649,15 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
         )
     else:
         per_h = max(height_val // 2, 25)
+        name_map = _interactive_data.get("_name_map") or {}
         graphs = _build_umap_per_sample_graphs(df, color_map, highlight,
                                                 show_labels, graph_height=f"{per_h}vh",
                                                 marker_size=marker_size or 2,
                                                 exclude_clusters=exclude_clusters,
                                                 label_size=label_size or 11,
-                                                saved_positions=all_pos.get("umap_per_sample"))
+                                                saved_positions=all_pos.get("umap_per_sample"),
+                                                show_legend=bool(show_legend),
+                                                name_map=name_map)
         return html.Div(
             style={"display": "flex", "flexWrap": "wrap", "gap": "15px",
                    "width": f"{width_val}vw", "margin": "0 auto"},
@@ -1943,18 +2680,19 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
      Input("fs_spatial_height_slider", "value"),
      Input("fs_spatial_width_slider", "value"),
      Input("fs_spatial_label_size", "value")],
+    State("custom_color_map_store", "data"),
     prevent_initial_call=True,
 )
 def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                       exclude_clusters, marker_size, height_val, width_val,
-                      label_size):
+                      label_size, custom_colors):
     height_val = height_val or 60
     width_val = width_val or 95
     df = _interactive_data.get("plot_data")
     if df is None or "SpatialX" not in df.columns:
         return ""
-    color_map = _get_cluster_color_map(df["Cluster"])
-    cluster_to_idx, discrete_cscale = _get_cluster_colorscale(df["Cluster"])
+    color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
+    cluster_to_idx, discrete_cscale = _get_cluster_colorscale(df["Cluster"], custom_colors)
     all_pos = _load_label_positions()
     spatial_pos = all_pos.get("spatial", {})
     if not rotation_store:
@@ -1966,8 +2704,10 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
         samples_to_show = sorted(df["Sample"].unique())
 
     fs_config = {"scrollZoom": True, "edits": {"annotationPosition": True}, "toImageButtonOptions": {"format": "png", "scale": 3}}
+    name_map = _interactive_data.get("_name_map") or {}
     graphs = []
     for s in samples_to_show:
+        display_s = _display_name(s, name_map)
         df_s = df[df["Sample"] == s]
         transform = rotation_store.get(
             s, rotation_store.get("__all__", {"angle": 0, "flip_h": False, "flip_v": False}))
@@ -1978,7 +2718,7 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                                          show_labels=show_labels,
                                          flip_h=transform.get("flip_h", False),
                                          flip_v=transform.get("flip_v", False),
-                                         title=s, embed_legend=True,
+                                         title=display_s, embed_legend=True,
                                          cluster_to_idx=cluster_to_idx,
                                          discrete_cscale=discrete_cscale,
                                          marker_size=marker_size or 0,
@@ -1989,14 +2729,13 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
         flex_basis = f"{max(30, 90 // n)}%"
         fs_cfg = dict(fs_config)
         fs_cfg["toImageButtonOptions"] = dict(fs_cfg["toImageButtonOptions"],
-                                               filename=f"Spatial_{s}")
+                                               filename=f"Spatial_{display_s}")
         graphs.append(
             html.Div(
                 style={"flex": f"1 1 {flex_basis}", "minWidth": "350px",
                         "border": "1px solid #dee2e6", "borderRadius": "6px",
                         "padding": "5px", "backgroundColor": "#fff"},
                 children=[
-                    html.H6(s, className="text-center mb-1", style={"fontWeight": "600"}),
                     dcc.Graph(id={"type": "fs_spatial_graph", "index": s},
                               figure=fig, style={"height": f"{height_val}vh"}, config=fs_cfg),
                 ],

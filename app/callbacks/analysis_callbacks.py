@@ -69,6 +69,7 @@ _process_state = {
      State("reanalysis_logfc_thresh", "value"),
      State("reanalysis_ion_mode", "value"),
      State("reanalysis_tolerance_mz", "value"),
+     State("default_annotation_csv", "value"),
      State("desi_v8_script_path", "value"),
      State("desi_cluster_filter_script_path", "value"),
      State("tims_v8_script_path", "value"),
@@ -88,6 +89,7 @@ def run_analysis(
     ion_mode, tolerance_mz,
     reanalysis_p_thresh, reanalysis_logfc_thresh,
     reanalysis_ion_mode, reanalysis_tolerance_mz,
+    annotation_csv,
     desi_v8_script, desi_cluster_script,
     tims_v8_script, tims_cluster_script,
     app_state,
@@ -196,6 +198,14 @@ def run_analysis(
             if analysis_type == "tims_v8":
                 params["ion_mode"] = ion_mode or "Positive"
                 params["tolerance_mz"] = float(tolerance_mz) if tolerance_mz else 0.01
+                # INPUT_PATHS: data_folder内のファイルのフルパスリスト
+                from app.services.data_manager import build_tims_input_paths
+                params["input_paths"] = build_tims_input_paths(data_folder)
+                # OUTPUT_DIR: TIMSスクリプトはOUTPUT_DIR（大文字）を使用
+                params["output_dir_var"] = "OUTPUT_DIR"
+                # ANNOTATION_CSV_PATH: UIの初期設定から取得
+                if annotation_csv:
+                    params["annotation_csv_path"] = annotation_csv
 
             config_path = generate_v8_config(params, full_output_dir)
 
@@ -226,6 +236,16 @@ def run_analysis(
                 "target_clusters": clusters,
                 "sample_names": sample_names,
             }
+
+            # TIMSクラスターフィルター固有パラメータ
+            if analysis_type == "tims_cluster_filter":
+                from app.services.data_manager import build_tims_input_paths
+                src_folder = reanalysis_data_folder or data_folder
+                params["original_input_paths"] = build_tims_input_paths(src_folder)
+                params["export_data_dir"] = full_output_dir
+                # RDS_RUN_DIR: rds_pathの親ディレクトリから推定
+                if rds_path:
+                    params["rds_run_dir"] = str(Path(rds_path).parent)
 
             config_path = generate_cluster_filter_config(params, full_output_dir)
 

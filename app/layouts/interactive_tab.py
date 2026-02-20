@@ -82,22 +82,33 @@ def create_interactive_tab():
             id="interactive_viz_container",
             style={"display": "none"},
             children=[
-                # 統合手法ヘッダーバー（結果エリア上部）
-                html.Div(
-                    className="card mb-2",
-                    style={"padding": "10px 15px", "display": "flex",
-                           "flexDirection": "row", "alignItems": "center", "gap": "15px"},
-                    children=[
-                        html.H5("統合手法", className="mb-0",
-                                style={"whiteSpace": "nowrap"}),
-                        dbc.RadioItems(
-                            id="interactive_integration_method",
-                            options=[],
-                            value=None,
-                            inline=True,
+                # 統合手法ヘッダーバー（結果エリア上部 — 折りたたみ可能）
+                html.Div([
+                    dbc.Button(
+                        "解析手法 ▼",
+                        id="toggle_integration_method",
+                        color="light",
+                        className="w-100 text-start fw-bold",
+                        size="sm",
+                    ),
+                    dbc.Collapse(
+                        html.Div(
+                            style={"display": "flex", "flexDirection": "row",
+                                   "alignItems": "center", "gap": "15px",
+                                   "padding": "8px 0"},
+                            children=[
+                                dbc.RadioItems(
+                                    id="interactive_integration_method",
+                                    options=[],
+                                    value=None,
+                                    inline=True,
+                                ),
+                            ],
                         ),
-                    ],
-                ),
+                        id="integration_method_collapse",
+                        is_open=True,
+                    ),
+                ], className="mb-2"),
 
                 dbc.Row(className="mt-3", children=[
                     # UMAP プロット
@@ -178,6 +189,8 @@ def create_interactive_tab():
                                 ]),
                             ]),
                             html.Div(children=[
+                                # UMAP側サンプル名変更コンテナ（グラフの上に配置）
+                                html.Div(id="umap_name_controls_container"),
                                 html.Div(id="umap_integrated_wrapper", children=[
                                     dcc.Loading(
                                         dcc.Graph(id="interactive_umap_plot",
@@ -298,40 +311,61 @@ def create_interactive_tab():
                     ]),
                 ]),
 
-                # Feature プロット
+                # Feature プロット（Spatial表示）
                 dbc.Row(className="mt-3", children=[
-                    dbc.Col(width=6, children=[
+                    dbc.Col(width=12, children=[
                         html.Div(className="card", children=[
                             html.Div(className="d-flex justify-content-between align-items-center", children=[
                                 html.H5("Feature Plot", className="mb-0"),
                                 dbc.Button("⤢", id="expand_feature_btn", size="sm", color="light",
                                            style={"fontSize": "1.2rem", "padding": "2px 8px", "lineHeight": "1"}),
                             ]),
-                            dbc.Row(className="mt-2", children=[
-                                dbc.Col(width=8, children=[
+                            dbc.Row(className="mt-2 align-items-center", children=[
+                                dbc.Col(width=3, children=[
                                     dcc.Dropdown(
                                         id="feature_select",
                                         placeholder="m/z Feature を検索・選択",
                                         search_value="",
                                     ),
                                 ]),
-                                dbc.Col(width=4, children=[
+                                dbc.Col(width=2, children=[
+                                    dcc.Dropdown(
+                                        id="feature_sample_select",
+                                        placeholder="サンプル（空=全表示）",
+                                        clearable=True,
+                                    ),
+                                ]),
+                                dbc.Col(width=3, children=[
+                                    dbc.Label("マーカーサイズ", className="small mb-0"),
+                                    dcc.Slider(
+                                        id="feature_marker_size",
+                                        min=1, max=15, step=1, value=3,
+                                        marks={1: "1", 3: "3", 5: "5", 10: "10", 15: "15"},
+                                        tooltip={"placement": "bottom", "always_visible": False},
+                                    ),
+                                ]),
+                                dbc.Col(width=1, children=[
                                     dbc.Button("表示", id="show_feature_plot",
                                                size="sm", color="primary"),
                                 ]),
                             ]),
-                            dcc.Loading(
-                                dcc.Graph(id="feature_plot",
-                                          style={"height": "350px"},
-                                          config={
-                                              "scrollZoom": True,
-                                              "toImageButtonOptions": {
-                                                  "format": "png",
-                                                  "filename": "Feature_plot",
-                                                  "scale": 3,
-                                              },
-                                          }),
-                            ),
+                            dbc.Row(className="mt-1 align-items-center", children=[
+                                dbc.Col(width=2, children=[
+                                    dbc.Label("m/z 最小値", className="small mb-0"),
+                                    dbc.Input(id="feature_mz_min", type="number",
+                                              placeholder="例: 100", size="sm"),
+                                ]),
+                                dbc.Col(width=2, children=[
+                                    dbc.Label("m/z 最大値", className="small mb-0"),
+                                    dbc.Input(id="feature_mz_max", type="number",
+                                              placeholder="例: 900", size="sm"),
+                                ]),
+                                dbc.Col(width=2, className="d-flex align-items-end", children=[
+                                    dbc.Button("絞り込み", id="apply_feature_mz_filter",
+                                               size="sm", color="info", className="mb-1"),
+                                ]),
+                            ]),
+                            dcc.Loading(html.Div(id="feature_plot_container")),
                         ]),
                     ]),
                 ]),
@@ -534,8 +568,16 @@ def create_interactive_tab():
         dcc.Store(id="last_spatial_figure_store", data=None),
         # Spatial回転角度の保持（サンプル別）
         dcc.Store(id="spatial_rotation_store", data={}),
+        # サンプル名の表示名マッピング（{"元名": "表示名", ...}）
+        dcc.Store(id="sample_name_map_store", data={}),
         # ラベル位置保存ステータス
         dcc.Store(id="label_pos_save_status", data=None),
+        # Feature Plot m/zフィルタ結果リスト
+        dcc.Store(id="feature_mz_filtered_list", data=None),
+        # カスタムクラスタ色マッピング（{"0": "#FF0000", ...}）
+        dcc.Store(id="custom_color_map_store", data={}),
+        # フルスクリーン閉じトリガー
+        dcc.Store(id="fullscreen_closed_trigger", data=0),
         # CSVダウンロード用
         dcc.Download(id="download_csv"),
         dcc.Download(id="download_html"),

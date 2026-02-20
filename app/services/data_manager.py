@@ -29,6 +29,18 @@ def list_tims_files(data_folder: str) -> list[str]:
     return sorted(files)
 
 
+def build_tims_input_paths(data_folder: str) -> list[str]:
+    """データフォルダ内のTIMSファイルのフルパスリストを返す。
+    Rスクリプトの INPUT_PATHS / ORIGINAL_INPUT_PATHS に対応。
+    """
+    folder = Path(data_folder)
+    if not folder.is_dir():
+        return []
+    extensions = {".parquet", ".pq", ".csv", ".tsv", ".txt"}
+    files = [str(f) for f in folder.iterdir() if f.suffix.lower() in extensions]
+    return sorted(files)
+
+
 def validate_msi_file(file_path: str) -> dict:
     """MSIファイルの妥当性チェック"""
     path = Path(file_path)

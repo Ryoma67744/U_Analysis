@@ -24,6 +24,12 @@ suppressPackageStartupMessages(library(Seurat))
 
 obj <- readRDS(rds_path)
 
+# TIMS ver13 互換: list(obj=seu, ...) 形式の場合、Seuratオブジェクトを取り出す
+if (is.list(obj) && !inherits(obj, "Seurat") && "obj" %in% names(obj)) {
+  cat("Detected list-wrapped Seurat object. Extracting $obj...\n")
+  obj <- obj$obj
+}
+
 # --- UMAP coordinates ---
 has_umap <- "umap" %in% names(obj@reductions)
 if (has_umap) {
@@ -42,14 +48,21 @@ meta <- obj@meta.data
 cell_ids <- rownames(meta)
 
 # --- Sample identification ---
-# meta$sample を優先（複数切片のマージ時に orig.ident が単一値になるケースがある）
-# フォールバック: orig.ident
+# 最もユニーク数が多い列を Sample として採用する
+# 優先順: slice_id > condition > sample > orig.ident
 sample_col <- as.character(meta$orig.ident)
-if ("sample" %in% colnames(meta)) {
-  sample_candidate <- as.character(meta$sample)
-  if (length(unique(sample_candidate)) > length(unique(sample_col))) {
-    sample_col <- sample_candidate
-    cat("Using meta$sample for Sample column (", length(unique(sample_col)), " samples)\n")
+best_n <- length(unique(sample_col))
+
+candidate_cols <- c("sample", "condition", "slice_id")
+for (cname in candidate_cols) {
+  if (cname %in% colnames(meta)) {
+    cand <- as.character(meta[[cname]])
+    n_unique <- length(unique(cand[!is.na(cand) & nzchar(cand)]))
+    if (n_unique > best_n) {
+      sample_col <- cand
+      best_n <- n_unique
+      cat("Using meta$", cname, " for Sample column (", n_unique, " samples)\n", sep = "")
+    }
   }
 }
 

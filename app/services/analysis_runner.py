@@ -67,8 +67,8 @@ def _replace_sample_names_block(
             end_idx = i
             break
 
-    # 新しいブロックを構築
-    quoted = [f'  "{name}"' for name in sample_names]
+    # 新しいブロックを構築（バックスラッシュをエスケープ: \ → \\）
+    quoted = [f'  "{name.replace(chr(92), chr(92)*2)}"' for name in sample_names]
     new_block = f"{var_name} <- c(\n" + ",\n".join(quoted) + "\n)"
     new_block_lines = new_block.split("\n")
 
