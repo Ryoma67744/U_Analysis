@@ -150,6 +150,7 @@ def create_main_layout():
 
                         # 通知用 Toast
                         dbc.Toast(
+                            "",
                             id="notification_toast",
                             header="通知",
                             is_open=False,

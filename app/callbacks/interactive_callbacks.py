@@ -52,6 +52,29 @@ def _get_cluster_color_map(clusters, custom_colors=None):
     return cmap
 
 
+def _is_meaningful_annotation(ann, gene=""):
+    """annotation値が表示価値のある化合物名かどうかを判定。
+    数値のみのアノテーション(例: "240.984")や空文字は除外する。"""
+    if not ann or not isinstance(ann, str):
+        return False
+    ann = ann.strip()
+    if not ann:
+        return False
+    # 数値のみ（小数点含む）は無意味なアノテーション
+    if re.match(r'^[\d.]+$', ann):
+        return False
+    # geneと同一テキストも除外
+    if ann == gene:
+        return False
+    return True
+
+
+def _extract_mz_numeric(f):
+    """フィーチャー名から数値部分(m/z値)を抽出してソート用floatを返す"""
+    match = re.search(r"(\d+\.?\d*)", f)
+    return float(match.group(1)) if match else float("inf")
+
+
 def _get_label_positions_path():
     """label_positions.json のパスを返す（RDSと同ディレクトリ）"""
     rds_path = _interactive_data.get("rds_path")
@@ -69,6 +92,42 @@ def _load_label_positions():
         except Exception:
             return {}
     return {}
+
+
+def _get_interactive_settings_path():
+    """interactive_settings.json のパスを返す（RDSと同ディレクトリ）"""
+    rds_path = _interactive_data.get("rds_path")
+    if not rds_path:
+        return None
+    return Path(rds_path).parent / "interactive_settings.json"
+
+
+def _load_interactive_settings():
+    """interactive_settings.json を読み込み。ファイルなし/エラー時は空dict"""
+    path = _get_interactive_settings_path()
+    if path and path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_interactive_settings(key, value):
+    """interactive_settings.json の指定キーを更新して書き込む"""
+    path = _get_interactive_settings_path()
+    if not path:
+        return
+    try:
+        existing = _load_interactive_settings()
+        existing[key] = value
+        existing["_saved_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        path.write_text(
+            json.dumps(existing, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
 
 
 def _extract_annotation_positions(relayout_data):
@@ -326,7 +385,13 @@ def toggle_integration_method(n, is_open):
      Output("spatial_exclude_cluster", "options"),
      Output("spatial_highlight_cluster", "options"),
      Output("umap_exclude_cluster", "options"),
-     Output("feature_sample_select", "options")],
+     Output("feature_sample_select", "options"),
+     Output("deg_no_data_message", "style"),
+     Output("feature_cluster_filter", "options"),
+     Output("sample_name_map_store", "data", allow_duplicate=True),
+     Output("spatial_rotation_store", "data", allow_duplicate=True),
+     Output("custom_color_map_store", "data", allow_duplicate=True),
+     Output("feature_history_store", "data", allow_duplicate=True)],
     [Input("load_interactive_data", "n_clicks"),
      Input("interactive_integration_method", "value"),
      Input("interactive_rds_map", "data")],
@@ -334,12 +399,14 @@ def toggle_integration_method(n, is_open):
     prevent_initial_call=True,
 )
 def load_interactive_data(n_clicks, integration_method, rds_map, result_folder):
-    _n_out = 13
+    _n_out = 19
     if not integration_method or not rds_map:
         return (
             "統合手法を選択してください（結果フォルダをスキャンしてください）",
             {"display": "none"}, [], [], [], None, None, None,
             {"display": "none"}, [], [], [], [],
+            {"display": "none"}, [],
+            no_update, no_update, no_update, no_update,
         )
 
     rds_path = rds_map.get(integration_method)
@@ -348,6 +415,8 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder):
             f"RDSファイルが見つかりません: {integration_method}",
             {"display": "none"}, [], [], [], None, None, None,
             {"display": "none"}, [], [], [], [],
+            {"display": "none"}, [],
+            no_update, no_update, no_update, no_update,
         )
 
     try:
@@ -384,7 +453,6 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder):
 
         # DEG 結果を探す（選択した統合手法のフォルダを優先）
         deg_data = None
-        deg_style = {"display": "none"}
         if result_folder:
             result_base = Path(result_folder)
             deg_data = _load_deg_results(result_base, integration_method)
@@ -392,8 +460,26 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder):
             rds_dir = Path(rds_path).parent
             result_base = rds_dir.parent if rds_dir.name == "RDS_Files" else rds_dir
             deg_data = _load_deg_results(result_base, integration_method)
+
+        # DEGセクションは常に表示、データ有無でメッセージ切替
+        deg_section_style = {}  # 常に表示
+        deg_no_data_style = {"display": "none"} if deg_data else {}
+        # クラスタフィルタ選択肢（DEGデータから生成）
+        cluster_filter_opts = []
         if deg_data:
-            deg_style = {}
+            deg_clusters = sorted(set(str(r.get("cluster", "")) for r in deg_data), key=_cluster_sort_key)
+            cluster_filter_opts = [
+                {"label": f"Cluster {c}", "value": c} for c in deg_clusters
+            ]
+
+        # 保存済み設定を読み込み（初回ロード時にStoreへ復元）
+        saved = _load_interactive_settings()
+        restored_name_map = saved.get("sample_name_map", {})
+        restored_rotation = saved.get("spatial_rotation", {})
+        restored_colors = saved.get("custom_color_map", {})
+        restored_bookmarks = saved.get("feature_bookmarks", [])
+        if restored_name_map:
+            _interactive_data["_name_map"] = restored_name_map
 
         return (
             info_text,
@@ -404,11 +490,17 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder):
             rds_path,
             str(result.get("cache_dir", "")),
             deg_data,
-            deg_style,
+            deg_section_style,
             cluster_options,  # spatial_exclude_cluster用
             cluster_options,  # spatial_highlight_cluster用
             cluster_options,  # umap_exclude_cluster用
             sample_options,   # feature_sample_select用
+            deg_no_data_style,
+            cluster_filter_opts,
+            restored_name_map,
+            restored_rotation,
+            restored_colors,
+            restored_bookmarks,
         )
 
     except Exception as e:
@@ -416,22 +508,105 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder):
             f"読み込みエラー: {e}",
             {"display": "none"}, [], [], [], None, None, None,
             {"display": "none"}, [], [], [], [],
+            {"display": "none"}, [],
+            no_update, no_update, no_update, no_update,
         )
+
+
+def _standardize_deg_df(df: pd.DataFrame) -> list[dict] | None:
+    """DEG DataFrame の列名を標準化し、dict のリストとして返す。
+    CSV / RDS 両方の読み込みから共通で使用する。"""
+    try:
+        # 列名を標準化
+        col_map = {}
+        for col in df.columns:
+            cl = col.lower().strip()
+            if cl in ("gene", "row.names", "x", "...1"):
+                col_map[col] = "gene"
+            elif "cluster" in cl:
+                col_map[col] = "cluster"
+            elif "avg_log2fc" in cl or "avg_logfc" in cl:
+                col_map[col] = "avg_log2FC"
+            elif "p_val_adj" in cl:
+                col_map[col] = "p_val_adj"
+            elif cl == "pct.1":
+                col_map[col] = "pct.1"
+            elif cl == "pct.2":
+                col_map[col] = "pct.2"
+
+        df = df.rename(columns=col_map)
+        # gene列がない場合、最初の列をgeneとする
+        if "gene" not in df.columns and len(df.columns) > 0:
+            df = df.rename(columns={df.columns[0]: "gene"})
+
+        # 必要な列のみ抽出
+        keep = [c for c in ["gene", "cluster", "avg_log2FC", "p_val_adj",
+                             "pct.1", "pct.2", "annotation"] if c in df.columns]
+        df = df[keep]
+
+        # 数値列を丸める
+        for col in ["avg_log2FC", "p_val_adj", "pct.1", "pct.2"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+                if col == "p_val_adj":
+                    # Volcano Plot用に元の数値を保持
+                    df["p_val_adj_raw"] = df[col].copy()
+                    # テーブル表示用に科学記数法文字列へ変換
+                    df[col] = df[col].map(
+                        lambda x: f"{x:.2e}" if pd.notna(x) else ""
+                    )
+                else:
+                    df[col] = df[col].round(4)
+
+        return df.to_dict("records")
+    except Exception as e:
+        print(f"[DEG] _standardize_deg_df エラー: {e}")
+        import traceback; traceback.print_exc()
+        return None
+
+
+def _read_deg_rds(rds_path: Path) -> list[dict] | None:
+    """TIMS ver13 が出力する deg_FindAllMarkers_raw_*.rds を読み込む。
+    R subprocess で RDS → 一時CSV → pandas DataFrame に変換。"""
+    import subprocess
+    import tempfile
+
+    tmp_csv = Path(tempfile.mktemp(suffix=".csv"))
+    try:
+        r_cmd = (
+            f'deg <- readRDS("{rds_path.as_posix()}");\n'
+            f'write.csv(deg, "{tmp_csv.as_posix()}", row.names=TRUE)'
+        )
+        result = subprocess.run(
+            ["Rscript", "-e", r_cmd],
+            capture_output=True, timeout=30,
+        )
+        if not tmp_csv.exists():
+            return None
+        df = pd.read_csv(tmp_csv)
+        return _standardize_deg_df(df)
+    except Exception:
+        return None
+    finally:
+        tmp_csv.unlink(missing_ok=True)
 
 
 def _load_deg_results(
     result_base: Path, integration_method: str | None = None
 ) -> list[dict] | None:
-    """解析結果フォルダ内の DEG CSV を読み込む"""
+    """解析結果フォルダ内の DEG CSV / RDS を読み込む"""
     # 選択した統合手法のフォルダを優先検索
     if integration_method and integration_method in ("Harmony", "RPCA", "PCA"):
         method_dir = integration_method
     else:
         method_dir = "Harmony"
 
-    search_patterns = [
+    # --- 1. CSV ファイル検索 ---
+    csv_patterns = [
         f"{method_dir}/*deg*markers*.csv",
         f"{method_dir}/*top*markers*.csv",
+        f"{method_dir}/markers_annotated*.csv",
+        f"{method_dir}/markers_mz_only*.csv",
         "Harmony/*deg*markers*.csv",
         "Harmony/*top*markers*.csv",
         "RPCA/*deg*markers*.csv",
@@ -440,56 +615,87 @@ def _load_deg_results(
         "PCA/*top*markers*.csv",
         "*deg*markers*.csv",
         "*top*markers*.csv",
+        "markers_annotated*.csv",
+        "markers_mz_only*.csv",
     ]
-    for pattern in search_patterns:
-        matches = list(result_base.glob(pattern))
+
+    def _try_load_csv(matches):
+        """マッチしたCSVファイルの読み込みを試行"""
+        for csv_path in matches:
+            try:
+                df = pd.read_csv(csv_path)
+                print(f"[DEG] CSV発見: {csv_path} (列: {list(df.columns)}, 行数: {len(df)})")
+                result = _standardize_deg_df(df)
+                if result:
+                    print(f"[DEG] 読み込み成功: {len(result)} レコード")
+                    return result
+                else:
+                    print(f"[DEG] _standardize_deg_df が None を返しました: {csv_path}")
+            except Exception as e:
+                print(f"[DEG] CSV読み込みエラー: {csv_path} — {e}")
+        return None
+
+    # 第1段階: result_base 直下を glob で検索
+    for pattern in csv_patterns:
+        matches = sorted(result_base.glob(pattern))
+        if matches:
+            result = _try_load_csv(matches)
+            if result:
+                return result
+
+    # 第2段階: result_base 以下を rglob で再帰検索
+    # （TIMS ver13 は日付サブフォルダ内に出力するため）
+    rglob_csv_names = [
+        "markers_annotated*.csv",
+        "markers_mz_only*.csv",
+        "*deg*markers*.csv",
+        "*top*markers*.csv",
+    ]
+    for name_pattern in rglob_csv_names:
+        matches = sorted(result_base.rglob(name_pattern))
+        if matches:
+            # 選択した統合手法のフォルダ内を優先
+            method_lower = method_dir.lower()
+            prioritized = [m for m in matches if method_lower in m.parent.name.lower()]
+            ordered = prioritized + [m for m in matches if m not in prioritized]
+            result = _try_load_csv(ordered)
+            if result:
+                return result
+
+    # --- 2. DEG RDS ファイル検索（TIMS ver13 が出力する deg_FindAllMarkers_raw_*.rds） ---
+    rds_patterns = [
+        f"{method_dir}/deg_FindAllMarkers_raw_*.rds",
+        "RDS_Files/deg_FindAllMarkers_raw_*.rds",
+        "deg_FindAllMarkers_raw_*.rds",
+    ]
+    for pattern in rds_patterns:
+        matches = sorted(result_base.glob(pattern))
         if matches:
             try:
-                df = pd.read_csv(matches[0])
-                # 列名を標準化
-                col_map = {}
-                for col in df.columns:
-                    cl = col.lower().strip()
-                    if cl in ("gene", "row.names", "x", "...1"):
-                        col_map[col] = "gene"
-                    elif "cluster" in cl:
-                        col_map[col] = "cluster"
-                    elif "avg_log2fc" in cl or "avg_logfc" in cl:
-                        col_map[col] = "avg_log2FC"
-                    elif "p_val_adj" in cl:
-                        col_map[col] = "p_val_adj"
-                    elif cl == "pct.1":
-                        col_map[col] = "pct.1"
-                    elif cl == "pct.2":
-                        col_map[col] = "pct.2"
-
-                df = df.rename(columns=col_map)
-                # gene列がない場合、最初の列をgeneとする
-                if "gene" not in df.columns and len(df.columns) > 0:
-                    df = df.rename(columns={df.columns[0]: "gene"})
-
-                # 必要な列のみ抽出
-                keep = [c for c in ["gene", "cluster", "avg_log2FC", "p_val_adj",
-                                     "pct.1", "pct.2"] if c in df.columns]
-                df = df[keep]
-
-                # 数値列を丸める
-                for col in ["avg_log2FC", "p_val_adj", "pct.1", "pct.2"]:
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors="coerce")
-                        if col == "p_val_adj":
-                            # Volcano Plot用に元の数値を保持
-                            df["p_val_adj_raw"] = df[col].copy()
-                            # テーブル表示用に科学記数法文字列へ変換
-                            df[col] = df[col].map(
-                                lambda x: f"{x:.2e}" if pd.notna(x) else ""
-                            )
-                        else:
-                            df[col] = df[col].round(4)
-
-                return df.to_dict("records")
-            except Exception:
+                print(f"[DEG] RDS発見: {matches[0]}")
+                result = _read_deg_rds(matches[0])
+                if result:
+                    print(f"[DEG] RDS読み込み成功: {len(result)} レコード")
+                    return result
+                else:
+                    print(f"[DEG] _read_deg_rds が None を返しました: {matches[0]}")
+            except Exception as e:
+                print(f"[DEG] RDS読み込みエラー: {matches[0]} — {e}")
                 continue
+
+    # 第2段階(RDS): rglob でサブフォルダも再帰検索
+    rds_rglob_matches = sorted(result_base.rglob("deg_FindAllMarkers_raw_*.rds"))
+    if rds_rglob_matches:
+        try:
+            print(f"[DEG] RDS発見(rglob): {rds_rglob_matches[0]}")
+            result = _read_deg_rds(rds_rglob_matches[0])
+            if result:
+                print(f"[DEG] RDS読み込み成功: {len(result)} レコード")
+                return result
+        except Exception as e:
+            print(f"[DEG] RDS読み込みエラー(rglob): {rds_rglob_matches[0]} — {e}")
+
+    print(f"[DEG] result_base={result_base}, method_dir={method_dir} — DEGファイル見つからず")
     return None
 
 
@@ -499,28 +705,140 @@ def _load_deg_results(
 
 @callback(
     Output("feature_select", "options", allow_duplicate=True),
-    Input("feature_select", "search_value"),
-    State("feature_mz_filtered_list", "data"),
+    [Input("feature_select", "search_value"),
+     Input("feature_filter_mode", "value"),
+     Input("feature_cluster_filter", "value")],
+    [State("feature_mz_filtered_list", "data"),
+     State("deg_data_store", "data")],
     prevent_initial_call=True,
 )
-def filter_features(search_value, mz_filtered):
+def filter_features(search_value, filter_mode, cluster_filter,
+                    mz_filtered, deg_data):
     """フィーチャードロップダウンの検索値に基づいてオプションをフィルタ"""
     features = _interactive_data.get("features_list")
     if not features:
         return []
 
-    # m/zフィルタ適用済みリストがあればそれをベースにする
-    if mz_filtered:
-        features = mz_filtered
+    # annotation マッピングを構築（deg_dataから）
+    ann_map = {}
+    if deg_data:
+        for r in deg_data:
+            gene = r.get("gene", "")
+            ann = r.get("annotation", "")
+            if gene and _is_meaningful_annotation(ann, gene):
+                ann_map[gene] = ann
 
+    def _make_option(f, rank=None):
+        """フィーチャー名からドロップダウン用オプションを生成"""
+        prefix = f"★{rank} " if rank is not None else ""
+        if f in ann_map:
+            return {"label": f"{prefix}{f} ({ann_map[f]})", "value": f}
+        return {"label": f"{prefix}{f}", "value": f}
+
+    # DEGマーカーモード: クラスタのマーカーm/zのみ表示
+    top15_ordered = None
+    rest_ordered = None
+
+    if filter_mode == "deg" and deg_data:
+        if cluster_filter:
+            # 選択クラスタのDEGレコードを抽出
+            cluster_records = [
+                r for r in deg_data
+                if str(r.get("cluster", "")) == str(cluster_filter)
+            ]
+
+            # p値昇順（最も有意が先頭）、|log2FC|降順でタイブレーク
+            def _sort_key(r):
+                p = r.get("p_val_adj_raw")
+                if p is None or (isinstance(p, float) and np.isnan(p)):
+                    p = 1.0
+                fc = r.get("avg_log2FC", 0)
+                if fc is None or (isinstance(fc, float) and np.isnan(fc)):
+                    fc = 0.0
+                return (float(p), -abs(float(fc)))
+
+            cluster_records_sorted = sorted(cluster_records, key=_sort_key)
+
+            # Top 15 ユニーク遺伝子を抽出
+            seen = set()
+            top15_genes = []
+            for r in cluster_records_sorted:
+                g = str(r.get("gene", ""))
+                if g and g not in seen:
+                    seen.add(g)
+                    top15_genes.append(g)
+                    if len(top15_genes) >= 15:
+                        break
+
+            top15_set = set(top15_genes)
+            features_set = set(features)
+
+            # features_listに存在するもののみ保持
+            top15_ordered = [f for f in top15_genes if f in features_set]
+
+            # 残りのDEG遺伝子をm/z数値順でソート
+            all_deg_set = set(str(r.get("gene", "")) for r in cluster_records)
+            rest_ordered = sorted(
+                [f for f in features if f in all_deg_set and f not in top15_set],
+                key=_extract_mz_numeric,
+            )
+        else:
+            # 全クラスタのDEGマーカー（従来通り）
+            deg_genes = [str(r.get("gene", "")) for r in deg_data]
+            deg_set = set(deg_genes)
+            features = [f for f in features if f in deg_set]
+    else:
+        # 全m/zモード: m/zフィルタ適用済みリストがあればそれをベースにする
+        if mz_filtered:
+            features = mz_filtered
+
+    # --- Top15 + 残り の特別表示モード ---
+    if top15_ordered is not None:
+        if not search_value:
+            options = []
+            for rank, f in enumerate(top15_ordered, 1):
+                options.append(_make_option(f, rank=rank))
+            if top15_ordered and rest_ordered:
+                options.append({
+                    "label": "──── その他の DEG マーカー ────",
+                    "value": "__separator__",
+                    "disabled": True,
+                })
+            for f in rest_ordered[:500 - len(top15_ordered) - 1]:
+                options.append(_make_option(f))
+            return options
+        else:
+            keyword = search_value.lower()
+            options = []
+            for rank, f in enumerate(top15_ordered, 1):
+                if keyword in f.lower() or keyword in ann_map.get(f, "").lower():
+                    options.append(_make_option(f, rank=rank))
+            matched_rest = [
+                f for f in rest_ordered
+                if keyword in f.lower() or keyword in ann_map.get(f, "").lower()
+            ]
+            if options and matched_rest:
+                options.append({
+                    "label": "──── その他の DEG マーカー ────",
+                    "value": "__separator__",
+                    "disabled": True,
+                })
+            for f in matched_rest[:100]:
+                options.append(_make_option(f))
+            return options
+
+    # --- 通常モード ---
     if not search_value:
         # 検索なしの場合は全件（最大500件）
-        return [{"label": f, "value": f} for f in features[:500]]
+        return [_make_option(f) for f in features[:500]]
 
-    # 検索値でフィルタ（大文字小文字区別なし）
+    # 検索値でフィルタ（大文字小文字区別なし、アノテーションも検索対象）
     keyword = search_value.lower()
-    filtered = [f for f in features if keyword in f.lower()]
-    return [{"label": f, "value": f} for f in filtered[:100]]
+    filtered = [
+        f for f in features
+        if keyword in f.lower() or keyword in ann_map.get(f, "").lower()
+    ]
+    return [_make_option(f) for f in filtered[:100]]
 
 
 # ---------------------------------------------------------------------------
@@ -591,6 +909,20 @@ def _compact_sci(v):
     exp = int(np.floor(np.log10(abs(v))))
     coeff = v / (10 ** exp)
     return f"{coeff:.1f}e{exp}"
+
+
+def _format_plain_number(v):
+    """数値を e 表記なしのプレーンな文字列で返す。
+    0.00123 → '0.00123', 280000 → '280000', 3.5 → '3.5'"""
+    if v == 0:
+        return "0"
+    if abs(v) >= 1:
+        # 整数表示可能ならそうする
+        if v == int(v):
+            return str(int(v))
+        return f"{v:.1f}"
+    # 小数の場合、有効数字を維持しつつ e なし
+    return f"{v:.6g}"
 
 
 def _generate_umap_arrow_image():
@@ -993,7 +1325,8 @@ def update_cluster_stats(rds_path):
         return []
 
     total = len(df)
-    stats = df["Cluster"].value_counts().sort_index()
+    stats = df["Cluster"].value_counts()
+    stats = stats.reindex(sorted(stats.index, key=_cluster_sort_key))
     return [
         {"Cluster": str(c), "Pixels": int(n), "Percent": f"{n / total * 100:.1f}%"}
         for c, n in stats.items()
@@ -1568,6 +1901,7 @@ def update_custom_color_map(picker_values, swatch_clicks, current_store):
                 # 既存のピッカー値を維持
                 idx = picker_cluster_order.index(c_id)
                 updated_picker_values.append(picker_values[idx])
+        _save_interactive_settings("custom_color_map", current_store)
         return current_store, updated_picker_values
     else:
         # --- カラーピッカーが変更された場合 ---
@@ -1577,6 +1911,7 @@ def update_custom_color_map(picker_values, swatch_clicks, current_store):
             val = item.get("value")
             if val:
                 custom[str(cl)] = val
+        _save_interactive_settings("custom_color_map", custom)
         return custom, picker_values
 
 
@@ -1625,6 +1960,7 @@ def update_rotation_store_from_per_sample(rotations, flip_hs, flip_vs, current_s
             transform["flip_v"] = bool(fv_input.get("value", False))
 
     current_store[sample_name] = transform
+    _save_interactive_settings("spatial_rotation", current_store)
     return current_store
 
 
@@ -1669,6 +2005,7 @@ def update_sample_name_map(spatial_values, umap_values):
 
     # フルスクリーン用にも参照できるようモジュール変数にも保持
     _interactive_data["_name_map"] = name_map
+    _save_interactive_settings("sample_name_map", name_map)
     return name_map
 
 
@@ -1860,33 +2197,40 @@ _FEATURE_IMG_CONFIG = {
 
 
 @callback(
-    Output("feature_plot_container", "children"),
-    [Input("show_feature_plot", "n_clicks"),
+    [Output("feature_plot_container", "children"),
+     Output("feature_intensity_min", "placeholder"),
+     Output("feature_intensity_max", "placeholder")],
+    [Input("feature_select", "value"),
+     Input("feature_sample_select", "value"),
+     Input("feature_marker_size", "value"),
+     Input("feature_intensity_min", "value"),
+     Input("feature_intensity_max", "value"),
      Input("sample_name_map_store", "data"),
      Input("fullscreen_closed_trigger", "data")],
-    [State("feature_select", "value"),
-     State("feature_sample_select", "value"),
-     State("seurat_rds_path_store", "data"),
+    [State("seurat_rds_path_store", "data"),
      State("seurat_cache_dir_store", "data"),
      State("spatial_rotation_store", "data"),
-     State("feature_marker_size", "value")],
+     State("deg_data_store", "data")],
     prevent_initial_call=True,
 )
-def update_feature_plot(n_clicks, name_map, _fs_trigger, feature_name, sample,
-                        rds_path, cache_dir_str, rotation_store, marker_size):
+def update_feature_plot(feature_name, sample, marker_size,
+                        intensity_min, intensity_max,
+                        name_map, _fs_trigger,
+                        rds_path, cache_dir_str, rotation_store,
+                        deg_data):
     # 名前変更・フルスクリーン閉鎖トリガーだがFeature未選択 → スキップ
     if ctx.triggered_id in ("sample_name_map_store", "fullscreen_closed_trigger") and not feature_name:
-        return no_update
+        return no_update, no_update, no_update
 
     if not feature_name or not rds_path:
-        return html.Div("m/z Feature を選択してください", className="text-muted p-3")
+        return html.Div("m/z Feature を選択してください", className="text-muted p-3"), no_update, no_update
 
     df = _interactive_data.get("plot_data")
     if df is None:
-        return html.Div("データが読み込まれていません", className="text-muted p-3")
+        return html.Div("データが読み込まれていません", className="text-muted p-3"), no_update, no_update
 
     if "SpatialX" not in df.columns:
-        return html.Div("空間座標データがありません", className="text-muted p-3")
+        return html.Div("空間座標データがありません", className="text-muted p-3"), no_update, no_update
 
     if not rotation_store:
         rotation_store = {}
@@ -1923,6 +2267,10 @@ def update_feature_plot(n_clicks, name_map, _fs_trigger, feature_name, sample,
         global_min = float(np.nanmin(expr_vals))
         global_max = float(np.nanmax(expr_vals))
 
+        # ユーザー指定の Intensity Range でオーバーライド
+        display_min = intensity_min if intensity_min is not None else global_min
+        display_max = intensity_max if intensity_max is not None else global_max
+
         m_size = marker_size or 3
 
         graphs = []
@@ -1951,23 +2299,43 @@ def update_feature_plot(n_clicks, name_map, _fs_trigger, feature_name, sample,
                 size=m_size,
                 color=df_s["_expression"].values,
                 colorscale="Plasma",
-                cmin=global_min,
-                cmax=global_max,
+                cmin=display_min,
+                cmax=display_max,
                 showscale=is_last,
+                opacity=0.8,
             )
             if is_last:
                 marker_opts["colorbar"] = dict(
                     title=dict(text="Intensity", side="right"),
-                    tickvals=[global_min, global_max],
+                    tickvals=[display_min, display_max],
                     ticktext=[
-                        "0" if global_min == 0 else _compact_sci(global_min),
-                        _compact_sci(global_max),
+                        "0" if display_min == 0 else _compact_sci(display_min),
+                        _compact_sci(display_max),
                     ],
                     len=0.8,
                     thickness=15,
                 )
 
-            fig = go.Figure(go.Scatter(
+            fig = go.Figure()
+
+            # TIC 背景（グレースケール）— 発現量トレースの前に常時描画
+            if "TotalCount" in df_s.columns:
+                fig.add_trace(go.Scatter(
+                    x=plot_x,
+                    y=plot_y,
+                    mode="markers",
+                    marker=dict(
+                        size=m_size,
+                        color=df_s["TotalCount"].values,
+                        colorscale="Greys",
+                        opacity=0.5,
+                        showscale=False,
+                    ),
+                    hoverinfo="skip",
+                    showlegend=False,
+                ))
+
+            fig.add_trace(go.Scatter(
                 x=plot_x,
                 y=plot_y,
                 mode="markers",
@@ -2004,70 +2372,109 @@ def update_feature_plot(n_clicks, name_map, _fs_trigger, feature_name, sample,
                 )
             )
 
-        return html.Div(
+        container = html.Div(
             style={"display": "flex", "flexWrap": "wrap", "gap": "15px"},
             children=graphs,
         )
 
+        # --- ③ アノテーション見出し ---
+        annotation = ""
+        if deg_data:
+            for r in deg_data:
+                if r.get("gene") == feature_name:
+                    ann = r.get("annotation", "")
+                    if _is_meaningful_annotation(ann, feature_name):
+                        annotation = ann
+                    break
+        title_text = f"{feature_name}  ({annotation})" if annotation else feature_name
+        heading = html.H6(
+            title_text,
+            className="text-center mt-2 mb-1",
+            style={"color": "#333", "fontSize": "0.95rem"},
+        )
+
+        return html.Div([heading, container]), _format_plain_number(global_min), _format_plain_number(global_max)
+
     except Exception as e:
-        return html.Div(f"エラー: {e}", className="text-danger p-3")
+        return html.Div(f"エラー: {e}", className="text-danger p-3"), no_update, no_update
 
 
 # ---------------------------------------------------------------------------
-# DEG テーブル更新（クラスタ選択/ハイライト連動）
-# ---------------------------------------------------------------------------
-
-@callback(
-    Output("deg_results_table", "data"),
-    [Input("cluster_stats_table", "selected_rows"),
-     Input("umap_highlight_cluster", "value")],
-    [State("cluster_stats_table", "data"),
-     State("deg_data_store", "data")],
-)
-def update_deg_table(selected_rows, highlight, table_data, deg_data):
-    if not deg_data:
-        return []
-
-    cluster_id = None
-    if selected_rows and table_data:
-        cluster_id = table_data[selected_rows[0]].get("Cluster")
-    elif highlight and len(highlight) == 1:
-        cluster_id = str(highlight[0])
-
-    if cluster_id is not None:
-        # 指定クラスタのみ表示
-        filtered = [
-            r for r in deg_data
-            if str(r.get("cluster", "")) == str(cluster_id)
-        ]
-        return filtered if filtered else deg_data[:50]
-
-    # クラスタ未選択時は全データ（上位50件）
-    return deg_data[:50]
-
-
-# ---------------------------------------------------------------------------
-# DEG テーブル行クリック → Feature Plot に反映
+# Feature Plot ブックマークコールバック
 # ---------------------------------------------------------------------------
 
 @callback(
-    [Output("feature_select", "value", allow_duplicate=True),
-     Output("show_feature_plot", "n_clicks", allow_duplicate=True)],
-    Input("deg_results_table", "selected_rows"),
-    State("deg_results_table", "data"),
+    Output("feature_history_store", "data"),
+    Input("add_feature_bookmark_btn", "n_clicks"),
+    [State("feature_select", "value"),
+     State("feature_history_store", "data")],
     prevent_initial_call=True,
 )
-def deg_row_to_feature(selected_rows, table_data):
-    if not selected_rows or not table_data:
-        return no_update, no_update
+def add_feature_bookmark(n_clicks, feature_name, current_bookmarks):
+    """ブックマーク追加ボタン → 現在の Feature をブックマークストアに保存"""
+    if not n_clicks or not feature_name:
+        return no_update
+    bookmarks = list(current_bookmarks) if current_bookmarks else []
+    if feature_name in bookmarks:
+        bookmarks.remove(feature_name)
+    bookmarks.insert(0, feature_name)
+    bookmarks = bookmarks[:50]
+    _save_interactive_settings("feature_bookmarks", bookmarks)
+    return bookmarks
 
-    row = table_data[selected_rows[0]]
-    gene = row.get("gene", "")
-    if not gene:
-        return no_update, no_update
 
-    # feature_select にセット + show_feature_plot をトリガ
-    return gene, 1
+@callback(
+    [Output("feature_history_store", "data", allow_duplicate=True),
+     Output("feature_history_select", "value")],
+    Input("remove_feature_bookmark_btn", "n_clicks"),
+    [State("feature_history_select", "value"),
+     State("feature_history_store", "data")],
+    prevent_initial_call=True,
+)
+def remove_feature_bookmark(n_clicks, selected, current_bookmarks):
+    """選択中のブックマークを削除"""
+    if not n_clicks or not selected or not current_bookmarks:
+        return no_update, no_update
+    bookmarks = list(current_bookmarks)
+    if selected in bookmarks:
+        bookmarks.remove(selected)
+    _save_interactive_settings("feature_bookmarks", bookmarks)
+    return bookmarks, None
+
+
+@callback(
+    Output("feature_history_select", "options"),
+    Input("feature_history_store", "data"),
+    State("deg_data_store", "data"),
+    prevent_initial_call=True,
+)
+def update_bookmark_options(bookmarks, deg_data):
+    """ブックマークストアからドロップダウンオプションを生成"""
+    if not bookmarks:
+        return []
+    ann_map = {}
+    if deg_data:
+        for r in deg_data:
+            gene = r.get("gene", "")
+            ann = r.get("annotation", "")
+            if gene and _is_meaningful_annotation(ann, gene):
+                ann_map[gene] = ann
+    return [
+        {"label": f"{f} ({ann_map[f]})" if f in ann_map else f, "value": f}
+        for f in bookmarks
+    ]
+
+
+@callback(
+    Output("feature_select", "value", allow_duplicate=True),
+    Input("feature_history_select", "value"),
+    prevent_initial_call=True,
+)
+def bookmark_to_feature(selected):
+    """ブックマークドロップダウンから選択 → feature_select に値セット"""
+    if not selected:
+        return no_update
+    return selected
 
 
 # ---------------------------------------------------------------------------
@@ -2544,26 +2951,7 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
         )
         deg_cluster_opts = [{"label": f"Cluster {c}", "value": c} for c in deg_clusters]
 
-        fs_deg_body = dbc.Tabs(active_tab="fs_deg_table_tab", children=[
-            dbc.Tab(label="テーブル", tab_id="fs_deg_table_tab", children=[
-                dash_table.DataTable(
-                    columns=[
-                        {"name": "Gene/m/z", "id": "gene"},
-                        {"name": "Cluster", "id": "cluster"},
-                        {"name": "avg_log2FC", "id": "avg_log2FC"},
-                        {"name": "p_val_adj", "id": "p_val_adj"},
-                        {"name": "pct.1", "id": "pct.1"},
-                        {"name": "pct.2", "id": "pct.2"},
-                    ],
-                    data=deg_data,
-                    sort_action="native",
-                    filter_action="native",
-                    style_table={"overflowX": "auto"},
-                    style_cell={"textAlign": "left", "padding": "6px", "fontSize": "0.85rem"},
-                    style_header={"backgroundColor": "#f8f9fa", "fontWeight": "600"},
-                    page_size=50,
-                ),
-            ]),
+        fs_deg_body = dbc.Tabs(active_tab="fs_deg_volcano_tab", children=[
             dbc.Tab(label="Volcano Plot", tab_id="fs_deg_volcano_tab", children=[
                 html.P("メイン画面のVolcano Plotタブで操作してください。",
                        className="text-muted small mt-2"),
@@ -2754,7 +3142,9 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
 # ---------------------------------------------------------------------------
 
 @callback(
-    Output("label_pos_save_status", "data"),
+    [Output("label_pos_save_status", "data"),
+     Output("notification_toast", "children", allow_duplicate=True),
+     Output("notification_toast", "is_open", allow_duplicate=True)],
     [Input("save_label_pos_btn", "n_clicks"),
      Input("save_spatial_label_pos_btn", "n_clicks"),
      Input("fs_save_label_pos_btn", "n_clicks"),
@@ -2768,86 +3158,91 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
 def save_label_positions(n1, n2, n3, n4, umap_relayout, umap_ps_relayouts,
                          spatial_relayouts, fs_spatial_relayouts):
     """全グラフのアノテーション位置をJSONファイルに永続保存する"""
-    path = _get_label_positions_path()
-    if not path:
-        return no_update
+    try:
+        path = _get_label_positions_path()
+        if not path:
+            return no_update, "ラベル位置の保存に失敗しました（データ未読込）", True
 
-    df = _interactive_data.get("plot_data")
-    if df is None:
-        return no_update
+        df = _interactive_data.get("plot_data")
+        if df is None:
+            return no_update, "ラベル位置の保存に失敗しました（データ未読込）", True
 
-    clusters = sorted(df["Cluster"].unique(), key=_cluster_sort_key)
+        clusters = sorted(df["Cluster"].unique(), key=_cluster_sort_key)
 
-    # 既存データを読み込み（マージ）
-    existing = _load_label_positions()
+        # 既存データを読み込み（マージ）
+        existing = _load_label_positions()
 
-    # 1) UMAP統合
-    umap_pos = _extract_annotation_positions(umap_relayout)
-    if umap_pos:
-        umap_saved = existing.get("umap_integrated", {})
-        for idx_str, pos in umap_pos.items():
-            idx = int(idx_str)
-            if idx < len(clusters):
-                cl = str(clusters[idx])
-                if cl not in umap_saved:
-                    umap_saved[cl] = {}
-                umap_saved[cl].update(pos)
-        existing["umap_integrated"] = umap_saved
+        # 1) UMAP統合
+        umap_pos = _extract_annotation_positions(umap_relayout)
+        if umap_pos:
+            umap_saved = existing.get("umap_integrated", {})
+            for idx_str, pos in umap_pos.items():
+                idx = int(idx_str)
+                if idx < len(clusters):
+                    cl = str(clusters[idx])
+                    if cl not in umap_saved:
+                        umap_saved[cl] = {}
+                    umap_saved[cl].update(pos)
+            existing["umap_integrated"] = umap_saved
 
-    # 2) サンプル別UMAP
-    if umap_ps_relayouts:
-        umap_ps_saved = existing.get("umap_per_sample", {})
-        inputs_list = ctx.inputs_list[5]  # State index 5 (Input 4つ + State[0]=umap, [1]=per_sample)
-        for i, rd in enumerate(umap_ps_relayouts):
-            if i < len(inputs_list):
-                sample_name = inputs_list[i]["id"]["index"]
-                ps_pos = _extract_annotation_positions(rd)
-                if ps_pos:
-                    sample_saved = umap_ps_saved.get(sample_name, {})
-                    sample_clusters = sorted(
-                        df[df["Sample"] == sample_name]["Cluster"].unique(),
-                        key=_cluster_sort_key)
-                    for idx_str, pos in ps_pos.items():
-                        idx = int(idx_str)
-                        if idx < len(sample_clusters):
-                            cl = str(sample_clusters[idx])
-                            if cl not in sample_saved:
-                                sample_saved[cl] = {}
-                            sample_saved[cl].update(pos)
-                    umap_ps_saved[sample_name] = sample_saved
-        existing["umap_per_sample"] = umap_ps_saved
+        # 2) サンプル別UMAP
+        if umap_ps_relayouts:
+            umap_ps_saved = existing.get("umap_per_sample", {})
+            inputs_list = ctx.states_list[1]  # State[1] = umap_per_sample_graph relayoutData
+            for i, rd in enumerate(umap_ps_relayouts):
+                if i < len(inputs_list):
+                    sample_name = inputs_list[i]["id"]["index"]
+                    ps_pos = _extract_annotation_positions(rd)
+                    if ps_pos:
+                        sample_saved = umap_ps_saved.get(sample_name, {})
+                        sample_clusters = sorted(
+                            df[df["Sample"] == sample_name]["Cluster"].unique(),
+                            key=_cluster_sort_key)
+                        for idx_str, pos in ps_pos.items():
+                            idx = int(idx_str)
+                            if idx < len(sample_clusters):
+                                cl = str(sample_clusters[idx])
+                                if cl not in sample_saved:
+                                    sample_saved[cl] = {}
+                                sample_saved[cl].update(pos)
+                        umap_ps_saved[sample_name] = sample_saved
+            existing["umap_per_sample"] = umap_ps_saved
 
-    # 3) Spatial (通常 + FS)
-    all_spatial_relayouts = (spatial_relayouts or []) + (fs_spatial_relayouts or [])
-    spatial_inputs = (ctx.inputs_list[6] if len(ctx.inputs_list) > 6 else []) + \
-                     (ctx.inputs_list[7] if len(ctx.inputs_list) > 7 else [])
-    if all_spatial_relayouts:
-        spatial_saved = existing.get("spatial", {})
-        inputs_list = spatial_inputs
-        for i, rd in enumerate(all_spatial_relayouts):
-            if i < len(inputs_list):
-                sample_name = inputs_list[i]["id"]["index"]
-                sp_pos = _extract_annotation_positions(rd)
-                if sp_pos:
-                    sample_saved = spatial_saved.get(sample_name, {})
-                    sample_clusters = sorted(
-                        df[df["Sample"] == sample_name]["Cluster"].unique(),
-                        key=_cluster_sort_key)
-                    for idx_str, pos in sp_pos.items():
-                        idx = int(idx_str)
-                        if idx < len(sample_clusters):
-                            cl = str(sample_clusters[idx])
-                            if cl not in sample_saved:
-                                sample_saved[cl] = {}
-                            sample_saved[cl].update(pos)
-                    spatial_saved[sample_name] = sample_saved
-        existing["spatial"] = spatial_saved
+        # 3) Spatial (通常 + FS)
+        all_spatial_relayouts = (spatial_relayouts or []) + (fs_spatial_relayouts or [])
+        spatial_inputs = (ctx.states_list[2] if len(ctx.states_list) > 2 else []) + \
+                         (ctx.states_list[3] if len(ctx.states_list) > 3 else [])
+        if all_spatial_relayouts:
+            spatial_saved = existing.get("spatial", {})
+            inputs_list = spatial_inputs
+            for i, rd in enumerate(all_spatial_relayouts):
+                if i < len(inputs_list):
+                    sample_name = inputs_list[i]["id"]["index"]
+                    sp_pos = _extract_annotation_positions(rd)
+                    if sp_pos:
+                        sample_saved = spatial_saved.get(sample_name, {})
+                        sample_clusters = sorted(
+                            df[df["Sample"] == sample_name]["Cluster"].unique(),
+                            key=_cluster_sort_key)
+                        for idx_str, pos in sp_pos.items():
+                            idx = int(idx_str)
+                            if idx < len(sample_clusters):
+                                cl = str(sample_clusters[idx])
+                                if cl not in sample_saved:
+                                    sample_saved[cl] = {}
+                                sample_saved[cl].update(pos)
+                        spatial_saved[sample_name] = sample_saved
+            existing["spatial"] = spatial_saved
 
-    # JSON書き込み
-    path.write_text(json.dumps(existing, indent=2, ensure_ascii=False),
-                    encoding="utf-8")
+        # JSON書き込み
+        path.write_text(json.dumps(existing, indent=2, ensure_ascii=False),
+                        encoding="utf-8")
 
-    return datetime.now().isoformat()
+        return datetime.now().isoformat(), "ラベル位置を保存しました", True
+    except Exception as e:
+        print(f"[LABEL] ラベル位置保存エラー: {e}")
+        import traceback; traceback.print_exc()
+        return no_update, f"ラベル位置の保存エラー: {e}", True
 
 
 # ---------------------------------------------------------------------------
@@ -2891,9 +3286,21 @@ def update_volcano_plot(cluster, fc_thresh, p_thresh, y_max, marker_size, deg_da
         df["p_num"] = pd.to_numeric(df["p_val_adj_raw"], errors="coerce")
     else:
         df["p_num"] = pd.to_numeric(df["p_val_adj"], errors="coerce")
-    # p=0 は 1e-50 にclip（-log10 = 50 に集約、300集中を回避）
-    df["neg_log10_p"] = -np.log10(df["p_num"].clip(lower=1e-50))
     df["avg_log2FC"] = pd.to_numeric(df["avg_log2FC"], errors="coerce")
+    # p=0 は非ゼロ最小p値にclip（真の -log10 を使用、p=0は最上部に集約）
+    min_nonzero_p = df.loc[df["p_num"] > 0, "p_num"].min() if (df["p_num"] > 0).any() else 5e-324
+    df["neg_log10_p"] = -np.log10(df["p_num"].clip(lower=min_nonzero_p))
+
+    # annotation列があれば、表示テキストに化合物名を含める
+    if "annotation" in df.columns:
+        df["display_text"] = df.apply(
+            lambda r: f"{r['gene']}\n({r['annotation']})"
+            if _is_meaningful_annotation(r.get('annotation', ''), r.get('gene', ''))
+            else r['gene'],
+            axis=1,
+        )
+    else:
+        df["display_text"] = df["gene"]
 
     if cluster:
         df = df[df["cluster"].astype(str) == str(cluster)]
@@ -2925,7 +3332,7 @@ def update_volcano_plot(cluster, fc_thresh, p_thresh, y_max, marker_size, deg_da
                 mode="markers",
                 marker=dict(size=marker_size, color=color, opacity=0.7),
                 name=label,
-                text=sub["gene"],
+                text=sub["display_text"],
                 hovertemplate=(
                     "<b>%{text}</b><br>"
                     "log2FC: %{x:.3f}<br>"
@@ -3116,11 +3523,26 @@ def update_heatmap(top_n, scale, annotation_on, deg_data, cache_dir_str, mrm_pat
         col_std[col_std == 0] = 1
         z_data = (z_data - col_mean) / col_std
 
-    # Y軸ラベル: アノテーションがONかつMRMファイルがある場合は化合物名を付与
+    # Y軸ラベル: アノテーション表示
     y_labels = available
-    if annotation_on and mrm_path_str:
-        mz_to_compound = _build_mz_to_compound_map(mrm_path_str, tolerance=0.1)
-        y_labels = _annotate_gene_labels(available, mz_to_compound, tolerance=0.1)
+    if annotation_on:
+        # 1次ソース: CSV annotation列（deg_dataから取得）
+        gene_to_annotation = {}
+        if deg_data:
+            for r in deg_data:
+                gene = r.get("gene", "")
+                ann = r.get("annotation", "")
+                if gene and _is_meaningful_annotation(ann, gene):
+                    gene_to_annotation[gene] = ann
+        if gene_to_annotation:
+            y_labels = [
+                f"{g} ({gene_to_annotation[g]})" if g in gene_to_annotation else g
+                for g in available
+            ]
+        elif mrm_path_str:
+            # フォールバック: MRMファイルマッチング
+            mz_to_compound = _build_mz_to_compound_map(mrm_path_str, tolerance=0.1)
+            y_labels = _annotate_gene_labels(available, mz_to_compound, tolerance=0.1)
 
     fig = go.Figure(go.Heatmap(
         z=z_data.T,

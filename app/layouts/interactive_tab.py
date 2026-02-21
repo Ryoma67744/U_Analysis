@@ -108,14 +108,68 @@ def create_interactive_tab():
                         id="integration_method_collapse",
                         is_open=True,
                     ),
-                ], className="mb-2"),
+                ], className="mb-2", style={"display": "none"}),
 
-                dbc.Row(className="mt-3", children=[
-                    # UMAP プロット
-                    dbc.Col(width=7, children=[
-                        html.Div(className="card", children=[
-                            html.Div(className="d-flex justify-content-between align-items-center", children=[
-                                html.H5("UMAP", className="mb-0"),
+                # アコーディオン（各セクション折りたたみ可能）
+                dbc.Accordion(
+                    always_open=True,
+                    start_collapsed=False,
+                    flush=True,
+                    className="mt-3",
+                    children=[
+                        # --- エクスポート ---
+                        dbc.AccordionItem(title="エクスポート", children=[
+                            dbc.Row([
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button(
+                                        "📄 HTML レポート出力",
+                                        id="export_html_report",
+                                        color="success", size="sm",
+                                    ),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button(
+                                        "📊 データ CSV 出力",
+                                        id="export_csv_data",
+                                        color="info", size="sm",
+                                    ),
+                                ]),
+                            ]),
+                            html.Div(id="export_status", className="mt-2 text-muted"),
+                        ]),
+
+                        # --- クラスタ情報 + 統計 ---
+                        dbc.AccordionItem(title="クラスタ情報", children=[
+                            html.Pre(id="cluster_info_text",
+                                     style={"fontSize": "0.85rem", "maxHeight": "120px",
+                                            "overflowY": "auto"}),
+                            html.H5("クラスタ統計", className="mt-2"),
+                            html.Div(
+                                id="cluster_stats_container",
+                                style={"maxHeight": "300px", "overflowY": "auto"},
+                                children=[
+                                    dash_table.DataTable(
+                                        id="cluster_stats_table",
+                                        columns=[
+                                            {"name": "Cluster", "id": "Cluster"},
+                                            {"name": "Pixels", "id": "Pixels"},
+                                            {"name": "%", "id": "Percent"},
+                                        ],
+                                        data=[],
+                                        row_selectable="single",
+                                        style_table={"overflowX": "auto"},
+                                        style_cell={"textAlign": "left", "padding": "8px",
+                                                     "fontSize": "0.85rem"},
+                                        style_header={"backgroundColor": "#f8f9fa", "fontWeight": "600"},
+                                        page_size=15,
+                                    ),
+                                ],
+                            ),
+                        ]),
+
+                        # --- UMAP プロット ---
+                        dbc.AccordionItem(title="UMAP", children=[
+                            html.Div(className="d-flex justify-content-end", children=[
                                 dbc.Button("⤢", id="expand_umap_btn", size="sm", color="light",
                                            style={"fontSize": "1.2rem", "padding": "2px 8px", "lineHeight": "1"}),
                             ]),
@@ -210,47 +264,10 @@ def create_interactive_tab():
                                 html.Div(id="umap_per_sample_container"),
                             ]),
                         ]),
-                    ]),
 
-                    # クラスタ情報 + 統計
-                    dbc.Col(width=5, children=[
-                        html.Div(className="card", children=[
-                            html.H5("クラスタ情報"),
-                            html.Pre(id="cluster_info_text",
-                                     style={"fontSize": "0.85rem", "maxHeight": "120px",
-                                            "overflowY": "auto"}),
-                            html.H5("クラスタ統計", className="mt-2"),
-                            html.Div(
-                                id="cluster_stats_container",
-                                style={"maxHeight": "300px", "overflowY": "auto"},
-                                children=[
-                                    dash_table.DataTable(
-                                        id="cluster_stats_table",
-                                        columns=[
-                                            {"name": "Cluster", "id": "Cluster"},
-                                            {"name": "Pixels", "id": "Pixels"},
-                                            {"name": "%", "id": "Percent"},
-                                        ],
-                                        data=[],
-                                        row_selectable="single",
-                                        style_table={"overflowX": "auto"},
-                                        style_cell={"textAlign": "left", "padding": "8px",
-                                                     "fontSize": "0.85rem"},
-                                        style_header={"backgroundColor": "#f8f9fa", "fontWeight": "600"},
-                                        page_size=15,
-                                    ),
-                                ],
-                            ),
-                        ]),
-                    ]),
-                ]),
-
-                # Spatial Mapping（全幅 — 複数切片を横並びで表示）
-                dbc.Row(className="mt-3", children=[
-                    dbc.Col(width=12, children=[
-                        html.Div(className="card", children=[
-                            html.Div(className="d-flex justify-content-between align-items-center", children=[
-                                html.H5("Spatial Mapping", className="mb-0"),
+                        # --- Spatial Mapping ---
+                        dbc.AccordionItem(title="Spatial Mapping", children=[
+                            html.Div(className="d-flex justify-content-end", children=[
                                 dbc.Button("⤢", id="expand_spatial_btn", size="sm", color="light",
                                            style={"fontSize": "1.2rem", "padding": "2px 8px", "lineHeight": "1"}),
                             ]),
@@ -308,15 +325,10 @@ def create_interactive_tab():
                             html.Div(id="spatial_controls_container"),
                             dcc.Loading(html.Div(id="spatial_plots_container")),
                         ]),
-                    ]),
-                ]),
 
-                # Feature プロット（Spatial表示）
-                dbc.Row(className="mt-3", children=[
-                    dbc.Col(width=12, children=[
-                        html.Div(className="card", children=[
-                            html.Div(className="d-flex justify-content-between align-items-center", children=[
-                                html.H5("Feature Plot", className="mb-0"),
+                        # --- Feature Plot ---
+                        dbc.AccordionItem(title="Feature Plot", children=[
+                            html.Div(className="d-flex justify-content-end", children=[
                                 dbc.Button("⤢", id="expand_feature_btn", size="sm", color="light",
                                            style={"fontSize": "1.2rem", "padding": "2px 8px", "lineHeight": "1"}),
                             ]),
@@ -326,6 +338,7 @@ def create_interactive_tab():
                                         id="feature_select",
                                         placeholder="m/z Feature を検索・選択",
                                         search_value="",
+                                        optionHeight=50,
                                     ),
                                 ]),
                                 dbc.Col(width=2, children=[
@@ -335,7 +348,27 @@ def create_interactive_tab():
                                         clearable=True,
                                     ),
                                 ]),
-                                dbc.Col(width=3, children=[
+                                dbc.Col(width=4, children=[
+                                    dbc.Label("ブックマーク", className="small mb-0"),
+                                    html.Div(className="d-flex align-items-center gap-1", children=[
+                                        dbc.Button("★ 追加", id="add_feature_bookmark_btn",
+                                                   size="sm", color="warning", className="flex-shrink-0",
+                                                   style={"whiteSpace": "nowrap"}),
+                                        html.Div(style={"flex": "1 1 auto", "minWidth": "0"}, children=[
+                                            dcc.Dropdown(
+                                                id="feature_history_select",
+                                                placeholder="ブックマークした Feature",
+                                                clearable=True,
+                                            ),
+                                        ]),
+                                        dbc.Button("✕", id="remove_feature_bookmark_btn",
+                                                   size="sm", color="outline-danger", className="flex-shrink-0",
+                                                   title="選択中のブックマークを削除"),
+                                    ]),
+                                ]),
+                            ]),
+                            dbc.Row(className="mt-1 align-items-center", children=[
+                                dbc.Col(width=4, children=[
                                     dbc.Label("マーカーサイズ", className="small mb-0"),
                                     dcc.Slider(
                                         id="feature_marker_size",
@@ -343,10 +376,6 @@ def create_interactive_tab():
                                         marks={1: "1", 3: "3", 5: "5", 10: "10", 15: "15"},
                                         tooltip={"placement": "bottom", "always_visible": False},
                                     ),
-                                ]),
-                                dbc.Col(width=1, children=[
-                                    dbc.Button("表示", id="show_feature_plot",
-                                               size="sm", color="primary"),
                                 ]),
                             ]),
                             dbc.Row(className="mt-1 align-items-center", children=[
@@ -365,186 +394,158 @@ def create_interactive_tab():
                                                size="sm", color="info", className="mb-1"),
                                 ]),
                             ]),
-                            dcc.Loading(html.Div(id="feature_plot_container")),
-                        ]),
-                    ]),
-                ]),
-
-                # DEG 結果（テーブル / Volcano Plot / Heatmap）
-                dbc.Row(className="mt-3", children=[
-                    dbc.Col(width=12, children=[
-                        html.Div(
-                            id="deg_results_section",
-                            className="card",
-                            style={"display": "none"},
-                            children=[
-                                html.Div(className="d-flex justify-content-between align-items-center mb-2", children=[
-                                    html.H5("DEG マーカー", className="mb-0"),
-                                    dbc.Button("⤢", id="expand_deg_btn", size="sm", color="light",
-                                               style={"fontSize": "1.2rem", "padding": "2px 8px", "lineHeight": "1"}),
-                                ]),
-                                dbc.Tabs(id="deg_viz_tabs", active_tab="deg_table_tab", children=[
-                                    # --- テーブルタブ ---
-                                    dbc.Tab(label="テーブル", tab_id="deg_table_tab", children=[
-                                        html.P(
-                                            "行をクリックすると Feature Plot に表示されます。",
-                                            className="text-muted small mt-2",
-                                        ),
-                                        html.Div(
-                                            id="deg_table_container",
-                                            style={"maxHeight": "300px", "overflowY": "auto"},
-                                            children=[
-                                                dash_table.DataTable(
-                                                    id="deg_results_table",
-                                                    columns=[
-                                                        {"name": "Gene/m/z", "id": "gene"},
-                                                        {"name": "Cluster", "id": "cluster"},
-                                                        {"name": "avg_log2FC", "id": "avg_log2FC"},
-                                                        {"name": "p_val_adj", "id": "p_val_adj"},
-                                                        {"name": "pct.1", "id": "pct.1"},
-                                                        {"name": "pct.2", "id": "pct.2"},
-                                                    ],
-                                                    data=[],
-                                                    row_selectable="single",
-                                                    sort_action="native",
-                                                    filter_action="native",
-                                                    style_table={"overflowX": "auto"},
-                                                    style_cell={
-                                                        "textAlign": "left",
-                                                        "padding": "6px",
-                                                        "fontSize": "0.8rem",
-                                                    },
-                                                    style_header={
-                                                        "backgroundColor": "#f8f9fa",
-                                                        "fontWeight": "600",
-                                                    },
-                                                    page_size=20,
-                                                ),
-                                            ],
-                                        ),
-                                    ]),
-                                    # --- Volcano Plot タブ ---
-                                    dbc.Tab(label="Volcano Plot", tab_id="deg_volcano_tab", children=[
-                                        dbc.Row(className="mt-2 mb-2 align-items-end", children=[
-                                            dbc.Col(width=2, children=[
-                                                dcc.Dropdown(
-                                                    id="volcano_cluster_select",
-                                                    placeholder="クラスタ (空=全体)",
-                                                    clearable=True,
-                                                ),
-                                            ]),
-                                            dbc.Col(width=2, children=[
-                                                dbc.Label(["FC 閾値", help_badge("volcano_fc_threshold")], className="small mb-0"),
-                                                dbc.Input(id="volcano_fc_threshold", type="number",
-                                                          value=0.5, step=0.1, size="sm"),
-                                            ]),
-                                            dbc.Col(width=2, children=[
-                                                dbc.Label(["-log10(p) 閾値", help_badge("volcano_p_threshold")], className="small mb-0"),
-                                                dbc.Input(id="volcano_p_threshold", type="number",
-                                                          value=1.3, step=0.1, size="sm"),
-                                            ]),
-                                            dbc.Col(width=2, children=[
-                                                dbc.Label("Y軸上限", className="small mb-0"),
-                                                dbc.Input(id="volcano_y_max", type="number",
-                                                          placeholder="auto", step=1, size="sm"),
-                                            ]),
-                                            dbc.Col(width=3, children=[
-                                                dbc.Label("点サイズ", className="small mb-0"),
-                                                dcc.Slider(
-                                                    id="volcano_marker_size",
-                                                    min=2, max=20, step=1, value=8,
-                                                    marks={2: "2", 8: "8", 14: "14", 20: "20"},
-                                                    tooltip={"placement": "bottom", "always_visible": False},
-                                                ),
-                                            ]),
-                                        ]),
-                                        dcc.Loading(
-                                            dcc.Graph(
-                                                id="volcano_plot",
-                                                style={"height": "500px"},
-                                                config={
-                                                    "scrollZoom": True,
-                                                    "toImageButtonOptions": {
-                                                        "format": "png",
-                                                        "filename": "Volcano_plot",
-                                                        "scale": 3,
-                                                    },
-                                                },
-                                            ),
-                                        ),
-                                    ]),
-                                    # --- Heatmap タブ ---
-                                    dbc.Tab(label="Heatmap", tab_id="deg_heatmap_tab", children=[
-                                        dbc.Row(className="mt-2 mb-2 align-items-end", children=[
-                                            dbc.Col(width=2, children=[
-                                                dbc.Label("Top N", className="small mb-0"),
-                                                dbc.Input(id="heatmap_top_n", type="number",
-                                                          value=5, min=1, max=20, step=1, size="sm"),
-                                            ]),
-                                            dbc.Col(width=3, children=[
-                                                dbc.Label(["スケール", help_badge("heatmap_scale")], className="small mb-0"),
-                                                dbc.RadioItems(
-                                                    id="heatmap_scale",
-                                                    options=[
-                                                        {"label": "Z-score", "value": "zscore"},
-                                                        {"label": "Raw", "value": "raw"},
-                                                    ],
-                                                    value="zscore", inline=True,
-                                                ),
-                                            ]),
-                                            dbc.Col(width=3, children=[
-                                                dbc.Switch(
-                                                    id="heatmap_annotation_switch",
-                                                    label=html.Span(["化合物名アノテーション", help_badge("heatmap_annotation_switch")]),
-                                                    value=True,
-                                                ),
-                                            ]),
-                                        ]),
-                                        dcc.Loading(
-                                            dcc.Graph(
-                                                id="heatmap_plot",
-                                                style={"height": "600px"},
-                                                config={
-                                                    "toImageButtonOptions": {
-                                                        "format": "png",
-                                                        "filename": "Heatmap",
-                                                        "scale": 3,
-                                                    },
-                                                },
-                                            ),
-                                        ),
-                                    ]),
-                                ]),
-                            ],
-                        ),
-                    ]),
-                ]),
-
-                # HTML エクスポート
-                dbc.Row(className="mt-3 mb-3", children=[
-                    dbc.Col(width=12, children=[
-                        html.Div(className="card", children=[
-                            html.H5("エクスポート"),
-                            dbc.Row([
-                                dbc.Col(width="auto", children=[
-                                    dbc.Button(
-                                        "📄 HTML レポート出力",
-                                        id="export_html_report",
-                                        color="success", size="sm",
+                            dbc.Row(className="mt-1 align-items-center", children=[
+                                dbc.Col(width=2, children=[
+                                    dbc.Label("クラスタフィルタ", className="small mb-0"),
+                                    dcc.Dropdown(
+                                        id="feature_cluster_filter",
+                                        placeholder="全クラスタ",
+                                        clearable=True,
                                     ),
                                 ]),
-                                dbc.Col(width="auto", children=[
-                                    dbc.Button(
-                                        "📊 データ CSV 出力",
-                                        id="export_csv_data",
-                                        color="info", size="sm",
+                                dbc.Col(width=3, children=[
+                                    dbc.RadioItems(
+                                        id="feature_filter_mode",
+                                        options=[
+                                            {"label": "全 m/z", "value": "all"},
+                                            {"label": "DEGマーカー", "value": "deg"},
+                                        ],
+                                        value="all",
+                                        inline=True,
+                                        className="mt-3",
                                     ),
+                                ]),
+                                dbc.Col(width=2, children=[
+                                    dbc.Label("強度 最小値", className="small mb-0"),
+                                    dbc.Input(id="feature_intensity_min", type="number",
+                                              placeholder="", size="sm"),
+                                ]),
+                                dbc.Col(width=2, children=[
+                                    dbc.Label("強度 最大値", className="small mb-0"),
+                                    dbc.Input(id="feature_intensity_max", type="number",
+                                              placeholder="", size="sm"),
                                 ]),
                             ]),
-                            html.Div(id="export_status", className="mt-2 text-muted"),
+                            dcc.Loading(html.Div(id="feature_plot_container")),
                         ]),
-                    ]),
-                ]),
+
+                        # --- DEG マーカー ---
+                        dbc.AccordionItem(title="DEG マーカー", children=[
+                            html.Div(
+                                id="deg_results_section",
+                                style={"display": "none"},
+                                children=[
+                                    html.Div(id="deg_no_data_message", style={"display": "none"}, children=[
+                                        dbc.Alert(
+                                            "DEGマーカーデータが見つかりません。結果フォルダに "
+                                            "deg_markers.csv、markers_annotated.csv、"
+                                            "または deg_FindAllMarkers_raw_*.rds が必要です。",
+                                            color="info", className="mt-2",
+                                        ),
+                                    ]),
+                                    html.Div(className="d-flex justify-content-end mb-2", children=[
+                                        dbc.Button("⤢", id="expand_deg_btn", size="sm", color="light",
+                                                   style={"fontSize": "1.2rem", "padding": "2px 8px", "lineHeight": "1"}),
+                                    ]),
+                                    dbc.Tabs(id="deg_viz_tabs", active_tab="deg_volcano_tab", children=[
+                                        # --- Volcano Plot タブ ---
+                                        dbc.Tab(label="Volcano Plot", tab_id="deg_volcano_tab", children=[
+                                            dbc.Row(className="mt-2 mb-2 align-items-end", children=[
+                                                dbc.Col(width=2, children=[
+                                                    dcc.Dropdown(
+                                                        id="volcano_cluster_select",
+                                                        placeholder="クラスタ (空=全体)",
+                                                        clearable=True,
+                                                    ),
+                                                ]),
+                                                dbc.Col(width=2, children=[
+                                                    dbc.Label(["FC 閾値", help_badge("volcano_fc_threshold")], className="small mb-0"),
+                                                    dbc.Input(id="volcano_fc_threshold", type="number",
+                                                              value=0.5, step=0.1, size="sm"),
+                                                ]),
+                                                dbc.Col(width=2, children=[
+                                                    dbc.Label(["-log10(p) 閾値", help_badge("volcano_p_threshold")], className="small mb-0"),
+                                                    dbc.Input(id="volcano_p_threshold", type="number",
+                                                              value=1.3, step=0.1, size="sm"),
+                                                ]),
+                                                dbc.Col(width=2, children=[
+                                                    dbc.Label("Y軸上限", className="small mb-0"),
+                                                    dbc.Input(id="volcano_y_max", type="number",
+                                                              placeholder="auto", step=1, size="sm"),
+                                                ]),
+                                                dbc.Col(width=3, children=[
+                                                    dbc.Label("点サイズ", className="small mb-0"),
+                                                    dcc.Slider(
+                                                        id="volcano_marker_size",
+                                                        min=2, max=20, step=1, value=8,
+                                                        marks={2: "2", 8: "8", 14: "14", 20: "20"},
+                                                        tooltip={"placement": "bottom", "always_visible": False},
+                                                    ),
+                                                ]),
+                                            ]),
+                                            dcc.Loading(
+                                                dcc.Graph(
+                                                    id="volcano_plot",
+                                                    style={"height": "500px"},
+                                                    config={
+                                                        "scrollZoom": True,
+                                                        "toImageButtonOptions": {
+                                                            "format": "png",
+                                                            "filename": "Volcano_plot",
+                                                            "scale": 3,
+                                                        },
+                                                    },
+                                                ),
+                                            ),
+                                        ]),
+                                        # --- Heatmap タブ ---
+                                        dbc.Tab(label="Heatmap", tab_id="deg_heatmap_tab", children=[
+                                            dbc.Row(className="mt-2 mb-2 align-items-end", children=[
+                                                dbc.Col(width=2, children=[
+                                                    dbc.Label("Top N", className="small mb-0"),
+                                                    dbc.Input(id="heatmap_top_n", type="number",
+                                                              value=5, min=1, max=20, step=1, size="sm"),
+                                                ]),
+                                                dbc.Col(width=3, children=[
+                                                    dbc.Label(["スケール", help_badge("heatmap_scale")], className="small mb-0"),
+                                                    dbc.RadioItems(
+                                                        id="heatmap_scale",
+                                                        options=[
+                                                            {"label": "Z-score", "value": "zscore"},
+                                                            {"label": "Raw", "value": "raw"},
+                                                        ],
+                                                        value="zscore", inline=True,
+                                                    ),
+                                                ]),
+                                                dbc.Col(width=3, children=[
+                                                    dbc.Switch(
+                                                        id="heatmap_annotation_switch",
+                                                        label=html.Span(["化合物名アノテーション", help_badge("heatmap_annotation_switch")]),
+                                                        value=True,
+                                                    ),
+                                                ]),
+                                            ]),
+                                            dcc.Loading(
+                                                dcc.Graph(
+                                                    id="heatmap_plot",
+                                                    style={"height": "600px"},
+                                                    config={
+                                                        "toImageButtonOptions": {
+                                                            "format": "png",
+                                                            "filename": "Heatmap",
+                                                            "scale": 3,
+                                                        },
+                                                    },
+                                                ),
+                                            ),
+                                        ]),
+                                    ]),
+                                ],
+                            ),
+                        ]),
+                    ],
+                ),
+
             ],
         ),
 
@@ -576,6 +577,8 @@ def create_interactive_tab():
         dcc.Store(id="feature_mz_filtered_list", data=None),
         # カスタムクラスタ色マッピング（{"0": "#FF0000", ...}）
         dcc.Store(id="custom_color_map_store", data={}),
+        # Feature Plot 閲覧履歴
+        dcc.Store(id="feature_history_store", data=[]),
         # フルスクリーン閉じトリガー
         dcc.Store(id="fullscreen_closed_trigger", data=0),
         # CSVダウンロード用

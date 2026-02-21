@@ -49,7 +49,8 @@
       "Bash(where.exe:*)",
       "WebFetch(domain:www.dash-bootstrap-components.com)",
       "Bash(date:*)",
-      "Bash(time:*)"
+      "Bash(time:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\n2026/02/20 12:51 インタラクティブ解析UI大幅強化（TIMS ver13対応・カスタムクラスタ色・m/zフィルタ・サンプル名変更・Feature Plot空間表示化）\n\n主な変更:\n・TIMS ver13互換性向上（list型Seuratオブジェクト検出・パーケット対応・サンプル列検出改善）\n・クラスタ配色カスタマイズ機能（科学論文向け30色プリセット＋詳細カラーピッカー・使用色グレーアウト）\n・回転/反転・色変更UIのコンパクト化（ドロップダウン選択で1件ずつ表示）\n・Feature Plotの空間座標表示化・サンプル別表示・m/z範囲フィルタリング\n・サンプル表示名変更機能（全プロット・凡例・エクスポートに反映）\n・解析手法セクションの折りたたみ（Collapse+Button方式）\n・UMAP参照軸（L字型矢印画像）の埋め込み表示\n・各プロット軸・凡例・マージンの改善\n・Rスクリプト更新時のキャッシュ自動無効化\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   }
 }
