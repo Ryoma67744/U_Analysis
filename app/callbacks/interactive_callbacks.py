@@ -75,6 +75,173 @@ def _extract_mz_numeric(f):
     return float(match.group(1)) if match else float("inf")
 
 
+# ---------------------------------------------------------------------------
+# m/z キャリブレーション
+# ---------------------------------------------------------------------------
+def _calibrate_mz(features_list, expression_df, reference_mz,
+                  search_window=0.5, min_peaks=2):
+    """全ピクセル平均スペクトルから参照ピークのppmずれを計算し、線形回帰で補正値を返す。
+
+    Args:
+        features_list: Feature名リスト ("m/z 123.45678" 形式)
+        expression_df: DataFrame (cells×features, 列名=feature名)
+        reference_mz: list[float] — 参照m/z理論値
+        search_window: float — 検索ウィンドウ(Da)
+        min_peaks: int — 最低マッチ数
+
+    Returns:
+        dict: calibrated, corrected_mz_map, report, slope, intercept, r_squared
+    """
+    from scipy.stats import linregress
+
+    # Feature名 → m/z数値マッピング
+    mz_values = {}
+    for f in features_list:
+        mz = _extract_mz_numeric(f)
+        if mz != float("inf"):
+            mz_values[f] = mz
+
+    if not mz_values:
+        return {"calibrated": False, "corrected_mz_map": {}, "report": []}
+
+    mz_array = np.array(list(mz_values.values()))
+    feature_names = list(mz_values.keys())
+
+    # 平均スペクトル算出
+    avg_spectrum = {}
+    for f in feature_names:
+        if f in expression_df.columns:
+            avg_spectrum[f] = expression_df[f].mean()
+        else:
+            avg_spectrum[f] = 0.0
+
+    # 参照ピークとのマッチング
+    matched = []
+    for ref in reference_mz:
+        within_window = np.where(np.abs(mz_array - ref) <= search_window)[0]
+        if len(within_window) == 0:
+            continue
+        # ウィンドウ内で最大強度のピークを選択
+        best_idx = None
+        best_intensity = -1
+        for idx in within_window:
+            fname = feature_names[idx]
+            intensity = avg_spectrum.get(fname, 0.0)
+            if intensity > best_intensity:
+                best_intensity = intensity
+                best_idx = idx
+        if best_idx is not None:
+            obs = mz_array[best_idx]
+            ppm = (obs - ref) / ref * 1e6
+            matched.append({
+                "ref_mz": ref, "obs_mz": float(obs),
+                "ppm_drift": float(ppm), "avg_intensity": float(best_intensity),
+            })
+
+    if len(matched) < min_peaks:
+        return {"calibrated": False, "corrected_mz_map": {}, "report": matched}
+
+    # 線形回帰: ppm_drift = slope * obs_mz + intercept
+    obs_arr = np.array([m["obs_mz"] for m in matched])
+    ppm_arr = np.array([m["ppm_drift"] for m in matched])
+    slope, intercept, r_value, _, _ = linregress(obs_arr, ppm_arr)
+
+    # 全m/zに補正適用
+    predicted_ppm = slope * mz_array + intercept
+    corrected_mz = mz_array / (1 + predicted_ppm / 1e6)
+    corrected_mz_map = {f: float(c) for f, c in zip(feature_names, corrected_mz)}
+
+    return {
+        "calibrated": True,
+        "corrected_mz_map": corrected_mz_map,
+        "report": matched,
+        "slope": float(slope),
+        "intercept": float(intercept),
+        "r_squared": float(r_value ** 2),
+    }
+
+
+def _calibrate_mz_from_pairs(features_list, matched_pairs):
+    """ユーザーが明示的に対応付けたref/obsペアから直接キャリブレーション回帰を行う。
+
+    Args:
+        features_list: Feature名リスト ("m/z 123.45678" 形式)
+        matched_pairs: list[dict] — {ref_mz, obs_mz, ppm_drift} のリスト
+
+    Returns:
+        dict: _calibrate_mz() と同一形式
+    """
+    from scipy.stats import linregress
+
+    if len(matched_pairs) < 2:
+        return {"calibrated": False, "corrected_mz_map": {}, "report": matched_pairs}
+
+    obs_arr = np.array([p["obs_mz"] for p in matched_pairs])
+    ppm_arr = np.array([p["ppm_drift"] for p in matched_pairs])
+    slope, intercept, r_value, _, _ = linregress(obs_arr, ppm_arr)
+
+    # Feature名 → m/z数値マッピング
+    mz_values = {}
+    for f in features_list:
+        mz = _extract_mz_numeric(f)
+        if mz != float("inf"):
+            mz_values[f] = mz
+
+    if not mz_values:
+        return {"calibrated": False, "corrected_mz_map": {}, "report": matched_pairs}
+
+    mz_array = np.array(list(mz_values.values()))
+    feature_names = list(mz_values.keys())
+
+    # 全m/zに補正適用
+    predicted_ppm = slope * mz_array + intercept
+    corrected_mz = mz_array / (1 + predicted_ppm / 1e6)
+    corrected_mz_map = {f: float(c) for f, c in zip(feature_names, corrected_mz)}
+
+    return {
+        "calibrated": True,
+        "corrected_mz_map": corrected_mz_map,
+        "report": matched_pairs,
+        "slope": float(slope),
+        "intercept": float(intercept),
+        "r_squared": float(r_value ** 2),
+    }
+
+
+def _reannotate_with_calibration(deg_data, corrected_mz_map, mrm_path, tolerance=0.1):
+    """補正済みm/zでTraceFinder DBと照合し、DEGデータのannotation列を更新する。
+
+    Args:
+        deg_data: list[dict] — DEGレコードリスト
+        corrected_mz_map: dict[str, float] — feature名 → 補正済みm/z
+        mrm_path: str — MRM/TraceFinder DBファイルパス
+        tolerance: float — マッチング許容誤差(Da)
+
+    Returns:
+        list[dict] — annotation更新済みDEGデータ
+    """
+    mz_to_compound = _build_mz_to_compound_map(mrm_path, tolerance=tolerance)
+    if not mz_to_compound:
+        return deg_data
+
+    mrm_mz_values = np.array(sorted(mz_to_compound.keys()))
+    if len(mrm_mz_values) == 0:
+        return deg_data
+
+    updated = []
+    for row in deg_data:
+        row = dict(row)  # コピー
+        gene = row.get("gene", "")
+        corrected = corrected_mz_map.get(gene)
+        if corrected is not None and len(mrm_mz_values) > 0:
+            idx = np.argmin(np.abs(mrm_mz_values - corrected))
+            if abs(mrm_mz_values[idx] - corrected) <= tolerance:
+                compound = mz_to_compound[mrm_mz_values[idx]]
+                row["annotation"] = compound
+        updated.append(row)
+    return updated
+
+
 def _get_label_positions_path():
     """label_positions.json のパスを返す（RDSと同ディレクトリ）"""
     rds_path = _interactive_data.get("rds_path")
@@ -395,10 +562,21 @@ def toggle_integration_method(n, is_open):
     [Input("load_interactive_data", "n_clicks"),
      Input("interactive_integration_method", "value"),
      Input("interactive_rds_map", "data")],
-    [State("interactive_result_folder", "value")],
+    [State("interactive_result_folder", "value"),
+     State("calibration_enable", "value"),
+     State("calibration_matrix", "value"),
+     State("calibration_table_data", "data"),
+     State("calibration_search_window", "value"),
+     State("calibration_min_peaks", "value"),
+     State("ion_mode", "value"),
+     State("mrm_path", "value"),
+     State("tolerance_mz", "value")],
     prevent_initial_call=True,
 )
-def load_interactive_data(n_clicks, integration_method, rds_map, result_folder):
+def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
+                          cal_enable, cal_matrix, cal_table_data,
+                          cal_search_window, cal_min_peaks,
+                          ion_mode, mrm_path, tolerance_mz):
     _n_out = 19
     if not integration_method or not rds_map:
         return (
@@ -460,6 +638,59 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder):
             rds_dir = Path(rds_path).parent
             result_base = rds_dir.parent if rds_dir.name == "RDS_Files" else rds_dir
             deg_data = _load_deg_results(result_base, integration_method)
+
+        # --- m/z キャリブレーション（有効時のみ） ---
+        if cal_enable and deg_data and mrm_path and cal_table_data:
+            try:
+                # テーブルから use="Yes" のペアを抽出
+                matched_pairs = []
+                ref_only_mz = []
+                for row in cal_table_data:
+                    if row.get("use") != "Yes":
+                        continue
+                    ref = row.get("ref_mz")
+                    obs = row.get("obs_mz")
+                    if ref and obs and str(ref).strip() and str(obs).strip():
+                        ref_f = float(ref)
+                        obs_f = float(obs)
+                        ppm = (obs_f - ref_f) / ref_f * 1e6
+                        matched_pairs.append({
+                            "ref_mz": ref_f, "obs_mz": obs_f,
+                            "ppm_drift": ppm,
+                        })
+                    elif ref and str(ref).strip():
+                        ref_only_mz.append(float(ref))
+
+                mp = int(cal_min_peaks or 2)
+                cal_result = None
+
+                if len(matched_pairs) >= mp:
+                    # 明示的ペアが十分 → 直接回帰
+                    cal_result = _calibrate_mz_from_pairs(
+                        result["features_list"], matched_pairs,
+                    )
+                elif ref_only_mz:
+                    # obs未入力行あり → 自動検出にフォールバック
+                    cache_dir = result.get("cache_dir")
+                    expr_path = (Path(cache_dir) / "expression_matrix.parquet"
+                                 if cache_dir else None)
+                    if expr_path and expr_path.exists():
+                        expr_df = pd.read_parquet(expr_path)
+                        sw = float(cal_search_window or 0.5)
+                        cal_result = _calibrate_mz(
+                            result["features_list"], expr_df, ref_only_mz,
+                            search_window=sw, min_peaks=mp,
+                        )
+
+                if cal_result and cal_result.get("calibrated"):
+                    tol = float(tolerance_mz or 0.1)
+                    deg_data = _reannotate_with_calibration(
+                        deg_data, cal_result["corrected_mz_map"],
+                        mrm_path, tolerance=tol,
+                    )
+                    _interactive_data["_calibration_result"] = cal_result
+            except Exception:
+                pass  # キャリブレーション失敗時はそのまま続行
 
         # DEGセクションは常に表示、データ有無でメッセージ切替
         deg_section_style = {}  # 常に表示

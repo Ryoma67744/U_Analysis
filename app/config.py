@@ -50,6 +50,27 @@ DEFAULT_TOLERANCE_MZ = 0.01
 DEFAULT_ADDUCT_POSITIVE = ["+H", "+Na", "+NH4"]
 DEFAULT_ADDUCT_NEGATIVE = ["-H"]
 
+# m/z キャリブレーション
+DEFAULT_CALIBRATION_ENABLE = False
+DEFAULT_CALIBRATION_MATRIX = "DHB"
+DEFAULT_CALIBRATION_SEARCH_WINDOW = 0.5  # Da
+DEFAULT_CALIBRATION_MIN_PEAKS = 2
+
+MATRIX_REFERENCE_MZ = {
+    "DHB": {
+        "Positive": [137.0233, 155.0339, 177.0158, 273.0399],
+        "Negative": [153.0193, 136.0166],
+    },
+    "CHCA": {
+        "Positive": [190.0499, 172.0393, 212.0318, 379.0925],
+        "Negative": [188.0353],
+    },
+    "9AA": {
+        "Positive": [195.0917],
+        "Negative": [193.0771],
+    },
+}
+
 # 後方互換性のためのエイリアス
 V8_TEMPLATE_PATH = DESI_V8_TEMPLATE_PATH
 CLUSTER_FILTER_PATH = DESI_CLUSTER_FILTER_PATH

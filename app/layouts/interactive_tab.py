@@ -581,6 +581,8 @@ def create_interactive_tab():
         dcc.Store(id="feature_history_store", data=[]),
         # フルスクリーン閉じトリガー
         dcc.Store(id="fullscreen_closed_trigger", data=0),
+        # キャリブレーション対応表データ（settings_tab / interactive 共有）
+        dcc.Store(id="calibration_table_data", data=[]),
         # CSVダウンロード用
         dcc.Download(id="download_csv"),
         dcc.Download(id="download_html"),

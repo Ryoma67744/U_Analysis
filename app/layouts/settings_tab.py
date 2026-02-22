@@ -5,10 +5,14 @@
 
 from datetime import datetime
 
-from dash import html, dcc
+from dash import html, dcc, dash_table
 import dash_bootstrap_components as dbc
 
-from app.config import DEFAULT_DESI_DATA_FOLDER, APP_BASE_DIR
+from app.config import (
+    DEFAULT_DESI_DATA_FOLDER, APP_BASE_DIR,
+    DEFAULT_CALIBRATION_ENABLE, DEFAULT_CALIBRATION_MATRIX,
+    DEFAULT_CALIBRATION_SEARCH_WINDOW, DEFAULT_CALIBRATION_MIN_PEAKS,
+)
 from app.services.session_manager import load_last_settings
 from app.layouts.tooltips import help_badge
 
@@ -22,7 +26,7 @@ def create_settings_tab():
             id="umap_settings_panel",
             children=[
                 html.H4(className="card-title", children=["📊 UMAP解析設定"]),
-                dbc.Row([
+                dbc.Row(align="start", children=[
                     dbc.Col(width=6, children=[
                         html.Div(className="param-group", children=[
                             html.H5("データフォルダ・サンプル選択"),
@@ -37,6 +41,27 @@ def create_settings_tab():
                             ),
                             html.Div(id="sample_selector"),
                             dbc.FormText("チェックを入れたサンプルが解析対象になります"),
+                        ]),
+                        # RDS途中再開
+                        html.Div(className="param-group", style={"marginTop": "15px"}, children=[
+                            html.H5("RDSファイル"),
+                            dbc.Checkbox(id="resume_rds", label=html.Span(["途中再開 (RDSから)", help_badge("resume_rds")]),
+                                        value=ls.get("resume_rds", False)),
+                            html.Div(
+                                id="resume_rds_panel",
+                                style={"display": "none", "marginTop": "10px"},
+                                children=[
+                                    dbc.Input(id="rds_folder", value=ls.get("rds_folder", ""),
+                                              placeholder="RDSファイルが入っているフォルダ"),
+                                    dbc.Button("参照...", id="browse_rds_folder", size="sm", color="secondary",
+                                               style={"marginTop": "5px"}),
+                                    html.Div(style={"marginTop": "10px"}, children=[
+                                        html.H6("RDSファイル選択"),
+                                        html.Div(id="rds_file_selector"),
+                                        dbc.FormText("チェックを入れたRDSファイルを使用します"),
+                                    ]),
+                                ],
+                            ),
                         ]),
                     ]),
                     dbc.Col(width=6, children=[
@@ -78,6 +103,139 @@ def create_settings_tab():
                                         value=["+H", "+Na", "+NH4"],
                                         inline=True,
                                     ),
+                                    # --- m/z キャリブレーション ---
+                                    html.Hr(style={"marginTop": "15px", "marginBottom": "10px"}),
+                                    html.H5(["m/z キャリブレーション", help_badge("calibration")],
+                                            style={"marginTop": "5px"}),
+                                    dbc.Checkbox(
+                                        id="calibration_enable",
+                                        label="マトリクスピークでキャリブレーション",
+                                        value=ls.get("calibration_enable", DEFAULT_CALIBRATION_ENABLE),
+                                    ),
+                                    html.Div(
+                                        id="calibration_detail_panel",
+                                        style={"display": "none", "marginTop": "10px",
+                                               "padding": "10px", "background": "#f8f9fa",
+                                               "borderRadius": "5px"},
+                                        children=[
+                                            dbc.Label("マトリクス種"),
+                                            dbc.Select(
+                                                id="calibration_matrix",
+                                                options=[
+                                                    {"label": "DHB (2,5-Dihydroxybenzoic acid)", "value": "DHB"},
+                                                    {"label": "CHCA (α-Cyano-4-hydroxycinnamic acid)", "value": "CHCA"},
+                                                    {"label": "9-AA (9-Aminoacridine)", "value": "9AA"},
+                                                    {"label": "カスタム (手動入力)", "value": "custom"},
+                                                ],
+                                                value=ls.get("calibration_matrix", DEFAULT_CALIBRATION_MATRIX),
+                                            ),
+                                            html.Div(
+                                                style={"marginTop": "10px"},
+                                                children=[
+                                                    dbc.Label("リファレンス / 実測値 対応表"),
+                                                    dash_table.DataTable(
+                                                        id="calibration_table",
+                                                        columns=[
+                                                            {"name": "Reference m/z", "id": "ref_mz",
+                                                             "editable": True, "type": "numeric"},
+                                                            {"name": "Observed m/z", "id": "obs_mz",
+                                                             "editable": True, "type": "numeric"},
+                                                            {"name": "Δppm", "id": "ppm_drift",
+                                                             "editable": False, "type": "text"},
+                                                            {"name": "使用", "id": "use",
+                                                             "editable": True, "presentation": "dropdown"},
+                                                        ],
+                                                        data=[],
+                                                        dropdown={"use": {"options": [
+                                                            {"label": "Yes", "value": "Yes"},
+                                                            {"label": "No", "value": "No"},
+                                                        ]}},
+                                                        row_selectable="multi",
+                                                        style_table={"overflowX": "auto"},
+                                                        style_cell={
+                                                            "textAlign": "center",
+                                                            "padding": "5px",
+                                                            "fontSize": "0.85rem",
+                                                            "minWidth": "90px",
+                                                        },
+                                                        style_header={
+                                                            "backgroundColor": "#f8f9fa",
+                                                            "fontWeight": "600",
+                                                        },
+                                                        style_data_conditional=[
+                                                            {"if": {"filter_query": '{obs_mz} eq ""'},
+                                                             "backgroundColor": "#f5f5f5",
+                                                             "color": "#aaa"},
+                                                        ],
+                                                    ),
+                                                    html.Div(
+                                                        className="d-flex gap-2 mt-2",
+                                                        children=[
+                                                            dbc.Button(
+                                                                "行追加",
+                                                                id="calibration_add_row",
+                                                                size="sm", color="secondary",
+                                                                outline=True,
+                                                            ),
+                                                            dbc.Button(
+                                                                "選択行削除",
+                                                                id="calibration_delete_rows",
+                                                                size="sm", color="danger",
+                                                                outline=True,
+                                                            ),
+                                                            dbc.Button(
+                                                                "ピーク自動検出",
+                                                                id="calibration_auto_detect",
+                                                                size="sm", color="info",
+                                                            ),
+                                                        ],
+                                                    ),
+                                                    html.Div(
+                                                        id="calibration_status_text",
+                                                        style={"marginTop": "8px",
+                                                               "fontSize": "12px",
+                                                               "color": "#666"},
+                                                    ),
+                                                    dbc.FormText(
+                                                        "マトリクス種変更でリファレンス値リセット。"
+                                                        "データ読込後「ピーク自動検出」で実測値を検索。"
+                                                    ),
+                                                ],
+                                            ),
+                                            html.Details([
+                                                html.Summary("詳細設定",
+                                                             style={"cursor": "pointer",
+                                                                    "fontSize": "12px",
+                                                                    "marginTop": "8px"}),
+                                                html.Div(style={"marginTop": "5px"}, children=[
+                                                    dbc.Row([
+                                                        dbc.Col(width=6, children=[
+                                                            dbc.Label("検索ウィンドウ (Da)",
+                                                                      className="small"),
+                                                            dbc.Input(
+                                                                id="calibration_search_window",
+                                                                type="number",
+                                                                value=ls.get("calibration_search_window",
+                                                                             DEFAULT_CALIBRATION_SEARCH_WINDOW),
+                                                                min=0.01, max=2.0, step=0.01,
+                                                            ),
+                                                        ]),
+                                                        dbc.Col(width=6, children=[
+                                                            dbc.Label("最低マッチピーク数",
+                                                                      className="small"),
+                                                            dbc.Input(
+                                                                id="calibration_min_peaks",
+                                                                type="number",
+                                                                value=ls.get("calibration_min_peaks",
+                                                                             DEFAULT_CALIBRATION_MIN_PEAKS),
+                                                                min=1, max=10, step=1,
+                                                            ),
+                                                        ]),
+                                                    ]),
+                                                ]),
+                                            ]),
+                                        ],
+                                    ),
                                 ]),
                             ],
                         ),
@@ -109,31 +267,6 @@ def create_settings_tab():
                     ),
                 ]),
 
-                # RDS途中再開
-                dbc.Row(className="mt-3", children=[
-                    dbc.Col(width=12, children=[
-                        html.Div(className="param-group", children=[
-                            html.H5("RDSファイル"),
-                            dbc.Checkbox(id="resume_rds", label=html.Span(["途中再開 (RDSから)", help_badge("resume_rds")]),
-                                        value=ls.get("resume_rds", False)),
-                            html.Div(
-                                id="resume_rds_panel",
-                                style={"display": "none", "marginTop": "10px"},
-                                children=[
-                                    dbc.Input(id="rds_folder", value=ls.get("rds_folder", ""),
-                                              placeholder="RDSファイルが入っているフォルダ"),
-                                    dbc.Button("参照...", id="browse_rds_folder", size="sm", color="secondary",
-                                               style={"marginTop": "5px"}),
-                                    html.Div(style={"marginTop": "10px"}, children=[
-                                        html.H6("RDSファイル選択"),
-                                        html.Div(id="rds_file_selector"),
-                                        dbc.FormText("チェックを入れたRDSファイルを使用します"),
-                                    ]),
-                                ],
-                            ),
-                        ]),
-                    ]),
-                ]),
             ],
         ),
 

@@ -80,6 +80,11 @@ def get_settings_tooltips():
             "出力先ディレクトリの下にこの名前のサブフォルダが作成されます。",
             target="output_subfolder_help_badge", **_TOOLTIP_PROPS,
         ),
+        dbc.Tooltip(
+            "マトリクスの既知ピーク（リファレンスm/z）と実測ピークを対応付けて"
+            "m/z値の線形回帰補正を行います。補正後のm/zでアノテーションを再検索します。",
+            target="calibration_help_badge", **_TOOLTIP_PROPS,
+        ),
     ]
 
 

@@ -34,6 +34,10 @@ _AUTO_SAVE_KEYS = [
     "default_desi_data_folder", "default_mrm_file", "default_desi_output_dir",
     "default_tims_data_folder", "default_annotation_csv", "default_tims_output_dir",
     "default_output_dir",
+    # キャリブレーション設定
+    "calibration_table_data",
+    "calibration_enable", "calibration_matrix",
+    "calibration_search_window", "calibration_min_peaks",
 ]
 
 

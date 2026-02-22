@@ -573,3 +573,194 @@ def handle_stop(n_clicks, app_state):
     stop_analysis_process(process, output_dir, log_fh)
 
     return "停止リクエストを送信しました", True
+
+
+# ---------------------------------------------------------------------------
+# m/z キャリブレーション UI 表示切替
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("calibration_detail_panel", "style"),
+    Input("calibration_enable", "value"),
+    prevent_initial_call=True,
+)
+def toggle_calibration_panel(enabled):
+    if enabled:
+        return {"display": "block", "marginTop": "10px",
+                "padding": "10px", "background": "#f8f9fa",
+                "borderRadius": "5px"}
+    return {"display": "none"}
+
+
+@callback(
+    Output("calibration_table_data", "data"),
+    [Input("calibration_matrix", "value"),
+     Input("ion_mode", "value")],
+    prevent_initial_call=True,
+)
+def update_calibration_table_on_matrix(matrix_type, ion_mode):
+    """マトリックス種/イオンモード変更時にテーブルデータを初期化"""
+    from app.config import MATRIX_REFERENCE_MZ
+    if not matrix_type or matrix_type == "custom":
+        return no_update
+    polarity = ion_mode or "Positive"
+    ref_list = MATRIX_REFERENCE_MZ.get(matrix_type, {}).get(polarity, [])
+    if not ref_list:
+        return []
+    return [{"ref_mz": round(r, 4), "obs_mz": "",
+             "ppm_drift": "--", "use": "Yes"} for r in ref_list]
+
+
+@callback(
+    Output("calibration_table", "data"),
+    Input("calibration_table_data", "data"),
+    prevent_initial_call=True,
+)
+def sync_calibration_store_to_table(store_data):
+    """Store → DataTable 同期"""
+    return store_data or []
+
+
+@callback(
+    Output("calibration_table_data", "data", allow_duplicate=True),
+    Input("calibration_add_row", "n_clicks"),
+    State("calibration_table_data", "data"),
+    prevent_initial_call=True,
+)
+def add_calibration_row(n, data):
+    """行追加ボタン"""
+    if not n:
+        return no_update
+    data = list(data or [])
+    data.append({"ref_mz": "", "obs_mz": "", "ppm_drift": "--", "use": "Yes"})
+    return data
+
+
+@callback(
+    Output("calibration_table_data", "data", allow_duplicate=True),
+    Input("calibration_delete_rows", "n_clicks"),
+    [State("calibration_table", "selected_rows"),
+     State("calibration_table_data", "data")],
+    prevent_initial_call=True,
+)
+def delete_calibration_rows(n, selected, data):
+    """選択行削除ボタン"""
+    if not n or not selected or not data:
+        return no_update
+    return [r for i, r in enumerate(data) if i not in selected]
+
+
+@callback(
+    [Output("calibration_table_data", "data", allow_duplicate=True),
+     Output("calibration_status_text", "children")],
+    Input("calibration_auto_detect", "n_clicks"),
+    [State("calibration_table_data", "data"),
+     State("calibration_search_window", "value"),
+     State("seurat_cache_dir_store", "data")],
+    prevent_initial_call=True,
+)
+def auto_detect_observed_peaks(n, table_data, search_window, cache_dir):
+    """リファレンスm/z値に対応する実測ピークを自動検出"""
+    import numpy as np
+    import pandas as pd
+
+    if not n or not table_data:
+        return no_update, no_update
+
+    if not cache_dir:
+        return no_update, "⚠ データが読み込まれていません。先にインタラクティブ解析タブでデータをロードしてください。"
+
+    expr_path = Path(cache_dir) / "expression_matrix.parquet"
+    if not expr_path.exists():
+        return no_update, "⚠ expression_matrix.parquet が見つかりません。"
+
+    try:
+        expr_df = pd.read_parquet(expr_path)
+    except Exception as e:
+        return no_update, f"⚠ データ読込エラー: {e}"
+
+    # Feature名 → m/z数値マッピング
+    mz_values = {}
+    for col in expr_df.columns:
+        match = re.search(r"(\d+\.?\d*)", col)
+        if match:
+            mz_values[col] = float(match.group(1))
+
+    if not mz_values:
+        return no_update, "⚠ m/z値を含むフィーチャーが見つかりません。"
+
+    mz_array = np.array(list(mz_values.values()))
+    feature_names = list(mz_values.keys())
+    avg_spectrum = {f: float(expr_df[f].mean()) for f in feature_names}
+
+    sw = float(search_window or 0.5)
+    matched_count = 0
+    updated_data = []
+
+    for row in table_data:
+        row = dict(row)  # コピー
+        ref = row.get("ref_mz")
+        if not ref or ref == "":
+            updated_data.append(row)
+            continue
+        try:
+            ref_f = float(ref)
+        except (ValueError, TypeError):
+            updated_data.append(row)
+            continue
+
+        within = np.where(np.abs(mz_array - ref_f) <= sw)[0]
+        if len(within) == 0:
+            row["obs_mz"] = ""
+            row["ppm_drift"] = "--"
+            updated_data.append(row)
+            continue
+
+        # ウィンドウ内で最大強度のピークを選択
+        best_idx = max(within, key=lambda i: avg_spectrum.get(feature_names[i], 0))
+        obs = float(mz_array[best_idx])
+        ppm = (obs - ref_f) / ref_f * 1e6
+        row["obs_mz"] = round(obs, 5)
+        row["ppm_drift"] = f"{ppm:+.1f}"
+        matched_count += 1
+        updated_data.append(row)
+
+    status = f"✓ 検出完了: {matched_count}/{len(table_data)} ピークがマッチしました"
+    return updated_data, status
+
+
+@callback(
+    Output("calibration_table_data", "data", allow_duplicate=True),
+    Input("calibration_table", "data_timestamp"),
+    State("calibration_table", "data"),
+    prevent_initial_call=True,
+)
+def recalculate_ppm_on_edit(ts, table_data):
+    """テーブル編集時にppm driftを再計算してStoreに反映"""
+    if not table_data:
+        return no_update
+    changed = False
+    updated = []
+    for row in table_data:
+        row = dict(row)
+        ref = row.get("ref_mz")
+        obs = row.get("obs_mz")
+        if ref and obs and str(ref).strip() and str(obs).strip():
+            try:
+                ref_f = float(ref)
+                obs_f = float(obs)
+                ppm = (obs_f - ref_f) / ref_f * 1e6
+                new_drift = f"{ppm:+.1f}"
+                if row.get("ppm_drift") != new_drift:
+                    row["ppm_drift"] = new_drift
+                    changed = True
+            except (ValueError, TypeError):
+                if row.get("ppm_drift") != "--":
+                    row["ppm_drift"] = "--"
+                    changed = True
+        else:
+            if row.get("ppm_drift") != "--":
+                row["ppm_drift"] = "--"
+                changed = True
+        updated.append(row)
+    return updated if changed else no_update
