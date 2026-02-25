@@ -122,7 +122,7 @@ def create_interactive_tab():
                     className="mt-3",
                     children=[
                         # --- エクスポート ---
-                        dbc.AccordionItem(title="エクスポート", children=[
+                        dbc.AccordionItem(title="エクスポート", className="accordion-export", children=[
                             dbc.Row(className="align-items-center", children=[
                                 dbc.Col(width="auto", children=[
                                     dbc.Button(
@@ -174,7 +174,7 @@ def create_interactive_tab():
                         ]),
 
                         # --- クラスタ情報 + 統計 ---
-                        dbc.AccordionItem(title="クラスタ情報", children=[
+                        dbc.AccordionItem(title="クラスタ情報", className="accordion-cluster", children=[
                             html.Pre(id="cluster_info_text",
                                      style={"fontSize": "0.85rem", "maxHeight": "120px",
                                             "overflowY": "auto"}),
@@ -203,7 +203,7 @@ def create_interactive_tab():
                         ]),
 
                         # --- UMAP プロット ---
-                        dbc.AccordionItem(title="UMAP", children=[
+                        dbc.AccordionItem(title="UMAP", className="accordion-umap", children=[
                             html.Div(className="d-flex justify-content-end", children=[
                                 dbc.Button("⤢", id="expand_umap_btn", size="sm", color="light",
                                            style={"fontSize": "1.2rem", "padding": "2px 8px", "lineHeight": "1"}),
@@ -320,7 +320,7 @@ def create_interactive_tab():
                         ]),
 
                         # --- Spatial Mapping ---
-                        dbc.AccordionItem(title="Spatial Mapping", children=[
+                        dbc.AccordionItem(title="Spatial Mapping", className="accordion-spatial", children=[
                             html.Div(className="d-flex justify-content-end", children=[
                                 dbc.Button("⤢", id="expand_spatial_btn", size="sm", color="light",
                                            style={"fontSize": "1.2rem", "padding": "2px 8px", "lineHeight": "1"}),
@@ -406,7 +406,7 @@ def create_interactive_tab():
                         ]),
 
                         # --- Feature Plot ---
-                        dbc.AccordionItem(title="Feature Plot", children=[
+                        dbc.AccordionItem(title="Feature Plot", className="accordion-feature", children=[
                             html.Div(className="d-flex justify-content-end", children=[
                                 dbc.Button("⤢", id="expand_feature_btn", size="sm", color="light",
                                            style={"fontSize": "1.2rem", "padding": "2px 8px", "lineHeight": "1"}),
@@ -534,7 +534,7 @@ def create_interactive_tab():
                         ]),
 
                         # --- DEG マーカー ---
-                        dbc.AccordionItem(title="DEG マーカー", children=[
+                        dbc.AccordionItem(title="DEG マーカー", className="accordion-deg", children=[
                             html.Div(
                                 id="deg_results_section",
                                 style={"display": "none"},

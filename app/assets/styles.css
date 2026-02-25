@@ -369,3 +369,17 @@
         height: 120px;
     }
 }
+
+/* アコーディオンセクション色分け */
+.accordion-export > .accordion-header > .accordion-button,
+.accordion-export > .accordion-header > .accordion-button:not(.collapsed) { background-color: #e8f5e9; }
+.accordion-cluster > .accordion-header > .accordion-button,
+.accordion-cluster > .accordion-header > .accordion-button:not(.collapsed) { background-color: #e3f2fd; }
+.accordion-umap > .accordion-header > .accordion-button,
+.accordion-umap > .accordion-header > .accordion-button:not(.collapsed) { background-color: #fff3e0; }
+.accordion-spatial > .accordion-header > .accordion-button,
+.accordion-spatial > .accordion-header > .accordion-button:not(.collapsed) { background-color: #fce4ec; }
+.accordion-feature > .accordion-header > .accordion-button,
+.accordion-feature > .accordion-header > .accordion-button:not(.collapsed) { background-color: #e0f7fa; }
+.accordion-deg > .accordion-header > .accordion-button,
+.accordion-deg > .accordion-header > .accordion-button:not(.collapsed) { background-color: #fffde7; }
