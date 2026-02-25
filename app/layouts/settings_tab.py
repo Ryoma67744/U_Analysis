@@ -12,6 +12,7 @@ from app.config import (
     DEFAULT_DESI_DATA_FOLDER, APP_BASE_DIR,
     DEFAULT_CALIBRATION_ENABLE, DEFAULT_CALIBRATION_MATRIX,
     DEFAULT_CALIBRATION_SEARCH_WINDOW, DEFAULT_CALIBRATION_MIN_PEAKS,
+    DEFAULT_CALIBRATION_REGRESSION,
 )
 from app.services.session_manager import load_last_settings
 from app.layouts.tooltips import help_badge
@@ -142,14 +143,8 @@ def create_settings_tab():
                                                              "editable": True, "type": "numeric"},
                                                             {"name": "Δppm", "id": "ppm_drift",
                                                              "editable": False, "type": "text"},
-                                                            {"name": "使用", "id": "use",
-                                                             "editable": True, "presentation": "dropdown"},
                                                         ],
                                                         data=[],
-                                                        dropdown={"use": {"options": [
-                                                            {"label": "Yes", "value": "Yes"},
-                                                            {"label": "No", "value": "No"},
-                                                        ]}},
                                                         row_selectable="multi",
                                                         style_table={"overflowX": "auto"},
                                                         style_cell={
@@ -187,6 +182,12 @@ def create_settings_tab():
                                                                 "ピーク自動検出",
                                                                 id="calibration_auto_detect",
                                                                 size="sm", color="info",
+                                                            ),
+                                                            dbc.Button(
+                                                                "List保存",
+                                                                id="calibration_save_list",
+                                                                size="sm", color="success",
+                                                                outline=True,
                                                             ),
                                                         ],
                                                     ),
@@ -232,6 +233,28 @@ def create_settings_tab():
                                                             ),
                                                         ]),
                                                     ]),
+                                                    dbc.Row([
+                                                        dbc.Col(width=5, children=[
+                                                            dbc.Label("回帰モデル",
+                                                                      className="small"),
+                                                        ]),
+                                                        dbc.Col(width=7, children=[
+                                                            dbc.Select(
+                                                                id="calibration_regression_mode",
+                                                                options=[
+                                                                    {"label": "線形 (1次)",
+                                                                     "value": "linear"},
+                                                                    {"label": "多項式 (2次)",
+                                                                     "value": "poly2"},
+                                                                    {"label": "多項式 (3次)",
+                                                                     "value": "poly3"},
+                                                                ],
+                                                                value=ls.get(
+                                                                    "calibration_regression_mode",
+                                                                    DEFAULT_CALIBRATION_REGRESSION),
+                                                            ),
+                                                        ]),
+                                                    ], className="mt-2"),
                                                 ]),
                                             ]),
                                         ],

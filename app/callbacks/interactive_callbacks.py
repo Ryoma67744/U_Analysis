@@ -5,8 +5,10 @@
 
 import base64
 import io
+from io import BytesIO
 import json
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -52,6 +54,13 @@ def _get_cluster_color_map(clusters, custom_colors=None):
     return cmap
 
 
+def _get_sample_color_map(samples):
+    """サンプル名のリストからサンプル色マップを生成（DESI_COLORS_50 使用）"""
+    sorted_samples = sorted(set(str(s) for s in samples))
+    return {s: DESI_COLORS_50[i % len(DESI_COLORS_50)]
+            for i, s in enumerate(sorted_samples)}
+
+
 def _is_meaningful_annotation(ann, gene=""):
     """annotation値が表示価値のある化合物名かどうかを判定。
     数値のみのアノテーション(例: "240.984")や空文字は除外する。"""
@@ -79,8 +88,8 @@ def _extract_mz_numeric(f):
 # m/z キャリブレーション
 # ---------------------------------------------------------------------------
 def _calibrate_mz(features_list, expression_df, reference_mz,
-                  search_window=0.5, min_peaks=2):
-    """全ピクセル平均スペクトルから参照ピークのppmずれを計算し、線形回帰で補正値を返す。
+                  search_window=0.5, min_peaks=2, regression_mode="linear"):
+    """全ピクセル平均スペクトルから参照ピークのppmずれを計算し、回帰で補正値を返す。
 
     Args:
         features_list: Feature名リスト ("m/z 123.45678" 形式)
@@ -88,9 +97,10 @@ def _calibrate_mz(features_list, expression_df, reference_mz,
         reference_mz: list[float] — 参照m/z理論値
         search_window: float — 検索ウィンドウ(Da)
         min_peaks: int — 最低マッチ数
+        regression_mode: str — "linear", "poly2", "poly3"
 
     Returns:
-        dict: calibrated, corrected_mz_map, report, slope, intercept, r_squared
+        dict: calibrated, corrected_mz_map, report, regression_mode, r_squared, ...
     """
     from scipy.stats import linregress
 
@@ -141,32 +151,53 @@ def _calibrate_mz(features_list, expression_df, reference_mz,
     if len(matched) < min_peaks:
         return {"calibrated": False, "corrected_mz_map": {}, "report": matched}
 
-    # 線形回帰: ppm_drift = slope * obs_mz + intercept
+    # 回帰: ppm_drift を obs_mz の関数としてフィッティング
     obs_arr = np.array([m["obs_mz"] for m in matched])
     ppm_arr = np.array([m["ppm_drift"] for m in matched])
-    slope, intercept, r_value, _, _ = linregress(obs_arr, ppm_arr)
+
+    if regression_mode in ("poly2", "poly3"):
+        degree = 2 if regression_mode == "poly2" else 3
+        degree = min(degree, len(obs_arr) - 1)  # 過学習防止
+        coeffs = np.polyfit(obs_arr, ppm_arr, degree)
+        predicted_ppm = np.polyval(coeffs, mz_array)
+        # R² 算出
+        fitted_ppm = np.polyval(coeffs, obs_arr)
+        ss_res = np.sum((ppm_arr - fitted_ppm) ** 2)
+        ss_tot = np.sum((ppm_arr - np.mean(ppm_arr)) ** 2)
+        r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    else:
+        slope, intercept, r_value, _, _ = linregress(obs_arr, ppm_arr)
+        predicted_ppm = slope * mz_array + intercept
+        coeffs = None
+        r_squared = float(r_value ** 2)
 
     # 全m/zに補正適用
-    predicted_ppm = slope * mz_array + intercept
     corrected_mz = mz_array / (1 + predicted_ppm / 1e6)
     corrected_mz_map = {f: float(c) for f, c in zip(feature_names, corrected_mz)}
 
-    return {
+    result = {
         "calibrated": True,
         "corrected_mz_map": corrected_mz_map,
         "report": matched,
-        "slope": float(slope),
-        "intercept": float(intercept),
-        "r_squared": float(r_value ** 2),
+        "regression_mode": regression_mode,
+        "r_squared": r_squared,
     }
+    if coeffs is not None:
+        result["poly_coeffs"] = [float(c) for c in coeffs]
+    else:
+        result["slope"] = float(slope)
+        result["intercept"] = float(intercept)
+    return result
 
 
-def _calibrate_mz_from_pairs(features_list, matched_pairs):
+def _calibrate_mz_from_pairs(features_list, matched_pairs,
+                             regression_mode="linear"):
     """ユーザーが明示的に対応付けたref/obsペアから直接キャリブレーション回帰を行う。
 
     Args:
         features_list: Feature名リスト ("m/z 123.45678" 形式)
         matched_pairs: list[dict] — {ref_mz, obs_mz, ppm_drift} のリスト
+        regression_mode: str — "linear", "poly2", "poly3"
 
     Returns:
         dict: _calibrate_mz() と同一形式
@@ -178,7 +209,20 @@ def _calibrate_mz_from_pairs(features_list, matched_pairs):
 
     obs_arr = np.array([p["obs_mz"] for p in matched_pairs])
     ppm_arr = np.array([p["ppm_drift"] for p in matched_pairs])
-    slope, intercept, r_value, _, _ = linregress(obs_arr, ppm_arr)
+
+    if regression_mode in ("poly2", "poly3"):
+        degree = 2 if regression_mode == "poly2" else 3
+        degree = min(degree, len(obs_arr) - 1)  # 過学習防止
+        coeffs = np.polyfit(obs_arr, ppm_arr, degree)
+        # R² 算出
+        fitted_ppm = np.polyval(coeffs, obs_arr)
+        ss_res = np.sum((ppm_arr - fitted_ppm) ** 2)
+        ss_tot = np.sum((ppm_arr - np.mean(ppm_arr)) ** 2)
+        r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    else:
+        slope, intercept, r_value, _, _ = linregress(obs_arr, ppm_arr)
+        coeffs = None
+        r_squared = float(r_value ** 2)
 
     # Feature名 → m/z数値マッピング
     mz_values = {}
@@ -194,18 +238,26 @@ def _calibrate_mz_from_pairs(features_list, matched_pairs):
     feature_names = list(mz_values.keys())
 
     # 全m/zに補正適用
-    predicted_ppm = slope * mz_array + intercept
+    if coeffs is not None:
+        predicted_ppm = np.polyval(coeffs, mz_array)
+    else:
+        predicted_ppm = slope * mz_array + intercept
     corrected_mz = mz_array / (1 + predicted_ppm / 1e6)
     corrected_mz_map = {f: float(c) for f, c in zip(feature_names, corrected_mz)}
 
-    return {
+    result = {
         "calibrated": True,
         "corrected_mz_map": corrected_mz_map,
         "report": matched_pairs,
-        "slope": float(slope),
-        "intercept": float(intercept),
-        "r_squared": float(r_value ** 2),
+        "regression_mode": regression_mode,
+        "r_squared": r_squared,
     }
+    if coeffs is not None:
+        result["poly_coeffs"] = [float(c) for c in coeffs]
+    else:
+        result["slope"] = float(slope)
+        result["intercept"] = float(intercept)
+    return result
 
 
 def _reannotate_with_calibration(deg_data, corrected_mz_map, mrm_path, tolerance=0.1):
@@ -568,6 +620,7 @@ def toggle_integration_method(n, is_open):
      State("calibration_table_data", "data"),
      State("calibration_search_window", "value"),
      State("calibration_min_peaks", "value"),
+     State("calibration_regression_mode", "value"),
      State("ion_mode", "value"),
      State("mrm_path", "value"),
      State("tolerance_mz", "value")],
@@ -576,6 +629,7 @@ def toggle_integration_method(n, is_open):
 def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
                           cal_enable, cal_matrix, cal_table_data,
                           cal_search_window, cal_min_peaks,
+                          cal_regression_mode,
                           ion_mode, mrm_path, tolerance_mz):
     _n_out = 19
     if not integration_method or not rds_map:
@@ -662,12 +716,14 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
                         ref_only_mz.append(float(ref))
 
                 mp = int(cal_min_peaks or 2)
+                reg_mode = cal_regression_mode or "linear"
                 cal_result = None
 
                 if len(matched_pairs) >= mp:
                     # 明示的ペアが十分 → 直接回帰
                     cal_result = _calibrate_mz_from_pairs(
                         result["features_list"], matched_pairs,
+                        regression_mode=reg_mode,
                     )
                 elif ref_only_mz:
                     # obs未入力行あり → 自動検出にフォールバック
@@ -680,6 +736,7 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
                         cal_result = _calibrate_mz(
                             result["features_list"], expr_df, ref_only_mz,
                             search_window=sw, min_peaks=mp,
+                            regression_mode=reg_mode,
                         )
 
                 if cal_result and cal_result.get("calibrated"):
@@ -1226,7 +1283,8 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                                 show_legend, show_labels, title=None,
                                 marker_size=2, exclude_clusters=None,
                                 label_size=14, saved_positions=None,
-                                custom_colors=None):
+                                custom_colors=None, bg_opacity=0.1,
+                                title_font_size=None):
     """統合UMAPのgo.Figureを生成（メイン/フルスクリーン共用）"""
     fig = go.Figure()
 
@@ -1249,7 +1307,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                 x=df.loc[mask_bg, "UMAP_1"],
                 y=df.loc[mask_bg, "UMAP_2"],
                 mode="markers",
-                marker=dict(size=max(1, marker_size - 1), color=HIGHLIGHT_GRAY, opacity=0.1),
+                marker=dict(size=max(1, marker_size - 1), color=HIGHLIGHT_GRAY, opacity=bg_opacity),
                 name="Other", showlegend=False, hoverinfo="skip",
             ))
         for cl in highlight_clusters:
@@ -1303,15 +1361,18 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
         dragmode="select",
         showlegend=bool(show_legend),
         legend=dict(itemsizing="constant", font=dict(size=12), tracegroupgap=2),
-        margin=dict(l=60, r=10, t=40 if title else 30, b=60),
+        margin=dict(l=60, r=10,
+                    t=max(40, (title_font_size or 14) + 15) if title else 30,
+                    b=60),
         xaxis=dict(showgrid=False, showline=False, zeroline=False,
                    showticklabels=False, title=""),
-        yaxis=dict(showgrid=False, showline=False, zeroline=False,
-                   showticklabels=False, title=""),
+        yaxis=dict(scaleanchor="x", showgrid=False, showline=False,
+                   zeroline=False, showticklabels=False, title=""),
         plot_bgcolor="white",
     )
     if title:
-        layout_opts["title"] = dict(text=title, font=dict(size=14), x=0.5)
+        layout_opts["title"] = dict(
+            text=title, font=dict(size=title_font_size or 14), x=0.5)
     fig.update_layout(**layout_opts)
     _add_umap_arrows(fig)
     return fig
@@ -1321,7 +1382,8 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                                    show_labels, graph_height="300px",
                                    marker_size=2, exclude_clusters=None,
                                    label_size=11, saved_positions=None,
-                                   show_legend=True, name_map=None):
+                                   show_legend=True, name_map=None,
+                                   columns_per_row=0):
     """サンプル別UMAPのhtml.Divリストを生成（メイン/フルスクリーン共用）"""
     # 除外クラスタのフィルタリング
     if exclude_clusters:
@@ -1338,17 +1400,6 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
     for s in samples:
         fig = go.Figure()
         mask_sample = df["Sample"] == s
-        mask_other = ~mask_sample
-
-        if mask_other.any():
-            fig.add_trace(go.Scattergl(
-                x=df.loc[mask_other, "UMAP_1"],
-                y=df.loc[mask_other, "UMAP_2"],
-                mode="markers",
-                marker=dict(size=max(1, marker_size - 1), color=HIGHLIGHT_GRAY, opacity=0.1),
-                name="Other", showlegend=False, hoverinfo="skip",
-            ))
-
         df_s = df[mask_sample]
         if highlight_clusters and len(highlight_clusters) > 0:
             hl_set = set(str(c) for c in highlight_clusters)
@@ -1371,6 +1422,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                         mode="markers",
                         marker=dict(size=marker_size + 1, color=color_map.get(str(cl), "#999999")),
                         name=f"Cluster {cl}", showlegend=False,
+                        legendgroup=f"Cluster {cl}",
                     ))
         else:
             for cl in sorted(df_s["Cluster"].unique(), key=_cluster_sort_key):
@@ -1381,6 +1433,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                     mode="markers",
                     marker=dict(size=marker_size, color=color_map.get(str(cl), "#999999")),
                     name=str(cl), showlegend=False,
+                    legendgroup=f"Cluster {cl}",
                 ))
 
         # 凡例用ダミートレース（全クラスタ共通で統一凡例を表示）
@@ -1391,6 +1444,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                     x=[None], y=[None], mode="markers",
                     marker=dict(size=10, color=color_map.get(str(cl), "#999999")),
                     name=f"Cluster {cl}", showlegend=True, legendrank=rank,
+                    legendgroup=f"Cluster {cl}",
                 ))
 
         if show_labels:
@@ -1416,8 +1470,8 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
             title=dict(text=display_s, font=dict(size=12), x=0.5),
             xaxis=dict(showgrid=False, showline=False, zeroline=False,
                        showticklabels=False, title=""),
-            yaxis=dict(showgrid=False, showline=False, zeroline=False,
-                       showticklabels=False, title=""),
+            yaxis=dict(scaleanchor="x", showgrid=False, showline=False,
+                       zeroline=False, showticklabels=False, title=""),
             plot_bgcolor="white",
             showlegend=bool(show_legend),
             legend=dict(itemsizing="constant", font=dict(size=9), tracegroupgap=1),
@@ -1427,9 +1481,18 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
         cfg = dict(_UMAP_PER_SAMPLE_CONFIG)
         cfg["toImageButtonOptions"] = dict(cfg["toImageButtonOptions"],
                                            filename=f"UMAP_{display_s}")
+        if columns_per_row:
+            n_cols = columns_per_row
+            gap_total = (n_cols - 1) * 15
+            flex_basis = f"calc({100 / n_cols:.2f}% - {gap_total / n_cols:.1f}px)"
+            min_w = "0"
+        else:
+            n_cols = len(samples)
+            flex_basis = f"{max(20, 90 // n_cols)}%"
+            min_w = "300px"
         graphs.append(
             html.Div(
-                style={"flex": "1 1 46%", "minWidth": "280px", "maxWidth": "50%",
+                style={"flex": f"1 1 {flex_basis}", "minWidth": min_w,
                         "border": "1px solid #dee2e6", "borderRadius": "6px",
                         "padding": "5px", "backgroundColor": "#fff"},
                 children=[
@@ -1515,11 +1578,13 @@ _UMAP_PER_SAMPLE_CONFIG = {
      Input("umap_show_legend", "value"),
      Input("sample_name_map_store", "data"),
      Input("fullscreen_closed_trigger", "data"),
-     Input("custom_color_map_store", "data")],
+     Input("custom_color_map_store", "data"),
+     Input("umap_columns_per_row", "value")],
 )
 def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
                             marker_size, exclude_clusters, label_size, rds_path,
-                            show_legend, name_map, _fs_trigger, custom_colors):
+                            show_legend, name_map, _fs_trigger, custom_colors,
+                            columns_per_row):
     """表示モード「サンプル別」の場合、各サンプルのUMAPを並列表示"""
     if display_mode != "per_sample":
         return ""
@@ -1535,7 +1600,8 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
                                             label_size=label_size or 11,
                                             saved_positions=all_pos.get("umap_per_sample"),
                                             show_legend=bool(show_legend),
-                                            name_map=name_map)
+                                            name_map=name_map,
+                                            columns_per_row=columns_per_row or 0)
     return html.Div(
         style={"display": "flex", "flexWrap": "wrap", "gap": "15px", "marginTop": "10px"},
         children=graphs,
@@ -1626,13 +1692,30 @@ def _transform_coords(x, y, angle_deg, flip_h=False, flip_v=False):
     return x_rot, y_rot
 
 
+def _calc_zero_gap_marker_size(plot_x, plot_y, render_height=310):
+    """点間距離ゼロ（隣接点が接する）のマーカーサイズを計算（scale_factor=1.0）"""
+    if len(plot_x) <= 1:
+        return 4
+    sorted_ux = np.sort(np.unique(plot_x))
+    if len(sorted_ux) <= 1:
+        return 4
+    min_spacing = float(np.min(np.diff(sorted_ux)))
+    x_range = float(plot_x.max() - plot_x.min())
+    y_range = float(plot_y.max() - plot_y.min()) if len(plot_y) > 1 else 1.0
+    if y_range > 0 and x_range > 0:
+        effective_w = render_height * (x_range / y_range)
+        return max(2, round(min_spacing * effective_w / x_range))
+    return 4
+
+
 def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                                selected_cell_ids, rotation_deg=0,
                                show_labels=False, flip_h=False, flip_v=False,
                                title=None, embed_legend=False,
                                cluster_to_idx=None, discrete_cscale=None,
                                marker_size=4, exclude_clusters=None,
-                               label_size=10, saved_positions=None):
+                               label_size=10, saved_positions=None,
+                               title_font_size=None, render_height=None):
     """単一サンプルのSpatial Mapping figureを生成"""
     # 除外クラスタのフィルタリング
     if exclude_clusters:
@@ -1659,11 +1742,12 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
             x_range = float(plot_x.max() - plot_x.min())
             y_range = float(plot_y.max() - plot_y.min()) if len(plot_y) > 1 else 1.0
             # scaleanchor="x" のため、描画幅は高さ×アスペクト比で決定
-            # コンテナ高さ350px - margin(t=30+b=10)=40px → 有効高さ310px
-            effective_h = 310
+            # render_height 指定時はそれを使用、未指定時はWebデフォルト310px
+            effective_h = render_height or 310
+            _scale_factor = 1.0
             if y_range > 0 and x_range > 0:
                 effective_w = effective_h * (x_range / y_range)
-                marker_size = max(2, round(min_spacing * effective_w / x_range * 1.3))
+                marker_size = max(2, round(min_spacing * effective_w / x_range * _scale_factor))
             else:
                 marker_size = 4
         else:
@@ -1677,11 +1761,11 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
         if mask_bg.any():
             if "TotalCount" in df_sample.columns:
                 tc_values = df_sample["TotalCount"].values[mask_bg]
-                bg_marker = dict(size=marker_size, color=tc_values, colorscale="Greys",
+                bg_marker = dict(size=marker_size, symbol="square", color=tc_values, colorscale="Greys",
                                  opacity=0.5, showscale=False)
                 bg_name = "TIC"
             else:
-                bg_marker = dict(size=marker_size, color=HIGHLIGHT_GRAY, opacity=0.2)
+                bg_marker = dict(size=marker_size, symbol="square", color=HIGHLIGHT_GRAY, opacity=0.2)
                 bg_name = "Other"
             fig.add_trace(go.Scattergl(
                 x=plot_x[mask_bg],
@@ -1695,7 +1779,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 x=plot_x[mask_selected],
                 y=plot_y[mask_selected],
                 mode="markers",
-                marker=dict(size=marker_size + 1, color="red"),
+                marker=dict(size=marker_size + 1, symbol="square", color="red"),
                 name=f"Selected ({mask_selected.sum()})",
             ))
     elif highlight_clusters and len(highlight_clusters) > 0:
@@ -1705,11 +1789,11 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
         if mask_bg.values.any():
             if "TotalCount" in df_sample.columns:
                 tc_values = df_sample["TotalCount"].values[mask_bg.values]
-                bg_marker = dict(size=marker_size, color=tc_values, colorscale="Greys",
+                bg_marker = dict(size=marker_size, symbol="square", color=tc_values, colorscale="Greys",
                                  opacity=0.5, showscale=False)
                 bg_name = "TIC"
             else:
-                bg_marker = dict(size=marker_size, color=HIGHLIGHT_GRAY, opacity=0.2)
+                bg_marker = dict(size=marker_size, symbol="square", color=HIGHLIGHT_GRAY, opacity=0.2)
                 bg_name = "Other"
             fig.add_trace(go.Scattergl(
                 x=plot_x[mask_bg.values],
@@ -1726,12 +1810,27 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                     x=plot_x[mask],
                     y=plot_y[mask],
                     mode="markers",
-                    marker=dict(size=marker_size + 1, color=color_map.get(str(cl), "#999999")),
+                    marker=dict(size=marker_size + 1, symbol="square", color=color_map.get(str(cl), "#999999")),
                     name=f"Cluster {cl}",
+                    legendgroup=f"Cluster {cl}",
                 ))
     else:
-        # 数値インデックス + discrete colorscale 方式
-        if cluster_to_idx is not None and discrete_cscale is not None:
+        if embed_legend:
+            # 凡例リンク用: クラスタ別個別トレース（legendgroup でダミーと連動）
+            for cl in sorted(df_sample["Cluster"].unique(), key=_cluster_sort_key):
+                mask = (df_sample["Cluster"].astype(str) == str(cl)).values
+                if mask.any():
+                    fig.add_trace(go.Scattergl(
+                        x=plot_x[mask], y=plot_y[mask], mode="markers",
+                        marker=dict(size=marker_size, symbol="square",
+                                    color=color_map.get(str(cl), "#999999")),
+                        text=[f"Cluster {cl}"] * int(mask.sum()),
+                        hovertemplate="%{text}<extra></extra>",
+                        name=f"Cluster {cl}", showlegend=False,
+                        legendgroup=f"Cluster {cl}",
+                    ))
+        elif cluster_to_idx is not None and discrete_cscale is not None:
+            # 数値インデックス + discrete colorscale 方式
             n_clusters = max(len(cluster_to_idx), 1)
             point_values = np.array(
                 [cluster_to_idx.get(str(cl), 0) for cl in df_sample["Cluster"]]
@@ -1741,6 +1840,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 x=plot_x, y=plot_y, mode="markers",
                 marker=dict(
                     size=marker_size,
+                    symbol="square",
                     color=point_normalized,
                     colorscale=discrete_cscale,
                     cmin=0, cmax=1,
@@ -1755,7 +1855,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
             point_colors = [color_map.get(str(cl), "#999999") for cl in df_sample["Cluster"]]
             fig.add_trace(go.Scattergl(
                 x=plot_x, y=plot_y, mode="markers",
-                marker=dict(size=marker_size, color=point_colors),
+                marker=dict(size=marker_size, symbol="square", color=point_colors),
                 text=[f"Cluster {cl}" for cl in df_sample["Cluster"]],
                 hovertemplate="%{text}<extra></extra>",
                 showlegend=False,
@@ -1767,10 +1867,11 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 fig.add_trace(go.Scattergl(
                     x=[None], y=[None],
                     mode="markers",
-                    marker=dict(size=10, color=color_map.get(str(cl), "#999999")),
+                    marker=dict(size=10, symbol="square", color=color_map.get(str(cl), "#999999")),
                     name=f"Cluster {cl}",
                     showlegend=True,
                     legendrank=rank,
+                    legendgroup=f"Cluster {cl}",
                 ))
 
     # クラスタ番号ラベル
@@ -1796,13 +1897,13 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                    showticklabels=False, title="", visible=False),
         yaxis=dict(scaleanchor="x", showgrid=False, showline=False, zeroline=False,
                    showticklabels=False, title="", visible=False),
-        margin=dict(l=10, r=10, t=30 if title else 10, b=10),
+        margin=dict(l=10, r=10, t=max(30, (title_font_size or 14) + 15) if title else 10, b=10),
         plot_bgcolor="white",
         showlegend=embed_legend,
         legend=dict(itemsizing="constant", font=dict(size=12), tracegroupgap=2),
     )
     if title:
-        layout_opts["title"] = dict(text=title, font=dict(size=14), x=0.5)
+        layout_opts["title"] = dict(text=title, font=dict(size=title_font_size or 14), x=0.5)
     fig.update_layout(**layout_opts)
     return fig
 
@@ -2315,6 +2416,51 @@ def create_umap_name_controls(rds_path, name_map):
     )
 
 
+# ---------------------------------------------------------------------------
+# Spatial マーカーサイズ Auto ボタン
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("spatial_marker_size", "value"),
+    Input("spatial_marker_auto_btn", "n_clicks"),
+    [State("spatial_rotation_store", "data"),
+     State("interactive_sample", "value")],
+    prevent_initial_call=True,
+)
+def auto_spatial_marker(n_clicks, rotation_store, sample):
+    """通常ビュー: スライダーを自動モード(0)にリセット → 各サンプル個別に自動計算"""
+    return 0
+
+
+@callback(
+    Output("fs_spatial_marker_size", "value"),
+    Input("fs_spatial_marker_auto_btn", "n_clicks"),
+    [State("spatial_rotation_store", "data"),
+     State("fs_spatial_sample", "value"),
+     State("fs_spatial_height_slider", "value")],
+    prevent_initial_call=True,
+)
+def auto_fs_spatial_marker(n_clicks, rotation_store, sample, height_val):
+    """フルスクリーン: スライダーを自動モード(0)にリセット → 各サンプル個別に自動計算"""
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Feature Plot マーカーサイズ Auto ボタン
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("feature_marker_size", "value"),
+    Input("feature_marker_auto_btn", "n_clicks"),
+    [State("spatial_rotation_store", "data"),
+     State("feature_sample_select", "value")],
+    prevent_initial_call=True,
+)
+def auto_feature_marker(n_clicks, rotation_store, sample):
+    """Feature Plot: スライダーを自動モード(0)にリセット → 各サンプル個別に自動計算"""
+    return 0
+
+
 @callback(
     [Output("spatial_plots_container", "children"),
      Output("last_spatial_figure_store", "data")],
@@ -2329,12 +2475,13 @@ def create_umap_name_controls(rds_path, name_map):
      Input("seurat_rds_path_store", "data"),
      Input("sample_name_map_store", "data"),
      Input("fullscreen_closed_trigger", "data"),
-     Input("custom_color_map_store", "data")],
+     Input("custom_color_map_store", "data"),
+     Input("spatial_columns_per_row", "value")],
 )
 def update_spatial_plots(sample, highlight_clusters, selected_data,
                          rotation_store, show_labels, marker_size,
                          exclude_clusters, label_size, rds_path, name_map,
-                         _fs_trigger, custom_colors):
+                         _fs_trigger, custom_colors, columns_per_row):
     df = _interactive_data.get("plot_data")
     if df is None or "SpatialX" not in df.columns:
         return html.Div("空間座標データがありません", className="text-muted p-3"), None
@@ -2392,11 +2539,18 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
         cfg = dict(_SPATIAL_IMG_CONFIG)
         cfg["toImageButtonOptions"] = dict(cfg["toImageButtonOptions"],
                                            filename=f"Spatial_{display_s}")
-        n_samples = len(samples_to_show)
-        flex_basis = f"{max(30, 90 // n_samples)}%"
+        if columns_per_row:
+            n_cols = columns_per_row
+            gap_total = (n_cols - 1) * 15
+            flex_basis = f"calc({100 / n_cols:.2f}% - {gap_total / n_cols:.1f}px)"
+            min_w = "0"
+        else:
+            n_cols = len(samples_to_show)
+            flex_basis = f"{max(20, 90 // n_cols)}%"
+            min_w = "300px"
         graphs.append(
             html.Div(
-                style={"flex": f"1 1 {flex_basis}", "minWidth": "300px",
+                style={"flex": f"1 1 {flex_basis}", "minWidth": min_w,
                         "border": "1px solid #dee2e6", "borderRadius": "6px",
                         "padding": "5px", "backgroundColor": "#fff"},
                 children=[
@@ -2437,7 +2591,8 @@ _FEATURE_IMG_CONFIG = {
      Input("feature_intensity_min", "value"),
      Input("feature_intensity_max", "value"),
      Input("sample_name_map_store", "data"),
-     Input("fullscreen_closed_trigger", "data")],
+     Input("fullscreen_closed_trigger", "data"),
+     Input("feature_columns_per_row", "value")],
     [State("seurat_rds_path_store", "data"),
      State("seurat_cache_dir_store", "data"),
      State("spatial_rotation_store", "data"),
@@ -2446,7 +2601,7 @@ _FEATURE_IMG_CONFIG = {
 )
 def update_feature_plot(feature_name, sample, marker_size,
                         intensity_min, intensity_max,
-                        name_map, _fs_trigger,
+                        name_map, _fs_trigger, columns_per_row,
                         rds_path, cache_dir_str, rotation_store,
                         deg_data):
     # 名前変更・フルスクリーン閉鎖トリガーだがFeature未選択 → スキップ
@@ -2502,7 +2657,7 @@ def update_feature_plot(feature_name, sample, marker_size,
         display_min = intensity_min if intensity_min is not None else global_min
         display_max = intensity_max if intensity_max is not None else global_max
 
-        m_size = marker_size or 3
+        auto_mode = (marker_size is None or marker_size <= 0)
 
         graphs = []
         for s in samples_to_show:
@@ -2524,16 +2679,22 @@ def update_feature_plot(feature_name, sample, marker_size,
                 flip_v=transform.get("flip_v", False),
             )
 
+            # マーカーサイズ: 自動モード(0)ならサンプル毎に計算
+            if auto_mode:
+                m_size = _calc_zero_gap_marker_size(plot_x, plot_y, render_height=280)
+            else:
+                m_size = marker_size
+
             # 最後のサンプルのみカラーバーを表示
             is_last = (s == samples_to_show[-1])
             marker_opts = dict(
                 size=m_size,
+                symbol="square",
                 color=df_s["_expression"].values,
                 colorscale="Plasma",
                 cmin=display_min,
                 cmax=display_max,
                 showscale=is_last,
-                opacity=0.8,
             )
             if is_last:
                 marker_opts["colorbar"] = dict(
@@ -2548,23 +2709,6 @@ def update_feature_plot(feature_name, sample, marker_size,
                 )
 
             fig = go.Figure()
-
-            # TIC 背景（グレースケール）— 発現量トレースの前に常時描画
-            if "TotalCount" in df_s.columns:
-                fig.add_trace(go.Scatter(
-                    x=plot_x,
-                    y=plot_y,
-                    mode="markers",
-                    marker=dict(
-                        size=m_size,
-                        color=df_s["TotalCount"].values,
-                        colorscale="Greys",
-                        opacity=0.5,
-                        showscale=False,
-                    ),
-                    hoverinfo="skip",
-                    showlegend=False,
-                ))
 
             fig.add_trace(go.Scatter(
                 x=plot_x,
@@ -2590,11 +2734,18 @@ def update_feature_plot(feature_name, sample, marker_size,
             cfg = dict(_FEATURE_IMG_CONFIG)
             cfg["toImageButtonOptions"] = dict(cfg["toImageButtonOptions"],
                                                filename=f"Feature_{feature_name}_{display_s}")
-            n_samples = len(samples_to_show)
-            flex_basis = f"{max(30, 90 // n_samples)}%"
+            if columns_per_row:
+                n_cols = columns_per_row
+                gap_total = (n_cols - 1) * 15
+                flex_basis = f"calc({100 / n_cols:.2f}% - {gap_total / n_cols:.1f}px)"
+                min_w = "0"
+            else:
+                n_cols = len(samples_to_show)
+                flex_basis = f"{max(20, 90 // n_cols)}%"
+                min_w = "300px"
             graphs.append(
                 html.Div(
-                    style={"flex": f"1 1 {flex_basis}", "minWidth": "300px",
+                    style={"flex": f"1 1 {flex_basis}", "minWidth": min_w,
                             "border": "1px solid #dee2e6", "borderRadius": "6px",
                             "padding": "5px", "backgroundColor": "#fff"},
                     children=[
@@ -2709,100 +2860,1746 @@ def bookmark_to_feature(selected):
 
 
 # ---------------------------------------------------------------------------
-# HTML レポートエクスポート
+# PPTX (Google Slides) エクスポート
 # ---------------------------------------------------------------------------
 
-@callback(
-    [Output("download_html", "data"),
-     Output("export_status", "children", allow_duplicate=True)],
-    Input("export_html_report", "n_clicks"),
-    [State("interactive_umap_plot", "figure"),
-     State("last_spatial_figure_store", "data"),
-     State("seurat_rds_path_store", "data")],
-    prevent_initial_call=True,
-)
-def export_html_report(n_clicks, umap_fig, spatial_fig, rds_path):
-    if not n_clicks:
-        return no_update, no_update
-
+def _fig_to_png_bytes(fig_dict, width=1200, height=800, scale=2):
+    """Plotly figure dict を PNG バイト列に変換する。
+    kaleido が未インストールの場合は None を返す。"""
     try:
-        # 各プロットを HTML に変換
-        parts = []
-        parts.append("<html><head><meta charset='utf-8'>")
-        parts.append("<title>MSI Interactive Analysis Report</title>")
-        parts.append("</head><body>")
-        parts.append(f"<h1>MSI Interactive Analysis Report</h1>")
-        parts.append(
-            f"<p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>"
+        fig = go.Figure(fig_dict)
+        fig.update_layout(paper_bgcolor="white", plot_bgcolor="white")
+        return pio.to_image(fig, format="png", width=width, height=height, scale=scale)
+    except Exception:
+        return None
+
+
+def _get_top_n_features_for_cluster(deg_data, cluster, n=5):
+    """指定クラスタの DEG データから Top N up/down regulated feature を取得。
+
+    Returns:
+        (up_features: list[str], down_features: list[str])
+    """
+    if not deg_data:
+        return [], []
+    cluster_records = [
+        r for r in deg_data
+        if str(r.get("cluster", "")) == str(cluster)
+    ]
+    if not cluster_records:
+        return [], []
+
+    def _sort_key(r):
+        p = r.get("p_val_adj_raw")
+        if p is None:
+            p = r.get("p_val_adj", 1.0)
+        try:
+            p = float(p)
+            if np.isnan(p):
+                p = 1.0
+        except (ValueError, TypeError):
+            p = 1.0
+        fc = r.get("avg_log2FC", 0)
+        try:
+            fc = float(fc)
+            if np.isnan(fc):
+                fc = 0.0
+        except (ValueError, TypeError):
+            fc = 0.0
+        return (p, -abs(fc))
+
+    def _extract_top_n(records, n_items):
+        sorted_recs = sorted(records, key=_sort_key)
+        seen = set()
+        result = []
+        for r in sorted_recs:
+            g = str(r.get("gene", ""))
+            if g and g not in seen:
+                seen.add(g)
+                result.append(g)
+                if len(result) >= n_items:
+                    break
+        return result
+
+    up_records = []
+    down_records = []
+    for r in cluster_records:
+        try:
+            fc = float(r.get("avg_log2FC", 0) or 0)
+        except (ValueError, TypeError):
+            fc = 0.0
+        if fc > 0:
+            up_records.append(r)
+        elif fc < 0:
+            down_records.append(r)
+
+    return _extract_top_n(up_records, n), _extract_top_n(down_records, n)
+
+
+def _build_feature_plot_fig(df, feature_name, cache_dir_path, rds_path,
+                            rotation_store=None, name_map=None, marker_size=3,
+                            colorbar_tickformat=None, show_colorbar_title=True,
+                            auto_marker_size=False):
+    """単一 m/z Feature の Spatial Expression Plot figure を生成（PPTX 用）。
+
+    Returns:
+        go.Figure or None
+    """
+    from plotly.subplots import make_subplots
+
+    if rotation_store is None:
+        rotation_store = {}
+    if name_map is None:
+        name_map = {}
+
+    # 発現データ取得
+    expression = None
+    if cache_dir_path:
+        cache_dir = Path(cache_dir_path) if isinstance(cache_dir_path, str) else cache_dir_path
+        expression = _bridge.get_feature_expression_fast(cache_dir, feature_name)
+    if expression is None and rds_path:
+        try:
+            expression = _bridge.get_feature_expression(rds_path, feature_name)
+        except Exception:
+            return None
+    if expression is None:
+        return None
+
+    df_plot = df.copy()
+    df_plot["_expression"] = expression.values if hasattr(expression, "values") else expression
+
+    if "SpatialX" not in df_plot.columns:
+        return None
+
+    samples = sorted(df_plot["Sample"].unique())
+    n_samples = len(samples)
+    subplot_titles = [_display_name(s, name_map) for s in samples]
+
+    fig = make_subplots(
+        rows=1, cols=n_samples,
+        subplot_titles=subplot_titles,
+        horizontal_spacing=0.03,
+    )
+
+    expr_vals = df_plot["_expression"].values
+    global_min = float(np.nanmin(expr_vals))
+    global_max = float(np.nanmax(expr_vals))
+
+    for idx, s in enumerate(samples, 1):
+        df_s = df_plot[df_plot["Sample"] == s]
+        transform = rotation_store.get(
+            s, rotation_store.get("__all__", {"angle": 0, "flip_h": False, "flip_v": False}))
+        if isinstance(transform, (int, float)):
+            transform = {"angle": int(transform), "flip_h": False, "flip_v": False}
+
+        raw_x = df_s["SpatialX"].values
+        raw_y = -df_s["SpatialY"].values
+        plot_x, plot_y = _transform_coords(
+            raw_x, raw_y,
+            transform.get("angle", 0),
+            flip_h=transform.get("flip_h", False),
+            flip_v=transform.get("flip_v", False),
         )
-        if rds_path:
-            parts.append(f"<p>Source: {Path(rds_path).name}</p>")
 
-        # クラスタ統計
-        meta = _interactive_data.get("meta", {})
-        parts.append(f"<p>Cells: {meta.get('n_cells', '?')} | ")
-        parts.append(f"Clusters: {meta.get('n_clusters', '?')} | ")
-        parts.append(f"Samples: {', '.join(meta.get('samples', []))}</p>")
+        # サンプル別マーカーサイズ自動計算
+        ms = marker_size
+        if auto_marker_size and len(plot_x) > 1:
+            sorted_ux = np.sort(np.unique(plot_x))
+            if len(sorted_ux) > 1:
+                min_sp = float(np.min(np.diff(sorted_ux)))
+                xr = float(plot_x.max() - plot_x.min())
+                yr = float(plot_y.max() - plot_y.min()) if len(plot_y) > 1 else 1.0
+                # Feature Plot は height=280 描画、margin 約40px → 有効240px
+                eff_h = 240
+                if yr > 0 and xr > 0:
+                    eff_w = eff_h * (xr / yr)
+                    ms = max(2, round(min_sp * eff_w / xr * 1.5))
 
-        parts.append("<hr>")
+        # TIC 背景
+        if "TotalCount" in df_s.columns:
+            fig.add_trace(go.Scatter(
+                x=plot_x, y=plot_y, mode="markers",
+                marker=dict(size=ms, symbol="square", color=df_s["TotalCount"].values,
+                            colorscale="Greys", opacity=0.5, showscale=False),
+                hoverinfo="skip", showlegend=False,
+            ), row=1, col=idx)
 
-        # UMAP
-        if umap_fig:
-            fig = go.Figure(umap_fig)
-            parts.append("<h2>UMAP Plot</h2>")
-            parts.append(pio.to_html(
-                fig, include_plotlyjs="cdn", full_html=False,
+        # 発現量オーバーレイ
+        is_last = (idx == n_samples)
+        marker_opts = dict(
+            size=ms,
+            symbol="square",
+            color=df_s["_expression"].values,
+            colorscale="Plasma",
+            cmin=global_min, cmax=global_max,
+            showscale=is_last,
+            opacity=0.8,
+        )
+        if is_last:
+            cb_opts = dict(len=0.8, thickness=15)
+            if colorbar_tickformat:
+                cb_opts["tickformat"] = colorbar_tickformat
+            if show_colorbar_title:
+                cb_opts["title"] = "Intensity"
+            marker_opts["colorbar"] = cb_opts
+        fig.add_trace(go.Scatter(
+            x=plot_x, y=plot_y, mode="markers",
+            marker=marker_opts, showlegend=False,
+        ), row=1, col=idx)
+
+    fig.update_layout(
+        title=dict(text=feature_name, font=dict(size=20), x=0.5),
+        plot_bgcolor="white", paper_bgcolor="white",
+        margin=dict(l=10, r=50, t=50, b=10),
+    )
+    # Subplot titles のフォントサイズ拡大
+    fig.update_annotations(font_size=16)
+    for i in range(1, n_samples + 1):
+        fig.update_xaxes(visible=False, row=1, col=i)
+        xanchor = f"x{i}" if i > 1 else "x"
+        fig.update_yaxes(visible=False, scaleanchor=xanchor, row=1, col=i)
+
+    return fig
+
+
+def _build_volcano_fig_for_cluster(deg_data, cluster, fc_thresh=0.5, p_thresh=1.3,
+                                   marker_size=8):
+    """指定クラスタの Volcano Plot figure を生成（PPTX 用）。
+
+    Returns:
+        go.Figure or None
+    """
+    if not deg_data:
+        return None
+    df = pd.DataFrame(deg_data)
+    if "p_val_adj_raw" in df.columns:
+        df["p_num"] = pd.to_numeric(df["p_val_adj_raw"], errors="coerce")
+    else:
+        df["p_num"] = pd.to_numeric(df["p_val_adj"], errors="coerce")
+    df["avg_log2FC"] = pd.to_numeric(df["avg_log2FC"], errors="coerce")
+    min_nonzero_p = (
+        df.loc[df["p_num"] > 0, "p_num"].min()
+        if (df["p_num"] > 0).any()
+        else 5e-324
+    )
+    df["neg_log10_p"] = -np.log10(df["p_num"].clip(lower=min_nonzero_p))
+
+    if "annotation" in df.columns:
+        df["display_text"] = df.apply(
+            lambda r: f"{r['gene']}\n({r['annotation']})"
+            if _is_meaningful_annotation(r.get("annotation", ""), r.get("gene", ""))
+            else r["gene"],
+            axis=1,
+        )
+    else:
+        df["display_text"] = df["gene"]
+
+    df = df[df["cluster"].astype(str) == str(cluster)]
+    if df.empty:
+        return None
+
+    fig = go.Figure()
+    for reg, color, label in [
+        ("Up", "#FF2D2D", "Up-regulated"),
+        ("Down", "#1E5BFF", "Down-regulated"),
+        ("NS", "#7A7A7A", "Not significant"),
+    ]:
+        if reg == "Up":
+            mask = (df["neg_log10_p"] >= p_thresh) & (df["avg_log2FC"] >= fc_thresh)
+        elif reg == "Down":
+            mask = (df["neg_log10_p"] >= p_thresh) & (df["avg_log2FC"] <= -fc_thresh)
+        else:
+            mask = ~(
+                (df["neg_log10_p"] >= p_thresh) & (df["avg_log2FC"].abs() >= fc_thresh)
+            )
+        sub = df[mask]
+        if len(sub) > 0:
+            fig.add_trace(go.Scattergl(
+                x=sub["avg_log2FC"], y=sub["neg_log10_p"],
+                mode="markers",
+                marker=dict(size=marker_size, color=color, opacity=0.7),
+                name=label, text=sub["display_text"],
+                hovertemplate=(
+                    "<b>%{text}</b><br>"
+                    "log2FC: %{x:.3f}<br>"
+                    "-log10(p): %{y:.2f}<extra></extra>"
+                ),
             ))
 
-        # Spatial
-        if spatial_fig:
-            fig = go.Figure(spatial_fig)
-            if fig.data:  # 空でなければ
-                parts.append("<h2>Spatial Mapping</h2>")
-                parts.append(pio.to_html(
-                    fig, include_plotlyjs=False, full_html=False,
-                ))
-
-        parts.append("</body></html>")
-        html_content = "\n".join(parts)
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"interactive_report_{timestamp}.html"
-
-        return (
-            dcc.send_string(html_content, filename=filename),
-            f"HTMLレポートを出力しました: {filename}",
-        )
-
-    except Exception as e:
-        return no_update, f"エクスポートエラー: {e}"
+    fig.add_hline(y=p_thresh, line_dash="dash", line_color="gray", opacity=0.5)
+    fig.add_vline(x=fc_thresh, line_dash="dash", line_color="gray", opacity=0.5)
+    fig.add_vline(x=-fc_thresh, line_dash="dash", line_color="gray", opacity=0.5)
+    fig.update_layout(
+        title=dict(text=f"Volcano Plot - Cluster {cluster}", font=dict(size=20), x=0.5),
+        xaxis_title="avg_log2FC",
+        yaxis_title="-log10(p_val_adj)",
+        template="plotly_white",
+        margin=dict(l=50, r=20, t=40, b=40),
+    )
+    return fig
 
 
-# ---------------------------------------------------------------------------
-# CSV データエクスポート
-# ---------------------------------------------------------------------------
+def _pptx_add_title_bar(slide, title_text):
+    """PPTX スライドにタイトルバーを追加する。"""
+    from pptx.util import Inches, Pt
+    from pptx.dml.color import RGBColor
+    txBox = slide.shapes.add_textbox(Inches(0.3), Inches(0.15), Inches(8), Inches(0.5))
+    p = txBox.text_frame.paragraphs[0]
+    p.text = title_text
+    p.font.size = Pt(22)
+    p.font.bold = True
+    p.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
 
-@callback(
-    [Output("download_csv", "data"),
-     Output("export_status", "children")],
-    Input("export_csv_data", "n_clicks"),
-    prevent_initial_call=True,
-)
-def export_csv_data(n_clicks):
-    if not n_clicks:
-        return no_update, no_update
 
-    df = _interactive_data.get("plot_data")
-    if df is None:
-        return no_update, "データが読み込まれていません"
+def _pptx_add_image(slide, png_bytes, left, top, width, height):
+    """PNG バイト列を PPTX スライドの指定位置に配置する。"""
+    if png_bytes:
+        img_stream = BytesIO(png_bytes)
+        slide.shapes.add_picture(img_stream, left, top, width, height)
+
+
+def _pptx_add_image_preserve_ratio(slide, png_bytes, left, top,
+                                    max_width, max_height,
+                                    png_w=None, png_h=None):
+    """PNG 元比率を保持して max_width × max_height 内に収まるよう配置する。
+
+    png_w, png_h: PNG 生成時のピクセル寸法（比率計算に使用）。
+    未指定時は max_width × max_height をそのまま使用（従来互換）。
+    """
+    if not png_bytes:
+        return
+    if png_w and png_h:
+        aspect = png_w / png_h
+        max_aspect = max_width / max_height if max_height else 1.0
+        if max_aspect > aspect:
+            # 高さ制約: height = max_height, width = height * aspect
+            h = max_height
+            w = int(h * aspect)
+        else:
+            # 幅制約: width = max_width, height = width / aspect
+            w = max_width
+            h = int(w / aspect)
+        # 枠内中央寄せ
+        left = left + int((max_width - w) / 2)
+        top = top + int((max_height - h) / 2)
+    else:
+        w, h = max_width, max_height
+    img_stream = BytesIO(png_bytes)
+    slide.shapes.add_picture(img_stream, left, top, w, h)
+
+
+def _square_tile_dims(tile_w, row_h, margin=0.95):
+    """正方形画像のタイル配置寸法を計算する。
+
+    Returns:
+        (side, side, offset): 正方形の辺長と、タイル内の左オフセット
+    """
+    avail_w = tile_w * margin
+    side = min(avail_w, row_h)
+    offset = (tile_w - side) / 2
+    return side, side, offset
+
+
+def _build_cluster_legend_fig(cluster_list, color_map, font_size=18,
+                              marker_size=14):
+    """クラスタレジェンド専用のPlotly Figureを生成"""
+    fig = go.Figure()
+    for cl in sorted(cluster_list, key=_cluster_sort_key):
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(size=marker_size,
+                        color=color_map.get(str(cl), "#999")),
+            name=f"Cluster {cl}", showlegend=True,
+        ))
+    fig.update_layout(
+        showlegend=True,
+        legend=dict(
+            font=dict(size=font_size),
+            itemsizing="constant",
+            yanchor="middle", y=0.5,
+            xanchor="center", x=0.5,
+            tracegroupgap=4,
+        ),
+        margin=dict(l=0, r=0, t=0, b=0),
+        xaxis=dict(visible=False), yaxis=dict(visible=False),
+        plot_bgcolor="white", paper_bgcolor="white",
+        width=200, height=600,
+    )
+    return fig
+
+
+def _build_sample_legend_fig(sample_list, sample_color_map, name_map=None,
+                              font_size=18, marker_size=14):
+    """サンプルレジェンド専用のPlotly Figureを生成"""
+    fig = go.Figure()
+    for s in sorted(sample_list):
+        display = (name_map or {}).get(s, s) if name_map else s
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(size=marker_size,
+                        color=sample_color_map.get(str(s), "#999")),
+            name=str(display), showlegend=True,
+        ))
+    fig.update_layout(
+        showlegend=True,
+        legend=dict(
+            font=dict(size=font_size),
+            itemsizing="constant",
+            yanchor="middle", y=0.5,
+            xanchor="center", x=0.5,
+            tracegroupgap=4,
+        ),
+        margin=dict(l=0, r=0, t=0, b=0),
+        xaxis=dict(visible=False), yaxis=dict(visible=False),
+        plot_bgcolor="white", paper_bgcolor="white",
+        width=200, height=600,
+    )
+    return fig
+
+
+def _pptx_add_sections(prs, section_map):
+    """PPTX にセクション情報を追加する（PowerPoint のセクションパネルに表示される）。
+
+    Args:
+        prs: python-pptx Presentation オブジェクト
+        section_map: list of (section_name, start_slide_idx, end_slide_idx)
+            slide indices は 0-based、両端を含む。
+    """
+    import uuid
+    from lxml import etree
+
+    p_ns = "http://schemas.openxmlformats.org/presentationml/2006/main"
+    p14_ns = "http://schemas.microsoft.com/office/powerpoint/2010/main"
+    ext_uri = "{521415D9-36F7-43E2-AB2F-B90AF26B5E84}"
+
+    prs_elem = prs.element  # CT_Presentation lxml element
+
+    # p14 名前空間プレフィックスを登録（PowerPoint互換性のため）
+    etree.register_namespace("p14", p14_ns)
+
+    # sldIdLst から全スライド ID を取得
+    sldIdLst = prs_elem.find(f"{{{p_ns}}}sldIdLst")
+    if sldIdLst is None:
+        return
+
+    sld_ids = []
+    for sldId in sldIdLst:
+        sid = sldId.get("id")
+        if sid:
+            sld_ids.append(sid)
+    if not sld_ids:
+        return
+
+    # extLst を検索または作成
+    extLst = prs_elem.find(f"{{{p_ns}}}extLst")
+    if extLst is None:
+        extLst = etree.SubElement(prs_elem, f"{{{p_ns}}}extLst")
+
+    # ext 要素を作成（セクション用 URI）
+    ext = etree.SubElement(extLst, f"{{{p_ns}}}ext")
+    ext.set("uri", ext_uri)
+
+    # sectionLst を作成
+    sectionLst = etree.SubElement(ext, f"{{{p14_ns}}}sectionLst")
+
+    for sec_name, start_idx, end_idx in section_map:
+        section = etree.SubElement(sectionLst, f"{{{p14_ns}}}section")
+        section.set("name", sec_name)
+        section.set("id", "{" + str(uuid.uuid4()).upper() + "}")
+
+        sldIdLst_sec = etree.SubElement(section, f"{{{p14_ns}}}sldIdLst")
+
+        for i in range(start_idx, min(end_idx + 1, len(sld_ids))):
+            sldId_ref = etree.SubElement(sldIdLst_sec, f"{{{p14_ns}}}sldId")
+            sldId_ref.set("id", sld_ids[i])
+
+
+def _build_heatmap_for_pptx(heatmap_fig, deg_data, df, cache_dir, top_n,
+                             mrm_path=None):
+    """PPTX 用にZ-score + アノテーション付きヒートマップ figure を生成/調整する。
+
+    アプリの heatmap_fig がすでに Z-score ならアノテーションだけ補完し、
+    Raw なら expression_matrix から再計算して Z-score + アノテーション付きで返す。
+    """
+    # ---- deg_data / cache_dir がなければアプリ図をそのまま返す ----
+    if not deg_data or not cache_dir:
+        return heatmap_fig
+
+    cache_dir_path = Path(cache_dir) if isinstance(cache_dir, str) else cache_dir
+    expr_path = cache_dir_path / "expression_matrix.parquet" if cache_dir_path else None
+
+    # ---- アノテーション辞書を構築 ----
+    gene_to_annotation = {}
+    for r in deg_data:
+        gene = r.get("gene", "")
+        ann = r.get("annotation", "")
+        if gene and _is_meaningful_annotation(ann, gene):
+            gene_to_annotation[gene] = ann
+
+    # MRM fallback
+    if not gene_to_annotation and mrm_path:
+        try:
+            mz_to_compound = _build_mz_to_compound_map(mrm_path, tolerance=0.1)
+        except Exception:
+            mz_to_compound = {}
+    else:
+        mz_to_compound = {}
+
+    # ---- heatmap_fig が Z-score かどうかを判定 ----
+    is_zscore = False
+    if heatmap_fig:
+        traces = heatmap_fig.get("data", [])
+        for t in traces:
+            if t.get("type") == "heatmap" and t.get("zmid") == 0:
+                is_zscore = True
+                break
+
+    # ---- Z-score 済みの場合: アノテーション補完のみ ----
+    if is_zscore and heatmap_fig:
+        fig = go.Figure(heatmap_fig)
+        # Y軸ラベルにアノテーションを補完
+        for t in fig.data:
+            if hasattr(t, "y") and t.y is not None:
+                current_labels = list(t.y)
+                needs_update = False
+                new_labels = []
+                for lbl in current_labels:
+                    gene = str(lbl).split(" (")[0]  # 既存アノテーション除去
+                    if gene in gene_to_annotation:
+                        new_labels.append(f"{gene} ({gene_to_annotation[gene]})")
+                        needs_update = True
+                    elif mz_to_compound:
+                        annotated = _annotate_gene_labels(
+                            [gene], mz_to_compound, tolerance=0.1)
+                        new_labels.append(annotated[0])
+                        if annotated[0] != gene:
+                            needs_update = True
+                    else:
+                        new_labels.append(lbl)
+                if needs_update:
+                    t.y = new_labels
+        # 左マージンを再調整
+        all_labels = []
+        for t in fig.data:
+            if hasattr(t, "y") and t.y is not None:
+                all_labels.extend(str(l) for l in t.y)
+        if all_labels:
+            max_len = max(len(l) for l in all_labels)
+            left_margin = min(max(max_len * 7, 120), 350)
+            fig.update_layout(margin=dict(l=left_margin))
+        return fig.to_dict()
+
+    # ---- Raw / heatmap_fig がない場合: expression_matrix から新規生成 ----
+    if not expr_path or not expr_path.exists():
+        return heatmap_fig  # fallback: アプリ図をそのまま
+    if df is None or df.empty:
+        return heatmap_fig
 
     try:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"interactive_data_{timestamp}.csv"
+        df_deg = pd.DataFrame(deg_data)
+        df_deg["p_num"] = pd.to_numeric(df_deg.get("p_val_adj", ""), errors="coerce")
+        top_markers = df_deg.sort_values("p_num").groupby("cluster").head(top_n)
+        genes = top_markers["gene"].unique().tolist()
+        if not genes:
+            return heatmap_fig
 
+        # 利用可能な遺伝子のみ読み込み
+        available = []
+        for g in genes:
+            try:
+                pd.read_parquet(expr_path, columns=[g])
+                available.append(g)
+            except Exception:
+                continue
+        if not available:
+            return heatmap_fig
+
+        expr_df = pd.read_parquet(expr_path, columns=["CellID"] + available)
+        merged = expr_df.merge(
+            df[["CellID", "Cluster"]], on="CellID", how="inner"
+        )
+        cluster_means = merged.groupby("Cluster")[available].mean()
+        cluster_means = cluster_means.reindex(
+            sorted(cluster_means.index, key=_cluster_sort_key)
+        )
+
+        # Z-score 変換
+        z_data = cluster_means.values.copy()
+        col_mean = z_data.mean(axis=0)
+        col_std = z_data.std(axis=0)
+        col_std[col_std == 0] = 1
+        z_data = (z_data - col_mean) / col_std
+
+        # Y軸ラベル（アノテーション付き）
+        y_labels = []
+        for g in available:
+            if g in gene_to_annotation:
+                y_labels.append(f"{g} ({gene_to_annotation[g]})")
+            elif mz_to_compound:
+                annotated = _annotate_gene_labels(
+                    [g], mz_to_compound, tolerance=0.1)
+                y_labels.append(annotated[0])
+            else:
+                y_labels.append(g)
+
+        fig = go.Figure(go.Heatmap(
+            z=z_data.T,
+            x=[f"C{c}" for c in cluster_means.index],
+            y=y_labels,
+            colorscale="RdBu_r",
+            zmid=0,
+            hovertemplate=(
+                "Cluster: %{x}<br>Gene: %{y}<br>"
+                "Value: %{z:.3f}<extra></extra>"
+            ),
+        ))
+        max_label_len = max(len(str(l)) for l in y_labels) if y_labels else 10
+        left_margin = min(max(max_label_len * 7, 120), 350)
+        fig.update_layout(
+            title=dict(
+                text=f"Top {top_n} DEG Heatmap (Z-score)",
+                font=dict(size=14), x=0.5),
+            xaxis_title="Cluster",
+            yaxis_title="Gene / m/z",
+            template="plotly_white",
+            margin=dict(l=left_margin, r=20, t=40, b=40),
+            yaxis=dict(autorange="reversed"),
+        )
+        return fig.to_dict()
+
+    except Exception:
+        return heatmap_fig  # エラー時はアプリ図にフォールバック
+
+
+def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
+                 sub_name="", volcano_fig=None, heatmap_fig=None,
+                 deg_data=None, top_n=5, df=None, cache_dir=None,
+                 custom_colors=None, rotation_store=None, name_map=None,
+                 set_progress=None, mrm_path=None,
+                 existing_prs=None, progress_offset=0, progress_total=None):
+    """グローバル概要 + クラスターごとの詳細スライドを含む PPTX を生成し bytes を返す。
+
+    グローバルセクション:
+        1. タイトル  2. Heatmap  3. UMAP+Spatial (統合)  4. クラスタ統計
+    クラスターセクション (各クラスター × 2 スライド):
+        A. Volcano Plot + Top N Feature Plots
+        B. UMAP (ハイライト) + Spatial (ハイライト)
+
+    existing_prs: 既存のPresentationオブジェクト。指定時はそこにスライドを追加し、
+                  bytes は返さず None を返す。
+    progress_offset: 進捗計算のオフセット（複数手法ループ時に使用）
+    progress_total: 進捗計算の全体ステップ数（複数手法ループ時に使用）
+    """
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+    from pptx.enum.text import PP_ALIGN
+    from pptx.dml.color import RGBColor
+
+    # 進捗計算用
+    _clusters_for_progress = []
+    if df is not None:
+        try:
+            _clusters_for_progress = sorted(
+                set(str(c) for c in df["Cluster"].unique()),
+                key=_cluster_sort_key)
+        except Exception:
+            pass
+    _local_steps = 5 + len(_clusters_for_progress) * 2  # +1 for UMAP by Sample
+    _total_steps = progress_total if progress_total else _local_steps
+    _current_step = [progress_offset]  # mutable for nested function
+
+    def _progress(label=""):
+        _current_step[0] += 1
+        if set_progress:
+            pct = int(_current_step[0] / _total_steps * 100)
+            set_progress((min(pct, 99), 100, label))
+
+    if existing_prs is not None:
+        prs = existing_prs
+    else:
+        prs = Presentation()
+        # 16:9 ワイドスクリーン
+        prs.slide_width = Inches(13.333)
+        prs.slide_height = Inches(7.5)
+
+    # =====================================================================
+    # グローバルセクション
+    # =====================================================================
+
+    # --- スライド 1: タイトル ---
+    slide = prs.slides.add_slide(prs.slide_layouts[6])  # Blank
+    txBox = slide.shapes.add_textbox(Inches(1), Inches(1.5), Inches(11), Inches(3))
+    tf = txBox.text_frame
+    tf.word_wrap = True
+
+    if sub_name:
+        p_title = tf.paragraphs[0]
+        p_title.text = sub_name
+        p_title.font.size = Pt(40)
+        p_title.font.bold = True
+        p_title.alignment = PP_ALIGN.CENTER
+
+        p_sub = tf.add_paragraph()
+        p_sub.text = "MSI Interactive Analysis Report"
+        p_sub.font.size = Pt(20)
+        p_sub.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+        p_sub.alignment = PP_ALIGN.CENTER
+    else:
+        p_title = tf.paragraphs[0]
+        p_title.text = "MSI Interactive Analysis Report"
+        p_title.font.size = Pt(36)
+        p_title.font.bold = True
+        p_title.alignment = PP_ALIGN.CENTER
+
+    p2 = tf.add_paragraph()
+    p2.text = f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    p2.font.size = Pt(16)
+    p2.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+    p2.alignment = PP_ALIGN.CENTER
+
+    if rds_path:
+        p3 = tf.add_paragraph()
+        p3.text = f"Source: {Path(rds_path).name}"
+        p3.font.size = Pt(14)
+        p3.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+        p3.alignment = PP_ALIGN.CENTER
+
+    if meta:
+        p4 = tf.add_paragraph()
+        samples_str = ", ".join(meta.get("samples", []))
+        p4.text = (
+            f"Cells: {meta.get('n_cells', '?')} | "
+            f"Clusters: {meta.get('n_clusters', '?')} | "
+            f"Samples: {samples_str}"
+        )
+        p4.font.size = Pt(12)
+        p4.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
+        p4.alignment = PP_ALIGN.CENTER
+
+    _progress("タイトルスライド")
+
+    # --- スライド 2: Heatmap (Z-score + アノテーション) ---
+    heatmap_for_pptx = _build_heatmap_for_pptx(
+        heatmap_fig, deg_data, df, cache_dir, top_n, mrm_path=mrm_path)
+    if heatmap_for_pptx:
+        png_bytes = _fig_to_png_bytes(heatmap_for_pptx, width=1200, height=800)
+        if png_bytes:
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+            _pptx_add_title_bar(slide, f"Heatmap — Top {top_n} DEG (Z-score)")
+            _pptx_add_image_preserve_ratio(
+                slide, png_bytes,
+                int((prs.slide_width - Inches(12)) / 2), Inches(0.9),
+                Inches(12), Inches(6.3),
+                png_w=1200, png_h=800)
+
+    _progress("Heatmap")
+
+    # --- スライド 3: UMAP + Spatial 統合 (サンプル別) ---
+    if df is not None and not df.empty and "SpatialX" in df.columns:
+        import math
+        color_map_global = _get_cluster_color_map(df["Cluster"], custom_colors)
+        all_samples = sorted(df["Sample"].unique())
+        if not rotation_store:
+            rotation_store = {}
+        if not name_map:
+            name_map = {}
+
+        if all_samples:
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+            _pptx_add_title_bar(slide, "UMAP & Spatial Mapping")
+
+            n_sp = len(all_samples)
+            avail_w = 11.0  # 0.3〜11.3" (右端にレジェンド配置)
+
+            # UMAP の全データ軸範囲（サンプル間で統一）
+            umap1_min = float(df["UMAP_1"].min())
+            umap1_max = float(df["UMAP_1"].max())
+            umap2_min = float(df["UMAP_2"].min())
+            umap2_max = float(df["UMAP_2"].max())
+            umap_pad = max(umap1_max - umap1_min, umap2_max - umap2_min) * 0.05
+            umap_xrange = [umap1_min - umap_pad, umap1_max + umap_pad]
+            umap_yrange = [umap2_min - umap_pad, umap2_max + umap_pad]
+
+            # 上段: サンプル別UMAP (y=0.9" 〜 y=4.0", 高さ3.1")
+            tile_w_umap = avail_w / n_sp
+            for idx, s in enumerate(all_samples):
+                df_s = df[df["Sample"] == s]
+                umap_s = _build_umap_integrated_fig(
+                    df_s, color_by="Cluster", highlight_clusters=None,
+                    show_legend=False, show_labels=True,
+                    title=_display_name(s, name_map),
+                    marker_size=3, custom_colors=custom_colors,
+                    title_font_size=40, label_size=24)
+                if umap_s is not None:
+                    # 全データと同じ軸範囲に固定
+                    umap_s.update_xaxes(range=umap_xrange)
+                    umap_s.update_yaxes(range=umap_yrange)
+                    u_dict = (umap_s.to_dict()
+                              if hasattr(umap_s, "to_dict") else umap_s)
+                    u_png = _fig_to_png_bytes(
+                        u_dict, width=600, height=600, scale=2)
+                    _uw, _uh, _uoff = _square_tile_dims(
+                        tile_w_umap, 3.0)
+                    u_left = Inches(0.3 + idx * tile_w_umap + _uoff)
+                    _pptx_add_image(slide, u_png,
+                                    int(u_left), Inches(0.9),
+                                    Inches(_uw), Inches(_uh))
+
+            # 下段: サンプル別Spatial (y=4.1" 〜 y=7.3", 高さ3.2")
+            tile_w_sp = avail_w / n_sp
+            for idx, s in enumerate(all_samples):
+                df_s = df[df["Sample"] == s]
+                transform = rotation_store.get(
+                    s, rotation_store.get(
+                        "__all__",
+                        {"angle": 0, "flip_h": False, "flip_v": False}))
+                if isinstance(transform, (int, float)):
+                    transform = {"angle": int(transform),
+                                 "flip_h": False, "flip_v": False}
+
+                sp_fig = _create_single_spatial_fig(
+                    df_s, color_map_global,
+                    highlight_clusters=None,
+                    selected_cell_ids=set(),
+                    rotation_deg=transform.get("angle", 0),
+                    show_labels=True,
+                    flip_h=transform.get("flip_h", False),
+                    flip_v=transform.get("flip_v", False),
+                    title=_display_name(s, name_map),
+                    marker_size=0,
+                    render_height=560,
+                    embed_legend=False,
+                    title_font_size=40, label_size=24)
+                if sp_fig is not None:
+                    sp_dict = (sp_fig.to_dict()
+                               if hasattr(sp_fig, "to_dict") else sp_fig)
+                    sp_png = _fig_to_png_bytes(
+                        sp_dict, width=600, height=600, scale=2)
+                    _sw, _sh, _soff = _square_tile_dims(
+                        tile_w_sp, 3.1)
+                    sp_left = Inches(0.3 + idx * tile_w_sp + _soff)
+                    _pptx_add_image(slide, sp_png,
+                                    int(sp_left), Inches(4.1),
+                                    Inches(_sw), Inches(_sh))
+
+            # クラスタレジェンド（右端に配置）
+            legend_fig = _build_cluster_legend_fig(
+                df["Cluster"].unique(), color_map_global)
+            legend_png = _fig_to_png_bytes(
+                legend_fig.to_dict(), width=200, height=600, scale=2)
+            _pptx_add_image_preserve_ratio(slide, legend_png,
+                                           Inches(11.5), Inches(0.9),
+                                           Inches(1.3), Inches(6.3),
+                                           png_w=200, png_h=600)
+
+            # --- UMAP (by Sample) スライド ---
+            if len(all_samples) > 1:
+                sample_cmap = _get_sample_color_map(all_samples)
+                slide_by_sample = prs.slides.add_slide(prs.slide_layouts[6])
+                _pptx_add_title_bar(slide_by_sample, "UMAP (by Sample)")
+
+                tile_w_s = avail_w / n_sp
+                for idx, s in enumerate(all_samples):
+                    df_s = df[df["Sample"] == s]
+                    umap_s_sample = _build_umap_integrated_fig(
+                        df_s, color_by="Sample",
+                        highlight_clusters=None,
+                        show_legend=False, show_labels=False,
+                        title=_display_name(s, name_map),
+                        marker_size=3, custom_colors=sample_cmap,
+                        title_font_size=40)
+                    if umap_s_sample is not None:
+                        umap_s_sample.update_xaxes(range=umap_xrange)
+                        umap_s_sample.update_yaxes(range=umap_yrange)
+                        u_dict = (umap_s_sample.to_dict()
+                                  if hasattr(umap_s_sample, "to_dict")
+                                  else umap_s_sample)
+                        u_png = _fig_to_png_bytes(
+                            u_dict, width=600, height=600, scale=2)
+                        _uw, _uh, _uoff = _square_tile_dims(
+                            tile_w_s, 5.5)
+                        u_left = Inches(0.3 + idx * tile_w_s + _uoff)
+                        _pptx_add_image(slide_by_sample, u_png,
+                                        int(u_left), Inches(0.9),
+                                        Inches(_uw), Inches(_uh))
+
+                # サンプルレジェンド（右端）
+                sample_legend = _build_sample_legend_fig(
+                    all_samples, sample_cmap, name_map=name_map)
+                sample_legend_png = _fig_to_png_bytes(
+                    sample_legend.to_dict(), width=200, height=600, scale=2)
+                _pptx_add_image_preserve_ratio(
+                    slide_by_sample, sample_legend_png,
+                    Inches(11.5), Inches(0.9),
+                    Inches(1.3), Inches(6.3),
+                    png_w=200, png_h=600)
+                _progress("UMAP by Sample")
+
+    elif spatial_fig:
+        # SpatialX がない場合はアプリの図をフォールバック
+        fig_check = go.Figure(spatial_fig)
+        if fig_check.data:
+            png_bytes = _fig_to_png_bytes(spatial_fig, width=1200, height=800)
+            if png_bytes:
+                slide = prs.slides.add_slide(prs.slide_layouts[6])
+                _pptx_add_title_bar(slide, "Spatial Mapping")
+                _pptx_add_image_preserve_ratio(
+                    slide, png_bytes,
+                    int((prs.slide_width - Inches(12)) / 2), Inches(0.9),
+                    Inches(12), Inches(6.3),
+                    png_w=1200, png_h=800)
+
+    _progress("UMAP & Spatial")
+
+    # --- スライド 5: クラスタ統計 ---
+    if cluster_stats_data:
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        _pptx_add_title_bar(slide, "Cluster Statistics")
+
+        n_rows = len(cluster_stats_data) + 1
+        n_cols = 3
+        table_w = Inches(6)
+        table_h = Inches(min(5.5, 0.4 * n_rows))
+        left = int((prs.slide_width - table_w) / 2)
+        table_shape = slide.shapes.add_table(
+            n_rows, n_cols, left, Inches(1.0), table_w, table_h,
+        )
+        table = table_shape.table
+
+        for j, h in enumerate(["Cluster", "Pixels", "%"]):
+            cell = table.cell(0, j)
+            cell.text = h
+            cell.text_frame.paragraphs[0].font.size = Pt(12)
+            cell.text_frame.paragraphs[0].font.bold = True
+
+        for i, row_data in enumerate(cluster_stats_data):
+            table.cell(i + 1, 0).text = str(row_data.get("Cluster", ""))
+            table.cell(i + 1, 1).text = str(row_data.get("Pixels", ""))
+            table.cell(i + 1, 2).text = str(row_data.get("Percent", ""))
+            for j in range(n_cols):
+                table.cell(i + 1, j).text_frame.paragraphs[0].font.size = Pt(11)
+
+    _progress("クラスタ統計")
+
+    # =====================================================================
+    # クラスターセクション（各クラスター × 2 スライド）
+    # =====================================================================
+    if df is not None and not df.empty:
+        clusters = sorted(df["Cluster"].unique(), key=_cluster_sort_key)
+        color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
+        has_spatial = "SpatialX" in df.columns
+        samples = sorted(df["Sample"].unique()) if has_spatial else []
+        if not rotation_store:
+            rotation_store = {}
+        if not name_map:
+            name_map = {}
+
+        # UMAP 軸範囲（Per-cluster Slide B でサンプル間統一に使用）
+        cl_umap1_min = float(df["UMAP_1"].min())
+        cl_umap1_max = float(df["UMAP_1"].max())
+        cl_umap2_min = float(df["UMAP_2"].min())
+        cl_umap2_max = float(df["UMAP_2"].max())
+        cl_umap_pad = max(cl_umap1_max - cl_umap1_min,
+                          cl_umap2_max - cl_umap2_min) * 0.05
+        cl_umap_xrange = [cl_umap1_min - cl_umap_pad,
+                          cl_umap1_max + cl_umap_pad]
+        cl_umap_yrange = [cl_umap2_min - cl_umap_pad,
+                          cl_umap2_max + cl_umap_pad]
+
+        rds_path_str = str(rds_path) if rds_path else None
+        cache_dir_path = (
+            Path(cache_dir) if isinstance(cache_dir, str) and cache_dir
+            else cache_dir
+        )
+
+        for cl in clusters:
+            cl_str = str(cl)
+
+            # === Slide A: Volcano + Feature Plots ===
+            slide_a = prs.slides.add_slide(prs.slide_layouts[6])
+            _pptx_add_title_bar(slide_a, f"Cluster {cl_str} — DEG Analysis")
+
+            # Top N features (up / down)
+            up_features, down_features = _get_top_n_features_for_cluster(
+                deg_data, cl_str, n=top_n)
+
+            # Volcano Plot を先に生成（レイアウト計算に必要）
+            volcano_cl = _build_volcano_fig_for_cluster(deg_data, cl_str)
+
+            # ---- 自動レイアウト計算 ----
+            has_up = bool(up_features)
+            has_down = bool(down_features)
+            has_volcano = volcano_cl is not None
+
+            _avail_top = 0.65      # Feature配置開始Y (タイトルバー下)
+            _avail_bottom = 7.35   # スライド下端マージン
+            _avail_h = _avail_bottom - _avail_top  # 6.7"
+            _label_h = 0.25        # ラベル行の高さ
+            _gap = 0.1             # セクション間隙間
+            _volcano_h = 2.5       # Volcano固定高さ
+
+            _n_feat_rows = (1 if has_up else 0) + (1 if has_down else 0)
+
+            if _n_feat_rows > 0 and has_volcano:
+                _non_feat = _n_feat_rows * (_label_h + _gap) + _gap + _volcano_h
+                _feat_h_val = (_avail_h - _non_feat) / _n_feat_rows
+            elif _n_feat_rows > 0:
+                _non_feat = _n_feat_rows * (_label_h + _gap)
+                _feat_h_val = (_avail_h - _non_feat) / _n_feat_rows
+            else:
+                _feat_h_val = 0
+
+            _feat_h_val = max(1.5, min(_feat_h_val, 3.5))
+
+            feat_w_val = min(2.4, 12.0 / max(top_n, 1))
+            feat_w = Inches(feat_w_val)
+            feat_h = Inches(_feat_h_val)
+
+            # Y座標を順番に計算
+            _cur_y = _avail_top
+            _up_label_y = _up_plot_y = 0
+            _down_label_y = _down_plot_y = 0
+            _volcano_y = 0
+
+            if has_up:
+                _up_label_y = _cur_y
+                _cur_y += _label_h + _gap
+                _up_plot_y = _cur_y
+                _cur_y += _feat_h_val + _gap
+            if has_down:
+                _down_label_y = _cur_y
+                _cur_y += _label_h + _gap
+                _down_plot_y = _cur_y
+                _cur_y += _feat_h_val + _gap
+            if has_volcano:
+                _volcano_y = _cur_y
+
+            # "▲ Up-regulated" ラベル
+            if has_up:
+                lbl = slide_a.shapes.add_textbox(
+                    Inches(0.3), Inches(_up_label_y), Inches(3), Inches(0.3))
+                lp = lbl.text_frame.paragraphs[0]
+                lp.text = f"▲ Up-regulated (Top {len(up_features)})"
+                lp.font.size = Pt(10)
+                lp.font.color.rgb = RGBColor(0xFF, 0x2D, 0x2D)
+                lp.font.bold = True
+
+            # Feature Plot 画像配置 — Up
+            for i, feat in enumerate(up_features):
+                is_last_up = (i == len(up_features) - 1)
+                feat_fig = _build_feature_plot_fig(
+                    df, feat, cache_dir_path, rds_path_str,
+                    rotation_store, name_map, marker_size=3,
+                    colorbar_tickformat=".1e",
+                    show_colorbar_title=is_last_up,
+                    auto_marker_size=True)
+                if feat_fig:
+                    png = _fig_to_png_bytes(
+                        feat_fig, width=400, height=280, scale=2)
+                    left = Inches(0.3 + i * (12.5 / max(top_n, 1)))
+                    _pptx_add_image_preserve_ratio(
+                        slide_a, png,
+                        int(left), Inches(_up_plot_y),
+                        feat_w, feat_h,
+                        png_w=400, png_h=280)
+
+            # "▼ Down-regulated" ラベル
+            if has_down:
+                lbl = slide_a.shapes.add_textbox(
+                    Inches(0.3), Inches(_down_label_y), Inches(3), Inches(0.3))
+                lp = lbl.text_frame.paragraphs[0]
+                lp.text = f"▼ Down-regulated (Top {len(down_features)})"
+                lp.font.size = Pt(10)
+                lp.font.color.rgb = RGBColor(0x1E, 0x5B, 0xFF)
+                lp.font.bold = True
+
+            # Feature Plot 画像配置 — Down
+            for i, feat in enumerate(down_features):
+                is_last_down = (i == len(down_features) - 1)
+                feat_fig = _build_feature_plot_fig(
+                    df, feat, cache_dir_path, rds_path_str,
+                    rotation_store, name_map, marker_size=3,
+                    colorbar_tickformat=".1e",
+                    show_colorbar_title=is_last_down,
+                    auto_marker_size=True)
+                if feat_fig:
+                    png = _fig_to_png_bytes(
+                        feat_fig, width=400, height=280, scale=2)
+                    left = Inches(0.3 + i * (12.5 / max(top_n, 1)))
+                    _pptx_add_image_preserve_ratio(
+                        slide_a, png,
+                        int(left), Inches(_down_plot_y),
+                        feat_w, feat_h,
+                        png_w=400, png_h=280)
+
+            # Volcano Plot (下段) — XY比を保持して最大サイズで配置
+            if has_volcano:
+                vpng = _fig_to_png_bytes(volcano_cl, width=800, height=700, scale=2)
+                v_aspect = 800 / 700  # ≈ 1.14
+                v_height = Inches(_volcano_h)
+                v_width = int(v_height * v_aspect)
+                v_left = int((prs.slide_width - v_width) / 2)
+                _pptx_add_image(slide_a, vpng,
+                                v_left, Inches(_volcano_y), v_width, v_height)
+            elif not up_features and not down_features:
+                # DEG データなし → 注釈
+                no_deg = slide_a.shapes.add_textbox(
+                    Inches(3), Inches(3), Inches(7), Inches(1))
+                np_ = no_deg.text_frame.paragraphs[0]
+                np_.text = "No DEG data available for this cluster"
+                np_.font.size = Pt(16)
+                np_.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
+                np_.alignment = PP_ALIGN.CENTER
+
+            _progress(f"Cluster {cl_str} — DEG")
+
+            # === Slide B: UMAP + Spatial (上下2段・サンプル別) ===
+            slide_b = prs.slides.add_slide(prs.slide_layouts[6])
+            _pptx_add_title_bar(slide_b, f"Cluster {cl_str} — UMAP & Spatial")
+
+            n_sp_b = len(samples) if has_spatial and samples else 0
+            avail_w_b = 12.7  # 0.3〜13.0"
+
+            if n_sp_b > 0:
+                tile_w_b = avail_w_b / n_sp_b
+
+                # 上段: サンプル別UMAP (y=0.9", h=3.0")
+                for idx, s in enumerate(samples):
+                    df_s = df[df["Sample"] == s]
+                    umap_s = _build_umap_integrated_fig(
+                        df_s, color_by="Cluster",
+                        highlight_clusters=[cl_str],
+                        show_legend=False, show_labels=False,
+                        title=_display_name(s, name_map),
+                        marker_size=3, custom_colors=custom_colors,
+                        bg_opacity=1.0, title_font_size=40)
+                    if umap_s is not None:
+                        umap_s.update_xaxes(range=cl_umap_xrange)
+                        umap_s.update_yaxes(range=cl_umap_yrange)
+                        u_dict = (umap_s.to_dict()
+                                  if hasattr(umap_s, "to_dict") else umap_s)
+                        u_png = _fig_to_png_bytes(
+                            u_dict, width=600, height=600, scale=2)
+                        _buw, _buh, _buoff = _square_tile_dims(
+                            tile_w_b, 3.0)
+                        u_left = Inches(0.3 + idx * tile_w_b + _buoff)
+                        _pptx_add_image(slide_b, u_png,
+                                        int(u_left), Inches(0.9),
+                                        Inches(_buw), Inches(_buh))
+
+                # 下段: サンプル別Spatial (y=4.1", h=3.1")
+                for idx, s in enumerate(samples):
+                    df_s = df[df["Sample"] == s]
+                    transform = rotation_store.get(
+                        s, rotation_store.get(
+                            "__all__",
+                            {"angle": 0, "flip_h": False, "flip_v": False}))
+                    if isinstance(transform, (int, float)):
+                        transform = {"angle": int(transform),
+                                     "flip_h": False, "flip_v": False}
+                    sp_fig = _create_single_spatial_fig(
+                        df_s, color_map,
+                        highlight_clusters=[cl_str],
+                        selected_cell_ids=set(),
+                        rotation_deg=transform.get("angle", 0),
+                        show_labels=False,
+                        flip_h=transform.get("flip_h", False),
+                        flip_v=transform.get("flip_v", False),
+                        title=_display_name(s, name_map),
+                        marker_size=0, render_height=560,
+                        title_font_size=40,
+                        embed_legend=(idx == 0))
+                    if sp_fig is not None:
+                        sp_dict = (sp_fig.to_dict()
+                                   if hasattr(sp_fig, "to_dict") else sp_fig)
+                        sp_png = _fig_to_png_bytes(
+                            sp_dict, width=600, height=600, scale=2)
+                        _bsw, _bsh, _bsoff = _square_tile_dims(
+                            tile_w_b, 3.1)
+                        sp_left = Inches(0.3 + idx * tile_w_b + _bsoff)
+                        _pptx_add_image(slide_b, sp_png,
+                                        int(sp_left), Inches(4.1),
+                                        Inches(_bsw), Inches(_bsh))
+            else:
+                # Spatialデータなし → 単一UMAP（従来互換）
+                umap_hl = _build_umap_integrated_fig(
+                    df, color_by="Cluster", highlight_clusters=[cl_str],
+                    show_legend=True, show_labels=False,
+                    marker_size=3, custom_colors=custom_colors,
+                    bg_opacity=1.0)
+                if umap_hl is not None:
+                    umap_dict = (umap_hl.to_dict()
+                                 if hasattr(umap_hl, "to_dict") else umap_hl)
+                    upng = _fig_to_png_bytes(
+                        umap_dict, width=800, height=800, scale=2)
+                    _pptx_add_image(slide_b, upng,
+                                    Inches(0.3), Inches(0.7),
+                                    Inches(4.5), Inches(4.5))
+
+            _progress(f"Cluster {cl_str} — UMAP/Spatial")
+
+    # existing_prs が渡された場合は呼び出し元がまとめて保存するため
+    # ここでは保存しない (現在のステップ数を返す)
+    if existing_prs is not None:
+        return _current_step[0]
+
+    output = BytesIO()
+    prs.save(output)
+    output.seek(0)
+    return output.getvalue()
+
+
+@callback(
+    Output("export_top_n_store", "data"),
+    Input("input_export_top_n", "value"),
+    prevent_initial_call=True,
+)
+def sync_export_top_n(value):
+    """dbc.Input → dcc.Store ブリッジ (Top N)"""
+    return value or 5
+
+
+@callback(
+    [Output("export_method_selector", "options"),
+     Output("export_method_selector", "value")],
+    Input("interactive_rds_map", "data"),
+    prevent_initial_call=True,
+)
+def update_export_method_options(rds_map):
+    """rds_map の変更に応じてエクスポート対象手法セレクタを更新する。"""
+    if not rds_map or not isinstance(rds_map, dict):
+        return [{"label": "All", "value": "all"}], "all"
+
+    methods = list(rds_map.keys())
+    options = [{"label": m, "value": m} for m in methods]
+    if len(methods) > 1:
+        options.append({"label": "Both", "value": "all"})
+
+    default_val = "all" if len(methods) > 1 else methods[0]
+    return options, default_val
+
+
+@callback(
+    [Output("dl_report_pptx", "data"),
+     Output("div_export_status", "children")],
+    Input("btn_export_report", "n_clicks"),
+    [State("interactive_umap_plot", "figure"),
+     State("last_spatial_figure_store", "data"),
+     State("seurat_rds_path_store", "data"),
+     State("cluster_stats_table", "data"),
+     State("interactive_sub_project_select", "options"),
+     State("interactive_sub_project_select", "value"),
+     State("volcano_plot", "figure"),
+     State("heatmap_plot", "figure"),
+     State("deg_data_store", "data"),
+     State("custom_color_map_store", "data"),
+     State("spatial_rotation_store", "data"),
+     State("sample_name_map_store", "data"),
+     State("export_top_n_store", "data"),
+     State("seurat_cache_dir_store", "data"),
+     State("mrm_path", "value"),
+     State("interactive_rds_map", "data"),
+     State("interactive_result_folder", "value"),
+     State("interactive_integration_method", "value"),
+     State("export_method_selector", "value")],
+    background=True,
+    running=[
+        (Output("btn_export_report", "disabled"), True, False),
+        (Output("export_progress_container", "style"),
+         {"display": "block"}, {"display": "none"}),
+    ],
+    progress=[
+        Output("export_progress_bar", "value"),
+        Output("export_progress_bar", "max"),
+        Output("export_progress_label", "children"),
+    ],
+    prevent_initial_call=True,
+)
+def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
+                     cluster_stats_data, sub_options, sub_value,
+                     volcano_fig, heatmap_fig, deg_data, custom_colors,
+                     rotation_store, name_map, top_n, cache_dir_str,
+                     mrm_path_str, rds_map, result_folder, current_method,
+                     export_method_selection):
+    """PPTX レポートをバックグラウンド生成してダウンロード。
+
+    export_method_selection:
+        "all" → 全手法（比較スライド付き）
+        特定手法名 → その手法のみ
+    """
+    if not n_clicks:
+        raise PreventUpdate
+
+    set_progress((0, 100, "準備中..."))
+
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches, Pt
+        from pptx.enum.text import PP_ALIGN
+        from pptx.dml.color import RGBColor
+    except ImportError:
+        return no_update, (
+            "python-pptx がインストールされていません。"
+            "pip install python-pptx を実行してください。"
+        )
+
+    try:
+        import kaleido  # noqa: F401
+    except ImportError:
+        return no_update, (
+            "kaleido がインストールされていません。"
+            "pip install kaleido を実行してください。"
+        )
+
+    if not umap_fig:
+        return no_update, "UMAPプロットが見つかりません。データを読み込んでください。"
+
+    try:
+        # サブプロジェクト名を取得
+        sub_name = ""
+        if sub_options and sub_value:
+            for opt in sub_options:
+                if opt.get("value") == sub_value:
+                    sub_name = opt.get("label", "")
+                    break
+
+        # ファイル名を決定
+        if sub_name:
+            safe_name = re.sub(r'[\\/*?:"<>|]', '_', sub_name)
+            filename = f"{safe_name}.pptx"
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"MSI_Report_{timestamp}.pptx"
+
+        top_n = top_n or 5
+
+        # ------------------------------------------------------------------
+        # 出力対象手法リストの決定（export_method_selector に基づく）
+        # ------------------------------------------------------------------
+        methods_to_export = []
+        if rds_map and isinstance(rds_map, dict):
+            if export_method_selection and export_method_selection != "all":
+                # 特定手法のみ選択
+                if export_method_selection in rds_map:
+                    methods_to_export = [export_method_selection]
+                else:
+                    methods_to_export = []
+            elif len(rds_map) > 1:
+                # "all" → 全手法
+                if current_method and current_method in rds_map:
+                    methods_to_export = [current_method] + [
+                        m for m in rds_map if m != current_method
+                    ]
+                else:
+                    methods_to_export = list(rds_map.keys())
+
+        # ------------------------------------------------------------------
+        # 単一手法の場合（従来の動作と完全互換）
+        # ------------------------------------------------------------------
+        if not methods_to_export:
+            cache_dir_path = Path(cache_dir_str) if cache_dir_str else None
+            df = None
+            meta = {}
+            if cache_dir_path:
+                plot_parquet = cache_dir_path / "plot_data.parquet"
+                plot_csv = cache_dir_path / "plot_data.csv"
+                if plot_parquet.exists():
+                    df = pd.read_parquet(plot_parquet)
+                elif plot_csv.exists():
+                    df = pd.read_csv(plot_csv)
+
+                meta_file = cache_dir_path / "extraction_meta.json"
+                if meta_file.exists():
+                    with open(meta_file, "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+
+            pptx_bytes = _build_pptx(
+                umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
+                sub_name=sub_name, volcano_fig=volcano_fig,
+                heatmap_fig=heatmap_fig,
+                deg_data=deg_data, top_n=top_n, df=df,
+                cache_dir=str(cache_dir_path) if cache_dir_path else None,
+                custom_colors=custom_colors, rotation_store=rotation_store,
+                name_map=name_map, set_progress=set_progress,
+                mrm_path=mrm_path_str,
+            )
+
+            return (
+                dcc.send_bytes(pptx_bytes, filename=filename),
+                f"✓ PPTXファイルを出力しました: {filename}",
+            )
+
+        # ------------------------------------------------------------------
+        # 複数手法 or セレクタで指定された手法 → 1つの PPTX に結合
+        # ------------------------------------------------------------------
+        prs = Presentation()
+        prs.slide_width = Inches(13.333)
+        prs.slide_height = Inches(7.5)
+
+        is_multi = len(methods_to_export) > 1
+
+        # 全手法のステップ数（Phase 1 後に再計算する）
+        total_steps = len(methods_to_export) * 2  # 暫定: データ読込用
+        progress_offset = 0
+        exported_methods = []
+        section_map = []  # (name, start_idx, end_idx) — ①-5
+
+        # ==================================================================
+        # Phase 1: 全手法のデータを事前抽出（キャッシュして二重抽出を防止）
+        # ==================================================================
+        extracted_data = {}  # method_name → dict
+
+        for method_name in methods_to_export:
+            method_rds = rds_map.get(method_name)
+            if not method_rds or not Path(method_rds).exists():
+                print(f"[Export] {method_name}: "
+                      f"RDSファイルが見つかりません → スキップ")
+                continue
+
+            set_progress((
+                min(int(progress_offset / total_steps * 100), 99), 100,
+                f"{method_name} のデータを読み込み中..."
+            ))
+
+            try:
+                result = _bridge.extract_data(method_rds)
+            except Exception as e:
+                print(f"[Export] {method_name}: データ抽出エラー: {e}")
+                continue
+
+            method_df = result["plot_data"]
+            method_meta = result["meta"]
+            method_cache_dir = result.get("cache_dir")
+
+            # DEG 結果読み込み
+            method_deg_data = None
+            if result_folder:
+                result_base = Path(result_folder)
+                method_deg_data = _load_deg_results(
+                    result_base, method_name)
+            else:
+                rds_dir = Path(method_rds).parent
+                result_base = (rds_dir.parent
+                               if rds_dir.name == "RDS_Files"
+                               else rds_dir)
+                method_deg_data = _load_deg_results(
+                    result_base, method_name)
+
+            extracted_data[method_name] = {
+                "df": method_df,
+                "meta": method_meta,
+                "cache_dir": method_cache_dir,
+                "deg_data": method_deg_data,
+                "rds_path": method_rds,
+            }
+            progress_offset += 1
+
+        if not extracted_data:
+            return no_update, "エクスポート可能な手法がありません。"
+
+        # Phase 1 完了: 実際のクラスタ数に基づいて total_steps を再計算
+        total_steps = progress_offset                    # Phase 1 消費済み
+        if is_multi:
+            total_steps += len(extracted_data) * 2        # Phase 2: 比較 + sample UMAP
+        for _ed in extracted_data.values():
+            total_steps += 1                              # セパレータスライド
+            _method_df = _ed["df"]
+            if _method_df is not None:
+                _n_clusters = len(_method_df["Cluster"].unique())
+                total_steps += 5 + _n_clusters * 2       # _build_pptx 実ステップ (+1 sample UMAP)
+            else:
+                total_steps += 4
+
+        # ==================================================================
+        # Phase 2: 比較セクション — 全手法の UMAP & Spatial を先頭に配置
+        #          (①-3: 複数手法の場合のみ)
+        # ==================================================================
+        if is_multi and len(extracted_data) > 1:
+            comparison_start = len(prs.slides)
+
+            for method_name, ed in extracted_data.items():
+                m_df = ed["df"]
+                if m_df is None or m_df.empty:
+                    continue
+                has_spatial_cmp = "SpatialX" in m_df.columns
+
+                slide = prs.slides.add_slide(prs.slide_layouts[6])
+                _pptx_add_title_bar(
+                    slide,
+                    f"UMAP & Spatial Mapping — {method_name}")
+
+                color_map_cmp = _get_cluster_color_map(
+                    m_df["Cluster"], custom_colors)
+                all_samples_cmp = sorted(m_df["Sample"].unique())
+                n_sp_cmp = len(all_samples_cmp)
+                avail_w_cmp = 11.0  # 右端にレジェンド配置
+
+                # UMAP axis ranges (全サンプル統一)
+                u1_min = float(m_df["UMAP_1"].min())
+                u1_max = float(m_df["UMAP_1"].max())
+                u2_min = float(m_df["UMAP_2"].min())
+                u2_max = float(m_df["UMAP_2"].max())
+                u_pad = max(u1_max - u1_min,
+                            u2_max - u2_min) * 0.05
+                u_xrange = [u1_min - u_pad, u1_max + u_pad]
+                u_yrange = [u2_min - u_pad, u2_max + u_pad]
+
+                # 上段: サンプル別 UMAP
+                tile_w_cmp = avail_w_cmp / max(n_sp_cmp, 1)
+                for idx_s, s in enumerate(all_samples_cmp):
+                    df_s = m_df[m_df["Sample"] == s]
+                    umap_s = _build_umap_integrated_fig(
+                        df_s, color_by="Cluster",
+                        highlight_clusters=None,
+                        show_legend=False, show_labels=True,
+                        title=_display_name(s, name_map),
+                        marker_size=3, custom_colors=custom_colors,
+                        title_font_size=40, label_size=24)
+                    if umap_s is not None:
+                        umap_s.update_xaxes(range=u_xrange)
+                        umap_s.update_yaxes(range=u_yrange)
+                        u_dict = (umap_s.to_dict()
+                                  if hasattr(umap_s, "to_dict")
+                                  else umap_s)
+                        u_png = _fig_to_png_bytes(
+                            u_dict, width=600, height=600, scale=2)
+                        _cw, _ch, _coff = _square_tile_dims(
+                            tile_w_cmp, 3.0)
+                        u_left = Inches(
+                            0.3 + idx_s * tile_w_cmp + _coff)
+                        _pptx_add_image(slide, u_png,
+                                        int(u_left), Inches(0.9),
+                                        Inches(_cw), Inches(_ch))
+
+                # 下段: サンプル別 Spatial
+                if has_spatial_cmp:
+                    _rot_store = rotation_store or {}
+                    for idx_s, s in enumerate(all_samples_cmp):
+                        df_s = m_df[m_df["Sample"] == s]
+                        transform = _rot_store.get(
+                            s, _rot_store.get(
+                                "__all__",
+                                {"angle": 0, "flip_h": False,
+                                 "flip_v": False}))
+                        if isinstance(transform, (int, float)):
+                            transform = {
+                                "angle": int(transform),
+                                "flip_h": False, "flip_v": False}
+                        sp_fig_cmp = _create_single_spatial_fig(
+                            df_s, color_map_cmp,
+                            highlight_clusters=None,
+                            selected_cell_ids=set(),
+                            rotation_deg=transform.get("angle", 0),
+                            show_labels=True,
+                            flip_h=transform.get("flip_h", False),
+                            flip_v=transform.get("flip_v", False),
+                            title=_display_name(s, name_map),
+                            marker_size=0, render_height=560,
+                            embed_legend=False,
+                            title_font_size=40, label_size=24)
+                        if sp_fig_cmp is not None:
+                            sp_dict = (sp_fig_cmp.to_dict()
+                                       if hasattr(sp_fig_cmp, "to_dict")
+                                       else sp_fig_cmp)
+                            sp_png = _fig_to_png_bytes(
+                                sp_dict, width=600, height=600,
+                                scale=2)
+                            _csw, _csh, _csoff = _square_tile_dims(
+                                tile_w_cmp, 3.1)
+                            sp_left = Inches(
+                                0.3 + idx_s * tile_w_cmp + _csoff)
+                            _pptx_add_image(
+                                slide, sp_png,
+                                int(sp_left), Inches(4.1),
+                                Inches(_csw), Inches(_csh))
+
+                # クラスタレジェンド（右端に配置）
+                legend_fig_cmp = _build_cluster_legend_fig(
+                    m_df["Cluster"].unique(), color_map_cmp)
+                legend_png_cmp = _fig_to_png_bytes(
+                    legend_fig_cmp.to_dict(),
+                    width=200, height=600, scale=2)
+                _pptx_add_image_preserve_ratio(slide, legend_png_cmp,
+                                               Inches(11.5), Inches(0.9),
+                                               Inches(1.3), Inches(6.3),
+                                               png_w=200, png_h=600)
+
+                # --- UMAP (by Sample) comparison slide ---
+                if n_sp_cmp > 1:
+                    sample_cmap_cmp = _get_sample_color_map(all_samples_cmp)
+                    slide_s_cmp = prs.slides.add_slide(prs.slide_layouts[6])
+                    _pptx_add_title_bar(
+                        slide_s_cmp,
+                        f"UMAP (by Sample) \u2014 {method_name}")
+
+                    for idx_s, s in enumerate(all_samples_cmp):
+                        df_s = m_df[m_df["Sample"] == s]
+                        umap_s_cmp = _build_umap_integrated_fig(
+                            df_s, color_by="Sample",
+                            highlight_clusters=None,
+                            show_legend=False, show_labels=False,
+                            title=_display_name(s, name_map),
+                            marker_size=3, custom_colors=sample_cmap_cmp,
+                            title_font_size=40)
+                        if umap_s_cmp is not None:
+                            umap_s_cmp.update_xaxes(range=u_xrange)
+                            umap_s_cmp.update_yaxes(range=u_yrange)
+                            u_dict = (umap_s_cmp.to_dict()
+                                      if hasattr(umap_s_cmp, "to_dict")
+                                      else umap_s_cmp)
+                            u_png = _fig_to_png_bytes(
+                                u_dict, width=600, height=600, scale=2)
+                            _cw, _ch, _coff = _square_tile_dims(
+                                tile_w_cmp, 5.5)
+                            u_left = Inches(
+                                0.3 + idx_s * tile_w_cmp + _coff)
+                            _pptx_add_image(slide_s_cmp, u_png,
+                                            int(u_left), Inches(0.9),
+                                            Inches(_cw), Inches(_ch))
+
+                    # サンプルレジェンド（右端）
+                    sample_legend_cmp = _build_sample_legend_fig(
+                        all_samples_cmp, sample_cmap_cmp,
+                        name_map=name_map)
+                    sample_legend_png_cmp = _fig_to_png_bytes(
+                        sample_legend_cmp.to_dict(),
+                        width=200, height=600, scale=2)
+                    _pptx_add_image_preserve_ratio(
+                        slide_s_cmp, sample_legend_png_cmp,
+                        Inches(11.5), Inches(0.9),
+                        Inches(1.3), Inches(6.3),
+                        png_w=200, png_h=600)
+
+                progress_offset += 1
+
+            comparison_end = len(prs.slides) - 1
+            if comparison_end >= comparison_start:
+                section_map.append(
+                    ("Comparison", comparison_start, comparison_end))
+
+        # ==================================================================
+        # Phase 3: 各手法のフルセクション
+        # ==================================================================
+        for method_name in methods_to_export:
+            if method_name not in extracted_data:
+                continue
+
+            ed = extracted_data[method_name]
+            method_df = ed["df"]
+            method_meta = ed["meta"]
+            method_cache_dir = ed["cache_dir"]
+            method_deg_data = ed["deg_data"]
+            method_rds = ed["rds_path"]
+
+            method_start_idx = len(prs.slides)
+
+            set_progress((
+                min(int(progress_offset / total_steps * 100), 99),
+                100,
+                f"{method_name} のスライドを生成中..."
+            ))
+
+            # --- セパレータスライド ---
+            sep_slide = prs.slides.add_slide(prs.slide_layouts[6])
+            _pptx_add_title_bar(sep_slide, f"═══ {method_name} ═══")
+            txBox = sep_slide.shapes.add_textbox(
+                Inches(1), Inches(2.5), Inches(11), Inches(2))
+            tf = txBox.text_frame
+            tf.word_wrap = True
+            p = tf.paragraphs[0]
+            p.text = f"Integration Method: {method_name}"
+            p.font.size = Pt(28)
+            p.font.bold = True
+            p.alignment = PP_ALIGN.CENTER
+            p2 = tf.add_paragraph()
+            p2.text = (
+                f"Cells: {method_meta.get('n_cells', '?')} | "
+                f"Clusters: {method_meta.get('n_clusters', '?')}"
+            )
+            p2.font.size = Pt(18)
+            p2.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+            p2.alignment = PP_ALIGN.CENTER
+            progress_offset += 1
+
+            # --- UMAP 図を生成 ---
+            method_umap_fig = _build_umap_integrated_fig(
+                method_df, color_by="Cluster",
+                highlight_clusters=None,
+                show_legend=True, show_labels=True,
+                custom_colors=custom_colors,
+            )
+
+            # --- クラスタ統計の生成 ---
+            method_cluster_stats = []
+            try:
+                clusters_sorted = sorted(
+                    method_df["Cluster"].unique(),
+                    key=_cluster_sort_key)
+                n_total = len(method_df)
+                for c in clusters_sorted:
+                    n_c = int((method_df["Cluster"] == c).sum())
+                    pct = (f"{n_c / n_total * 100:.1f}"
+                           if n_total else "0")
+                    method_cluster_stats.append({
+                        "Cluster": str(c),
+                        "Pixels": n_c,
+                        "Percent": pct,
+                    })
+            except Exception:
+                method_cluster_stats = []
+
+            # --- _build_pptx でフルセットを追加 ---
+            method_sub_name = (
+                f"{sub_name} [{method_name}]"
+                if sub_name else method_name
+            )
+            returned = _build_pptx(
+                method_umap_fig, None, method_meta,
+                method_cluster_stats, method_rds,
+                sub_name=method_sub_name,
+                volcano_fig=None, heatmap_fig=None,
+                deg_data=method_deg_data, top_n=top_n,
+                df=method_df,
+                cache_dir=(str(method_cache_dir)
+                           if method_cache_dir else None),
+                custom_colors=custom_colors,
+                rotation_store=rotation_store,
+                name_map=name_map,
+                set_progress=set_progress,
+                mrm_path=mrm_path_str,
+                existing_prs=prs,
+                progress_offset=progress_offset,
+                progress_total=total_steps,
+            )
+            if isinstance(returned, int):
+                progress_offset = returned
+
+            method_end_idx = len(prs.slides) - 1
+            section_map.append(
+                (method_name, method_start_idx, method_end_idx))
+            exported_methods.append(method_name)
+
+        if not exported_methods:
+            return no_update, "エクスポート可能な手法がありません。"
+
+        # ==================================================================
+        # Phase 4: セクション情報を PPTX XML に追加（①-5）
+        # ==================================================================
+        if section_map:
+            try:
+                _pptx_add_sections(prs, section_map)
+            except Exception as e:
+                print(f"[Export] セクション追加エラー（無視）: {e}")
+
+        # --- 結合 PPTX をバイト列に変換 ---
+        output = BytesIO()
+        prs.save(output)
+        output.seek(0)
+
+        methods_str = " + ".join(exported_methods)
         return (
-            dcc.send_data_frame(df.to_csv, filename=filename, index=False),
-            f"CSVデータを出力しました: {filename}",
+            dcc.send_bytes(output.getvalue(), filename=filename),
+            f"✓ PPTXファイルを出力しました ({methods_str}): {filename}",
         )
 
     except Exception as e:
@@ -2812,6 +4609,18 @@ def export_csv_data(n_clicks):
 # ---------------------------------------------------------------------------
 # プロジェクト / サブプロジェクト選択コールバック
 # ---------------------------------------------------------------------------
+
+@callback(
+    Output("interactive_project_row", "style"),
+    Input("interactive_entry_mode", "data"),
+    prevent_initial_call=True,
+)
+def toggle_project_dropdown_visibility(entry_mode):
+    """entry_mode に応じてプロジェクトドロップダウンの表示/非表示を切り替え"""
+    if entry_mode == "sub_project":
+        return {"display": "none"}
+    return {}
+
 
 @callback(
     Output("interactive_project_select", "options"),
@@ -2832,17 +4641,21 @@ def populate_interactive_projects(active_tab, current_page):
     [Output("interactive_sub_project_select", "options", allow_duplicate=True),
      Output("interactive_sub_project_select", "value", allow_duplicate=True)],
     Input("interactive_project_select", "value"),
+    State("interactive_entry_mode", "data"),
     prevent_initial_call=True,
 )
-def populate_interactive_sub_projects(project_id):
-    """プロジェクト選択時にサブプロジェクト一覧を取得し、先頭を自動選択"""
+def populate_interactive_sub_projects(project_id, entry_mode):
+    """プロジェクト選択時にサブプロジェクト一覧を取得。
+    sub_project モード: options のみ更新（value は sub_action_interactive が設定済み）
+    standalone モード: options を更新、value は None（ユーザーが選択）"""
     if not project_id:
         return [], None
     from app.services.project_manager import list_sub_projects
     subs = list_sub_projects(project_id)
     options = [{"label": s["name"], "value": s["id"]} for s in subs]
-    first_value = options[0]["value"] if options else None
-    return options, first_value
+    if entry_mode == "sub_project":
+        return options, no_update
+    return options, None
 
 
 @callback(
@@ -2890,12 +4703,13 @@ def set_interactive_folders_from_sub_project(sub_id, project_id):
      State("last_spatial_figure_store", "data"),
      State("deg_data_store", "data"),
      State("spatial_rotation_store", "data"),
-     State("custom_color_map_store", "data")],
+     State("custom_color_map_store", "data"),
+     State("spatial_columns_per_row", "value")],
     prevent_initial_call=True,
 )
 def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                       umap_fig, feat_container_children, spatial_fig_data, deg_data,
-                      rotation_store, custom_colors):
+                      rotation_store, custom_colors, spatial_columns_per_row):
     trigger = ctx.triggered_id
     if not trigger:
         return False, "", ""
@@ -3046,14 +4860,21 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                                              title=display_s, embed_legend=True,
                                              cluster_to_idx=cluster_to_idx,
                                              discrete_cscale=discrete_cscale)
-            n = len(samples)
-            flex_basis = f"{max(30, 90 // n)}%"
+            if spatial_columns_per_row:
+                n_cols = spatial_columns_per_row
+                gap_total = (n_cols - 1) * 15
+                flex_basis = f"calc({100 / n_cols:.2f}% - {gap_total / n_cols:.1f}px)"
+                min_w = "0"
+            else:
+                n_cols = len(samples)
+                flex_basis = f"{max(20, 90 // n_cols)}%"
+                min_w = "350px"
             init_cfg = dict(fs_config)
             init_cfg["toImageButtonOptions"] = dict(init_cfg["toImageButtonOptions"],
                                                      filename=f"Spatial_{display_s}")
             init_graphs.append(
                 html.Div(
-                    style={"flex": f"1 1 {flex_basis}", "minWidth": "350px",
+                    style={"flex": f"1 1 {flex_basis}", "minWidth": min_w,
                             "border": "1px solid #dee2e6", "borderRadius": "6px",
                             "padding": "5px", "backgroundColor": "#fff"},
                     children=[
@@ -3124,11 +4945,17 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
             ]),
             dbc.Row(className="mt-1 align-items-center", children=[
                 dbc.Col(width=2, children=[
-                    dbc.Label("マーカー", className="small mb-0"),
+                    html.Div(style={"display": "flex", "alignItems": "center", "gap": "4px"}, children=[
+                        dbc.Label("マーカー", className="small mb-0"),
+                        dbc.Button("Auto", id="fs_spatial_marker_auto_btn",
+                                   size="sm", outline=True, color="info",
+                                   style={"padding": "0 5px", "fontSize": "10px",
+                                          "lineHeight": "1.2"}),
+                    ]),
                     dcc.Slider(
                         id="fs_spatial_marker_size",
-                        min=0, max=15, step=1, value=0,
-                        marks={0: "自動", 8: "8", 15: "15"},
+                        min=0, max=30, step=1, value=0,
+                        marks={0: "自動", 10: "10", 20: "20", 30: "30"},
                         tooltip={"placement": "bottom", "always_visible": False},
                     ),
                 ]),
@@ -3231,12 +5058,13 @@ def on_fullscreen_close(is_open, current_val):
      Input("fs_umap_marker_size", "value"),
      Input("fs_umap_exclude_cluster", "value"),
      Input("fs_umap_label_size", "value")],
-    [State("custom_color_map_store", "data")],
+    [State("custom_color_map_store", "data"),
+     State("umap_columns_per_row", "value")],
     prevent_initial_call=True,
 )
 def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
                    height_val, width_val, marker_size, exclude_clusters, label_size,
-                   custom_color_map):
+                   custom_color_map, columns_per_row):
     height_val = height_val or 78
     width_val = width_val or 95
     df = _interactive_data.get("plot_data")
@@ -3276,7 +5104,8 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
                                                 label_size=label_size or 11,
                                                 saved_positions=all_pos.get("umap_per_sample"),
                                                 show_legend=bool(show_legend),
-                                                name_map=name_map)
+                                                name_map=name_map,
+                                                columns_per_row=columns_per_row or 0)
         return html.Div(
             style={"display": "flex", "flexWrap": "wrap", "gap": "15px",
                    "width": f"{width_val}vw", "margin": "0 auto"},
@@ -3299,12 +5128,13 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
      Input("fs_spatial_height_slider", "value"),
      Input("fs_spatial_width_slider", "value"),
      Input("fs_spatial_label_size", "value")],
-    State("custom_color_map_store", "data"),
+    [State("custom_color_map_store", "data"),
+     State("spatial_columns_per_row", "value")],
     prevent_initial_call=True,
 )
 def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                       exclude_clusters, marker_size, height_val, width_val,
-                      label_size, custom_colors):
+                      label_size, custom_colors, columns_per_row):
     height_val = height_val or 60
     width_val = width_val or 95
     df = _interactive_data.get("plot_data")
@@ -3332,6 +5162,7 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
             s, rotation_store.get("__all__", {"angle": 0, "flip_h": False, "flip_v": False}))
         if isinstance(transform, (int, float)):
             transform = {"angle": int(transform), "flip_h": False, "flip_v": False}
+        render_h = round(height_val * 10.8)  # vh → px概算
         fig = _create_single_spatial_fig(df_s, color_map, highlight, set(),
                                          rotation_deg=transform.get("angle", 0),
                                          show_labels=show_labels,
@@ -3343,15 +5174,23 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                                          marker_size=marker_size or 0,
                                          exclude_clusters=exclude_clusters,
                                          label_size=label_size or 10,
-                                         saved_positions=spatial_pos.get(s))
-        n = len(samples_to_show)
-        flex_basis = f"{max(30, 90 // n)}%"
+                                         saved_positions=spatial_pos.get(s),
+                                         render_height=render_h)
+        if columns_per_row:
+            n_cols = columns_per_row
+            gap_total = (n_cols - 1) * 15
+            flex_basis = f"calc({100 / n_cols:.2f}% - {gap_total / n_cols:.1f}px)"
+            min_w = "0"
+        else:
+            n_cols = len(samples_to_show)
+            flex_basis = f"{max(20, 90 // n_cols)}%"
+            min_w = "350px"
         fs_cfg = dict(fs_config)
         fs_cfg["toImageButtonOptions"] = dict(fs_cfg["toImageButtonOptions"],
                                                filename=f"Spatial_{display_s}")
         graphs.append(
             html.Div(
-                style={"flex": f"1 1 {flex_basis}", "minWidth": "350px",
+                style={"flex": f"1 1 {flex_basis}", "minWidth": min_w,
                         "border": "1px solid #dee2e6", "borderRadius": "6px",
                         "padding": "5px", "backgroundColor": "#fff"},
                 children=[
@@ -3372,23 +5211,9 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
 # ラベル位置の永続保存
 # ---------------------------------------------------------------------------
 
-@callback(
-    [Output("label_pos_save_status", "data"),
-     Output("notification_toast", "children", allow_duplicate=True),
-     Output("notification_toast", "is_open", allow_duplicate=True)],
-    [Input("save_label_pos_btn", "n_clicks"),
-     Input("save_spatial_label_pos_btn", "n_clicks"),
-     Input("fs_save_label_pos_btn", "n_clicks"),
-     Input("fs_save_spatial_label_pos_btn", "n_clicks")],
-    [State("interactive_umap_plot", "relayoutData"),
-     State({"type": "umap_per_sample_graph", "index": ALL}, "relayoutData"),
-     State({"type": "spatial_graph", "index": ALL}, "relayoutData"),
-     State({"type": "fs_spatial_graph", "index": ALL}, "relayoutData")],
-    prevent_initial_call=True,
-)
-def save_label_positions(n1, n2, n3, n4, umap_relayout, umap_ps_relayouts,
-                         spatial_relayouts, fs_spatial_relayouts):
-    """全グラフのアノテーション位置をJSONファイルに永続保存する"""
+def _save_label_positions_impl(umap_relayout, umap_ps_relayouts,
+                               spatial_relayouts, fs_spatial_relayouts):
+    """ラベル位置保存の共通ロジック（通常版・FS版で共用）"""
     try:
         path = _get_label_positions_path()
         if not path:
@@ -3474,6 +5299,46 @@ def save_label_positions(n1, n2, n3, n4, umap_relayout, umap_ps_relayouts,
         print(f"[LABEL] ラベル位置保存エラー: {e}")
         import traceback; traceback.print_exc()
         return no_update, f"ラベル位置の保存エラー: {e}", True
+
+
+# --- 通常版（常にDOMに存在するボタン） ---
+@callback(
+    [Output("label_pos_save_status", "data"),
+     Output("notification_toast", "children", allow_duplicate=True),
+     Output("notification_toast", "is_open", allow_duplicate=True)],
+    [Input("save_label_pos_btn", "n_clicks"),
+     Input("save_spatial_label_pos_btn", "n_clicks")],
+    [State("interactive_umap_plot", "relayoutData"),
+     State({"type": "umap_per_sample_graph", "index": ALL}, "relayoutData"),
+     State({"type": "spatial_graph", "index": ALL}, "relayoutData"),
+     State({"type": "fs_spatial_graph", "index": ALL}, "relayoutData")],
+    prevent_initial_call=True,
+)
+def save_label_positions(n1, n2, umap_relayout, umap_ps_relayouts,
+                         spatial_relayouts, fs_spatial_relayouts):
+    """通常ビューのラベル位置保存ボタン"""
+    return _save_label_positions_impl(umap_relayout, umap_ps_relayouts,
+                                       spatial_relayouts, fs_spatial_relayouts)
+
+
+# --- フルスクリーン版（モーダル内の動的ボタン） ---
+@callback(
+    [Output("label_pos_save_status", "data", allow_duplicate=True),
+     Output("notification_toast", "children", allow_duplicate=True),
+     Output("notification_toast", "is_open", allow_duplicate=True)],
+    [Input("fs_save_label_pos_btn", "n_clicks"),
+     Input("fs_save_spatial_label_pos_btn", "n_clicks")],
+    [State("interactive_umap_plot", "relayoutData"),
+     State({"type": "umap_per_sample_graph", "index": ALL}, "relayoutData"),
+     State({"type": "spatial_graph", "index": ALL}, "relayoutData"),
+     State({"type": "fs_spatial_graph", "index": ALL}, "relayoutData")],
+    prevent_initial_call=True,
+)
+def save_label_positions_fs(n1, n2, umap_relayout, umap_ps_relayouts,
+                             spatial_relayouts, fs_spatial_relayouts):
+    """フルスクリーンモーダルのラベル位置保存ボタン"""
+    return _save_label_positions_impl(umap_relayout, umap_ps_relayouts,
+                                       spatial_relayouts, fs_spatial_relayouts)
 
 
 # ---------------------------------------------------------------------------

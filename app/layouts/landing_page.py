@@ -78,6 +78,12 @@ def create_landing_page():
                                 className="text-end",
                                 children=[
                                     dbc.Button(
+                                        "インタラクティブ解析",
+                                        id="open_interactive_from_landing_btn",
+                                        color="info",
+                                        className="me-2",
+                                    ),
+                                    dbc.Button(
                                         "+ 新規プロジェクト",
                                         id="open_create_project_modal",
                                         color="primary",

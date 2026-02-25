@@ -198,7 +198,6 @@ def render_project_cards(current_page, _refresh, sort_order, search_text):
                                 color="primary",
                                 size="sm",
                                 className="mt-2",
-                                style={"width": "100%"},
                             ),
                         ]),
                     ],
@@ -244,6 +243,29 @@ def select_project(clicks):
         project,
         project["name"],
         " | ".join(desc_parts) if desc_parts else "",
+    )
+
+
+# =========================================================================
+# ランディングページ → インタラクティブ解析に直接遷移
+# =========================================================================
+
+@callback(
+    [Output("current_page", "data", allow_duplicate=True),
+     Output("main_tabs", "active_tab", allow_duplicate=True),
+     Output("interactive_entry_mode", "data", allow_duplicate=True)],
+    Input("open_interactive_from_landing_btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def open_interactive_from_landing(n_clicks):
+    """ランディングページ「インタラクティブ解析」→ インタラクティブ解析タブに遷移（standalone mode）"""
+    if not n_clicks:
+        return no_update, no_update, no_update
+
+    return (
+        "analysis",        # current_page
+        "interactive",     # main_tabs
+        "standalone",      # interactive_entry_mode（プロジェクト・サブプロジェクトDD表示）
     )
 
 
@@ -589,21 +611,24 @@ def sub_action_view_results(clicks, project):
      Output("interactive_result_folder", "value", allow_duplicate=True),
      Output("interactive_msi_folder", "value", allow_duplicate=True),
      Output("interactive_project_select", "value", allow_duplicate=True),
-     Output("interactive_sub_project_select", "value", allow_duplicate=True)],
+     Output("interactive_sub_project_select", "value", allow_duplicate=True),
+     Output("interactive_entry_mode", "data", allow_duplicate=True),
+     Output("current_sub_project_id", "data", allow_duplicate=True)],
     Input({"type": "sub_action_interactive", "index": ALL}, "n_clicks"),
     State("selected_project", "data"),
     prevent_initial_call=True,
 )
 def sub_action_interactive(clicks, project):
     """サブプロジェクト「インタラクティブ」→ インタラクティブ解析タブに遷移"""
+    _n_out = 8
     if not ctx.triggered_id or not any(c for c in clicks if c):
-        return no_update, no_update, no_update, no_update, no_update, no_update
+        return (no_update,) * _n_out
 
     sub_id = ctx.triggered_id["index"]
     project_id = project.get("id", "") if project else ""
     sub = get_sub_project(project_id, sub_id)
     if not sub:
-        return no_update, no_update, no_update, no_update, no_update, no_update
+        return (no_update,) * _n_out
 
     # last_result_dir を優先、なければ output_dir にフォールバック
     result_dir = sub.get("last_result_dir") or sub.get("output_dir", "")
@@ -616,6 +641,8 @@ def sub_action_interactive(clicks, project):
         data_folder or no_update,
         project_id,
         sub_id,
+        "sub_project",      # interactive_entry_mode
+        sub_id,              # current_sub_project_id
     )
 
 
@@ -639,13 +666,28 @@ def back_to_landing(n_clicks):
 # =========================================================================
 
 @callback(
-    Output("current_page", "data", allow_duplicate=True),
-    Input("back_to_action_from_analysis", "n_clicks"),
+    Output("back_to_action_from_analysis", "children"),
+    Input("interactive_entry_mode", "data"),
     prevent_initial_call=True,
 )
-def back_to_action(n_clicks):
+def update_back_button_text(entry_mode):
+    """エントリーモードに応じて戻るボタンのテキストを切替"""
+    if entry_mode == "standalone":
+        return "< プロジェクト一覧に戻る"
+    return "< プロジェクトに戻る"
+
+
+@callback(
+    Output("current_page", "data", allow_duplicate=True),
+    Input("back_to_action_from_analysis", "n_clicks"),
+    State("interactive_entry_mode", "data"),
+    prevent_initial_call=True,
+)
+def back_to_action(n_clicks, entry_mode):
     if not n_clicks:
         return no_update
+    if entry_mode == "standalone":
+        return "landing"
     return "action"
 
 

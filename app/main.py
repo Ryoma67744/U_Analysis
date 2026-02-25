@@ -3,11 +3,22 @@
 # Dash アプリケーション エントリポイント
 # =============================================================================
 
+from uuid import uuid4
+
 import dash
 import dash_bootstrap_components as dbc
+import diskcache
+from dash.long_callback import DiskcacheManager
 
 from app.config import APP_PORT, APP_HOST
 from app.layouts.main_layout import create_main_layout
+
+# バックグラウンドコールバック用キャッシュ
+_launch_uid = uuid4()
+_cache = diskcache.Cache("./cache")
+_background_manager = DiskcacheManager(
+    _cache, cache_by=[lambda: _launch_uid], expire=300,
+)
 
 # Dash アプリケーション作成
 app = dash.Dash(
@@ -16,6 +27,7 @@ app = dash.Dash(
     suppress_callback_exceptions=True,
     title="MSI Analysis Application",
     assets_folder="assets",
+    background_callback_manager=_background_manager,
 )
 
 # Flask サーバーへの参照（画像配信用）

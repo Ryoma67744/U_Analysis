@@ -35,44 +35,60 @@ def _path_input_row(input_id: str, btn_id: str, value: str, placeholder: str):
 
 def create_sidebar():
     ls = load_last_settings()  # 前回の設定を復元
-    return html.Div(className="sidebar", children=[
-        # 解析手法選択
-        html.H4(["🧪 解析手法"]),
-
-        # DESI セクション
+    return html.Div(id="sidebar_content", className="sidebar", children=[
+        # 解析手法選択（「解析設定」タブ以外では非表示）
         html.Div(
-            "【DESI】",
-            style={
-                "color": "#667eea", "fontWeight": "bold", "fontSize": "14px",
-                "marginBottom": "5px", "borderBottom": "1px solid #667eea",
-                "paddingBottom": "2px",
-            },
-        ),
-        dbc.RadioItems(
-            id="analysis_method",
-            options=[
-                {"label": html.Span("UMAP解析", style={"marginLeft": "15px"}), "value": "desi_v8"},
-                {"label": html.Span("再解析", style={"marginLeft": "15px"}), "value": "desi_cluster_filter"},
-            ],
-            value=ls.get("analysis_method", "desi_v8"),
-        ),
+            id="method_selector_section",
+            children=[
+                html.H4(["🧪 解析手法"]),
 
-        # TIMS セクション
-        html.Div(
-            "【TIMS】",
-            style={
-                "color": "#f093fb", "fontWeight": "bold", "fontSize": "14px",
-                "marginTop": "10px", "marginBottom": "5px",
-                "borderBottom": "1px solid #f093fb", "paddingBottom": "2px",
-            },
-        ),
-        dbc.RadioItems(
-            id="analysis_method_tims",
-            options=[
-                {"label": html.Span("UMAP解析", style={"marginLeft": "15px"}), "value": "tims_v8"},
-                {"label": html.Span("再解析", style={"marginLeft": "15px"}), "value": "tims_cluster_filter"},
+                # DESI セクション
+                html.Div(
+                    "【DESI】",
+                    style={
+                        "color": "#667eea", "fontWeight": "bold",
+                        "fontSize": "14px", "marginBottom": "5px",
+                        "borderBottom": "1px solid #667eea",
+                        "paddingBottom": "2px",
+                    },
+                ),
+                dbc.RadioItems(
+                    id="analysis_method",
+                    options=[
+                        {"label": html.Span("UMAP解析",
+                                            style={"marginLeft": "15px"}),
+                         "value": "desi_v8"},
+                        {"label": html.Span("再解析",
+                                            style={"marginLeft": "15px"}),
+                         "value": "desi_cluster_filter"},
+                    ],
+                    value=ls.get("analysis_method", "desi_v8"),
+                ),
+
+                # TIMS セクション
+                html.Div(
+                    "【TIMS】",
+                    style={
+                        "color": "#f093fb", "fontWeight": "bold",
+                        "fontSize": "14px", "marginTop": "10px",
+                        "marginBottom": "5px",
+                        "borderBottom": "1px solid #f093fb",
+                        "paddingBottom": "2px",
+                    },
+                ),
+                dbc.RadioItems(
+                    id="analysis_method_tims",
+                    options=[
+                        {"label": html.Span("UMAP解析",
+                                            style={"marginLeft": "15px"}),
+                         "value": "tims_v8"},
+                        {"label": html.Span("再解析",
+                                            style={"marginLeft": "15px"}),
+                         "value": "tims_cluster_filter"},
+                    ],
+                    value=ls.get("analysis_method_tims", None),
+                ),
             ],
-            value=ls.get("analysis_method_tims", None),
         ),
 
         # スクリプト設定（折りたたみ）

@@ -38,6 +38,7 @@ _AUTO_SAVE_KEYS = [
     "calibration_table_data",
     "calibration_enable", "calibration_matrix",
     "calibration_search_window", "calibration_min_peaks",
+    "calibration_regression_mode",
 ]
 
 

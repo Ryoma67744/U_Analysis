@@ -82,8 +82,13 @@ def get_settings_tooltips():
         ),
         dbc.Tooltip(
             "マトリクスの既知ピーク（リファレンスm/z）と実測ピークを対応付けて"
-            "m/z値の線形回帰補正を行います。補正後のm/zでアノテーションを再検索します。",
+            "m/z値の回帰補正を行います。補正後のm/zでアノテーションを再検索します。",
             target="calibration_help_badge", **_TOOLTIP_PROPS,
+        ),
+        dbc.Tooltip(
+            "線形(1次): ppmずれがm/zに比例する場合（通常はこれで十分）。"
+            "多項式(2次/3次): 線形で5ppm以上のずれが残る場合に使用。",
+            target="calibration_regression_mode", **_TOOLTIP_PROPS,
         ),
     ]
 

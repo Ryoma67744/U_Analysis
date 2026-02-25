@@ -36,6 +36,22 @@ _process_state = {
 
 
 # ---------------------------------------------------------------------------
+# 解析手法セクションの表示制御
+# ---------------------------------------------------------------------------
+
+@callback(
+    [Output("sidebar_col", "style"),
+     Output("main_content_col", "width")],
+    Input("main_tabs", "active_tab"),
+)
+def toggle_sidebar_content(active_tab):
+    """「解析設定」タブ選択時のみサイドバーを表示し、他タブではメインを全幅に"""
+    if active_tab == "settings":
+        return {"display": "block"}, 9
+    return {"display": "none"}, 12
+
+
+# ---------------------------------------------------------------------------
 # 解析実行
 # ---------------------------------------------------------------------------
 
@@ -612,13 +628,39 @@ def update_calibration_table_on_matrix(matrix_type, ion_mode):
 
 
 @callback(
-    Output("calibration_table", "data"),
+    [Output("calibration_table", "data"),
+     Output("calibration_table", "selected_rows")],
     Input("calibration_table_data", "data"),
     prevent_initial_call=True,
 )
 def sync_calibration_store_to_table(store_data):
-    """Store → DataTable 同期"""
-    return store_data or []
+    """Store → DataTable 同期（selected_rows も use フィールドから復元）"""
+    data = store_data or []
+    selected = [i for i, r in enumerate(data) if r.get("use") == "Yes"]
+    return data, selected
+
+
+@callback(
+    Output("calibration_table_data", "data", allow_duplicate=True),
+    Input("calibration_table", "selected_rows"),
+    State("calibration_table", "data"),
+    prevent_initial_call=True,
+)
+def sync_selection_to_use(selected_rows, table_data):
+    """チェックボックス変更 → use フィールドを更新"""
+    if table_data is None:
+        return no_update
+    selected_set = set(selected_rows or [])
+    changed = False
+    new_data = []
+    for i, row in enumerate(table_data):
+        new_use = "Yes" if i in selected_set else "No"
+        if row.get("use") != new_use:
+            changed = True
+        new_data.append({**row, "use": new_use})
+    if not changed:
+        return no_update
+    return new_data
 
 
 @callback(
@@ -644,10 +686,10 @@ def add_calibration_row(n, data):
     prevent_initial_call=True,
 )
 def delete_calibration_rows(n, selected, data):
-    """選択行削除ボタン"""
+    """チェックされた行を削除"""
     if not n or not selected or not data:
         return no_update
-    return [r for i, r in enumerate(data) if i not in selected]
+    return [r for i, r in enumerate(data) if i not in set(selected)]
 
 
 @callback(
@@ -764,3 +806,57 @@ def recalculate_ppm_on_edit(ts, table_data):
                 changed = True
         updated.append(row)
     return updated if changed else no_update
+
+
+# =========================================================================
+# キャリブレーション設定の自動保存
+# =========================================================================
+@callback(
+    Output("calibration_save_trigger", "data"),
+    [Input("calibration_enable", "value"),
+     Input("calibration_matrix", "value"),
+     Input("calibration_table_data", "data"),
+     Input("calibration_search_window", "value"),
+     Input("calibration_min_peaks", "value"),
+     Input("calibration_regression_mode", "value")],
+    prevent_initial_call=True,
+)
+def auto_save_calibration_settings(enable, matrix, table_data,
+                                    search_window, min_peaks, regression_mode):
+    """キャリブレーション関連の設定が変更されたら自動保存する"""
+    save_last_settings({
+        "calibration_enable": enable,
+        "calibration_matrix": matrix,
+        "calibration_table_data": table_data,
+        "calibration_search_window": search_window,
+        "calibration_min_peaks": min_peaks,
+        "calibration_regression_mode": regression_mode,
+    })
+    return no_update
+
+
+@callback(
+    Output("calibration_status_text", "children", allow_duplicate=True),
+    Input("calibration_save_list", "n_clicks"),
+    [State("calibration_enable", "value"),
+     State("calibration_matrix", "value"),
+     State("calibration_table_data", "data"),
+     State("calibration_search_window", "value"),
+     State("calibration_min_peaks", "value"),
+     State("calibration_regression_mode", "value")],
+    prevent_initial_call=True,
+)
+def save_calibration_list(n, enable, matrix, table_data,
+                          search_window, min_peaks, regression_mode):
+    """List保存ボタン: キャリブレーション設定を明示的に保存"""
+    if not n:
+        return no_update
+    save_last_settings({
+        "calibration_enable": enable,
+        "calibration_matrix": matrix,
+        "calibration_table_data": table_data,
+        "calibration_search_window": search_window,
+        "calibration_min_peaks": min_peaks,
+        "calibration_regression_mode": regression_mode,
+    })
+    return "リストを保存しました ✓"

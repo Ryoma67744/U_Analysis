@@ -7,10 +7,12 @@ from dash import html, dcc, dash_table
 import dash_bootstrap_components as dbc
 
 from app.layouts.tooltips import help_badge
+from app.services.session_manager import load_last_settings
 
 
 
 def create_interactive_tab():
+    _ls = load_last_settings()
     return html.Div(style={"marginTop": "15px"}, children=[
         # データソース選択
         html.Div(className="card", children=[
@@ -19,12 +21,14 @@ def create_interactive_tab():
             # プロジェクト / サブプロジェクト選択（主な選択手段）
             dbc.Row(className="mb-3", children=[
                 dbc.Col(width=5, children=[
-                    dbc.Label("プロジェクト", className="small fw-bold"),
-                    dcc.Dropdown(
-                        id="interactive_project_select",
-                        placeholder="プロジェクトを選択",
-                        clearable=True,
-                    ),
+                    html.Div(id="interactive_project_row", children=[
+                        dbc.Label("プロジェクト", className="small fw-bold"),
+                        dcc.Dropdown(
+                            id="interactive_project_select",
+                            placeholder="プロジェクトを選択",
+                            clearable=True,
+                        ),
+                    ]),
                 ]),
                 dbc.Col(width=5, children=[
                     dbc.Label("サブプロジェクト", className="small fw-bold"),
@@ -108,7 +112,7 @@ def create_interactive_tab():
                         id="integration_method_collapse",
                         is_open=True,
                     ),
-                ], className="mb-2", style={"display": "none"}),
+                ], className="mb-2", id="integration_method_wrapper"),
 
                 # アコーディオン（各セクション折りたたみ可能）
                 dbc.Accordion(
@@ -119,23 +123,54 @@ def create_interactive_tab():
                     children=[
                         # --- エクスポート ---
                         dbc.AccordionItem(title="エクスポート", children=[
-                            dbc.Row([
+                            dbc.Row(className="align-items-center", children=[
                                 dbc.Col(width="auto", children=[
                                     dbc.Button(
-                                        "📄 HTML レポート出力",
-                                        id="export_html_report",
+                                        "📊 レポート出力 (.pptx)",
+                                        id="btn_export_report",
                                         color="success", size="sm",
+                                        n_clicks=0,
                                     ),
                                 ]),
                                 dbc.Col(width="auto", children=[
-                                    dbc.Button(
-                                        "📊 データ CSV 出力",
-                                        id="export_csv_data",
-                                        color="info", size="sm",
+                                    html.Div(className="d-flex align-items-center gap-2", children=[
+                                        dbc.Label("Top N:", className="small mb-0"),
+                                        dbc.Input(
+                                            id="input_export_top_n",
+                                            type="number", min=1, max=20,
+                                            step=1, value=5, size="sm",
+                                            style={"width": "70px", "fontSize": "0.85rem"},
+                                        ),
+                                    ]),
+                                ]),
+                            ]),
+                            # 出力対象手法セレクタ
+                            dbc.Row(className="align-items-center mt-2", children=[
+                                dbc.Col(width="auto", children=[
+                                    dbc.Label("出力対象:", className="small mb-0"),
+                                ]),
+                                dbc.Col(children=[
+                                    dbc.RadioItems(
+                                        id="export_method_selector",
+                                        options=[{"label": "All", "value": "all"}],
+                                        value="all",
+                                        inline=True,
+                                        className="small",
                                     ),
                                 ]),
                             ]),
-                            html.Div(id="export_status", className="mt-2 text-muted"),
+                            # プログレスバー（生成中のみ表示）
+                            html.Div(id="export_progress_container",
+                                     style={"display": "none"}, children=[
+                                dbc.Progress(id="export_progress_bar", value=0,
+                                             max=100, striped=True, animated=True,
+                                             className="mt-2",
+                                             style={"height": "20px"}),
+                                html.Div(id="export_progress_label",
+                                         className="text-center small text-muted"),
+                            ]),
+                            html.Div(id="div_export_status", className="mt-1 text-muted",
+                                     style={"fontSize": "0.85rem"}),
                         ]),
 
                         # --- クラスタ情報 + 統計 ---
@@ -241,6 +276,25 @@ def create_interactive_tab():
                                     dbc.Button("ラベル位置保存", id="save_label_pos_btn",
                                                size="sm", color="secondary", className="mb-1"),
                                 ]),
+                                dbc.Col(width=2, children=[
+                                    dbc.Label("横並び", className="small mb-0"),
+                                    dcc.Dropdown(
+                                        id="umap_columns_per_row",
+                                        options=[
+                                            {"label": "自動", "value": 0},
+                                            {"label": "1列", "value": 1},
+                                            {"label": "2列", "value": 2},
+                                            {"label": "3列", "value": 3},
+                                            {"label": "4列", "value": 4},
+                                            {"label": "5列", "value": 5},
+                                            {"label": "6列", "value": 6},
+                                            {"label": "7列", "value": 7},
+                                            {"label": "8列", "value": 8},
+                                        ],
+                                        value=0, clearable=False,
+                                        style={"fontSize": "12px"},
+                                    ),
+                                ]),
                             ]),
                             html.Div(children=[
                                 # UMAP側サンプル名変更コンテナ（グラフの上に配置）
@@ -298,11 +352,17 @@ def create_interactive_tab():
                                     dbc.Checkbox(id="spatial_show_labels", label="番号", value=False),
                                 ]),
                                 dbc.Col(width=2, children=[
-                                    dbc.Label(["マーカーサイズ", help_badge("spatial_marker_size")], className="small mb-0"),
+                                    html.Div(style={"display": "flex", "alignItems": "center", "gap": "4px"}, children=[
+                                        dbc.Label(["マーカーサイズ", help_badge("spatial_marker_size")], className="small mb-0"),
+                                        dbc.Button("Auto", id="spatial_marker_auto_btn",
+                                                   size="sm", outline=True, color="info",
+                                                   style={"padding": "0 5px", "fontSize": "10px",
+                                                          "lineHeight": "1.2"}),
+                                    ]),
                                     dcc.Slider(
                                         id="spatial_marker_size",
-                                        min=0, max=15, step=1, value=0,
-                                        marks={0: "自動", 4: "4", 8: "8", 15: "15"},
+                                        min=0, max=30, step=1, value=0,
+                                        marks={0: "自動", 5: "5", 10: "10", 15: "15", 30: "30"},
                                         tooltip={"placement": "bottom", "always_visible": False},
                                     ),
                                 ]),
@@ -320,6 +380,25 @@ def create_interactive_tab():
                                 dbc.Col(width=2, className="d-flex align-items-end", children=[
                                     dbc.Button("ラベル位置保存", id="save_spatial_label_pos_btn",
                                                size="sm", color="secondary", className="mb-1"),
+                                ]),
+                                dbc.Col(width=2, children=[
+                                    dbc.Label("横並び", className="small mb-0"),
+                                    dcc.Dropdown(
+                                        id="spatial_columns_per_row",
+                                        options=[
+                                            {"label": "自動", "value": 0},
+                                            {"label": "1列", "value": 1},
+                                            {"label": "2列", "value": 2},
+                                            {"label": "3列", "value": 3},
+                                            {"label": "4列", "value": 4},
+                                            {"label": "5列", "value": 5},
+                                            {"label": "6列", "value": 6},
+                                            {"label": "7列", "value": 7},
+                                            {"label": "8列", "value": 8},
+                                        ],
+                                        value=0, clearable=False,
+                                        style={"fontSize": "12px"},
+                                    ),
                                 ]),
                             ]),
                             html.Div(id="spatial_controls_container"),
@@ -369,12 +448,37 @@ def create_interactive_tab():
                             ]),
                             dbc.Row(className="mt-1 align-items-center", children=[
                                 dbc.Col(width=4, children=[
-                                    dbc.Label("マーカーサイズ", className="small mb-0"),
+                                    html.Div(style={"display": "flex", "alignItems": "center", "gap": "4px"}, children=[
+                                        dbc.Label("マーカーサイズ", className="small mb-0"),
+                                        dbc.Button("Auto", id="feature_marker_auto_btn",
+                                                   size="sm", outline=True, color="info",
+                                                   style={"padding": "0 5px", "fontSize": "10px",
+                                                          "lineHeight": "1.2"}),
+                                    ]),
                                     dcc.Slider(
                                         id="feature_marker_size",
-                                        min=1, max=15, step=1, value=3,
-                                        marks={1: "1", 3: "3", 5: "5", 10: "10", 15: "15"},
+                                        min=0, max=15, step=1, value=0,
+                                        marks={0: "自動", 3: "3", 5: "5", 10: "10", 15: "15"},
                                         tooltip={"placement": "bottom", "always_visible": False},
+                                    ),
+                                ]),
+                                dbc.Col(width=2, children=[
+                                    dbc.Label("横並び", className="small mb-0"),
+                                    dcc.Dropdown(
+                                        id="feature_columns_per_row",
+                                        options=[
+                                            {"label": "自動", "value": 0},
+                                            {"label": "1列", "value": 1},
+                                            {"label": "2列", "value": 2},
+                                            {"label": "3列", "value": 3},
+                                            {"label": "4列", "value": 4},
+                                            {"label": "5列", "value": 5},
+                                            {"label": "6列", "value": 6},
+                                            {"label": "7列", "value": 7},
+                                            {"label": "8列", "value": 8},
+                                        ],
+                                        value=0, clearable=False,
+                                        style={"fontSize": "12px"},
                                     ),
                                 ]),
                             ]),
@@ -582,8 +686,12 @@ def create_interactive_tab():
         # フルスクリーン閉じトリガー
         dcc.Store(id="fullscreen_closed_trigger", data=0),
         # キャリブレーション対応表データ（settings_tab / interactive 共有）
-        dcc.Store(id="calibration_table_data", data=[]),
-        # CSVダウンロード用
-        dcc.Download(id="download_csv"),
-        dcc.Download(id="download_html"),
+        dcc.Store(id="calibration_table_data",
+                  data=_ls.get("calibration_table_data", [])),
+        # キャリブレーション自動保存トリガー（ダミー出力先）
+        dcc.Store(id="calibration_save_trigger", data=None),
+        # エクスポート Top N 値ブリッジ用
+        dcc.Store(id="export_top_n_store", data=5),
+        # PPTXダウンロード用
+        dcc.Download(id="dl_report_pptx"),
     ])

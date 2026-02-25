@@ -37,6 +37,7 @@ def create_main_layout():
         dcc.Store(id="edit_target_project_id", data=""),
         dcc.Store(id="edit_target_sub_project_id", data=""),
         dcc.Store(id="current_sub_project_id", data=""),
+        dcc.Store(id="interactive_entry_mode", data=""),
 
         # ========== Page 1: Landing (プロジェクト一覧) ==========
         create_landing_page(),
@@ -87,8 +88,8 @@ def create_main_layout():
 
                         # メインレイアウト: サイドバー(3) + メインパネル(9)
                         dbc.Row([
-                            dbc.Col(width=3, children=[create_sidebar()]),
-                            dbc.Col(width=9, children=[
+                            dbc.Col(id="sidebar_col", width=3, children=[create_sidebar()]),
+                            dbc.Col(id="main_content_col", width=9, children=[
                                 dbc.Tabs(
                                     id="main_tabs",
                                     active_tab="settings",
@@ -104,16 +105,16 @@ def create_main_layout():
                                             children=[create_results_tab()],
                                         ),
                                         dbc.Tab(
-                                            label="セッション履歴",
-                                            tab_id="history",
-                                            children=[create_history_tab()],
-                                        ),
-                                        dbc.Tab(
                                             label="インタラクティブ解析",
                                             tab_id="interactive",
                                             children=[
                                                 create_interactive_tab()
                                             ],
+                                        ),
+                                        dbc.Tab(
+                                            label="セッション履歴",
+                                            tab_id="history",
+                                            children=[create_history_tab()],
                                         ),
                                     ],
                                 ),
