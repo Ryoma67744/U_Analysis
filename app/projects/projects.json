@@ -1,29 +1,6 @@
 {
   "projects": [
     {
-      "id": "78d83333",
-      "name": "あ",
-      "experiment_date": "",
-      "memo": "",
-      "sub_projects": [
-        {
-          "id": "1e6050d9",
-          "name": "あ",
-          "experiment_date": "",
-          "target_compound": "",
-          "ms_instrument": "",
-          "polarity": [],
-          "memo": "",
-          "data_folder": "",
-          "output_dir": "",
-          "created_at": "2026-02-15T11:23:22",
-          "last_modified": "2026-02-15T11:23:22"
-        }
-      ],
-      "created_at": "2026-02-15T10:45:01",
-      "last_modified": "2026-02-15T11:23:22"
-    },
-    {
       "id": "f81f734e",
       "name": "260217-宮林-demo",
       "experiment_date": "2026-02-17",
