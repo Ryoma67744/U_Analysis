@@ -81,10 +81,12 @@ def toggle_sidebar_content(active_tab):
      State("target_clusters", "value"),
      State("ion_mode", "value"),
      State("tolerance_mz", "value"),
+     State("adduct_filter", "value"),
      State("reanalysis_p_thresh", "value"),
      State("reanalysis_logfc_thresh", "value"),
      State("reanalysis_ion_mode", "value"),
      State("reanalysis_tolerance_mz", "value"),
+     State("reanalysis_adduct_filter", "value"),
      State("default_annotation_csv", "value"),
      State("desi_v8_script_path", "value"),
      State("desi_cluster_filter_script_path", "value"),
@@ -102,9 +104,9 @@ def run_analysis(
     resume_rds, rds_folder,
     output_subfolder, output_dir,
     rds_path, reanalysis_data_folder, filter_mode, target_clusters,
-    ion_mode, tolerance_mz,
+    ion_mode, tolerance_mz, adduct_filter,
     reanalysis_p_thresh, reanalysis_logfc_thresh,
-    reanalysis_ion_mode, reanalysis_tolerance_mz,
+    reanalysis_ion_mode, reanalysis_tolerance_mz, reanalysis_adduct_filter,
     annotation_csv,
     desi_v8_script, desi_cluster_script,
     tims_v8_script, tims_cluster_script,
@@ -214,6 +216,8 @@ def run_analysis(
             if analysis_type == "tims_v8":
                 params["ion_mode"] = ion_mode or "Positive"
                 params["tolerance_mz"] = float(tolerance_mz) if tolerance_mz else 0.01
+                if adduct_filter:
+                    params["adduct_patterns"] = adduct_filter
                 # INPUT_PATHS: data_folder内のファイルのフルパスリスト
                 from app.services.data_manager import build_tims_input_paths
                 params["input_paths"] = build_tims_input_paths(data_folder)
@@ -623,7 +627,7 @@ def update_calibration_table_on_matrix(matrix_type, ion_mode):
     ref_list = MATRIX_REFERENCE_MZ.get(matrix_type, {}).get(polarity, [])
     if not ref_list:
         return []
-    return [{"ref_mz": round(r, 4), "obs_mz": "",
+    return [{"ref_mz": round(r, 4), "formula": "", "obs_mz": "",
              "ppm_drift": "--", "use": "Yes"} for r in ref_list]
 
 
@@ -631,7 +635,6 @@ def update_calibration_table_on_matrix(matrix_type, ion_mode):
     [Output("calibration_table", "data"),
      Output("calibration_table", "selected_rows")],
     Input("calibration_table_data", "data"),
-    prevent_initial_call=True,
 )
 def sync_calibration_store_to_table(store_data):
     """Store → DataTable 同期（selected_rows も use フィールドから復元）"""
@@ -666,7 +669,7 @@ def sync_selection_to_use(selected_rows, table_data):
 @callback(
     Output("calibration_table_data", "data", allow_duplicate=True),
     Input("calibration_add_row", "n_clicks"),
-    State("calibration_table_data", "data"),
+    State("calibration_table", "data"),
     prevent_initial_call=True,
 )
 def add_calibration_row(n, data):
@@ -674,7 +677,7 @@ def add_calibration_row(n, data):
     if not n:
         return no_update
     data = list(data or [])
-    data.append({"ref_mz": "", "obs_mz": "", "ppm_drift": "--", "use": "Yes"})
+    data.append({"ref_mz": "", "formula": "", "obs_mz": "", "ppm_drift": "--", "use": "Yes"})
     return data
 
 
@@ -682,7 +685,7 @@ def add_calibration_row(n, data):
     Output("calibration_table_data", "data", allow_duplicate=True),
     Input("calibration_delete_rows", "n_clicks"),
     [State("calibration_table", "selected_rows"),
-     State("calibration_table_data", "data")],
+     State("calibration_table", "data")],
     prevent_initial_call=True,
 )
 def delete_calibration_rows(n, selected, data):
@@ -698,28 +701,39 @@ def delete_calibration_rows(n, selected, data):
     Input("calibration_auto_detect", "n_clicks"),
     [State("calibration_table_data", "data"),
      State("calibration_search_window", "value"),
-     State("seurat_cache_dir_store", "data")],
+     State("seurat_cache_dir_store", "data"),
+     State("data_folder", "value"),
+     State("analysis_method", "value"),
+     State("analysis_method_tims", "value")],
     prevent_initial_call=True,
 )
-def auto_detect_observed_peaks(n, table_data, search_window, cache_dir):
+def auto_detect_observed_peaks(n, table_data, search_window, cache_dir,
+                               data_folder, analysis_method, analysis_method_tims):
     """リファレンスm/z値に対応する実測ピークを自動検出"""
     import numpy as np
     import pandas as pd
+    from app.services.data_manager import read_raw_mz_spectrum
 
     if not n or not table_data:
         return no_update, no_update
 
-    if not cache_dir:
-        return no_update, "⚠ データが読み込まれていません。先にインタラクティブ解析タブでデータをロードしてください。"
+    # --- データ読み込み: 優先順位 1) cache_dir  2) data_folder 生データ ---
+    expr_df = None
+    if cache_dir:
+        expr_path = Path(cache_dir) / "expression_matrix.parquet"
+        if expr_path.exists():
+            try:
+                expr_df = pd.read_parquet(expr_path)
+            except Exception:
+                expr_df = None
 
-    expr_path = Path(cache_dir) / "expression_matrix.parquet"
-    if not expr_path.exists():
-        return no_update, "⚠ expression_matrix.parquet が見つかりません。"
+    if expr_df is None:
+        # data_folder から生データを読み込むフォールバック
+        is_tims = bool(analysis_method_tims)
+        expr_df = read_raw_mz_spectrum(data_folder, is_tims=is_tims)
 
-    try:
-        expr_df = pd.read_parquet(expr_path)
-    except Exception as e:
-        return no_update, f"⚠ データ読込エラー: {e}"
+    if expr_df is None:
+        return no_update, "⚠ データが見つかりません。データフォルダを確認してください。"
 
     # Feature名 → m/z数値マッピング
     mz_values = {}
@@ -806,6 +820,23 @@ def recalculate_ppm_on_edit(ts, table_data):
                 changed = True
         updated.append(row)
     return updated if changed else no_update
+
+
+@callback(
+    [Output("calibration_table_data", "data", allow_duplicate=True),
+     Output("calibration_status_text", "children", allow_duplicate=True)],
+    Input("calibration_reset_list", "n_clicks"),
+    prevent_initial_call=True,
+)
+def reset_calibration_list(n):
+    """リセットボタン: 直前のList保存状態に復元"""
+    if not n:
+        return no_update, no_update
+    saved = load_last_settings()
+    table_data = saved.get("calibration_table_data", [])
+    if not table_data:
+        return no_update, "保存データがありません"
+    return table_data, "保存済みリストに復元しました ✓"
 
 
 # =========================================================================

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 # アプリケーションルートをパスに追加
-app_root = Path(__file__).parent.parent
+app_root = Path(__file__).parent
 sys.path.insert(0, str(app_root))
 
 from app.main import app

@@ -202,7 +202,7 @@ def auto_switch_data_folder(desi_val, tims_val, desi_default, tims_default):
 )
 def auto_switch_adduct(ion_mode):
     if ion_mode == "Positive":
-        return ["+H", "+Na", "+NH4"]
+        return ["+H", "+Na", "+NH4", "+K"]
     return ["-H"]
 
 
@@ -213,7 +213,7 @@ def auto_switch_adduct(ion_mode):
 )
 def auto_switch_reanalysis_adduct(ion_mode):
     if ion_mode == "Positive":
-        return ["+H", "+Na", "+NH4"]
+        return ["+H", "+Na", "+NH4", "+K"]
     return ["-H"]
 
 
@@ -364,6 +364,7 @@ _BROWSE_BUTTONS = {
     "browse_default_annotation": ("file", "default_annotation_csv"),
     "browse_default_tims_output": ("folder", "default_tims_output_dir"),
     "browse_default_output": ("folder", "default_output_dir"),
+    "browse_int_cal_mrm": ("file", "int_cal_mrm_path"),
 }
 
 # 全対象入力フィールドIDの一覧（_BROWSE_BUTTONSのvalue[1]を収集）

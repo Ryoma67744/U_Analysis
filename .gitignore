@@ -1,7 +1,10 @@
 # データフォルダ
-DESI/Data/
-TIMS/Data/
+data/DESI/Data/
+data/TIMS/Data/
 Analysis_*/
+
+# 大容量DBファイル（GitHub 100MB制限）
+data/TIMS/DB/260228-hmdb_metabolites_charge_aware_merged_with_list.csv
 
 # Python キャッシュ
 __pycache__/
@@ -12,6 +15,6 @@ __pycache__/
 app_output.log
 nul
 
-# Rセッション
+# Rセッション（レガシー）
 Other/sessions/
 

@@ -9,6 +9,6 @@ REM Change to app root directory
 cd /d "%~dp0"
 
 REM Launch Python Dash app
-python Other\run_app.py
+python run_app.py
 
 pause

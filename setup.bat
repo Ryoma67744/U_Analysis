@@ -38,7 +38,7 @@ echo [2/4] Python パッケージをインストール中...
 echo   （初回は数分かかる場合があります）
 echo.
 python -m pip install --upgrade pip >nul 2>&1
-python -m pip install -r Other\requirements.txt
+python -m pip install -r requirements.txt
 if errorlevel 1 (
     echo.
     echo [エラー] Python パッケージのインストールに失敗しました。
@@ -77,7 +77,7 @@ REM ============================================================
 echo [4/4] R パッケージをインストール中...
 echo   （初回は 10〜20 分かかる場合があります）
 echo.
-Rscript Other\install_r_packages.R
+Rscript install_r_packages.R
 if errorlevel 1 (
     echo.
     echo [警告] 一部の R パッケージのインストールに失敗した可能性があります。

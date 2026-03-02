@@ -20,7 +20,10 @@ import dash_bootstrap_components as dbc
 from dash import Input, Output, State, callback, ctx, no_update, html, dcc, dash_table, ALL
 from dash.exceptions import PreventUpdate
 
-from app.config import CLUSTER_PRESET_COLORS, DESI_COLORS_50, HIGHLIGHT_GRAY
+from app.config import (
+    CLUSTER_PRESET_COLORS, DESI_COLORS_50, HIGHLIGHT_GRAY,
+    DEFAULT_ADDUCT_POSITIVE,
+)
 from app.services.seurat_bridge import SeuratBridge
 
 # Seuratブリッジのシングルトン
@@ -260,19 +263,30 @@ def _calibrate_mz_from_pairs(features_list, matched_pairs,
     return result
 
 
-def _reannotate_with_calibration(deg_data, corrected_mz_map, mrm_path, tolerance=0.1):
-    """補正済みm/zでTraceFinder DBと照合し、DEGデータのannotation列を更新する。
+def _reannotate_with_calibration(deg_data, corrected_mz_map, mrm_path, tolerance=0.1,
+                                  annotation_csv_path=None, ion_mode="Positive",
+                                  adduct_patterns=None):
+    """補正済みm/zでアノテーションDBと照合し、DEGデータのannotation列を更新する。
 
     Args:
         deg_data: list[dict] — DEGレコードリスト
         corrected_mz_map: dict[str, float] — feature名 → 補正済みm/z
         mrm_path: str — MRM/TraceFinder DBファイルパス
         tolerance: float — マッチング許容誤差(Da)
+        annotation_csv_path: str — アノテーションCSV（TraceFinder/HMDB形式）パス
+        ion_mode: str — "Positive" or "Negative"
+        adduct_patterns: list[str] — 付加イオンフィルター
 
     Returns:
         list[dict] — annotation更新済みDEGデータ
     """
+    # アノテーションCSV（TraceFinder/HMDB）を優先、MRMをフォールバック
     mz_to_compound = _build_mz_to_compound_map(mrm_path, tolerance=tolerance)
+    ann_map = _build_annotation_csv_map(
+        annotation_csv_path, ion_mode=ion_mode,
+        adduct_patterns=adduct_patterns, tolerance=tolerance,
+    )
+    mz_to_compound.update(ann_map)  # ann_map を優先
     if not mz_to_compound:
         return deg_data
 
@@ -599,7 +613,7 @@ def toggle_integration_method(n, is_open):
      Output("feature_select", "options"),
      Output("seurat_rds_path_store", "data"),
      Output("seurat_cache_dir_store", "data"),
-     Output("deg_data_store", "data"),
+     Output("deg_data_store", "data", allow_duplicate=True),
      Output("deg_results_section", "style"),
      Output("spatial_exclude_cluster", "options"),
      Output("spatial_highlight_cluster", "options"),
@@ -610,7 +624,19 @@ def toggle_integration_method(n, is_open):
      Output("sample_name_map_store", "data", allow_duplicate=True),
      Output("spatial_rotation_store", "data", allow_duplicate=True),
      Output("custom_color_map_store", "data", allow_duplicate=True),
-     Output("feature_history_store", "data", allow_duplicate=True)],
+     Output("feature_history_store", "data", allow_duplicate=True),
+     # キャリブレーション設定復元 (11個)
+     Output("int_cal_table_data", "data", allow_duplicate=True),
+     Output("int_cal_enable", "value"),
+     Output("int_cal_ion_mode", "value"),
+     Output("int_cal_matrix", "value"),
+     Output("int_cal_adduct_filter", "value", allow_duplicate=True),
+     Output("int_cal_mrm_path", "value"),
+     Output("int_cal_search_window", "value"),
+     Output("int_cal_min_peaks", "value"),
+     Output("int_cal_regression_mode", "value"),
+     Output("int_cal_ms_instrument", "data", allow_duplicate=True),
+     Output("int_cal_restore_pending", "data")],
     [Input("load_interactive_data", "n_clicks"),
      Input("interactive_integration_method", "value"),
      Input("interactive_rds_map", "data")],
@@ -623,15 +649,22 @@ def toggle_integration_method(n, is_open):
      State("calibration_regression_mode", "value"),
      State("ion_mode", "value"),
      State("mrm_path", "value"),
-     State("tolerance_mz", "value")],
+     State("tolerance_mz", "value"),
+     State("adduct_filter", "value"),
+     State("interactive_project_select", "value"),
+     State("interactive_sub_project_select", "value"),
+     State("default_annotation_csv", "value")],
     prevent_initial_call=True,
 )
 def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
                           cal_enable, cal_matrix, cal_table_data,
                           cal_search_window, cal_min_peaks,
                           cal_regression_mode,
-                          ion_mode, mrm_path, tolerance_mz):
-    _n_out = 19
+                          ion_mode, mrm_path, tolerance_mz,
+                          adduct_filter, project_id, sub_project_id,
+                          annotation_csv):
+    _n_out = 30
+    _no_cal = (no_update,) * 11  # キャリブレーション設定復元用
     if not integration_method or not rds_map:
         return (
             "統合手法を選択してください（結果フォルダをスキャンしてください）",
@@ -639,7 +672,7 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
             {"display": "none"}, [], [], [], [],
             {"display": "none"}, [],
             no_update, no_update, no_update, no_update,
-        )
+        ) + _no_cal
 
     rds_path = rds_map.get(integration_method)
     if not rds_path or not Path(rds_path).exists():
@@ -649,7 +682,7 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
             {"display": "none"}, [], [], [], [],
             {"display": "none"}, [],
             no_update, no_update, no_update, no_update,
-        )
+        ) + _no_cal
 
     try:
         result = _bridge.extract_data(rds_path)
@@ -744,6 +777,9 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
                     deg_data = _reannotate_with_calibration(
                         deg_data, cal_result["corrected_mz_map"],
                         mrm_path, tolerance=tol,
+                        annotation_csv_path=annotation_csv,
+                        ion_mode=ion_mode,
+                        adduct_patterns=adduct_filter,
                     )
                     _interactive_data["_calibration_result"] = cal_result
             except Exception:
@@ -769,6 +805,42 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
         if restored_name_map:
             _interactive_data["_name_map"] = restored_name_map
 
+        # --- キャリブレーション設定の復元 ---
+        int_cal = saved.get("int_calibration", {})
+        if int_cal:
+            r_table = int_cal.get("table_data", [])
+            r_enable = int_cal.get("enable", False)
+            r_ion_mode = int_cal.get("ion_mode", ion_mode or "Positive")
+            r_matrix = int_cal.get("matrix", cal_matrix or "DHB")
+            r_adduct = int_cal.get("adduct_filter",
+                                   adduct_filter or DEFAULT_ADDUCT_POSITIVE)
+            r_mrm = int_cal.get("mrm_path", mrm_path or "")
+            r_sw = int_cal.get("search_window", cal_search_window or 0.5)
+            r_mp = int_cal.get("min_peaks", cal_min_peaks or 2)
+            r_reg = int_cal.get("regression_mode", cal_regression_mode or "poly3")
+        else:
+            # フォールバック: 解析設定タブの値
+            r_table = cal_table_data or []
+            r_enable = cal_enable or False
+            r_ion_mode = ion_mode or "Positive"
+            r_matrix = cal_matrix or "DHB"
+            r_adduct = adduct_filter or DEFAULT_ADDUCT_POSITIVE
+            r_mrm = mrm_path or ""
+            r_sw = cal_search_window or 0.5
+            r_mp = cal_min_peaks or 2
+            r_reg = cal_regression_mode or "poly3"
+
+        # ms_instrument をサブプロジェクトから取得
+        r_instrument = "TIMS"
+        if sub_project_id and project_id:
+            try:
+                from app.services.project_manager import get_sub_project
+                sub = get_sub_project(project_id, sub_project_id)
+                if sub:
+                    r_instrument = sub.get("ms_instrument", "TIMS")
+            except Exception:
+                pass
+
         return (
             info_text,
             {},  # 可視化コンテナ表示
@@ -789,6 +861,9 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
             restored_rotation,
             restored_colors,
             restored_bookmarks,
+            # キャリブレーション設定復元 (11個)
+            r_table, r_enable, r_ion_mode, r_matrix, r_adduct, r_mrm,
+            r_sw, r_mp, r_reg, r_instrument, True,
         )
 
     except Exception as e:
@@ -798,7 +873,7 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
             {"display": "none"}, [], [], [], [],
             {"display": "none"}, [],
             no_update, no_update, no_update, no_update,
-        )
+        ) + _no_cal
 
 
 def _standardize_deg_df(df: pd.DataFrame) -> list[dict] | None:
@@ -873,7 +948,8 @@ def _read_deg_rds(rds_path: Path) -> list[dict] | None:
             return None
         df = pd.read_csv(tmp_csv)
         return _standardize_deg_df(df)
-    except Exception:
+    except Exception as e:
+        print(f"[DEG] _read_deg_rds error: {e}")
         return None
     finally:
         tmp_csv.unlink(missing_ok=True)
@@ -4661,7 +4737,8 @@ def populate_interactive_sub_projects(project_id, entry_mode):
 @callback(
     [Output("interactive_result_folder", "value", allow_duplicate=True),
      Output("interactive_msi_folder", "value", allow_duplicate=True),
-     Output("interactive_data_info", "children", allow_duplicate=True)],
+     Output("interactive_data_info", "children", allow_duplicate=True),
+     Output("int_cal_ms_instrument", "data")],
     Input("interactive_sub_project_select", "value"),
     State("interactive_project_select", "value"),
     prevent_initial_call=True,
@@ -4669,13 +4746,14 @@ def populate_interactive_sub_projects(project_id, entry_mode):
 def set_interactive_folders_from_sub_project(sub_id, project_id):
     """サブプロジェクト選択時にフォルダパスを自動設定"""
     if not sub_id or not project_id:
-        return no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update
     from app.services.project_manager import get_sub_project
     sub = get_sub_project(project_id, sub_id)
     if not sub:
-        return no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update
     result_dir = sub.get("last_result_dir") or sub.get("output_dir", "")
     data_folder = sub.get("data_folder", "")
+    ms_instrument = sub.get("ms_instrument", "TIMS")
     # 未設定フォルダの警告メッセージ
     warnings = []
     if not result_dir:
@@ -4683,7 +4761,7 @@ def set_interactive_folders_from_sub_project(sub_id, project_id):
     if not data_folder:
         warnings.append("MSIデータフォルダが未設定です")
     msg = "⚠ " + "、".join(warnings) if warnings else ""
-    return (result_dir, data_folder, msg)
+    return (result_dir, data_folder, msg, ms_instrument)
 
 
 # ---------------------------------------------------------------------------
@@ -5461,6 +5539,113 @@ def update_volcano_plot(cluster, fc_thresh, p_thresh, y_max, marker_size, deg_da
 # Heatmap（DEG Top N マーカーのクラスタ別平均発現量）
 # ---------------------------------------------------------------------------
 
+def _build_annotation_csv_map(csv_path, ion_mode="Positive", adduct_patterns=None, tolerance=0.01):
+    """アノテーションCSV（TraceFinder/HMDB）→ {m/z: compound_name} マッピング。
+
+    1行目でフォーマットを自動判定し、イオンモード・付加イオンでフィルタして返す。
+    Returns:
+        dict[float, str] — m/z数値 → 化合物名
+    """
+    if not csv_path or not Path(csv_path).exists():
+        return {}
+
+    try:
+        with open(csv_path, encoding="utf-8", errors="replace") as f:
+            first_line = f.readline()
+    except Exception:
+        return {}
+
+    pol_need = "+" if ion_mode == "Positive" else "-"
+
+    # --- TraceFinder format ---
+    if "TraceFinder" in first_line:
+        try:
+            df = pd.read_csv(csv_path, skiprows=2, encoding="utf-8", on_bad_lines="skip")
+        except Exception:
+            return {}
+        if "CompoundName" not in df.columns:
+            return {}
+        # ExtractedMass / Adduct / Polarity の繰返しブロックを検出
+        # pandas は重複カラム名に .1, .2, .3 サフィックスを付与するため対応
+        import re as _re2
+        mass_cols = [i for i, c in enumerate(df.columns)
+                     if c == "ExtractedMass" or _re2.match(r"ExtractedMass\.\d+$", c)]
+        add_cols  = [i for i, c in enumerate(df.columns)
+                     if c == "Adduct" or _re2.match(r"Adduct\.\d+$", c)]
+        pol_cols  = [i for i, c in enumerate(df.columns)
+                     if c == "Polarity" or _re2.match(r"Polarity\.\d+$", c)]
+        if not mass_cols or not add_cols or not pol_cols:
+            return {}
+        n_blocks = min(len(mass_cols), len(add_cols), len(pol_cols))
+        rows = []
+        for k in range(n_blocks):
+            for _, row in df.iterrows():
+                name = str(row.iloc[0]).strip()  # CompoundName は常に0列目
+                try:
+                    mz = float(row.iloc[mass_cols[k]])
+                except (ValueError, TypeError):
+                    continue
+                adduct = str(row.iloc[add_cols[k]]).strip()
+                pol_raw = str(row.iloc[pol_cols[k]]).strip().upper()
+                pol = "+" if pol_raw in ("+", "POS", "P", "POSITIVE") else (
+                      "-" if pol_raw in ("-", "NEG", "N", "NEGATIVE") else "")
+                if pol == pol_need and name and mz > 0:
+                    rows.append((mz, name, adduct))
+        # フィルタ: adduct_patterns
+        if adduct_patterns:
+            filtered = [(mz, nm, ad) for mz, nm, ad in rows
+                        if any(p in ad for p in adduct_patterns)]
+        else:
+            filtered = rows
+        return {mz: f"{nm} {ad}" for mz, nm, ad in filtered}
+
+    # --- HMDB format ---
+    adduct_col_map = {
+        "[M+H]+":  ("M+H",  "+"),
+        "[M+Na]+": ("M+Na", "+"),
+        "[M+K]+":  ("M+K",  "+"),
+        "[M+NH4]+":("M+NH4","+"),
+        "[M]+":    ("M+",   "+"),
+        "[M-H]-":  ("M-H",  "-"),
+        "[M]-":    ("M-",   "-"),
+    }
+    try:
+        df = pd.read_csv(csv_path, encoding="utf-8", on_bad_lines="skip")
+    except Exception:
+        return {}
+    # 化合物名カラム検出
+    name_col = None
+    for c in ("name (accession)", "name", "Name", "CompoundName"):
+        if c in df.columns:
+            name_col = c
+            break
+    if name_col is None:
+        return {}
+
+    import re as _re
+    result = {}
+    for col_name, (adduct_str, pol) in adduct_col_map.items():
+        if col_name not in df.columns or pol != pol_need:
+            continue
+        # adduct_patterns フィルタ
+        if adduct_patterns:
+            if not any(p in adduct_str for p in adduct_patterns):
+                continue
+        for _, row in df.iterrows():
+            try:
+                mz = float(row[col_name])
+            except (ValueError, TypeError):
+                continue
+            if mz <= 0 or pd.isna(mz):
+                continue
+            name = str(row[name_col]).strip()
+            # HMDB ID 除去
+            name = _re.sub(r"\s*\(HMDB\d+\)\s*$", "", name)
+            if name:
+                result[mz] = f"{name} {adduct_str}"
+    return result
+
+
 def _build_mz_to_compound_map(mrm_path_str, tolerance=0.1):
     """MRMファイルから m/z値 → 化合物名 のマッピング辞書を構築する。
 
@@ -5663,3 +5848,451 @@ def update_heatmap(top_n, scale, annotation_on, deg_data, cache_dir_str, mrm_pat
         yaxis=dict(autorange="reversed"),
     )
     return fig
+
+
+# ===========================================================================
+# インタラクティブ m/z キャリブレーション UI コールバック (INT-CB1〜CB11)
+# ===========================================================================
+
+# INT-CB1: キャリブレーション詳細パネルの表示切替
+@callback(
+    Output("int_cal_detail_panel", "style"),
+    Input("int_cal_enable", "value"),
+    prevent_initial_call=True,
+)
+def toggle_int_cal_panel(enabled):
+    if enabled:
+        return {"display": "block", "marginTop": "10px",
+                "padding": "10px", "background": "#f8f9fa",
+                "borderRadius": "5px"}
+    return {"display": "none"}
+
+
+# INT-CB2: マトリックス/イオンモード変更 → 参照m/zテーブル初期化
+@callback(
+    [Output("int_cal_table_data", "data", allow_duplicate=True),
+     Output("int_cal_restore_pending", "data", allow_duplicate=True)],
+    [Input("int_cal_matrix", "value"),
+     Input("int_cal_ion_mode", "value")],
+    State("int_cal_restore_pending", "data"),
+    prevent_initial_call=True,
+)
+def update_int_cal_table_on_matrix(matrix_type, ion_mode, is_restoring):
+    # データ読み込み直後の復元フェーズではテーブル上書きをスキップ
+    if is_restoring:
+        return no_update, False
+    from app.config import MATRIX_REFERENCE_MZ
+    if not matrix_type or matrix_type == "custom":
+        return no_update, False
+    polarity = ion_mode or "Positive"
+    ref_list = MATRIX_REFERENCE_MZ.get(matrix_type, {}).get(polarity, [])
+    if not ref_list:
+        return [], False
+    return [{"ref_mz": round(r, 4), "formula": "", "obs_mz": "",
+             "ppm_drift": "--", "use": "Yes"} for r in ref_list], False
+
+
+# INT-CB3: Store → DataTable 同期
+@callback(
+    [Output("int_cal_table", "data"),
+     Output("int_cal_table", "selected_rows")],
+    Input("int_cal_table_data", "data"),
+    prevent_initial_call=True,
+)
+def sync_int_cal_store_to_table(store_data):
+    data = store_data or []
+    selected = [i for i, r in enumerate(data) if r.get("use") == "Yes"]
+    return data, selected
+
+
+# INT-CB4: チェックボックス → use フィールド同期
+@callback(
+    Output("int_cal_table_data", "data", allow_duplicate=True),
+    Input("int_cal_table", "selected_rows"),
+    State("int_cal_table", "data"),
+    prevent_initial_call=True,
+)
+def sync_int_cal_selection_to_use(selected_rows, table_data):
+    if table_data is None:
+        return no_update
+    selected_set = set(selected_rows or [])
+    changed = False
+    new_data = []
+    for i, row in enumerate(table_data):
+        new_use = "Yes" if i in selected_set else "No"
+        if row.get("use") != new_use:
+            changed = True
+        new_data.append({**row, "use": new_use})
+    if not changed:
+        return no_update
+    return new_data
+
+
+# INT-CB5: 行追加
+@callback(
+    Output("int_cal_table_data", "data", allow_duplicate=True),
+    Input("int_cal_add_row", "n_clicks"),
+    State("int_cal_table", "data"),
+    prevent_initial_call=True,
+)
+def add_int_cal_row(n, data):
+    if not n:
+        return no_update
+    data = list(data or [])
+    data.append({"ref_mz": "", "formula": "", "obs_mz": "", "ppm_drift": "--", "use": "Yes"})
+    return data
+
+
+# INT-CB6: 選択行削除
+@callback(
+    Output("int_cal_table_data", "data", allow_duplicate=True),
+    Input("int_cal_delete_rows", "n_clicks"),
+    [State("int_cal_table", "selected_rows"),
+     State("int_cal_table", "data")],
+    prevent_initial_call=True,
+)
+def delete_int_cal_rows(n, selected, data):
+    if not n or not selected or not data:
+        return no_update
+    return [r for i, r in enumerate(data) if i not in set(selected)]
+
+
+# INT-CB7: ピーク自動検出
+@callback(
+    [Output("int_cal_table_data", "data", allow_duplicate=True),
+     Output("int_cal_status_text", "children")],
+    Input("int_cal_auto_detect", "n_clicks"),
+    [State("int_cal_table_data", "data"),
+     State("int_cal_search_window", "value"),
+     State("seurat_cache_dir_store", "data"),
+     State("data_folder", "value"),
+     State("analysis_method", "value"),
+     State("analysis_method_tims", "value")],
+    prevent_initial_call=True,
+)
+def auto_detect_int_cal_peaks(n, table_data, search_window, cache_dir,
+                              data_folder, analysis_method, analysis_method_tims):
+    if not n or not table_data:
+        return no_update, no_update
+
+    # --- データ読み込み: 優先順位 1) cache_dir  2) data_folder 生データ ---
+    from app.services.data_manager import read_raw_mz_spectrum
+
+    expr_df = None
+    if cache_dir:
+        expr_path = Path(cache_dir) / "expression_matrix.parquet"
+        if expr_path.exists():
+            try:
+                expr_df = pd.read_parquet(expr_path)
+            except Exception:
+                expr_df = None
+
+    if expr_df is None:
+        is_tims = bool(analysis_method_tims)
+        expr_df = read_raw_mz_spectrum(data_folder, is_tims=is_tims)
+
+    if expr_df is None:
+        return no_update, "データが見つかりません。データフォルダを確認してください。"
+
+    mz_values = {}
+    for col in expr_df.columns:
+        match = re.search(r"(\d+\.?\d*)", col)
+        if match:
+            mz_values[col] = float(match.group(1))
+    if not mz_values:
+        return no_update, "m/z値を含むフィーチャーが見つかりません。"
+
+    mz_array = np.array(list(mz_values.values()))
+    feature_names = list(mz_values.keys())
+    avg_spectrum = {f: float(expr_df[f].mean()) for f in feature_names}
+
+    sw = float(search_window or 0.5)
+    matched_count = 0
+    updated_data = []
+    for row in table_data:
+        row = dict(row)
+        ref = row.get("ref_mz")
+        if not ref or ref == "":
+            updated_data.append(row)
+            continue
+        try:
+            ref_f = float(ref)
+        except (ValueError, TypeError):
+            updated_data.append(row)
+            continue
+        within = np.where(np.abs(mz_array - ref_f) <= sw)[0]
+        if len(within) == 0:
+            row["obs_mz"] = ""
+            row["ppm_drift"] = "--"
+            updated_data.append(row)
+            continue
+        best_idx = max(within, key=lambda i: avg_spectrum.get(feature_names[i], 0))
+        obs = float(mz_array[best_idx])
+        ppm = (obs - ref_f) / ref_f * 1e6
+        row["obs_mz"] = round(obs, 5)
+        row["ppm_drift"] = f"{ppm:+.1f}"
+        matched_count += 1
+        updated_data.append(row)
+
+    status = f"検出完了: {matched_count}/{len(table_data)} ピークがマッチしました"
+    return updated_data, status
+
+
+# INT-CB8: テーブル編集時にΔppm再計算
+@callback(
+    Output("int_cal_table_data", "data", allow_duplicate=True),
+    Input("int_cal_table", "data_timestamp"),
+    State("int_cal_table", "data"),
+    prevent_initial_call=True,
+)
+def recalculate_int_cal_ppm(ts, table_data):
+    if not table_data:
+        return no_update
+    changed = False
+    updated = []
+    for row in table_data:
+        row = dict(row)
+        ref = row.get("ref_mz")
+        obs = row.get("obs_mz")
+        if ref and obs and str(ref).strip() and str(obs).strip():
+            try:
+                ref_f = float(ref)
+                obs_f = float(obs)
+                ppm = (obs_f - ref_f) / ref_f * 1e6
+                new_drift = f"{ppm:+.1f}"
+                if row.get("ppm_drift") != new_drift:
+                    changed = True
+                row["ppm_drift"] = new_drift
+            except (ValueError, TypeError):
+                pass
+        else:
+            if row.get("ppm_drift") != "--":
+                changed = True
+            row["ppm_drift"] = "--"
+        updated.append(row)
+    if not changed:
+        return no_update
+    return updated
+
+
+# INT-CB9: 自動保存
+@callback(
+    Output("int_cal_save_trigger", "data"),
+    [Input("int_cal_enable", "value"),
+     Input("int_cal_ion_mode", "value"),
+     Input("int_cal_adduct_filter", "value"),
+     Input("int_cal_matrix", "value"),
+     Input("int_cal_table_data", "data"),
+     Input("int_cal_search_window", "value"),
+     Input("int_cal_min_peaks", "value"),
+     Input("int_cal_regression_mode", "value"),
+     Input("int_cal_mrm_path", "value")],
+    prevent_initial_call=True,
+)
+def auto_save_int_cal(enable, ion_mode, adduct_filter, matrix, table_data,
+                      search_window, min_peaks, regression_mode,
+                      mrm_path):
+    _save_interactive_settings("int_calibration", {
+        "enable": enable or False,
+        "ion_mode": ion_mode or "Positive",
+        "adduct_filter": adduct_filter or DEFAULT_ADDUCT_POSITIVE,
+        "matrix": matrix or "DHB",
+        "table_data": table_data or [],
+        "search_window": search_window or 0.5,
+        "min_peaks": min_peaks or 2,
+        "regression_mode": regression_mode or "poly3",
+        "mrm_path": mrm_path or "",
+    })
+    return None
+
+
+# INT-CB10: List保存ボタン
+@callback(
+    Output("int_cal_status_text", "children", allow_duplicate=True),
+    Input("int_cal_save_list", "n_clicks"),
+    [State("int_cal_enable", "value"),
+     State("int_cal_ion_mode", "value"),
+     State("int_cal_adduct_filter", "value"),
+     State("int_cal_matrix", "value"),
+     State("int_cal_table_data", "data"),
+     State("int_cal_search_window", "value"),
+     State("int_cal_min_peaks", "value"),
+     State("int_cal_regression_mode", "value"),
+     State("int_cal_mrm_path", "value")],
+    prevent_initial_call=True,
+)
+def save_int_cal_list(n, enable, ion_mode, adduct_filter, matrix, table_data,
+                      search_window, min_peaks, regression_mode,
+                      mrm_path):
+    if not n:
+        return no_update
+    _save_interactive_settings("int_calibration", {
+        "enable": enable or False,
+        "ion_mode": ion_mode or "Positive",
+        "adduct_filter": adduct_filter or DEFAULT_ADDUCT_POSITIVE,
+        "matrix": matrix or "DHB",
+        "table_data": table_data or [],
+        "search_window": search_window or 0.5,
+        "min_peaks": min_peaks or 2,
+        "regression_mode": regression_mode or "poly3",
+        "mrm_path": mrm_path or "",
+    })
+    return "設定を保存しました"
+
+
+# INT-CB-ADDUCT: イオンモード変更時に付加イオン自動切替
+@callback(
+    Output("int_cal_adduct_filter", "value", allow_duplicate=True),
+    Input("int_cal_ion_mode", "value"),
+    prevent_initial_call=True,
+)
+def auto_switch_int_cal_adduct(ion_mode):
+    from app.config import DEFAULT_ADDUCT_POSITIVE, DEFAULT_ADDUCT_NEGATIVE
+    if ion_mode == "Positive":
+        return DEFAULT_ADDUCT_POSITIVE
+    return DEFAULT_ADDUCT_NEGATIVE
+
+
+# INT-CB-MRM: MRMセクション表示制御（DESIのみ表示）
+@callback(
+    Output("int_cal_mrm_section", "style"),
+    Input("int_cal_ms_instrument", "data"),
+    prevent_initial_call=True,
+)
+def toggle_int_cal_mrm_section(ms_instrument):
+    if ms_instrument and str(ms_instrument).upper() == "DESI":
+        return {}
+    return {"display": "none"}
+
+
+# INT-CB11: キャリブレーション適用
+@callback(
+    [Output("deg_data_store", "data", allow_duplicate=True),
+     Output("int_cal_apply_status", "children")],
+    Input("int_cal_apply", "n_clicks"),
+    [State("int_cal_enable", "value"),
+     State("int_cal_table_data", "data"),
+     State("int_cal_search_window", "value"),
+     State("int_cal_min_peaks", "value"),
+     State("int_cal_regression_mode", "value"),
+     State("int_cal_mrm_path", "value"),
+     State("tolerance_mz", "value"),
+     State("interactive_result_folder", "value"),
+     State("interactive_integration_method", "value"),
+     State("interactive_rds_map", "data"),
+     State("default_annotation_csv", "value"),
+     State("int_cal_ion_mode", "value"),
+     State("int_cal_adduct_filter", "value")],
+    prevent_initial_call=True,
+)
+def apply_int_calibration(n_clicks, cal_enable, cal_table_data,
+                          cal_search_window, cal_min_peaks,
+                          cal_regression_mode, mrm_path_str,
+                          tolerance_mz, result_folder,
+                          integration_method, rds_map,
+                          annotation_csv, ion_mode, adduct_filter):
+    if not n_clicks:
+        raise PreventUpdate
+
+    # DEGデータをディスクから再読み込み
+    deg_data = None
+    if result_folder:
+        result_base = Path(result_folder)
+        deg_data = _load_deg_results(result_base, integration_method or "")
+    elif _interactive_data.get("rds_path"):
+        rds_dir = Path(_interactive_data["rds_path"]).parent
+        result_base = rds_dir.parent if rds_dir.name == "RDS_Files" else rds_dir
+        deg_data = _load_deg_results(result_base, integration_method or "")
+
+    if not deg_data:
+        return no_update, "DEGデータが見つかりません。データを先に読み込んでください。"
+
+    if not cal_enable:
+        # キャリブレーション無効 → 元のDEGデータをそのまま返す
+        return deg_data, "キャリブレーションは無効です。有効にしてから適用してください。"
+
+    if not cal_table_data:
+        return no_update, "キャリブレーションテーブルにデータがありません。"
+
+    # テーブルから use="Yes" のペアを抽出
+    matched_pairs = []
+    ref_only_mz = []
+    for row in cal_table_data:
+        if row.get("use") != "Yes":
+            continue
+        ref = row.get("ref_mz")
+        obs = row.get("obs_mz")
+        if ref and obs and str(ref).strip() and str(obs).strip():
+            try:
+                ref_f = float(ref)
+                obs_f = float(obs)
+                ppm = (obs_f - ref_f) / ref_f * 1e6
+                matched_pairs.append({
+                    "ref_mz": ref_f, "obs_mz": obs_f, "ppm_drift": ppm,
+                })
+            except (ValueError, TypeError):
+                pass
+        elif ref and str(ref).strip():
+            try:
+                ref_only_mz.append(float(ref))
+            except (ValueError, TypeError):
+                pass
+
+    features_list = _interactive_data.get("features_list", [])
+    if not features_list:
+        return no_update, "フィーチャーリストが読み込まれていません。"
+
+    mp = int(cal_min_peaks or 2)
+    reg_mode = cal_regression_mode or "poly3"
+    cal_result = None
+
+    try:
+        if len(matched_pairs) >= mp:
+            cal_result = _calibrate_mz_from_pairs(
+                features_list, matched_pairs, regression_mode=reg_mode,
+            )
+        elif ref_only_mz:
+            cache_dir = _interactive_data.get("cache_dir")
+            expr_path = (Path(cache_dir) / "expression_matrix.parquet"
+                         if cache_dir else None)
+            if expr_path and expr_path.exists():
+                expr_df = pd.read_parquet(expr_path)
+                sw = float(cal_search_window or 0.5)
+                cal_result = _calibrate_mz(
+                    features_list, expr_df, ref_only_mz,
+                    search_window=sw, min_peaks=mp,
+                    regression_mode=reg_mode,
+                )
+            else:
+                return no_update, "expression_matrix.parquet が見つかりません。ピーク自動検出を先に実行してください。"
+        else:
+            return no_update, "有効なリファレンス/実測値ペアがありません。テーブルを確認してください。"
+
+        if cal_result and cal_result.get("calibrated"):
+            tol = float(tolerance_mz or 0.1)
+            deg_data = _reannotate_with_calibration(
+                deg_data, cal_result["corrected_mz_map"],
+                mrm_path_str, tolerance=tol,
+                annotation_csv_path=annotation_csv,
+                ion_mode=ion_mode or "Positive",
+                adduct_patterns=adduct_filter,
+            )
+            _interactive_data["_calibration_result"] = cal_result
+            r2 = cal_result.get("r_squared", 0)
+            mode = cal_result.get("regression_mode", "")
+            status = f"キャリブレーション適用完了 (R²={r2:.4f}, {mode})"
+            # 設定を永続化
+            _save_interactive_settings("int_calibration", {
+                "enable": cal_enable,
+                "table_data": cal_table_data,
+                "search_window": cal_search_window,
+                "min_peaks": cal_min_peaks,
+                "regression_mode": cal_regression_mode,
+                "mrm_path": mrm_path_str or "",
+            })
+            return deg_data, status
+        else:
+            return no_update, "キャリブレーションに失敗しました。ピーク数が不足している可能性があります。"
+
+    except Exception as e:
+        return no_update, f"キャリブレーションエラー: {e}"

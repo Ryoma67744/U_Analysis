@@ -91,6 +91,10 @@ def update_clusters(result_folder):
     State("app_state", "data"),
 )
 def render_gallery(result_folder, subfolder, category, cluster, page, n_intervals, app_state):
+    # progress_interval トリガー時は解析実行中のみ再描画
+    if ctx.triggered_id == "progress_interval":
+        if not app_state or not app_state.get("is_running"):
+            return no_update, no_update
     if not result_folder or not Path(result_folder).is_dir():
         return [html.Div("結果フォルダを選択してください", className="text-muted p-4")], ""
 

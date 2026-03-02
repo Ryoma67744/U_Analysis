@@ -38,6 +38,23 @@ def _replace_assign(lines: list[str], var: str, new_rhs: str) -> list[str]:
     return lines
 
 
+def _replace_block_assign(lines: list[str], var: str, new_rhs: str) -> list[str]:
+    """R代入文の右辺を置換（複数行 if/else ブロック対応）。
+    ブレース {} の深さを追跡して、複数行ブロック全体を1行に置換する。
+    """
+    pattern = re.compile(rf"^\s*{re.escape(var)}\s*<-\s*")
+    for i, line in enumerate(lines):
+        if pattern.match(line):
+            depth = line.count("{") - line.count("}")
+            end_idx = i
+            while depth > 0 and end_idx + 1 < len(lines):
+                end_idx += 1
+                depth += lines[end_idx].count("{") - lines[end_idx].count("}")
+            lines = lines[:i] + [f"{var} <- {new_rhs}"] + lines[end_idx + 1:]
+            break
+    return lines
+
+
 def _replace_sample_names_block(
     lines: list[str],
     var_name: str,
@@ -155,6 +172,9 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
         lines = _replace_assign(
             lines, "DEFAULT_TOLERANCE_MZ", str(params["tolerance_mz"])
         )
+    if params.get("adduct_patterns"):
+        r_vec = "c(" + ", ".join(f'"{p}"' for p in params["adduct_patterns"]) + ")"
+        lines = _replace_block_assign(lines, "ANNOT_ADDUCT_PATTERNS", r_vec)
 
     # 一時ファイルをlog/サブフォルダに保存
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -272,6 +292,7 @@ def start_analysis_process(
         rscript = "Rscript"  # PATH上のRscriptにフォールバック
 
     # サブプロセスを起動（stdout/stderrをログファイルにリダイレクト）
+    log_fh = None
     try:
         log_fh = open(log_file, "w", encoding="utf-8")
         process = subprocess.Popen(
@@ -283,6 +304,8 @@ def start_analysis_process(
         )
         pid_file.write_text(str(process.pid), encoding="utf-8")
     except Exception as e:
+        if log_fh:
+            log_fh.close()
         return {
             "success": False,
             "message": f"プロセス起動エラー: {e}",

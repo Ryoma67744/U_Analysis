@@ -15,8 +15,11 @@ def create_interactive_tab():
     _ls = load_last_settings()
     return html.Div(style={"marginTop": "15px"}, children=[
         # データソース選択
-        html.Div(className="card", children=[
-            html.H4(className="card-title", children=["🔬 インタラクティブ解析"]),
+        html.Details(open=True, className="card", children=[
+            html.Summary(
+                html.H4("🔬 インタラクティブ解析", className="card-title",
+                         style={"display": "inline", "cursor": "pointer"}),
+            ),
 
             # プロジェクト / サブプロジェクト選択（主な選択手段）
             dbc.Row(className="mb-3", children=[
@@ -78,6 +81,191 @@ def create_interactive_tab():
                 "データを読み込む", id="load_interactive_data",
                 color="primary", style={"marginTop": "10px"},
             ),
+
+            # --- イオンモード / m/z キャリブレーション（折りたたみパネル） ---
+            html.Details(
+                open=False,
+                style={"marginTop": "10px"},
+                children=[
+                    html.Summary(
+                        "イオンモード / m/z キャリブレーション",
+                        style={"cursor": "pointer", "fontSize": "13px",
+                               "color": "#555", "fontWeight": "600"},
+                    ),
+                    html.Div(
+                        style={"background": "#f8f9fa", "padding": "12px",
+                               "borderRadius": "5px", "marginTop": "5px"},
+                        children=[
+                            # キャリブレーション有効化チェック
+                            dbc.Checkbox(
+                                id="int_cal_enable",
+                                label="m/z キャリブレーションを有効にする",
+                                value=False,
+                                className="mb-2",
+                            ),
+                            # 詳細パネル（enable時に表示）
+                            html.Div(
+                                id="int_cal_detail_panel",
+                                style={"display": "none"},
+                                children=[
+                                    # Row: イオンモード + 付加イオン + マトリクス
+                                    dbc.Row(className="mb-2", children=[
+                                        dbc.Col(width=3, children=[
+                                            dbc.Label("イオンモード", className="small fw-bold"),
+                                            dbc.RadioItems(
+                                                id="int_cal_ion_mode",
+                                                options=[
+                                                    {"label": "Positive", "value": "Positive"},
+                                                    {"label": "Negative", "value": "Negative"},
+                                                ],
+                                                value="Positive",
+                                                inline=True,
+                                                className="small",
+                                            ),
+                                        ]),
+                                        dbc.Col(width=5, children=[
+                                            dbc.Label("付加イオン", className="small fw-bold"),
+                                            dbc.Checklist(
+                                                id="int_cal_adduct_filter",
+                                                options=[
+                                                    {"label": "+H", "value": "+H"},
+                                                    {"label": "+Na", "value": "+Na"},
+                                                    {"label": "+NH4", "value": "+NH4"},
+                                                    {"label": "+K", "value": "+K"},
+                                                    {"label": "-H", "value": "-H"},
+                                                ],
+                                                value=["+H", "+Na", "+NH4", "+K"],
+                                                inline=True,
+                                                className="small",
+                                            ),
+                                        ]),
+                                        dbc.Col(width=4, children=[
+                                            dbc.Label("マトリクス種", className="small fw-bold"),
+                                            dbc.Select(
+                                                id="int_cal_matrix",
+                                                options=[
+                                                    {"label": "DHB", "value": "DHB"},
+                                                    {"label": "CHCA", "value": "CHCA"},
+                                                    {"label": "9-AA", "value": "9AA"},
+                                                    {"label": "カスタム", "value": "custom"},
+                                                ],
+                                                value="DHB",
+                                                className="form-select-sm",
+                                            ),
+                                        ]),
+                                    ]),
+                                    # キャリブレーションテーブル
+                                    dbc.Label("リファレンス / 実測値 対応表", className="small fw-bold"),
+                                    dash_table.DataTable(
+                                        id="int_cal_table",
+                                        columns=[
+                                            {"name": "Reference m/z", "id": "ref_mz",
+                                             "editable": True, "type": "numeric"},
+                                            {"name": "Formula", "id": "formula",
+                                             "editable": True, "type": "text"},
+                                            {"name": "Observed m/z", "id": "obs_mz",
+                                             "editable": True, "type": "numeric"},
+                                            {"name": "Δppm", "id": "ppm_drift",
+                                             "editable": False, "type": "text"},
+                                        ],
+                                        editable=True,
+                                        data=[],
+                                        row_selectable="multi",
+                                        selected_rows=[],
+                                        style_table={"overflowX": "auto", "maxHeight": "200px",
+                                                     "overflowY": "auto"},
+                                        style_cell={"fontSize": "12px", "padding": "4px 8px"},
+                                        style_header={"fontWeight": "bold", "fontSize": "12px"},
+                                    ),
+                                    # ボタン行
+                                    html.Div(
+                                        className="d-flex gap-2 mt-2",
+                                        children=[
+                                            dbc.Button("行追加", id="int_cal_add_row",
+                                                       size="sm", color="secondary", outline=True),
+                                            dbc.Button("選択行削除", id="int_cal_delete_rows",
+                                                       size="sm", color="danger", outline=True),
+                                            dbc.Button("ピーク自動検出", id="int_cal_auto_detect",
+                                                       size="sm", color="info", outline=True),
+                                            dbc.Button("List保存", id="int_cal_save_list",
+                                                       size="sm", color="secondary", outline=True),
+                                        ],
+                                    ),
+                                    html.Div(id="int_cal_status_text",
+                                             className="small text-muted mt-1"),
+                                    # 詳細設定（折りたたみ）
+                                    html.Details(
+                                        className="mt-2",
+                                        children=[
+                                            html.Summary("詳細設定",
+                                                         style={"fontSize": "12px", "cursor": "pointer"}),
+                                            html.Div(style={"padding": "8px"}, children=[
+                                                dbc.Row(className="mb-1", children=[
+                                                    dbc.Col(width=4, children=[
+                                                        dbc.Label("検索ウィンドウ (Da)", className="small"),
+                                                        dbc.Input(id="int_cal_search_window",
+                                                                  type="number", value=0.5,
+                                                                  min=0.01, step=0.1, size="sm"),
+                                                    ]),
+                                                    dbc.Col(width=4, children=[
+                                                        dbc.Label("最低マッチピーク数", className="small"),
+                                                        dbc.Input(id="int_cal_min_peaks",
+                                                                  type="number", value=2,
+                                                                  min=1, step=1, size="sm"),
+                                                    ]),
+                                                    dbc.Col(width=4, children=[
+                                                        dbc.Label("回帰モデル", className="small"),
+                                                        dbc.Select(id="int_cal_regression_mode",
+                                                                   options=[
+                                                                       {"label": "Linear", "value": "linear"},
+                                                                       {"label": "Poly2", "value": "poly2"},
+                                                                       {"label": "Poly3", "value": "poly3"},
+                                                                   ],
+                                                                   value="poly3",
+                                                                   className="form-select-sm"),
+                                                    ]),
+                                                ]),
+                                            ]),
+                                        ],
+                                    ),
+                                    html.Hr(className="my-2"),
+                                    # MRMファイル（DESIのみ表示）
+                                    html.Div(
+                                        id="int_cal_mrm_section",
+                                        style={"display": "none"},
+                                        children=[
+                                            dbc.Row(className="mb-2", children=[
+                                                dbc.Col(width=12, children=[
+                                                    dbc.Label("MRMファイル", className="small fw-bold"),
+                                                    html.Div(
+                                                        style={"display": "flex", "gap": "5px"},
+                                                        children=[
+                                                            dbc.Input(id="int_cal_mrm_path",
+                                                                      placeholder="MRM.xlsx",
+                                                                      size="sm"),
+                                                            dbc.Button("参照...", id="browse_int_cal_mrm",
+                                                                       size="sm", color="secondary"),
+                                                        ],
+                                                    ),
+                                                ]),
+                                            ]),
+                                        ],
+                                    ),
+                                    # 適用ボタン
+                                    dbc.Button(
+                                        "キャリブレーション適用", id="int_cal_apply",
+                                        color="warning", size="sm", className="mt-2",
+                                    ),
+                                ],
+                            ),
+                            # 適用結果メッセージ
+                            html.Div(id="int_cal_apply_status",
+                                     className="small mt-1"),
+                        ],
+                    ),
+                ],
+            ),
+
             html.Div(id="interactive_data_info", className="mt-2 text-muted"),
         ]),
 
@@ -694,4 +882,9 @@ def create_interactive_tab():
         dcc.Store(id="export_top_n_store", data=5),
         # PPTXダウンロード用
         dcc.Download(id="dl_report_pptx"),
+        # インタラクティブキャリブレーション用
+        dcc.Store(id="int_cal_table_data", data=[]),
+        dcc.Store(id="int_cal_save_trigger", data=None),
+        dcc.Store(id="int_cal_ms_instrument", data="TIMS"),
+        dcc.Store(id="int_cal_restore_pending", data=False),
     ])

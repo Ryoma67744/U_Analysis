@@ -41,6 +41,124 @@ def build_tims_input_paths(data_folder: str) -> list[str]:
     return sorted(files)
 
 
+def read_raw_mz_spectrum(data_folder: str, is_tims: bool = True) -> Optional[pd.DataFrame]:
+    """生データファイルから m/z フィーチャーの平均スペクトルを読み取る。
+
+    data_folder 内の最初の1ファイルを読み込み、
+    ``expression_matrix.parquet`` と同等の形式（列名 = フィーチャー名、値 = 平均強度）で返す。
+    キャリブレーション自動検出のフォールバック用。
+
+    Returns
+    -------
+    pd.DataFrame | None
+        1行 × N列 の DataFrame（各列 = フィーチャー名、値 = 平均強度）。
+        読み取り失敗時は None。
+    """
+    import re as _re
+
+    folder = Path(data_folder) if data_folder else None
+    if not folder or not folder.is_dir():
+        return None
+
+    try:
+        if is_tims:
+            return _read_tims_raw(folder)
+        else:
+            return _read_desi_raw(folder)
+    except Exception:
+        return None
+
+
+def _read_tims_raw(folder: Path) -> Optional[pd.DataFrame]:
+    """TIMS 生データ（parquet/csv/tsv/txt）から mz_ 列の平均を取得。"""
+    import re as _re
+
+    extensions = {".parquet", ".pq", ".csv", ".tsv", ".txt"}
+    files = sorted(f for f in folder.iterdir() if f.suffix.lower() in extensions)
+    if not files:
+        return None
+
+    fp = files[0]
+    ext = fp.suffix.lower()
+
+    if ext in (".parquet", ".pq"):
+        import pyarrow.parquet as pq
+
+        pf = pq.ParquetFile(fp)
+        mz_cols = [n for n in pf.schema.names if n.startswith("mz_")]
+        if not mz_cols:
+            return None
+        df = pd.read_parquet(fp, columns=mz_cols)
+    else:
+        # CSV / TSV / TXT — ヘッダーあり前提
+        sep = "\t" if ext in (".tsv", ".txt") else ","
+        df = pd.read_csv(fp, sep=sep)
+        mz_cols = [c for c in df.columns if _re.match(r"mz_\d", c)]
+        if not mz_cols:
+            return None
+        df = df[mz_cols]
+
+    # 1行の平均スペクトル DataFrame を返す
+    avg = df.mean().to_frame().T
+    return avg
+
+
+def _read_desi_raw(folder: Path) -> Optional[pd.DataFrame]:
+    """DESI 生データ（.txt）から m/z 値と平均強度を取得。
+
+    DESI .txt フォーマット:
+      行1: 空行
+      行2: ヘッダー情報
+      行3: 列インデックス
+      行4: m/z 値（タブ区切り）
+      行5: フラグメント m/z（使用しない）
+      行6〜: ピクセルデータ（ID, x, y, 強度..., line, pixel）
+    """
+    import re as _re
+
+    txt_files = sorted(f for f in folder.iterdir() if f.suffix.lower() == ".txt")
+    if not txt_files:
+        return None
+
+    fp = txt_files[0]
+    with open(fp, "r", encoding="utf-8") as fh:
+        lines = [fh.readline() for _ in range(5)]
+
+    # 行4 (0-indexed: lines[3]) から m/z 値を抽出
+    mz_line = lines[3].strip()
+    if not mz_line:
+        return None
+    parts = mz_line.split("\t")
+    # 先頭に空フィールドがある場合をスキップ
+    mz_values = []
+    col_indices = []
+    for i, p in enumerate(parts):
+        p = p.strip()
+        if p and _re.match(r"\d+\.?\d*$", p):
+            mz_values.append(float(p))
+            col_indices.append(i)
+
+    if not mz_values:
+        return None
+
+    # データ行を読み込み（行6〜、skiprows=5）
+    try:
+        data_df = pd.read_csv(fp, sep="\t", header=None, skiprows=5)
+    except Exception:
+        return None
+
+    # m/z に対応する列の平均強度を計算
+    feature_names = [f"mz_{mz:.4f}" for mz in mz_values]
+    avg_dict = {}
+    for fname, ci in zip(feature_names, col_indices):
+        if ci < len(data_df.columns):
+            avg_dict[fname] = [pd.to_numeric(data_df.iloc[:, ci], errors="coerce").mean()]
+
+    if not avg_dict:
+        return None
+    return pd.DataFrame(avg_dict)
+
+
 def validate_msi_file(file_path: str) -> dict:
     """MSIファイルの妥当性チェック"""
     path = Path(file_path)
