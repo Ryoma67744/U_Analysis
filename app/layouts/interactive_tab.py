@@ -708,14 +708,14 @@ def create_interactive_tab():
                                     ),
                                 ]),
                                 dbc.Col(width=2, children=[
-                                    dbc.Label("強度 最小値", className="small mb-0"),
+                                    dbc.Label("強度 最小値 (%)", className="small mb-0"),
                                     dbc.Input(id="feature_intensity_min", type="number",
-                                              placeholder="", size="sm"),
+                                              placeholder="0", size="sm"),
                                 ]),
                                 dbc.Col(width=2, children=[
-                                    dbc.Label("強度 最大値", className="small mb-0"),
+                                    dbc.Label("強度 最大値 (%)", className="small mb-0"),
                                     dbc.Input(id="feature_intensity_max", type="number",
-                                              placeholder="", size="sm"),
+                                              placeholder="100", size="sm"),
                                 ]),
                             ]),
                             dcc.Loading(html.Div(id="feature_plot_container")),
@@ -865,6 +865,10 @@ def create_interactive_tab():
         dcc.Store(id="sample_name_map_store", data={}),
         # ラベル位置保存ステータス
         dcc.Store(id="label_pos_save_status", data=None),
+        # ラベル位置スナップショット（clientside callback → save callback ブリッジ）
+        dcc.Store(id="annotation_snapshot_store", data=None),
+        # アノテーション位置の蓄積（relayoutData イベントからリアルタイム蓄積）
+        dcc.Store(id="accumulated_label_positions", data={}),
         # Feature Plot m/zフィルタ結果リスト
         dcc.Store(id="feature_mz_filtered_list", data=None),
         # カスタムクラスタ色マッピング（{"0": "#FF0000", ...}）

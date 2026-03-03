@@ -17,7 +17,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.io as pio
 import dash_bootstrap_components as dbc
-from dash import Input, Output, State, callback, ctx, no_update, html, dcc, dash_table, ALL
+from dash import (Input, Output, State, callback, ctx, no_update, html, dcc,
+                  dash_table, ALL, clientside_callback, ClientsideFunction)
 from dash.exceptions import PreventUpdate
 
 from app.config import (
@@ -363,21 +364,49 @@ def _save_interactive_settings(key, value):
         pass
 
 
-def _extract_annotation_positions(relayout_data):
-    """relayoutDataからアノテーション位置を抽出 → {インデックス文字列: {"x": v, "y": v}}"""
-    if not relayout_data:
+def _extract_annotation_positions_by_name(relayout_data, clusters):
+    """relayoutData の annotations[N].x/y をクラスタ名ベースで抽出。
+
+    Parameters
+    ----------
+    relayout_data : dict  – Dash relayoutData
+    clusters : list       – ソート済みクラスタ名リスト（annotation 追加順と一致）
+
+    Returns
+    -------
+    dict – {"クラスタ名": {"x": v, "y": v}}  （更新があったもののみ）
+    """
+    if not relayout_data or not clusters:
         return {}
     positions = {}
+    sorted_clusters = list(clusters)
     for key, val in relayout_data.items():
-        if key.startswith("annotations["):
-            m = re.match(r"annotations\[(\d+)\]\.([xy])", key)
-            if m:
-                idx = m.group(1)
-                attr = m.group(2)
-                if idx not in positions:
-                    positions[idx] = {}
-                positions[idx][attr] = val
+        m = re.match(r"annotations\[(\d+)\]\.([xy])", key)
+        if m:
+            idx = int(m.group(1))
+            attr = m.group(2)
+            if idx < len(sorted_clusters):
+                cl = str(sorted_clusters[idx])
+                if cl not in positions:
+                    positions[cl] = {}
+                positions[cl][attr] = val
     return positions
+
+
+def _merge_label_positions(base, overlay):
+    """base dict に overlay dict をディープマージ（overlay が優先）。
+
+    base/overlay は {"key": {"x": v, "y": v}} 形式。
+    base を破壊的に更新して返す。
+    """
+    for k, v in (overlay or {}).items():
+        if k not in base:
+            base[k] = {}
+        if isinstance(v, dict):
+            base[k].update(v)
+        else:
+            base[k] = v
+    return base
 
 
 def _get_cluster_colorscale(clusters, custom_colors=None):
@@ -1421,6 +1450,9 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
         centroids = df.groupby("Cluster").agg(
             cx=("UMAP_1", "mean"), cy=("UMAP_2", "mean"),
         ).reset_index()
+        centroids = centroids.sort_values(
+            "Cluster", key=lambda col: col.map(_cluster_sort_key)
+        )
         for _, row in centroids.iterrows():
             cl_str = str(row["Cluster"])
             pos = (saved_positions or {}).get(cl_str, {})
@@ -1430,7 +1462,6 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                 text=cl_str,
                 showarrow=False,
                 font=dict(size=label_size, color="black", family="Arial Black"),
-                bgcolor="rgba(255,255,255,0.7)", borderpad=2,
             )
 
     layout_opts = dict(
@@ -1528,6 +1559,9 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
             centroids = df_s.groupby("Cluster").agg(
                 cx=("UMAP_1", "mean"), cy=("UMAP_2", "mean"),
             ).reset_index()
+            centroids = centroids.sort_values(
+                "Cluster", key=lambda col: col.map(_cluster_sort_key)
+            )
             for _, row in centroids.iterrows():
                 cl_str = str(row["Cluster"])
                 pos = sample_pos.get(cl_str, {})
@@ -1537,7 +1571,6 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                     text=cl_str,
                     showarrow=False,
                     font=dict(size=label_size, color="black", family="Arial Black"),
-                    bgcolor="rgba(255,255,255,0.7)", borderpad=1,
                 )
 
         display_s = _display_name(s, name_map)
@@ -1584,6 +1617,29 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
 # UMAP プロット — コールバック
 # ---------------------------------------------------------------------------
 
+def _get_merged_label_positions(accumulated_positions=None):
+    """JSON ファイル + 蓄積 Store からマージしたラベル位置を返す。
+
+    蓄積データは JSON より新しいため、蓄積データで JSON をオーバーライドする。
+    """
+    all_pos = _load_label_positions()
+    acc = accumulated_positions or {}
+    for section in ("umap_integrated", "umap_per_sample", "spatial"):
+        acc_section = acc.get(section)
+        if not acc_section:
+            continue
+        saved_section = all_pos.get(section, {})
+        if section == "umap_integrated":
+            _merge_label_positions(saved_section, acc_section)
+        else:
+            for sample_name, pos_dict in acc_section.items():
+                sample_saved = saved_section.get(sample_name, {})
+                _merge_label_positions(sample_saved, pos_dict)
+                saved_section[sample_name] = sample_saved
+        all_pos[section] = saved_section
+    return all_pos
+
+
 @callback(
     Output("interactive_umap_plot", "figure"),
     [Input("umap_color_by", "value"),
@@ -1597,16 +1653,17 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
      Input("seurat_rds_path_store", "data"),
      Input("fullscreen_closed_trigger", "data"),
      Input("custom_color_map_store", "data")],
+    State("accumulated_label_positions", "data"),
 )
 def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
                      display_mode, marker_size, exclude_clusters, label_size,
-                     rds_path, _fs_trigger, custom_colors):
+                     rds_path, _fs_trigger, custom_colors, accumulated_positions):
     if display_mode == "per_sample":
         return go.Figure()
     df = _interactive_data.get("plot_data")
     if df is None:
         return go.Figure()
-    all_pos = _load_label_positions()
+    all_pos = _get_merged_label_positions(accumulated_positions)
     return _build_umap_integrated_fig(df, color_by, highlight_clusters,
                                        show_legend, show_labels,
                                        marker_size=marker_size or 2,
@@ -1656,11 +1713,12 @@ _UMAP_PER_SAMPLE_CONFIG = {
      Input("fullscreen_closed_trigger", "data"),
      Input("custom_color_map_store", "data"),
      Input("umap_columns_per_row", "value")],
+    State("accumulated_label_positions", "data"),
 )
 def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
                             marker_size, exclude_clusters, label_size, rds_path,
                             show_legend, name_map, _fs_trigger, custom_colors,
-                            columns_per_row):
+                            columns_per_row, accumulated_positions):
     """表示モード「サンプル別」の場合、各サンプルのUMAPを並列表示"""
     if display_mode != "per_sample":
         return ""
@@ -1668,7 +1726,7 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
     if df is None:
         return ""
     color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
-    all_pos = _load_label_positions()
+    all_pos = _get_merged_label_positions(accumulated_positions)
     graphs = _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                                             show_labels, graph_height="300px",
                                             marker_size=marker_size or 2,
@@ -1965,7 +2023,6 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                     text=cl_str,
                     showarrow=False,
                     font=dict(size=label_size, color="black"),
-                    bgcolor="rgba(255,255,255,0.7)",
                 )
 
     layout_opts = dict(
@@ -2553,11 +2610,13 @@ def auto_feature_marker(n_clicks, rotation_store, sample):
      Input("fullscreen_closed_trigger", "data"),
      Input("custom_color_map_store", "data"),
      Input("spatial_columns_per_row", "value")],
+    State("accumulated_label_positions", "data"),
 )
 def update_spatial_plots(sample, highlight_clusters, selected_data,
                          rotation_store, show_labels, marker_size,
                          exclude_clusters, label_size, rds_path, name_map,
-                         _fs_trigger, custom_colors, columns_per_row):
+                         _fs_trigger, custom_colors, columns_per_row,
+                         accumulated_positions):
     df = _interactive_data.get("plot_data")
     if df is None or "SpatialX" not in df.columns:
         return html.Div("空間座標データがありません", className="text-muted p-3"), None
@@ -2576,7 +2635,7 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
 
     color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
     cluster_to_idx, discrete_cscale = _get_cluster_colorscale(df["Cluster"], custom_colors)
-    all_pos = _load_label_positions()
+    all_pos = _get_merged_label_positions(accumulated_positions)
     spatial_pos = all_pos.get("spatial", {})
 
     # 表示対象サンプル
@@ -2729,9 +2788,16 @@ def update_feature_plot(feature_name, sample, marker_size,
         global_min = float(np.nanmin(expr_vals))
         global_max = float(np.nanmax(expr_vals))
 
-        # ユーザー指定の Intensity Range でオーバーライド
-        display_min = intensity_min if intensity_min is not None else global_min
-        display_max = intensity_max if intensity_max is not None else global_max
+        # ユーザー指定の Intensity Range（パーセント値）を強度値に変換
+        val_range = global_max - global_min
+        if intensity_min is not None:
+            display_min = global_min + (intensity_min / 100.0) * val_range
+        else:
+            display_min = global_min
+        if intensity_max is not None:
+            display_max = global_min + (intensity_max / 100.0) * val_range
+        else:
+            display_max = global_max
 
         auto_mode = (marker_size is None or marker_size <= 0)
 
@@ -2777,8 +2843,8 @@ def update_feature_plot(feature_name, sample, marker_size,
                     title=dict(text="Intensity", side="right"),
                     tickvals=[display_min, display_max],
                     ticktext=[
-                        "0" if display_min == 0 else _compact_sci(display_min),
-                        _compact_sci(display_max),
+                        f"{int(intensity_min)}%" if intensity_min is not None else "0%",
+                        f"{int(intensity_max)}%" if intensity_max is not None else "100%",
                     ],
                     len=0.8,
                     thickness=15,
@@ -2786,6 +2852,25 @@ def update_feature_plot(feature_name, sample, marker_size,
 
             fig = go.Figure()
 
+            # TIC 背景（Greys, opacity=0.5）
+            if "TotalCount" in df_s.columns:
+                fig.add_trace(go.Scatter(
+                    x=plot_x, y=plot_y, mode="markers",
+                    marker=dict(size=m_size, symbol="square",
+                                color=df_s["TotalCount"].values,
+                                colorscale="Greys", opacity=0.5,
+                                showscale=False),
+                    hoverinfo="skip", showlegend=False,
+                ))
+
+            # 発現量オーバーレイ — ポイントごとの opacity で TIC 背景を透過
+            # 発現量が低い → 透明（TIC が見える）、高い → 不透明（発現量が見える）
+            expr_raw = df_s["_expression"].values
+            if display_max > display_min:
+                norm = np.clip((expr_raw - display_min) / (display_max - display_min), 0, 1)
+            else:
+                norm = np.zeros_like(expr_raw)
+            marker_opts["opacity"] = np.where(norm > 0.01, 0.3 + 0.7 * norm, 0.0).tolist()
             fig.add_trace(go.Scatter(
                 x=plot_x,
                 y=plot_y,
@@ -2851,7 +2936,7 @@ def update_feature_plot(feature_name, sample, marker_size,
             style={"color": "#333", "fontSize": "0.95rem"},
         )
 
-        return html.Div([heading, container]), _format_plain_number(global_min), _format_plain_number(global_max)
+        return html.Div([heading, container]), "0", "100"
 
     except Exception as e:
         return html.Div(f"エラー: {e}", className="text-danger p-3"), no_update, no_update
@@ -3112,9 +3197,11 @@ def _build_feature_plot_fig(df, feature_name, cache_dir_path, rds_path,
             opacity=0.8,
         )
         if is_last:
-            cb_opts = dict(len=0.8, thickness=15)
-            if colorbar_tickformat:
-                cb_opts["tickformat"] = colorbar_tickformat
+            cb_opts = dict(
+                len=0.8, thickness=15,
+                tickvals=[global_min, global_max],
+                ticktext=["0%", "100%"],
+            )
             if show_colorbar_title:
                 cb_opts["title"] = "Intensity"
             marker_opts["colorbar"] = cb_opts
@@ -3552,7 +3639,8 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                  deg_data=None, top_n=5, df=None, cache_dir=None,
                  custom_colors=None, rotation_store=None, name_map=None,
                  set_progress=None, mrm_path=None,
-                 existing_prs=None, progress_offset=0, progress_total=None):
+                 existing_prs=None, progress_offset=0, progress_total=None,
+                 saved_positions=None):
     """グローバル概要 + クラスターごとの詳細スライドを含む PPTX を生成し bytes を返す。
 
     グローバルセクション:
@@ -3700,12 +3788,14 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
             tile_w_umap = avail_w / n_sp
             for idx, s in enumerate(all_samples):
                 df_s = df[df["Sample"] == s]
+                _umap_pos = (saved_positions or {}).get("umap_integrated", {})
                 umap_s = _build_umap_integrated_fig(
                     df_s, color_by="Cluster", highlight_clusters=None,
                     show_legend=False, show_labels=True,
                     title=_display_name(s, name_map),
                     marker_size=3, custom_colors=custom_colors,
-                    title_font_size=40, label_size=24)
+                    title_font_size=40, label_size=24,
+                    saved_positions=_umap_pos)
                 if umap_s is not None:
                     # 全データと同じ軸範囲に固定
                     umap_s.update_xaxes(range=umap_xrange)
@@ -3733,6 +3823,7 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                     transform = {"angle": int(transform),
                                  "flip_h": False, "flip_v": False}
 
+                _sp_pos = (saved_positions or {}).get("spatial", {}).get(s, {})
                 sp_fig = _create_single_spatial_fig(
                     df_s, color_map_global,
                     highlight_clusters=None,
@@ -3745,7 +3836,8 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                     marker_size=0,
                     render_height=560,
                     embed_legend=False,
-                    title_font_size=40, label_size=24)
+                    title_font_size=40, label_size=24,
+                    saved_positions=_sp_pos)
                 if sp_fig is not None:
                     sp_dict = (sp_fig.to_dict()
                                if hasattr(sp_fig, "to_dict") else sp_fig)
@@ -3966,7 +4058,6 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                 feat_fig = _build_feature_plot_fig(
                     df, feat, cache_dir_path, rds_path_str,
                     rotation_store, name_map, marker_size=3,
-                    colorbar_tickformat=".1e",
                     show_colorbar_title=is_last_up,
                     auto_marker_size=True)
                 if feat_fig:
@@ -3995,7 +4086,6 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                 feat_fig = _build_feature_plot_fig(
                     df, feat, cache_dir_path, rds_path_str,
                     rotation_store, name_map, marker_size=3,
-                    colorbar_tickformat=".1e",
                     show_colorbar_title=is_last_down,
                     auto_marker_size=True)
                 if feat_fig:
@@ -4248,6 +4338,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
             filename = f"MSI_Report_{timestamp}.pptx"
 
         top_n = top_n or 5
+        saved_positions = _load_label_positions()
 
         # ------------------------------------------------------------------
         # 出力対象手法リストの決定（export_method_selector に基づく）
@@ -4298,6 +4389,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 custom_colors=custom_colors, rotation_store=rotation_store,
                 name_map=name_map, set_progress=set_progress,
                 mrm_path=mrm_path_str,
+                saved_positions=saved_positions,
             )
 
             return (
@@ -4422,6 +4514,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
 
                 # 上段: サンプル別 UMAP
                 tile_w_cmp = avail_w_cmp / max(n_sp_cmp, 1)
+                _umap_pos_cmp = (saved_positions or {}).get("umap_integrated", {})
                 for idx_s, s in enumerate(all_samples_cmp):
                     df_s = m_df[m_df["Sample"] == s]
                     umap_s = _build_umap_integrated_fig(
@@ -4430,7 +4523,8 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                         show_legend=False, show_labels=True,
                         title=_display_name(s, name_map),
                         marker_size=3, custom_colors=custom_colors,
-                        title_font_size=40, label_size=24)
+                        title_font_size=40, label_size=24,
+                        saved_positions=_umap_pos_cmp)
                     if umap_s is not None:
                         umap_s.update_xaxes(range=u_xrange)
                         umap_s.update_yaxes(range=u_yrange)
@@ -4461,6 +4555,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                             transform = {
                                 "angle": int(transform),
                                 "flip_h": False, "flip_v": False}
+                        _sp_pos_cmp = (saved_positions or {}).get("spatial", {}).get(s, {})
                         sp_fig_cmp = _create_single_spatial_fig(
                             df_s, color_map_cmp,
                             highlight_clusters=None,
@@ -4472,7 +4567,8 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                             title=_display_name(s, name_map),
                             marker_size=0, render_height=560,
                             embed_legend=False,
-                            title_font_size=40, label_size=24)
+                            title_font_size=40, label_size=24,
+                            saved_positions=_sp_pos_cmp)
                         if sp_fig_cmp is not None:
                             sp_dict = (sp_fig_cmp.to_dict()
                                        if hasattr(sp_fig_cmp, "to_dict")
@@ -4598,11 +4694,13 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
             progress_offset += 1
 
             # --- UMAP 図を生成 ---
+            _umap_pos_m = (saved_positions or {}).get("umap_integrated", {})
             method_umap_fig = _build_umap_integrated_fig(
                 method_df, color_by="Cluster",
                 highlight_clusters=None,
                 show_legend=True, show_labels=True,
                 custom_colors=custom_colors,
+                saved_positions=_umap_pos_m,
             )
 
             # --- クラスタ統計の生成 ---
@@ -4646,6 +4744,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 existing_prs=prs,
                 progress_offset=progress_offset,
                 progress_total=total_steps,
+                saved_positions=saved_positions,
             )
             if isinstance(returned, int):
                 progress_offset = returned
@@ -4891,7 +4990,8 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                     ),
                 ]),
                 dbc.Col(width=2, className="d-flex align-items-end", children=[
-                    dbc.Button("ラベル位置保存", id="fs_save_label_pos_btn",
+                    dbc.Button("ラベル位置保存",
+                               id={"type": "fs_save_label_pos", "index": "umap"},
                                size="sm", color="secondary", className="mb-1"),
                 ]),
             ]),
@@ -5065,7 +5165,8 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                     ),
                 ]),
                 dbc.Col(width=2, className="d-flex align-items-end", children=[
-                    dbc.Button("ラベル位置保存", id="fs_save_spatial_label_pos_btn",
+                    dbc.Button("ラベル位置保存",
+                               id={"type": "fs_save_label_pos", "index": "spatial"},
                                size="sm", color="secondary", className="mb-1"),
                 ]),
             ]),
@@ -5137,12 +5238,13 @@ def on_fullscreen_close(is_open, current_val):
      Input("fs_umap_exclude_cluster", "value"),
      Input("fs_umap_label_size", "value")],
     [State("custom_color_map_store", "data"),
-     State("umap_columns_per_row", "value")],
+     State("umap_columns_per_row", "value"),
+     State("accumulated_label_positions", "data")],
     prevent_initial_call=True,
 )
 def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
                    height_val, width_val, marker_size, exclude_clusters, label_size,
-                   custom_color_map, columns_per_row):
+                   custom_color_map, columns_per_row, accumulated_positions):
     height_val = height_val or 78
     width_val = width_val or 95
     df = _interactive_data.get("plot_data")
@@ -5151,7 +5253,7 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
     custom_colors = custom_color_map if custom_color_map else None
     color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
     fs_config = {"scrollZoom": True, "edits": {"annotationPosition": True}, "toImageButtonOptions": {"format": "png", "scale": 3}}
-    all_pos = _load_label_positions()
+    all_pos = _get_merged_label_positions(accumulated_positions)
 
     # タイトル（RDSファイル名から生成）
     rds_path = _interactive_data.get("rds_path", "")
@@ -5170,7 +5272,7 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
                                                filename=f"UMAP_{umap_title}")
         return html.Div(
             style={"width": f"{width_val}vw", "margin": "0 auto"},
-            children=[dcc.Graph(figure=fig, style={"height": f"{height_val}vh"}, config=fs_cfg)],
+            children=[dcc.Graph(id="fs_umap_integrated_graph", figure=fig, style={"height": f"{height_val}vh"}, config=fs_cfg)],
         )
     else:
         per_h = max(height_val // 2, 25)
@@ -5207,12 +5309,14 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
      Input("fs_spatial_width_slider", "value"),
      Input("fs_spatial_label_size", "value")],
     [State("custom_color_map_store", "data"),
-     State("spatial_columns_per_row", "value")],
+     State("spatial_columns_per_row", "value"),
+     State("accumulated_label_positions", "data")],
     prevent_initial_call=True,
 )
 def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                       exclude_clusters, marker_size, height_val, width_val,
-                      label_size, custom_colors, columns_per_row):
+                      label_size, custom_colors, columns_per_row,
+                      accumulated_positions):
     height_val = height_val or 60
     width_val = width_val or 95
     df = _interactive_data.get("plot_data")
@@ -5220,7 +5324,7 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
         return ""
     color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
     cluster_to_idx, discrete_cscale = _get_cluster_colorscale(df["Cluster"], custom_colors)
-    all_pos = _load_label_positions()
+    all_pos = _get_merged_label_positions(accumulated_positions)
     spatial_pos = all_pos.get("spatial", {})
     if not rotation_store:
         rotation_store = {}
@@ -5286,92 +5390,255 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
 
 
 # ---------------------------------------------------------------------------
-# ラベル位置の永続保存
+# ラベル位置の永続保存（v2: relayoutData 蓄積 + DOM スナップショット二重方式）
 # ---------------------------------------------------------------------------
+# Primary: relayoutData からアノテーション位置をリアルタイム蓄積（サーバーサイド）
+# Backup: 保存ボタン押下時に Plotly.js DOM を直接読み取り（クライアントサイド）
 
-def _save_label_positions_impl(umap_relayout, umap_ps_relayouts,
-                               spatial_relayouts, fs_spatial_relayouts):
-    """ラベル位置保存の共通ロジック（通常版・FS版で共用）"""
+
+# --- メカニズム1: relayoutData 蓄積 ---
+# v4: 通常モード / FS モードに分割（動的 Input がコールバック全体をブロックする問題の対策）
+
+
+def _accumulate_core(triggered_id, existing, excl_fn):
+    """蓄積コールバックの共通ロジック。
+
+    Args:
+        triggered_id: ctx.triggered_id
+        existing: accumulated_label_positions Store の現在値
+        excl_fn: triggered_id に応じた除外セットを返す関数
+    Returns:
+        更新された existing dict、または PreventUpdate
+    """
+    # triggered[0]["value"] から relayoutData を取得
+    rd = None
+    for t in ctx.triggered:
+        if t.get("value") and isinstance(t["value"], dict):
+            rd = t["value"]
+            break
+    if not rd:
+        raise PreventUpdate
+
+    # annotation 位置変更のみ処理（zoom/pan はスキップ）
+    if not any(k.startswith("annotations[") for k in rd):
+        raise PreventUpdate
+
+    df = _interactive_data.get("plot_data")
+    if df is None:
+        raise PreventUpdate
+
+    existing = dict(existing) if existing else {}
+    excl = excl_fn(triggered_id)
+
+    # 文字列 ID → UMAP 統合
+    if isinstance(triggered_id, str):
+        clusters = [c for c in sorted(df["Cluster"].unique(), key=_cluster_sort_key)
+                    if str(c) not in excl]
+        pos = _extract_annotation_positions_by_name(rd, clusters)
+        if pos:
+            umap_saved = dict(existing.get("umap_integrated", {}))
+            _merge_label_positions(umap_saved, pos)
+            existing["umap_integrated"] = umap_saved
+
+    # dict ID → パターンマッチ（per_sample / spatial）
+    elif isinstance(triggered_id, dict):
+        graph_type = triggered_id.get("type")
+        sample_name = str(triggered_id.get("index", ""))
+
+        if graph_type in ("umap_per_sample_graph",):
+            section = "umap_per_sample"
+        elif graph_type in ("spatial_graph", "fs_spatial_graph"):
+            section = "spatial"
+        else:
+            raise PreventUpdate
+
+        sample_df = df[df["Sample"] == sample_name]
+        if sample_df.empty:
+            raise PreventUpdate
+        clusters = [c for c in sorted(sample_df["Cluster"].unique(), key=_cluster_sort_key)
+                    if str(c) not in excl]
+        pos = _extract_annotation_positions_by_name(rd, clusters)
+        if pos:
+            section_saved = dict(existing.get(section, {}))
+            sample_saved = dict(section_saved.get(sample_name, {}))
+            _merge_label_positions(sample_saved, pos)
+            section_saved[sample_name] = sample_saved
+            existing[section] = section_saved
+    else:
+        raise PreventUpdate
+
+    return existing
+
+
+def _excl_set(val):
+    """exclude dropdown の値から除外セットを返す"""
+    if not val:
+        return set()
+    return set(str(c) for c in val)
+
+
+# 1a: 通常モード蓄積（静的 Input のみ → 常に発火可能）
+@callback(
+    Output("accumulated_label_positions", "data"),
+    [Input("interactive_umap_plot", "relayoutData"),
+     Input({"type": "umap_per_sample_graph", "index": ALL}, "relayoutData"),
+     Input({"type": "spatial_graph", "index": ALL}, "relayoutData")],
+    [State("accumulated_label_positions", "data"),
+     State("umap_exclude_cluster", "value"),
+     State("spatial_exclude_cluster", "value")],
+    prevent_initial_call=True,
+)
+def accumulate_annotation_positions_normal(umap_rd, umap_ps_rds,
+                                            spatial_rds, existing,
+                                            umap_exclude, spatial_exclude):
+    """通常モード: relayoutData のアノテーション位置変更をリアルタイムで蓄積。"""
+    triggered_id = ctx.triggered_id
+    if not triggered_id:
+        raise PreventUpdate
+
+    def _get_excl(tid):
+        if isinstance(tid, dict):
+            gtype = tid.get("type")
+            if gtype == "spatial_graph":
+                return _excl_set(spatial_exclude)
+            else:
+                return _excl_set(umap_exclude)
+        return _excl_set(umap_exclude)
+
+    return _accumulate_core(triggered_id, existing, _get_excl)
+
+
+# 1b: FS UMAP 蓄積（Input 1個: 文字列 ID → UMAP FS 時のみ存在）
+@callback(
+    Output("accumulated_label_positions", "data", allow_duplicate=True),
+    Input("fs_umap_integrated_graph", "relayoutData"),
+    [State("accumulated_label_positions", "data"),
+     State("fs_umap_exclude_cluster", "value")],
+    prevent_initial_call=True,
+)
+def accumulate_annotation_positions_fs_umap(fs_umap_rd, existing, fs_umap_exclude):
+    """FS UMAP: relayoutData のアノテーション位置変更を蓄積。"""
+    triggered_id = ctx.triggered_id
+    if not triggered_id:
+        raise PreventUpdate
+    return _accumulate_core(triggered_id, existing, lambda _: _excl_set(fs_umap_exclude))
+
+
+# 1c: FS Spatial 蓄積（Input 1個: パターンマッチ → Spatial FS 時のみ存在）
+@callback(
+    Output("accumulated_label_positions", "data", allow_duplicate=True),
+    Input({"type": "fs_spatial_graph", "index": ALL}, "relayoutData"),
+    [State("accumulated_label_positions", "data"),
+     State("fs_spatial_exclude_cluster", "value")],
+    prevent_initial_call=True,
+)
+def accumulate_annotation_positions_fs_spatial(fs_spatial_rds, existing, fs_spatial_exclude):
+    """FS Spatial: relayoutData のアノテーション位置変更を蓄積。"""
+    triggered_id = ctx.triggered_id
+    if not triggered_id:
+        raise PreventUpdate
+    return _accumulate_core(triggered_id, existing, lambda _: _excl_set(fs_spatial_exclude))
+
+
+# --- メカニズム2: DOM スナップショット（バックアップ） ---
+# v4: 通常 / FS 分割
+
+# 2a: 通常モード DOM スナップショット
+clientside_callback(
+    ClientsideFunction(namespace="annotation_ns",
+                       function_name="capture_annotations_normal"),
+    Output("annotation_snapshot_store", "data"),
+    [Input("save_label_pos_btn", "n_clicks"),
+     Input("save_spatial_label_pos_btn", "n_clicks")],
+    prevent_initial_call=True,
+)
+
+# 2b: FS DOM スナップショット（パターンマッチング: UMAP/Spatial 共通、ALL で 0個以上にマッチ）
+clientside_callback(
+    ClientsideFunction(namespace="annotation_ns",
+                       function_name="capture_annotations_fs"),
+    Output("annotation_snapshot_store", "data", allow_duplicate=True),
+    Input({"type": "fs_save_label_pos", "index": ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+
+
+# --- 保存コールバック: 蓄積データ + スナップショット → JSON ---
+# v4: 通常 / FS 分割、共通ロジックはヘルパー関数に抽出
+
+
+def _do_save_label_positions(accumulated, snapshot):
+    """ラベル位置保存の共通ロジック。蓄積データ + DOM スナップショット → JSON。"""
     try:
         path = _get_label_positions_path()
         if not path:
             return no_update, "ラベル位置の保存に失敗しました（データ未読込）", True
 
-        df = _interactive_data.get("plot_data")
-        if df is None:
-            return no_update, "ラベル位置の保存に失敗しました（データ未読込）", True
-
-        clusters = sorted(df["Cluster"].unique(), key=_cluster_sort_key)
-
-        # 既存データを読み込み（マージ）
+        # JSON ファイルの既存データ
         existing = _load_label_positions()
 
-        # 1) UMAP統合
-        umap_pos = _extract_annotation_positions(umap_relayout)
-        if umap_pos:
-            umap_saved = existing.get("umap_integrated", {})
-            for idx_str, pos in umap_pos.items():
-                idx = int(idx_str)
-                if idx < len(clusters):
-                    cl = str(clusters[idx])
-                    if cl not in umap_saved:
-                        umap_saved[cl] = {}
-                    umap_saved[cl].update(pos)
-            existing["umap_integrated"] = umap_saved
+        # --- Primary: 蓄積データからマージ ---
+        acc = accumulated or {}
+        for section in ("umap_integrated", "umap_per_sample", "spatial"):
+            acc_section = acc.get(section)
+            if not acc_section:
+                continue
+            saved_section = existing.get(section, {})
+            if section == "umap_integrated":
+                _merge_label_positions(saved_section, acc_section)
+            else:
+                for sample_name, pos_dict in acc_section.items():
+                    sample_saved = saved_section.get(sample_name, {})
+                    _merge_label_positions(sample_saved, pos_dict)
+                    saved_section[sample_name] = sample_saved
+            existing[section] = saved_section
 
-        # 2) サンプル別UMAP
-        if umap_ps_relayouts:
-            umap_ps_saved = existing.get("umap_per_sample", {})
-            inputs_list = ctx.states_list[1]  # State[1] = umap_per_sample_graph relayoutData
-            for i, rd in enumerate(umap_ps_relayouts):
-                if i < len(inputs_list):
-                    sample_name = inputs_list[i]["id"]["index"]
-                    ps_pos = _extract_annotation_positions(rd)
-                    if ps_pos:
-                        sample_saved = umap_ps_saved.get(sample_name, {})
-                        sample_clusters = sorted(
-                            df[df["Sample"] == sample_name]["Cluster"].unique(),
-                            key=_cluster_sort_key)
-                        for idx_str, pos in ps_pos.items():
-                            idx = int(idx_str)
-                            if idx < len(sample_clusters):
-                                cl = str(sample_clusters[idx])
-                                if cl not in sample_saved:
-                                    sample_saved[cl] = {}
-                                sample_saved[cl].update(pos)
-                        umap_ps_saved[sample_name] = sample_saved
-            existing["umap_per_sample"] = umap_ps_saved
+        # --- Backup: DOM スナップショットからマージ ---
+        if snapshot and snapshot.get("timestamp"):
+            def _anns_to_dict(anns_list):
+                d = {}
+                for a in (anns_list or []):
+                    txt = (a.get("text") or "").strip()
+                    if txt and a.get("x") is not None and a.get("y") is not None:
+                        d[txt] = {"x": a["x"], "y": a["y"]}
+                return d
 
-        # 3) Spatial (通常 + FS)
-        all_spatial_relayouts = (spatial_relayouts or []) + (fs_spatial_relayouts or [])
-        spatial_inputs = (ctx.states_list[2] if len(ctx.states_list) > 2 else []) + \
-                         (ctx.states_list[3] if len(ctx.states_list) > 3 else [])
-        if all_spatial_relayouts:
-            spatial_saved = existing.get("spatial", {})
-            inputs_list = spatial_inputs
-            for i, rd in enumerate(all_spatial_relayouts):
-                if i < len(inputs_list):
-                    sample_name = inputs_list[i]["id"]["index"]
-                    sp_pos = _extract_annotation_positions(rd)
-                    if sp_pos:
-                        sample_saved = spatial_saved.get(sample_name, {})
-                        sample_clusters = sorted(
-                            df[df["Sample"] == sample_name]["Cluster"].unique(),
-                            key=_cluster_sort_key)
-                        for idx_str, pos in sp_pos.items():
-                            idx = int(idx_str)
-                            if idx < len(sample_clusters):
-                                cl = str(sample_clusters[idx])
-                                if cl not in sample_saved:
-                                    sample_saved[cl] = {}
-                                sample_saved[cl].update(pos)
-                        spatial_saved[sample_name] = sample_saved
-            existing["spatial"] = spatial_saved
+            # UMAP 統合（FS 優先）
+            umap_anns = snapshot.get("fs_umap_integrated") or []
+            if not umap_anns:
+                umap_anns = snapshot.get("umap_integrated") or []
+            umap_dict = _anns_to_dict(umap_anns)
+            if umap_dict:
+                umap_saved = existing.get("umap_integrated", {})
+                _merge_label_positions(umap_saved, umap_dict)
+                existing["umap_integrated"] = umap_saved
 
-        # JSON書き込み
+            # サンプル別 UMAP
+            for sample_name, anns in (snapshot.get("umap_per_sample") or {}).items():
+                sd = _anns_to_dict(anns)
+                if sd:
+                    ps_saved = existing.get("umap_per_sample", {})
+                    ss = ps_saved.get(sample_name, {})
+                    _merge_label_positions(ss, sd)
+                    ps_saved[sample_name] = ss
+                    existing["umap_per_sample"] = ps_saved
+
+            # Spatial（FS 優先）
+            for src_key in ("spatial", "fs_spatial"):
+                for sample_name, anns in (snapshot.get(src_key) or {}).items():
+                    sd = _anns_to_dict(anns)
+                    if sd:
+                        sp_saved = existing.get("spatial", {})
+                        ss = sp_saved.get(sample_name, {})
+                        _merge_label_positions(ss, sd)
+                        sp_saved[sample_name] = ss
+                        existing["spatial"] = sp_saved
+
+        # JSON 書き込み
         path.write_text(json.dumps(existing, indent=2, ensure_ascii=False),
                         encoding="utf-8")
 
+        print(f"[LABEL] ラベル位置を保存しました: {path}")
         return datetime.now().isoformat(), "ラベル位置を保存しました", True
     except Exception as e:
         print(f"[LABEL] ラベル位置保存エラー: {e}")
@@ -5379,44 +5646,39 @@ def _save_label_positions_impl(umap_relayout, umap_ps_relayouts,
         return no_update, f"ラベル位置の保存エラー: {e}", True
 
 
-# --- 通常版（常にDOMに存在するボタン） ---
+# 3a: 通常モード保存
 @callback(
     [Output("label_pos_save_status", "data"),
      Output("notification_toast", "children", allow_duplicate=True),
      Output("notification_toast", "is_open", allow_duplicate=True)],
     [Input("save_label_pos_btn", "n_clicks"),
      Input("save_spatial_label_pos_btn", "n_clicks")],
-    [State("interactive_umap_plot", "relayoutData"),
-     State({"type": "umap_per_sample_graph", "index": ALL}, "relayoutData"),
-     State({"type": "spatial_graph", "index": ALL}, "relayoutData"),
-     State({"type": "fs_spatial_graph", "index": ALL}, "relayoutData")],
+    [State("accumulated_label_positions", "data"),
+     State("annotation_snapshot_store", "data")],
     prevent_initial_call=True,
 )
-def save_label_positions(n1, n2, umap_relayout, umap_ps_relayouts,
-                         spatial_relayouts, fs_spatial_relayouts):
-    """通常ビューのラベル位置保存ボタン"""
-    return _save_label_positions_impl(umap_relayout, umap_ps_relayouts,
-                                       spatial_relayouts, fs_spatial_relayouts)
+def save_label_positions_normal(n1, n2, accumulated, snapshot):
+    """通常モード: ラベル位置保存"""
+    if not any([n1, n2]):
+        raise PreventUpdate
+    return _do_save_label_positions(accumulated, snapshot)
 
 
-# --- フルスクリーン版（モーダル内の動的ボタン） ---
+# 3b: FS 保存（パターンマッチング: UMAP/Spatial 共通、ALL で 0個以上にマッチ）
 @callback(
     [Output("label_pos_save_status", "data", allow_duplicate=True),
      Output("notification_toast", "children", allow_duplicate=True),
      Output("notification_toast", "is_open", allow_duplicate=True)],
-    [Input("fs_save_label_pos_btn", "n_clicks"),
-     Input("fs_save_spatial_label_pos_btn", "n_clicks")],
-    [State("interactive_umap_plot", "relayoutData"),
-     State({"type": "umap_per_sample_graph", "index": ALL}, "relayoutData"),
-     State({"type": "spatial_graph", "index": ALL}, "relayoutData"),
-     State({"type": "fs_spatial_graph", "index": ALL}, "relayoutData")],
+    Input({"type": "fs_save_label_pos", "index": ALL}, "n_clicks"),
+    [State("accumulated_label_positions", "data"),
+     State("annotation_snapshot_store", "data")],
     prevent_initial_call=True,
 )
-def save_label_positions_fs(n1, n2, umap_relayout, umap_ps_relayouts,
-                             spatial_relayouts, fs_spatial_relayouts):
-    """フルスクリーンモーダルのラベル位置保存ボタン"""
-    return _save_label_positions_impl(umap_relayout, umap_ps_relayouts,
-                                       spatial_relayouts, fs_spatial_relayouts)
+def save_label_positions_fs(n_clicks_list, accumulated, snapshot):
+    """FS (UMAP/Spatial 共通): ラベル位置保存"""
+    if not any(n_clicks_list):
+        raise PreventUpdate
+    return _do_save_label_positions(accumulated, snapshot)
 
 
 # ---------------------------------------------------------------------------
@@ -5962,7 +6224,7 @@ def delete_int_cal_rows(n, selected, data):
     [Output("int_cal_table_data", "data", allow_duplicate=True),
      Output("int_cal_status_text", "children")],
     Input("int_cal_auto_detect", "n_clicks"),
-    [State("int_cal_table_data", "data"),
+    [State("int_cal_table", "data"),
      State("int_cal_search_window", "value"),
      State("seurat_cache_dir_store", "data"),
      State("data_folder", "value"),
