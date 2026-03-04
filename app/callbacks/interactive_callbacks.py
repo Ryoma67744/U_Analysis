@@ -1016,7 +1016,7 @@ def _load_deg_results(
         """マッチしたCSVファイルの読み込みを試行"""
         for csv_path in matches:
             try:
-                df = pd.read_csv(csv_path)
+                df = pd.read_csv(csv_path, encoding="utf-8")
                 print(f"[DEG] CSV発見: {csv_path} (列: {list(df.columns)}, 行数: {len(df)})")
                 result = _standardize_deg_df(df)
                 if result:
@@ -4834,22 +4834,52 @@ def populate_interactive_sub_projects(project_id, entry_mode):
 
 
 @callback(
+    [Output("interactive_viz_container", "style", allow_duplicate=True),
+     Output("interactive_data_info", "children", allow_duplicate=True)],
+    Input("interactive_project_select", "value"),
+    prevent_initial_call=True,
+)
+def reset_interactive_on_project_change(project_id):
+    """プロジェクト変更時にインタラクティブデータをリセット。
+    sub_project_select の value が同一でも確実にクリアされる。"""
+    _interactive_data["plot_data"] = None
+    _interactive_data["cluster_stats"] = None
+    _interactive_data["features_list"] = None
+    _interactive_data["meta"] = None
+    _interactive_data["rds_path"] = None
+    _interactive_data["cache_dir"] = None
+
+    if not project_id:
+        return {"display": "none"}, ""
+    return {"display": "none"}, "データを読み込んでください"
+
+
+@callback(
     [Output("interactive_result_folder", "value", allow_duplicate=True),
      Output("interactive_msi_folder", "value", allow_duplicate=True),
      Output("interactive_data_info", "children", allow_duplicate=True),
-     Output("int_cal_ms_instrument", "data")],
+     Output("int_cal_ms_instrument", "data"),
+     Output("interactive_viz_container", "style", allow_duplicate=True)],
     Input("interactive_sub_project_select", "value"),
     State("interactive_project_select", "value"),
     prevent_initial_call=True,
 )
 def set_interactive_folders_from_sub_project(sub_id, project_id):
-    """サブプロジェクト選択時にフォルダパスを自動設定"""
+    """サブプロジェクト選択時にフォルダパスを自動設定 + データリセット"""
+    # 前のプロジェクトのデータをクリア
+    _interactive_data["plot_data"] = None
+    _interactive_data["cluster_stats"] = None
+    _interactive_data["features_list"] = None
+    _interactive_data["meta"] = None
+    _interactive_data["rds_path"] = None
+    _interactive_data["cache_dir"] = None
+
     if not sub_id or not project_id:
-        return no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, {"display": "none"}
     from app.services.project_manager import get_sub_project
     sub = get_sub_project(project_id, sub_id)
     if not sub:
-        return no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, {"display": "none"}
     result_dir = sub.get("last_result_dir") or sub.get("output_dir", "")
     data_folder = sub.get("data_folder", "")
     ms_instrument = sub.get("ms_instrument", "TIMS")
@@ -4859,8 +4889,8 @@ def set_interactive_folders_from_sub_project(sub_id, project_id):
         warnings.append("結果フォルダが未設定です")
     if not data_folder:
         warnings.append("MSIデータフォルダが未設定です")
-    msg = "⚠ " + "、".join(warnings) if warnings else ""
-    return (result_dir, data_folder, msg, ms_instrument)
+    msg = "⚠ " + "、".join(warnings) if warnings else "データを読み込んでください"
+    return (result_dir, data_folder, msg, ms_instrument, {"display": "none"})
 
 
 # ---------------------------------------------------------------------------

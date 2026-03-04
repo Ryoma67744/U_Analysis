@@ -33,13 +33,13 @@ def create_landing_page():
                         className="mb-3 align-items-center",
                         children=[
                             dbc.Col(
-                                width=3,
+                                width=2,
                                 children=[
                                     html.H3("プロジェクト一覧"),
                                 ],
                             ),
                             dbc.Col(
-                                width=3,
+                                width=2,
                                 children=[
                                     dbc.Input(
                                         id="project_search",
@@ -74,14 +74,21 @@ def create_landing_page():
                                 ],
                             ),
                             dbc.Col(
-                                width=3,
+                                width=5,
                                 className="text-end",
+                                style={"whiteSpace": "nowrap"},
                                 children=[
                                     dbc.Button(
                                         "インタラクティブ解析",
                                         id="open_interactive_from_landing_btn",
                                         color="info",
-                                        className="me-2",
+                                        className="me-1",
+                                    ),
+                                    dbc.Button(
+                                        "復元",
+                                        id="open_restore_modal_btn",
+                                        color="warning",
+                                        className="me-1",
                                     ),
                                     dbc.Button(
                                         "+ 新規プロジェクト",
@@ -106,6 +113,12 @@ def create_landing_page():
 
             # 削除確認モーダル
             _create_delete_confirm_modal(),
+
+            # プロジェクト復元モーダル
+            _create_restore_modal(),
+
+            # 復元用ストア
+            dcc.Store(id="restore_scan_data", data=None),
         ],
     )
 
@@ -200,6 +213,75 @@ def _create_delete_confirm_modal():
                 ),
                 dbc.Button(
                     "削除", id="confirm_delete_project", color="danger",
+                ),
+            ]),
+        ],
+    )
+
+
+def _create_restore_modal():
+    """プロジェクト復元モーダル"""
+    return dbc.Modal(
+        id="restore_project_modal",
+        size="lg",
+        centered=True,
+        children=[
+            dbc.ModalHeader(dbc.ModalTitle("プロジェクト復元")),
+            dbc.ModalBody([
+                html.P(
+                    "結果フォルダに自動保存されたメタデータをスキャンし、"
+                    "プロジェクト一覧を復元します。",
+                    className="text-muted mb-3",
+                ),
+                # スキャンフォルダ選択
+                dbc.Label("スキャンフォルダ"),
+                dbc.InputGroup(
+                    className="mb-3",
+                    children=[
+                        dbc.Input(
+                            id="restore_scan_folder",
+                            placeholder="スキャン対象のルートフォルダを指定...",
+                        ),
+                        dbc.Button(
+                            "...",
+                            id="browse_restore_scan_folder",
+                            color="secondary",
+                            size="sm",
+                        ),
+                        dbc.Button(
+                            "スキャン開始",
+                            id="restore_scan_btn",
+                            color="info",
+                            className="ms-2",
+                        ),
+                    ],
+                ),
+                # スキャン結果表示領域
+                dcc.Loading(
+                    type="circle",
+                    children=html.Div(
+                        id="restore_scan_results",
+                        children=html.P(
+                            "スキャンフォルダを指定して「スキャン開始」を"
+                            "クリックしてください。",
+                            className="text-muted text-center py-4",
+                        ),
+                    ),
+                ),
+                # 復元ステータス
+                html.Div(id="restore_status", className="mt-2"),
+            ]),
+            dbc.ModalFooter([
+                dbc.Button(
+                    "閉じる",
+                    id="close_restore_modal_btn",
+                    color="secondary",
+                ),
+                dbc.Button(
+                    "選択したプロジェクトを復元",
+                    id="restore_execute_btn",
+                    color="success",
+                    disabled=True,
                 ),
             ]),
         ],

@@ -18,6 +18,8 @@ from app.services.project_manager import (
     update_sub_project,
     delete_sub_project,
     get_sub_project_settings,
+    scan_project_meta,
+    restore_projects_from_meta,
 )
 from app.services.share_manager import (
     create_share,
@@ -135,7 +137,7 @@ def render_project_cards(current_page, _refresh, sort_order, search_text):
                 dbc.Card(
                     className="project-card h-100",
                     children=[
-                        dbc.CardBody([
+                        dbc.CardBody(style={"paddingBottom": "0.5rem"}, children=[
                             html.Div(
                                 style={
                                     "display": "flex",
@@ -197,7 +199,7 @@ def render_project_cards(current_page, _refresh, sort_order, search_text):
                                 },
                                 color="primary",
                                 size="sm",
-                                className="mt-2",
+                                className="w-100 mt-2",
                             ),
                         ]),
                     ],
@@ -1272,3 +1274,210 @@ def cancel_delete_share_link(n_clicks):
     if n_clicks:
         return False
     return no_update
+
+
+# =========================================================================
+# プロジェクト復元
+# =========================================================================
+
+@callback(
+    Output("restore_project_modal", "is_open"),
+    [Input("open_restore_modal_btn", "n_clicks"),
+     Input("close_restore_modal_btn", "n_clicks")],
+    State("restore_project_modal", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_restore_modal(open_clicks, close_clicks, is_open):
+    """復元モーダルの開閉"""
+    if ctx.triggered_id in ("open_restore_modal_btn", "close_restore_modal_btn"):
+        return not is_open
+    return no_update
+
+
+@callback(
+    [Output("restore_scan_results", "children"),
+     Output("restore_scan_data", "data"),
+     Output("restore_execute_btn", "disabled")],
+    Input("restore_scan_btn", "n_clicks"),
+    State("restore_scan_folder", "value"),
+    prevent_initial_call=True,
+)
+def execute_scan(n_clicks, folder):
+    """スキャンフォルダを再帰検索し _project_meta.json を収集"""
+    if not n_clicks or not folder:
+        return (
+            html.P("スキャンフォルダを指定してください。",
+                   className="text-warning"),
+            None,
+            True,
+        )
+
+    from pathlib import Path
+    if not Path(folder).is_dir():
+        return (
+            html.P(f"指定されたフォルダが見つかりません: {folder}",
+                   className="text-danger"),
+            None,
+            True,
+        )
+
+    meta_list = scan_project_meta(folder)
+    if not meta_list:
+        return (
+            html.P(
+                "メタデータ (_project_meta.json) が見つかりませんでした。"
+                "解析済みの結果フォルダを含むフォルダを指定してください。",
+                className="text-warning text-center py-3",
+            ),
+            None,
+            True,
+        )
+
+    # --- 既存プロジェクトとの照合 ---
+    existing_projects = {p["id"]: p for p in list_projects()}
+
+    cards = []
+    for i, meta in enumerate(meta_list):
+        proj = meta.get("project", {})
+        sub = meta.get("sub_project", {})
+        proj_id = proj.get("id", "")
+        sub_id = sub.get("id", "")
+        found_dir = meta.get("_found_dir", "")
+
+        # ステータス判定
+        existing = existing_projects.get(proj_id)
+        if existing:
+            existing_sub = None
+            for s in existing.get("sub_projects", []):
+                if s["id"] == sub_id:
+                    existing_sub = s
+                    break
+            if existing_sub:
+                status_badge = dbc.Badge(
+                    "既存（ID一致）", color="warning", className="ms-2",
+                )
+                default_action = "update_paths"
+            else:
+                status_badge = dbc.Badge(
+                    "新規サブプロジェクト", color="info", className="ms-2",
+                )
+                default_action = "restore"
+        else:
+            status_badge = dbc.Badge(
+                "新規", color="success", className="ms-2",
+            )
+            default_action = "restore"
+
+        card = dbc.Card(
+            className="mb-2",
+            children=dbc.CardBody(
+                className="py-2",
+                children=[
+                    dbc.Row(
+                        className="align-items-center",
+                        children=[
+                            dbc.Col(
+                                width=7,
+                                children=[
+                                    html.Div([
+                                        html.Strong(
+                                            proj.get("name", "不明"),
+                                        ),
+                                        status_badge,
+                                    ]),
+                                    html.Small(
+                                        f"サブ: {sub.get('name', '不明')}",
+                                        className="text-muted d-block",
+                                    ),
+                                    html.Small(
+                                        f"パス: {found_dir}",
+                                        className="text-muted d-block",
+                                        style={
+                                            "overflow": "hidden",
+                                            "textOverflow": "ellipsis",
+                                            "whiteSpace": "nowrap",
+                                            "maxWidth": "100%",
+                                        },
+                                        title=found_dir,
+                                    ),
+                                ],
+                            ),
+                            dbc.Col(
+                                width=5,
+                                className="text-end",
+                                children=[
+                                    dbc.Select(
+                                        id={
+                                            "type": "restore_action",
+                                            "index": sub_id,
+                                        },
+                                        options=[
+                                            {"label": "復元",
+                                             "value": "restore"},
+                                            {"label": "パス更新",
+                                             "value": "update_paths"},
+                                            {"label": "スキップ",
+                                             "value": "skip"},
+                                        ],
+                                        value=default_action,
+                                        size="sm",
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+        )
+        cards.append(card)
+
+    summary = html.P(
+        f"{len(meta_list)} 件のメタデータが見つかりました。",
+        className="text-info fw-bold mb-2",
+    )
+    return [summary] + cards, meta_list, False
+
+
+@callback(
+    [Output("restore_status", "children"),
+     Output("project_list_refresh", "data", allow_duplicate=True),
+     Output("restore_execute_btn", "disabled", allow_duplicate=True)],
+    Input("restore_execute_btn", "n_clicks"),
+    [State("restore_scan_data", "data"),
+     State({"type": "restore_action", "index": ALL}, "value"),
+     State({"type": "restore_action", "index": ALL}, "id")],
+    prevent_initial_call=True,
+)
+def execute_restore(n_clicks, scan_data, action_values, action_ids):
+    """選択されたアクションに基づいてプロジェクトを復元"""
+    if not n_clicks or not scan_data:
+        return no_update, no_update, no_update
+
+    # action_map を構築: {sub_id: action}
+    action_map = {}
+    for aid, val in zip(action_ids, action_values):
+        sub_id = aid.get("index", "")
+        if sub_id:
+            action_map[sub_id] = val
+
+    messages = restore_projects_from_meta(scan_data, action_map)
+    if not messages:
+        return (
+            dbc.Alert("復元対象がありませんでした。", color="info"),
+            no_update,
+            True,
+        )
+
+    from datetime import datetime
+    result_items = [html.Li(m) for m in messages]
+    return (
+        dbc.Alert(
+            children=[
+                html.Strong("復元完了"),
+                html.Ul(result_items, className="mb-0 mt-1"),
+            ],
+            color="success",
+        ),
+        datetime.now().isoformat(),  # project_list_refresh を更新
+        True,
+    )

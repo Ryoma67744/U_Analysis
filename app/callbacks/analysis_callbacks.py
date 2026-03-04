@@ -225,7 +225,14 @@ def run_analysis(
                 params["output_dir_var"] = "OUTPUT_DIR"
                 # ANNOTATION_CSV_PATH: UIの初期設定から取得
                 if annotation_csv:
-                    params["annotation_csv_path"] = annotation_csv
+                    _acsv = Path(annotation_csv)
+                    if _acsv.is_file():
+                        params["annotation_csv_path"] = annotation_csv
+                    elif _acsv.is_dir():
+                        # ディレクトリが指定された場合、中の CSV を自動検索
+                        csvs = sorted(_acsv.glob("*.csv"))
+                        if csvs:
+                            params["annotation_csv_path"] = str(csvs[0])
 
             config_path = generate_v8_config(params, full_output_dir)
 
@@ -699,7 +706,7 @@ def delete_calibration_rows(n, selected, data):
     [Output("calibration_table_data", "data", allow_duplicate=True),
      Output("calibration_status_text", "children")],
     Input("calibration_auto_detect", "n_clicks"),
-    [State("calibration_table_data", "data"),
+    [State("calibration_table", "data"),
      State("calibration_search_window", "value"),
      State("seurat_cache_dir_store", "data"),
      State("data_folder", "value"),

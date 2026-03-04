@@ -365,6 +365,8 @@ _BROWSE_BUTTONS = {
     "browse_default_tims_output": ("folder", "default_tims_output_dir"),
     "browse_default_output": ("folder", "default_output_dir"),
     "browse_int_cal_mrm": ("file", "int_cal_mrm_path"),
+    # プロジェクト復元スキャンフォルダ
+    "browse_restore_scan_folder": ("folder", "restore_scan_folder"),
 }
 
 # 全対象入力フィールドIDの一覧（_BROWSE_BUTTONSのvalue[1]を収集）
@@ -517,7 +519,9 @@ def handle_fb_item_click(clicks, state):
 
     if path.is_dir():
         state["current_dir"] = str(path)
-        state["selected_path"] = str(path)
+        # folder モードの場合のみディレクトリを selected_path に設定
+        if state.get("mode") == "folder":
+            state["selected_path"] = str(path)
     else:
         state["selected_path"] = str(path)
     return state, state.get("selected_path", "")

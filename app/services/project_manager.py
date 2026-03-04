@@ -4,12 +4,16 @@
 # =============================================================================
 
 import json
+import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from app.config import PROJECTS_DIR, PROJECTS_FILE
+
+# メタデータファイル名（結果フォルダに自動保存）
+_META_FILENAME = "_project_meta.json"
 
 
 def _ensure_projects_file() -> None:
@@ -61,11 +65,19 @@ def create_project(
     name: str,
     experiment_date: str = "",
     memo: str = "",
+    *,
+    force_id: str = "",
 ) -> dict:
-    """新規プロジェクト作成"""
+    """新規プロジェクト作成
+
+    Parameters
+    ----------
+    force_id : str, optional
+        復元時に元のIDを保持するために使用。空文字の場合は自動生成。
+    """
     now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     project = {
-        "id": str(uuid.uuid4())[:8],
+        "id": force_id if force_id else str(uuid.uuid4())[:8],
         "name": name,
         "experiment_date": experiment_date,
         "memo": memo,
@@ -87,6 +99,9 @@ def update_project(project_id: str, updates: dict) -> Optional[dict]:
             p.update(updates)
             p["last_modified"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
             _save_all(data)
+            # メタデータを結果フォルダへバックアップ
+            for s in p.get("sub_projects", []):
+                _write_meta_to_folder(project_id, s["id"])
             return p
     return None
 
@@ -134,14 +149,25 @@ def create_sub_project(
     memo: str = "",
     data_folder: str = "",
     output_dir: str = "",
+    *,
+    force_id: str = "",
+    extra_fields: dict | None = None,
 ) -> Optional[dict]:
-    """サブプロジェクト作成"""
+    """サブプロジェクト作成
+
+    Parameters
+    ----------
+    force_id : str, optional
+        復元時に元のIDを保持するために使用。空文字の場合は自動生成。
+    extra_fields : dict, optional
+        復元時に last_analysis_settings 等の追加フィールドをマージする。
+    """
     data = _load_all()
     for p in data["projects"]:
         if p["id"] == project_id:
             now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
             sub = {
-                "id": str(uuid.uuid4())[:8],
+                "id": force_id if force_id else str(uuid.uuid4())[:8],
                 "name": name,
                 "experiment_date": experiment_date,
                 "target_compound": target_compound,
@@ -153,6 +179,8 @@ def create_sub_project(
                 "created_at": now,
                 "last_modified": now,
             }
+            if extra_fields:
+                sub.update(extra_fields)
             if "sub_projects" not in p:
                 p["sub_projects"] = []
             p["sub_projects"].append(sub)
@@ -176,6 +204,7 @@ def update_sub_project(
                     s["last_modified"] = now
                     p["last_modified"] = now
                     _save_all(data)
+                    _write_meta_to_folder(project_id, sub_id)
                     return s
     return None
 
@@ -194,6 +223,7 @@ def save_sub_project_settings(
                     s["last_modified"] = now
                     p["last_modified"] = now
                     _save_all(data)
+                    _write_meta_to_folder(project_id, sub_id)
                     return True
     return False
 
@@ -222,6 +252,7 @@ def save_sub_project_result_dir(
                     s["last_modified"] = now
                     p["last_modified"] = now
                     _save_all(data)
+                    _write_meta_to_folder(project_id, sub_id)
                     return True
     return False
 
@@ -242,3 +273,162 @@ def delete_sub_project(project_id: str, sub_id: str) -> bool:
                 _save_all(data)
                 return True
     return False
+
+
+# =========================================================================
+# メタデータバックアップ・スキャン・復元
+# =========================================================================
+
+def _write_meta_to_folder(project_id: str, sub_id: str) -> None:
+    """サブプロジェクトのメタデータを結果フォルダに自動保存する。
+
+    last_result_dir が存在しない場合はスキップ（解析前など）。
+    書き込み失敗時はログのみ出力し例外は発生させない。
+    """
+    project = get_project(project_id)
+    sub = get_sub_project(project_id, sub_id)
+    if not project or not sub:
+        return
+    result_dir = sub.get("last_result_dir", "")
+    if not result_dir or not Path(result_dir).is_dir():
+        return
+
+    # プロジェクトレベル情報（sub_projects は含めない）
+    proj_info = {
+        k: v for k, v in project.items() if k != "sub_projects"
+    }
+    meta = {
+        "version": "1.0",
+        "project": proj_info,
+        "sub_project": dict(sub),
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    meta_path = Path(result_dir) / _META_FILENAME
+    try:
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        print(f"[project_manager] メタデータ書き出し失敗: {exc}",
+              file=sys.stderr)
+
+
+def scan_project_meta(root_folder: str) -> list[dict]:
+    """指定フォルダを再帰的にスキャンし _project_meta.json を収集する。
+
+    Returns
+    -------
+    list[dict]
+        各要素は読み込んだメタデータ dict に ``_found_dir`` キーを追加したもの。
+    """
+    results: list[dict] = []
+    root = Path(root_folder)
+    if not root.is_dir():
+        return results
+    for meta_path in root.rglob(_META_FILENAME):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            meta["_found_dir"] = str(meta_path.parent)
+            results.append(meta)
+        except Exception:
+            continue
+    return results
+
+
+def restore_projects_from_meta(
+    meta_list: list[dict],
+    action_map: dict[str, str],
+) -> list[str]:
+    """スキャン結果からプロジェクトを復元する。
+
+    Parameters
+    ----------
+    meta_list : list[dict]
+        ``scan_project_meta`` の返り値。
+    action_map : dict[str, str]
+        ``{sub_project_id: "restore" | "update_paths" | "skip"}``
+
+    Returns
+    -------
+    list[str]
+        復元結果のサマリーメッセージのリスト。
+    """
+    messages: list[str] = []
+    for meta in meta_list:
+        sub_info = meta.get("sub_project", {})
+        proj_info = meta.get("project", {})
+        sub_id = sub_info.get("id", "")
+        proj_id = proj_info.get("id", "")
+        found_dir = meta.get("_found_dir", "")
+
+        action = action_map.get(sub_id, "skip")
+        if action == "skip" or not sub_id or not proj_id:
+            continue
+
+        existing_proj = get_project(proj_id)
+
+        if action == "restore":
+            # --- プロジェクトが存在しなければ作成 ---
+            if not existing_proj:
+                create_project(
+                    name=proj_info.get("name", "復元プロジェクト"),
+                    experiment_date=proj_info.get("experiment_date", ""),
+                    memo=proj_info.get("memo", ""),
+                    force_id=proj_id,
+                )
+            # --- サブプロジェクトが存在しなければ作成 ---
+            existing_sub = get_sub_project(proj_id, sub_id)
+            if not existing_sub:
+                # last_result_dir を発見パスで上書き
+                extra = {}
+                for key in ("last_analysis_settings", "last_result_dir"):
+                    if key in sub_info:
+                        extra[key] = sub_info[key]
+                extra["last_result_dir"] = found_dir
+
+                create_sub_project(
+                    project_id=proj_id,
+                    name=sub_info.get("name", "復元サブプロジェクト"),
+                    experiment_date=sub_info.get("experiment_date", ""),
+                    target_compound=sub_info.get("target_compound", ""),
+                    ms_instrument=sub_info.get("ms_instrument", ""),
+                    polarity=sub_info.get("polarity"),
+                    memo=sub_info.get("memo", ""),
+                    data_folder=sub_info.get("data_folder", ""),
+                    output_dir=sub_info.get("output_dir", ""),
+                    force_id=sub_id,
+                    extra_fields=extra,
+                )
+                messages.append(
+                    f"✅ 復元: {proj_info.get('name', '')} / "
+                    f"{sub_info.get('name', '')}"
+                )
+            else:
+                messages.append(
+                    f"⏭ スキップ（既存）: {proj_info.get('name', '')} / "
+                    f"{sub_info.get('name', '')}"
+                )
+
+        elif action == "update_paths":
+            # --- 既存プロジェクトのパスのみ更新 ---
+            if existing_proj:
+                existing_sub = get_sub_project(proj_id, sub_id)
+                if existing_sub:
+                    update_sub_project(
+                        proj_id, sub_id,
+                        {"last_result_dir": found_dir},
+                    )
+                    messages.append(
+                        f"🔄 パス更新: {proj_info.get('name', '')} / "
+                        f"{sub_info.get('name', '')}"
+                    )
+                else:
+                    messages.append(
+                        f"⚠ サブプロジェクト未検出: {sub_info.get('name', '')}"
+                    )
+            else:
+                messages.append(
+                    f"⚠ プロジェクト未検出: {proj_info.get('name', '')}"
+                )
+
+    return messages
