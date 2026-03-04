@@ -386,3 +386,79 @@ def display_analysis_params(result_folder, subfolder):
         style={"width": "100%", "borderCollapse": "collapse"},
         className="table table-sm table-borderless",
     )
+
+
+# ---------------------------------------------------------------------------
+# 過去ログ閲覧 (E3)
+# ---------------------------------------------------------------------------
+
+def _find_log_file(result_folder, subfolder=None):
+    """結果フォルダからログファイルのパスを検索"""
+    if not result_folder:
+        return None
+    base = Path(result_folder)
+    if subfolder:
+        base = base / subfolder
+    # 直下の log/ を探す
+    log_path = base / "log" / "analysis_log.txt"
+    if log_path.exists():
+        return log_path
+    # サブフォルダ内の log/ を探す（rglob フォールバック）
+    for p in base.rglob("analysis_log.txt"):
+        return p
+    return None
+
+
+@callback(
+    Output("past_log_modal", "is_open"),
+    Output("past_log_content", "children"),
+    Input("view_past_log_btn", "n_clicks"),
+    [State("result_folder_selector", "value"),
+     State("subfolder_selector", "value")],
+    prevent_initial_call=True,
+)
+def open_past_log(n_clicks, result_folder, subfolder):
+    """過去の解析ログをモーダルに表示"""
+    if not n_clicks:
+        return no_update, no_update
+
+    log_path = _find_log_file(result_folder, subfolder)
+    if not log_path:
+        return True, [html.P("ログファイルが見つかりません", className="text-muted")]
+
+    from app.services.analysis_runner import format_log_lines_styled
+    try:
+        log_text = log_path.read_text(encoding="utf-8")
+    except Exception:
+        return True, [html.P("ログファイルの読み込みに失敗しました", className="text-muted")]
+
+    styled = format_log_lines_styled(log_text)
+    if not styled:
+        styled = [html.P("ログが空です", className="text-muted")]
+    return True, styled
+
+
+@callback(
+    Output("past_log_content", "children", allow_duplicate=True),
+    [Input("past_log_search", "value"),
+     Input("past_log_level_filter", "value")],
+    [State("result_folder_selector", "value"),
+     State("subfolder_selector", "value")],
+    prevent_initial_call=True,
+)
+def filter_past_log(search, level, result_folder, subfolder):
+    """過去ログの検索/レベルフィルタ"""
+    log_path = _find_log_file(result_folder, subfolder)
+    if not log_path:
+        return no_update
+
+    from app.services.analysis_runner import format_log_lines_styled
+    try:
+        log_text = log_path.read_text(encoding="utf-8")
+    except Exception:
+        return no_update
+
+    styled = format_log_lines_styled(log_text, search=search or "", level=level or "all")
+    if not styled:
+        styled = [html.P("該当する行がありません", className="text-muted")]
+    return styled

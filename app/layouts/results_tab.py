@@ -98,6 +98,10 @@ def create_results_tab():
                 ],
             ),
 
+            # 過去ログ閲覧ボタン
+            dbc.Button("📄 ログを表示", id="view_past_log_btn", size="sm",
+                       outline=True, color="info", className="mb-2"),
+
             # 画像ギャラリー
             html.Div(id="image_gallery", className="image-gallery"),
 
@@ -134,4 +138,51 @@ def create_results_tab():
         # 現在クリックされた画像パスを保持するStore
         dcc.Store(id="clicked_image_store"),
         dcc.Store(id="gallery_page_store", data=1),
+
+        # 過去ログ閲覧モーダル
+        dbc.Modal(
+            id="past_log_modal",
+            size="xl",
+            centered=True,
+            children=[
+                dbc.ModalHeader(dbc.ModalTitle("📄 解析ログ")),
+                dbc.ModalBody([
+                    dbc.Row(className="mb-2 g-2", children=[
+                        dbc.Col(width=5, children=[
+                            dbc.Input(
+                                id="past_log_search",
+                                placeholder="ログ検索...",
+                                size="sm",
+                                debounce=True,
+                            ),
+                        ]),
+                        dbc.Col(width=3, children=[
+                            dcc.Dropdown(
+                                id="past_log_level_filter",
+                                options=[
+                                    {"label": "すべて", "value": "all"},
+                                    {"label": "Error", "value": "error"},
+                                    {"label": "Warning", "value": "warning"},
+                                ],
+                                value="all",
+                                clearable=False,
+                            ),
+                        ]),
+                    ]),
+                    html.Div(
+                        id="past_log_content",
+                        style={
+                            "maxHeight": "600px",
+                            "overflowY": "auto",
+                            "fontFamily": "monospace",
+                            "fontSize": "0.8rem",
+                            "backgroundColor": "#1e1e1e",
+                            "color": "#d4d4d4",
+                            "padding": "10px",
+                            "borderRadius": "4px",
+                        },
+                    ),
+                ]),
+            ],
+        ),
     ])

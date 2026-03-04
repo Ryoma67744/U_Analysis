@@ -356,6 +356,57 @@ def get_analysis_log(log_file: str, last_n: int = 50) -> str:
         return ""
 
 
+def get_analysis_log_full(log_file: str) -> str:
+    """解析プロセスのログ全文を取得（行数制限なし）"""
+    try:
+        return Path(log_file).read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+
+def format_log_lines_styled(log_text: str, search: str = "",
+                             level: str = "all") -> list:
+    """ログテキストを html.Span のリストに変換。
+
+    エラー行は赤、警告行は黄色、完了行は緑でスタイリング。
+    search / level フィルタ適用後の行のみ返す。
+    """
+    from dash import html
+
+    lines = log_text.splitlines()
+    result = []
+
+    for line in lines:
+        line_lower = line.lower()
+
+        # レベルフィルタ
+        is_error = ("error" in line_lower or "exception" in line_lower
+                     or "fatal" in line_lower)
+        is_warn = "warn" in line_lower
+        if level == "error" and not is_error:
+            continue
+        if level == "warning" and not is_error and not is_warn:
+            continue
+
+        # 検索フィルタ
+        if search and search.lower() not in line_lower:
+            continue
+
+        # スタイル決定
+        style = {"display": "block", "whiteSpace": "pre-wrap"}
+        if is_error:
+            style["color"] = "#f44747"
+            style["fontWeight"] = "bold"
+        elif is_warn:
+            style["color"] = "#cca700"
+        elif "done" in line_lower or "finished" in line_lower or "complete" in line_lower:
+            style["color"] = "#6a9955"
+
+        result.append(html.Span(line, style=style))
+
+    return result
+
+
 def get_analysis_status(status_file: str) -> str:
     """解析プロセスのステータスを取得"""
     try:

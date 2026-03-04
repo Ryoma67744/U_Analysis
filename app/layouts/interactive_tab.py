@@ -383,6 +383,27 @@ def create_interactive_tab():
                             html.Pre(id="cluster_info_text",
                                      style={"fontSize": "0.85rem", "maxHeight": "120px",
                                             "overflowY": "auto"}),
+                            # --- クラスタ名変更 ---
+                            html.Hr(className="my-2"),
+                            html.H6("✏️ クラスタ名変更", className="small fw-bold"),
+                            html.Div(
+                                id="cluster_rename_panel",
+                                style={"maxHeight": "200px", "overflowY": "auto"},
+                                children=[html.P("データ読み込み後に表示されます",
+                                                 className="text-muted small")],
+                            ),
+                            html.Div(
+                                style={"display": "flex", "gap": "8px", "marginTop": "6px"},
+                                children=[
+                                    dbc.Button("適用", id="cluster_rename_apply_btn",
+                                               size="sm", color="primary"),
+                                    dbc.Button("リセット", id="cluster_rename_reset_btn",
+                                               size="sm", color="secondary", outline=True),
+                                ],
+                            ),
+                            html.Div(id="cluster_rename_status",
+                                     className="small text-muted mt-1"),
+                            html.Hr(className="my-2"),
                             dbc.Row(className="mt-2", children=[
                                 dbc.Col(width=6, children=[
                                     html.H5("クラスタ統計"),
@@ -928,6 +949,8 @@ def create_interactive_tab():
         dcc.Store(id="feature_mz_filtered_list", data=None),
         # カスタムクラスタ色マッピング（{"0": "#FF0000", ...}）
         dcc.Store(id="custom_color_map_store", data={}),
+        # クラスタ名マッピング（{"0": "Epithelial", "1": "Stromal", ...}）
+        dcc.Store(id="cluster_name_map_store", data={}),
         # Feature Plot 閲覧履歴
         dcc.Store(id="feature_history_store", data=[]),
         # フルスクリーン閉じトリガー

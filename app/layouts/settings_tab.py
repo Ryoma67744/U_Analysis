@@ -512,9 +512,58 @@ def _create_run_button():
             style={"marginTop": "20px", "display": "none"},
             children=[
                 html.H5("⏳ 解析中...", id="log_header"),
-                html.Pre(
+                # ログフィルタコントロール
+                dbc.Row(className="mb-2 g-2", children=[
+                    dbc.Col(width=4, children=[
+                        dbc.Input(
+                            id="log_search_input",
+                            placeholder="ログ検索...",
+                            size="sm",
+                            debounce=True,
+                        ),
+                    ]),
+                    dbc.Col(width=3, children=[
+                        dcc.Dropdown(
+                            id="log_level_filter",
+                            options=[
+                                {"label": "すべて", "value": "all"},
+                                {"label": "Error", "value": "error"},
+                                {"label": "Warning", "value": "warning"},
+                            ],
+                            value="all",
+                            clearable=False,
+                            style={"fontSize": "0.85rem"},
+                        ),
+                    ]),
+                    dbc.Col(width=3, children=[
+                        dcc.Dropdown(
+                            id="log_lines_count",
+                            options=[
+                                {"label": "50行", "value": 50},
+                                {"label": "100行", "value": 100},
+                                {"label": "200行", "value": 200},
+                                {"label": "全行", "value": 0},
+                            ],
+                            value=50,
+                            clearable=False,
+                            style={"fontSize": "0.85rem"},
+                        ),
+                    ]),
+                ]),
+                # ログ出力（html.Div に変更: styled html.Span をchildren に受ける）
+                html.Div(
                     id="analysis_log",
                     className="progress-log",
+                    style={
+                        "maxHeight": "400px",
+                        "overflowY": "auto",
+                        "fontFamily": "monospace",
+                        "fontSize": "0.8rem",
+                        "backgroundColor": "#1e1e1e",
+                        "color": "#d4d4d4",
+                        "padding": "10px",
+                        "borderRadius": "4px",
+                    },
                     children="",
                 ),
             ],

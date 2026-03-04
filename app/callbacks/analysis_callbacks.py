@@ -18,6 +18,8 @@ from app.services.analysis_runner import (
     generate_cluster_filter_config,
     start_analysis_process,
     get_analysis_log,
+    get_analysis_log_full,
+    format_log_lines_styled,
     get_analysis_status,
     check_process_completion,
     stop_analysis_process,
@@ -496,10 +498,13 @@ def _format_elapsed_time(start_time_iso: str) -> str:
      Output("notification_toast", "children", allow_duplicate=True),
      Output("notification_toast", "is_open", allow_duplicate=True)],
     Input("progress_interval", "n_intervals"),
-    State("app_state", "data"),
+    [State("app_state", "data"),
+     State("log_search_input", "value"),
+     State("log_level_filter", "value"),
+     State("log_lines_count", "value")],
     prevent_initial_call=True,
 )
-def update_progress(n_intervals, app_state):
+def update_progress(n_intervals, app_state, log_search, log_level, log_lines_count):
     if not app_state or not app_state.get("is_running"):
         return (no_update,) * 11
 
@@ -509,8 +514,19 @@ def update_progress(n_intervals, app_state):
     start_time_iso = app_state.get("start_time", "")
     analysis_type = app_state.get("analysis_type", "desi_v8")
 
-    # ログ取得
-    log_text = get_analysis_log(log_file, last_n=50) if log_file else ""
+    # ログ取得（フィルタ用の行数設定）
+    n_lines = log_lines_count if log_lines_count else 50
+    if n_lines == 0 and log_file:
+        raw_log = get_analysis_log_full(log_file)
+    elif log_file:
+        raw_log = get_analysis_log(log_file, last_n=n_lines)
+    else:
+        raw_log = ""
+    # ステップ検出用の生テキスト（フィルタ前に取得）
+    log_text_for_steps = get_analysis_log(log_file, last_n=200) if log_file else ""
+    # 表示用のスタイル付きログ
+    styled_log = format_log_lines_styled(
+        raw_log, search=log_search or "", level=log_level or "all")
 
     # プロセス完了チェック
     process = _process_state.get("process")
@@ -528,8 +544,8 @@ def update_progress(n_intervals, app_state):
         for ext in ("*.png", "*.csv", "*.rds"):
             file_count += len(list(Path(output_dir).rglob(ext)))
 
-    # ステップ検出（ステップ定義リストに基づく）
-    step_current, step_total, step_name = _detect_current_step(log_text, analysis_type)
+    # ステップ検出（ステップ定義リストに基づく — フィルタ前の生テキスト使用）
+    step_current, step_total, step_name = _detect_current_step(log_text_for_steps, analysis_type)
 
     # 進捗バーをステップベースで計算
     if step_current > 0:
@@ -571,7 +587,7 @@ def update_progress(n_intervals, app_state):
             log_header = "❌ エラー発生"
 
         return (
-            log_text, 100, "100%", section_text,
+            styled_log, 100, "100%", section_text,
             app_state, True,  # Interval 無効化
             {"display": "none"},  # 停止ボタン非表示
             {"display": "none"},  # 進捗バー非表示
@@ -587,7 +603,7 @@ def update_progress(n_intervals, app_state):
         section_text = f"出力: {file_count} ファイル | ⏹ 停止 ({step_current}/{step_total}) | {elapsed_text}"
 
         return (
-            log_text, progress, f"{progress}%", section_text,
+            styled_log, progress, f"{progress}%", section_text,
             app_state, True,
             {"display": "none"},  # 停止ボタン非表示
             {"display": "none"},  # 進捗バー非表示
@@ -596,7 +612,7 @@ def update_progress(n_intervals, app_state):
         )
 
     return (
-        log_text, progress, f"{progress}%", section_text,
+        styled_log, progress, f"{progress}%", section_text,
         no_update, no_update,
         no_update,
         no_update,  # progress_container: 変更なし
