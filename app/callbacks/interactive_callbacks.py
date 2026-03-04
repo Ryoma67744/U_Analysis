@@ -88,6 +88,54 @@ def _extract_mz_numeric(f):
     return float(match.group(1)) if match else float("inf")
 
 
+def _build_feature_annotation_map(
+    features_list: list,
+    annotation_csv_path: str = "",
+    ion_mode: str = "Positive",
+    adduct_patterns: list | None = None,
+    tolerance: float = 0.01,
+    deg_data: list | None = None,
+) -> dict:
+    """Feature文字列 → 化合物名 のマッピングを構築。
+
+    アノテーションCSVとDEGデータの両方からマッピングを構築し統合する。
+    DEGデータのアノテーションが優先される。
+
+    Returns:
+        dict[str, str] — feature文字列 → 化合物名
+    """
+    result = {}
+
+    # 1) アノテーションCSVからの m/z(float)→化合物名 マッピング
+    csv_map = _build_annotation_csv_map(
+        annotation_csv_path,
+        ion_mode=ion_mode,
+        adduct_patterns=adduct_patterns,
+        tolerance=tolerance,
+    )
+    if csv_map:
+        csv_mz_values = np.array(sorted(csv_map.keys()))
+        for f in features_list:
+            mz_val = _extract_mz_numeric(f)
+            if mz_val == float("inf"):
+                continue
+            idx = np.argmin(np.abs(csv_mz_values - mz_val))
+            if abs(csv_mz_values[idx] - mz_val) <= tolerance:
+                compound = csv_map[csv_mz_values[idx]]
+                if _is_meaningful_annotation(compound, f):
+                    result[f] = compound
+
+    # 2) DEGデータからのアノテーション（優先的に上書き）
+    if deg_data:
+        for r in deg_data:
+            gene = r.get("gene", "")
+            ann = r.get("annotation", "")
+            if gene and _is_meaningful_annotation(ann, gene):
+                result[gene] = ann
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # m/z キャリブレーション
 # ---------------------------------------------------------------------------
@@ -861,6 +909,19 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
             r_mp = cal_min_peaks or 2
             r_reg = cal_regression_mode or "poly3"
 
+        # --- アノテーションマップの構築（Feature検索用） ---
+        try:
+            _interactive_data["annotation_map"] = _build_feature_annotation_map(
+                result["features_list"],
+                annotation_csv_path=annotation_csv or "",
+                ion_mode=ion_mode or "Positive",
+                adduct_patterns=adduct_filter,
+                tolerance=float(tolerance_mz or 0.01),
+                deg_data=deg_data,
+            )
+        except Exception:
+            _interactive_data["annotation_map"] = {}
+
         # ms_instrument をサブプロジェクトから取得
         r_instrument = "TIMS"
         if sub_project_id and project_id:
@@ -1115,14 +1176,14 @@ def filter_features(search_value, filter_mode, cluster_filter,
     if not features:
         return []
 
-    # annotation マッピングを構築（deg_dataから）
-    ann_map = {}
+    # annotation マッピング: キャッシュ済みマップ + DEGデータを統合
+    ann_map = dict(_interactive_data.get("annotation_map") or {})
     if deg_data:
         for r in deg_data:
             gene = r.get("gene", "")
             ann = r.get("annotation", "")
             if gene and _is_meaningful_annotation(ann, gene):
-                ann_map[gene] = ann
+                ann_map[gene] = ann  # DEGデータが優先
 
     def _make_option(f, rank=None):
         """フィーチャー名からドロップダウン用オプションを生成"""
@@ -1774,8 +1835,8 @@ def update_cluster_stats(rds_path):
 @callback(
     Output("cluster_info_text", "children"),
     [Input("cluster_stats_table", "selected_rows"),
-     Input("umap_highlight_cluster", "value")],
-    State("cluster_stats_table", "data"),
+     Input("umap_highlight_cluster", "value"),
+     Input("cluster_stats_table", "data")],
 )
 def update_cluster_info(selected_rows, highlight, table_data):
     df = _interactive_data.get("plot_data")
@@ -5734,18 +5795,30 @@ def save_label_positions_fs(n_clicks_list, accumulated, snapshot):
 
 @callback(
     Output("volcano_cluster_select", "options"),
+    Output("volcano_highlight_name", "options"),
     Input("deg_data_store", "data"),
     prevent_initial_call=True,
 )
 def update_volcano_cluster_options(deg_data):
-    """DEGデータからVolcano Plotのクラスタ選択肢を生成"""
+    """DEGデータからVolcano Plotのクラスタ選択肢+ハイライト化合物名選択肢を生成"""
     if not deg_data:
-        return []
+        return [], []
     clusters = sorted(
         set(str(r.get("cluster", "")) for r in deg_data),
         key=_cluster_sort_key,
     )
-    return [{"label": f"Cluster {c}", "value": c} for c in clusters]
+    cluster_opts = [{"label": f"Cluster {c}", "value": c} for c in clusters]
+
+    # ハイライト用: 意味のあるアノテーション名を抽出
+    ann_set = set()
+    for r in deg_data:
+        ann = r.get("annotation", "")
+        gene = r.get("gene", "")
+        if _is_meaningful_annotation(ann, gene):
+            ann_set.add(ann)
+    ann_opts = [{"label": a, "value": a} for a in sorted(ann_set)]
+
+    return cluster_opts, ann_opts
 
 
 @callback(
@@ -5754,11 +5827,14 @@ def update_volcano_cluster_options(deg_data):
      Input("volcano_fc_threshold", "value"),
      Input("volcano_p_threshold", "value"),
      Input("volcano_y_max", "value"),
-     Input("volcano_marker_size", "value")],
+     Input("volcano_marker_size", "value"),
+     Input("volcano_highlight_mz", "value"),
+     Input("volcano_highlight_name", "value")],
     State("deg_data_store", "data"),
     prevent_initial_call=True,
 )
-def update_volcano_plot(cluster, fc_thresh, p_thresh, y_max, marker_size, deg_data):
+def update_volcano_plot(cluster, fc_thresh, p_thresh, y_max, marker_size,
+                        highlight_mz, highlight_names, deg_data):
     """DEGデータからVolcano Plotを生成"""
     if not deg_data:
         return go.Figure()
@@ -5822,6 +5898,55 @@ def update_volcano_plot(cluster, fc_thresh, p_thresh, y_max, marker_size, deg_da
                     "-log10(p): %{y:.2f}<extra></extra>"
                 ),
             ))
+
+    # --- ハイライトトレース ---
+    hl_mask = pd.Series(False, index=df.index)
+
+    # m/z 入力によるハイライト
+    if highlight_mz and isinstance(highlight_mz, str) and highlight_mz.strip():
+        tolerance = 0.01
+        for token in highlight_mz.split(","):
+            token = token.strip()
+            try:
+                target_mz = float(token)
+            except ValueError:
+                continue
+            gene_mz = df["gene"].apply(_extract_mz_numeric)
+            hl_mask = hl_mask | (np.abs(gene_mz - target_mz) <= tolerance)
+
+    # 化合物名によるハイライト
+    if highlight_names and "annotation" in df.columns:
+        hl_mask = hl_mask | df["annotation"].isin(highlight_names)
+
+    hl_df = df[hl_mask]
+    if len(hl_df) > 0:
+        # ラベルテキスト: アノテーションがあればそれ、なければ gene
+        hl_labels = hl_df.apply(
+            lambda r: r["annotation"]
+            if "annotation" in r.index
+            and _is_meaningful_annotation(r.get("annotation", ""), r.get("gene", ""))
+            else r["gene"],
+            axis=1,
+        )
+        fig.add_trace(go.Scattergl(
+            x=hl_df["avg_log2FC"],
+            y=hl_df["neg_log10_p"],
+            mode="markers+text",
+            marker=dict(
+                size=marker_size + 8,
+                color="rgba(0,0,0,0)",
+                line=dict(color="#00CC96", width=3),
+            ),
+            text=hl_labels,
+            textposition="top center",
+            textfont=dict(size=10, color="#00CC96"),
+            name="Highlight",
+            hovertemplate=(
+                "<b>%{text}</b><br>"
+                "log2FC: %{x:.3f}<br>"
+                "-log10(p): %{y:.2f}<extra></extra>"
+            ),
+        ))
 
     # 閾値ライン
     fig.add_hline(y=p_thresh, line_dash="dash", line_color="gray", opacity=0.5)
@@ -6822,3 +6947,89 @@ def execute_save_as_project(
         return (
             dbc.Alert(f"保存エラー: {e}", color="danger"),
         ) + (no_update,) * 6
+
+
+# ---------------------------------------------------------------------------
+# クラスタ統計ダッシュボード (B5)
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("cluster_proportion_chart", "figure"),
+    Input("seurat_rds_path_store", "data"),
+    prevent_initial_call=True,
+)
+def update_cluster_dashboard(rds_path):
+    """クラスタ比率の円グラフ"""
+    df = _interactive_data.get("plot_data")
+    if df is None or "Cluster" not in df.columns:
+        return go.Figure()
+
+    colors = CLUSTER_PRESET_COLORS
+    clusters_sorted = sorted(df["Cluster"].unique(), key=_cluster_sort_key)
+    color_map = {str(c): colors[i % len(colors)] for i, c in enumerate(clusters_sorted)}
+
+    counts = df["Cluster"].value_counts()
+    counts = counts.reindex(clusters_sorted)
+    pie_fig = go.Figure(go.Pie(
+        labels=[str(c) for c in counts.index],
+        values=counts.values,
+        marker=dict(colors=[color_map[str(c)] for c in counts.index]),
+        textinfo="label+percent",
+        textposition="inside",
+        hole=0.3,
+    ))
+    pie_fig.update_layout(
+        margin=dict(l=10, r=10, t=10, b=10),
+        showlegend=False,
+    )
+    return pie_fig
+
+
+@callback(
+    Output("cluster_top_markers_panel", "children"),
+    Input("deg_data_store", "data"),
+    prevent_initial_call=True,
+)
+def update_cluster_top_markers(deg_data):
+    """クラスタ別 Top 5 マーカー一覧"""
+    if not deg_data:
+        return html.P("DEGデータなし", className="text-muted small")
+
+    deg_df = pd.DataFrame(deg_data)
+    if "cluster" not in deg_df.columns or "avg_log2FC" not in deg_df.columns:
+        return html.P("DEGデータにcluster/avg_log2FC列がありません", className="text-muted small")
+
+    deg_df["avg_log2FC"] = pd.to_numeric(deg_df["avg_log2FC"], errors="coerce")
+    clusters = sorted(deg_df["cluster"].unique(), key=_cluster_sort_key)
+
+    cards = []
+    for cl in clusters:
+        sub = deg_df[deg_df["cluster"] == cl].nlargest(5, "avg_log2FC")
+        if sub.empty:
+            continue
+        rows = []
+        for _, r in sub.iterrows():
+            gene = r.get("gene", "?")
+            ann = r.get("annotation", "")
+            fc = r["avg_log2FC"]
+            label = f"{gene}"
+            if _is_meaningful_annotation(ann, gene):
+                label += f" ({ann})"
+            rows.append(html.Li(f"{label}  [FC={fc:.2f}]", className="small"))
+
+        cards.append(
+            dbc.Col(width=4, className="mb-2", children=[
+                html.Div(
+                    style={"border": "1px solid #dee2e6", "borderRadius": "5px",
+                           "padding": "8px"},
+                    children=[
+                        html.Strong(f"Cluster {cl}", className="small"),
+                        html.Ul(rows, style={"paddingLeft": "18px", "marginBottom": "0"}),
+                    ],
+                ),
+            ]),
+        )
+
+    if not cards:
+        return html.P("マーカーなし", className="text-muted small")
+    return dbc.Row(cards)

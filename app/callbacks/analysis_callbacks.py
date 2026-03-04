@@ -287,6 +287,33 @@ def run_analysis(
                 f"解析開始に失敗: {result['message']}", True,
             )
 
+        # 解析パラメータを結果フォルダに保存 (C1: パラメータ履歴)
+        try:
+            import json as _json
+            _params_to_save = {
+                "analysis_type": analysis_type,
+                "data_folder": data_folder,
+                "output_dir": full_output_dir,
+                "mrm_path": mrm_path or "",
+                "annotation_csv": annotation_csv or "",
+                "ion_mode": ion_mode or "",
+                "tolerance_mz": tolerance_mz,
+                "adduct_filter": adduct_filter or [],
+                "p_thresh": p_thresh,
+                "logfc_thresh": logfc_thresh,
+                "filter_mode": filter_mode or "",
+                "target_clusters": target_clusters or "",
+                "resume_rds": bool(resume_rds),
+                "timestamp": datetime.now().isoformat(),
+            }
+            _pf = Path(full_output_dir) / "analysis_params.json"
+            _pf.write_text(
+                _json.dumps(_params_to_save, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass  # 保存失敗しても解析は続行
+
         # プロセス参照をモジュールレベルで保持
         _process_state["process"] = result["process"]
         _process_state["log_file_handle"] = result.get("log_file_handle")

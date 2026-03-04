@@ -307,3 +307,82 @@ def set_results_folder_from_sub_project(sub_id, project_id):
     result_dir = sub.get("last_result_dir") or sub.get("output_dir", "")
     msg = "⚠ 結果フォルダが未設定です" if not result_dir else ""
     return result_dir, msg
+
+
+# ---------------------------------------------------------------------------
+# 解析パラメータ表示 (C1)
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("result_params_display", "children"),
+    [Input("result_folder_selector", "value"),
+     Input("subfolder_selector", "value")],
+    prevent_initial_call=True,
+)
+def display_analysis_params(result_folder, subfolder):
+    """結果フォルダ内の analysis_params.json を読み込んで表示"""
+    import json
+
+    if not result_folder:
+        return html.Span("結果フォルダを選択してください", className="text-muted")
+
+    # サブフォルダが指定されている場合はそちらを優先
+    folder = Path(subfolder) if subfolder else Path(result_folder)
+    params_file = folder / "analysis_params.json"
+
+    # 親フォルダも探索
+    if not params_file.exists():
+        params_file = Path(result_folder) / "analysis_params.json"
+    if not params_file.exists():
+        return html.Span("パラメータ情報なし", className="text-muted")
+
+    try:
+        params = json.loads(params_file.read_text(encoding="utf-8"))
+    except Exception:
+        return html.Span("パラメータファイル読み込みエラー", className="text-danger")
+
+    # パラメータをテーブル形式で表示
+    # 表示用ラベルマッピング
+    label_map = {
+        "analysis_type": "解析タイプ",
+        "data_folder": "データフォルダ",
+        "output_dir": "出力フォルダ",
+        "mrm_path": "MRMファイル",
+        "annotation_csv": "アノテーションCSV",
+        "ion_mode": "イオンモード",
+        "tolerance_mz": "m/z許容誤差",
+        "adduct_filter": "付加イオン",
+        "p_thresh": "DEG p値閾値",
+        "logfc_thresh": "DEG LogFC閾値",
+        "calibration_enable": "キャリブレーション",
+        "calibration_matrix": "マトリックス",
+        "calibration_regression": "回帰モード",
+        "timestamp": "実行日時",
+        "filter_mode": "フィルタモード",
+        "target_clusters": "対象クラスタ",
+    }
+
+    rows = []
+    for key, value in params.items():
+        label = label_map.get(key, key)
+        # 値の表示を整形
+        if isinstance(value, list):
+            value = ", ".join(str(v) for v in value)
+        elif isinstance(value, bool):
+            value = "有効" if value else "無効"
+        elif isinstance(value, dict):
+            continue  # ネストした辞書はスキップ
+        rows.append(html.Tr([
+            html.Td(label, style={"fontWeight": "bold", "paddingRight": "15px",
+                                  "whiteSpace": "nowrap", "verticalAlign": "top"}),
+            html.Td(str(value), style={"wordBreak": "break-all"}),
+        ]))
+
+    if not rows:
+        return html.Span("パラメータ情報なし", className="text-muted")
+
+    return html.Table(
+        rows,
+        style={"width": "100%", "borderCollapse": "collapse"},
+        className="table table-sm table-borderless",
+    )

@@ -80,6 +80,24 @@ def create_results_tab():
                 ]),
             ]),
 
+            # 解析パラメータ表示パネル
+            html.Details(
+                style={"marginBottom": "10px"},
+                children=[
+                    html.Summary(
+                        "📋 解析パラメータ",
+                        style={"cursor": "pointer", "fontWeight": "bold",
+                               "fontSize": "14px", "color": "#555"},
+                    ),
+                    html.Div(
+                        id="result_params_display",
+                        style={"padding": "10px", "fontSize": "12px",
+                               "maxHeight": "300px", "overflowY": "auto",
+                               "backgroundColor": "#f8f9fa", "borderRadius": "5px"},
+                    ),
+                ],
+            ),
+
             # 画像ギャラリー
             html.Div(id="image_gallery", className="image-gallery"),
 

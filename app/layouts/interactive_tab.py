@@ -378,32 +378,51 @@ def create_interactive_tab():
                                      style={"fontSize": "0.85rem"}),
                         ]),
 
-                        # --- クラスタ情報 + 統計 ---
+                        # --- クラスタ情報 ---
                         dbc.AccordionItem(title="クラスタ情報", className="accordion-cluster", children=[
                             html.Pre(id="cluster_info_text",
                                      style={"fontSize": "0.85rem", "maxHeight": "120px",
                                             "overflowY": "auto"}),
-                            html.H5("クラスタ統計", className="mt-2"),
-                            html.Div(
-                                id="cluster_stats_container",
-                                style={"maxHeight": "300px", "overflowY": "auto"},
-                                children=[
-                                    dash_table.DataTable(
-                                        id="cluster_stats_table",
-                                        columns=[
-                                            {"name": "Cluster", "id": "Cluster"},
-                                            {"name": "Pixels", "id": "Pixels"},
-                                            {"name": "%", "id": "Percent"},
+                            dbc.Row(className="mt-2", children=[
+                                dbc.Col(width=6, children=[
+                                    html.H5("クラスタ統計"),
+                                    html.Div(
+                                        id="cluster_stats_container",
+                                        style={"maxHeight": "300px", "overflowY": "auto"},
+                                        children=[
+                                            dash_table.DataTable(
+                                                id="cluster_stats_table",
+                                                columns=[
+                                                    {"name": "Cluster", "id": "Cluster"},
+                                                    {"name": "Pixels", "id": "Pixels"},
+                                                    {"name": "%", "id": "Percent"},
+                                                ],
+                                                data=[],
+                                                row_selectable="single",
+                                                style_table={"overflowX": "auto"},
+                                                style_cell={"textAlign": "left", "padding": "8px",
+                                                             "fontSize": "0.85rem"},
+                                                style_header={"backgroundColor": "#f8f9fa",
+                                                               "fontWeight": "600"},
+                                                page_size=15,
+                                            ),
                                         ],
-                                        data=[],
-                                        row_selectable="single",
-                                        style_table={"overflowX": "auto"},
-                                        style_cell={"textAlign": "left", "padding": "8px",
-                                                     "fontSize": "0.85rem"},
-                                        style_header={"backgroundColor": "#f8f9fa", "fontWeight": "600"},
-                                        page_size=15,
                                     ),
-                                ],
+                                ]),
+                                dbc.Col(width=6, children=[
+                                    html.H5("クラスタ比率"),
+                                    dcc.Graph(
+                                        id="cluster_proportion_chart",
+                                        style={"height": "300px"},
+                                        config={"displayModeBar": False},
+                                    ),
+                                ]),
+                            ]),
+                            html.Hr(),
+                            html.H6("クラスタ別 Top 5 マーカー"),
+                            html.Div(
+                                id="cluster_top_markers_panel",
+                                style={"maxHeight": "400px", "overflowY": "auto"},
                             ),
                         ]),
 
@@ -789,6 +808,25 @@ def create_interactive_tab():
                                                         min=2, max=20, step=1, value=8,
                                                         marks={2: "2", 8: "8", 14: "14", 20: "20"},
                                                         tooltip={"placement": "bottom", "always_visible": False},
+                                                    ),
+                                                ]),
+                                            ]),
+                                            # ハイライト行
+                                            dbc.Row(className="mb-2 align-items-end", children=[
+                                                dbc.Col(width=4, children=[
+                                                    dbc.Label("🔍 m/z ハイライト", className="small mb-0"),
+                                                    dbc.Input(
+                                                        id="volcano_highlight_mz",
+                                                        placeholder="例: 785.55, 810.60",
+                                                        size="sm",
+                                                    ),
+                                                ]),
+                                                dbc.Col(width=8, children=[
+                                                    dbc.Label("🔍 化合物名ハイライト", className="small mb-0"),
+                                                    dcc.Dropdown(
+                                                        id="volcano_highlight_name",
+                                                        placeholder="化合物名を選択...",
+                                                        multi=True,
                                                     ),
                                                 ]),
                                             ]),

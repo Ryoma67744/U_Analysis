@@ -83,6 +83,9 @@ SESSIONS_DIR = APP_BASE_DIR / "app" / "sessions"
 PROJECTS_DIR = APP_BASE_DIR / "app" / "projects"
 PROJECTS_FILE = PROJECTS_DIR / "projects.json"
 
+# プリセットディレクトリ
+PRESETS_DIR = APP_BASE_DIR / "app" / "presets"
+
 # 共有リンク管理
 SHARES_DIR = APP_BASE_DIR / "app" / "shares"
 SHARES_FILE = SHARES_DIR / "shares.json"

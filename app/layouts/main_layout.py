@@ -21,6 +21,54 @@ from app.layouts.tooltips import (
 )
 
 
+def _create_preset_modal():
+    """プリセット管理モーダル"""
+    return dbc.Modal(
+        id="preset_modal",
+        is_open=False,
+        centered=True,
+        children=[
+            dbc.ModalHeader(dbc.ModalTitle("📋 パラメータプリセット")),
+            dbc.ModalBody([
+                dbc.Label("既存プリセット", className="small fw-bold"),
+                dcc.Dropdown(
+                    id="preset_select",
+                    placeholder="プリセットを選択...",
+                    clearable=True,
+                ),
+                html.Hr(style={"margin": "10px 0"}),
+                dbc.Label("プリセット名", className="small fw-bold"),
+                dbc.Input(
+                    id="preset_name_input",
+                    placeholder="新しいプリセット名を入力",
+                    size="sm",
+                ),
+                html.Div(
+                    style={"display": "flex", "gap": "8px", "marginTop": "12px"},
+                    children=[
+                        dbc.Button(
+                            "💾 保存", id="preset_save_btn",
+                            size="sm", color="success",
+                        ),
+                        dbc.Button(
+                            "📂 読込", id="preset_load_btn",
+                            size="sm", color="primary",
+                        ),
+                        dbc.Button(
+                            "🗑 削除", id="preset_delete_btn",
+                            size="sm", color="danger", outline=True,
+                        ),
+                    ],
+                ),
+                html.Div(
+                    id="preset_status",
+                    style={"marginTop": "10px", "fontSize": "13px"},
+                ),
+            ]),
+        ],
+    )
+
+
 def create_main_layout():
     return html.Div([
         # ========== URLルーティング ==========
@@ -123,6 +171,9 @@ def create_main_layout():
 
                         # ファイルブラウザモーダル（共通）
                         create_file_browser_modal(),
+
+                        # プリセット管理モーダル
+                        _create_preset_modal(),
 
                         # ファイルブラウザの状態
                         dcc.Store(id="fb_state", data={

@@ -108,7 +108,7 @@ def create_sidebar():
         # セッション管理
         html.H4(["💾 セッション"]),
         html.Div(
-            style={"display": "flex", "gap": "10px"},
+            style={"display": "flex", "gap": "10px", "flexWrap": "wrap"},
             children=[
                 dbc.Button(
                     ["💾 保存"], id="save_session",
@@ -117,6 +117,10 @@ def create_sidebar():
                 dbc.Button(
                     ["📂 読込"], id="load_session",
                     size="sm", color="info",
+                ),
+                dbc.Button(
+                    ["📋 プリセット"], id="open_preset_modal",
+                    size="sm", color="warning", outline=True,
                 ),
             ],
         ),

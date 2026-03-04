@@ -39,6 +39,12 @@ def _save_all(data: dict) -> None:
     _ensure_projects_file()
     with open(PROJECTS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+    # 自動バックアップ
+    try:
+        from app.services.backup_manager import backup_on_save
+        backup_on_save(PROJECTS_FILE)
+    except Exception:
+        pass
 
 
 # =========================================================================
