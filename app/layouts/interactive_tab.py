@@ -77,9 +77,26 @@ def create_interactive_tab():
                     ]),
                 ]),
             ]),
-            dbc.Button(
-                "データを読み込む", id="load_interactive_data",
-                color="primary", style={"marginTop": "10px"},
+            html.Div(
+                style={"display": "flex", "gap": "10px", "marginTop": "10px",
+                       "alignItems": "center"},
+                children=[
+                    dbc.Button(
+                        "データを読み込む", id="load_interactive_data",
+                        color="primary",
+                    ),
+                    html.Div(
+                        id="sap_btn_wrapper",
+                        style={"display": "none"},
+                        children=[
+                            dbc.Button(
+                                "プロジェクトとして保存",
+                                id="open_save_as_project_modal",
+                                color="success", outline=True,
+                            ),
+                        ],
+                    ),
+                ],
             ),
 
             # --- イオンモード / m/z キャリブレーション（折りたたみパネル） ---
@@ -891,4 +908,128 @@ def create_interactive_tab():
         dcc.Store(id="int_cal_save_trigger", data=None),
         dcc.Store(id="int_cal_ms_instrument", data="TIMS"),
         dcc.Store(id="int_cal_restore_pending", data=False),
+        # プロジェクトとして保存: リセット抑止フラグ
+        dcc.Store(id="sap_skip_reset", data=False),
+
+        # プロジェクトとして保存モーダル
+        _create_save_as_project_modal(),
     ])
+
+
+def _create_save_as_project_modal():
+    """プロジェクトとして保存モーダル"""
+    return dbc.Modal(
+        id="save_as_project_modal",
+        size="lg",
+        centered=True,
+        children=[
+            dbc.ModalHeader(dbc.ModalTitle("プロジェクトとして保存")),
+            dbc.ModalBody([
+                # アクション選択
+                dbc.Label("アクション", className="fw-bold"),
+                dbc.RadioItems(
+                    id="sap_action_type",
+                    options=[
+                        {"label": "新規プロジェクト + 新規サブプロジェクト作成",
+                         "value": "new_all"},
+                        {"label": "既存プロジェクトにサブプロジェクト追加",
+                         "value": "add_sub"},
+                        {"label": "既存サブプロジェクトに紐付け",
+                         "value": "link_existing"},
+                    ],
+                    value="new_all",
+                    className="mb-3",
+                ),
+
+                # --- 新規プロジェクト入力 (new_all) ---
+                html.Div(id="sap_new_project_section", children=[
+                    dbc.Label("プロジェクト名", className="fw-bold"),
+                    dbc.Input(id="sap_project_name",
+                              placeholder="プロジェクト名を入力"),
+                    dbc.Label("実験日", className="fw-bold mt-2"),
+                    dbc.Input(id="sap_project_date", type="date"),
+                ]),
+
+                # --- 既存プロジェクト選択 (add_sub / link_existing) ---
+                html.Div(id="sap_existing_project_section",
+                         style={"display": "none"}, children=[
+                    dbc.Label("プロジェクト", className="fw-bold"),
+                    dcc.Dropdown(id="sap_project_select",
+                                 placeholder="プロジェクトを選択"),
+                ]),
+
+                # --- 新規サブプロジェクト入力 (new_all / add_sub) ---
+                html.Div(id="sap_new_sub_section", children=[
+                    html.Hr(className="my-3"),
+                    dbc.Label("サブプロジェクト名", className="fw-bold"),
+                    dbc.Input(id="sap_sub_name",
+                              placeholder="サブプロジェクト名を入力"),
+                    dbc.Row(className="mt-2", children=[
+                        dbc.Col(width=4, children=[
+                            dbc.Label("実験日", className="small fw-bold"),
+                            dbc.Input(id="sap_sub_date", type="date"),
+                        ]),
+                        dbc.Col(width=4, children=[
+                            dbc.Label("対象化合物", className="small fw-bold"),
+                            dbc.Input(id="sap_target_compound"),
+                        ]),
+                        dbc.Col(width=4, children=[
+                            dbc.Label("MS装置", className="small fw-bold"),
+                            dbc.Select(
+                                id="sap_ms_instrument",
+                                options=[
+                                    {"label": "TIMS", "value": "TIMS"},
+                                    {"label": "DESI", "value": "DESI"},
+                                ],
+                                value="TIMS",
+                            ),
+                        ]),
+                    ]),
+                    dbc.Row(className="mt-2", children=[
+                        dbc.Col(width=6, children=[
+                            dbc.Label("極性", className="small fw-bold"),
+                            dbc.Checklist(
+                                id="sap_polarity",
+                                options=[
+                                    {"label": "Positive",
+                                     "value": "Positive"},
+                                    {"label": "Negative",
+                                     "value": "Negative"},
+                                ],
+                                value=["Positive"],
+                                inline=True,
+                            ),
+                        ]),
+                    ]),
+                ]),
+
+                # --- 既存サブプロジェクト選択 (link_existing) ---
+                html.Div(id="sap_existing_sub_section",
+                         style={"display": "none"}, children=[
+                    html.Hr(className="my-3"),
+                    dbc.Label("サブプロジェクト", className="fw-bold"),
+                    dcc.Dropdown(id="sap_sub_select",
+                                 placeholder="サブプロジェクトを選択"),
+                ]),
+
+                # --- 自動入力パス表示 ---
+                html.Hr(className="my-3"),
+                dbc.Label("自動入力パス", className="fw-bold text-muted"),
+                html.Div(className="small text-muted", children=[
+                    html.Div(id="sap_result_folder_display"),
+                    html.Div(id="sap_msi_folder_display"),
+                ]),
+
+                # ステータス
+                html.Div(id="sap_status", className="mt-2"),
+            ]),
+            dbc.ModalFooter([
+                dbc.Button("キャンセル",
+                           id="close_save_as_project_modal",
+                           color="secondary"),
+                dbc.Button("保存",
+                           id="execute_save_as_project",
+                           color="success"),
+            ]),
+        ],
+    )
