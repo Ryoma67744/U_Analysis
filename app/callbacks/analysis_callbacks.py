@@ -941,3 +941,134 @@ def save_calibration_list(n, enable, matrix, table_data,
         "calibration_regression_mode": regression_mode,
     })
     return "リストを保存しました ✓"
+
+
+# =========================================================================
+# C3: リアルタイム入力バリデーション
+# =========================================================================
+
+from app.services.data_manager import (
+    validate_data_folder, validate_rds_folder,
+    validate_output_dir, validate_numeric_param,
+)
+
+import dash_bootstrap_components as dbc
+from dash import html
+
+
+def _badge(result: dict) -> html.Span:
+    """バリデーション結果を色付きバッジに変換する。"""
+    if result["ok"]:
+        return html.Span(
+            f"✓ {result['msg']}",
+            style={"color": "#28a745", "fontSize": "0.8rem"},
+        )
+    return html.Span(
+        f"✗ {result['msg']}",
+        style={"color": "#dc3545", "fontSize": "0.8rem"},
+    )
+
+
+@callback(
+    Output("data_folder_badge", "children"),
+    Input("data_folder", "value"),
+    State("analysis_method_tims", "value"),
+)
+def validate_data_folder_input(folder, tims_method):
+    if not folder or not folder.strip():
+        return ""
+    is_tims = bool(tims_method)
+    result = validate_data_folder(folder, is_tims=is_tims)
+    return _badge(result)
+
+
+@callback(
+    Output("rds_folder_badge", "children"),
+    Input("rds_folder", "value"),
+)
+def validate_rds_folder_input(folder):
+    if not folder or not folder.strip():
+        return ""
+    result = validate_rds_folder(folder)
+    return _badge(result)
+
+
+@callback(
+    Output("output_dir_badge", "children"),
+    Input("output_dir", "value"),
+)
+def validate_output_dir_input(folder):
+    if not folder or not folder.strip():
+        return ""
+    result = validate_output_dir(folder)
+    return _badge(result)
+
+
+@callback(
+    Output("validation_summary", "children"),
+    Output("validation_summary", "style"),
+    Input("run_analysis", "n_clicks"),
+    [State("data_folder", "value"),
+     State("output_dir", "value"),
+     State("p_thresh", "value"),
+     State("logfc_thresh", "value"),
+     State("tolerance_mz", "value"),
+     State("resume_rds", "value"),
+     State("rds_folder", "value"),
+     State("analysis_method_tims", "value")],
+    prevent_initial_call=True,
+)
+def preflight_validation(
+    n_clicks, data_folder, output_dir,
+    p_thresh, logfc_thresh, tolerance_mz,
+    resume_rds, rds_folder, tims_method,
+):
+    """解析実行ボタン押下時にプリフライトチェックを実行する。
+    問題がなければ非表示のまま。問題があればエラー一覧を表示。"""
+    if not n_clicks:
+        return "", {"display": "none"}
+
+    errors = []
+    is_tims = bool(tims_method)
+
+    # データフォルダ
+    r = validate_data_folder(data_folder, is_tims=is_tims)
+    if not r["ok"]:
+        errors.append(f"データフォルダ: {r['msg']}")
+
+    # RDSフォルダ (途中再開時のみ)
+    if resume_rds:
+        r = validate_rds_folder(rds_folder)
+        if not r["ok"]:
+            errors.append(f"RDSフォルダ: {r['msg']}")
+
+    # 出力先
+    r = validate_output_dir(output_dir)
+    if not r["ok"]:
+        errors.append(f"出力先: {r['msg']}")
+
+    # 数値パラメータ
+    for val, name, lo, hi in [
+        (p_thresh, "p値閾値", 0, 1),
+        (logfc_thresh, "log2FC閾値", 0, None),
+        (tolerance_mz, "m/z許容誤差", 0, None),
+    ]:
+        if val is not None and val != "":
+            r = validate_numeric_param(val, name, min_val=lo, max_val=hi)
+            if not r["ok"]:
+                errors.append(r["msg"])
+
+    if not errors:
+        return "", {"display": "none"}
+
+    items = [html.Li(e, style={"fontSize": "0.85rem"}) for e in errors]
+    alert = dbc.Alert(
+        children=[
+            html.Strong("入力チェックでエラーが見つかりました:"),
+            html.Ul(items, style={"marginBottom": 0, "marginTop": "5px"}),
+        ],
+        color="danger",
+        dismissable=True,
+        style={"marginBottom": "10px"},
+    )
+    return alert, {"display": "block"}

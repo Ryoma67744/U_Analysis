@@ -252,3 +252,75 @@ def list_result_images(result_dir: str, subfolder: str = None) -> list[str]:
         if f.suffix.lower() in extensions
     ]
     return sorted(images)
+
+
+# ---------------------------------------------------------------------------
+# C3: データ入力バリデーション
+# ---------------------------------------------------------------------------
+
+def validate_data_folder(folder_path: str, is_tims: bool = False) -> dict:
+    """データフォルダの存在とファイル有無を検証する。
+
+    Returns
+    -------
+    dict  {"ok": bool, "msg": str, "count": int}
+    """
+    if not folder_path or not folder_path.strip():
+        return {"ok": False, "msg": "パスが未入力です", "count": 0}
+    p = Path(folder_path)
+    if not p.exists():
+        return {"ok": False, "msg": "フォルダが見つかりません", "count": 0}
+    if not p.is_dir():
+        return {"ok": False, "msg": "指定パスはフォルダではありません", "count": 0}
+    files = list_tims_files(folder_path) if is_tims else list_msi_files(folder_path)
+    if not files:
+        return {"ok": False, "msg": "データファイルが見つかりません", "count": 0}
+    return {"ok": True, "msg": f"{len(files)} ファイル検出", "count": len(files)}
+
+
+def validate_rds_folder(folder_path: str) -> dict:
+    """RDSフォルダの存在と.rdsファイル有無を検証する。"""
+    if not folder_path or not folder_path.strip():
+        return {"ok": False, "msg": "パスが未入力です", "count": 0}
+    p = Path(folder_path)
+    if not p.exists():
+        return {"ok": False, "msg": "フォルダが見つかりません", "count": 0}
+    if not p.is_dir():
+        return {"ok": False, "msg": "指定パスはフォルダではありません", "count": 0}
+    rds = list(p.glob("*.rds"))
+    if not rds:
+        return {"ok": False, "msg": ".rds ファイルが見つかりません", "count": 0}
+    return {"ok": True, "msg": f"{len(rds)} .rds ファイル検出", "count": len(rds)}
+
+
+def validate_output_dir(folder_path: str) -> dict:
+    """出力先フォルダの書き込み権限を検証する。"""
+    if not folder_path or not folder_path.strip():
+        return {"ok": False, "msg": "パスが未入力です"}
+    p = Path(folder_path)
+    # 親フォルダが存在すれば書き込みテスト
+    target = p if p.is_dir() else p.parent
+    if not target.is_dir():
+        return {"ok": False, "msg": "親フォルダが見つかりません"}
+    try:
+        test_file = target / ".write_test_tmp"
+        test_file.touch()
+        test_file.unlink()
+        return {"ok": True, "msg": "書き込み可能"}
+    except OSError:
+        return {"ok": False, "msg": "書き込み権限がありません"}
+
+
+def validate_numeric_param(value, name: str, min_val=None, max_val=None) -> dict:
+    """数値パラメータの妥当性を検証する。"""
+    if value is None or value == "":
+        return {"ok": False, "msg": f"{name}: 値が未入力です"}
+    try:
+        v = float(value)
+    except (ValueError, TypeError):
+        return {"ok": False, "msg": f"{name}: 数値ではありません"}
+    if min_val is not None and v < min_val:
+        return {"ok": False, "msg": f"{name}: {min_val} 以上にしてください"}
+    if max_val is not None and v > max_val:
+        return {"ok": False, "msg": f"{name}: {max_val} 以下にしてください"}
+    return {"ok": True, "msg": "OK"}

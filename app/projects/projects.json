@@ -41,11 +41,59 @@
             "reanalysis_ion_mode": "Positive",
             "reanalysis_tolerance_mz": 0.01
           },
-          "last_result_dir": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\TIMS\\Data\\240819_py_PD100um_251223\\260219-DEMO"
+          "last_result_dir": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\TIMS\\Data\\240819_py_PD100um_251223\\260219-DEMO",
+          "thumbnail_path": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\TIMS\\Data\\240819_py_PD100um_251223\\260219-DEMO\\thumbnail.png"
         }
       ],
       "created_at": "2026-02-19T14:52:08",
       "last_modified": "2026-02-19T16:22:36"
+    },
+    {
+      "id": "76044856",
+      "name": "260209-Apple-POS",
+      "experiment_date": "2026-02-09",
+      "memo": "",
+      "sub_projects": [
+        {
+          "id": "28322f76",
+          "name": "260209-Apple-POS",
+          "experiment_date": "2026-02-09",
+          "target_compound": "",
+          "ms_instrument": "TIMS",
+          "polarity": [
+            "Cation"
+          ],
+          "memo": "DHB",
+          "data_folder": "",
+          "output_dir": "",
+          "created_at": "2026-03-02T18:11:54",
+          "last_modified": "2026-03-02T19:17:08",
+          "last_analysis_settings": {
+            "analysis_method": null,
+            "analysis_method_tims": "tims_v8",
+            "data_folder": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\TIMS\\Data\\260209_Apple_POS_260302",
+            "output_dir": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\TIMS\\Data\\260209_Apple_POS_260302",
+            "mrm_path": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\TIMS\\DB\\260228-hmdb_metabolites_charge_aware_merged_with_list.csv",
+            "p_thresh": 0.05,
+            "logfc_thresh": 0.1,
+            "ion_mode": "Positive",
+            "tolerance_mz": 0.01,
+            "resume_rds": false,
+            "rds_folder": "",
+            "reanalysis_data_folder": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\DESI\\Data",
+            "rds_path": "",
+            "filter_mode": "exclude",
+            "target_clusters": "",
+            "reanalysis_p_thresh": 0.05,
+            "reanalysis_logfc_thresh": 0.1,
+            "reanalysis_ion_mode": "Positive",
+            "reanalysis_tolerance_mz": 0.01
+          },
+          "last_result_dir": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\TIMS\\Data\\260209_Apple_POS_260302\\260209-Apple-POS-260302"
+        }
+      ],
+      "created_at": "2026-03-02T18:11:28",
+      "last_modified": "2026-03-02T19:17:08"
     }
   ]
 }

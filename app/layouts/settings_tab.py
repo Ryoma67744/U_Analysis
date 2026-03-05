@@ -32,7 +32,7 @@ def create_settings_tab():
                         html.Div(className="param-group", children=[
                             html.H5("データフォルダ・サンプル選択"),
                             html.Div(
-                                style={"display": "flex", "gap": "5px", "marginBottom": "10px"},
+                                style={"display": "flex", "gap": "5px", "marginBottom": "4px"},
                                 children=[
                                     dbc.Input(id="data_folder",
                                               value=ls.get("data_folder", DEFAULT_DESI_DATA_FOLDER),
@@ -40,6 +40,7 @@ def create_settings_tab():
                                     dbc.Button("参照...", id="browse_folder", size="sm", color="secondary"),
                                 ],
                             ),
+                            html.Span(id="data_folder_badge", children="", style={"fontSize": "0.8rem"}),
                             html.Div(id="sample_selector"),
                             dbc.FormText("チェックを入れたサンプルが解析対象になります"),
                         ]),
@@ -56,6 +57,8 @@ def create_settings_tab():
                                               placeholder="RDSファイルが入っているフォルダ"),
                                     dbc.Button("参照...", id="browse_rds_folder", size="sm", color="secondary",
                                                style={"marginTop": "5px"}),
+                                    html.Span(id="rds_folder_badge", children="",
+                                              style={"fontSize": "0.8rem", "display": "block", "marginTop": "2px"}),
                                     html.Div(style={"marginTop": "10px"}, children=[
                                         html.H6("RDSファイル選択"),
                                         html.Div(id="rds_file_selector"),
@@ -446,7 +449,11 @@ def create_settings_tab():
             ]),
         ]),
         dbc.FormText("出力先の下にサブフォルダーとして作成されます"),
+        html.Span(id="output_dir_badge", children="", style={"fontSize": "0.8rem"}),
         html.Hr(),
+
+        # プリフライトバリデーション結果
+        html.Div(id="validation_summary", children="", style={"display": "none"}),
 
         # 実行ボタンエリア
         _create_run_button(),
