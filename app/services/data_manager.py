@@ -236,23 +236,6 @@ def list_result_folders(base_dir: str) -> list[dict]:
     return results
 
 
-def list_result_images(result_dir: str, subfolder: str = None) -> list[str]:
-    """結果フォルダ内の画像ファイル一覧を取得"""
-    target = Path(result_dir)
-    if subfolder:
-        target = target / subfolder
-
-    if not target.is_dir():
-        return []
-
-    extensions = {".png", ".jpg", ".jpeg"}
-    images = [
-        str(f)
-        for f in target.rglob("*")
-        if f.suffix.lower() in extensions
-    ]
-    return sorted(images)
-
 
 # ---------------------------------------------------------------------------
 # C3: データ入力バリデーション

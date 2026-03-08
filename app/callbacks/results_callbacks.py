@@ -14,6 +14,7 @@ from app.services.results_viewer import (
     categorize_image, get_available_clusters,
     sort_images_by_time, filter_images_by_cluster,
 )
+from app.services.notify import warn_user
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +137,8 @@ def render_gallery(result_folder, subfolder, category, cluster, page, n_interval
             with open(img_path, "rb") as f:
                 img_data = base64.b64encode(f.read()).decode()
             src = f"data:image/png;base64,{img_data}"
-        except Exception:
+        except Exception as e:
+            print(f"[WARNING] 画像読み込み失敗 ({p.name}): {e}")
             src = ""
 
         cards.append(
@@ -200,7 +202,8 @@ def open_image_modal(clicks):
         with open(img_path, "rb") as f:
             img_data = base64.b64encode(f.read()).decode()
         src = f"data:image/png;base64,{img_data}"
-    except Exception:
+    except Exception as e:
+        warn_user(f"画像の読み込みに失敗: {e}")
         return True, html.Div("画像を読み込めません"), p.name, img_path
 
     return (
@@ -338,7 +341,8 @@ def display_analysis_params(result_folder, subfolder):
 
     try:
         params = json.loads(params_file.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        warn_user(f"解析パラメータの読み込みに失敗: {e}")
         return html.Span("パラメータファイル読み込みエラー", className="text-danger")
 
     # パラメータをテーブル形式で表示
@@ -347,7 +351,7 @@ def display_analysis_params(result_folder, subfolder):
         "analysis_type": "解析タイプ",
         "data_folder": "データフォルダ",
         "output_dir": "出力フォルダ",
-        "mrm_path": "MRMファイル",
+        "annotation_path": "アノテーションファイル",
         "annotation_csv": "アノテーションCSV",
         "ion_mode": "イオンモード",
         "tolerance_mz": "m/z許容誤差",
@@ -429,7 +433,8 @@ def open_past_log(n_clicks, result_folder, subfolder):
     from app.services.analysis_runner import format_log_lines_styled
     try:
         log_text = log_path.read_text(encoding="utf-8")
-    except Exception:
+    except Exception as e:
+        warn_user(f"ログファイルの読み込みに失敗: {e}")
         return True, [html.P("ログファイルの読み込みに失敗しました", className="text-muted")]
 
     styled = format_log_lines_styled(log_text)
@@ -455,7 +460,8 @@ def filter_past_log(search, level, result_folder, subfolder):
     from app.services.analysis_runner import format_log_lines_styled
     try:
         log_text = log_path.read_text(encoding="utf-8")
-    except Exception:
+    except Exception as e:
+        warn_user(f"ログフィルタに失敗: {e}")
         return no_update
 
     styled = format_log_lines_styled(log_text, search=search or "", level=level or "all")

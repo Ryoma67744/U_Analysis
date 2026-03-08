@@ -95,6 +95,63 @@ def _replace_sample_names_block(
 
 
 # ---------------------------------------------------------------------------
+# m/z キャリブレーション回帰計算
+# ---------------------------------------------------------------------------
+
+def compute_calibration_coefficients(
+    table_data: list,
+    regression_mode: str,
+    min_peaks: int = 2,
+) -> Optional[dict]:
+    """キャリブレーションテーブルから多項式回帰係数を計算。
+
+    モデル: error(mz) = observed_mz - reference_mz
+           error = c_n * mz^n + c_{n-1} * mz^(n-1) + ... + c_0
+    補正:  corrected_mz = mz - polyval(coefficients, mz)
+
+    Returns:
+        dict: {coefficients, degree, r_squared, n_points, regression_mode}
+        None: データ不足時
+    """
+    import numpy as np
+
+    pairs = []
+    for row in (table_data or []):
+        if not row.get("use"):
+            continue
+        try:
+            ref = float(row["ref_mz"])
+            obs = float(row["obs_mz"])
+            if ref > 0 and obs > 0:
+                pairs.append((ref, obs))
+        except (ValueError, TypeError, KeyError):
+            continue
+
+    if len(pairs) < min_peaks:
+        return None
+
+    refs = np.array([p[0] for p in pairs])
+    obs = np.array([p[1] for p in pairs])
+    errors = obs - refs
+
+    degree = {"linear": 1, "poly2": 2, "poly3": 3}.get(regression_mode, 3)
+    coefficients = np.polyfit(refs, errors, degree)  # 降順 [c_n, ..., c_0]
+
+    predicted = np.polyval(coefficients, refs)
+    ss_res = np.sum((errors - predicted) ** 2)
+    ss_tot = np.sum((errors - np.mean(errors)) ** 2)
+    r_squared = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 1.0
+
+    return {
+        "coefficients": coefficients.tolist(),
+        "degree": degree,
+        "r_squared": round(r_squared, 6),
+        "n_points": len(pairs),
+        "regression_mode": regression_mode,
+    }
+
+
+# ---------------------------------------------------------------------------
 # 設定生成
 # ---------------------------------------------------------------------------
 
@@ -125,8 +182,8 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
         rds_dir = str(Path(params["resume_rds_paths"][0]).parent)
         lines = _replace_assign(lines, "RESUME_DIR_PATH", _r_str(rds_dir))
 
-    if params.get("mrm_path"):
-        lines = _replace_assign(lines, "MRM_FILE_PATH", _r_str(params["mrm_path"]))
+    if params.get("annotation_path"):
+        lines = _replace_assign(lines, "MRM_FILE_PATH", _r_str(params["annotation_path"]))
 
     if params.get("p_thresh") is not None:
         lines = _replace_assign(
@@ -175,6 +232,15 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
     if params.get("adduct_patterns"):
         r_vec = "c(" + ", ".join(f'"{p}"' for p in params["adduct_patterns"]) + ")"
         lines = _replace_block_assign(lines, "ANNOT_ADDUCT_PATTERNS", r_vec)
+
+    # --- m/z キャリブレーション ---
+    if params.get("calibration_enable"):
+        lines = _replace_assign(lines, "CALIBRATION_ENABLE", "TRUE")
+        coefs = params["calibration_coefficients"]
+        lines = _replace_assign(
+            lines, "CALIBRATION_COEFFICIENTS",
+            "c(" + ", ".join(str(c) for c in coefs) + ")",
+        )
 
     # 一時ファイルをlog/サブフォルダに保存
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -235,6 +301,41 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
     if params.get("export_data_dir"):
         lines = _replace_assign(
             lines, "EXPORT_DATA_DIR", _r_str(params["export_data_dir"])
+        )
+
+    # --- クラスタソースの注入（TIMS: resolve_rds_path()用） ---
+    if params.get("cluster_source"):
+        lines = _replace_assign(
+            lines, "CLUSTER_SOURCE", _r_str(params["cluster_source"])
+        )
+
+    # --- 再解析用アノテーションファイルの注入 ---
+    if params.get("reanalysis_annotation_path"):
+        ann_path = params["reanalysis_annotation_path"]
+        # TIMS (.csv) → ANNOTATION_CSV_PATH
+        if ann_path.lower().endswith(".csv"):
+            lines = _replace_assign(
+                lines, "ANNOTATION_CSV_PATH", _r_str(ann_path)
+            )
+        # DESI (.xlsx) → MRM_FILE_PATH
+        else:
+            lines = _replace_assign(
+                lines, "MRM_FILE_PATH", _r_str(ann_path)
+            )
+
+    # --- マージスクリプトパスの注入（DESI/TIMS共通） ---
+    if params.get("merge_script_path"):
+        lines = _replace_assign(
+            lines, "MERGE_SCRIPT_PATH", _r_str(params["merge_script_path"])
+        )
+
+    # --- m/z キャリブレーション（再解析） ---
+    if params.get("calibration_enable"):
+        lines = _replace_assign(lines, "V13_CALIBRATION_ENABLE", "TRUE")
+        coefs = params["calibration_coefficients"]
+        lines = _replace_assign(
+            lines, "V13_CALIBRATION_COEFFICIENTS",
+            "c(" + ", ".join(str(c) for c in coefs) + ")",
         )
 
     # 一時ファイルをlog/サブフォルダに保存
@@ -323,26 +424,6 @@ def start_analysis_process(
         "status_file": str(status_file),
     }
 
-
-def get_analysis_progress(progress_file: str) -> dict:
-    """解析プロセスの進捗を取得"""
-    try:
-        content = Path(progress_file).read_text(encoding="utf-8").strip()
-        if not content:
-            return {"percent": 0, "step": "準備中", "current": 0, "total": 1}
-        # 最終行を使用
-        last_line = content.strip().split("\n")[-1]
-        parts = last_line.split("|")
-        if len(parts) >= 4:
-            return {
-                "percent": int(parts[0]),
-                "step": parts[1],
-                "current": int(parts[2]),
-                "total": int(parts[3]),
-            }
-    except Exception:
-        pass
-    return {"percent": 0, "step": "準備中", "current": 0, "total": 1}
 
 
 def get_analysis_log(log_file: str, last_n: int = 50) -> str:

@@ -18,37 +18,6 @@ KEY_SUBDIRS = [
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 
 
-def get_result_structure(result_dir: str) -> dict:
-    """結果フォルダの構造を取得"""
-    root = Path(result_dir)
-    if not root.is_dir():
-        return {"root": str(root), "subdirs": {}, "root_images": []}
-
-    subdirs = {}
-    for subdir_name in KEY_SUBDIRS:
-        subdir_path = root / subdir_name
-        if subdir_path.is_dir():
-            images = [
-                str(f) for f in subdir_path.rglob("*")
-                if f.suffix.lower() in IMAGE_EXTENSIONS
-            ]
-            subdirs[subdir_name] = {
-                "path": str(subdir_path),
-                "image_count": len(images),
-                "images": images,
-            }
-
-    root_images = [
-        str(f) for f in root.iterdir()
-        if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
-    ]
-
-    return {
-        "root": str(root),
-        "subdirs": subdirs,
-        "root_images": root_images,
-    }
-
 
 def categorize_image(image_path: str) -> str:
     """画像カテゴリを判定"""
@@ -70,17 +39,6 @@ def categorize_image(image_path: str) -> str:
         return "Filtering"
     return "Other"
 
-
-def organize_images_by_category(images: list[str]) -> dict[str, list[str]]:
-    """画像一覧をカテゴリ別に整理"""
-    if not images:
-        return {}
-
-    result: dict[str, list[str]] = {}
-    for img in images:
-        cat = categorize_image(img)
-        result.setdefault(cat, []).append(img)
-    return result
 
 
 def extract_cluster_number(image_path: str) -> Optional[int]:
@@ -109,17 +67,6 @@ def get_available_clusters(result_dir: str) -> list[int]:
     return sorted(clusters)
 
 
-def extract_sample_name(image_path: str) -> Optional[str]:
-    """サンプル名を画像パスから抽出"""
-    filename = Path(image_path).stem
-    parts = filename.split("_")
-
-    # 日付パターン（6桁の数字で始まる）を探す
-    for i, part in enumerate(parts):
-        if re.match(r"^\d{6}", part):
-            return "_".join(parts[i:])
-    return None
-
 
 def filter_images_by_cluster(
     images: list[str], cluster_num: Optional[int]
@@ -132,21 +79,6 @@ def filter_images_by_cluster(
         if extract_cluster_number(img) == cluster_num
     ]
 
-
-def create_gallery_data(
-    images: list[str], max_per_page: int = 20
-) -> dict:
-    """画像ギャラリーデータを生成"""
-    if not images:
-        return {"images": [], "total": 0, "pages": 0, "per_page": max_per_page}
-
-    import math
-    return {
-        "images": images,
-        "total": len(images),
-        "pages": math.ceil(len(images) / max_per_page),
-        "per_page": max_per_page,
-    }
 
 
 def sort_images_by_time(images: list[str]) -> list[str]:

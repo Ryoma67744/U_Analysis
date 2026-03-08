@@ -6,16 +6,12 @@
 import base64
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
 from dash import (
     Input, Output, State, callback, ctx, no_update,
     html, dcc, dash_table, ALL,
 )
-
-from app.config import DESI_COLORS_50, HIGHLIGHT_GRAY
 from app.services.share_manager import get_share
 from app.services.seurat_bridge import SeuratBridge
 from app.services.results_viewer import (

@@ -41,6 +41,11 @@ def create_settings_tab():
                                 ],
                             ),
                             html.Span(id="data_folder_badge", children="", style={"fontSize": "0.8rem"}),
+                            html.Small(
+                                id="data_folder_path_hint", children="",
+                                style={"color": "#6c757d", "fontSize": "0.75rem",
+                                       "marginTop": "2px", "display": "block"},
+                            ),
                             html.Div(id="sample_selector"),
                             dbc.FormText("チェックを入れたサンプルが解析対象になります"),
                         ]),
@@ -59,6 +64,11 @@ def create_settings_tab():
                                                style={"marginTop": "5px"}),
                                     html.Span(id="rds_folder_badge", children="",
                                               style={"fontSize": "0.8rem", "display": "block", "marginTop": "2px"}),
+                                    html.Small(
+                                        id="rds_folder_path_hint", children="",
+                                        style={"color": "#6c757d", "fontSize": "0.75rem",
+                                               "marginTop": "2px", "display": "block"},
+                                    ),
                                     html.Div(style={"marginTop": "10px"}, children=[
                                         html.H6("RDSファイル選択"),
                                         html.Div(id="rds_file_selector"),
@@ -70,11 +80,17 @@ def create_settings_tab():
                     ]),
                     dbc.Col(width=6, children=[
                         html.Div(className="param-group", children=[
-                            html.H5("MRMファイル (オプション)"),
-                            dbc.Input(id="mrm_path", value=ls.get("mrm_path", ""),
-                                      placeholder="MRM.xlsx のパス"),
-                            dbc.Button("参照...", id="browse_mrm", size="sm", color="secondary",
+                            html.H5("アノテーションファイル (オプション)"),
+                            dbc.Input(id="annotation_path",
+                                      value=ls.get("annotation_path", ls.get("mrm_path", "")),
+                                      placeholder="アノテーションファイルのパス"),
+                            dbc.Button("参照...", id="browse_annotation", size="sm", color="secondary",
                                        style={"marginTop": "5px"}),
+                            html.Small(
+                                id="annotation_path_path_hint", children="",
+                                style={"color": "#6c757d", "fontSize": "0.75rem",
+                                       "marginTop": "2px", "display": "block"},
+                            ),
                         ]),
                         # TIMS イオンモード設定（TIMS選択時のみ表示）
                         html.Div(
@@ -326,17 +342,73 @@ def create_settings_tab():
                                                size="sm", color="secondary"),
                                 ],
                             ),
+                            html.Small(
+                                id="reanalysis_data_folder_path_hint", children="",
+                                style={"color": "#6c757d", "fontSize": "0.75rem",
+                                       "marginTop": "2px", "display": "block"},
+                            ),
                             html.Div(id="sample_selector_reanalysis"),
                             dbc.FormText("チェックを入れたサンプルが再解析対象になります"),
+                        ]),
+                        # --- フィルタモード（Row 1 左カラムに統合）---
+                        html.Div(className="param-group", style={"marginTop": "10px"}, children=[
+                            html.H5(["フィルタモード", help_badge("filter_mode")]),
+                            dbc.RadioItems(
+                                id="filter_mode",
+                                options=[
+                                    {"label": "除外 (exclude)", "value": "exclude"},
+                                    {"label": "抽出 (keep)", "value": "keep"},
+                                ],
+                                value=ls.get("filter_mode", "exclude"), inline=True,
+                            ),
+                        ]),
+                        # --- 対象クラスタ（Row 1 左カラムに統合）---
+                        html.Div(className="param-group", style={"marginTop": "10px"}, children=[
+                            html.H5("対象クラスタ"),
+                            dbc.Input(id="target_clusters", placeholder="例: 0, 1, 5, 7",
+                                      value=ls.get("target_clusters", "")),
+                            dbc.FormText("カンマ区切りでクラスタ番号を入力"),
                         ]),
                     ]),
                     dbc.Col(width=6, children=[
                         html.Div(className="param-group", children=[
-                            html.H5("RDSファイル"),
-                            dbc.Input(id="rds_path", value=ls.get("rds_path", ""),
-                                      placeholder="解析済みRDSファイルのパス"),
-                            dbc.Button("参照...", id="browse_rds", size="sm", color="secondary",
-                                       style={"marginTop": "5px"}),
+                            html.H5("RDS指定"),
+                            html.H6("RDSフォルダ"),
+                            html.Div(
+                                style={"display": "flex", "gap": "5px", "marginBottom": "5px"},
+                                children=[
+                                    dbc.Input(id="rds_folder_reanalysis",
+                                              value=ls.get("rds_folder_reanalysis", ""),
+                                              placeholder="RDS_Filesフォルダのパス"),
+                                    dbc.Button("参照...", id="browse_rds_folder_reanalysis",
+                                               size="sm", color="secondary"),
+                                ],
+                            ),
+                            html.Small(
+                                id="rds_folder_reanalysis_path_hint", children="",
+                                style={"color": "#6c757d", "fontSize": "0.75rem",
+                                       "marginTop": "2px", "display": "block"},
+                            ),
+                            html.Span(id="rds_detection_badge"),
+                            html.Div(
+                                id="cluster_source_container",
+                                style={"display": "none"},
+                                children=[
+                                    html.H6("クラスタソース", style={"marginTop": "5px"}),
+                                    dbc.RadioItems(
+                                        id="cluster_source",
+                                        options=[
+                                            {"label": "Harmony/PCA", "value": "harmony"},
+                                            {"label": "RPCA", "value": "rpca"},
+                                        ],
+                                        value=ls.get("cluster_source", "harmony"),
+                                        inline=True,
+                                    ),
+                                ],
+                            ),
+                            # 後方互換: rds_path を非表示で維持（既存State参照用）
+                            dbc.Input(id="rds_path", value="",
+                                      style={"display": "none"}),
                         ]),
                         # TIMS 再解析イオンモード
                         html.Div(
@@ -371,32 +443,53 @@ def create_settings_tab():
                                         inline=True,
                                     ),
                                 ]),
+                                # --- m/z キャリブレーション（再解析） ---
+                                html.Hr(style={"marginTop": "15px"}),
+                                html.H5("m/z キャリブレーション"),
+                                dbc.Checkbox(
+                                    id="reanalysis_calibration_use_previous",
+                                    label="前回の解析の回帰式でキャリブレーション",
+                                    value=ls.get("reanalysis_calibration_use_previous", False),
+                                ),
+                                html.Div(
+                                    id="reanalysis_calibration_info",
+                                    style={"display": "none"},
+                                    children=[
+                                        html.Div(
+                                            id="reanalysis_calibration_details",
+                                            style={
+                                                "background": "#f0f9f0",
+                                                "padding": "10px",
+                                                "borderRadius": "5px",
+                                                "marginTop": "5px",
+                                                "fontSize": "13px",
+                                            },
+                                        ),
+                                    ],
+                                ),
                             ],
                         ),
                     ]),
                 ]),
-                dbc.Row([
-                    dbc.Col(width=6, children=[
-                        html.Div(className="param-group", children=[
-                            html.H5(["フィルタモード", help_badge("filter_mode")]),
-                            dbc.RadioItems(
-                                id="filter_mode",
-                                options=[
-                                    {"label": "除外 (exclude)", "value": "exclude"},
-                                    {"label": "抽出 (keep)", "value": "keep"},
-                                ],
-                                value=ls.get("filter_mode", "exclude"), inline=True,
-                            ),
-                        ]),
-                    ]),
-                    dbc.Col(width=6, children=[
-                        html.Div(className="param-group", children=[
-                            html.H5("対象クラスタ"),
-                            dbc.Input(id="target_clusters", placeholder="例: 0, 1, 5, 7",
-                                      value=ls.get("target_clusters", "")),
-                            dbc.FormText("カンマ区切りでクラスタ番号を入力"),
-                        ]),
-                    ]),
+                # アノテーションファイル（オプション）
+                html.Div(className="param-group", style={"marginTop": "15px"}, children=[
+                    html.H5("アノテーションファイル (オプション)"),
+                    html.Div(
+                        style={"display": "flex", "gap": "5px"},
+                        children=[
+                            dbc.Input(id="reanalysis_annotation_path",
+                                      value=ls.get("reanalysis_annotation_path", ""),
+                                      placeholder="アノテーションファイルのパス"),
+                            dbc.Button("参照...", id="browse_reanalysis_annotation",
+                                       size="sm", color="secondary"),
+                        ],
+                    ),
+                    html.Small(
+                        id="reanalysis_annotation_path_path_hint", children="",
+                        style={"color": "#6c757d", "fontSize": "0.75rem",
+                               "marginTop": "2px", "display": "block"},
+                    ),
+                    dbc.FormText(".xlsx (DESI) / .csv (TIMS)"),
                 ]),
                 # 再解析 詳細設定
                 html.Details([
@@ -450,6 +543,11 @@ def create_settings_tab():
         ]),
         dbc.FormText("出力先の下にサブフォルダーとして作成されます"),
         html.Span(id="output_dir_badge", children="", style={"fontSize": "0.8rem"}),
+        html.Small(
+            id="output_dir_path_hint", children="",
+            style={"color": "#6c757d", "fontSize": "0.75rem",
+                   "marginTop": "2px", "display": "block"},
+        ),
         html.Hr(),
 
         # プリフライトバリデーション結果

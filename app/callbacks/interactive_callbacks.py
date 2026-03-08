@@ -26,6 +26,7 @@ from app.config import (
     DEFAULT_ADDUCT_POSITIVE,
 )
 from app.services.seurat_bridge import SeuratBridge
+from app.services.notify import warn_user
 
 # Seuratブリッジのシングルトン
 _bridge = SeuratBridge()
@@ -42,9 +43,17 @@ _interactive_data = {
 
 
 def _cluster_sort_key(x):
-    """クラスタIDの統一ソートキー（数値優先、文字列は末尾）"""
+    """クラスタIDの統一ソートキー
+    "3-a" → (3, "a"), "3" → (3, ""), "abc" → (inf, "abc")
+    """
     s = str(x)
-    return (int(s) if s.isdigit() else float("inf"), s)
+    # "3-a" 形式の分解
+    m = re.match(r'^(\d+)-([a-z]+)$', s)
+    if m:
+        return (int(m.group(1)), m.group(2))
+    if s.isdigit():
+        return (int(s), "")
+    return (float("inf"), s)
 
 
 def _get_cluster_color_map(clusters, custom_colors=None):
@@ -53,6 +62,76 @@ def _get_cluster_color_map(clusters, custom_colors=None):
     str_cls = list(set(str(c) for c in clusters))
     str_cls.sort(key=_cluster_sort_key)
     cmap = {cl: CLUSTER_PRESET_COLORS[i % len(CLUSTER_PRESET_COLORS)] for i, cl in enumerate(str_cls)}
+    if custom_colors:
+        cmap.update(custom_colors)
+    return cmap
+
+
+def _adjust_color_lightness(hex_color, factor):
+    """HEX カラーの明度を調整する。factor > 1 で明るく、< 1 で暗く。"""
+    hex_color = hex_color.lstrip('#')
+    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+    r = min(255, max(0, int(r + (255 - r) * (factor - 1) * 0.5)))
+    g = min(255, max(0, int(g + (255 - g) * (factor - 1) * 0.5)))
+    b = min(255, max(0, int(b + (255 - b) * (factor - 1) * 0.5)))
+    return f'#{r:02x}{g:02x}{b:02x}'
+
+
+def _get_merged_cluster_color_map(clusters, mode="shade", custom_colors=None):
+    """マージクラスタ用カラーマップ
+
+    mode="shade": 親クラスタの色を濃淡バリエーションで展開
+      例: 親 3 = #1f77b4 → 3-a=#1f77b4, 3-b=明るい, 3-c=さらに明るい
+    mode="independent": 全サブクラスタに独立した新色を割り当て
+    """
+    str_cls = list(set(str(c) for c in clusters))
+    str_cls.sort(key=_cluster_sort_key)
+
+    if mode == "independent":
+        # 全クラスタに独立色を割り当て
+        cmap = {cl: CLUSTER_PRESET_COLORS[i % len(CLUSTER_PRESET_COLORS)]
+                for i, cl in enumerate(str_cls)}
+    else:
+        # shade モード: 親クラスタごとに色を展開
+        # まず親クラスタ（サブクラスタを持たないものも含む）の色を決定
+        parent_set = set()
+        for cl in str_cls:
+            m = re.match(r'^(\d+)-[a-z]+$', cl)
+            if m:
+                parent_set.add(m.group(1))
+            else:
+                parent_set.add(cl)
+        parent_sorted = sorted(parent_set, key=_cluster_sort_key)
+        parent_colors = {p: CLUSTER_PRESET_COLORS[i % len(CLUSTER_PRESET_COLORS)]
+                         for i, p in enumerate(parent_sorted)}
+
+        cmap = {}
+        # 親クラスタごとのサブクラスタ数を計算
+        parent_subclusters = {}
+        for cl in str_cls:
+            m = re.match(r'^(\d+)-([a-z]+)$', cl)
+            if m:
+                p = m.group(1)
+                parent_subclusters.setdefault(p, []).append(cl)
+
+        for cl in str_cls:
+            m = re.match(r'^(\d+)-([a-z]+)$', cl)
+            if m:
+                parent = m.group(1)
+                base_color = parent_colors.get(parent, "#999999")
+                subs = parent_subclusters.get(parent, [cl])
+                idx = subs.index(cl) if cl in subs else 0
+                n_subs = len(subs)
+                if n_subs <= 1:
+                    factor = 1.0
+                else:
+                    # 0番目=元の色, 最後=最も明るい
+                    factor = 1.0 + (idx / (n_subs - 1)) * 1.2
+                cmap[cl] = _adjust_color_lightness(base_color, factor)
+            else:
+                # 通常クラスタはそのまま親の色
+                cmap[cl] = parent_colors.get(cl, "#999999")
+
     if custom_colors:
         cmap.update(custom_colors)
     return cmap
@@ -417,8 +496,8 @@ def _save_interactive_settings(key, value):
             json.dumps(existing, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-    except Exception:
-        pass
+    except Exception as e:
+        warn_user(f"インタラクティブ設定の保存に失敗: {e}")
 
 
 def _extract_annotation_positions_by_name(relayout_data, clusters):
@@ -561,6 +640,19 @@ def _detect_integration_methods(folder_path: str) -> dict:
                     rds_map["Harmony"] = str(rds_file)
                 elif "rpca" in name_lower and "RPCA" not in rds_map:
                     rds_map["RPCA"] = str(rds_file)
+
+    # --- マージ済みRDS優先検出（無効化中）---
+    # パフォーマンス問題のため無効化。有効化するとマージRDS（~200MB）が
+    # Step2の代わりに読み込まれ、Cluster_merged / umap_merged が利用可能になる。
+    # 有効化時はB〜H（トグルUI・コールバック・R抽出）が自動的に発動する。
+    # for search_dir in search_dirs:
+    #     for rds_file in search_dir.glob("*_merged_seurat.rds"):
+    #         merged_path = str(rds_file)
+    #         if "Harmony" in rds_map:
+    #             rds_map["Harmony"] = merged_path
+    #         elif "RPCA" in rds_map:
+    #             rds_map["RPCA"] = merged_path
+    #         break  # 最初の1つのみ使用
 
     return rds_map
 
@@ -717,7 +809,7 @@ def toggle_integration_method(n, is_open):
      Output("int_cal_ion_mode", "value"),
      Output("int_cal_matrix", "value"),
      Output("int_cal_adduct_filter", "value", allow_duplicate=True),
-     Output("int_cal_mrm_path", "value"),
+     Output("int_cal_annotation_path", "value"),
      Output("int_cal_search_window", "value"),
      Output("int_cal_min_peaks", "value"),
      Output("int_cal_regression_mode", "value"),
@@ -725,9 +817,9 @@ def toggle_integration_method(n, is_open):
      Output("int_cal_restore_pending", "data"),
      Output("sap_btn_wrapper", "style")],
     [Input("load_interactive_data", "n_clicks"),
-     Input("interactive_integration_method", "value"),
-     Input("interactive_rds_map", "data")],
-    [State("interactive_result_folder", "value"),
+     Input("interactive_integration_method", "value")],
+    [State("interactive_rds_map", "data"),
+     State("interactive_result_folder", "value"),
      State("calibration_enable", "value"),
      State("calibration_matrix", "value"),
      State("calibration_table_data", "data"),
@@ -735,7 +827,7 @@ def toggle_integration_method(n, is_open):
      State("calibration_min_peaks", "value"),
      State("calibration_regression_mode", "value"),
      State("ion_mode", "value"),
-     State("mrm_path", "value"),
+     State("annotation_path", "value"),
      State("tolerance_mz", "value"),
      State("adduct_filter", "value"),
      State("interactive_project_select", "value"),
@@ -939,8 +1031,8 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
                 sub = get_sub_project(project_id, sub_project_id)
                 if sub:
                     r_instrument = sub.get("ms_instrument", "TIMS")
-            except Exception:
-                pass
+            except Exception as e:
+                warn_user(f"サブプロジェクト情報の取得に失敗: {e}")
 
         return (
             info_text,
@@ -1726,25 +1818,41 @@ def _get_merged_label_positions(accumulated_positions=None):
      Input("seurat_rds_path_store", "data"),
      Input("fullscreen_closed_trigger", "data"),
      Input("custom_color_map_store", "data"),
-     Input("cluster_name_map_store", "data")],
+     Input("cluster_name_map_store", "data"),
+     Input("umap_merge_toggle", "value"),
+     Input("umap_merge_color_mode", "value")],
     State("accumulated_label_positions", "data"),
 )
 def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
                      display_mode, marker_size, exclude_clusters, label_size,
-                     rds_path, _fs_trigger, custom_colors, cluster_name_map, accumulated_positions):
+                     rds_path, _fs_trigger, custom_colors, cluster_name_map,
+                     merge_toggle, merge_color_mode, accumulated_positions):
     if display_mode == "per_sample":
         return go.Figure()
     df = _interactive_data.get("plot_data")
     if df is None:
         return go.Figure()
+
+    # マージ表示切替
+    plot_df = df
+    effective_custom_colors = custom_colors
+    if merge_toggle == "merged" and df is not None and "Cluster_merged" in df.columns:
+        plot_df = df.copy()
+        plot_df["Cluster"] = plot_df["Cluster_merged"]
+        plot_df["UMAP_1"] = plot_df["UMAP_1_merged"]
+        plot_df["UMAP_2"] = plot_df["UMAP_2_merged"]
+        effective_custom_colors = _get_merged_cluster_color_map(
+            plot_df["Cluster"], mode=merge_color_mode or "shade"
+        )
+
     all_pos = _get_merged_label_positions(accumulated_positions)
-    return _build_umap_integrated_fig(df, color_by, highlight_clusters,
+    return _build_umap_integrated_fig(plot_df, color_by, highlight_clusters,
                                        show_legend, show_labels,
                                        marker_size=marker_size or 2,
                                        exclude_clusters=exclude_clusters,
                                        label_size=label_size or 14,
                                        saved_positions=all_pos.get("umap_integrated"),
-                                       custom_colors=custom_colors,
+                                       custom_colors=effective_custom_colors,
                                        cluster_name_map=cluster_name_map)
 
 
@@ -1761,6 +1869,23 @@ def toggle_umap_integrated_visibility(mode):
     if mode == "per_sample":
         return {"display": "none"}
     return {"display": "block"}
+
+
+# ---------------------------------------------------------------------------
+# マージ統合コントロールの表示/非表示
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("umap_merge_controls_wrapper", "style"),
+    [Input("seurat_rds_path_store", "data"),
+     Input("fullscreen_closed_trigger", "data")],
+)
+def toggle_merge_controls(_rds_path, _fs_trigger):
+    """マージデータの有無で UI 表示を制御"""
+    df = _interactive_data.get("plot_data")
+    if df is not None and "Cluster_merged" in df.columns:
+        return {"display": "block"}
+    return {"display": "none"}
 
 
 # ---------------------------------------------------------------------------
@@ -2691,14 +2816,17 @@ def auto_feature_marker(n_clicks, rotation_store, sample):
      Input("fullscreen_closed_trigger", "data"),
      Input("custom_color_map_store", "data"),
      Input("spatial_columns_per_row", "value"),
-     Input("cluster_name_map_store", "data")],
+     Input("cluster_name_map_store", "data"),
+     Input("umap_merge_toggle", "value"),
+     Input("umap_merge_color_mode", "value")],
     State("accumulated_label_positions", "data"),
 )
 def update_spatial_plots(sample, highlight_clusters, selected_data,
                          rotation_store, show_labels, marker_size,
                          exclude_clusters, label_size, rds_path, name_map,
                          _fs_trigger, custom_colors, columns_per_row,
-                         cluster_name_map, accumulated_positions):
+                         cluster_name_map, merge_toggle, merge_color_mode,
+                         accumulated_positions):
     df = _interactive_data.get("plot_data")
     if df is None or "SpatialX" not in df.columns:
         return html.Div("空間座標データがありません", className="text-muted p-3"), None
@@ -2715,8 +2843,18 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
             if pt.get("text"):
                 selected_cell_ids.add(pt["text"])
 
-    color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
-    cluster_to_idx, discrete_cscale = _get_cluster_colorscale(df["Cluster"], custom_colors)
+    # マージ表示切替 (Spatial Mapping)
+    plot_df = df
+    effective_custom_colors = custom_colors
+    if merge_toggle == "merged" and "Cluster_merged" in df.columns:
+        plot_df = df.copy()
+        plot_df["Cluster"] = plot_df["Cluster_merged"]
+        effective_custom_colors = _get_merged_cluster_color_map(
+            plot_df["Cluster"], mode=merge_color_mode or "shade"
+        )
+
+    color_map = _get_cluster_color_map(plot_df["Cluster"], effective_custom_colors)
+    cluster_to_idx, discrete_cscale = _get_cluster_colorscale(plot_df["Cluster"], effective_custom_colors)
     all_pos = _get_merged_label_positions(accumulated_positions)
     spatial_pos = all_pos.get("spatial", {})
 
@@ -2724,12 +2862,12 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
     if sample:
         samples_to_show = [sample]
     else:
-        samples_to_show = sorted(df["Sample"].unique())
+        samples_to_show = sorted(plot_df["Sample"].unique())
 
     graphs = []
     representative_fig = None
     for s in samples_to_show:
-        df_s = df[df["Sample"] == s]
+        df_s = plot_df[plot_df["Sample"] == s]
         # サンプル別の変換設定を取得
         transform = rotation_store.get(s, rotation_store.get("__all__", {"angle": 0, "flip_h": False, "flip_v": False}))
         # 後方互換: 旧形式(int)の場合
@@ -4353,7 +4491,7 @@ def update_export_method_options(rds_map):
      State("sample_name_map_store", "data"),
      State("export_top_n_store", "data"),
      State("seurat_cache_dir_store", "data"),
-     State("mrm_path", "value"),
+     State("annotation_path", "value"),
      State("interactive_rds_map", "data"),
      State("interactive_result_folder", "value"),
      State("interactive_integration_method", "value"),
@@ -6202,13 +6340,15 @@ def _annotate_gene_labels(gene_list, mz_to_compound, tolerance=0.1):
     Output("heatmap_plot", "figure"),
     [Input("heatmap_top_n", "value"),
      Input("heatmap_scale", "value"),
-     Input("heatmap_annotation_switch", "value")],
+     Input("heatmap_annotation_switch", "value"),
+     Input("umap_merge_toggle", "value")],
     [State("deg_data_store", "data"),
      State("seurat_cache_dir_store", "data"),
-     State("mrm_path", "value")],
+     State("annotation_path", "value")],
     prevent_initial_call=True,
 )
-def update_heatmap(top_n, scale, annotation_on, deg_data, cache_dir_str, mrm_path_str):
+def update_heatmap(top_n, scale, annotation_on, merge_toggle,
+                   deg_data, cache_dir_str, mrm_path_str):
     """DEG Top N マーカーのクラスタ別平均発現量ヒートマップを生成"""
     if not deg_data or not cache_dir_str:
         return go.Figure()
@@ -6263,8 +6403,14 @@ def update_heatmap(top_n, scale, annotation_on, deg_data, cache_dir_str, mrm_pat
     plot_data = _interactive_data.get("plot_data")
     if plot_data is None:
         return go.Figure()
+
+    # マージ表示切替: マージ時は Cluster_merged カラムを使用
+    cluster_col = "Cluster"
+    if merge_toggle == "merged" and "Cluster_merged" in plot_data.columns:
+        cluster_col = "Cluster_merged"
     merged = expr_df.merge(
-        plot_data[["CellID", "Cluster"]], on="CellID", how="inner"
+        plot_data[["CellID", cluster_col]].rename(columns={cluster_col: "Cluster"}),
+        on="CellID", how="inner"
     )
 
     # クラスタ別平均発現量
@@ -6563,7 +6709,7 @@ def recalculate_int_cal_ppm(ts, table_data):
      Input("int_cal_search_window", "value"),
      Input("int_cal_min_peaks", "value"),
      Input("int_cal_regression_mode", "value"),
-     Input("int_cal_mrm_path", "value")],
+     Input("int_cal_annotation_path", "value")],
     prevent_initial_call=True,
 )
 def auto_save_int_cal(enable, ion_mode, adduct_filter, matrix, table_data,
@@ -6595,7 +6741,7 @@ def auto_save_int_cal(enable, ion_mode, adduct_filter, matrix, table_data,
      State("int_cal_search_window", "value"),
      State("int_cal_min_peaks", "value"),
      State("int_cal_regression_mode", "value"),
-     State("int_cal_mrm_path", "value")],
+     State("int_cal_annotation_path", "value")],
     prevent_initial_call=True,
 )
 def save_int_cal_list(n, enable, ion_mode, adduct_filter, matrix, table_data,
@@ -6630,13 +6776,13 @@ def auto_switch_int_cal_adduct(ion_mode):
     return DEFAULT_ADDUCT_NEGATIVE
 
 
-# INT-CB-MRM: MRMセクション表示制御（DESIのみ表示）
+# INT-CB-MRM: アノテーションセクション表示制御（DESIのみ表示）
 @callback(
-    Output("int_cal_mrm_section", "style"),
+    Output("int_cal_annotation_section", "style"),
     Input("int_cal_ms_instrument", "data"),
     prevent_initial_call=True,
 )
-def toggle_int_cal_mrm_section(ms_instrument):
+def toggle_int_cal_annotation_section(ms_instrument):
     if ms_instrument and str(ms_instrument).upper() == "DESI":
         return {}
     return {"display": "none"}
@@ -6652,7 +6798,7 @@ def toggle_int_cal_mrm_section(ms_instrument):
      State("int_cal_search_window", "value"),
      State("int_cal_min_peaks", "value"),
      State("int_cal_regression_mode", "value"),
-     State("int_cal_mrm_path", "value"),
+     State("int_cal_annotation_path", "value"),
      State("tolerance_mz", "value"),
      State("interactive_result_folder", "value"),
      State("interactive_integration_method", "value"),
@@ -7178,15 +7324,22 @@ def load_saved_cluster_name_map(rds_path):
     Output("spatial_highlight_cluster", "options", allow_duplicate=True),
     Output("spatial_exclude_cluster", "options", allow_duplicate=True),
     Output("feature_cluster_filter", "options", allow_duplicate=True),
-    Input("cluster_name_map_store", "data"),
+    [Input("cluster_name_map_store", "data"),
+     Input("umap_merge_toggle", "value")],
     prevent_initial_call=True,
 )
-def update_cluster_dropdown_labels(cluster_name_map):
-    """cluster_name_map変更時に全クラスタ関連ドロップダウンのラベルを更新"""
+def update_cluster_dropdown_labels(cluster_name_map, merge_toggle):
+    """cluster_name_map変更時 or マージ切替時に全クラスタ関連ドロップダウンのラベルを更新"""
     df = _interactive_data.get("plot_data")
     if df is None:
         return (no_update,) * 5
-    clusters = sorted(df["Cluster"].unique(), key=_cluster_sort_key)
+
+    # マージ表示の場合はマージ後のクラスタラベルを使用
+    if merge_toggle == "merged" and "Cluster_merged" in df.columns:
+        clusters = sorted(df["Cluster_merged"].unique(), key=_cluster_sort_key)
+    else:
+        clusters = sorted(df["Cluster"].unique(), key=_cluster_sort_key)
+
     opts = [{"label": _cluster_display_name(c, cluster_name_map), "value": str(c)}
             for c in clusters]
     return opts, opts, opts, opts, opts

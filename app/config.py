@@ -27,20 +27,25 @@ TIMS_SCRIPT_DIR = TIMS_DIR / "Script"
 TIMS_DB_DIR = TIMS_DIR / "DB"
 TIMS_DATA_DIR = TIMS_DIR / "Data"
 
+# Common（DESI/TIMS共通）スクリプトのパス
+COMMON_DIR = APP_BASE_DIR / "data" / "Common"
+COMMON_SCRIPT_DIR = COMMON_DIR / "Script"
+MERGE_CLUSTERS_SCRIPT_PATH = COMMON_SCRIPT_DIR / "UMAP_Merge_Clusters_ver1.R"
+
 # DESI用スクリプトのパス
 DESI_V8_TEMPLATE_PATH = DESI_SCRIPT_DIR / "260130_DESI-UMAP_Template_v9.R"
-DESI_CLUSTER_FILTER_PATH = DESI_SCRIPT_DIR / "DESI_RDS_ClusterFilter_ver1.R"
+DESI_CLUSTER_FILTER_PATH = DESI_SCRIPT_DIR / "DESI_RDS_ClusterFilter_ver2.R"
 
 # TIMS用スクリプトのパス
-TIMS_V8_TEMPLATE_PATH = TIMS_SCRIPT_DIR / "260301_DBSCAN_With_cluster_ver14.R"
-TIMS_CLUSTER_FILTER_PATH = TIMS_SCRIPT_DIR / "260126_DBSCAN_ver13_Cluster_Filter_ReUMAP.R"
+TIMS_V8_TEMPLATE_PATH = TIMS_SCRIPT_DIR / "260306_DBSCAN_With_cluster_ver15.R"
+TIMS_CLUSTER_FILTER_PATH = TIMS_SCRIPT_DIR / "260306_DBSCAN_ver15_Cluster_Filter_ReUMAP.R"
 
 # R ヘルパースクリプトのパス
 R_HELPERS_DIR = Path(__file__).parent / "r_helpers"
 
 # DESI用デフォルト設定
 DEFAULT_DESI_DATA_FOLDER = str(DESI_DATA_DIR)
-DEFAULT_MRM_FILE_PATH = str(DESI_DB_DIR / "MRM.xlsx")
+DEFAULT_ANNOTATION_FILE_PATH = str(DESI_DB_DIR / "MRM.xlsx")
 
 # TIMS用デフォルト設定
 DEFAULT_TIMS_DATA_FOLDER = str(TIMS_DATA_DIR)
@@ -97,7 +102,7 @@ DEFAULT_SHARE_EXPIRY_DAYS = 30
 #     2. Quick Tunnel: cloudflared tunnel --url http://localhost:3838
 #     3. 表示されたURLをここに設定: "https://xxxx.trycloudflare.com"
 #     4. 固定ドメインの場合: cloudflared tunnel run --url http://localhost:3838 <tunnel-name>
-SHARE_BASE_URL = " https://administered-exercises-dude-give.trycloudflare.com"
+SHARE_BASE_URL = "https://administered-exercises-dude-give.trycloudflare.com"
 
 # Seuratブリッジ キャッシュディレクトリ
 # 日本語パスを含むとRscript.exeが文字化けするため、tempdir（ASCII安全）を使用

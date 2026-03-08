@@ -9,7 +9,7 @@ import dash_bootstrap_components as dbc
 from app.config import (
     DESI_V8_TEMPLATE_PATH, DESI_CLUSTER_FILTER_PATH,
     TIMS_V8_TEMPLATE_PATH, TIMS_CLUSTER_FILTER_PATH,
-    DEFAULT_DESI_DATA_FOLDER, DEFAULT_MRM_FILE_PATH,
+    DEFAULT_DESI_DATA_FOLDER, DEFAULT_ANNOTATION_FILE_PATH,
     DEFAULT_TIMS_DATA_FOLDER, DEFAULT_ANNOTATION_CSV_PATH,
     DESI_DATA_DIR, TIMS_DATA_DIR, APP_BASE_DIR,
 )
@@ -18,19 +18,34 @@ from app.services.session_manager import load_last_settings
 
 
 def _path_input_row(input_id: str, btn_id: str, value: str, placeholder: str):
-    """テキスト入力 + 参照ボタンの行"""
-    return html.Div(
-        style={"display": "flex", "gap": "5px"},
-        children=[
-            dbc.Input(
-                id=input_id, value=value, placeholder=placeholder,
-                size="sm", style={"flex": "1"},
-            ),
-            dbc.Button(
-                "...", id=btn_id, size="sm", outline=True, color="secondary",
-            ),
-        ],
-    )
+    """テキスト入力 + 参照ボタンの行（パス名バッジ付き）"""
+    from pathlib import PurePosixPath, PureWindowsPath
+    basename = ""
+    if value:
+        try:
+            basename = PureWindowsPath(value).name or PurePosixPath(value).name
+        except Exception:
+            basename = value.rstrip("/\\").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+    return html.Div(children=[
+        html.Div(
+            style={"display": "flex", "gap": "5px"},
+            children=[
+                dbc.Input(
+                    id=input_id, value=value, placeholder=placeholder,
+                    size="sm", style={"flex": "1"},
+                ),
+                dbc.Button(
+                    "...", id=btn_id, size="sm", outline=True, color="secondary",
+                ),
+            ],
+        ),
+        html.Small(
+            id=f"{input_id}_path_hint",
+            children=f"📁 {basename}" if basename else "",
+            style={"color": "#6c757d", "fontSize": "0.75rem",
+                   "marginTop": "2px", "display": "block"},
+        ),
+    ])
 
 
 def create_sidebar():
@@ -122,6 +137,10 @@ def create_sidebar():
                     ["📋 プリセット"], id="open_preset_modal",
                     size="sm", color="warning", outline=True,
                 ),
+                dbc.Button(
+                    ["🗂 バックアップ"], id="open_backup_list_btn",
+                    size="sm", color="secondary", outline=True,
+                ),
             ],
         ),
     ])
@@ -193,10 +212,10 @@ def _create_desi_settings(ls: dict = None):
                                 ls.get("default_desi_data_folder", DEFAULT_DESI_DATA_FOLDER),
                                 "DESIデータフォルダ"),
 
-                html.H6("MRMファイル (.xlsx)", style={"marginTop": "10px"}),
-                _path_input_row("default_mrm_file", "browse_default_mrm",
-                                ls.get("default_mrm_file", DEFAULT_MRM_FILE_PATH),
-                                "MRMファイルのパス"),
+                html.H6("アノテーションファイル (.xlsx)", style={"marginTop": "10px"}),
+                _path_input_row("default_annotation_file", "browse_default_annotation_desi",
+                                ls.get("default_annotation_file", ls.get("default_mrm_file", DEFAULT_ANNOTATION_FILE_PATH)),
+                                "アノテーションファイルのパス"),
 
                 html.H6("デフォルト出力先", style={"marginTop": "10px"}),
                 _path_input_row("default_desi_output_dir", "browse_default_desi_output",

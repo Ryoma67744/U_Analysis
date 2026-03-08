@@ -12,6 +12,7 @@ from dash import Input, Output, State, callback, ctx, no_update
 from app.config import (
     DESI_V8_TEMPLATE_PATH, DESI_CLUSTER_FILTER_PATH,
     TIMS_V8_TEMPLATE_PATH, TIMS_CLUSTER_FILTER_PATH,
+    MERGE_CLUSTERS_SCRIPT_PATH,
 )
 from app.services.analysis_runner import (
     generate_v8_config,
@@ -23,9 +24,11 @@ from app.services.analysis_runner import (
     get_analysis_status,
     check_process_completion,
     stop_analysis_process,
+    compute_calibration_coefficients,
 )
 from app.services.session_manager import save_last_settings
 from app.services.project_manager import save_sub_project_settings, save_sub_project_result_dir
+from app.services.notify import warn_user
 
 
 # アプリケーションレベルの状態（サブプロセス参照など）
@@ -70,7 +73,7 @@ def toggle_sidebar_content(active_tab):
     [State("analysis_method", "value"),
      State("analysis_method_tims", "value"),
      State("data_folder", "value"),
-     State("mrm_path", "value"),
+     State("annotation_path", "value"),
      State("p_thresh", "value"),
      State("logfc_thresh", "value"),
      State("resume_rds", "value"),
@@ -90,19 +93,28 @@ def toggle_sidebar_content(active_tab):
      State("reanalysis_tolerance_mz", "value"),
      State("reanalysis_adduct_filter", "value"),
      State("default_annotation_csv", "value"),
+     State("rds_folder_reanalysis", "value"),
+     State("cluster_source", "value"),
+     State("reanalysis_annotation_path", "value"),
      State("desi_v8_script_path", "value"),
      State("desi_cluster_filter_script_path", "value"),
      State("tims_v8_script_path", "value"),
      State("tims_cluster_filter_script_path", "value"),
      State("app_state", "data"),
      State("selected_project", "data"),
-     State("current_sub_project_id", "data")],
+     State("current_sub_project_id", "data"),
+     State("calibration_enable", "value"),
+     State("calibration_table", "data"),
+     State("calibration_regression_mode", "value"),
+     State("calibration_min_peaks", "value"),
+     State("reanalysis_calibration_use_previous", "value"),
+     State("reanalysis_calibration_data", "data")],
     prevent_initial_call=True,
 )
 def run_analysis(
     n_clicks,
     desi_method, tims_method,
-    data_folder, mrm_path, p_thresh, logfc_thresh,
+    data_folder, annotation_path, p_thresh, logfc_thresh,
     resume_rds, rds_folder,
     output_subfolder, output_dir,
     rds_path, reanalysis_data_folder, filter_mode, target_clusters,
@@ -110,10 +122,14 @@ def run_analysis(
     reanalysis_p_thresh, reanalysis_logfc_thresh,
     reanalysis_ion_mode, reanalysis_tolerance_mz, reanalysis_adduct_filter,
     annotation_csv,
+    rds_folder_reanalysis, cluster_source, reanalysis_annotation_path,
     desi_v8_script, desi_cluster_script,
     tims_v8_script, tims_cluster_script,
     app_state,
     selected_project, current_sub_project_id,
+    calibration_enable, calibration_table_data,
+    calibration_regression_mode, calibration_min_peaks,
+    reanalysis_cal_use_previous, reanalysis_cal_data,
 ):
     if not n_clicks:
         return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
@@ -124,7 +140,7 @@ def run_analysis(
             "analysis_method": desi_method,
             "analysis_method_tims": tims_method,
             "data_folder": data_folder,
-            "mrm_path": mrm_path,
+            "annotation_path": annotation_path,
             "p_thresh": p_thresh,
             "logfc_thresh": logfc_thresh,
             "resume_rds": resume_rds,
@@ -145,8 +161,8 @@ def run_analysis(
             "tims_v8_script_path": tims_v8_script,
             "tims_cluster_filter_script_path": tims_cluster_script,
         })
-    except Exception:
-        pass  # 保存失敗しても解析は続行
+    except Exception as e:
+        warn_user(f"解析設定の保存に失敗: {e}")
 
     # サブプロジェクトに解析設定を紐づけて保存
     try:
@@ -158,7 +174,7 @@ def run_analysis(
                     "analysis_method_tims": tims_method,
                     "data_folder": data_folder,
                     "output_dir": output_dir,
-                    "mrm_path": mrm_path,
+                    "annotation_path": annotation_path,
                     "p_thresh": p_thresh,
                     "logfc_thresh": logfc_thresh,
                     "ion_mode": ion_mode,
@@ -174,8 +190,8 @@ def run_analysis(
                     "reanalysis_ion_mode": reanalysis_ion_mode,
                     "reanalysis_tolerance_mz": reanalysis_tolerance_mz,
                 })
-    except Exception:
-        pass  # 保存失敗しても解析は続行
+    except Exception as e:
+        warn_user(f"サブプロジェクト設定の保存に失敗: {e}")
 
     analysis_type = desi_method or tims_method or "desi_v8"
     full_output_dir = str(Path(output_dir) / output_subfolder)
@@ -203,7 +219,7 @@ def run_analysis(
                 "template_path": template,
                 "data_folder": data_folder,
                 "sample_names": sample_names,
-                "mrm_path": mrm_path or "",
+                "annotation_path": annotation_path or "",
                 "p_thresh": float(p_thresh) if p_thresh else 0.05,
                 "logfc_thresh": float(logfc_thresh) if logfc_thresh else 0.10,
                 "resume_from_rds": bool(resume_rds),
@@ -236,6 +252,18 @@ def run_analysis(
                         if csvs:
                             params["annotation_csv_path"] = str(csvs[0])
 
+            # --- m/z キャリブレーション（TIMS UMAP解析） ---
+            if calibration_enable and analysis_type == "tims_v8":
+                cal_result = compute_calibration_coefficients(
+                    calibration_table_data,
+                    calibration_regression_mode or "poly3",
+                    int(calibration_min_peaks or 2),
+                )
+                if cal_result:
+                    params["calibration_enable"] = True
+                    params["calibration_coefficients"] = cal_result["coefficients"]
+                    params["calibration_result"] = cal_result
+
             config_path = generate_v8_config(params, full_output_dir)
 
         else:
@@ -257,14 +285,32 @@ def run_analysis(
                 from app.services.data_manager import list_msi_files
                 sample_names = list_msi_files(reanalysis_data_folder)
 
+            # RDSパス解決: 直接指定 > フォルダ+クラスタソースから構築
+            resolved_rds_path = rds_path or ""
+            resolved_cluster_source = cluster_source or "harmony"
+            if not resolved_rds_path and rds_folder_reanalysis:
+                if analysis_type == "desi_cluster_filter":
+                    # DESI: Python側でファイル名を構築
+                    rds_filename = ("Step2_HarmonyPCA_Result.rds"
+                                    if resolved_cluster_source == "harmony"
+                                    else "Step2_RPCA_Result.rds")
+                    resolved_rds_path = str(Path(rds_folder_reanalysis) / rds_filename)
+                # TIMS: R側の resolve_rds_path() に委譲するため rds_path は空のまま
+
             params = {
                 "template_path": template,
-                "rds_path": rds_path or "",
+                "rds_path": resolved_rds_path,
                 "original_data_folder": reanalysis_data_folder or data_folder,
                 "filter_mode": filter_mode or "exclude",
                 "target_clusters": clusters,
                 "sample_names": sample_names,
+                # マージスクリプトパス（DESI/TIMS共通）
+                "merge_script_path": str(MERGE_CLUSTERS_SCRIPT_PATH),
             }
+
+            # 再解析用アノテーションファイル
+            if reanalysis_annotation_path:
+                params["reanalysis_annotation_path"] = reanalysis_annotation_path
 
             # TIMSクラスターフィルター固有パラメータ
             if analysis_type == "tims_cluster_filter":
@@ -272,9 +318,18 @@ def run_analysis(
                 src_folder = reanalysis_data_folder or data_folder
                 params["original_input_paths"] = build_tims_input_paths(src_folder)
                 params["export_data_dir"] = full_output_dir
-                # RDS_RUN_DIR: rds_pathの親ディレクトリから推定
-                if rds_path:
+                # RDSフォルダ+クラスタソース → R側で解決
+                if rds_folder_reanalysis:
+                    params["rds_run_dir"] = rds_folder_reanalysis
+                    params["cluster_source"] = resolved_cluster_source
+                elif rds_path:
                     params["rds_run_dir"] = str(Path(rds_path).parent)
+
+            # --- m/z キャリブレーション（TIMS 再解析） ---
+            if analysis_type == "tims_cluster_filter":
+                if reanalysis_cal_use_previous and reanalysis_cal_data:
+                    params["calibration_enable"] = True
+                    params["calibration_coefficients"] = reanalysis_cal_data["coefficients"]
 
             config_path = generate_cluster_filter_config(params, full_output_dir)
 
@@ -296,7 +351,7 @@ def run_analysis(
                 "analysis_type": analysis_type,
                 "data_folder": data_folder,
                 "output_dir": full_output_dir,
-                "mrm_path": mrm_path or "",
+                "annotation_path": annotation_path or "",
                 "annotation_csv": annotation_csv or "",
                 "ion_mode": ion_mode or "",
                 "tolerance_mz": tolerance_mz,
@@ -308,13 +363,22 @@ def run_analysis(
                 "resume_rds": bool(resume_rds),
                 "timestamp": datetime.now().isoformat(),
             }
+            # キャリブレーション情報の保存
+            cal_r = params.get("calibration_result", {})
+            _params_to_save["calibration_enable"] = bool(params.get("calibration_enable"))
+            _params_to_save["calibration_coefficients"] = cal_r.get("coefficients")
+            _params_to_save["calibration_degree"] = cal_r.get("degree")
+            _params_to_save["calibration_r_squared"] = cal_r.get("r_squared")
+            _params_to_save["calibration_n_points"] = cal_r.get("n_points")
+            _params_to_save["calibration_regression_mode"] = calibration_regression_mode
+            _params_to_save["calibration_table"] = calibration_table_data
             _pf = Path(full_output_dir) / "analysis_params.json"
             _pf.write_text(
                 _json.dumps(_params_to_save, indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
-        except Exception:
-            pass  # 保存失敗しても解析は続行
+        except Exception as e:
+            warn_user(f"パラメータ保存に失敗: {e}")
 
         # プロセス参照をモジュールレベルで保持
         _process_state["process"] = result["process"]
@@ -394,6 +458,7 @@ _STEP_DEFINITIONS = {
         ("Volcano", "volcano"),
         ("MSI Images", "msi"),
         ("Saving", "saving"),
+        ("Merge", "merge"),
         ("Done", "done"),
     ],
     "tims_cluster_filter": [
@@ -404,6 +469,7 @@ _STEP_DEFINITIONS = {
         ("Volcano", "volcano"),
         ("MSI Images", "msi"),
         ("Saving", "saving"),
+        ("Merge", "merge"),
         ("Done", "done"),
     ],
 }
@@ -579,8 +645,8 @@ def update_progress(n_intervals, app_state, log_search, log_level, log_lines_cou
                 sub_id = app_state.get("sub_project_id")
                 if proj_id and sub_id and output_dir:
                     save_sub_project_result_dir(proj_id, sub_id, output_dir)
-            except Exception:
-                pass
+            except Exception as e:
+                warn_user(f"結果ディレクトリの保存に失敗: {e}")
         else:
             msg = "解析でエラーが発生しました"
             section_text = f"出力: {file_count} ファイル | ❌ エラー ({step_current}/{step_total}) | {elapsed_text}"
@@ -643,6 +709,106 @@ def handle_stop(n_clicks, app_state):
     stop_analysis_process(process, output_dir, log_fh)
 
     return "停止リクエストを送信しました", True
+
+
+# ---------------------------------------------------------------------------
+# RDS ファイル自動検出
+# ---------------------------------------------------------------------------
+
+# DESI/TIMS別のRDSファイル名マッピング
+_RDS_FILE_NAMES = {
+    "desi": {
+        "harmony": "DESI_SeuratCombined_harmony.rds",
+        "rpca": "DESI_SeuratCombined_RPCA.rds",
+    },
+    "tims": {
+        "harmony": "Step2_HarmonyPCA_Result.rds",
+        "rpca": "Step3_RPCA_Result.rds",
+    },
+}
+
+
+@callback(
+    [Output("rds_detection_badge", "children"),
+     Output("cluster_source", "options"),
+     Output("cluster_source", "value", allow_duplicate=True),
+     Output("cluster_source_container", "style")],
+    [Input("rds_folder_reanalysis", "value"),
+     Input("analysis_method", "value"),
+     Input("analysis_method_tims", "value")],
+    prevent_initial_call=True,
+)
+def detect_rds_files(folder, desi_method, tims_method):
+    """RDSフォルダ内のファイルをスキャンし、Harmony/RPCA選択肢を動的に更新する"""
+    _default_options = [
+        {"label": "Harmony/PCA", "value": "harmony"},
+        {"label": "RPCA", "value": "rpca"},
+    ]
+    _hide = {"display": "none"}
+
+    if not folder or not folder.strip():
+        return "", _default_options, no_update, _hide
+
+    p = Path(folder.strip())
+    if not p.is_dir():
+        return (
+            html.Span("⚠ フォルダが見つかりません",
+                       style={"color": "#dc3545", "fontSize": "0.8rem"}),
+            _default_options, no_update, _hide,
+        )
+
+    # DESI/TIMSを判定
+    instrument = "tims" if tims_method else "desi"
+    names = _RDS_FILE_NAMES[instrument]
+
+    has_harmony = (p / names["harmony"]).exists()
+    has_rpca = (p / names["rpca"]).exists()
+
+    if has_harmony and has_rpca:
+        badge = html.Span(
+            f"✓ {names['harmony']}, {names['rpca']} 検出",
+            style={"color": "#28a745", "fontSize": "0.8rem"},
+        )
+        options = [
+            {"label": "Harmony/PCA", "value": "harmony"},
+            {"label": "RPCA", "value": "rpca"},
+        ]
+        return badge, options, no_update, {}
+
+    if has_harmony:
+        badge = html.Span(
+            f"✓ {names['harmony']} 検出",
+            style={"color": "#28a745", "fontSize": "0.8rem"},
+        )
+        options = [
+            {"label": "Harmony/PCA", "value": "harmony"},
+            {"label": "RPCA", "value": "rpca", "disabled": True},
+        ]
+        return badge, options, "harmony", {}
+
+    if has_rpca:
+        badge = html.Span(
+            f"✓ {names['rpca']} 検出",
+            style={"color": "#28a745", "fontSize": "0.8rem"},
+        )
+        options = [
+            {"label": "Harmony/PCA", "value": "harmony", "disabled": True},
+            {"label": "RPCA", "value": "rpca"},
+        ]
+        return badge, options, "rpca", {}
+
+    # どちらも見つからない
+    rds_files = list(p.glob("*.rds"))
+    if rds_files:
+        file_list = ", ".join(f.name for f in rds_files[:3])
+        suffix = f" 他{len(rds_files)-3}件" if len(rds_files) > 3 else ""
+        msg = f"⚠ 標準ファイル未検出（{file_list}{suffix}）"
+    else:
+        msg = "⚠ RDSファイルが見つかりません"
+    return (
+        html.Span(msg, style={"color": "#dc3545", "fontSize": "0.8rem"}),
+        _default_options, no_update, _hide,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -950,6 +1116,7 @@ def save_calibration_list(n, enable, matrix, table_data,
 from app.services.data_manager import (
     validate_data_folder, validate_rds_folder,
     validate_output_dir, validate_numeric_param,
+    validate_msi_file, list_msi_files,
 )
 
 import dash_bootstrap_components as dbc
@@ -979,6 +1146,19 @@ def validate_data_folder_input(folder, tims_method):
         return ""
     is_tims = bool(tims_method)
     result = validate_data_folder(folder, is_tims=is_tims)
+    if not result["ok"]:
+        return _badge(result)
+    # フォルダOKの場合、最初のMSIファイルの形式も検証（DESI .txt のみ）
+    if not is_tims:
+        from pathlib import Path
+        txt_files = sorted(Path(folder).glob("*.txt"))
+        if txt_files:
+            file_result = validate_msi_file(str(txt_files[0]))
+            if not file_result["valid"]:
+                return html.Span(
+                    f"⚠ {result['count']} ファイル検出 (形式警告: {file_result['message']})",
+                    style={"color": "#e67e22", "fontSize": "0.8rem"},
+                )
     return _badge(result)
 
 
@@ -1008,20 +1188,24 @@ def validate_output_dir_input(folder):
     Output("validation_summary", "children"),
     Output("validation_summary", "style"),
     Input("run_analysis", "n_clicks"),
-    [State("data_folder", "value"),
+    [State("analysis_method", "value"),
+     State("analysis_method_tims", "value"),
+     State("data_folder", "value"),
+     State("reanalysis_data_folder", "value"),
      State("output_dir", "value"),
      State("p_thresh", "value"),
      State("logfc_thresh", "value"),
      State("tolerance_mz", "value"),
      State("resume_rds", "value"),
      State("rds_folder", "value"),
-     State("analysis_method_tims", "value")],
+     State("rds_folder_reanalysis", "value")],
     prevent_initial_call=True,
 )
 def preflight_validation(
-    n_clicks, data_folder, output_dir,
+    n_clicks, desi_method, tims_method,
+    data_folder, reanalysis_data_folder, output_dir,
     p_thresh, logfc_thresh, tolerance_mz,
-    resume_rds, rds_folder, tims_method,
+    resume_rds, rds_folder, rds_folder_reanalysis,
 ):
     """解析実行ボタン押下時にプリフライトチェックを実行する。
     問題がなければ非表示のまま。問題があればエラー一覧を表示。"""
@@ -1029,18 +1213,31 @@ def preflight_validation(
         return "", {"display": "none"}
 
     errors = []
+    analysis_type = desi_method or tims_method or "desi_v8"
     is_tims = bool(tims_method)
+    is_reanalysis = analysis_type in ("desi_cluster_filter", "tims_cluster_filter")
 
-    # データフォルダ
-    r = validate_data_folder(data_folder, is_tims=is_tims)
-    if not r["ok"]:
-        errors.append(f"データフォルダ: {r['msg']}")
+    if is_reanalysis:
+        # 再解析: reanalysis_data_folder を検証
+        r = validate_data_folder(reanalysis_data_folder, is_tims=is_tims)
+        if not r["ok"]:
+            errors.append(f"データフォルダ: {r['msg']}")
 
-    # RDSフォルダ (途中再開時のみ)
-    if resume_rds:
-        r = validate_rds_folder(rds_folder)
+        # 再解析: RDSフォルダを検証
+        r = validate_rds_folder(rds_folder_reanalysis)
         if not r["ok"]:
             errors.append(f"RDSフォルダ: {r['msg']}")
+    else:
+        # UMAP解析: data_folder を検証
+        r = validate_data_folder(data_folder, is_tims=is_tims)
+        if not r["ok"]:
+            errors.append(f"データフォルダ: {r['msg']}")
+
+        # RDSフォルダ (途中再開時のみ)
+        if resume_rds:
+            r = validate_rds_folder(rds_folder)
+            if not r["ok"]:
+                errors.append(f"RDSフォルダ: {r['msg']}")
 
     # 出力先
     r = validate_output_dir(output_dir)
@@ -1072,3 +1269,140 @@ def preflight_validation(
         style={"marginBottom": "10px"},
     )
     return alert, {"display": "block"}
+
+
+# ---------------------------------------------------------------------------
+# 再解析: キャリブレーション回帰情報の自動読込
+# ---------------------------------------------------------------------------
+
+@callback(
+    [Output("reanalysis_calibration_data", "data"),
+     Output("reanalysis_calibration_details", "children"),
+     Output("reanalysis_calibration_info", "style"),
+     Output("reanalysis_calibration_use_previous", "value", allow_duplicate=True)],
+    Input("rds_folder_reanalysis", "value"),
+    prevent_initial_call=True,
+)
+def load_calibration_from_first_analysis(rds_folder):
+    """RDSフォルダの親ディレクトリから analysis_params.json を読み、
+    キャリブレーション回帰情報を自動表示する。"""
+    import json as _json
+
+    _no_data = (None, "", {"display": "none"}, False)
+
+    if not rds_folder or not rds_folder.strip():
+        return _no_data
+
+    rds_path = Path(rds_folder.strip())
+    if not rds_path.is_dir():
+        return _no_data
+
+    # analysis_params.json を上位3階層まで探索
+    params_data = None
+    source_dir = None
+    search_path = rds_path
+    for _ in range(4):
+        candidate = search_path / "analysis_params.json"
+        if candidate.is_file():
+            try:
+                params_data = _json.loads(candidate.read_text(encoding="utf-8"))
+                source_dir = str(search_path)
+                break
+            except Exception:
+                pass
+        search_path = search_path.parent
+        if search_path == search_path.parent:
+            break
+
+    if not params_data:
+        return _no_data
+
+    # キャリブレーション情報を抽出
+    cal_enable = params_data.get("calibration_enable", False)
+    cal_coefficients = params_data.get("calibration_coefficients")
+
+    if not cal_enable or not cal_coefficients:
+        return _no_data
+
+    # 回帰情報をまとめる
+    cal_data = {
+        "coefficients": cal_coefficients,
+        "degree": params_data.get("calibration_degree"),
+        "r_squared": params_data.get("calibration_r_squared"),
+        "n_points": params_data.get("calibration_n_points"),
+        "regression_mode": params_data.get("calibration_regression_mode"),
+    }
+
+    # 表示用テキスト
+    mode = cal_data.get("regression_mode", "?")
+    degree = cal_data.get("degree", "?")
+    r2 = cal_data.get("r_squared", "?")
+    n_pts = cal_data.get("n_points", "?")
+
+    detail_children = [
+        html.Div("✅ 前回の解析から回帰式を検出:",
+                 style={"fontWeight": "bold", "marginBottom": "5px"}),
+        html.Div(f"回帰モデル: {mode} (次数: {degree})"),
+        html.Div(f"R²: {r2}  |  マッチピーク数: {n_pts}"),
+    ]
+
+    # 使用ピーク一覧を表示
+    cal_table = params_data.get("calibration_table", [])
+    used_rows = [r for r in cal_table if r.get("use") == "Yes"]
+    if used_rows:
+        peak_lines = []
+        for row in used_rows:
+            ref = row.get("ref_mz", "")
+            obs = row.get("obs_mz", "")
+            ppm = row.get("ppm_drift", "--")
+            formula = row.get("formula", "")
+            label = f"  {ref} → {obs}  ({ppm} ppm)"
+            if formula:
+                label += f"  [{formula}]"
+            peak_lines.append(html.Div(label, style={"fontFamily": "monospace"}))
+        detail_children.append(
+            html.Div([
+                html.Div("使用ピーク:", style={"marginTop": "8px", "fontWeight": "bold"}),
+                *peak_lines,
+            ])
+        )
+
+    detail_children.append(
+        html.Div(f"参照元: {source_dir}",
+                 style={"color": "#666", "fontSize": "12px", "marginTop": "5px"}),
+    )
+
+    details = html.Div(detail_children)
+
+    return (
+        cal_data,
+        details,
+        {"display": "block", "marginTop": "5px"},
+        True,  # チェックボックスを自動ON
+    )
+
+
+@callback(
+    [Output("reanalysis_calibration_info", "style", allow_duplicate=True),
+     Output("reanalysis_calibration_details", "children", allow_duplicate=True)],
+    Input("reanalysis_calibration_use_previous", "value"),
+    [State("reanalysis_calibration_data", "data"),
+     State("rds_folder_reanalysis", "value")],
+    prevent_initial_call=True,
+)
+def toggle_reanalysis_calibration_panel(checked, cal_data, rds_folder):
+    """チェックボックス操作時にキャリブレーション情報パネルの表示を制御する。"""
+    if not checked:
+        return {"display": "none"}, no_update
+    if cal_data:
+        # データ読込済み → パネル表示（内容は load_calibration で設定済み）
+        return {"display": "block", "marginTop": "5px"}, no_update
+    # チェック ON だがデータなし → ガイドメッセージ
+    if not rds_folder or not rds_folder.strip():
+        msg = "RDSフォルダを指定すると、前回のキャリブレーション情報を自動検出します。"
+    else:
+        msg = "指定されたRDSフォルダから前回のキャリブレーション情報が見つかりませんでした。"
+    return (
+        {"display": "block", "marginTop": "5px"},
+        html.Div(msg, style={"color": "#888", "fontSize": "13px"}),
+    )

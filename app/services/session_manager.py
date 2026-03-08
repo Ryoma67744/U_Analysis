@@ -20,10 +20,12 @@ _LAST_SETTINGS_FILE = SESSIONS_DIR / "last_settings.json"
 # 自動保存対象のキー一覧
 _AUTO_SAVE_KEYS = [
     "analysis_method", "analysis_method_tims",
-    "data_folder", "mrm_path", "output_dir",
+    "data_folder", "annotation_path", "output_dir",
     "p_thresh", "logfc_thresh",
     "resume_rds", "rds_folder",
     "reanalysis_data_folder", "rds_path",
+    "rds_folder_reanalysis", "cluster_source",
+    "reanalysis_annotation_path",
     "filter_mode", "target_clusters",
     "ion_mode", "tolerance_mz",
     "reanalysis_ion_mode", "reanalysis_tolerance_mz",
@@ -31,7 +33,7 @@ _AUTO_SAVE_KEYS = [
     # サイドバー設定
     "desi_v8_script_path", "desi_cluster_filter_script_path",
     "tims_v8_script_path", "tims_cluster_filter_script_path",
-    "default_desi_data_folder", "default_mrm_file", "default_desi_output_dir",
+    "default_desi_data_folder", "default_annotation_file", "default_desi_output_dir",
     "default_tims_data_folder", "default_annotation_csv", "default_tims_output_dir",
     "default_output_dir",
     # キャリブレーション設定
@@ -39,6 +41,8 @@ _AUTO_SAVE_KEYS = [
     "calibration_enable", "calibration_matrix",
     "calibration_search_window", "calibration_min_peaks",
     "calibration_regression_mode",
+    # 再解析キャリブレーション
+    "reanalysis_calibration_use_previous",
 ]
 
 

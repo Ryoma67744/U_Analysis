@@ -246,21 +246,21 @@ def create_interactive_tab():
                                         ],
                                     ),
                                     html.Hr(className="my-2"),
-                                    # MRMファイル（DESIのみ表示）
+                                    # アノテーションファイル（DESIのみ表示）
                                     html.Div(
-                                        id="int_cal_mrm_section",
+                                        id="int_cal_annotation_section",
                                         style={"display": "none"},
                                         children=[
                                             dbc.Row(className="mb-2", children=[
                                                 dbc.Col(width=12, children=[
-                                                    dbc.Label("MRMファイル", className="small fw-bold"),
+                                                    dbc.Label("アノテーションファイル", className="small fw-bold"),
                                                     html.Div(
                                                         style={"display": "flex", "gap": "5px"},
                                                         children=[
-                                                            dbc.Input(id="int_cal_mrm_path",
-                                                                      placeholder="MRM.xlsx",
+                                                            dbc.Input(id="int_cal_annotation_path",
+                                                                      placeholder="アノテーションファイル",
                                                                       size="sm"),
-                                                            dbc.Button("参照...", id="browse_int_cal_mrm",
+                                                            dbc.Button("参照...", id="browse_int_cal_annotation",
                                                                        size="sm", color="secondary"),
                                                         ],
                                                     ),
@@ -541,6 +541,40 @@ def create_interactive_tab():
                                     ),
                                 ]),
                             ]),
+                            # マージ統合 切替コントロール（マージデータがある場合のみ表示）
+                            html.Div(
+                                id="umap_merge_controls_wrapper",
+                                style={"display": "none"},  # 初期非表示、コールバックで制御
+                                className="mt-1",
+                                children=[
+                                    dbc.Row(className="align-items-center", children=[
+                                        dbc.Col(width=3, children=[
+                                            dbc.Label("クラスタ表示", className="small mb-0 fw-bold"),
+                                            dbc.RadioItems(
+                                                id="umap_merge_toggle",
+                                                options=[
+                                                    {"label": "元のクラスタ", "value": "original"},
+                                                    {"label": "マージ統合", "value": "merged"},
+                                                ],
+                                                value="original", inline=True,
+                                                className="small",
+                                            ),
+                                        ]),
+                                        dbc.Col(width=3, children=[
+                                            dbc.Label("カラーモード", className="small mb-0 fw-bold"),
+                                            dbc.RadioItems(
+                                                id="umap_merge_color_mode",
+                                                options=[
+                                                    {"label": "親クラスタ濃淡", "value": "shade"},
+                                                    {"label": "独立色", "value": "independent"},
+                                                ],
+                                                value="shade", inline=True,
+                                                className="small",
+                                            ),
+                                        ]),
+                                    ]),
+                                ],
+                            ),
                             html.Div(children=[
                                 # UMAP側サンプル名変更コンテナ（グラフの上に配置）
                                 html.Div(id="umap_name_controls_container"),
@@ -960,6 +994,8 @@ def create_interactive_tab():
                   data=_ls.get("calibration_table_data", [])),
         # キャリブレーション自動保存トリガー（ダミー出力先）
         dcc.Store(id="calibration_save_trigger", data=None),
+        # 再解析キャリブレーション回帰データ（analysis_params.jsonから読込）
+        dcc.Store(id="reanalysis_calibration_data", data=None),
         # エクスポート Top N 値ブリッジ用
         dcc.Store(id="export_top_n_store", data=5),
         # PPTXダウンロード用

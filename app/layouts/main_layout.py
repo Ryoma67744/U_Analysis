@@ -218,6 +218,16 @@ def create_main_layout():
                             },
                         ),
 
+                        # バックアップ一覧モーダル
+                        dbc.Modal([
+                            dbc.ModalHeader(dbc.ModalTitle("バックアップ一覧")),
+                            dbc.ModalBody(id="backup_list_body"),
+                            dbc.ModalFooter(
+                                dbc.Button("閉じる", id="close_backup_list_btn",
+                                           className="ms-auto", size="sm"),
+                            ),
+                        ], id="backup_list_modal", size="lg", is_open=False),
+
                         # ツールチップ（タブ外に配置して常にDOM上に存在させる）
                         *get_sidebar_tooltips(),
                         *get_settings_tooltips(),

@@ -147,6 +147,30 @@ tryCatch({
   cat("Feature queries will fall back to R subprocess.\n")
 })
 
+# --- Merged cluster data (if available) ---
+has_merged <- "seurat_clusters_merged" %in% colnames(obj@meta.data)
+has_merged_umap <- "umap_merged" %in% names(obj@reductions)
+
+if (has_merged && has_merged_umap) {
+  cat("Detected merged cluster data. Exporting...\n")
+  merged_umap <- Embeddings(obj, "umap_merged")
+  plot_data$Cluster_merged <- as.character(obj@meta.data$seurat_clusters_merged)
+  plot_data$UMAP_1_merged  <- merged_umap[, 1]
+  plot_data$UMAP_2_merged  <- merged_umap[, 2]
+  cat("Added Cluster_merged, UMAP_1_merged, UMAP_2_merged to plot_data\n")
+
+  # plot_data を再書き出し（マージデータ含む）
+  tryCatch({
+    arrow::write_parquet(plot_data, file.path(output_dir, "plot_data.parquet"))
+    cat("Re-wrote plot_data.parquet (with merged data)\n")
+  }, error = function(e) {
+    write.csv(plot_data, file.path(output_dir, "plot_data.csv"), row.names = FALSE)
+    cat("Re-wrote plot_data.csv (with merged data)\n")
+  })
+} else {
+  cat("No merged cluster data found (umap_merged / seurat_clusters_merged).\n")
+}
+
 # --- Metadata JSON ---
 samples <- unique(sample_col)
 meta_info <- list(
@@ -155,7 +179,8 @@ meta_info <- list(
   n_features = length(features),
   samples    = samples,
   has_umap   = has_umap,
-  has_spatial = ("SpatialX" %in% colnames(plot_data))
+  has_spatial = ("SpatialX" %in% colnames(plot_data)),
+  has_merged_clusters = (has_merged && has_merged_umap)
 )
 jsonlite::write_json(meta_info, file.path(output_dir, "extraction_meta.json"),
                      auto_unbox = TRUE, pretty = TRUE)

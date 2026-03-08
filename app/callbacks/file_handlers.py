@@ -5,11 +5,11 @@
 
 from pathlib import Path
 
-from dash import Input, Output, State, callback, ctx, no_update, html, ALL
+from dash import Input, Output, State, callback, clientside_callback, ctx, no_update, html, ALL
 import dash_bootstrap_components as dbc
 
 from app.config import (
-    DEFAULT_DESI_DATA_FOLDER, DEFAULT_MRM_FILE_PATH,
+    DEFAULT_DESI_DATA_FOLDER, DEFAULT_ANNOTATION_FILE_PATH,
     DEFAULT_TIMS_DATA_FOLDER, DEFAULT_ANNOTATION_CSV_PATH,
     DESI_DATA_DIR, TIMS_DATA_DIR, APP_BASE_DIR,
     DESI_V8_TEMPLATE_PATH, DESI_CLUSTER_FILTER_PATH,
@@ -20,6 +20,7 @@ from app.layouts.file_browser_modal import (
 )
 from app.services.data_manager import list_msi_files, list_tims_files
 from app.services.session_manager import save_last_settings
+from app.services.notify import warn_user
 
 
 # ---------------------------------------------------------------------------
@@ -240,13 +241,13 @@ def reset_script_paths(n):
 
 @callback(
     [Output("default_desi_data_folder", "value", allow_duplicate=True),
-     Output("default_mrm_file", "value", allow_duplicate=True),
+     Output("default_annotation_file", "value", allow_duplicate=True),
      Output("default_desi_output_dir", "value", allow_duplicate=True)],
     Input("reset_desi_defaults", "n_clicks"),
     prevent_initial_call=True,
 )
 def reset_desi_defaults(n):
-    return DEFAULT_DESI_DATA_FOLDER, DEFAULT_MRM_FILE_PATH, str(DESI_DATA_DIR)
+    return DEFAULT_DESI_DATA_FOLDER, DEFAULT_ANNOTATION_FILE_PATH, str(DESI_DATA_DIR)
 
 
 @callback(
@@ -275,31 +276,31 @@ def reset_output_defaults(n):
 
 @callback(
     [Output("data_folder", "value", allow_duplicate=True),
-     Output("mrm_path", "value", allow_duplicate=True),
+     Output("annotation_path", "value", allow_duplicate=True),
      Output("output_dir", "value", allow_duplicate=True)],
     Input("apply_desi_defaults", "n_clicks"),
     [State("default_desi_data_folder", "value"),
-     State("default_mrm_file", "value"),
+     State("default_annotation_file", "value"),
      State("default_desi_output_dir", "value")],
     prevent_initial_call=True,
 )
-def apply_desi_defaults(n, desi_folder, mrm_file, desi_output):
+def apply_desi_defaults(n, desi_folder, annotation_file, desi_output):
     if not n:
         return no_update, no_update, no_update
     try:
         save_last_settings({
             "default_desi_data_folder": desi_folder,
-            "default_mrm_file": mrm_file,
+            "default_annotation_file": annotation_file,
             "default_desi_output_dir": desi_output,
         })
-    except Exception:
-        pass
-    return desi_folder or no_update, mrm_file or no_update, desi_output or no_update
+    except Exception as e:
+        warn_user(f"DESI初期設定の保存に失敗: {e}")
+    return desi_folder or no_update, annotation_file or no_update, desi_output or no_update
 
 
 @callback(
     [Output("data_folder", "value", allow_duplicate=True),
-     Output("mrm_path", "value", allow_duplicate=True),
+     Output("annotation_path", "value", allow_duplicate=True),
      Output("output_dir", "value", allow_duplicate=True)],
     Input("apply_tims_defaults", "n_clicks"),
     [State("default_tims_data_folder", "value"),
@@ -316,8 +317,8 @@ def apply_tims_defaults(n, tims_folder, annotation_csv, tims_output):
             "default_annotation_csv": annotation_csv,
             "default_tims_output_dir": tims_output,
         })
-    except Exception:
-        pass
+    except Exception as e:
+        warn_user(f"TIMS初期設定の保存に失敗: {e}")
     return tims_folder or no_update, annotation_csv or no_update, tims_output or no_update
 
 
@@ -332,8 +333,8 @@ def apply_output_defaults(n, output_dir):
         return no_update
     try:
         save_last_settings({"default_output_dir": output_dir})
-    except Exception:
-        pass
+    except Exception as e:
+        warn_user(f"出力設定の保存に失敗: {e}")
     return output_dir or no_update
 
 
@@ -344,10 +345,11 @@ def apply_output_defaults(n, output_dir):
 # ブラウズボタン ID → (mode, target_input_id) のマッピング
 _BROWSE_BUTTONS = {
     "browse_folder": ("folder", "data_folder"),
-    "browse_mrm": ("file", "mrm_path"),
+    "browse_annotation": ("file", "annotation_path"),
     "browse_rds_folder": ("folder", "rds_folder"),
-    "browse_rds": ("file", "rds_path"),
+    "browse_rds_folder_reanalysis": ("folder", "rds_folder_reanalysis"),
     "browse_reanalysis_folder": ("folder", "reanalysis_data_folder"),
+    "browse_reanalysis_annotation": ("file", "reanalysis_annotation_path"),
     "browse_output": ("folder", "output_dir"),
     "browse_result_folder": ("folder", "result_folder_manual"),
     "browse_interactive_result": ("folder", "interactive_result_folder"),
@@ -358,13 +360,13 @@ _BROWSE_BUTTONS = {
     "browse_tims_v8_script": ("file", "tims_v8_script_path"),
     "browse_tims_cluster_script": ("file", "tims_cluster_filter_script_path"),
     "browse_default_desi_folder": ("folder", "default_desi_data_folder"),
-    "browse_default_mrm": ("file", "default_mrm_file"),
+    "browse_default_annotation_desi": ("file", "default_annotation_file"),
     "browse_default_desi_output": ("folder", "default_desi_output_dir"),
     "browse_default_tims_folder": ("folder", "default_tims_data_folder"),
     "browse_default_annotation": ("file", "default_annotation_csv"),
     "browse_default_tims_output": ("folder", "default_tims_output_dir"),
     "browse_default_output": ("folder", "default_output_dir"),
-    "browse_int_cal_mrm": ("file", "int_cal_mrm_path"),
+    "browse_int_cal_annotation": ("file", "int_cal_annotation_path"),
     # プロジェクト復元スキャンフォルダ
     "browse_restore_scan_folder": ("folder", "restore_scan_folder"),
 }
@@ -563,3 +565,32 @@ def apply_file_browser_selection(n_clicks, state):
 )
 def close_file_browser(n):
     return False
+
+
+# ---------------------------------------------------------------------------
+# パス入力欄のファイル名バッジ（クライアントサイドコールバック）
+# ---------------------------------------------------------------------------
+
+_PATH_INPUT_IDS = [
+    "data_folder", "rds_folder", "annotation_path", "output_dir",
+    "reanalysis_data_folder", "rds_folder_reanalysis", "reanalysis_annotation_path",
+    "desi_v8_script_path", "desi_cluster_filter_script_path",
+    "tims_v8_script_path", "tims_cluster_filter_script_path",
+    "default_desi_data_folder", "default_annotation_file", "default_desi_output_dir",
+    "default_tims_data_folder", "default_annotation_csv", "default_tims_output_dir",
+    "default_output_dir",
+]
+
+clientside_callback(
+    """function() {
+        var args = Array.prototype.slice.call(arguments);
+        return args.map(function(v) {
+            if (!v) return '';
+            var p = v.replace(/\\\\/g, '/').split('/');
+            var name = p[p.length - 1] || p[p.length - 2] || '';
+            return '\\ud83d\\udcc1 ' + name;
+        });
+    }""",
+    [Output(f"{pid}_path_hint", "children") for pid in _PATH_INPUT_IDS],
+    [Input(pid, "value") for pid in _PATH_INPUT_IDS],
+)

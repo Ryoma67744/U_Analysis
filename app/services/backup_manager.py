@@ -86,8 +86,8 @@ def rotate_backups(prefix: str, max_count: int = MAX_BACKUPS) -> int:
         try:
             oldest.unlink()
             deleted += 1
-        except OSError:
-            pass
+        except OSError as e:
+            print(f"[WARNING] バックアップ削除失敗 ({oldest.name}): {e}")
 
     return deleted
 
@@ -121,9 +121,8 @@ def backup_on_save(source_file: Path) -> None:
     """
     try:
         create_backup(source_file)
-    except Exception:
-        # バックアップ失敗は保存処理をブロックしない
-        pass
+    except Exception as e:
+        print(f"[WARNING] バックアップ作成失敗 ({source_file.name}): {e}")
 
 
 def list_backups() -> list[dict]:
@@ -145,6 +144,6 @@ def list_backups() -> list[dict]:
                 "size_kb": round(stat.st_size / 1024, 1),
                 "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
             })
-        except OSError:
-            pass
+        except OSError as e:
+            print(f"[WARNING] バックアップ情報取得失敗 ({p.name}): {e}")
     return result

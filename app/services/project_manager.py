@@ -30,7 +30,8 @@ def _load_all() -> dict:
     try:
         with open(PROJECTS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except Exception as e:
+        print(f"[WARNING] projects.json読み込み失敗: {e}")
         return {"projects": []}
 
 
@@ -43,8 +44,8 @@ def _save_all(data: dict) -> None:
     try:
         from app.services.backup_manager import backup_on_save
         backup_on_save(PROJECTS_FILE)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[WARNING] プロジェクトバックアップ失敗: {e}")
 
 
 # =========================================================================
@@ -336,7 +337,8 @@ def scan_project_meta(root_folder: str) -> list[dict]:
                 meta = json.load(f)
             meta["_found_dir"] = str(meta_path.parent)
             results.append(meta)
-        except Exception:
+        except Exception as e:
+            print(f"[WARNING] メタデータ読み込み失敗 ({meta_path}): {e}")
             continue
     return results
 

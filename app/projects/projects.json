@@ -7,46 +7,45 @@
       "memo": "",
       "sub_projects": [
         {
-          "id": "c66e1e81",
+          "id": "4efa5a53",
           "name": "260217-宮林-demo",
           "experiment_date": "2026-02-17",
-          "target_compound": "Amino Acids",
+          "target_compound": "",
           "ms_instrument": "TIMS",
           "polarity": [
             "Cation"
           ],
-          "memo": "",
+          "memo": "DHB, Py誘導体化",
           "data_folder": "",
           "output_dir": "",
-          "created_at": "2026-02-19T14:52:33",
-          "last_modified": "2026-02-19T16:22:36",
+          "created_at": "2026-03-06T14:15:47",
+          "last_modified": "2026-03-06T15:08:04",
           "last_analysis_settings": {
             "analysis_method": null,
             "analysis_method_tims": "tims_v8",
-            "data_folder": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\TIMS\\Data\\240819_py_PD100um_251223",
-            "output_dir": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\TIMS\\Data\\240819_py_PD100um_251223",
-            "mrm_path": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\TIMS\\DB\\260210_4500_endogenous_metabolites_mod.csv",
+            "data_folder": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\TIMS\\Data\\240819_py_PD100um_251223",
+            "output_dir": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\TIMS\\Data\\240819_py_PD100um_251223",
+            "annotation_path": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\TIMS\\DB\\260228-hmdb_metabolites_charge_aware_merged_with_list.csv",
             "p_thresh": 0.05,
             "logfc_thresh": 0.1,
-            "ion_mode": "Negative",
+            "ion_mode": "Positive",
             "tolerance_mz": 0.01,
             "resume_rds": false,
             "rds_folder": "",
-            "reanalysis_data_folder": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\DESI\\Data",
+            "reanalysis_data_folder": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\TIMS\\Data\\240819_py_PD100um_251223",
             "rds_path": "",
-            "filter_mode": "exclude",
-            "target_clusters": "",
+            "filter_mode": "keep",
+            "target_clusters": "5",
             "reanalysis_p_thresh": 0.05,
             "reanalysis_logfc_thresh": 0.1,
             "reanalysis_ion_mode": "Positive",
             "reanalysis_tolerance_mz": 0.01
           },
-          "last_result_dir": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\TIMS\\Data\\240819_py_PD100um_251223\\260219-DEMO",
-          "thumbnail_path": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\TIMS\\Data\\240819_py_PD100um_251223\\260219-DEMO\\thumbnail.png"
+          "last_result_dir": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\TIMS\\Data\\240819_py_PD100um_251223\\260219-DEMO"
         }
       ],
       "created_at": "2026-02-19T14:52:08",
-      "last_modified": "2026-02-19T16:22:36"
+      "last_modified": "2026-03-07T18:32:39"
     },
     {
       "id": "76044856",

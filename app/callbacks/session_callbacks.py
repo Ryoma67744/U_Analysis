@@ -3,11 +3,13 @@
 # セッション管理 コールバック
 # =============================================================================
 
-from dash import Input, Output, State, callback, ctx, no_update
+from dash import Input, Output, State, callback, ctx, no_update, html
+import dash_bootstrap_components as dbc
 
 from app.services.session_manager import (
     save_session, load_session, list_sessions, delete_session,
 )
+from app.services.backup_manager import list_backups
 
 
 # ---------------------------------------------------------------------------
@@ -22,7 +24,7 @@ from app.services.session_manager import (
      State("analysis_method_tims", "value"),
      State("data_folder", "value"),
      State("output_dir", "value"),
-     State("mrm_path", "value"),
+     State("annotation_path", "value"),
      State("p_thresh", "value"),
      State("logfc_thresh", "value"),
      State("resume_rds", "value"),
@@ -35,7 +37,7 @@ from app.services.session_manager import (
 def handle_save_session(
     n_clicks,
     desi_method, tims_method,
-    data_folder, output_dir, mrm_path,
+    data_folder, output_dir, annotation_path,
     p_thresh, logfc_thresh, resume_rds,
     filter_mode, target_clusters, rds_path,
     output_subfolder,
@@ -48,7 +50,7 @@ def handle_save_session(
         "analysis_method_tims": tims_method or "",
         "data_folder": data_folder or "",
         "output_dir": output_dir or "",
-        "mrm_path": mrm_path or "",
+        "annotation_path": annotation_path or "",
         "p_thresh": p_thresh,
         "logfc_thresh": logfc_thresh,
         "resume_rds": resume_rds,
@@ -74,7 +76,7 @@ def handle_save_session(
      Output("analysis_method_tims", "value", allow_duplicate=True),
      Output("data_folder", "value", allow_duplicate=True),
      Output("output_dir", "value", allow_duplicate=True),
-     Output("mrm_path", "value", allow_duplicate=True),
+     Output("annotation_path", "value", allow_duplicate=True),
      Output("p_thresh", "value", allow_duplicate=True),
      Output("logfc_thresh", "value", allow_duplicate=True),
      Output("resume_rds", "value", allow_duplicate=True),
@@ -106,7 +108,7 @@ def handle_reload_session(n_clicks, selected_rows, table_data):
             tims_method,
             data.get("data_folder", ""),
             data.get("output_dir", ""),
-            data.get("mrm_path", ""),
+            data.get("annotation_path", data.get("mrm_path", "")),
             data.get("p_thresh", 0.05),
             data.get("logfc_thresh", 0.10),
             data.get("resume_rds", False),
@@ -179,3 +181,49 @@ def switch_to_history_tab(n_clicks):
     if not n_clicks:
         return no_update
     return "history"
+
+
+# ---------------------------------------------------------------------------
+# バックアップ一覧モーダル
+# ---------------------------------------------------------------------------
+
+@callback(
+    [Output("backup_list_modal", "is_open"),
+     Output("backup_list_body", "children")],
+    [Input("open_backup_list_btn", "n_clicks"),
+     Input("close_backup_list_btn", "n_clicks")],
+    State("backup_list_modal", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_backup_list_modal(open_clicks, close_clicks, is_open):
+    if not ctx.triggered_id:
+        return no_update, no_update
+
+    if ctx.triggered_id == "close_backup_list_btn":
+        return False, no_update
+
+    # モーダルを開く → バックアップ一覧を取得
+    backups = list_backups()
+    if not backups:
+        body = html.P("バックアップファイルはありません。",
+                       className="text-muted")
+    else:
+        rows = []
+        for b in backups:
+            rows.append(html.Tr([
+                html.Td(b["name"], style={"fontSize": "0.85rem"}),
+                html.Td(f"{b['size_kb']:.1f} KB",
+                         style={"fontSize": "0.85rem", "textAlign": "right"}),
+                html.Td(b["created_at"],
+                         style={"fontSize": "0.85rem"}),
+            ]))
+        body = dbc.Table([
+            html.Thead(html.Tr([
+                html.Th("ファイル名"),
+                html.Th("サイズ", style={"textAlign": "right"}),
+                html.Th("作成日時"),
+            ])),
+            html.Tbody(rows),
+        ], bordered=True, hover=True, size="sm", striped=True)
+
+    return True, body

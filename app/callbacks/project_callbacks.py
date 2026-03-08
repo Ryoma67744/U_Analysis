@@ -477,7 +477,7 @@ _ANALYSIS_SETTINGS_KEYS = [
     "analysis_method_tims",
     "data_folder",
     "output_dir",
-    "mrm_path",
+    "annotation_path",
     "p_thresh",
     "logfc_thresh",
     "ion_mode",
@@ -503,7 +503,7 @@ _ANALYSIS_SETTINGS_KEYS = [
      Output("output_dir", "value", allow_duplicate=True),
      Output("analysis_method", "value", allow_duplicate=True),
      Output("analysis_method_tims", "value", allow_duplicate=True),
-     Output("mrm_path", "value", allow_duplicate=True),
+     Output("annotation_path", "value", allow_duplicate=True),
      Output("p_thresh", "value", allow_duplicate=True),
      Output("logfc_thresh", "value", allow_duplicate=True),
      Output("ion_mode", "value", allow_duplicate=True),
@@ -549,7 +549,7 @@ def sub_action_new_analysis(clicks, project):
         output_dir or no_update,                                # output_dir
         settings.get("analysis_method") or no_update,           # analysis_method
         settings.get("analysis_method_tims") or no_update,      # analysis_method_tims
-        settings.get("mrm_path", "") if settings else no_update,  # mrm_path
+        settings.get("annotation_path", settings.get("mrm_path", "")) if settings else no_update,  # annotation_path
         settings.get("p_thresh") if settings else no_update,    # p_thresh
         settings.get("logfc_thresh") if settings else no_update,  # logfc_thresh
         settings.get("ion_mode") or no_update,                  # ion_mode
