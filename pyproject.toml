@@ -35,4 +35,4 @@ msi-app = "run_app:main"
 testpaths = ["tests"]
 
 [tool.setuptools]
-packages = ["app", "app.callbacks", "app.layouts", "app.services"]
+packages = ["app", "app.callbacks", "app.layouts", "app.services", "app.utils"]

@@ -24,10 +24,10 @@ from app.callbacks.interactive_callbacks import (
     _cluster_sort_key,
     _get_cluster_color_map,
     _get_cluster_colorscale,
-    _build_umap_integrated_fig,
-    _create_single_spatial_fig,
     _load_deg_results,
 )
+from app.callbacks.interactive_umap import _build_umap_integrated_fig
+from app.callbacks.interactive_spatial import _create_single_spatial_fig
 
 # Seuratブリッジ
 _sv_bridge = SeuratBridge()
