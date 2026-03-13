@@ -7,6 +7,9 @@ import os
 import tempfile
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()  # .env ファイルがあれば読み込み
+
 # アプリケーションのベースディレクトリ
 # app/ の親ディレクトリ = プロジェクトルート (UMAP_Claudecode/)
 APP_BASE_DIR = Path(__file__).parent.parent
@@ -33,12 +36,12 @@ COMMON_SCRIPT_DIR = COMMON_DIR / "Script"
 MERGE_CLUSTERS_SCRIPT_PATH = COMMON_SCRIPT_DIR / "UMAP_Merge_Clusters_ver1.R"
 
 # DESI用スクリプトのパス
-DESI_V8_TEMPLATE_PATH = DESI_SCRIPT_DIR / "260130_DESI-UMAP_Template_v9.R"
+DESI_V8_TEMPLATE_PATH = DESI_SCRIPT_DIR / "260312_DESI-UMAP_Template_v13.R"
 DESI_CLUSTER_FILTER_PATH = DESI_SCRIPT_DIR / "DESI_RDS_ClusterFilter_ver2.R"
 
 # TIMS用スクリプトのパス
-TIMS_V8_TEMPLATE_PATH = TIMS_SCRIPT_DIR / "260306_DBSCAN_With_cluster_ver15.R"
-TIMS_CLUSTER_FILTER_PATH = TIMS_SCRIPT_DIR / "260306_DBSCAN_ver15_Cluster_Filter_ReUMAP.R"
+TIMS_V8_TEMPLATE_PATH = TIMS_SCRIPT_DIR / "260312_DBSCAN_With_cluster_ver20.R"
+TIMS_CLUSTER_FILTER_PATH = TIMS_SCRIPT_DIR / "260312_DBSCAN_ver17_Cluster_Filter_ReUMAP.R"
 
 # R ヘルパースクリプトのパス
 R_HELPERS_DIR = Path(__file__).parent / "r_helpers"
@@ -102,7 +105,7 @@ DEFAULT_SHARE_EXPIRY_DAYS = 30
 #     2. Quick Tunnel: cloudflared tunnel --url http://localhost:3838
 #     3. 表示されたURLをここに設定: "https://xxxx.trycloudflare.com"
 #     4. 固定ドメインの場合: cloudflared tunnel run --url http://localhost:3838 <tunnel-name>
-SHARE_BASE_URL = "https://administered-exercises-dude-give.trycloudflare.com"
+SHARE_BASE_URL = os.environ.get("SHARE_BASE_URL", "")
 
 # Seuratブリッジ キャッシュディレクトリ
 # 日本語パスを含むとRscript.exeが文字化けするため、tempdir（ASCII安全）を使用
@@ -161,5 +164,5 @@ CLUSTER_PRESET_COLORS = [
 
 # アプリケーション設定
 APP_VERSION = "2.0.0"
-APP_PORT = 3838
-APP_HOST = "0.0.0.0"  # LAN + Cloudflare Tunnel 対応
+APP_PORT = int(os.environ.get("APP_PORT", "3838"))
+APP_HOST = os.environ.get("APP_HOST", "0.0.0.0")  # LAN + Cloudflare Tunnel 対応

@@ -1,0 +1,40 @@
+{
+  "presets": [
+    {
+      "name": "260304-Demo",
+      "params": {
+        "analysis_method": null,
+        "analysis_method_tims": "tims_v8",
+        "ion_mode": "Positive",
+        "tolerance_mz": 0.01,
+        "adduct_filter": [
+          "+H",
+          "+Na",
+          "+NH4",
+          "+K"
+        ],
+        "p_thresh": 0.05,
+        "logfc_thresh": 0.1,
+        "calibration_enable": true,
+        "calibration_matrix": "DHB",
+        "calibration_search_window": 0.5,
+        "calibration_min_peaks": 2,
+        "calibration_regression_mode": "poly3",
+        "filter_mode": "exclude",
+        "target_clusters": "",
+        "reanalysis_ion_mode": "Positive",
+        "reanalysis_tolerance_mz": 0.01,
+        "reanalysis_adduct_filter": [
+          "+H",
+          "+Na",
+          "+NH4",
+          "+K"
+        ],
+        "reanalysis_p_thresh": 0.05,
+        "reanalysis_logfc_thresh": 0.1,
+        "_saved_at": "2026-03-04T18:16:17.781543"
+      },
+      "created_at": "2026-03-04 18:16"
+    }
+  ]
+}

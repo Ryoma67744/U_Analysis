@@ -138,11 +138,6 @@ def get_interactive_tooltips():
             target="spatial_marker_size_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "UMAPプロット上のクラスタラベル位置をドラッグで調整した後、"
-            "このボタンで位置を保存します。次回読み込み時に復元されます。",
-            target="save_label_pos_btn", **_TOOLTIP_PROPS,
-        ),
-        dbc.Tooltip(
             "プロットをフルスクリーンで拡大表示します。"
             "詳細な観察やスクリーンショット撮影に便利です。",
             target="expand_umap_btn", **_TOOLTIP_PROPS,

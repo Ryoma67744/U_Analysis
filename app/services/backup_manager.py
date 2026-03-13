@@ -3,11 +3,14 @@
 # 自動バックアップ管理モジュール
 # =============================================================================
 
+import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
 
 from app.config import PROJECTS_FILE, SHARES_FILE, SESSIONS_DIR
+
+logger = logging.getLogger("msi.backup")
 
 # バックアップ設定
 BACKUPS_DIR = PROJECTS_FILE.parent / "backups"
@@ -87,7 +90,7 @@ def rotate_backups(prefix: str, max_count: int = MAX_BACKUPS) -> int:
             oldest.unlink()
             deleted += 1
         except OSError as e:
-            print(f"[WARNING] バックアップ削除失敗 ({oldest.name}): {e}")
+            logger.warning("バックアップ削除失敗 (%s): %s", oldest.name, e)
 
     return deleted
 
@@ -122,7 +125,7 @@ def backup_on_save(source_file: Path) -> None:
     try:
         create_backup(source_file)
     except Exception as e:
-        print(f"[WARNING] バックアップ作成失敗 ({source_file.name}): {e}")
+        logger.warning("バックアップ作成失敗 (%s): %s", source_file.name, e)
 
 
 def list_backups() -> list[dict]:
@@ -145,5 +148,5 @@ def list_backups() -> list[dict]:
                 "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
             })
         except OSError as e:
-            print(f"[WARNING] バックアップ情報取得失敗 ({p.name}): {e}")
+            logger.warning("バックアップ情報取得失敗 (%s): %s", p.name, e)
     return result

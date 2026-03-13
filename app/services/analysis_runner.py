@@ -4,6 +4,7 @@
 # パラメータ注入 + サブプロセス管理
 # =============================================================================
 
+import logging
 import os
 import re
 import subprocess
@@ -12,6 +13,8 @@ from pathlib import Path
 from typing import Optional
 
 from app.config import RSCRIPT_PATH
+
+logger = logging.getLogger("msi.analysis_runner")
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +235,12 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
     if params.get("adduct_patterns"):
         r_vec = "c(" + ", ".join(f'"{p}"' for p in params["adduct_patterns"]) + ")"
         lines = _replace_block_assign(lines, "ANNOT_ADDUCT_PATTERNS", r_vec)
+
+    # --- Annotation Filter ---
+    if params.get("annotation_filter"):
+        filter_values = params["annotation_filter"]
+        r_vec = "c(" + ", ".join(f'"{v}"' for v in filter_values) + ")"
+        lines = _replace_assign(lines, "ANNOTATION_FILTER", r_vec)
 
     # --- m/z キャリブレーション ---
     if params.get("calibration_enable"):

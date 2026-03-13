@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MSI Analysis Application - 操作マニュアル</title>
+<style>
+  :root {
+    --primary: #2c3e50;
+    --accent: #3498db;
+    --bg: #f8f9fa;
+    --card-bg: #ffffff;
+    --border: #dee2e6;
+    --text: #333333;
+    --text-light: #666666;
+    --note-bg: #fff3cd;
+    --note-border: #ffc107;
+    --warn-bg: #f8d7da;
+    --warn-border: #dc3545;
+    --tip-bg: #d1ecf1;
+    --tip-border: #17a2b8;
+    --code-bg: #f4f4f4;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Hiragino Kaku Gothic ProN", "Meiryo", "Yu Gothic", sans-serif;
+    line-height: 1.8;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 20px 30px 60px;
+  }
+  h1 {
+    font-size: 2em;
+    color: var(--primary);
+    border-bottom: 3px solid var(--accent);
+    padding-bottom: 10px;
+    margin: 40px 0 20px;
+  }
+  h2 {
+    font-size: 1.5em;
+    color: var(--primary);
+    border-left: 5px solid var(--accent);
+    padding-left: 12px;
+    margin: 35px 0 15px;
+  }
+  h3 {
+    font-size: 1.2em;
+    color: var(--primary);
+    margin: 25px 0 10px;
+  }
+  h4 {
+    font-size: 1.05em;
+    color: var(--text);
+    margin: 18px 0 8px;
+  }
+  p { margin: 8px 0; }
+  ol, ul { margin: 8px 0 8px 24px; }
+  li { margin: 4px 0; }
+  code {
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: "Consolas", "Source Code Pro", monospace;
+    font-size: 0.9em;
+  }
+  pre {
+    background: var(--code-bg);
+    padding: 14px 18px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-family: "Consolas", "Source Code Pro", monospace;
+    font-size: 0.88em;
+    line-height: 1.5;
+    margin: 10px 0;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 0.95em;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    text-align: left;
+  }
+  th {
+    background: var(--primary);
+    color: #fff;
+    font-weight: 600;
+  }
+  tr:nth-child(even) { background: #f2f6fa; }
+  .note, .warn, .tip {
+    padding: 14px 18px;
+    border-left: 4px solid;
+    border-radius: 4px;
+    margin: 14px 0;
+  }
+  .note { background: var(--note-bg); border-color: var(--note-border); }
+  .warn { background: var(--warn-bg); border-color: var(--warn-border); }
+  .tip  { background: var(--tip-bg);  border-color: var(--tip-border); }
+  .note::before { content: "Note: "; font-weight: bold; }
+  .warn::before { content: "Warning: "; font-weight: bold; color: var(--warn-border); }
+  .tip::before  { content: "Tip: "; font-weight: bold; color: var(--tip-border); }
+  .screenshot {
+    display: block;
+    max-width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin: 14px auto;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  }
+  .caption {
+    text-align: center;
+    font-size: 0.88em;
+    color: var(--text-light);
+    margin-top: -8px;
+    margin-bottom: 14px;
+  }
+  .placeholder {
+    display: block;
+    max-width: 100%;
+    min-height: 200px;
+    border: 2px dashed var(--border);
+    border-radius: 6px;
+    margin: 14px auto;
+    background: #fafafa;
+    text-align: center;
+    line-height: 200px;
+    color: #aaa;
+    font-size: 0.9em;
+  }
+  strong { color: var(--primary); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  #toc {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px 28px;
+    margin: 20px 0 30px;
+  }
+  #toc h2 { border: none; padding: 0; margin: 0 0 12px; font-size: 1.3em; }
+  #toc ol { counter-reset: toc-counter; list-style: none; margin: 0; padding: 0; }
+  #toc > ol > li { margin: 6px 0; }
+  #toc > ol > li > a { font-weight: bold; font-size: 1.05em; }
+  #toc ol ol { margin: 2px 0 2px 20px; }
+  #toc ol ol li { margin: 2px 0; }
+  .header-bar {
+    background: var(--primary);
+    color: #fff;
+    padding: 30px;
+    border-radius: 8px;
+    text-align: center;
+    margin-bottom: 30px;
+  }
+  .header-bar h1 { color: #fff; border: none; margin: 0; padding: 0; font-size: 2.2em; }
+  .header-bar p { color: #ccc; margin: 8px 0 0; font-size: 1.1em; }
+  .step-num {
+    display: inline-block;
+    background: var(--accent);
+    color: #fff;
+    width: 28px;
+    height: 28px;
+    text-align: center;
+    line-height: 28px;
+    border-radius: 50%;
+    font-size: 0.85em;
+    font-weight: bold;
+    margin-right: 6px;
+  }
+  @media print {
+    body { max-width: 100%; padding: 10px; }
+    .header-bar { break-after: page; }
+    h1 { break-before: page; }
+    .placeholder { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header-bar">
+  <h1>MSI Analysis Application</h1>
+  <p>操作マニュアル v2.2</p>
+</div>
+
+<!-- ===== 目次 ===== -->
+<nav id="toc">
+  <h2>目次</h2>
+  <ol>
+    <li><a href="#ch1">第1章 はじめに</a>
+      <ol>
+        <li><a href="#ch1-1">1.1 アプリの概要</a></li>
+        <li><a href="#ch1-2">1.2 対応装置</a></li>
+        <li><a href="#ch1-3">1.3 全体ワークフロー</a></li>
+      </ol>
+    </li>
+    <li><a href="#ch2">第2章 環境構築</a>
+      <ol>
+        <li><a href="#ch2-1">2.1 必要なソフトウェア</a></li>
+        <li><a href="#ch2-2">2.2 アプリのセットアップ</a></li>
+        <li><a href="#ch2-3">2.3 アプリの起動と終了</a></li>
+      </ol>
+    </li>
+    <li><a href="#ch3">第3章 プロジェクト管理</a>
+      <ol>
+        <li><a href="#ch3-1">3.1 プロジェクトの作成</a></li>
+        <li><a href="#ch3-2">3.2 サブプロジェクトの作成</a></li>
+        <li><a href="#ch3-3">3.3 プロジェクトの検索・編集・削除</a></li>
+      </ol>
+    </li>
+    <li><a href="#ch4">第4章 解析の実行（設定タブ）</a>
+      <ol>
+        <li><a href="#ch4-1">4.1 TIMS解析</a></li>
+        <li><a href="#ch4-2">4.2 DESI解析</a></li>
+        <li><a href="#ch4-3">4.3 再解析（クラスタフィルター）</a></li>
+        <li><a href="#ch4-4">4.4 解析の進捗確認</a></li>
+      </ol>
+    </li>
+    <li><a href="#ch5">第5章 結果の閲覧（結果タブ）</a>
+      <ol>
+        <li><a href="#ch5-1">5.1 結果フォルダの選択</a></li>
+        <li><a href="#ch5-2">5.2 カテゴリ・クラスタフィルター</a></li>
+        <li><a href="#ch5-3">5.3 画像ギャラリーの操作</a></li>
+        <li><a href="#ch5-4">5.4 画像の拡大表示</a></li>
+      </ol>
+    </li>
+    <li><a href="#ch6">第6章 インタラクティブ解析</a>
+      <ol>
+        <li><a href="#ch6-1">6.1 データの読み込み</a></li>
+        <li><a href="#ch6-2">6.2 UMAP</a></li>
+        <li><a href="#ch6-3">6.3 Spatial Mapping</a></li>
+        <li><a href="#ch6-4">6.4 Feature Plot</a></li>
+        <li><a href="#ch6-5">6.5 DEGマーカー解析</a></li>
+        <li><a href="#ch6-6">6.6 クラスタ情報</a></li>
+        <li><a href="#ch6-7">6.7 m/z キャリブレーション</a></li>
+      </ol>
+    </li>
+    <li><a href="#ch7">第7章 レポート出力</a></li>
+    <li><a href="#ch8">第8章 セッション管理</a></li>
+    <li><a href="#appendix">付録</a>
+      <ol>
+        <li><a href="#app-a">A. トラブルシューティング</a></li>
+        <li><a href="#app-b">B. フォルダ構成一覧</a></li>
+        <li><a href="#app-c">C. 動作環境・必要スペック</a></li>
+      </ol>
+    </li>
+  </ol>
+</nav>
+
+<!-- ===================================================================== -->
+<h1 id="ch1">第1章 はじめに</h1>
+<!-- ===================================================================== -->
+
+<h2 id="ch1-1">1.1 アプリの概要</h2>
+<p>
+  <strong>MSI Analysis Application</strong> は、質量分析イメージング（Mass Spectrometry Imaging, MSI）データの
+  UMAP解析・クラスタリング・可視化を行うためのWebアプリケーションです。
+  ブラウザ上で動作し、以下の機能を提供します。
+</p>
+<ul>
+  <li><strong>UMAP解析の実行</strong> — Rスクリプトを自動実行し、次元削減・クラスタリングを行います</li>
+  <li><strong>インタラクティブ可視化</strong> — UMAP、Spatial Mapping、Feature Plot、Volcano Plot、Heatmap をブラウザ上で操作できます</li>
+  <li><strong>レポート出力</strong> — 解析結果を PowerPoint（.pptx）ファイルとして自動生成します</li>
+  <li><strong>プロジェクト管理</strong> — 解析設定をプロジェクト単位で保存・管理できます</li>
+</ul>
+
+<h2 id="ch1-2">1.2 対応装置</h2>
+<table>
+  <tr><th>装置</th><th>解析手法</th><th>スクリプトバージョン</th></tr>
+  <tr><td>DESI-MSI</td><td>UMAP Template 解析</td><td>v9</td></tr>
+  <tr><td>TIMS-MSI</td><td>DBSCAN + UMAP 解析</td><td>ver13</td></tr>
+</table>
+<p>どちらの装置でも、新規解析と再解析（クラスタフィルター）に対応しています。</p>
+
+<h2 id="ch1-3">1.3 全体ワークフロー</h2>
+<p>本アプリを使った解析は、以下のステップで進めます。</p>
+<pre>
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│  1. 環境構築  │ →  │ 2. プロジェクト│ →  │ 3. 解析実行   │ →  │ 4. 結果閲覧   │ →  │ 5. レポート   │
+│  Python / R   │    │    作成       │    │  UMAP / DBSCAN│    │  インタラクティブ│    │  PPTX 出力   │
+│  セットアップ  │    │              │    │              │    │  解析          │    │              │
+└──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
+</pre>
+
+<!-- ===================================================================== -->
+<h1 id="ch2">第2章 環境構築</h1>
+<!-- ===================================================================== -->
+
+<h2 id="ch2-1">2.1 必要なソフトウェア</h2>
+
+<h3>Python のインストール（必須）</h3>
+<p>Python 3.10 以上が必要です。以下の手順でインストールしてください。</p>
+<ol>
+  <li><a href="https://www.python.org/downloads/" target="_blank">python.org</a> にアクセスし、最新の Python 3.x をダウンロードします</li>
+  <li>インストーラを実行します</li>
+  <li>
+    <strong>重要:</strong> インストール画面の一番下にある
+    <strong>「Add Python to PATH」にチェック</strong>を入れてから「Install Now」をクリックしてください
+  </li>
+  <li>インストール完了後、コマンドプロンプトを開いて以下を入力し、バージョンが表示されることを確認します</li>
+</ol>
+<pre>python --version</pre>
+<p>例: <code>Python 3.12.5</code> と表示されれば成功です。</p>
+<!-- Python PATH スクリーンショットは省略 -->
+
+<div class="warn">
+  「Add Python to PATH」にチェックを入れ忘れた場合、アプリが起動できません。
+  その場合は Python を一度アンインストールし、再度インストールしてください。
+</div>
+
+<h3>R のインストール（推奨）</h3>
+<p>R は UMAP解析・クラスタリングの実行に必要です。インタラクティブ解析のみ使用する場合は不要です。</p>
+<ol>
+  <li><a href="https://cran.r-project.org/bin/windows/base/" target="_blank">CRAN</a> から R 4.4.x をダウンロードします</li>
+  <li>インストーラを実行し、デフォルト設定のまま進めます</li>
+  <li>インストール先はデフォルトの <code>C:\Program Files\R\R-4.4.x</code> を推奨します</li>
+</ol>
+
+<div class="tip">
+  R のインストール先を変更した場合は、アプリの設定ファイル（<code>app/config.py</code>）内の
+  <code>R_HOME</code> を修正する必要があります。
+</div>
+
+<h2 id="ch2-2">2.2 アプリのセットアップ</h2>
+
+<h3>フォルダの配置</h3>
+<p>アプリ一式が入ったフォルダ（<code>UMAP_Claudecode</code>）を任意の場所にコピーします。</p>
+
+<h3>セットアップの実行</h3>
+<ol>
+  <li>エクスプローラーで <code>UMAP_Claudecode</code> フォルダを開きます</li>
+  <li><strong><code>setup.bat</code></strong> をダブルクリックします</li>
+  <li>コマンドプロンプトが開き、以下の処理が自動実行されます:
+    <ul>
+      <li>Python のバージョン確認</li>
+      <li>必要な Python パッケージのインストール</li>
+      <li>R の確認（インストールされている場合のみ）</li>
+      <li>R パッケージのインストール（初回は10〜20分かかります）</li>
+    </ul>
+  </li>
+  <li>「セットアップが完了しました」と表示されたら完了です。何かキーを押してウィンドウを閉じます</li>
+</ol>
+<!-- setup.bat スクリーンショットは省略 -->
+
+<div class="note">
+  セットアップは初回のみ実行すれば十分です。
+  Python や R のバージョンを変更した場合は再度 <code>setup.bat</code> を実行してください。
+</div>
+
+<h2 id="ch2-3">2.3 アプリの起動と終了</h2>
+
+<h3>起動</h3>
+<ol>
+  <li><code>UMAP_Claudecode</code> フォルダ内の <strong><code>run_app.bat</code></strong> をダブルクリックします</li>
+  <li>コマンドプロンプトが開き、<code>Starting MSI Analysis Application on http://127.0.0.1:3838</code> と表示されます</li>
+  <li>Webブラウザ（Google Chrome 推奨）を開き、アドレスバーに以下を入力します:
+    <pre>http://localhost:3838</pre>
+  </li>
+  <li>アプリのトップ画面（プロジェクト一覧）が表示されれば起動完了です</li>
+</ol>
+<img src="images/01_landing.png" alt="アプリのトップ画面（プロジェクト一覧）" class="screenshot">
+<p class="caption">図: アプリ起動後のプロジェクト一覧画面</p>
+
+<div class="tip">
+  同じネットワーク上の別PCからアクセスする場合は、<code>http://[このPCのIPアドレス]:3838</code> で接続できます。
+</div>
+
+<h3>終了</h3>
+<p>アプリを終了するには、<code>run_app.bat</code> のコマンドプロンプトウィンドウを閉じてください。
+  ブラウザのタブを閉じるだけではアプリは終了しません。</p>
+
+<!-- ===================================================================== -->
+<h1 id="ch3">第3章 プロジェクト管理</h1>
+<!-- ===================================================================== -->
+
+<p>アプリを起動すると、まずプロジェクト一覧画面（ランディングページ）が表示されます。
+  解析データをプロジェクト単位で整理・管理できます。</p>
+
+<h2 id="ch3-1">3.1 プロジェクトの作成</h2>
+<ol>
+  <li>画面左上の <strong>「+ 新規プロジェクト」</strong> ボタンをクリックします</li>
+  <li>プロジェクト名を入力します（例: <code>240301-田中-肝臓</code>）</li>
+  <li>必要に応じて説明を入力します</li>
+  <li><strong>「作成」</strong> ボタンをクリックします</li>
+</ol>
+<img src="images/01_landing.png" alt="プロジェクト一覧画面" class="screenshot">
+<p class="caption">図: プロジェクト一覧画面。右上の「+ 新規プロジェクト」から作成できます</p>
+
+<h2 id="ch3-2">3.2 サブプロジェクトの作成</h2>
+<p>プロジェクトをクリックすると、サブプロジェクト一覧画面に移動します。
+  1つのプロジェクト内に複数のサブプロジェクト（解析条件の異なる実験など）を作成できます。</p>
+<ol>
+  <li>プロジェクト一覧から対象のプロジェクトをクリックします</li>
+  <li><strong>「+ 新規サブプロジェクト」</strong> ボタンをクリックします</li>
+  <li>サブプロジェクト名を入力し、解析対象の装置（DESI / TIMS）を選択します</li>
+  <li><strong>「作成」</strong> ボタンをクリックします</li>
+</ol>
+<img src="images/02_subproject.png" alt="サブプロジェクト一覧画面" class="screenshot">
+<p class="caption">図: サブプロジェクト一覧画面。「解析」「結果閲覧」「インタラクティブ」から各機能にアクセスできます</p>
+
+<h2 id="ch3-3">3.3 プロジェクトの検索・編集・削除</h2>
+<ul>
+  <li><strong>検索:</strong> プロジェクト一覧画面上部の検索バーにキーワードを入力すると、プロジェクトが絞り込まれます</li>
+  <li><strong>編集:</strong> プロジェクト名の右側にある編集アイコンをクリックして名前や説明を変更できます</li>
+  <li><strong>削除:</strong> 削除アイコンをクリックすると確認ダイアログが表示されます。削除は取り消せません</li>
+</ul>
+
+<!-- ===================================================================== -->
+<h1 id="ch4">第4章 解析の実行（設定タブ）</h1>
+<!-- ===================================================================== -->
+
+<p>サブプロジェクトを選択し <strong>「解析開始」</strong> をクリックすると、設定画面に移動します。
+  左側のサイドバーで解析手法を選び、各種パラメータを設定して解析を実行します。</p>
+
+<h2 id="ch4-1">4.1 TIMS解析</h2>
+
+<h3>データの準備</h3>
+<p>TIMS装置で取得したデータファイル（<code>.parquet</code>、<code>.csv</code>、<code>.txt</code> 等）を
+  1つのフォルダにまとめておきます。1ファイル＝1サンプルとして認識されます。</p>
+
+<h3>解析設定の手順</h3>
+<ol>
+  <li>サイドバーの <strong>「TIMS」</strong> セクションから <strong>「UMAP解析」</strong> を選択します</li>
+  <li><strong>データフォルダ</strong>: 「...」ボタンをクリックし、データが格納されているフォルダを選択します</li>
+  <li><strong>サンプル選択</strong>: 表示されたファイル一覧から、解析対象のサンプルにチェックを入れます</li>
+  <li><strong>アノテーションファイル</strong>（任意）: 代謝物データベースの CSV ファイルを指定します</li>
+  <li><strong>出力先フォルダ</strong>: 結果の保存先を指定します</li>
+  <li><strong>解析名</strong>: 自動生成されますが、任意の名前に変更できます</li>
+</ol>
+<img src="images/03_settings_tab.png" alt="TIMS 解析設定画面" class="screenshot">
+<p class="caption">図: TIMS 解析設定画面。左のサイドバーで解析手法を選択し、右側で各種パラメータを設定します</p>
+
+<h4>イオンモード設定</h4>
+<table>
+  <tr><th>設定項目</th><th>説明</th><th>デフォルト値</th></tr>
+  <tr><td>イオンモード</td><td>Positive（陽イオン）または Negative（陰イオン）</td><td>Positive</td></tr>
+  <tr><td>m/z トレランス</td><td>m/z 値のマッチング許容差（Da）</td><td>0.01</td></tr>
+  <tr><td>アダクトフィルタ</td><td>対象とするアダクトイオン種</td><td>+H, +Na, +NH4（Positive時）</td></tr>
+</table>
+
+<h4>m/z キャリブレーション（任意）</h4>
+<p>マトリックスのリファレンスピークを用いて m/z 値を補正できます。</p>
+<ol>
+  <li><strong>「m/z キャリブレーション」</strong> セクションを展開します</li>
+  <li><strong>マトリックス</strong> を選択します（DHB / CHCA / 9-AA / カスタム）</li>
+  <li>リファレンス m/z 値のテーブルが表示されます。必要に応じて編集します</li>
+  <li><strong>「ピーク自動検出」</strong> ボタンで、データ内のピークを自動マッチングできます</li>
+  <li>回帰モデル（線形 / 2次 / 3次多項式）を選択します</li>
+</ol>
+<img src="images/03b_settings_scroll.png" alt="解析設定画面（出力設定・実行ボタン）" class="screenshot">
+<p class="caption">図: 設定画面下部。出力設定と「解析実行」ボタンが表示されます</p>
+
+<h4>解析パラメータ</h4>
+<table>
+  <tr><th>パラメータ</th><th>説明</th><th>デフォルト値</th></tr>
+  <tr><td>p値閾値</td><td>DEG（差次的発現）の有意水準</td><td>0.05</td></tr>
+  <tr><td>log2FC 閾値</td><td>発現変動量の最小値</td><td>0.1</td></tr>
+</table>
+
+<h4>解析の実行</h4>
+<ol>
+  <li>設定が完了したら <strong>「解析実行」</strong> ボタンをクリックします</li>
+  <li>R スクリプトが自動的に実行されます。進捗はプログレスバーとログで確認できます</li>
+  <li>解析完了後、結果フォルダに RDS ファイルや画像が生成されます</li>
+</ol>
+
+<h2 id="ch4-2">4.2 DESI解析</h2>
+
+<h3>データの準備</h3>
+<p>DESI装置で取得したテキストデータファイル（<code>.txt</code>）を1つのフォルダにまとめておきます。</p>
+
+<h3>解析設定の手順</h3>
+<ol>
+  <li>サイドバーの <strong>「DESI」</strong> セクションから <strong>「UMAP解析」</strong> を選択します</li>
+  <li><strong>データフォルダ</strong>: 「...」ボタンでデータフォルダを選択します</li>
+  <li><strong>サンプル選択</strong>: 解析対象のサンプルにチェックを入れます</li>
+  <li><strong>MRMファイル</strong>（任意）: MRM リスト（<code>.xlsx</code>）を指定するとターゲット代謝物が表示されます</li>
+  <li><strong>出力先フォルダ</strong>と<strong>解析名</strong>を確認します</li>
+  <li><strong>「解析実行」</strong> ボタンをクリックします</li>
+</ol>
+<!-- DESI設定画面はTIMSと同様のレイアウトです -->
+
+<h2 id="ch4-3">4.3 再解析（クラスタフィルター）</h2>
+<p>既に実行済みの解析結果から、特定のクラスタを除外・抽出して再度 UMAP 計算を行えます。</p>
+<ol>
+  <li>サイドバーで <strong>「再解析」</strong> を選択します</li>
+  <li><strong>RDSファイル</strong>: 「...」ボタンで既存の RDS ファイル（Step2 または Step3）を選択します</li>
+  <li><strong>対象クラスタ</strong>: クラスタ番号をカンマ区切りで入力します（例: <code>0, 1, 5</code>）</li>
+  <li><strong>フィルターモード</strong>: 「除外」（指定クラスタを取り除く）または「抽出」（指定クラスタのみ残す）を選択します</li>
+  <li><strong>「解析実行」</strong> ボタンをクリックします</li>
+</ol>
+
+<h2 id="ch4-4">4.4 解析の進捗確認</h2>
+<p>解析実行中は以下の情報が表示されます:</p>
+<ul>
+  <li><strong>プログレスバー</strong>: 全体の進捗を表示</li>
+  <li><strong>ステータスメッセージ</strong>: 現在実行中の処理内容</li>
+  <li><strong>ログ出力</strong>: R スクリプトの実行ログがリアルタイムで表示されます</li>
+</ul>
+<div class="note">
+  解析にかかる時間はデータサイズとサンプル数によって異なります。
+  目安として、5サンプル・各1000ピクセル程度で 5〜15分 程度です。
+</div>
+
+<!-- ===================================================================== -->
+<h1 id="ch5">第5章 結果の閲覧（結果タブ）</h1>
+<!-- ===================================================================== -->
+
+<p>解析が完了すると、生成された画像やデータを <strong>「結果」タブ</strong> で閲覧できます。</p>
+
+<h2 id="ch5-1">5.1 結果フォルダの選択</h2>
+<ol>
+  <li>画面上部の <strong>「結果」</strong> タブをクリックします</li>
+  <li><strong>結果フォルダ</strong> ドロップダウンから、閲覧したい結果フォルダを選択します</li>
+  <li>フォルダ内のサブフォルダが一覧表示されます</li>
+</ol>
+<img src="images/04_results_tab.png" alt="結果閲覧タブ" class="screenshot">
+<p class="caption">図: 結果閲覧タブ。結果フォルダを選択し、カテゴリ・クラスタでフィルタリングできます</p>
+
+<h2 id="ch5-2">5.2 カテゴリ・クラスタフィルター</h2>
+<p>結果画像を種類やクラスタで絞り込めます。</p>
+<table>
+  <tr><th>フィルター</th><th>選択肢</th></tr>
+  <tr><td>カテゴリ</td><td>全て / UMAP / Volcano / MSI / Spatial / Heatmap</td></tr>
+  <tr><td>クラスタ</td><td>全て / 特定のクラスタ番号</td></tr>
+</table>
+
+<h2 id="ch5-3">5.3 画像ギャラリーの操作</h2>
+<ul>
+  <li>サムネイル画像が一覧表示されます</li>
+  <li>画像数が多い場合は <strong>「&lt; Previous」「Next &gt;」</strong> ボタンでページ送りします</li>
+</ul>
+
+<h2 id="ch5-4">5.4 画像の拡大表示</h2>
+<p>サムネイルをクリックすると、モーダルウィンドウで拡大表示されます。</p>
+
+<!-- ===================================================================== -->
+<h1 id="ch6">第6章 インタラクティブ解析</h1>
+<!-- ===================================================================== -->
+
+<p>本アプリの中心機能です。解析結果をブラウザ上でリアルタイムに操作し、
+  クラスタの特徴や代謝物の空間分布を詳細に調べることができます。</p>
+
+<div class="tip">
+  各セクション（UMAP、Spatial Mapping 等）はタイトルをクリックすると折りたたみ/展開できます。
+  「インタラクティブ解析」セクション全体も折りたたみ可能です。
+</div>
+
+<h2 id="ch6-1">6.1 データの読み込み</h2>
+<ol>
+  <li>画面上部の <strong>「インタラクティブ」</strong> タブをクリックします</li>
+  <li>設定タブで解析を実行した場合、結果は自動的に読み込まれます</li>
+  <li>
+    手動で読み込む場合は、<strong>結果フォルダ</strong>のドロップダウンまたは「...」ボタンから
+    結果フォルダを選択します
+  </li>
+  <li>
+    複数の解析手法（Harmony / RPCA など）がある場合、
+    <strong>解析手法セレクター</strong>で切り替えられます
+  </li>
+</ol>
+<img src="images/05c_data_loaded.png" alt="インタラクティブタブ（データ読み込み完了）" class="screenshot">
+<p class="caption">図: インタラクティブタブ。結果フォルダを指定してデータを読み込んだ状態。読み込み完了メッセージにセル数・クラスタ数・サンプル情報が表示されます</p>
+
+<div class="note">
+  データの読み込みには RDS ファイルから Python 形式への変換が行われるため、
+  初回は数十秒〜数分かかる場合があります。2回目以降はキャッシュにより高速になります。
+</div>
+
+<h2 id="ch6-2">6.2 UMAP</h2>
+<p><strong>UMAP</strong> セクション（アコーディオン）を展開すると、UMAP プロットが表示されます。</p>
+
+<h3>表示モード</h3>
+<table>
+  <tr><th>モード</th><th>説明</th></tr>
+  <tr><td><strong>統合表示</strong></td><td>全サンプルを1つのプロットに重ねて表示します</td></tr>
+  <tr><td><strong>サンプル別表示</strong></td><td>各サンプルを個別のプロットとして横並びで表示します</td></tr>
+</table>
+
+<h3>色分け</h3>
+<ul>
+  <li><strong>Cluster</strong>: クラスタ番号ごとに色分けされます（デフォルト）</li>
+  <li><strong>Sample</strong>: サンプル名ごとに色分けされます。サンプル間の分布差を確認するのに便利です</li>
+</ul>
+
+<h3>操作パネル</h3>
+<table>
+  <tr><th>操作</th><th>説明</th></tr>
+  <tr><td>ハイライト</td><td>特定のクラスタだけを強調表示します（他のクラスタは薄く表示）</td></tr>
+  <tr><td>除外</td><td>特定のクラスタを非表示にします</td></tr>
+  <tr><td>マーカーサイズ</td><td>プロット上の点の大きさを調整します（1〜10）</td></tr>
+  <tr><td>ラベルサイズ</td><td>クラスタ番号ラベルの文字サイズを調整します（6〜24pt）</td></tr>
+  <tr><td>ラベル表示 / 非表示</td><td>クラスタ番号ラベルのオン/オフを切り替えます</td></tr>
+  <tr><td>凡例表示 / 非表示</td><td>カラー凡例のオン/オフを切り替えます</td></tr>
+  <tr><td>横並び数</td><td>サンプル別表示時の1行あたりの列数（自動 / 1〜8列）</td></tr>
+  <tr><td>ラベル位置保存</td><td>ドラッグで移動したラベル位置を保存します（次回も同じ位置で表示）</td></tr>
+</table>
+<img src="images/08a_umap_controls.png" alt="UMAP セクション（コントロール + 散布図）" class="screenshot">
+<p class="caption">図: UMAP セクション。表示モード・色分け・ハイライト等のコントロールと UMAP 散布図</p>
+
+<div class="tip">
+  プロット上でマウスホイールを使うとズームイン/アウトできます。
+  ドラッグで表示範囲を移動できます。
+  プロット右上のカメラアイコンをクリックすると PNG 画像として保存できます。
+</div>
+
+<h3>フルスクリーン表示</h3>
+<p>プロットの右上にあるフルスクリーンボタンをクリックすると、
+  画面全体を使った大きなプロットが表示されます。
+  フルスクリーンでも全ての操作パネルが使用可能です。</p>
+
+<h2 id="ch6-3">6.3 Spatial Mapping</h2>
+<p><strong>Spatial Mapping</strong> セクションを展開すると、
+  組織上の空間座標にクラスタ情報をマッピングした図が表示されます。</p>
+
+<h3>操作パネル</h3>
+<table>
+  <tr><th>操作</th><th>説明</th></tr>
+  <tr><td>サンプル選択</td><td>表示するサンプルを選択します（「全て」または個別サンプル）</td></tr>
+  <tr><td>ハイライト / 除外</td><td>UMAP と同様にクラスタの強調・非表示が可能です</td></tr>
+  <tr><td>マーカーサイズ</td><td>ピクセルの描画サイズを調整します。「Auto」ボタンで自動計算もできます</td></tr>
+  <tr><td>回転 / 反転</td><td>各サンプルの表示を回転・左右反転・上下反転できます</td></tr>
+  <tr><td>横並び数</td><td>複数サンプルの1行あたりの列数を設定します</td></tr>
+</table>
+<img src="images/09a_spatial_controls.png" alt="Spatial Mapping セクション" class="screenshot">
+<p class="caption">図: Spatial Mapping セクション。サンプル選択・回転/反転・クラスタ色変更と空間マッピング画像</p>
+<img src="images/09b_spatial_plot.png" alt="Spatial Mapping プロット" class="screenshot">
+<p class="caption">図: Spatial Mapping のサンプル別表示。各サンプルのクラスタ分布が組織上の空間座標にマッピングされます</p>
+
+<h2 id="ch6-4">6.4 Feature Plot</h2>
+<p><strong>Feature Plot</strong> セクションでは、特定の m/z（代謝物）の発現強度を
+  空間座標上にカラーマッピングして表示します。</p>
+
+<h3>m/z の選択</h3>
+<ol>
+  <li><strong>Feature ドロップダウン</strong> から表示したい m/z を検索・選択します</li>
+  <li>ドロップダウンに直接入力するとインクリメンタルサーチが可能です</li>
+  <li>よく使う m/z は <strong>「★ ブックマークに追加」</strong> ボタンで保存できます</li>
+</ol>
+
+<h3>フィルター機能</h3>
+<table>
+  <tr><th>フィルター</th><th>説明</th></tr>
+  <tr><td>モード</td><td>「全 m/z」: 全ての m/z を表示 / 「DEGマーカー」: 有意な DEG のみ表示</td></tr>
+  <tr><td>m/z 範囲</td><td>最小値〜最大値で m/z 範囲を絞り込みます</td></tr>
+  <tr><td>強度フィルター</td><td>表示する最小/最大強度を設定します</td></tr>
+  <tr><td>サンプルフィルター</td><td>特定のサンプルだけを表示します</td></tr>
+  <tr><td>クラスタフィルター</td><td>特定のクラスタだけを表示します</td></tr>
+</table>
+<img src="images/10a_feature_controls.png" alt="Feature Plot セクション" class="screenshot">
+<p class="caption">図: Feature Plot セクション。m/z の検索・ブックマーク・フィルタリング機能</p>
+
+<h2 id="ch6-5">6.5 DEGマーカー解析</h2>
+<p><strong>DEGマーカー</strong> セクションでは、差次的発現解析の結果を
+  Volcano Plot と Heatmap で可視化します。</p>
+
+<h3>Volcano Plot</h3>
+<p>横軸に log2 Fold Change、縦軸に -log10(p-value) をプロットした散布図です。</p>
+<ul>
+  <li><strong>赤い点</strong>: 発現が上昇した有意なマーカー（Up-regulated）</li>
+  <li><strong>青い点</strong>: 発現が低下した有意なマーカー（Down-regulated）</li>
+  <li><strong>灰色の点</strong>: 有意でないマーカー</li>
+</ul>
+<table>
+  <tr><th>調整項目</th><th>説明</th><th>デフォルト</th></tr>
+  <tr><td>FC 閾値</td><td>Fold Change の閾値（縦の破線位置）</td><td>0.5</td></tr>
+  <tr><td>-log10(p) 閾値</td><td>有意水準の閾値（横の破線位置）</td><td>1.3</td></tr>
+  <tr><td>クラスタ選択</td><td>特定クラスタのマーカーだけを表示</td><td>全て</td></tr>
+  <tr><td>ポイントサイズ</td><td>点の大きさ</td><td>8</td></tr>
+</table>
+<img src="images/11a_deg_controls.png" alt="DEG マーカー Volcano Plot" class="screenshot">
+<p class="caption">図: DEG マーカーセクション。Volcano Plot タブでは FC 閾値・p 値閾値を調整してマーカーを可視化します</p>
+
+<h3>Heatmap</h3>
+<p>クラスタ間の発現パターンを色で表現したヒートマップです。</p>
+<table>
+  <tr><th>設定</th><th>説明</th><th>デフォルト</th></tr>
+  <tr><td>Top N</td><td>各クラスタの上位何個のマーカーを表示するか</td><td>5</td></tr>
+  <tr><td>スケール</td><td>Z-score（標準化）または Raw（生値）</td><td>Z-score</td></tr>
+  <tr><td>アノテーション</td><td>化合物名の表示/非表示</td><td>表示</td></tr>
+</table>
+<!-- Heatmap スクリーンショットは Volcano Plot と同じセクション内にあります -->
+
+<h2 id="ch6-6">6.6 クラスタ情報</h2>
+<p><strong>クラスタ情報</strong> セクションでは以下の機能を利用できます。</p>
+
+<h3>統計テーブル</h3>
+<p>各クラスタのピクセル数と全体に占める割合が表で表示されます。</p>
+
+<h3>クラスタ色のカスタマイズ</h3>
+<p>各クラスタに割り当てる色を変更できます。カラーピッカーで任意の色を選択してください。
+  変更は全てのプロット（UMAP、Spatial Mapping、Feature Plot）に即座に反映されます。</p>
+
+<h3>サンプル名の変更</h3>
+<p>元のファイル名の代わりに、表示用のサンプル名を設定できます。
+  変更した名前はプロットのタイトルや凡例、レポート出力にも反映されます。</p>
+<img src="images/07_cluster_info.png" alt="クラスタ情報セクション" class="screenshot">
+<p class="caption">図: クラスタ情報セクション。クラスタ統計テーブル（ピクセル数・割合）が表示されます</p>
+
+<h2 id="ch6-7">6.7 m/z キャリブレーション</h2>
+<p>インタラクティブ解析画面で、マトリックスのリファレンスピークを用いた
+  <strong>m/z キャリブレーション（補正）</strong>を行えます。
+  解析設定タブのキャリブレーション機能と同様のロジックで、読み込み済みデータに対してリアルタイムに補正を適用できます。</p>
+
+<h3>設定手順</h3>
+<ol>
+  <li><strong>「▶ イオンモード / m/z キャリブレーション」</strong> セクションを展開します</li>
+  <li><strong>イオンモード</strong>を選択します（Positive / Negative）</li>
+  <li><strong>付加イオン</strong>を選択します（Positive: +H, +Na, +NH4 / Negative: -H）
+    <br>— イオンモードを切り替えると自動的に適切な付加イオンが選択されます</li>
+  <li><strong>マトリックス</strong>を選択します（DHB / CHCA / 9-AA / カスタム）</li>
+  <li>リファレンス m/z テーブルが表示されます。<strong>「ピーク自動検出」</strong>ボタンで
+    データ内のピークと自動マッチングし、観測 m/z 値が入力されます</li>
+  <li>回帰モデル（線形 / 2次 / 3次多項式）を選択します</li>
+  <li><strong>「補正を適用」</strong> ボタンをクリックすると、m/z 値が補正されます</li>
+</ol>
+
+<h3>設定項目</h3>
+<table>
+  <tr><th>項目</th><th>説明</th><th>デフォルト</th></tr>
+  <tr><td>イオンモード</td><td>Positive / Negative の切り替え</td><td>Positive</td></tr>
+  <tr><td>付加イオン</td><td>対象とするアダクトイオン種</td><td>+H, +Na, +NH4（Positive時）</td></tr>
+  <tr><td>マトリックス</td><td>リファレンスピークの元になるマトリックス種</td><td>DHB</td></tr>
+  <tr><td>MRMファイル</td><td>MRM リスト（DESI解析の場合のみ表示）</td><td>―</td></tr>
+  <tr><td>検索ウィンドウ</td><td>ピーク自動検出の検索幅（Da）</td><td>0.5</td></tr>
+  <tr><td>最小ピーク数</td><td>回帰に使用する最小ピーク数</td><td>2</td></tr>
+  <tr><td>回帰モデル</td><td>linear / poly2 / poly3</td><td>poly3</td></tr>
+</table>
+
+<div class="note">
+  キャリブレーション設定は結果フォルダごとに自動保存されます。
+  次回同じデータを読み込んだ際に、前回の設定（観測 m/z 値を含む）が自動的に復元されます。
+</div>
+
+<!-- ===================================================================== -->
+<h1 id="ch7">第7章 レポート出力</h1>
+<!-- ===================================================================== -->
+
+<p>インタラクティブ解析の結果を PowerPoint（.pptx）ファイルとして出力できます。</p>
+
+<h2>7.1 PPTXエクスポート</h2>
+<ol>
+  <li>インタラクティブタブの <strong>「エクスポート」</strong> セクションを展開します</li>
+  <li><strong>Top N</strong>: 各クラスタの上位何個のマーカーを含めるかを設定します（デフォルト: 5）</li>
+  <li><strong>出力手法</strong>: 複数の解析手法がある場合、出力対象を選択します（「All」で全手法を含む）</li>
+  <li><strong>「レポート出力 (.pptx)」</strong> ボタンをクリックします</li>
+  <li>プログレスバーが表示され、生成が完了するとファイルが自動ダウンロードされます</li>
+</ol>
+<img src="images/06_export.png" alt="エクスポートセクション" class="screenshot">
+<p class="caption">図: エクスポートセクション。Top N と出力対象を設定し「レポート出力 (.pptx)」で PowerPoint を生成します</p>
+
+<h3>出力されるスライド構成</h3>
+<p>1つの解析手法あたり、以下のスライドが生成されます:</p>
+<table>
+  <tr><th>スライド</th><th>内容</th></tr>
+  <tr><td>1. タイトル</td><td>プロジェクト情報・日付・サンプル一覧</td></tr>
+  <tr><td>2. Heatmap</td><td>Top N DEG の Z-score ヒートマップ</td></tr>
+  <tr><td>3. UMAP & Spatial</td><td>サンプル別の UMAP（上段）と Spatial（下段）</td></tr>
+  <tr><td>4. UMAP (by Sample)</td><td>全サンプルを色分けした統合 UMAP</td></tr>
+  <tr><td>5. クラスタ統計</td><td>各クラスタのピクセル数・割合テーブル</td></tr>
+  <tr><td>6〜 クラスタ詳細</td><td>各クラスタの DEG 解析（Volcano + Feature Plot）と UMAP/Spatial ハイライト表示。クラスタ数 × 2 スライド</td></tr>
+</table>
+
+<div class="tip">
+  複数の解析手法を同時に出力する場合、先頭に各手法を比較する概要スライド（UMAP & Spatial / UMAP by Sample）が追加されます。
+</div>
+
+<!-- ===================================================================== -->
+<h1 id="ch8">第8章 セッション管理</h1>
+<!-- ===================================================================== -->
+
+<p>解析設定やUIの状態をセッションとして保存し、後から復元できます。</p>
+
+<h3>セッションの保存</h3>
+<ol>
+  <li>サイドバーの <strong>「💾 保存」</strong> ボタンをクリックします</li>
+  <li>現在の設定（データフォルダ、パラメータ、解析結果パス等）が保存されます</li>
+</ol>
+
+<h3>セッションの読み込み</h3>
+<ol>
+  <li>サイドバーの <strong>「📂 読込」</strong> ボタンをクリックします</li>
+  <li>保存済みのセッション一覧が表示されます</li>
+  <li>復元したいセッションを選択してクリックします</li>
+  <li>全ての設定が復元され、すぐに解析を再開できます</li>
+</ol>
+
+<img src="images/12_session_tab.png" alt="セッション履歴タブ" class="screenshot">
+<p class="caption">図: セッション履歴タブ。保存済みセッションの一覧が表示され、読込・削除が可能です</p>
+
+<h3>バックアップ一覧</h3>
+<p>プロジェクトデータの自動バックアップファイルを確認できます。</p>
+<ol>
+  <li>サイドバーの <strong>「🗂 バックアップ」</strong> ボタンをクリックします</li>
+  <li>モーダルウィンドウが開き、バックアップファイルの一覧（ファイル名・サイズ・作成日時）が表示されます</li>
+  <li>確認後、<strong>「閉じる」</strong> ボタンでモーダルを閉じます</li>
+</ol>
+
+<div class="note">
+  バックアップはプロジェクトの保存・更新時に自動的に作成されます。
+  バックアップファイルは <code>app/projects/backups/</code> フォルダに保存されます。
+</div>
+
+<div class="note">
+  セッションデータはアプリの <code>app/sessions/</code> フォルダに保存されます。
+  アプリのフォルダを別のPCにコピーすれば、セッションも引き継がれます。
+</div>
+
+<!-- ===================================================================== -->
+<h1 id="appendix">付録</h1>
+<!-- ===================================================================== -->
+
+<h2 id="app-a">A. トラブルシューティング</h2>
+
+<table>
+  <tr><th>症状</th><th>原因</th><th>対処法</th></tr>
+  <tr>
+    <td><code>run_app.bat</code> をダブルクリックしてもすぐ閉じる</td>
+    <td>Python が PATH に登録されていない</td>
+    <td>Python を再インストールし「Add Python to PATH」にチェックを入れる</td>
+  </tr>
+  <tr>
+    <td>ブラウザで <code>localhost:3838</code> に接続できない</td>
+    <td>アプリが起動していない / ポートが競合している</td>
+    <td>コマンドプロンプトにエラーが出ていないか確認する。他のアプリがポート3838を使用していないか確認する</td>
+  </tr>
+  <tr>
+    <td>解析実行ボタンを押してもエラーになる</td>
+    <td>R がインストールされていない / Rパッケージ不足</td>
+    <td>R をインストール後、<code>setup.bat</code> を再実行する</td>
+  </tr>
+  <tr>
+    <td>RDS ファイルの読み込みが失敗する</td>
+    <td>R のバージョン不一致 / Seurat パッケージ不足</td>
+    <td><code>setup.bat</code> を再実行し、R パッケージを再インストールする</td>
+  </tr>
+  <tr>
+    <td>インタラクティブ画面が真っ白になる</td>
+    <td>データの読み込みに失敗している</td>
+    <td>ブラウザの開発者ツール（F12）でエラーを確認する。コマンドプロンプトのログも確認する</td>
+  </tr>
+  <tr>
+    <td>PPTX の出力に失敗する</td>
+    <td>kaleido パッケージの問題</td>
+    <td>コマンドプロンプトで <code>pip install --upgrade kaleido</code> を実行する</td>
+  </tr>
+  <tr>
+    <td>画像の保存ボタン（カメラアイコン）が動作しない</td>
+    <td>kaleido の不具合</td>
+    <td><code>pip install kaleido==0.2.1</code> でバージョンを固定する</td>
+  </tr>
+</table>
+
+<h2 id="app-b">B. フォルダ構成一覧</h2>
+<pre>
+UMAP_Claudecode/
+├── run_app.bat              ← アプリ起動用バッチファイル
+├── run_app.py               ← Python 起動スクリプト
+├── setup.bat                ← 初期セットアップ用バッチファイル
+├── requirements.txt         ← Python パッケージ一覧
+├── install_r_packages.R     ← R パッケージインストールスクリプト
+├── app/
+│   ├── main.py              ← アプリ本体
+│   ├── config.py            ← 設定ファイル（ポート番号、Rパス等）
+│   ├── assets/              ← CSS / JavaScript
+│   ├── layouts/             ← 画面レイアウト定義
+│   ├── callbacks/           ← 画面操作の処理ロジック
+│   ├── services/            ← データ処理サービス
+│   ├── sessions/            ← セッション保存先
+│   └── projects/            ← プロジェクトデータ
+├── data/
+│   ├── TIMS/
+│   │   ├── Script/          ← TIMS 用 R スクリプト
+│   │   ├── DB/              ← アノテーションデータ
+│   │   └── Data/            ← TIMS データ格納先
+│   └── DESI/
+│       ├── Script/          ← DESI 用 R スクリプト
+│       ├── DB/              ← 参照データベース
+│       └── Data/            ← DESI データ格納先
+├── Other/                   ← レガシーコード（R Shiny版）
+└── docs/
+    └── manual.html          ← 本マニュアル
+</pre>
+
+<h2 id="app-c">C. 動作環境・必要スペック</h2>
+
+<table>
+  <tr><th>項目</th><th>最低要件</th><th>推奨</th></tr>
+  <tr><td>OS</td><td>Windows 10 (64bit)</td><td>Windows 10/11 (64bit)</td></tr>
+  <tr><td>CPU</td><td>4コア</td><td>8コア以上</td></tr>
+  <tr><td>メモリ</td><td>8 GB</td><td>16 GB 以上</td></tr>
+  <tr><td>ストレージ</td><td>10 GB 空き</td><td>50 GB 以上の空き</td></tr>
+  <tr><td>Python</td><td>3.10</td><td>3.12 以上</td></tr>
+  <tr><td>R</td><td>4.3（解析実行時のみ）</td><td>4.4.x</td></tr>
+  <tr><td>ブラウザ</td><td>Chrome / Edge / Firefox</td><td>Google Chrome（最新版）</td></tr>
+</table>
+
+<hr>
+<p style="text-align:center; color:#999; margin-top:40px; font-size:0.85em;">
+  MSI Analysis Application 操作マニュアル v2.2<br>
+  最終更新: 2026年3月
+</p>
+
+</body>
+</html>

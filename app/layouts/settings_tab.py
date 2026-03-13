@@ -48,6 +48,8 @@ def create_settings_tab():
                             ),
                             html.Div(id="sample_selector"),
                             dbc.FormText("チェックを入れたサンプルが解析対象になります"),
+                            html.Div(id="annotation_selector", className="mt-2"),
+                            dcc.Store(id="annotation_filter_store", data=None),
                         ]),
                         # RDS途中再開
                         html.Div(className="param-group", style={"marginTop": "15px"}, children=[
@@ -312,7 +314,7 @@ def create_settings_tab():
                                 dbc.Col(width=6, children=[
                                     dbc.Label(["log2FC閾値", help_badge("logfc_thresh")]),
                                     dbc.Input(id="logfc_thresh", type="number",
-                                              value=ls.get("logfc_thresh", 0.10), min=0, step=0.05),
+                                              value=ls.get("logfc_thresh", 0.25), min=0, step=0.05),
                                 ]),
                             ]),
                         ],
@@ -510,7 +512,7 @@ def create_settings_tab():
                                 dbc.Col(width=6, children=[
                                     dbc.Label("log2FC閾値"),
                                     dbc.Input(id="reanalysis_logfc_thresh", type="number",
-                                              value=ls.get("reanalysis_logfc_thresh", 0.10),
+                                              value=ls.get("reanalysis_logfc_thresh", 0.25),
                                               min=0, step=0.05),
                                 ]),
                             ]),

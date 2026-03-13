@@ -283,6 +283,132 @@ def create_interactive_tab():
                 ],
             ),
 
+            # --- 再アノテーション（折りたたみパネル） ---
+            html.Details(
+                open=False,
+                style={"marginTop": "10px"},
+                children=[
+                    html.Summary(
+                        "再アノテーション (m/z → 化合物名 再照合)",
+                        style={"cursor": "pointer", "fontSize": "13px",
+                               "color": "#555", "fontWeight": "600"},
+                    ),
+                    html.Div(
+                        style={"background": "#f8f9fa", "padding": "12px",
+                               "borderRadius": "5px", "marginTop": "5px"},
+                        children=[
+                            # Row 1: アノテーションファイル + 参照ボタン
+                            dbc.Row(className="mb-2", children=[
+                                dbc.Col(width=12, children=[
+                                    dbc.Label("アノテーションファイル",
+                                              className="small fw-bold"),
+                                    html.Div(
+                                        style={"display": "flex", "gap": "5px"},
+                                        children=[
+                                            dbc.Input(
+                                                id="reann_annotation_path",
+                                                placeholder="アノテーションファイル (.csv / .xlsx)",
+                                                size="sm",
+                                            ),
+                                            dbc.Button(
+                                                "参照...",
+                                                id="browse_reann_annotation",
+                                                size="sm", color="secondary",
+                                            ),
+                                        ],
+                                    ),
+                                    html.Small(
+                                        id="reann_annotation_path_path_hint",
+                                        children="",
+                                        style={"color": "#6c757d",
+                                               "fontSize": "0.75rem",
+                                               "marginTop": "2px",
+                                               "display": "block"},
+                                    ),
+                                    dbc.FormText(
+                                        "TIMS: TraceFinder/HMDB形式 CSV | "
+                                        "DESI: MRM形式 Excel (.xlsx)"
+                                    ),
+                                ]),
+                            ]),
+                            # Row 2: イオンモード + 付加イオン + m/z許容誤差
+                            dbc.Row(className="mb-2", children=[
+                                dbc.Col(width=3, children=[
+                                    dbc.Label("イオンモード",
+                                              className="small fw-bold"),
+                                    dbc.RadioItems(
+                                        id="reann_ion_mode",
+                                        options=[
+                                            {"label": "Positive",
+                                             "value": "Positive"},
+                                            {"label": "Negative",
+                                             "value": "Negative"},
+                                        ],
+                                        value="Positive",
+                                        inline=True,
+                                        className="small",
+                                    ),
+                                ]),
+                                dbc.Col(width=5, children=[
+                                    dbc.Label("付加イオン",
+                                              className="small fw-bold"),
+                                    dbc.Checklist(
+                                        id="reann_adduct_filter",
+                                        options=[
+                                            {"label": "+H", "value": "+H"},
+                                            {"label": "+Na", "value": "+Na"},
+                                            {"label": "+NH4", "value": "+NH4"},
+                                            {"label": "+K", "value": "+K"},
+                                            {"label": "-H", "value": "-H"},
+                                        ],
+                                        value=["+H", "+Na", "+NH4", "+K"],
+                                        inline=True,
+                                        className="small",
+                                    ),
+                                ]),
+                                dbc.Col(width=4, children=[
+                                    dbc.Label("m/z 許容誤差 (Da)",
+                                              className="small fw-bold"),
+                                    dbc.Input(
+                                        id="reann_tolerance",
+                                        type="number",
+                                        value=0.01,
+                                        min=0, step=0.001,
+                                        size="sm",
+                                        style={"width": "120px"},
+                                    ),
+                                ]),
+                            ]),
+                            # Row 3: CSV上書きチェック + 実行ボタン + ステータス
+                            dbc.Row(className="align-items-center", children=[
+                                dbc.Col(width=5, children=[
+                                    dbc.Checkbox(
+                                        id="reann_overwrite_csv",
+                                        label="markers_annotated.csv を上書き保存",
+                                        value=False,
+                                        className="small",
+                                    ),
+                                ]),
+                                dbc.Col(width=3, children=[
+                                    dbc.Button(
+                                        "再アノテーション実行",
+                                        id="reann_execute_btn",
+                                        color="warning",
+                                        size="sm",
+                                    ),
+                                ]),
+                                dbc.Col(width=4, children=[
+                                    html.Div(
+                                        id="reann_status_text",
+                                        className="small text-muted",
+                                    ),
+                                ]),
+                            ]),
+                        ],
+                    ),
+                ],
+            ),
+
             html.Div(id="interactive_data_info", className="mt-2 text-muted"),
         ]),
 
@@ -517,10 +643,6 @@ def create_interactive_tab():
                                         tooltip={"placement": "bottom", "always_visible": False},
                                     ),
                                 ]),
-                                dbc.Col(width=2, className="d-flex align-items-end", children=[
-                                    dbc.Button("ラベル位置保存", id="save_label_pos_btn",
-                                               size="sm", color="secondary", className="mb-1"),
-                                ]),
                                 dbc.Col(width=2, children=[
                                     dbc.Label("横並び", className="small mb-0"),
                                     dcc.Dropdown(
@@ -655,10 +777,6 @@ def create_interactive_tab():
                                         marks={6: "6", 10: "10", 14: "14", 20: "20", 24: "24"},
                                         tooltip={"placement": "bottom", "always_visible": False},
                                     ),
-                                ]),
-                                dbc.Col(width=2, className="d-flex align-items-end", children=[
-                                    dbc.Button("ラベル位置保存", id="save_spatial_label_pos_btn",
-                                               size="sm", color="secondary", className="mb-1"),
                                 ]),
                                 dbc.Col(width=2, children=[
                                     dbc.Label("横並び", className="small mb-0"),
@@ -865,6 +983,23 @@ def create_interactive_tab():
                                                         tooltip={"placement": "bottom", "always_visible": False},
                                                     ),
                                                 ]),
+                                                dbc.Col(width=2, children=[
+                                                    dbc.Label("Top N ラベル", className="small mb-0"),
+                                                    dbc.Input(
+                                                        id="volcano_label_top_n",
+                                                        type="number",
+                                                        value=5, min=0, max=50, step=1,
+                                                        size="sm",
+                                                    ),
+                                                    dbc.FormText("UP/DOWN各N個"),
+                                                ]),
+                                                dbc.Col(width=2, children=[
+                                                    dbc.Switch(
+                                                        id="volcano_annotation_switch",
+                                                        label="アノテーション",
+                                                        value=True,
+                                                    ),
+                                                ]),
                                             ]),
                                             # ハイライト行
                                             dbc.Row(className="mb-2 align-items-end", children=[
@@ -926,6 +1061,14 @@ def create_interactive_tab():
                                                         value=True,
                                                     ),
                                                 ]),
+                                                dbc.Col(width=3, children=[
+                                                    dbc.Label("フォーカスクラスタ", className="small mb-0"),
+                                                    dcc.Dropdown(
+                                                        id="heatmap_cluster_select",
+                                                        placeholder="全クラスタ",
+                                                        clearable=True,
+                                                    ),
+                                                ]),
                                             ]),
                                             dcc.Loading(
                                                 dcc.Graph(
@@ -973,10 +1116,6 @@ def create_interactive_tab():
         dcc.Store(id="spatial_rotation_store", data={}),
         # サンプル名の表示名マッピング（{"元名": "表示名", ...}）
         dcc.Store(id="sample_name_map_store", data={}),
-        # ラベル位置保存ステータス
-        dcc.Store(id="label_pos_save_status", data=None),
-        # ラベル位置スナップショット（clientside callback → save callback ブリッジ）
-        dcc.Store(id="annotation_snapshot_store", data=None),
         # アノテーション位置の蓄積（relayoutData イベントからリアルタイム蓄積）
         dcc.Store(id="accumulated_label_positions", data={}),
         # Feature Plot m/zフィルタ結果リスト

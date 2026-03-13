@@ -108,7 +108,8 @@ def toggle_sidebar_content(active_tab):
      State("calibration_regression_mode", "value"),
      State("calibration_min_peaks", "value"),
      State("reanalysis_calibration_use_previous", "value"),
-     State("reanalysis_calibration_data", "data")],
+     State("reanalysis_calibration_data", "data"),
+     State("annotation_filter_store", "data")],
     prevent_initial_call=True,
 )
 def run_analysis(
@@ -130,6 +131,7 @@ def run_analysis(
     calibration_enable, calibration_table_data,
     calibration_regression_mode, calibration_min_peaks,
     reanalysis_cal_use_previous, reanalysis_cal_data,
+    annotation_filter_data,
 ):
     if not n_clicks:
         return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
@@ -221,7 +223,7 @@ def run_analysis(
                 "sample_names": sample_names,
                 "annotation_path": annotation_path or "",
                 "p_thresh": float(p_thresh) if p_thresh else 0.05,
-                "logfc_thresh": float(logfc_thresh) if logfc_thresh else 0.10,
+                "logfc_thresh": float(logfc_thresh) if logfc_thresh else 0.25,
                 "resume_from_rds": bool(resume_rds),
                 "resume_rds_paths": [],
             }
@@ -251,6 +253,10 @@ def run_analysis(
                         csvs = sorted(_acsv.glob("*.csv"))
                         if csvs:
                             params["annotation_csv_path"] = str(csvs[0])
+
+            # --- Annotation Filter（TIMS: Parquet内の切片選択） ---
+            if analysis_type == "tims_v8" and annotation_filter_data:
+                params["annotation_filter"] = annotation_filter_data
 
             # --- m/z キャリブレーション（TIMS UMAP解析） ---
             if calibration_enable and analysis_type == "tims_v8":

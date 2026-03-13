@@ -5,8 +5,9 @@
 
 from pathlib import Path
 
-from dash import Input, Output, State, callback, clientside_callback, ctx, no_update, html, ALL
+from dash import Input, Output, State, callback, clientside_callback, ctx, no_update, html, ALL, MATCH
 import dash_bootstrap_components as dbc
+from dash import dcc
 
 from app.config import (
     DEFAULT_DESI_DATA_FOLDER, DEFAULT_ANNOTATION_FILE_PATH,
@@ -18,7 +19,10 @@ from app.config import (
 from app.layouts.file_browser_modal import (
     get_available_drives, list_directory, build_breadcrumb_parts,
 )
-from app.services.data_manager import list_msi_files, list_tims_files
+from app.services.data_manager import (
+    list_msi_files, list_tims_files,
+    find_tims_file_path, read_parquet_annotations,
+)
 from app.services.session_manager import save_last_settings
 from app.services.notify import warn_user
 
@@ -120,6 +124,82 @@ def update_sample_selector(data_folder, desi_method, tims_method):
         options=[{"label": s, "value": s} for s in samples],
         value=samples,  # デフォルト全選択
     )
+
+
+# ---------------------------------------------------------------------------
+# Annotation（切片）選択 — TIMS Parquet 内の annotation 列から生成
+# ---------------------------------------------------------------------------
+
+@callback(
+    [Output("annotation_selector", "children"),
+     Output("annotation_filter_store", "data")],
+    [Input("selected_samples", "value"),
+     Input("data_folder", "value"),
+     Input("analysis_method", "value"),
+     Input("analysis_method_tims", "value")],
+    prevent_initial_call=True,
+)
+def update_annotation_selector(selected_samples, data_folder, desi_method, tims_method):
+    """選択されたTIMSファイルごとにannotation一覧をチェックボックスで表示"""
+    active = desi_method or tims_method or "desi_v8"
+
+    # TIMS UMAP以外では非表示
+    if active != "tims_v8":
+        return [], None
+
+    if not selected_samples or not data_folder or not Path(data_folder).is_dir():
+        return [], None
+
+    children = []
+    all_annotations = []
+
+    for sample in selected_samples:
+        file_path = find_tims_file_path(data_folder, sample)
+        if not file_path:
+            continue
+        annotations = read_parquet_annotations(file_path)
+        if not annotations:
+            continue
+
+        all_annotations.extend(annotations)
+
+        # ファイル名ラベル + チェックボックス
+        children.append(html.Div([
+            html.Small(f"\U0001F4C4 {sample}", className="fw-bold"),
+            dbc.Checklist(
+                id={"type": "annotation_check", "index": sample},
+                options=[{"label": f" {a}", "value": a} for a in annotations],
+                value=annotations,  # デフォルト全選択
+                inline=True,
+                className="ms-2",
+            ),
+        ], className="mb-1"))
+
+    if not children:
+        return [], None
+
+    ui = [
+        html.Hr(className="my-1"),
+        html.Small("Annotation（切片）選択:", className="fw-bold"),
+    ] + children
+
+    return ui, sorted(set(all_annotations))
+
+
+@callback(
+    Output("annotation_filter_store", "data", allow_duplicate=True),
+    Input({"type": "annotation_check", "index": ALL}, "value"),
+    prevent_initial_call=True,
+)
+def sync_annotation_to_store(all_values):
+    """パターンマッチング: 全annotation_checkの選択値をStoreに集約"""
+    if not all_values:
+        return None
+    merged = []
+    for vals in all_values:
+        if vals:
+            merged.extend(vals)
+    return sorted(set(merged)) if merged else None
 
 
 @callback(
@@ -367,6 +447,8 @@ _BROWSE_BUTTONS = {
     "browse_default_tims_output": ("folder", "default_tims_output_dir"),
     "browse_default_output": ("folder", "default_output_dir"),
     "browse_int_cal_annotation": ("file", "int_cal_annotation_path"),
+    # 再アノテーション
+    "browse_reann_annotation": ("file", "reann_annotation_path"),
     # プロジェクト復元スキャンフォルダ
     "browse_restore_scan_folder": ("folder", "restore_scan_folder"),
 }
@@ -579,6 +661,7 @@ _PATH_INPUT_IDS = [
     "default_desi_data_folder", "default_annotation_file", "default_desi_output_dir",
     "default_tims_data_folder", "default_annotation_csv", "default_tims_output_dir",
     "default_output_dir",
+    "reann_annotation_path",
 ]
 
 clientside_callback(

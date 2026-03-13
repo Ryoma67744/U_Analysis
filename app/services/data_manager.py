@@ -3,10 +3,13 @@
 # データ管理モジュール
 # =============================================================================
 
+import logging
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+
+logger = logging.getLogger("msi.data_manager")
 
 
 def list_msi_files(data_folder: str) -> list[str]:
@@ -159,6 +162,37 @@ def _read_desi_raw(folder: Path) -> Optional[pd.DataFrame]:
     return pd.DataFrame(avg_dict)
 
 
+def find_tims_file_path(data_folder: str, stem: str) -> Optional[str]:
+    """ファイル名（拡張子なし）からフルパスを解決する。"""
+    folder = Path(data_folder)
+    if not folder.is_dir():
+        return None
+    extensions = [".parquet", ".pq", ".csv", ".tsv", ".txt"]
+    for ext in extensions:
+        fp = folder / f"{stem}{ext}"
+        if fp.exists():
+            return str(fp)
+    return None
+
+
+def read_parquet_annotations(file_path: str) -> list[str]:
+    """Parquetファイルの annotation 列からユニーク値を取得する。
+
+    annotation 列がない場合は空リストを返す。
+    """
+    try:
+        import pyarrow.parquet as pq
+
+        pf = pq.ParquetFile(file_path)
+        if "annotation" not in pf.schema.names:
+            return []
+        df = pd.read_parquet(file_path, columns=["annotation"])
+        unique = df["annotation"].dropna().unique().tolist()
+        return sorted(set(str(a).strip() for a in unique if str(a).strip()))
+    except Exception:
+        return []
+
+
 def validate_msi_file(file_path: str) -> dict:
     """MSIファイルの妥当性チェック"""
     path = Path(file_path)
@@ -199,7 +233,7 @@ def load_mrm_file(mrm_path: str) -> Optional[pd.DataFrame]:
             return None
         return df
     except Exception as e:
-        print(f"MRMファイル読み込みエラー: {e}")
+        logger.error("MRMファイル読み込みエラー: %s", e)
         return None
 
 

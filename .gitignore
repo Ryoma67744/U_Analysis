@@ -15,6 +15,12 @@ __pycache__/
 app_output.log
 nul
 
+# 環境設定（機密情報を含む可能性あり）
+.env
+
+# アプリケーションログ
+logs/
+
 # Rセッション（レガシー）
 Other/sessions/
 

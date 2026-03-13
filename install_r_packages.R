@@ -31,13 +31,18 @@ packages <- c(
   "ggrepel",
   "ggtext",
   "scales",
+  "viridisLite",
+  "ragg",
 
   # 解析
   "dbscan",
+  "future",
+  "leiden",
 
   # ユーティリティ
   "tools",
-  "tictoc"
+  "tictoc",
+  "devtools"
 )
 
 # 未インストールのパッケージのみインストール
@@ -59,6 +64,20 @@ if (length(to_install) == 0) {
                 paste(still_missing, collapse = ", ")))
     quit(status = 1)
   }
+}
+
+# --- GitHub パッケージ (presto) ---
+cat("\nGitHub パッケージの確認中...\n")
+if (!requireNamespace("presto", quietly = TRUE)) {
+  cat("presto をインストール中 (immunogenomics/presto)...\n")
+  devtools::install_github("immunogenomics/presto", upgrade = "never")
+  if (!requireNamespace("presto", quietly = TRUE)) {
+    cat("[警告] presto のインストールに失敗しました。\n")
+  } else {
+    cat("presto のインストールが完了しました。\n")
+  }
+} else {
+  cat("presto は既にインストールされています。\n")
 }
 
 cat("\nR パッケージのインストールが完了しました。\n")

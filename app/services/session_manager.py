@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from app.config import APP_VERSION
+
 from app.config import SESSIONS_DIR
 
 
@@ -82,7 +84,7 @@ def save_session(
     # メタデータ追加
     session_data["meta"] = {
         "created_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-        "app_version": "2.0.0",
+        "app_version": APP_VERSION,
     }
 
     sessions_dir = Path(output_dir) / "sessions"

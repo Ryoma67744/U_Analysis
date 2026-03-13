@@ -4,11 +4,14 @@
 # =============================================================================
 
 import json
+import logging
 import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger("msi.project_manager")
 
 from app.config import PROJECTS_DIR, PROJECTS_FILE
 
@@ -31,7 +34,7 @@ def _load_all() -> dict:
         with open(PROJECTS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        print(f"[WARNING] projects.json読み込み失敗: {e}")
+        logger.warning("projects.json読み込み失敗: %s", e)
         return {"projects": []}
 
 
@@ -45,7 +48,7 @@ def _save_all(data: dict) -> None:
         from app.services.backup_manager import backup_on_save
         backup_on_save(PROJECTS_FILE)
     except Exception as e:
-        print(f"[WARNING] プロジェクトバックアップ失敗: {e}")
+        logger.warning("プロジェクトバックアップ失敗: %s", e)
 
 
 # =========================================================================
@@ -315,8 +318,7 @@ def _write_meta_to_folder(project_id: str, sub_id: str) -> None:
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
     except Exception as exc:
-        print(f"[project_manager] メタデータ書き出し失敗: {exc}",
-              file=sys.stderr)
+        logger.error("メタデータ書き出し失敗: %s", exc)
 
 
 def scan_project_meta(root_folder: str) -> list[dict]:
@@ -338,7 +340,7 @@ def scan_project_meta(root_folder: str) -> list[dict]:
             meta["_found_dir"] = str(meta_path.parent)
             results.append(meta)
         except Exception as e:
-            print(f"[WARNING] メタデータ読み込み失敗 ({meta_path}): {e}")
+            logger.warning("メタデータ読み込み失敗 (%s): %s", meta_path, e)
             continue
     return results
 
