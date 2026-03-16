@@ -20,6 +20,7 @@ dependencies = [
     "python-pptx>=0.6.21",
     "kaleido>=0.2.1",
     "python-dotenv>=1.0",
+    "Pillow>=10.0",
 ]
 
 [project.optional-dependencies]

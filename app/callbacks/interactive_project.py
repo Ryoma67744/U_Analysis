@@ -338,7 +338,8 @@ def execute_save_as_project(
                 polarity=polarity or [],
                 data_folder=msi_folder or "",
                 output_dir=result_folder or "",
-                extra_fields={"last_result_dir": result_folder or ""},
+                extra_fields={"last_result_dir": result_folder or "",
+                              "matrix": ""},
             )
             pid, sid = proj["id"], sub["id"]
 
@@ -363,7 +364,8 @@ def execute_save_as_project(
                 polarity=polarity or [],
                 data_folder=msi_folder or "",
                 output_dir=result_folder or "",
-                extra_fields={"last_result_dir": result_folder or ""},
+                extra_fields={"last_result_dir": result_folder or "",
+                              "matrix": ""},
             )
             pid, sid = existing_proj_id, sub["id"]
 

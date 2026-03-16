@@ -61,7 +61,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
         highlight_set = set(str(c) for c in highlight_clusters)
         mask_bg = ~df["Cluster"].astype(str).isin(highlight_set)
         if mask_bg.any():
-            fig.add_trace(go.Scattergl(
+            fig.add_trace(go.Scatter(
                 x=df.loc[mask_bg, "UMAP_1"],
                 y=df.loc[mask_bg, "UMAP_2"],
                 mode="markers",
@@ -71,7 +71,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
         for cl in highlight_clusters:
             mask = df["Cluster"].astype(str) == str(cl)
             if mask.any():
-                fig.add_trace(go.Scattergl(
+                fig.add_trace(go.Scatter(
                     x=df.loc[mask, "UMAP_1"],
                     y=df.loc[mask, "UMAP_2"],
                     mode="markers",
@@ -88,7 +88,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
         for cat in categories:
             mask = df[color_col] == cat
             rank = _cluster_sort_key(cat)[0] if str(cat).isdigit() else 1000
-            fig.add_trace(go.Scattergl(
+            fig.add_trace(go.Scatter(
                 x=df.loc[mask, "UMAP_1"],
                 y=df.loc[mask, "UMAP_2"],
                 mode="markers",
@@ -150,8 +150,12 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                                    marker_size=2, exclude_clusters=None,
                                    label_size=11, saved_positions=None,
                                    show_legend=True, name_map=None,
-                                   columns_per_row=0, cluster_name_map=None):
-    """サンプル別UMAPのhtml.Divリストを生成（メイン/フルスクリーン共用）"""
+                                   columns_per_row=0, cluster_name_map=None,
+                                   collect_figures=None):
+    """サンプル別UMAPのhtml.Divリストを生成（メイン/フルスクリーン共用）
+
+    collect_figures: リストを渡すと (display_name, fig_dict) を追加する（一括保存用）
+    """
     # 除外クラスタのフィルタリング
     if exclude_clusters:
         exclude_set = set(str(c) for c in exclude_clusters)
@@ -173,7 +177,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
             mask_hl = df_s["Cluster"].astype(str).isin(hl_set)
             mask_bg_s = ~mask_hl
             if mask_bg_s.any():
-                fig.add_trace(go.Scattergl(
+                fig.add_trace(go.Scatter(
                     x=df_s.loc[mask_bg_s, "UMAP_1"],
                     y=df_s.loc[mask_bg_s, "UMAP_2"],
                     mode="markers",
@@ -183,7 +187,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
             for cl in highlight_clusters:
                 mask_cl = df_s["Cluster"].astype(str) == str(cl)
                 if mask_cl.any():
-                    fig.add_trace(go.Scattergl(
+                    fig.add_trace(go.Scatter(
                         x=df_s.loc[mask_cl, "UMAP_1"],
                         y=df_s.loc[mask_cl, "UMAP_2"],
                         mode="markers",
@@ -194,7 +198,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
         else:
             for cl in sorted(df_s["Cluster"].unique(), key=_cluster_sort_key):
                 mask_cl = df_s["Cluster"] == cl
-                fig.add_trace(go.Scattergl(
+                fig.add_trace(go.Scatter(
                     x=df_s.loc[mask_cl, "UMAP_1"],
                     y=df_s.loc[mask_cl, "UMAP_2"],
                     mode="markers",
@@ -207,7 +211,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
         if show_legend:
             for cl in sorted(df["Cluster"].unique(), key=_cluster_sort_key):
                 rank = _cluster_sort_key(cl)[0] if str(cl).isdigit() else 1000
-                fig.add_trace(go.Scattergl(
+                fig.add_trace(go.Scatter(
                     x=[None], y=[None], mode="markers",
                     marker=dict(size=10, color=color_map.get(str(cl), "#999999")),
                     name=_cluster_display_name(cl, cluster_name_map), showlegend=True, legendrank=rank,
@@ -246,6 +250,9 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
             legend=dict(itemsizing="constant", font=dict(size=9), tracegroupgap=1),
         )
         _add_umap_arrows(fig)
+
+        if collect_figures is not None:
+            collect_figures.append((f"UMAP_{display_s}", fig.to_dict()))
 
         cfg = dict(_UMAP_PER_SAMPLE_CONFIG)
         cfg["toImageButtonOptions"] = dict(cfg["toImageButtonOptions"],
@@ -391,7 +398,8 @@ def toggle_merge_controls(_rds_path, _fs_trigger):
 # ---------------------------------------------------------------------------
 
 @callback(
-    Output("umap_per_sample_container", "children"),
+    [Output("umap_per_sample_container", "children"),
+     Output("batch_umap_figures_store", "data")],
     [Input("umap_display_mode", "value"),
      Input("umap_highlight_cluster", "value"),
      Input("umap_show_labels", "value"),
@@ -414,12 +422,13 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
     """表示モード「サンプル別」の場合、各サンプルのUMAPを並列表示"""
     from app.callbacks.interactive_callbacks import _interactive_data
     if display_mode != "per_sample":
-        return ""
+        return "", []
     df = _interactive_data.get("plot_data")
     if df is None:
-        return ""
+        return "", []
     color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
     all_pos = _get_merged_label_positions(accumulated_positions)
+    fig_dicts = []
     graphs = _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                                             show_labels, graph_height="300px",
                                             marker_size=marker_size or 2,
@@ -429,8 +438,9 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
                                             show_legend=bool(show_legend),
                                             name_map=name_map,
                                             columns_per_row=columns_per_row or 0,
-                                            cluster_name_map=cluster_name_map)
+                                            cluster_name_map=cluster_name_map,
+                                            collect_figures=fig_dicts)
     return html.Div(
         style={"display": "flex", "flexWrap": "wrap", "gap": "15px", "marginTop": "10px"},
         children=graphs,
-    )
+    ), fig_dicts

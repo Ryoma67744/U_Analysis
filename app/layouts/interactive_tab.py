@@ -61,7 +61,7 @@ def create_interactive_tab():
                     ]),
                 ]),
                 dbc.Col(width=6, children=[
-                    html.Div(className="param-group", children=[
+                    html.Div(className="param-group", style={"display": "none"}, children=[
                         html.H5("MSIデータフォルダ (オプション)"),
                         html.Div(
                             style={"display": "flex", "gap": "5px"},
@@ -575,7 +575,10 @@ def create_interactive_tab():
 
                         # --- UMAP プロット ---
                         dbc.AccordionItem(title="UMAP", className="accordion-umap", children=[
-                            html.Div(className="d-flex justify-content-end", children=[
+                            html.Div(className="d-flex justify-content-end gap-2", children=[
+                                dbc.Button("📷 一括保存", id="btn_batch_save_umap", size="sm",
+                                           color="outline-secondary",
+                                           style={"fontSize": "0.75rem"}),
                                 dbc.Button("⤢", id="expand_umap_btn", size="sm", color="light",
                                            style={"fontSize": "1.2rem", "padding": "2px 8px", "lineHeight": "1"}),
                             ]),
@@ -722,7 +725,10 @@ def create_interactive_tab():
 
                         # --- Spatial Mapping ---
                         dbc.AccordionItem(title="Spatial Mapping", className="accordion-spatial", children=[
-                            html.Div(className="d-flex justify-content-end", children=[
+                            html.Div(className="d-flex justify-content-end gap-2", children=[
+                                dbc.Button("📷 一括保存", id="btn_batch_save_spatial", size="sm",
+                                           color="outline-secondary",
+                                           style={"fontSize": "0.75rem"}),
                                 dbc.Button("⤢", id="expand_spatial_btn", size="sm", color="light",
                                            style={"fontSize": "1.2rem", "padding": "2px 8px", "lineHeight": "1"}),
                             ]),
@@ -804,7 +810,10 @@ def create_interactive_tab():
 
                         # --- Feature Plot ---
                         dbc.AccordionItem(title="Feature Plot", className="accordion-feature", children=[
-                            html.Div(className="d-flex justify-content-end", children=[
+                            html.Div(className="d-flex justify-content-end gap-2", children=[
+                                dbc.Button("📷 一括保存", id="btn_batch_save_feature", size="sm",
+                                           color="outline-secondary",
+                                           style={"fontSize": "0.75rem"}),
                                 dbc.Button("⤢", id="expand_feature_btn", size="sm", color="light",
                                            style={"fontSize": "1.2rem", "padding": "2px 8px", "lineHeight": "1"}),
                             ]),
@@ -944,7 +953,10 @@ def create_interactive_tab():
                                             color="info", className="mt-2",
                                         ),
                                     ]),
-                                    html.Div(className="d-flex justify-content-end mb-2", children=[
+                                    html.Div(className="d-flex justify-content-end gap-2 mb-2", children=[
+                                        dbc.Button("📷 一括保存", id="btn_batch_save_deg", size="sm",
+                                                   color="outline-secondary",
+                                                   style={"fontSize": "0.75rem"}),
                                         dbc.Button("⤢", id="expand_deg_btn", size="sm", color="light",
                                                    style={"fontSize": "1.2rem", "padding": "2px 8px", "lineHeight": "1"}),
                                     ]),
@@ -1139,6 +1151,11 @@ def create_interactive_tab():
         dcc.Store(id="export_top_n_store", data=5),
         # PPTXダウンロード用
         dcc.Download(id="dl_report_pptx"),
+        # 一括保存用 Store / Download
+        dcc.Store(id="batch_umap_figures_store", data=[]),
+        dcc.Store(id="batch_spatial_figures_store", data=[]),
+        dcc.Store(id="batch_feature_figures_store", data=[]),
+        dcc.Download(id="dl_batch_zip"),
         # インタラクティブキャリブレーション用
         dcc.Store(id="int_cal_table_data", data=[]),
         dcc.Store(id="int_cal_save_trigger", data=None),

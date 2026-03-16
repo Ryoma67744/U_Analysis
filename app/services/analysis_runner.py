@@ -516,7 +516,7 @@ def check_process_completion(
     """プロセスの完了をチェックし、完了時にステータスを更新。
     戻り値: "finished", "error", または None（まだ実行中）
     """
-    if process.poll() is None:
+    if process is None or process.poll() is None:
         return None  # まだ実行中
 
     # プロセス終了 → ログファイルハンドルを閉じる

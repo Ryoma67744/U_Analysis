@@ -46,6 +46,7 @@ from app.callbacks import interactive_callbacks  # noqa: E402, F401
 from app.callbacks import project_callbacks  # noqa: E402, F401
 from app.callbacks import share_callbacks  # noqa: E402, F401
 from app.callbacks import preset_callbacks  # noqa: E402, F401
+from app.callbacks import interactive_batch_save  # noqa: E402, F401
 
 
 if __name__ == "__main__":

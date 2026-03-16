@@ -881,6 +881,7 @@ def toggle_create_sub_modal(open_clicks, cancel_clicks, confirm_clicks, is_open)
      Output("new_sub_experiment_date", "value"),
      Output("new_sub_target_compound", "value"),
      Output("new_sub_ms_instrument", "value"),
+     Output("new_sub_matrix", "value"),
      Output("new_sub_polarity", "value"),
      Output("new_sub_data_folder", "value"),
      Output("new_sub_output_dir", "value"),
@@ -892,6 +893,7 @@ def toggle_create_sub_modal(open_clicks, cancel_clicks, confirm_clicks, is_open)
      State("new_sub_experiment_date", "value"),
      State("new_sub_target_compound", "value"),
      State("new_sub_ms_instrument", "value"),
+     State("new_sub_matrix", "value"),
      State("new_sub_polarity", "value"),
      State("new_sub_data_folder", "value"),
      State("new_sub_output_dir", "value"),
@@ -901,11 +903,11 @@ def toggle_create_sub_modal(open_clicks, cancel_clicks, confirm_clicks, is_open)
 )
 def handle_create_sub_project(
     n_clicks, project, name, experiment_date,
-    target_compound, ms_instrument, polarity,
+    target_compound, ms_instrument, matrix, polarity,
     data_folder, output_dir, memo, refresh,
 ):
     if not n_clicks or not name or not project:
-        return (no_update,) * 9
+        return (no_update,) * 10
 
     project_id = project.get("id", "")
     create_sub_project(
@@ -918,10 +920,11 @@ def handle_create_sub_project(
         memo=memo or "",
         data_folder=data_folder or "",
         output_dir=output_dir or "",
+        extra_fields={"matrix": matrix or ""},
     )
 
     # フォーム入力をクリア + リフレッシュ
-    return "", None, "", "", [], "", "", "", (refresh or 0) + 1
+    return "", None, "", "", "", [], "", "", "", (refresh or 0) + 1
 
 
 # =========================================================================
@@ -984,6 +987,7 @@ def handle_delete_sub_project(n_clicks, sub_id, project, refresh):
      Output("edit_sub_experiment_date", "value"),
      Output("edit_sub_target_compound", "value"),
      Output("edit_sub_ms_instrument", "value"),
+     Output("edit_sub_matrix", "value"),
      Output("edit_sub_polarity", "value"),
      Output("edit_sub_data_folder", "value"),
      Output("edit_sub_output_dir", "value"),
@@ -1003,7 +1007,7 @@ def toggle_edit_sub_modal(
     # キャンセル or 保存 → 閉じる
     if (triggered == "cancel_edit_sub_project"
             or triggered == "confirm_edit_sub_project"):
-        return False, "", "", None, "", "", [], "", "", ""
+        return False, "", "", None, "", "", "", [], "", "", ""
 
     # 編集ボタン → モーダルを開いて既存値をセット
     if isinstance(triggered, dict) and triggered.get("type") == "edit_sub_btn":
@@ -1019,13 +1023,14 @@ def toggle_edit_sub_modal(
                     sub.get("experiment_date", None) or None,
                     sub.get("target_compound", ""),
                     sub.get("ms_instrument", ""),
+                    sub.get("matrix", ""),
                     sub.get("polarity", []),
                     sub.get("data_folder", ""),
                     sub.get("output_dir", ""),
                     sub.get("memo", ""),
                 )
 
-    return (no_update,) * 10
+    return (no_update,) * 11
 
 
 # =========================================================================
@@ -1041,6 +1046,7 @@ def toggle_edit_sub_modal(
      State("edit_sub_experiment_date", "value"),
      State("edit_sub_target_compound", "value"),
      State("edit_sub_ms_instrument", "value"),
+     State("edit_sub_matrix", "value"),
      State("edit_sub_polarity", "value"),
      State("edit_sub_data_folder", "value"),
      State("edit_sub_output_dir", "value"),
@@ -1050,7 +1056,7 @@ def toggle_edit_sub_modal(
 )
 def handle_edit_sub_project(
     n_clicks, project, sub_id, name, experiment_date,
-    target_compound, ms_instrument, polarity,
+    target_compound, ms_instrument, matrix, polarity,
     data_folder, output_dir, memo, refresh,
 ):
     if not n_clicks or not project or not sub_id or not name:
@@ -1062,6 +1068,7 @@ def handle_edit_sub_project(
         "experiment_date": experiment_date or "",
         "target_compound": target_compound or "",
         "ms_instrument": ms_instrument or "",
+        "matrix": matrix or "",
         "polarity": polarity or [],
         "memo": memo or "",
         "data_folder": data_folder or "",

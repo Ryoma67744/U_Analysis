@@ -54,8 +54,12 @@ def _transform_coords(x, y, angle_deg, flip_h=False, flip_v=False):
     return x_rot, y_rot
 
 
-def _calc_zero_gap_marker_size(plot_x, plot_y, render_height=310):
-    """点間距離ゼロ（隣接点が接する）のマーカーサイズを計算（scale_factor=1.0）"""
+def _calc_zero_gap_marker_size(plot_x, plot_y, render_height=310, scale_factor=1.0):
+    """点間距離ベースのマーカーサイズを計算。
+
+    scale_factor=1.0 で隣接点が接するサイズ（隙間ゼロ）。
+    float を返す（Plotly は小数マーカーサイズに対応）。
+    """
     if len(plot_x) <= 1:
         return 4
     sorted_ux = np.sort(np.unique(plot_x))
@@ -66,7 +70,7 @@ def _calc_zero_gap_marker_size(plot_x, plot_y, render_height=310):
     y_range = float(plot_y.max() - plot_y.min()) if len(plot_y) > 1 else 1.0
     if y_range > 0 and x_range > 0:
         effective_w = render_height * (x_range / y_range)
-        return max(2, round(min_spacing * effective_w / x_range))
+        return max(2.0, min_spacing * effective_w / x_range * scale_factor)
     return 4
 
 
@@ -78,7 +82,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                                marker_size=4, exclude_clusters=None,
                                label_size=10, saved_positions=None,
                                title_font_size=None, render_height=None,
-                               cluster_name_map=None):
+                               cluster_name_map=None, scale_factor=1.0):
     """単一サンプルのSpatial Mapping figureを生成"""
     # 除外クラスタのフィルタリング
     if exclude_clusters:
@@ -97,7 +101,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
     plot_x, plot_y = _transform_coords(raw_x, raw_y, rotation_deg,
                                         flip_h=flip_h, flip_v=flip_v)
 
-    # marker_size=0 の場合、データ密度ベースで自動計算（点間距離ゼロ）
+    # marker_size=0 の場合、データ密度ベースで自動計算（隙間ゼロ）
     if marker_size <= 0 and len(plot_x) > 1:
         sorted_ux = np.sort(np.unique(plot_x))
         if len(sorted_ux) > 1:
@@ -107,10 +111,9 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
             # scaleanchor="x" のため、描画幅は高さ×アスペクト比で決定
             # render_height 指定時はそれを使用、未指定時はWebデフォルト310px
             effective_h = render_height or 310
-            _scale_factor = 1.0
             if y_range > 0 and x_range > 0:
                 effective_w = effective_h * (x_range / y_range)
-                marker_size = max(2, round(min_spacing * effective_w / x_range * _scale_factor))
+                marker_size = max(2.0, min_spacing * effective_w / x_range * scale_factor)
             else:
                 marker_size = 4
         else:
@@ -130,7 +133,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
             else:
                 bg_marker = dict(size=marker_size, symbol="square", color=HIGHLIGHT_GRAY, opacity=0.2)
                 bg_name = "Other"
-            fig.add_trace(go.Scattergl(
+            fig.add_trace(go.Scatter(
                 x=plot_x[mask_bg],
                 y=plot_y[mask_bg],
                 mode="markers",
@@ -138,7 +141,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 name=bg_name, showlegend=False, hoverinfo="skip",
             ))
         if mask_selected.any():
-            fig.add_trace(go.Scattergl(
+            fig.add_trace(go.Scatter(
                 x=plot_x[mask_selected],
                 y=plot_y[mask_selected],
                 mode="markers",
@@ -158,7 +161,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
             else:
                 bg_marker = dict(size=marker_size, symbol="square", color=HIGHLIGHT_GRAY, opacity=0.2)
                 bg_name = "Other"
-            fig.add_trace(go.Scattergl(
+            fig.add_trace(go.Scatter(
                 x=plot_x[mask_bg.values],
                 y=plot_y[mask_bg.values],
                 mode="markers",
@@ -169,7 +172,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
         for cl in sorted(highlight_clusters, key=lambda x: _cluster_sort_key(x), reverse=True):
             mask = (df_sample["Cluster"].astype(str) == str(cl)).values
             if mask.any():
-                fig.add_trace(go.Scattergl(
+                fig.add_trace(go.Scatter(
                     x=plot_x[mask],
                     y=plot_y[mask],
                     mode="markers",
@@ -183,7 +186,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
             for cl in sorted(df_sample["Cluster"].unique(), key=_cluster_sort_key):
                 mask = (df_sample["Cluster"].astype(str) == str(cl)).values
                 if mask.any():
-                    fig.add_trace(go.Scattergl(
+                    fig.add_trace(go.Scatter(
                         x=plot_x[mask], y=plot_y[mask], mode="markers",
                         marker=dict(size=marker_size, symbol="square",
                                     color=color_map.get(str(cl), "#999999")),
@@ -199,7 +202,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 [cluster_to_idx.get(str(cl), 0) for cl in df_sample["Cluster"]]
             )
             point_normalized = (point_values + 0.5) / n_clusters
-            fig.add_trace(go.Scattergl(
+            fig.add_trace(go.Scatter(
                 x=plot_x, y=plot_y, mode="markers",
                 marker=dict(
                     size=marker_size,
@@ -216,7 +219,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
         else:
             # フォールバック: HEX文字列配列方式
             point_colors = [color_map.get(str(cl), "#999999") for cl in df_sample["Cluster"]]
-            fig.add_trace(go.Scattergl(
+            fig.add_trace(go.Scatter(
                 x=plot_x, y=plot_y, mode="markers",
                 marker=dict(size=marker_size, symbol="square", color=point_colors),
                 text=[_cluster_display_name(cl, cluster_name_map) for cl in df_sample["Cluster"]],
@@ -227,7 +230,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
         if embed_legend:
             for cl in sorted(df_sample["Cluster"].unique(), key=_cluster_sort_key):
                 rank = _cluster_sort_key(cl)[0] if str(cl).isdigit() else 1000
-                fig.add_trace(go.Scattergl(
+                fig.add_trace(go.Scatter(
                     x=[None], y=[None],
                     mode="markers",
                     marker=dict(size=10, symbol="square", color=color_map.get(str(cl), "#999999")),
@@ -837,7 +840,8 @@ def auto_feature_marker(n_clicks, rotation_store, sample):
 
 @callback(
     [Output("spatial_plots_container", "children"),
-     Output("last_spatial_figure_store", "data")],
+     Output("last_spatial_figure_store", "data"),
+     Output("batch_spatial_figures_store", "data")],
     [Input("interactive_sample", "value"),
      Input("spatial_highlight_cluster", "value"),
      Input("interactive_umap_plot", "selectedData"),
@@ -866,7 +870,7 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
     from app.callbacks.interactive_umap import _get_merged_label_positions
     df = _interactive_data.get("plot_data")
     if df is None or "SpatialX" not in df.columns:
-        return html.Div("空間座標データがありません", className="text-muted p-3"), None
+        return html.Div("空間座標データがありません", className="text-muted p-3"), None, []
 
     if not rotation_store:
         rotation_store = {}
@@ -902,6 +906,7 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
         samples_to_show = sorted(plot_df["Sample"].unique())
 
     graphs = []
+    batch_fig_dicts = []
     representative_fig = None
     for s in samples_to_show:
         df_s = plot_df[plot_df["Sample"] == s]
@@ -929,6 +934,7 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
                                          cluster_name_map=cluster_name_map)
         if representative_fig is None:
             representative_fig = fig
+        batch_fig_dicts.append((f"Spatial_{display_s}", fig.to_dict()))
         cfg = dict(_SPATIAL_IMG_CONFIG)
         cfg["toImageButtonOptions"] = dict(cfg["toImageButtonOptions"],
                                            filename=f"Spatial_{display_s}")
@@ -959,4 +965,4 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
     )
     # 代表figureをStoreに保存（HTMLエクスポート用）
     store_data = representative_fig.to_dict() if representative_fig else None
-    return container, store_data
+    return container, store_data, batch_fig_dicts

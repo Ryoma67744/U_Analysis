@@ -244,7 +244,8 @@ def update_feature_options_on_mz_filter(mz_filtered):
 @callback(
     [Output("feature_plot_container", "children"),
      Output("feature_intensity_min", "placeholder"),
-     Output("feature_intensity_max", "placeholder")],
+     Output("feature_intensity_max", "placeholder"),
+     Output("batch_feature_figures_store", "data")],
     [Input("feature_select", "value"),
      Input("feature_sample_select", "value"),
      Input("feature_marker_size", "value"),
@@ -268,17 +269,17 @@ def update_feature_plot(feature_name, sample, marker_size,
     from app.callbacks.interactive_spatial import _transform_coords, _calc_zero_gap_marker_size
     # 名前変更・フルスクリーン閉鎖トリガーだがFeature未選択 -> スキップ
     if ctx.triggered_id in ("sample_name_map_store", "fullscreen_closed_trigger") and not feature_name:
-        return no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update
 
     if not feature_name or not rds_path:
-        return html.Div("m/z Feature を選択してください", className="text-muted p-3"), no_update, no_update
+        return html.Div("m/z Feature を選択してください", className="text-muted p-3"), no_update, no_update, []
 
     df = _interactive_data.get("plot_data")
     if df is None:
-        return html.Div("データが読み込まれていません", className="text-muted p-3"), no_update, no_update
+        return html.Div("データが読み込まれていません", className="text-muted p-3"), no_update, no_update, []
 
     if "SpatialX" not in df.columns:
-        return html.Div("空間座標データがありません", className="text-muted p-3"), no_update, no_update
+        return html.Div("空間座標データがありません", className="text-muted p-3"), no_update, no_update, []
 
     if not rotation_store:
         rotation_store = {}
@@ -312,8 +313,12 @@ def update_feature_plot(feature_name, sample, marker_size,
         expr_vals = df_plot.loc[
             df_plot["Sample"].isin(samples_to_show), "_expression"
         ].values
+        if len(expr_vals) == 0 or np.all(np.isnan(expr_vals)):
+            return html.Div("発現データがありません", className="text-muted p-3"), no_update, no_update, []
         global_min = float(np.nanmin(expr_vals))
         global_max = float(np.nanmax(expr_vals))
+        if global_min == global_max:
+            global_max = global_min + 1.0
 
         # ユーザー指定の Intensity Range（パーセント値）を強度値に変換
         val_range = global_max - global_min
@@ -329,6 +334,7 @@ def update_feature_plot(feature_name, sample, marker_size,
         auto_mode = (marker_size is None or marker_size <= 0)
 
         graphs = []
+        batch_fig_dicts = []
         for s in samples_to_show:
             df_s = df_plot[df_plot["Sample"] == s]
             display_s = _display_name(s, name_map)
@@ -418,6 +424,8 @@ def update_feature_plot(feature_name, sample, marker_size,
                 plot_bgcolor="white",
             )
 
+            batch_fig_dicts.append((f"Feature_{feature_name}_{display_s}", fig.to_dict()))
+
             cfg = dict(_FEATURE_IMG_CONFIG)
             cfg["toImageButtonOptions"] = dict(cfg["toImageButtonOptions"],
                                                filename=f"Feature_{feature_name}_{display_s}")
@@ -462,10 +470,10 @@ def update_feature_plot(feature_name, sample, marker_size,
             style={"color": "#333", "fontSize": "0.95rem"},
         )
 
-        return html.Div([heading, container]), "0", "100"
+        return html.Div([heading, container]), "0", "100", batch_fig_dicts
 
     except Exception as e:
-        return html.Div(f"\u30a8\u30e9\u30fc: {e}", className="text-danger p-3"), no_update, no_update
+        return html.Div(f"\u30a8\u30e9\u30fc: {e}", className="text-danger p-3"), no_update, no_update, []
 
 
 # ---------------------------------------------------------------------------
@@ -651,7 +659,7 @@ def update_volcano_plot(cluster, fc_thresh, p_thresh, y_max, marker_size,
             )
         sub = df[mask]
         if len(sub) > 0:
-            fig.add_trace(go.Scattergl(
+            fig.add_trace(go.Scatter(
                 x=sub["avg_log2FC"],
                 y=sub["neg_log10_p"],
                 mode="markers",
@@ -726,7 +734,7 @@ def update_volcano_plot(cluster, fc_thresh, p_thresh, y_max, marker_size,
             else r["gene"],
             axis=1,
         )
-        fig.add_trace(go.Scattergl(
+        fig.add_trace(go.Scatter(
             x=hl_df["avg_log2FC"],
             y=hl_df["neg_log10_p"],
             mode="markers+text",

@@ -71,7 +71,7 @@ logger = logging.getLogger("msi.interactive.pptx")
 # ---------------------------------------------------------------------------
 
 def _build_feature_plot_fig(df, feature_name, cache_dir_path, rds_path,
-                            rotation_store=None, name_map=None, marker_size=3,
+                            rotation_store=None, name_map=None, marker_size=2,
                             colorbar_tickformat=None, show_colorbar_title=True,
                             auto_marker_size=False, show_colorbar=True):
     """単一 m/z Feature の Spatial Expression Plot figure を生成（PPTX 用）。
@@ -594,7 +594,7 @@ def _build_cluster_slide_combined_fig(
             fig.add_trace(go.Scattergl(
                 x=hl_df["UMAP_1"], y=hl_df["UMAP_2"],
                 mode="markers",
-                marker=dict(color=cl_color, size=3),
+                marker=dict(color=cl_color, size=2),
                 name=cl_name, legendgroup="hl",
                 showlegend=(idx == 0),
                 hoverinfo="skip",
@@ -616,7 +616,7 @@ def _build_cluster_slide_combined_fig(
             transform.get("angle", 0),
             flip_h=transform.get("flip_h", False),
             flip_v=transform.get("flip_v", False))
-        msize = _calc_zero_gap_marker_size(tx, ty, render_height=560)
+        msize = _calc_zero_gap_marker_size(tx, ty, render_height=300)
         bg_mask_arr = (~cl_mask).values
         hl_mask_arr = cl_mask.values
 
@@ -645,7 +645,7 @@ def _build_cluster_slide_combined_fig(
             fig.add_trace(go.Scattergl(
                 x=tx[hl_mask_arr], y=ty[hl_mask_arr],
                 mode="markers",
-                marker=dict(color=cl_color, size=msize + 1,
+                marker=dict(color=cl_color, size=msize,
                             symbol="square"),
                 showlegend=False, hoverinfo="skip",
             ), row=2, col=col)
@@ -710,8 +710,9 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
     progress_total: 進捗計算の全体ステップ数（複数手法ループ時に使用）
     """
     from pptx import Presentation
-    from pptx.util import Inches, Pt
+    from pptx.util import Inches, Pt, Emu
     from pptx.enum.text import PP_ALIGN
+    from pptx.enum.shapes import MSO_SHAPE
     from pptx.dml.color import RGBColor
 
     # 進捗計算用
@@ -855,7 +856,7 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                         df_s, color_by="Cluster", highlight_clusters=None,
                         show_legend=False, show_labels=True,
                         title=_display_name(s, name_map),
-                        marker_size=3, custom_colors=custom_colors,
+                        marker_size=2, custom_colors=custom_colors,
                         title_font_size=40, label_size=24,
                         saved_positions=_umap_pos,
                         cluster_name_map=cluster_name_map)
@@ -1034,7 +1035,7 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                 umap_hl = _build_umap_integrated_fig(
                     df, color_by="Cluster", highlight_clusters=[cl_str],
                     show_legend=True, show_labels=False,
-                    marker_size=3, custom_colors=custom_colors,
+                    marker_size=2, custom_colors=custom_colors,
                     bg_opacity=1.0,
                     cluster_name_map=cluster_name_map)
                 if umap_hl is not None:
@@ -1131,7 +1132,7 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                 is_last_up = (i == len(up_features) - 1)
                 feat_fig = _build_feature_plot_fig(
                     df, feat, cache_dir_path, rds_path_str,
-                    rotation_store, name_map, marker_size=3,
+                    rotation_store, name_map, marker_size=2,
                     show_colorbar_title=is_last_up,
                     show_colorbar=is_last_up,
                     auto_marker_size=True)
@@ -1152,6 +1153,18 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                         feat_w, feat_h,
                         png_w=400, png_h=280)
 
+            # Up features 間の縦区切り線
+            _tile_w_feat = 12.5 / max(top_n, 1)
+            for i in range(1, len(up_features)):
+                _sep_x = Inches(0.3 + i * _tile_w_feat)
+                _sep = slide_b.shapes.add_shape(
+                    MSO_SHAPE.RECTANGLE,
+                    int(_sep_x) - Emu(6350), Inches(_up_plot_y),
+                    Emu(6350), feat_h)
+                _sep.fill.solid()
+                _sep.fill.fore_color.rgb = RGBColor(0xCC, 0xCC, 0xCC)
+                _sep.line.fill.background()
+
             # "▼ Down-regulated" ラベル
             if has_down:
                 lbl = slide_b.shapes.add_textbox(
@@ -1167,7 +1180,7 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                 is_last_down = (i == len(down_features) - 1)
                 feat_fig = _build_feature_plot_fig(
                     df, feat, cache_dir_path, rds_path_str,
-                    rotation_store, name_map, marker_size=3,
+                    rotation_store, name_map, marker_size=2,
                     show_colorbar_title=is_last_down,
                     show_colorbar=is_last_down,
                     auto_marker_size=True)
@@ -1187,6 +1200,17 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                         int(left), Inches(_down_plot_y),
                         feat_w, feat_h,
                         png_w=400, png_h=280)
+
+            # Down features 間の縦区切り線
+            for i in range(1, len(down_features)):
+                _sep_x = Inches(0.3 + i * _tile_w_feat)
+                _sep = slide_b.shapes.add_shape(
+                    MSO_SHAPE.RECTANGLE,
+                    int(_sep_x) - Emu(6350), Inches(_down_plot_y),
+                    Emu(6350), feat_h)
+                _sep.fill.solid()
+                _sep.fill.fore_color.rgb = RGBColor(0xCC, 0xCC, 0xCC)
+                _sep.line.fill.background()
 
             # Volcano Plot (下段) — XY比を保持して最大サイズで配置
             if has_volcano:

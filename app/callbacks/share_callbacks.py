@@ -440,7 +440,7 @@ def sv_update_feature_plot(feature, token):
         if expression is None:
             expression = _sv_bridge.get_feature_expression(rds_path, feature)
 
-        fig = go.Figure(go.Scattergl(
+        fig = go.Figure(go.Scatter(
             x=df["UMAP_1"], y=df["UMAP_2"],
             mode="markers",
             marker=dict(

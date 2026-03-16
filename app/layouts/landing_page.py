@@ -134,7 +134,7 @@ def _create_new_project_modal():
                 dbc.Label("プロジェクトタイトル *"),
                 dbc.Input(
                     id="new_project_name",
-                    placeholder="例: 大橋プロジェクト",
+                    placeholder="例: 宮林Demo",
                 ),
                 dbc.Label("実験日", className="mt-2"),
                 dbc.Input(

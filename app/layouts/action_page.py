@@ -197,7 +197,21 @@ def _create_new_sub_project_modal():
                 ], className="mb-3"),
 
                 dbc.Row([
-                    dbc.Col(width=12, children=[
+                    dbc.Col(width=6, children=[
+                        dbc.Label("マトリックス"),
+                        dbc.Select(
+                            id="new_sub_matrix",
+                            options=[
+                                {"label": "-- 選択してください --", "value": ""},
+                                {"label": "DHB", "value": "DHB"},
+                                {"label": "CHCA", "value": "CHCA"},
+                                {"label": "9AA", "value": "9AA"},
+                                {"label": "Other", "value": "Other"},
+                            ],
+                            value="",
+                        ),
+                    ]),
+                    dbc.Col(width=6, children=[
                         dbc.Label("極性"),
                         dbc.Checklist(
                             id="new_sub_polarity",
@@ -304,7 +318,21 @@ def _create_edit_sub_project_modal():
                 ], className="mb-3"),
 
                 dbc.Row([
-                    dbc.Col(width=12, children=[
+                    dbc.Col(width=6, children=[
+                        dbc.Label("マトリックス"),
+                        dbc.Select(
+                            id="edit_sub_matrix",
+                            options=[
+                                {"label": "-- 選択してください --", "value": ""},
+                                {"label": "DHB", "value": "DHB"},
+                                {"label": "CHCA", "value": "CHCA"},
+                                {"label": "9AA", "value": "9AA"},
+                                {"label": "Other", "value": "Other"},
+                            ],
+                            value="",
+                        ),
+                    ]),
+                    dbc.Col(width=6, children=[
                         dbc.Label("極性"),
                         dbc.Checklist(
                             id="edit_sub_polarity",
