@@ -40,7 +40,7 @@ DESI_V8_TEMPLATE_PATH = DESI_SCRIPT_DIR / "260312_DESI-UMAP_Template_v13.R"
 DESI_CLUSTER_FILTER_PATH = DESI_SCRIPT_DIR / "DESI_RDS_ClusterFilter_ver2.R"
 
 # TIMS用スクリプトのパス
-TIMS_V8_TEMPLATE_PATH = TIMS_SCRIPT_DIR / "260312_DBSCAN_With_cluster_ver20.R"
+TIMS_V8_TEMPLATE_PATH = TIMS_SCRIPT_DIR / "260402_DBSCAN_With_cluster_ver2_no-png.R"
 TIMS_CLUSTER_FILTER_PATH = TIMS_SCRIPT_DIR / "260312_DBSCAN_ver17_Cluster_Filter_ReUMAP.R"
 
 # R ヘルパースクリプトのパス
@@ -48,7 +48,7 @@ R_HELPERS_DIR = Path(__file__).parent / "r_helpers"
 
 # DESI用デフォルト設定
 DEFAULT_DESI_DATA_FOLDER = str(DESI_DATA_DIR)
-DEFAULT_ANNOTATION_FILE_PATH = str(DESI_DB_DIR / "MRM.xlsx")
+DEFAULT_ANNOTATION_FILE_PATH = str(DESI_DB_DIR / "263010-MRM.xlsx")
 
 # TIMS用デフォルト設定
 DEFAULT_TIMS_DATA_FOLDER = str(TIMS_DATA_DIR)
@@ -163,6 +163,6 @@ CLUSTER_PRESET_COLORS = [
 ]
 
 # アプリケーション設定
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 APP_PORT = int(os.environ.get("APP_PORT", "3838"))
 APP_HOST = os.environ.get("APP_HOST", "0.0.0.0")  # LAN + Cloudflare Tunnel 対応

@@ -10,8 +10,13 @@ import dash_bootstrap_components as dbc
 import diskcache
 from dash.long_callback import DiskcacheManager
 
-from app.config import APP_PORT, APP_HOST
+from app.config import APP_PORT, APP_HOST, SESSIONS_DIR
 from app.layouts.main_layout import create_main_layout
+
+# 前回設定をクリア（毎回クリーンな初期値で起動）
+_last_settings = SESSIONS_DIR / "last_settings.json"
+if _last_settings.exists():
+    _last_settings.unlink(missing_ok=True)
 
 # バックグラウンドコールバック用キャッシュ
 _launch_uid = uuid4()
@@ -47,7 +52,6 @@ from app.callbacks import project_callbacks  # noqa: E402, F401
 from app.callbacks import share_callbacks  # noqa: E402, F401
 from app.callbacks import preset_callbacks  # noqa: E402, F401
 from app.callbacks import interactive_batch_save  # noqa: E402, F401
-
 
 if __name__ == "__main__":
     app.run(debug=True, host=APP_HOST, port=APP_PORT)

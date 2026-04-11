@@ -250,6 +250,19 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
             lines, "CALIBRATION_COEFFICIENTS",
             "c(" + ", ".join(str(c) for c in coefs) + ")",
         )
+        # サンプル別キャリブレーション
+        if params.get("calibration_by_sample"):
+            by_sample = params["calibration_by_sample"]
+            entries = []
+            for sname, scoefs in by_sample.items():
+                r_coefs = "c(" + ", ".join(str(c) for c in scoefs) + ")"
+                entries.append(f'  "{sname}" = {r_coefs}')
+            r_list = "list(\n" + ",\n".join(entries) + "\n)"
+            lines = _replace_assign(lines, "CALIBRATION_BY_SAMPLE", r_list)
+
+    # --- m/z アライメント (ppm) ---
+    if params.get("mz_align_ppm"):
+        lines = _replace_assign(lines, "MZ_ALIGN_PPM", str(params["mz_align_ppm"]))
 
     # 一時ファイルをlog/サブフォルダに保存
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -336,6 +349,14 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
     if params.get("merge_script_path"):
         lines = _replace_assign(
             lines, "MERGE_SCRIPT_PATH", _r_str(params["merge_script_path"])
+        )
+
+    # --- 本体スクリプトパスの動的注入（TIMS: V13_SCRIPT_PATH, DESI: V8_SCRIPT_PATH） ---
+    if params.get("main_analysis_script_path"):
+        is_tims = "DBSCAN" in Path(template_path).stem or "tims" in Path(template_path).stem.lower()
+        var_name = "V13_SCRIPT_PATH" if is_tims else "V8_SCRIPT_PATH"
+        lines = _replace_assign(
+            lines, var_name, _r_str(params["main_analysis_script_path"])
         )
 
     # --- m/z キャリブレーション（再解析） ---

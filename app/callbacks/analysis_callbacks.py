@@ -109,7 +109,13 @@ def toggle_sidebar_content(active_tab):
      State("calibration_min_peaks", "value"),
      State("reanalysis_calibration_use_previous", "value"),
      State("reanalysis_calibration_data", "data"),
-     State("annotation_filter_store", "data")],
+     State("annotation_filter_store", "data"),
+     State("annotation_filter_store_reanalysis", "data"),
+     State("extra_data_folders_store", "data"),
+     State("mz_align_ppm", "value"),
+     State("selected_samples_store", "data"),
+     State("cal_per_sample_store", "data"),
+     State("cal_sample_selector_prev", "data")],
     prevent_initial_call=True,
 )
 def run_analysis(
@@ -132,6 +138,12 @@ def run_analysis(
     calibration_regression_mode, calibration_min_peaks,
     reanalysis_cal_use_previous, reanalysis_cal_data,
     annotation_filter_data,
+    annotation_filter_reanalysis_data,
+    extra_data_folders,
+    mz_align_ppm,
+    selected_samples,
+    cal_per_sample_store,
+    cal_sample_selector_prev,
 ):
     if not n_clicks:
         return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
@@ -207,12 +219,13 @@ def run_analysis(
             else:
                 template = tims_v8_script or str(TIMS_V8_TEMPLATE_PATH)
 
-            # サンプル名は data_folder 内のファイル名（UI上の選択状態は
-            # selected_samples チェックリストから取得すべきだが、
-            # Dash の動的コンポーネントの制約により、ここでは data_folder 全体を対象にする）
-            if analysis_type == "tims_v8":
-                from app.services.data_manager import list_tims_files
-                sample_names = list_tims_files(data_folder)
+            # サンプル名: UIのチェックリスト（selected_samples）から取得
+            if selected_samples:
+                sample_names = list(selected_samples)
+            elif analysis_type == "tims_v8":
+                from app.services.data_manager import list_tims_files_multi
+                all_folders = [data_folder] + (extra_data_folders or [])
+                sample_names = list_tims_files_multi(all_folders)
             else:
                 from app.services.data_manager import list_msi_files
                 sample_names = list_msi_files(data_folder)
@@ -238,9 +251,15 @@ def run_analysis(
                 params["tolerance_mz"] = float(tolerance_mz) if tolerance_mz else 0.01
                 if adduct_filter:
                     params["adduct_patterns"] = adduct_filter
-                # INPUT_PATHS: data_folder内のファイルのフルパスリスト
-                from app.services.data_manager import build_tims_input_paths
-                params["input_paths"] = build_tims_input_paths(data_folder)
+                # INPUT_PATHS: 選択サンプルに対応するファイルのフルパスリスト
+                from app.services.data_manager import build_tims_input_paths_multi
+                all_folders = [data_folder] + (extra_data_folders or [])
+                all_paths = build_tims_input_paths_multi(all_folders)
+                if selected_samples:
+                    selected_set = set(selected_samples)
+                    all_paths = [p for p in all_paths
+                                 if Path(p).stem in selected_set]
+                params["input_paths"] = all_paths
                 # OUTPUT_DIR: TIMSスクリプトはOUTPUT_DIR（大文字）を使用
                 params["output_dir_var"] = "OUTPUT_DIR"
                 # ANNOTATION_CSV_PATH: UIの初期設定から取得
@@ -254,21 +273,64 @@ def run_analysis(
                         if csvs:
                             params["annotation_csv_path"] = str(csvs[0])
 
+            # --- m/z アライメント (ppm) ---
+            if analysis_type == "tims_v8":
+                params["mz_align_ppm"] = float(mz_align_ppm) if mz_align_ppm else 0
+
             # --- Annotation Filter（TIMS: Parquet内の切片選択） ---
             if analysis_type == "tims_v8" and annotation_filter_data:
                 params["annotation_filter"] = annotation_filter_data
 
             # --- m/z キャリブレーション（TIMS UMAP解析） ---
             if calibration_enable and analysis_type == "tims_v8":
-                cal_result = compute_calibration_coefficients(
-                    calibration_table_data,
-                    calibration_regression_mode or "poly3",
-                    int(calibration_min_peaks or 2),
-                )
-                if cal_result:
-                    params["calibration_enable"] = True
-                    params["calibration_coefficients"] = cal_result["coefficients"]
-                    params["calibration_result"] = cal_result
+                # 現在表示中のテーブルを Store に同期
+                per_store = dict(cal_per_sample_store or {})
+                if cal_sample_selector_prev:
+                    per_store[cal_sample_selector_prev] = calibration_table_data
+
+                reg_mode = calibration_regression_mode or "poly3"
+                min_pk = int(calibration_min_peaks or 2)
+
+                # サンプル固有エントリの抽出
+                sample_specific = {
+                    k: v for k, v in per_store.items()
+                    if k != "__all__" and v
+                }
+
+                if sample_specific:
+                    # サンプル別係数を算出
+                    cal_by_sample = {}
+                    for sname, tbl in sample_specific.items():
+                        result = compute_calibration_coefficients(
+                            tbl, reg_mode, min_pk)
+                        if result:
+                            cal_by_sample[sname] = result["coefficients"]
+
+                    # グローバルフォールバック
+                    global_tbl = per_store.get("__all__", [])
+                    global_result = compute_calibration_coefficients(
+                        global_tbl, reg_mode, min_pk) if global_tbl else None
+
+                    if cal_by_sample:
+                        params["calibration_enable"] = True
+                        params["calibration_by_sample"] = cal_by_sample
+                        if global_result:
+                            params["calibration_coefficients"] = global_result["coefficients"]
+                        else:
+                            params["calibration_coefficients"] = list(
+                                cal_by_sample.values())[0]
+                        params["calibration_result"] = global_result or {
+                            "coefficients": params["calibration_coefficients"],
+                            "degree": len(params["calibration_coefficients"]) - 1,
+                        }
+                else:
+                    # 従来動作: 全サンプル共通
+                    cal_result = compute_calibration_coefficients(
+                        calibration_table_data, reg_mode, min_pk)
+                    if cal_result:
+                        params["calibration_enable"] = True
+                        params["calibration_coefficients"] = cal_result["coefficients"]
+                        params["calibration_result"] = cal_result
 
             config_path = generate_v8_config(params, full_output_dir)
 
@@ -296,10 +358,10 @@ def run_analysis(
             resolved_cluster_source = cluster_source or "harmony"
             if not resolved_rds_path and rds_folder_reanalysis:
                 if analysis_type == "desi_cluster_filter":
-                    # DESI: Python側でファイル名を構築
-                    rds_filename = ("Step2_HarmonyPCA_Result.rds"
+                    # DESI: Python側でファイル名を構築（DESI命名規則）
+                    rds_filename = ("DESI_SeuratCombined_harmony.rds"
                                     if resolved_cluster_source == "harmony"
-                                    else "Step2_RPCA_Result.rds")
+                                    else "DESI_SeuratCombined_RPCA.rds")
                     resolved_rds_path = str(Path(rds_folder_reanalysis) / rds_filename)
                 # TIMS: R側の resolve_rds_path() に委譲するため rds_path は空のまま
 
@@ -312,11 +374,21 @@ def run_analysis(
                 "sample_names": sample_names,
                 # マージスクリプトパス（DESI/TIMS共通）
                 "merge_script_path": str(MERGE_CLUSTERS_SCRIPT_PATH),
+                # 本体スクリプトパス（動的注入: V13_SCRIPT_PATH / V8_SCRIPT_PATH）
+                "main_analysis_script_path": (
+                    tims_v8_script or str(TIMS_V8_TEMPLATE_PATH)
+                ) if analysis_type == "tims_cluster_filter" else (
+                    desi_v8_script or str(DESI_V8_TEMPLATE_PATH)
+                ),
             }
 
             # 再解析用アノテーションファイル
             if reanalysis_annotation_path:
                 params["reanalysis_annotation_path"] = reanalysis_annotation_path
+
+            # 再解析用 Annotation Filter（TIMS: 切片選択）
+            if analysis_type == "tims_cluster_filter" and annotation_filter_reanalysis_data:
+                params["annotation_filter"] = annotation_filter_reanalysis_data
 
             # TIMSクラスターフィルター固有パラメータ
             if analysis_type == "tims_cluster_filter":
@@ -926,11 +998,13 @@ def delete_calibration_rows(n, selected, data):
      State("seurat_cache_dir_store", "data"),
      State("data_folder", "value"),
      State("analysis_method", "value"),
-     State("analysis_method_tims", "value")],
+     State("analysis_method_tims", "value"),
+     State("cal_sample_selector", "value")],
     prevent_initial_call=True,
 )
 def auto_detect_observed_peaks(n, table_data, search_window, cache_dir,
-                               data_folder, analysis_method, analysis_method_tims):
+                               data_folder, analysis_method, analysis_method_tims,
+                               cal_sample_value):
     """リファレンスm/z値に対応する実測ピークを自動検出"""
     import numpy as np
     import pandas as pd
@@ -939,20 +1013,34 @@ def auto_detect_observed_peaks(n, table_data, search_window, cache_dir,
     if not n or not table_data:
         return no_update, no_update
 
+    # サンプル指定: __all__ 以外ならそのサンプルのみ読込
+    target_sample = cal_sample_value if cal_sample_value and cal_sample_value != "__all__" else None
+
     # --- データ読み込み: 優先順位 1) cache_dir  2) data_folder 生データ ---
     expr_df = None
     if cache_dir:
-        expr_path = Path(cache_dir) / "expression_matrix.parquet"
-        if expr_path.exists():
-            try:
-                expr_df = pd.read_parquet(expr_path)
-            except Exception:
-                expr_df = None
+        # サンプル固有のキャッシュがあればそちらを優先
+        if target_sample:
+            sample_expr_path = Path(cache_dir) / f"{target_sample}_expression.parquet"
+            if sample_expr_path.exists():
+                try:
+                    expr_df = pd.read_parquet(sample_expr_path)
+                except Exception:
+                    expr_df = None
+        # サンプル固有キャッシュがなければ全サンプル結合データ
+        if expr_df is None:
+            expr_path = Path(cache_dir) / "expression_matrix.parquet"
+            if expr_path.exists():
+                try:
+                    expr_df = pd.read_parquet(expr_path)
+                except Exception:
+                    expr_df = None
 
     if expr_df is None:
         # data_folder から生データを読み込むフォールバック
         is_tims = bool(analysis_method_tims)
-        expr_df = read_raw_mz_spectrum(data_folder, is_tims=is_tims)
+        expr_df = read_raw_mz_spectrum(data_folder, is_tims=is_tims,
+                                       sample_name=target_sample)
 
     if expr_df is None:
         return no_update, "⚠ データが見つかりません。データフォルダを確認してください。"
@@ -1003,7 +1091,8 @@ def auto_detect_observed_peaks(n, table_data, search_window, cache_dir,
         matched_count += 1
         updated_data.append(row)
 
-    status = f"✓ 検出完了: {matched_count}/{len(table_data)} ピークがマッチしました"
+    sample_label = target_sample or "全サンプル"
+    status = f"✓ 検出完了 [{sample_label}]: {matched_count}/{len(table_data)} ピークがマッチしました"
     return updated_data, status
 
 
@@ -1113,6 +1202,186 @@ def save_calibration_list(n, enable, matrix, table_data,
         "calibration_regression_mode": regression_mode,
     })
     return "リストを保存しました ✓"
+
+
+# =========================================================================
+# キャリブレーション プリセット (保存・読込・削除)
+# =========================================================================
+# =========================================================================
+# C2-b: サンプル別キャリブレーション
+# =========================================================================
+
+@callback(
+    Output("cal_sample_selector", "options"),
+    Input("selected_samples_store", "data"),
+    prevent_initial_call=True,
+)
+def update_cal_sample_options(selected_samples):
+    """サンプルチェックリスト変更時にキャリブレーション対象ドロップダウンを更新"""
+    opts = [{"label": "全サンプル共通", "value": "__all__"}]
+    if selected_samples:
+        for s in selected_samples:
+            opts.append({"label": f"  {s}", "value": s})
+    return opts
+
+
+@callback(
+    [Output("calibration_table_data", "data", allow_duplicate=True),
+     Output("cal_per_sample_store", "data", allow_duplicate=True),
+     Output("cal_sample_selector_prev", "data")],
+    Input("cal_sample_selector", "value"),
+    [State("cal_sample_selector_prev", "data"),
+     State("calibration_table", "data"),
+     State("cal_per_sample_store", "data")],
+    prevent_initial_call=True,
+)
+def switch_cal_sample(new_sample, prev_sample, current_table, store):
+    """キャリブレーション対象サンプル切替時にテーブルを保存/復元
+    NOTE: State は calibration_table (DataTable) から読み取り（手動編集を含む最新値）、
+    Output は calibration_table_data (Store) へ書き込み →
+    sync_calibration_store_to_table 経由で DataTable に反映
+    """
+    store = dict(store or {})
+    # 現在のテーブルデータを前のサンプルキーに保存
+    if prev_sample and current_table is not None:
+        store[prev_sample] = current_table
+    # 新サンプルのデータをロード
+    if new_sample in store and store[new_sample]:
+        new_data = store[new_sample]
+    elif "__all__" in store and store["__all__"]:
+        # __all__ から ref_mz/formula を引き継ぎ、obs_mz はクリア
+        new_data = [
+            {**row, "obs_mz": "", "ppm_drift": "--"}
+            for row in store["__all__"]
+        ]
+    else:
+        new_data = current_table or []
+    return new_data, store, new_sample
+
+
+from app.services.calibration_preset_manager import (
+    list_calibration_presets,
+    save_calibration_preset,
+    load_calibration_preset,
+    delete_calibration_preset,
+)
+
+
+def _cal_preset_options():
+    """ドロップダウン用の選択肢リストを生成"""
+    presets = list_calibration_presets()
+    return [
+        {
+            "label": f"{p['name']}  [{p['matrix']} / {p['ion_mode']}]",
+            "value": p["name"],
+        }
+        for p in presets
+    ]
+
+
+@callback(
+    [Output("calibration_table_data", "data", allow_duplicate=True),
+     Output("calibration_regression_mode", "value", allow_duplicate=True),
+     Output("calibration_search_window", "value", allow_duplicate=True),
+     Output("calibration_min_peaks", "value", allow_duplicate=True),
+     Output("cal_preset_status", "children"),
+     Output("cal_per_sample_store", "data", allow_duplicate=True),
+     Output("cal_sample_selector", "value", allow_duplicate=True)],
+    Input("cal_preset_select", "value"),
+    State("ion_mode", "value"),
+    prevent_initial_call=True,
+)
+def load_cal_preset(preset_name, current_ion_mode):
+    """プリセット選択時に即座にテーブル・設定を復元
+    NOTE: calibration_matrix は出力しない（変更すると
+    update_calibration_table_on_matrix が発火しテーブルがリセットされるため）
+    """
+    if not preset_name:
+        return [no_update] * 4 + ["", no_update, no_update]
+    p = load_calibration_preset(preset_name)
+    if not p:
+        return [no_update] * 4 + ["⚠ プリセットが見つかりません", no_update, no_update]
+
+    matrix_info = p.get("matrix", "?")
+    ion_info = p.get("ion_mode", "?")
+    status = f"✓ 「{preset_name}」を読み込みました ({matrix_info} / {ion_info})"
+    if p.get("ion_mode") and p["ion_mode"] != current_ion_mode:
+        status += f"  ⚠ イオンモード不一致 (現在: {current_ion_mode})"
+
+    # per_sample_data があればStoreに復元、セレクターを __all__ にリセット
+    per_sample = p.get("per_sample_data", {})
+    table_data = p.get("calibration_table_data", [])
+    # __all__ のテーブルデータを表示
+    if per_sample and "__all__" in per_sample:
+        table_data = per_sample["__all__"]
+
+    return [
+        table_data,
+        p.get("regression_mode", no_update),
+        p.get("search_window", no_update),
+        p.get("min_peaks", no_update),
+        status,
+        per_sample,
+        "__all__",
+    ]
+
+
+@callback(
+    [Output("cal_preset_select", "options"),
+     Output("cal_preset_status", "children", allow_duplicate=True),
+     Output("cal_preset_name_input", "value")],
+    Input("cal_preset_save_btn", "n_clicks"),
+    [State("cal_preset_name_input", "value"),
+     State("calibration_matrix", "value"),
+     State("ion_mode", "value"),
+     State("calibration_table_data", "data"),
+     State("calibration_regression_mode", "value"),
+     State("calibration_search_window", "value"),
+     State("calibration_min_peaks", "value"),
+     State("cal_per_sample_store", "data"),
+     State("cal_sample_selector_prev", "data")],
+    prevent_initial_call=True,
+)
+def save_cal_preset(n, name, matrix, ion_mode, table_data,
+                    reg_mode, window, min_peaks,
+                    cal_per_sample_store, cal_sample_selector_prev):
+    """プリセット保存（サンプル別データ含む）"""
+    if not n:
+        return no_update, no_update, no_update
+    if not name or not name.strip():
+        return no_update, "⚠ プリセット名を入力してください", no_update
+    # 現在表示中のテーブルを Store に同期してから保存
+    per_store = dict(cal_per_sample_store or {})
+    if cal_sample_selector_prev:
+        per_store[cal_sample_selector_prev] = table_data or []
+    save_calibration_preset(name.strip(), {
+        "matrix": matrix,
+        "ion_mode": ion_mode,
+        "calibration_table_data": table_data or [],
+        "per_sample_data": per_store,
+        "regression_mode": reg_mode,
+        "search_window": window,
+        "min_peaks": min_peaks,
+    })
+    return _cal_preset_options(), f"✓ 「{name.strip()}」を保存しました", ""
+
+
+@callback(
+    [Output("cal_preset_select", "options", allow_duplicate=True),
+     Output("cal_preset_select", "value", allow_duplicate=True),
+     Output("cal_preset_status", "children", allow_duplicate=True)],
+    Input("cal_preset_delete_btn", "n_clicks"),
+    State("cal_preset_select", "value"),
+    prevent_initial_call=True,
+)
+def delete_cal_preset(n, preset_name):
+    """プリセット削除"""
+    if not n:
+        return no_update, no_update, no_update
+    if not preset_name:
+        return no_update, no_update, "⚠ 削除するプリセットを選択してください"
+    delete_calibration_preset(preset_name)
+    return _cal_preset_options(), None, f"✓ 「{preset_name}」を削除しました"
 
 
 # =========================================================================

@@ -270,7 +270,7 @@
 <h2 id="ch1-2">1.2 対応装置</h2>
 <table>
   <tr><th>装置</th><th>解析手法</th><th>スクリプトバージョン</th></tr>
-  <tr><td>DESI-MSI</td><td>UMAP Template 解析</td><td>v9</td></tr>
+  <tr><td>DESI-MSI</td><td>UMAP Template 解析</td><td>v13</td></tr>
   <tr><td>TIMS-MSI</td><td>DBSCAN + UMAP 解析</td><td>ver13</td></tr>
 </table>
 <p>どちらの装置でも、新規解析と再解析（クラスタフィルター）に対応しています。</p>
@@ -604,7 +604,21 @@
 <div class="tip">
   プロット上でマウスホイールを使うとズームイン/アウトできます。
   ドラッグで表示範囲を移動できます。
-  プロット右上のカメラアイコンをクリックすると PNG 画像として保存できます。
+  プロット右上のカメラアイコンをクリックすると PNG 画像として個別に保存できます。
+</div>
+
+<h3>📷 一括保存</h3>
+<p>各セクション（UMAP、Spatial Mapping、Feature Plot、DEG マーカー）の右上にある
+  <strong>「📷 一括保存」</strong> ボタンをクリックすると、
+  セクション内に表示されている <strong>全てのプロットを PNG 画像にまとめた ZIP ファイル</strong> をダウンロードできます。</p>
+<ul>
+  <li>ZIP には個別の PNG ファイル（サンプルごと）が含まれます</li>
+  <li>2枚以上の場合は、<strong>横一列に結合した combined 画像</strong> も同梱されます</li>
+  <li>ハイライト・除外・色変更などの設定がそのまま反映されます</li>
+</ul>
+<div class="note">
+  一括保存は全セクション（UMAP / Spatial Mapping / Feature Plot / DEG マーカー）で利用可能です。
+  セクションの右上に「📷 一括保存」ボタンが表示されています。
 </div>
 
 <h3>フルスクリーン表示</h3>

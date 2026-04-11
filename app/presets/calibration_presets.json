@@ -1,0 +1,138 @@
+{
+  "presets": [
+    {
+      "name": "9AA_Lipid",
+      "params": {
+        "matrix": "DHB",
+        "ion_mode": "Negative",
+        "calibration_table_data": [
+          {
+            "ref_mz": 281.249,
+            "formula": "",
+            "obs_mz": 281.24621,
+            "ppm_drift": "-9.9",
+            "use": "Yes"
+          },
+          {
+            "ref_mz": 478.293,
+            "formula": "",
+            "obs_mz": 478.28969,
+            "ppm_drift": "-6.9",
+            "use": "Yes"
+          },
+          {
+            "ref_mz": 834.529,
+            "formula": "",
+            "obs_mz": 834.52257,
+            "ppm_drift": "-7.7",
+            "use": "Yes"
+          },
+          {
+            "ref_mz": 885.55,
+            "formula": "",
+            "obs_mz": 885.54332,
+            "ppm_drift": "-7.5",
+            "use": "Yes"
+          }
+        ],
+        "per_sample_data": {
+          "__all__": [
+            {
+              "ref_mz": 281.249,
+              "formula": "",
+              "obs_mz": 281.24621,
+              "ppm_drift": "-9.9",
+              "use": "Yes"
+            },
+            {
+              "ref_mz": 478.293,
+              "formula": "",
+              "obs_mz": 478.28969,
+              "ppm_drift": "-6.9",
+              "use": "Yes"
+            },
+            {
+              "ref_mz": 834.529,
+              "formula": "",
+              "obs_mz": 834.52257,
+              "ppm_drift": "-7.7",
+              "use": "Yes"
+            },
+            {
+              "ref_mz": 885.55,
+              "formula": "",
+              "obs_mz": 885.54332,
+              "ppm_drift": "-7.5",
+              "use": "Yes"
+            }
+          ],
+          "UMAP_mouse_Transform": [
+            {
+              "ref_mz": 281.249,
+              "formula": "",
+              "obs_mz": 281.24868,
+              "ppm_drift": "-1.2",
+              "use": "Yes"
+            },
+            {
+              "ref_mz": 478.293,
+              "formula": "",
+              "obs_mz": 478.29384,
+              "ppm_drift": "+1.8",
+              "use": "Yes"
+            },
+            {
+              "ref_mz": 834.529,
+              "formula": "",
+              "obs_mz": 834.52949,
+              "ppm_drift": "+0.6",
+              "use": "Yes"
+            },
+            {
+              "ref_mz": 885.55,
+              "formula": "",
+              "obs_mz": 885.55042,
+              "ppm_drift": "+0.5",
+              "use": "Yes"
+            }
+          ],
+          "UMAP_marmoset_Transform_Transform": [
+            {
+              "ref_mz": 281.249,
+              "formula": "",
+              "obs_mz": 281.24621,
+              "ppm_drift": "-9.9",
+              "use": "Yes"
+            },
+            {
+              "ref_mz": 478.293,
+              "formula": "",
+              "obs_mz": 478.28969,
+              "ppm_drift": "-6.9",
+              "use": "Yes"
+            },
+            {
+              "ref_mz": 834.529,
+              "formula": "",
+              "obs_mz": 834.52257,
+              "ppm_drift": "-7.7",
+              "use": "Yes"
+            },
+            {
+              "ref_mz": 885.55,
+              "formula": "",
+              "obs_mz": 885.54332,
+              "ppm_drift": "-7.5",
+              "use": "Yes"
+            }
+          ]
+        },
+        "regression_mode": "poly3",
+        "search_window": 0.5,
+        "min_peaks": 2,
+        "_saved_at": "2026-04-03T15:55:44.220455"
+      },
+      "created_at": "2026-04-03 15:55"
+    }
+  ]
+}

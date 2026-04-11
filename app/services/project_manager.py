@@ -32,7 +32,13 @@ def _load_all() -> dict:
     _ensure_projects_file()
     try:
         with open(PROJECTS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        # リスト型や不正な形式の場合は正しい形式に変換
+        if isinstance(data, list):
+            data = {"projects": data}
+        if not isinstance(data, dict) or "projects" not in data:
+            data = {"projects": []}
+        return data
     except Exception as e:
         logger.warning("projects.json読み込み失敗: %s", e)
         return {"projects": []}

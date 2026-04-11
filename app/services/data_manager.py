@@ -44,12 +44,38 @@ def build_tims_input_paths(data_folder: str) -> list[str]:
     return sorted(files)
 
 
-def read_raw_mz_spectrum(data_folder: str, is_tims: bool = True) -> Optional[pd.DataFrame]:
+def list_tims_files_multi(data_folders: list[str]) -> list[str]:
+    """複数フォルダからTIMSファイル一覧を取得（拡張子なし、重複除去）。"""
+    all_files = []
+    seen = set()
+    for folder in data_folders:
+        for f in list_tims_files(folder):
+            if f not in seen:
+                seen.add(f)
+                all_files.append(f)
+    return all_files
+
+
+def build_tims_input_paths_multi(data_folders: list[str]) -> list[str]:
+    """複数フォルダからTIMSファイルのフルパスリストを返す。"""
+    all_paths = []
+    for folder in data_folders:
+        all_paths.extend(build_tims_input_paths(folder))
+    return sorted(all_paths)
+
+
+def read_raw_mz_spectrum(data_folder: str, is_tims: bool = True,
+                         sample_name: str = None) -> Optional[pd.DataFrame]:
     """生データファイルから m/z フィーチャーの平均スペクトルを読み取る。
 
     data_folder 内の最初の1ファイルを読み込み、
     ``expression_matrix.parquet`` と同等の形式（列名 = フィーチャー名、値 = 平均強度）で返す。
     キャリブレーション自動検出のフォールバック用。
+
+    Parameters
+    ----------
+    sample_name : str, optional
+        指定時はそのサンプル名（ファイルstem）に一致するファイルのみ読み込む。
 
     Returns
     -------
@@ -65,14 +91,23 @@ def read_raw_mz_spectrum(data_folder: str, is_tims: bool = True) -> Optional[pd.
 
     try:
         if is_tims:
-            return _read_tims_raw(folder)
+            return _read_tims_raw(folder, sample_name=sample_name)
         else:
             return _read_desi_raw(folder)
     except Exception:
         return None
 
 
-def _read_tims_raw(folder: Path) -> Optional[pd.DataFrame]:
+def _is_numeric(s: str) -> bool:
+    """文字列が数値として解釈できるか判定する。"""
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
+
+def _read_tims_raw(folder: Path, sample_name: str = None) -> Optional[pd.DataFrame]:
     """TIMS 生データ（parquet/csv/tsv/txt）から mz_ 列の平均を取得。"""
     import re as _re
 
@@ -81,14 +116,23 @@ def _read_tims_raw(folder: Path) -> Optional[pd.DataFrame]:
     if not files:
         return None
 
-    fp = files[0]
+    if sample_name:
+        matched = [f for f in files if f.stem == sample_name]
+        fp = matched[0] if matched else files[0]
+    else:
+        fp = files[0]
     ext = fp.suffix.lower()
 
     if ext in (".parquet", ".pq"):
         import pyarrow.parquet as pq
 
         pf = pq.ParquetFile(fp)
-        mz_cols = [n for n in pf.schema.names if n.startswith("mz_")]
+        all_names = pf.schema.names
+        mz_cols = [n for n in all_names if n.startswith("mz_")]
+        if not mz_cols:
+            non_meta = {"id", "x", "y", "annotation"}
+            mz_cols = [n for n in all_names
+                       if n not in non_meta and _is_numeric(n)]
         if not mz_cols:
             return None
         df = pd.read_parquet(fp, columns=mz_cols)

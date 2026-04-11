@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MSI Analysis Application - セットアップガイド</title>
+<style>
+  :root {
+    --primary: #2c3e50;
+    --accent: #3498db;
+    --bg: #f8f9fa;
+    --card-bg: #ffffff;
+    --border: #dee2e6;
+    --text: #333333;
+    --note-bg: #fff3cd;
+    --note-border: #ffc107;
+    --warn-bg: #f8d7da;
+    --warn-border: #dc3545;
+    --tip-bg: #d1ecf1;
+    --tip-border: #17a2b8;
+    --success-bg: #d4edda;
+    --success-border: #28a745;
+    --code-bg: #f4f4f4;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Hiragino Kaku Gothic ProN", "Meiryo", "Yu Gothic", sans-serif;
+    line-height: 1.8;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px 30px 60px;
+  }
+  h1 {
+    font-size: 2em;
+    color: var(--primary);
+    border-bottom: 3px solid var(--accent);
+    padding-bottom: 10px;
+    margin: 30px 0 20px;
+  }
+  h2 {
+    font-size: 1.4em;
+    color: var(--primary);
+    border-left: 5px solid var(--accent);
+    padding-left: 12px;
+    margin: 35px 0 15px;
+  }
+  h3 { font-size: 1.15em; color: var(--primary); margin: 20px 0 10px; }
+  p { margin: 8px 0; }
+  ol, ul { margin: 8px 0 8px 24px; }
+  li { margin: 6px 0; }
+  code {
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: "Consolas", "Source Code Pro", monospace;
+    font-size: 0.9em;
+  }
+  pre {
+    background: var(--code-bg);
+    padding: 14px 18px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-family: "Consolas", "Source Code Pro", monospace;
+    font-size: 0.88em;
+    line-height: 1.5;
+    margin: 10px 0;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 0.95em;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    text-align: left;
+  }
+  th { background: var(--primary); color: #fff; font-weight: 600; }
+  tr:nth-child(even) { background: #f2f6fa; }
+  .note, .warn, .tip, .success {
+    padding: 14px 18px;
+    border-left: 4px solid;
+    border-radius: 4px;
+    margin: 14px 0;
+  }
+  .note { background: var(--note-bg); border-color: var(--note-border); }
+  .warn { background: var(--warn-bg); border-color: var(--warn-border); }
+  .tip { background: var(--tip-bg); border-color: var(--tip-border); }
+  .success { background: var(--success-bg); border-color: var(--success-border); }
+  .step-box {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px 22px;
+    margin: 16px 0;
+  }
+  .step-num {
+    display: inline-block;
+    background: var(--accent);
+    color: #fff;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    text-align: center;
+    line-height: 30px;
+    font-weight: bold;
+    margin-right: 8px;
+  }
+</style>
+</head>
+<body>
+
+<h1>MSI Analysis Application - セットアップガイド</h1>
+<p>別の PC でアプリケーションを実行するための環境構築手順です。</p>
+
+<h2>必要なもの</h2>
+<table>
+  <tr><th>ソフトウェア</th><th>バージョン</th><th>必須?</th><th>用途</th></tr>
+  <tr><td><strong>Python</strong></td><td>3.10 以上</td><td>必須</td><td>Web アプリケーション本体</td></tr>
+  <tr><td><strong>R</strong></td><td>4.4 以上</td><td>解析を行う場合のみ</td><td>UMAP 解析・クラスタリング・DEG 検出</td></tr>
+</table>
+
+<div class="tip">
+  <strong>R が不要なケース:</strong> 他の PC で解析済みの RDS ファイルを持ち込んで、
+  インタラクティブ可視化（UMAP・Spatial Mapping・Feature Plot 等）のみ利用する場合は R は不要です。
+</div>
+
+<h2>Step 1: ZIP ファイルの展開</h2>
+<div class="step-box">
+  <p><span class="step-num">1</span>
+    <code>MSI_Analysis_App_v2.1.0.zip</code> を任意のフォルダに展開（解凍）します。</p>
+  <div class="warn">
+    <strong>注意:</strong> パスに日本語（全角文字）が含まれるフォルダは避けてください。
+    例: <code>C:\MSI_App\</code> のような英数字のみのパスを推奨します。
+    デスクトップ（<code>C:\Users\ユーザー名\Desktop</code>）は日本語ユーザー名の場合に問題が起きることがあります。
+  </div>
+</div>
+
+<h2>Step 2: Python のインストール</h2>
+<div class="step-box">
+  <p><span class="step-num">2</span>
+    Python がまだインストールされていない場合は、以下からダウンロードしてインストールします。</p>
+  <p>ダウンロード: <a href="https://www.python.org/downloads/" target="_blank">https://www.python.org/downloads/</a></p>
+  <div class="warn">
+    <strong>重要:</strong> インストール時に <strong>「Add Python to PATH」</strong> に必ずチェックを入れてください。
+    これを忘れると、コマンドプロンプトから Python を実行できません。
+  </div>
+  <p>インストール後、コマンドプロンプトで確認:</p>
+  <pre>python --version
+# 出力例: Python 3.12.2</pre>
+</div>
+
+<h2>Step 3: R のインストール（任意）</h2>
+<div class="step-box">
+  <p><span class="step-num">3</span>
+    UMAP 解析・クラスタリングを実行する場合は R もインストールします。</p>
+  <p>ダウンロード: <a href="https://cran.r-project.org/bin/windows/base/" target="_blank">https://cran.r-project.org/bin/windows/base/</a></p>
+  <p>インストール先はデフォルト (<code>C:\Program Files\R\R-4.x.x</code>) を推奨します。</p>
+  <div class="note">
+    R のインストールパスがデフォルトと異なる場合は、展開したフォルダ内の
+    <code>.env.example</code> を <code>.env</code> にコピーし、
+    <code>R_HOME</code> の値を実際のパスに書き換えてください。
+  </div>
+</div>
+
+<h2>Step 4: セットアップの実行</h2>
+<div class="step-box">
+  <p><span class="step-num">4</span>
+    展開したフォルダ内の <strong><code>setup.bat</code></strong> をダブルクリックします。</p>
+  <p>自動で以下が実行されます:</p>
+  <ol>
+    <li>Python の存在チェック</li>
+    <li>Python パッケージのインストール（Dash, Plotly, pandas 等）</li>
+    <li>R の存在チェック（見つからない場合はスキップ）</li>
+    <li>R パッケージのインストール（Seurat, harmony 等 — 初回は10〜20分かかります）</li>
+  </ol>
+  <div class="note">
+    Python パッケージのインストールにはインターネット接続が必要です。
+    初回は 2〜5 分程度かかります。
+  </div>
+</div>
+
+<h2>Step 5: アプリの起動</h2>
+<div class="step-box">
+  <p><span class="step-num">5</span>
+    フォルダ内の <strong><code>run_app.bat</code></strong> をダブルクリックします。</p>
+  <p>コマンドプロンプトに以下のようなメッセージが表示されたら起動完了です:</p>
+  <pre>Dash is running on http://127.0.0.1:3838/</pre>
+  <p>ブラウザが自動で開きます。開かない場合は、ブラウザで
+    <a href="http://127.0.0.1:3838/" target="_blank">http://127.0.0.1:3838/</a> にアクセスしてください。</p>
+  <div class="success">
+    <strong>起動成功!</strong> ブラウザにアプリの画面が表示されれば、セットアップは完了です。
+  </div>
+</div>
+
+<h2>データの配置</h2>
+<p>解析データは以下のフォルダに配置します:</p>
+<table>
+  <tr><th>データ種別</th><th>配置先</th></tr>
+  <tr><td>TIMS-MSI データ</td><td><code>data/TIMS/Data/</code></td></tr>
+  <tr><td>DESI-MSI データ</td><td><code>data/DESI/Data/</code></td></tr>
+</table>
+<p>アプリ内のファイルブラウザから任意のフォルダを指定することも可能です。</p>
+
+<h2>トラブルシューティング</h2>
+
+<h3>「Python が見つかりません」と表示される</h3>
+<ul>
+  <li>Python のインストール時に「Add Python to PATH」にチェックを入れたか確認してください</li>
+  <li>コマンドプロンプトを一度閉じて開き直してください（PATH の反映に再起動が必要な場合があります）</li>
+</ul>
+
+<h3>「pip install に失敗した」と表示される</h3>
+<ul>
+  <li>インターネット接続を確認してください</li>
+  <li>プロキシ環境の場合は、IT 部門に pip の設定方法を確認してください</li>
+</ul>
+
+<h3>ブラウザに画面が表示されない</h3>
+<ul>
+  <li>コマンドプロンプトにエラーメッセージが出ていないか確認してください</li>
+  <li>ポート 3838 が他のアプリで使用されている可能性があります。<code>.env</code> ファイルで <code>APP_PORT</code> を変更できます</li>
+</ul>
+
+<h3>R の解析が実行できない</h3>
+<ul>
+  <li>R が正しくインストールされているか確認: コマンドプロンプトで <code>Rscript --version</code></li>
+  <li><code>.env</code> の <code>R_HOME</code> が実際のインストールパスと一致しているか確認</li>
+  <li><code>setup.bat</code> を再実行して R パッケージをインストールしてください</li>
+</ul>
+
+<h2>フォルダ構成</h2>
+<pre>
+MSI_Analysis_App/
+  run_app.bat          ... アプリ起動
+  setup.bat            ... 初回セットアップ
+  run_app.py           ... Python エントリーポイント
+  pyproject.toml       ... パッケージ定義
+  requirements.txt     ... Python 依存パッケージ
+  .env.example         ... 環境設定テンプレート
+  install_r_packages.R ... R パッケージインストーラ
+  app/                 ... アプリケーション本体
+  data/
+    TIMS/
+      Script/          ... TIMS 解析用 R スクリプト
+      DB/              ... アノテーション DB
+      Data/            ... (ここにデータを配置)
+    DESI/
+      Script/          ... DESI 解析用 R スクリプト
+      DB/              ... アノテーション DB
+      Data/            ... (ここにデータを配置)
+    Common/
+      Script/          ... 共通 R スクリプト
+  docs/                ... ドキュメント
+  tests/               ... テストコード
+</pre>
+
+</body>
+</html>

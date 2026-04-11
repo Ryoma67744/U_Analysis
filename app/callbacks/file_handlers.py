@@ -63,7 +63,8 @@ def clear_desi_on_tims_select(tims_val):
     [Output("umap_settings_panel", "style"),
      Output("reanalysis_settings_panel", "style"),
      Output("tims_ion_settings", "style"),
-     Output("tims_reanalysis_ion_settings", "style")],
+     Output("tims_reanalysis_ion_settings", "style"),
+     Output("extra_folders_section", "style")],
     [Input("analysis_method", "value"),
      Input("analysis_method_tims", "value")],
 )
@@ -78,8 +79,9 @@ def toggle_settings_panels(desi_val, tims_val):
     reanalysis_style = {} if is_reanalysis else {"display": "none"}
     tims_ion_style = {} if is_tims_umap else {"display": "none"}
     tims_reanalysis_ion_style = {} if is_tims_reanalysis else {"display": "none"}
+    extra_folders_style = {"marginTop": "10px"} if is_tims_umap else {"display": "none"}
 
-    return umap_style, reanalysis_style, tims_ion_style, tims_reanalysis_ion_style
+    return umap_style, reanalysis_style, tims_ion_style, tims_reanalysis_ion_style, extra_folders_style
 
 
 # ---------------------------------------------------------------------------
@@ -104,15 +106,18 @@ def toggle_resume_panel(resume):
     Output("sample_selector", "children"),
     [Input("data_folder", "value"),
      Input("analysis_method", "value"),
-     Input("analysis_method_tims", "value")],
+     Input("analysis_method_tims", "value"),
+     Input("extra_data_folders_store", "data")],
 )
-def update_sample_selector(data_folder, desi_method, tims_method):
+def update_sample_selector(data_folder, desi_method, tims_method, extra_folders):
     if not data_folder or not Path(data_folder).is_dir():
         return html.Div("データフォルダを指定してください", className="text-muted")
 
     active = desi_method or tims_method or "desi_v8"
     if active in ("tims_v8", "tims_cluster_filter"):
-        samples = list_tims_files(data_folder)
+        from app.services.data_manager import list_tims_files_multi
+        all_folders = [data_folder] + (extra_folders or [])
+        samples = list_tims_files_multi(all_folders)
     else:
         samples = list_msi_files(data_folder)
 
@@ -124,6 +129,20 @@ def update_sample_selector(data_folder, desi_method, tims_method):
         options=[{"label": s, "value": s} for s in samples],
         value=samples,  # デフォルト全選択
     )
+
+
+# ---------------------------------------------------------------------------
+# selected_samples → selected_samples_store 同期
+# 動的生成の Checklist を静的 Store にブリッジ
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("selected_samples_store", "data"),
+    Input("selected_samples", "value"),
+    prevent_initial_call=True,
+)
+def sync_selected_samples(value):
+    return value or []
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +245,98 @@ def update_reanalysis_sample_selector(data_folder, desi_method, tims_method):
         options=[{"label": s, "value": s} for s in samples],
         value=samples,
     )
+
+
+# ---------------------------------------------------------------------------
+# 再解析用 Annotation（切片）選択 — TIMS Cluster Filter のみ
+# ---------------------------------------------------------------------------
+
+@callback(
+    [Output("annotation_selector_reanalysis", "children"),
+     Output("annotation_filter_store_reanalysis", "data")],
+    [Input("selected_samples_reanalysis", "value"),
+     Input("reanalysis_data_folder", "value"),
+     Input("analysis_method", "value"),
+     Input("analysis_method_tims", "value")],
+    prevent_initial_call=True,
+)
+def update_reanalysis_annotation_selector(selected_samples, data_folder,
+                                           desi_method, tims_method):
+    """再解析側: 選択されたTIMSファイルごとにannotation一覧をチェックボックスで表示"""
+    active = desi_method or tims_method or "desi_v8"
+
+    if active != "tims_cluster_filter":
+        return [], None
+
+    if not selected_samples or not data_folder or not Path(data_folder).is_dir():
+        return [], None
+
+    children = []
+    all_annotations = []
+
+    for sample in selected_samples:
+        file_path = find_tims_file_path(data_folder, sample)
+        if not file_path:
+            continue
+        annotations = read_parquet_annotations(file_path)
+        if not annotations:
+            continue
+
+        all_annotations.extend(annotations)
+
+        children.append(html.Div([
+            html.Small(f"\U0001F4C4 {sample}", className="fw-bold"),
+            dbc.Checklist(
+                id={"type": "annotation_check_reanalysis", "index": sample},
+                options=[{"label": f" {a}", "value": a} for a in annotations],
+                value=annotations,
+                inline=True,
+                className="ms-2",
+            ),
+        ], className="mb-1"))
+
+    if not children:
+        return [], None
+
+    ui = [
+        html.Hr(className="my-1"),
+        html.Small("Annotation（切片）選択:", className="fw-bold"),
+    ] + children
+
+    return ui, sorted(set(all_annotations))
+
+
+@callback(
+    Output("annotation_filter_store_reanalysis", "data", allow_duplicate=True),
+    Input({"type": "annotation_check_reanalysis", "index": ALL}, "value"),
+    prevent_initial_call=True,
+)
+def sync_reanalysis_annotation_to_store(all_values):
+    """再解析側: 全annotation_check_reanalysisの選択値をStoreに集約"""
+    if not all_values:
+        return None
+    merged = []
+    for vals in all_values:
+        if vals:
+            merged.extend(vals)
+    return sorted(set(merged)) if merged else None
+
+
+# ---------------------------------------------------------------------------
+# TIMS/DESI モード切替時に再解析パラメータをデフォルトにリセット
+# ---------------------------------------------------------------------------
+
+@callback(
+    [Output("reanalysis_ion_mode", "value", allow_duplicate=True),
+     Output("reanalysis_tolerance_mz", "value", allow_duplicate=True)],
+    [Input("analysis_method", "value"),
+     Input("analysis_method_tims", "value")],
+    prevent_initial_call=True,
+)
+def reset_reanalysis_defaults(desi_val, tims_val):
+    """TIMS/DESIモード切替時に再解析パラメータをデフォルトにリセット"""
+    from app.config import DEFAULT_ION_MODE, DEFAULT_TOLERANCE_MZ
+    return DEFAULT_ION_MODE, DEFAULT_TOLERANCE_MZ
 
 
 # ---------------------------------------------------------------------------
@@ -451,13 +562,15 @@ _BROWSE_BUTTONS = {
     "browse_reann_annotation": ("file", "reann_annotation_path"),
     # プロジェクト復元スキャンフォルダ
     "browse_restore_scan_folder": ("folder", "restore_scan_folder"),
+    # TIMS 追加データフォルダ
+    "btn_add_extra_folder": ("folder", "extra_folder_pending_store"),
 }
 
 # 全対象入力フィールドIDの一覧（_BROWSE_BUTTONSのvalue[1]を収集）
 _ALL_TARGET_IDS = list(dict.fromkeys(v[1] for v in _BROWSE_BUTTONS.values()))
 
 # dcc.Store は "data" プロパティ、dbc.Input/dcc.Input は "value" プロパティ
-_STORE_TARGETS = {"result_folder_manual"}
+_STORE_TARGETS = {"result_folder_manual", "extra_folder_pending_store"}
 
 def _target_property(tid):
     return "data" if tid in _STORE_TARGETS else "value"
@@ -677,3 +790,71 @@ clientside_callback(
     [Output(f"{pid}_path_hint", "children") for pid in _PATH_INPUT_IDS],
     [Input(pid, "value") for pid in _PATH_INPUT_IDS],
 )
+
+
+# ---------------------------------------------------------------------------
+# TIMS 追加データフォルダ管理
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("extra_data_folders_store", "data"),
+    Input("extra_folder_pending_store", "data"),
+    State("extra_data_folders_store", "data"),
+    prevent_initial_call=True,
+)
+def add_extra_folder(pending_path, current_folders):
+    """ファイルブラウザで選択されたフォルダをリストに追加"""
+    if not pending_path or not Path(pending_path).is_dir():
+        return no_update
+    folders = list(current_folders or [])
+    if pending_path not in folders:
+        folders.append(pending_path)
+    return folders
+
+
+@callback(
+    Output("extra_data_folders_container", "children"),
+    Input("extra_data_folders_store", "data"),
+)
+def render_extra_folders(folders):
+    """追加フォルダリストをUI表示"""
+    if not folders:
+        return []
+    items = []
+    for i, folder in enumerate(folders):
+        folder_name = Path(folder).name or folder
+        items.append(
+            dbc.ListGroupItem(
+                className="d-flex justify-content-between align-items-center py-1 px-2",
+                style={"fontSize": "0.85rem"},
+                children=[
+                    html.Span(f"\U0001f4c1 {folder_name}", title=folder),
+                    dbc.Button(
+                        "\u00d7", size="sm", color="danger", outline=True,
+                        id={"type": "btn_remove_extra_folder", "index": i},
+                        style={"padding": "0 6px", "lineHeight": "1.2"},
+                    ),
+                ],
+            )
+        )
+    return dbc.ListGroup(items, flush=True, style={"marginTop": "5px"})
+
+
+@callback(
+    Output("extra_data_folders_store", "data", allow_duplicate=True),
+    Input({"type": "btn_remove_extra_folder", "index": ALL}, "n_clicks"),
+    State("extra_data_folders_store", "data"),
+    prevent_initial_call=True,
+)
+def remove_extra_folder(n_clicks_list, current_folders):
+    """×ボタンで追加フォルダを削除"""
+    if not current_folders or not any(n for n in n_clicks_list if n):
+        return no_update
+    triggered = ctx.triggered_id
+    if triggered and isinstance(triggered, dict):
+        idx = triggered.get("index")
+        if idx is not None and 0 <= idx < len(current_folders):
+            folders = list(current_folders)
+            folders.pop(idx)
+            return folders
+    return no_update

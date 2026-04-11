@@ -15,7 +15,20 @@ from app.config import (
     DEFAULT_CALIBRATION_REGRESSION,
 )
 from app.services.session_manager import load_last_settings
+from app.services.calibration_preset_manager import list_calibration_presets
 from app.layouts.tooltips import help_badge
+
+
+def _cal_preset_options():
+    """キャリブレーションプリセットのドロップダウン選択肢を生成"""
+    presets = list_calibration_presets()
+    return [
+        {
+            "label": f"{p['name']}  [{p['matrix']} / {p['ion_mode']}]",
+            "value": p["name"],
+        }
+        for p in presets
+    ]
 
 
 
@@ -47,7 +60,26 @@ def create_settings_tab():
                                        "marginTop": "2px", "display": "block"},
                             ),
                             html.Div(id="sample_selector"),
+                            dcc.Store(id="selected_samples_store", data=[]),
                             dbc.FormText("チェックを入れたサンプルが解析対象になります"),
+                            # --- 追加データフォルダ (TIMS複数フォルダ) ---
+                            html.Div(
+                                id="extra_folders_section",
+                                style={"display": "none", "marginTop": "10px"},
+                                children=[
+                                    html.Hr(className="my-2"),
+                                    html.Small("追加データフォルダ (TIMS)", className="fw-bold"),
+                                    html.Div(id="extra_data_folders_container"),
+                                    dbc.Button(
+                                        "＋ フォルダ追加",
+                                        id="btn_add_extra_folder",
+                                        size="sm", color="info", outline=True,
+                                        style={"marginTop": "5px"},
+                                    ),
+                                    dcc.Store(id="extra_data_folders_store", data=[]),
+                                    dcc.Store(id="extra_folder_pending_store", data=""),
+                                ],
+                            ),
                             html.Div(id="annotation_selector", className="mt-2"),
                             dcc.Store(id="annotation_filter_store", data=None),
                         ]),
@@ -113,6 +145,12 @@ def create_settings_tab():
                                     dbc.Input(id="tolerance_mz", type="number",
                                               value=ls.get("tolerance_mz", 0.01), min=0, step=0.001,
                                               style={"width": "50%"}),
+                                    html.H5(["m/z アライメント (ppm)", help_badge("mz_align_ppm")], style={"marginTop": "10px"}),
+                                    dbc.Input(id="mz_align_ppm", type="number",
+                                              value=ls.get("mz_align_ppm", 0),
+                                              min=0, max=500, step=1,
+                                              style={"width": "50%"}),
+                                    dbc.FormText("0 = 無効。複数サンプル間でm/z値を統一する許容誤差 (ppm)"),
                                     html.H5(["Adductフィルター", help_badge("adduct_filter")], style={"marginTop": "10px"}),
                                     dbc.Checklist(
                                         id="adduct_filter",
@@ -151,6 +189,53 @@ def create_settings_tab():
                                                     {"label": "カスタム (手動入力)", "value": "custom"},
                                                 ],
                                                 value=ls.get("calibration_matrix", DEFAULT_CALIBRATION_MATRIX),
+                                            ),
+                                            # ---- キャリブレーション プリセット ----
+                                            html.Hr(style={"margin": "8px 0"}),
+                                            dbc.Row([
+                                                dbc.Col(width=7, children=[
+                                                    dcc.Dropdown(
+                                                        id="cal_preset_select",
+                                                        options=_cal_preset_options(),
+                                                        placeholder="過去のキャリブレーションを選択...",
+                                                        clearable=True,
+                                                        style={"fontSize": "13px"},
+                                                    ),
+                                                ]),
+                                                dbc.Col(width=5, children=[
+                                                    dbc.InputGroup(size="sm", children=[
+                                                        dbc.Input(
+                                                            id="cal_preset_name_input",
+                                                            placeholder="プリセット名",
+                                                            style={"fontSize": "12px"},
+                                                        ),
+                                                        dbc.Button(
+                                                            "保存", id="cal_preset_save_btn",
+                                                            color="success", outline=True, size="sm",
+                                                        ),
+                                                        dbc.Button(
+                                                            "削除", id="cal_preset_delete_btn",
+                                                            color="danger", outline=True, size="sm",
+                                                        ),
+                                                    ]),
+                                                ]),
+                                            ], className="mb-2"),
+                                            html.Small(id="cal_preset_status",
+                                                       style={"color": "gray"}),
+                                            dcc.Store(id="cal_preset_loading_flag", data=False),
+                                            dcc.Store(id="cal_per_sample_store", data={}),
+                                            dcc.Store(id="cal_sample_selector_prev", data="__all__"),
+                                            html.Hr(style={"margin": "8px 0"}),
+                                            dbc.Label("キャリブレーション対象",
+                                                      className="small mt-1"),
+                                            dcc.Dropdown(
+                                                id="cal_sample_selector",
+                                                options=[{"label": "全サンプル共通",
+                                                          "value": "__all__"}],
+                                                value="__all__",
+                                                clearable=False,
+                                                style={"fontSize": "13px",
+                                                       "marginBottom": "8px"},
                                             ),
                                             html.Div(
                                                 style={"marginTop": "10px"},
@@ -351,6 +436,8 @@ def create_settings_tab():
                             ),
                             html.Div(id="sample_selector_reanalysis"),
                             dbc.FormText("チェックを入れたサンプルが再解析対象になります"),
+                            html.Div(id="annotation_selector_reanalysis", className="mt-2"),
+                            dcc.Store(id="annotation_filter_store_reanalysis", data=None),
                         ]),
                         # --- フィルタモード（Row 1 左カラムに統合）---
                         html.Div(className="param-group", style={"marginTop": "10px"}, children=[
