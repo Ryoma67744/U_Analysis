@@ -696,7 +696,7 @@ def _excl_set(val):
 
 # 1a: 通常モード蓄積（静的 Input のみ → 常に発火可能）
 @callback(
-    Output("accumulated_label_positions", "data"),
+    Output("accumulated_label_positions", "data", allow_duplicate=True),
     [Input("interactive_umap_plot", "relayoutData"),
      Input({"type": "umap_per_sample_graph", "index": ALL}, "relayoutData"),
      Input({"type": "spatial_graph", "index": ALL}, "relayoutData")],

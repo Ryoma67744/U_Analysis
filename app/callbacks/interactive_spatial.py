@@ -36,7 +36,7 @@ logger = logging.getLogger("msi.interactive.spatial")
 
 def _transform_coords(x, y, angle_deg, flip_h=False, flip_v=False):
     """中心基準で座標を反転+2D回転"""
-    cx, cy = x.mean(), y.mean()
+    cx, cy = np.nanmean(x), np.nanmean(y)
     # 反転（回転の前に適用）
     if flip_h:
         x = 2 * cx - x
@@ -46,7 +46,7 @@ def _transform_coords(x, y, angle_deg, flip_h=False, flip_v=False):
     if angle_deg == 0:
         return x, y
     # 反転後の中心を再計算
-    cx, cy = x.mean(), y.mean()
+    cx, cy = np.nanmean(x), np.nanmean(y)
     rad = np.radians(angle_deg)
     cos_a, sin_a = np.cos(rad), np.sin(rad)
     x_rot = cos_a * (x - cx) - sin_a * (y - cy) + cx

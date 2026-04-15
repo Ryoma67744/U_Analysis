@@ -1,0 +1,30 @@
+# =============================================================================
+# MSI Analysis Application - 本番環境オーバーレイ
+# HTTPS 対応（Caddy リバースプロキシ + Let's Encrypt 自動証明書）
+#
+# 使用方法:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# =============================================================================
+
+services:
+  caddy:
+    image: caddy:2
+    container_name: msi-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - msi-app
+    restart: unless-stopped
+
+  msi-app:
+    # 直接ポート公開を無効化（Caddy経由のみ）
+    ports: !override []
+
+volumes:
+  caddy-data:
+  caddy-config:

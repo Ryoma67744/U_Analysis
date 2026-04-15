@@ -331,7 +331,7 @@
           "data_folder": "",
           "output_dir": "",
           "created_at": "2026-04-11T22:22:39",
-          "last_modified": "2026-04-11T23:48:01",
+          "last_modified": "2026-04-12T00:17:20",
           "matrix": "",
           "last_analysis_settings": {
             "analysis_method": "desi_cluster_filter",
@@ -353,11 +353,98 @@
             "reanalysis_logfc_thresh": 0.25,
             "reanalysis_ion_mode": "Positive",
             "reanalysis_tolerance_mz": 0.01
-          }
+          },
+          "last_result_dir": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\DESI\\Data\\260410_nitta\\UMAP1_excluster"
         }
       ],
       "created_at": "2026-04-11T21:08:29",
-      "last_modified": "2026-04-11T23:48:01"
+      "last_modified": "2026-04-12T00:17:20"
+    },
+    {
+      "id": "60fdbbdd",
+      "name": "250621_大橋_胎児",
+      "experiment_date": "2025-06-21",
+      "memo": "",
+      "sub_projects": [
+        {
+          "id": "4c59b5f9",
+          "name": "250621_大橋_胎児",
+          "experiment_date": "2025-06-21",
+          "target_compound": "",
+          "ms_instrument": "DESI",
+          "polarity": [
+            "Cation"
+          ],
+          "memo": "",
+          "data_folder": "",
+          "output_dir": "",
+          "created_at": "2026-04-14T23:05:58",
+          "last_modified": "2026-04-14T23:19:43",
+          "matrix": "",
+          "last_analysis_settings": {
+            "analysis_method": "desi_v8",
+            "analysis_method_tims": null,
+            "data_folder": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\DESI\\Data\\250621_Ohashi",
+            "output_dir": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\DESI\\Data\\250621_Ohashi",
+            "annotation_path": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\DESI\\DB\\263010-MRM.xlsx",
+            "p_thresh": 0.05,
+            "logfc_thresh": 0.25,
+            "ion_mode": "Positive",
+            "tolerance_mz": 0.01,
+            "resume_rds": false,
+            "rds_folder": "",
+            "reanalysis_data_folder": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\DESI\\Data",
+            "rds_path": "",
+            "filter_mode": "exclude",
+            "target_clusters": "",
+            "reanalysis_p_thresh": 0.05,
+            "reanalysis_logfc_thresh": 0.25,
+            "reanalysis_ion_mode": "Positive",
+            "reanalysis_tolerance_mz": 0.01
+          },
+          "last_result_dir": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\DESI\\Data\\250621_Ohashi\\UMAP1"
+        },
+        {
+          "id": "497a4ca8",
+          "name": "250621_大橋_胎児_exclude",
+          "experiment_date": "2025-06-21",
+          "target_compound": "",
+          "ms_instrument": "DESI",
+          "polarity": [
+            "Cation"
+          ],
+          "memo": "",
+          "data_folder": "",
+          "output_dir": "",
+          "created_at": "2026-04-14T23:55:56",
+          "last_modified": "2026-04-15T00:05:02",
+          "matrix": "",
+          "last_analysis_settings": {
+            "analysis_method": "desi_cluster_filter",
+            "analysis_method_tims": null,
+            "data_folder": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\DESI\\Data",
+            "output_dir": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\DESI\\Data\\250621_Ohashi",
+            "annotation_path": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\DESI\\DB\\263010-MRM.xlsx",
+            "p_thresh": 0.05,
+            "logfc_thresh": 0.25,
+            "ion_mode": "Positive",
+            "tolerance_mz": 0.01,
+            "resume_rds": false,
+            "rds_folder": "",
+            "reanalysis_data_folder": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\DESI\\Data\\250621_Ohashi",
+            "rds_path": "",
+            "filter_mode": "exclude",
+            "target_clusters": "1",
+            "reanalysis_p_thresh": 0.05,
+            "reanalysis_logfc_thresh": 0.25,
+            "reanalysis_ion_mode": "Positive",
+            "reanalysis_tolerance_mz": 0.01
+          },
+          "last_result_dir": "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\DESI\\Data\\250621_Ohashi\\UMAP1_excluster"
+        }
+      ],
+      "created_at": "2026-04-14T23:05:34",
+      "last_modified": "2026-04-15T00:05:02"
     }
   ]
 }

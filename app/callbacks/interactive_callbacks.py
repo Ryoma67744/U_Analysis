@@ -88,6 +88,7 @@ _interactive_data = {
     "cache_dir": None,
     "deg_cache_key": None,
     "deg_cache_data": None,
+    "method": None,
 }
 
 
@@ -101,13 +102,17 @@ _interactive_data = {
 # ---------------------------------------------------------------------------
 
 def _get_label_positions_path():
-    """label_positions.json のパスを返す（RDSと同ディレクトリ）"""
-    return _get_label_positions_path_util(_interactive_data.get("rds_path"))
+    """label_positions.json のパスを返す（RDSと同ディレクトリ、手法別ファイル対応）"""
+    return _get_label_positions_path_util(
+        _interactive_data.get("rds_path"),
+        _interactive_data.get("method"))
 
 
 def _load_label_positions():
-    """label_positions.json を読み込んで dict を返す。ファイルなし or エラー時は空dict"""
-    return _load_label_positions_util(_interactive_data.get("rds_path"))
+    """label_positions.json を読み込んで dict を返す。ファイルなし or エラー時は空dict（手法別ファイル対応）"""
+    return _load_label_positions_util(
+        _interactive_data.get("rds_path"),
+        _interactive_data.get("method"))
 
 
 def _get_interactive_settings_path():
@@ -366,7 +371,8 @@ def toggle_integration_method(n, is_open):
      Output("int_cal_regression_mode", "value"),
      Output("int_cal_ms_instrument", "data", allow_duplicate=True),
      Output("int_cal_restore_pending", "data"),
-     Output("sap_btn_wrapper", "style")],
+     Output("sap_btn_wrapper", "style"),
+     Output("accumulated_label_positions", "data", allow_duplicate=True)],
     Input("load_interactive_data", "n_clicks"),
     [State("interactive_integration_method", "value"),
      State("interactive_rds_map", "data"),
@@ -397,9 +403,10 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
         _build_feature_annotation_map, _calibrate_mz, _calibrate_mz_from_pairs,
         _reannotate_with_calibration,
     )
-    _n_out = 31
+    _n_out = 32
     _no_cal = (no_update,) * 11  # キャリブレーション設定復元用
     _sap_hide = ({"display": "none"},)  # sap_btn_wrapper 非表示
+    _no_label_clear = (no_update,)  # accumulated_label_positions 変更なし
     if not integration_method or not rds_map:
         return (
             "統合手法を選択してください（結果フォルダをスキャンしてください）",
@@ -407,7 +414,7 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
             {"display": "none"}, [], [], [], [],
             {"display": "none"}, [],
             no_update, no_update, no_update, no_update,
-        ) + _no_cal + _sap_hide
+        ) + _no_cal + _sap_hide + _no_label_clear
 
     rds_path = rds_map.get(integration_method)
     if not rds_path or not Path(rds_path).exists():
@@ -417,7 +424,7 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
             {"display": "none"}, [], [], [], [],
             {"display": "none"}, [],
             no_update, no_update, no_update, no_update,
-        ) + _no_cal + _sap_hide
+        ) + _no_cal + _sap_hide + _no_label_clear
 
     try:
         result = _bridge.extract_data(rds_path)
@@ -428,6 +435,7 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
         _interactive_data["meta"] = result["meta"]
         _interactive_data["rds_path"] = rds_path
         _interactive_data["cache_dir"] = result.get("cache_dir")
+        _interactive_data["method"] = integration_method
 
         meta = result["meta"]
         info_text = (
@@ -613,6 +621,7 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
             r_table, r_enable, r_ion_mode, r_matrix, r_adduct, r_mrm,
             r_sw, r_mp, r_reg, r_instrument, True,
             {},  # sap_btn_wrapper 表示
+            {},  # accumulated_label_positions クリア（手法切替時にリセット）
         )
 
     except Exception as e:
@@ -622,7 +631,7 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
             {"display": "none"}, [], [], [], [],
             {"display": "none"}, [],
             no_update, no_update, no_update, no_update,
-        ) + _no_cal + _sap_hide
+        ) + _no_cal + _sap_hide + _no_label_clear
 
 
 def _load_deg_results(

@@ -502,6 +502,48 @@ def create_interactive_tab():
                             ]),
                             html.Div(id="div_export_status", className="mt-1 text-muted",
                                      style={"fontSize": "0.85rem"}),
+
+                            # --- データ出力 (UMAP cluster) ---
+                            html.Hr(className="my-2"),
+                            dbc.Row(className="g-2 align-items-center", children=[
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button(
+                                        "📥 データ出力 (UMAP cluster)",
+                                        id="btn_export_data",
+                                        color="primary",
+                                        size="sm",
+                                    ),
+                                ]),
+                                dbc.Col(
+                                    width="auto",
+                                    id="data_export_format_wrapper",
+                                    style={"display": "none"},
+                                    children=[
+                                        html.Div(
+                                            className="d-flex align-items-center gap-2",
+                                            children=[
+                                                dbc.Label("出力形式:", className="small mb-0"),
+                                                dbc.Select(
+                                                    id="data_export_format",
+                                                    value="xlsx",
+                                                    size="sm",
+                                                    options=[
+                                                        {"label": "Excel (.xlsx)", "value": "xlsx"},
+                                                        {"label": "CSV (.csv)", "value": "csv"},
+                                                        {"label": "Parquet (.parquet)", "value": "parquet"},
+                                                    ],
+                                                    style={"width": "180px"},
+                                                ),
+                                            ],
+                                        ),
+                                    ],
+                                ),
+                            ]),
+                            html.Div(
+                                id="div_data_export_status",
+                                className="mt-1 text-muted",
+                                style={"fontSize": "0.85rem"},
+                            ),
                         ]),
 
                         # --- クラスタ情報 ---
@@ -1156,6 +1198,8 @@ def create_interactive_tab():
         dcc.Store(id="batch_spatial_figures_store", data=[]),
         dcc.Store(id="batch_feature_figures_store", data=[]),
         dcc.Download(id="dl_batch_zip"),
+        # データ出力 (UMAP cluster) 用
+        dcc.Download(id="dl_data_export"),
         # インタラクティブキャリブレーション用
         dcc.Store(id="int_cal_table_data", data=[]),
         dcc.Store(id="int_cal_save_trigger", data=None),

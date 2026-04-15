@@ -4,6 +4,7 @@
 # =============================================================================
 
 import os
+import platform
 import tempfile
 from pathlib import Path
 
@@ -15,8 +16,9 @@ load_dotenv()  # .env ファイルがあれば読み込み
 APP_BASE_DIR = Path(__file__).parent.parent
 
 # R実行環境
-R_HOME = Path(os.environ.get("R_HOME", r"C:\Program Files\R\R-4.4.2"))
-RSCRIPT_PATH = R_HOME / "bin" / "Rscript.exe"
+_R_DEFAULT = r"C:\Program Files\R\R-4.4.2" if platform.system() == "Windows" else "/usr/lib/R"
+R_HOME = Path(os.environ.get("R_HOME", _R_DEFAULT))
+RSCRIPT_PATH = R_HOME / "bin" / ("Rscript.exe" if platform.system() == "Windows" else "Rscript")
 
 # DESI用フォルダのパス
 DESI_DIR = APP_BASE_DIR / "data" / "DESI"
@@ -40,7 +42,7 @@ DESI_V8_TEMPLATE_PATH = DESI_SCRIPT_DIR / "260312_DESI-UMAP_Template_v13.R"
 DESI_CLUSTER_FILTER_PATH = DESI_SCRIPT_DIR / "DESI_RDS_ClusterFilter_ver2.R"
 
 # TIMS用スクリプトのパス
-TIMS_V8_TEMPLATE_PATH = TIMS_SCRIPT_DIR / "260402_DBSCAN_With_cluster_ver2_no-png.R"
+TIMS_V8_TEMPLATE_PATH = TIMS_SCRIPT_DIR / "260308_DBSCAN_With_cluster_ver17.R"
 TIMS_CLUSTER_FILTER_PATH = TIMS_SCRIPT_DIR / "260312_DBSCAN_ver17_Cluster_Filter_ReUMAP.R"
 
 # R ヘルパースクリプトのパス

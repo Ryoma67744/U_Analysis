@@ -19,21 +19,39 @@ logger = logging.getLogger(__name__)
 # Path helpers
 # ---------------------------------------------------------------------------
 
-def get_label_positions_path(rds_path: str | None) -> Path | None:
-    """label_positions.json のパスを返す（RDSと同ディレクトリ）"""
+def get_label_positions_path(rds_path: str | None, method: str | None = None) -> Path | None:
+    """label_positions.json のパスを返す（RDSと同ディレクトリ）。
+
+    method が指定された場合、手法別ファイル (label_positions_harmony.json 等) を返す。
+    method=None の場合は従来の label_positions.json を返す（後方互換）。
+    """
     if not rds_path:
         return None
+    if method:
+        safe_method = method.replace(" ", "_").lower()
+        return Path(rds_path).parent / f"label_positions_{safe_method}.json"
     return Path(rds_path).parent / "label_positions.json"
 
 
-def load_label_positions(rds_path: str | None) -> dict:
-    """label_positions.json を読み込んで dict を返す。ファイルなし or エラー時は空dict"""
-    path = get_label_positions_path(rds_path)
+def load_label_positions(rds_path: str | None, method: str | None = None) -> dict:
+    """label_positions.json を読み込んで dict を返す。ファイルなし or エラー時は空dict。
+
+    method 指定時はまず手法別ファイルを探し、なければ旧共有ファイルにフォールバック。
+    """
+    path = get_label_positions_path(rds_path, method)
     if path and path.exists():
         try:
             return json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             return {}
+    # フォールバック: 手法別ファイルがない場合、旧共有 label_positions.json を読む
+    if method:
+        legacy = get_label_positions_path(rds_path, None)
+        if legacy and legacy.exists():
+            try:
+                return json.loads(legacy.read_text(encoding="utf-8"))
+            except Exception:
+                pass
     return {}
 
 

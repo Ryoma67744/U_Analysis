@@ -3,6 +3,7 @@
 # Dash アプリケーション エントリポイント
 # =============================================================================
 
+import os
 from uuid import uuid4
 
 import dash
@@ -38,6 +39,13 @@ app = dash.Dash(
 # Flask サーバーへの参照（画像配信用）
 server = app.server
 
+# パスワード認証（クラウドデプロイ用）
+# APP_PASSWORD 環境変数が設定されている場合のみ有効化
+_app_password = os.environ.get("APP_PASSWORD")
+if _app_password:
+    import dash_auth
+    dash_auth.BasicAuth(app, {"msi": _app_password})
+
 # レイアウト設定
 app.layout = create_main_layout()
 
@@ -52,6 +60,7 @@ from app.callbacks import project_callbacks  # noqa: E402, F401
 from app.callbacks import share_callbacks  # noqa: E402, F401
 from app.callbacks import preset_callbacks  # noqa: E402, F401
 from app.callbacks import interactive_batch_save  # noqa: E402, F401
+from app.callbacks import interactive_data_export  # noqa: E402, F401
 
 if __name__ == "__main__":
     app.run(debug=True, host=APP_HOST, port=APP_PORT)

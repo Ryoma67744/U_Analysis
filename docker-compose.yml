@@ -1,0 +1,41 @@
+# =============================================================================
+# MSI Analysis Application - Docker Compose
+# 開発・テスト用構成
+# =============================================================================
+
+services:
+  msi-app:
+    build: .
+    container_name: msi-analysis-app
+    ports:
+      - "${APP_PORT:-3838}:3838"
+    environment:
+      - R_HOME=/usr/lib/R
+      - APP_HOST=0.0.0.0
+      - APP_PORT=3838
+      - APP_PASSWORD=${APP_PASSWORD:-}
+      - SHARE_BASE_URL=${SHARE_BASE_URL:-}
+    volumes:
+      # 永続化データ
+      - msi-sessions:/app/app/sessions
+      - msi-projects:/app/app/projects
+      - msi-presets:/app/app/presets
+      - msi-shares:/app/app/shares
+      - msi-cache:/app/cache
+      # 解析データ（ユーザーがアップロード）
+      - msi-desi-data:/app/data/DESI/Data
+      - msi-tims-data:/app/data/TIMS/Data
+      # 解析出力
+      - msi-output:/app/output
+    restart: unless-stopped
+    mem_limit: 12g
+
+volumes:
+  msi-sessions:
+  msi-projects:
+  msi-presets:
+  msi-shares:
+  msi-cache:
+  msi-desi-data:
+  msi-tims-data:
+  msi-output:

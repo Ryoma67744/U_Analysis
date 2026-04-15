@@ -11,3 +11,4 @@ kaleido>=0.2.1
 python-dotenv>=1.0
 Pillow>=10.0
 matplotlib>=3.7
+dash-auth>=2.0

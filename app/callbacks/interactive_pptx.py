@@ -34,6 +34,7 @@ from app.utils.deg_utils import (
 )
 from app.utils.label_persistence import (
     compute_annotation_offsets as _compute_annotation_offsets,
+    load_label_positions as _load_label_positions_util,
 )
 from app.utils.pptx_helpers import (
     fig_to_png_bytes as _fig_to_png_bytes,
@@ -52,7 +53,10 @@ from app.callbacks.interactive_callbacks import (
     _load_deg_results,
     _load_label_positions,
 )
-from app.callbacks.interactive_umap import _build_umap_integrated_fig
+from app.callbacks.interactive_umap import (
+    _build_umap_integrated_fig,
+    _get_merged_label_positions,
+)
 from app.callbacks.interactive_spatial import (
     _create_single_spatial_fig,
     _transform_coords,
@@ -1318,7 +1322,8 @@ def update_export_method_options(rds_map):
      State("interactive_result_folder", "value"),
      State("interactive_integration_method", "value"),
      State("export_method_selector", "value"),
-     State("cluster_name_map_store", "data")],
+     State("cluster_name_map_store", "data"),
+     State("accumulated_label_positions", "data")],
     background=True,
     running=[
         (Output("btn_export_report", "disabled"), True, False),
@@ -1337,7 +1342,8 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                      volcano_fig, heatmap_fig, deg_data, custom_colors,
                      rotation_store, name_map, top_n, cache_dir_str,
                      mrm_path_str, rds_map, result_folder, current_method,
-                     export_method_selection, cluster_name_map):
+                     export_method_selection, cluster_name_map,
+                     accumulated_positions):
     """PPTX レポートをバックグラウンド生成してダウンロード。
 
     export_method_selection:
@@ -1389,7 +1395,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
             filename = f"MSI_Report_{timestamp}.pptx"
 
         top_n = top_n or 5
-        saved_positions = _load_label_positions()
+        saved_positions = _get_merged_label_positions(accumulated_positions)
 
         # ------------------------------------------------------------------
         # 出力対象手法リストの決定（export_method_selector に基づく）
@@ -1543,6 +1549,13 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                     continue
                 has_spatial_cmp = "SpatialX" in m_df.columns
 
+                # 手法別ラベル位置を取得（現在のメソッドはメモリ蓄積をマージ）
+                if method_name == current_method:
+                    _method_positions = saved_positions
+                else:
+                    _method_positions = _load_label_positions_util(
+                        ed["rds_path"], method_name)
+
                 color_map_cmp = _get_cluster_color_map(
                     m_df["Cluster"], custom_colors)
                 all_samples_cmp = sorted(m_df["Sample"].unique())
@@ -1588,7 +1601,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
 
                     # 上段: サンプル別 UMAP
                     tile_w_cmp = avail_w_cmp / max(_gs_n, 1)
-                    _umap_pos_cmp = (saved_positions or {}).get("umap_integrated", {})
+                    _umap_pos_cmp = (_method_positions or {}).get("umap_integrated", {})
                     for idx_s, s in enumerate(_gs):
                         df_s = m_df[m_df["Sample"] == s]
                         umap_s = _build_umap_integrated_fig(
@@ -1630,7 +1643,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                                 transform = {
                                     "angle": int(transform),
                                     "flip_h": False, "flip_v": False}
-                            _sp_pos_cmp = (saved_positions or {}).get("spatial", {}).get(s, {})
+                            _sp_pos_cmp = (_method_positions or {}).get("spatial", {}).get(s, {})
                             sp_fig_cmp = _create_single_spatial_fig(
                                 df_s, color_map_cmp,
                                 highlight_clusters=None,
@@ -1694,6 +1707,13 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
 
             method_start_idx = len(prs.slides)
 
+            # 手法別ラベル位置を取得
+            if method_name == current_method:
+                method_saved_positions = saved_positions
+            else:
+                method_saved_positions = _load_label_positions_util(
+                    method_rds, method_name)
+
             set_progress((
                 min(int(progress_offset / total_steps * 100), 99),
                 100,
@@ -1723,7 +1743,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
             progress_offset += 1
 
             # --- UMAP 図を生成 ---
-            _umap_pos_m = (saved_positions or {}).get("umap_integrated", {})
+            _umap_pos_m = (method_saved_positions or {}).get("umap_integrated", {})
             method_umap_fig = _build_umap_integrated_fig(
                 method_df, color_by="Cluster",
                 highlight_clusters=None,
@@ -1774,7 +1794,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 existing_prs=prs,
                 progress_offset=progress_offset,
                 progress_total=total_steps,
-                saved_positions=saved_positions,
+                saved_positions=method_saved_positions,
                 cluster_name_map=cluster_name_map,
             )
             if isinstance(returned, int):

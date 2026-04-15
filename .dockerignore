@@ -1,0 +1,45 @@
+# Git
+.git
+.gitignore
+
+# Python キャッシュ
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+
+# ローカルキャッシュ・ログ
+logs/
+cache/
+
+# セッション・プロジェクトデータ（ボリュームで管理）
+app/sessions/
+app/projects/
+app/shares/
+
+# ユーザーデータ（ボリュームで管理）
+data/DESI/Data/
+data/TIMS/Data/
+
+# 解析出力
+Analysis_*/
+output/
+
+# レガシー・アーカイブ
+Other/
+
+# 開発用ファイル
+tests/
+docs/images/
+docs/take_screenshots*.py
+*.bat
+create_dist_zip.py
+
+# 環境ファイル
+.env
+.env.docker
+
+# 一時ファイル
+*.tmp.*
+*.swp
+*~

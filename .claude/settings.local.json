@@ -91,7 +91,23 @@
       "Bash(fi)",
       "Bash(while read id)",
       "Bash(do if ! grep -r \"\"\"$id\"\"\" app/callbacks/)",
-      "Bash(then echo \"$id\")"
+      "Bash(then echo \"$id\")",
+      "Bash(git config --global user.name)",
+      "Bash(git config --global user.email)",
+      "Bash(git config --list --show-origin)",
+      "WebFetch(domain:www.biorxiv.org)",
+      "WebFetch(domain:bmcbioinformatics.biomedcentral.com)",
+      "WebFetch(domain:link.springer.com)",
+      "Bash(git checkout -- \"data/TIMS/Script/260308_DBSCAN_With_cluster_ver17.R\")",
+      "Bash(sort -t: -k2 -rn)",
+      "Bash(find 'C:\\\\Users\\\\Cciia\\\\Biochem Dropbox\\\\木津亮馬\\\\UMAP_Claudecode' -maxdepth 2 -type f \\\\\\(-name *.py -o -name setup.py -o -name pyproject.toml -o -name setup.cfg -o -name MANIFEST.in -o -name Dockerfile -o -name docker-compose.yml \\\\\\))",
+      "Bash(sed \"s/id=[''''\"\"]//\")",
+      "Bash(sed \"s/[''''\"\"]$//\")",
+      "Bash(dos2unix -i \"C:/Users/Cciia/Biochem Dropbox/木津亮馬/UMAP_Claudecode/data/TIMS/Script/260311_DBSCAN_ver16_Cluster_Filter_ReUMAP.R\")",
+      "Bash(dos2unix -i \"C:/Users/Cciia/Biochem Dropbox/木津亮馬/UMAP_Claudecode/data/TIMS/Script/260312_DBSCAN_ver17_Cluster_Filter_ReUMAP.R\")",
+      "Bash(__NEW_LINE_6a9c9866b0de2a7f__ sed:*)",
+      "Bash(2)",
+      "Bash(python -c \":*)"
     ]
   }
 }
