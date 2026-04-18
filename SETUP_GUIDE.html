@@ -303,8 +303,16 @@ bash run_app.sh</pre>
   <p>起動後、ブラウザで <a href="http://127.0.0.1:3838/" target="_blank">http://127.0.0.1:3838/</a> にアクセスします。</p>
   <div class="tip">
     <strong>Gatekeeper の警告が出た場合:</strong>
-    <code>.sh</code> はシェルスクリプトのため通常ブロックされませんが、
-    もし起動しない場合は <code>cd App && python3 run_app.py</code> を直接実行することもできます。
+    macOS Sequoia (15.x) 以降では、未署名の <code>.sh</code> をダブルクリック起動するとブロックされます
+    （「Apple は…検証できませんでした」ダイアログ。スクリプトは壊れていません）。
+    以下のいずれかで解除してください:
+    <ul>
+      <li>ターミナルから <code>./run_app.sh</code> で直接実行する（Gatekeeper 対象外）</li>
+      <li>システム設定 → プライバシーとセキュリティ → 画面下部の「このまま開く」を押す</li>
+      <li><code>xattr -dr com.apple.quarantine /path/to/UMAP-WebApp-ClaudeCode</code> で隔離属性を解除する</li>
+    </ul>
+    上記で起動しない場合は <code>cd App && python3 run_app.py</code> を直接実行することもできます。
+    詳細は <code>manual.html</code> 2.2 章を参照。
   </div>
 </div>
 

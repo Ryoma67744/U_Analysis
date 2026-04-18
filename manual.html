@@ -382,9 +382,27 @@
 
 <div class="warn">
   <strong>macOS で Gatekeeper 警告が出る場合</strong>:
-  ダウンロードした <code>setup.sh</code> / <code>run_app.sh</code> はネット由来扱いとなり、ダブルクリックでブロックされることがあります。
-  ターミナルから <code>./setup.sh</code> として直接起動するか、以下で隔離属性を解除してください:
-  <pre>xattr -dr com.apple.quarantine ~/path/to/UMAP-WebApp-ClaudeCode</pre>
+  <p><strong>スクリプトは壊れていません。</strong> 未署名のシェルスクリプトに対する macOS 標準のセキュリティロックです。
+  ダウンロードや iCloud Drive / AirDrop 経由で配置した <code>setup.sh</code> / <code>run_app.sh</code> には <code>com.apple.quarantine</code> 属性が付与され、ダブルクリック起動がブロックされます。</p>
+  <p>macOS Sequoia (15.x) 以降では以下のダイアログが表示されます:</p>
+  <pre>"run_app.sh" は開いていません
+Apple は、"run_app.sh" に Mac に損害を与えたり、プライバシーを侵害する
+可能性のあるマルウェアが含まれていないことを検証できませんでした。
+[ゴミ箱に入れる] [完了]</pre>
+  <p>（macOS Sonoma 以前は「開発元が未確認」「キャンセル / 開く」の旧ダイアログ）</p>
+  <p>いずれも初回のみ以下のいずれかで解除すれば、以降は通常どおり起動できます:</p>
+  <ol>
+    <li><strong>推奨: ターミナルから直接起動</strong>
+      <pre>cd ~/path/to/UMAP-WebApp-ClaudeCode
+./run_app.sh</pre>
+      ターミナル経由の実行は Gatekeeper の対象外です。</li>
+    <li><strong>システム設定から許可</strong>:
+      警告が表示された直後に「システム設定」→「プライバシーとセキュリティ」を開き、画面下部の「このまま開く」ボタンを押します。
+      Touch ID / パスワードで認証するとそのファイルはホワイトリストに登録され、以降ダブルクリックでも起動できます。</li>
+    <li><strong>quarantine 属性を一括解除</strong>:
+      <pre>xattr -dr com.apple.quarantine ~/path/to/UMAP-WebApp-ClaudeCode</pre>
+      フォルダ内の全ファイルから隔離属性を取り除きます。</li>
+  </ol>
 </div>
 
 <div class="note">
@@ -1059,9 +1077,9 @@
     <td>Python を再インストールし「Add Python to PATH」にチェックを入れる</td>
   </tr>
   <tr>
-    <td>macOS で <code>run_app.sh</code> をダブルクリックしてもメモが開く / Gatekeeper でブロックされる</td>
-    <td>シェルスクリプトが「テキスト」または「ダウンロード隔離」扱いされている</td>
-    <td>ターミナルから <code>./run_app.sh</code> として直接実行する。または <code>xattr -dr com.apple.quarantine ~/path/to/UMAP-WebApp-ClaudeCode</code> で隔離属性を解除する</td>
+    <td>macOS で <code>run_app.sh</code> をダブルクリックすると「Apple は…検証できませんでした」または「開発元が未確認」警告が出る</td>
+    <td>未署名シェルスクリプトに対する macOS Gatekeeper のセキュリティロック（スクリプト自体は正常）</td>
+    <td>ターミナルから <code>./run_app.sh</code> で直接実行する／システム設定 → プライバシーとセキュリティ → 「このまま開く」で許可する／<code>xattr -dr com.apple.quarantine ~/path/to/UMAP-WebApp-ClaudeCode</code> で隔離属性を解除する（いずれか 1 つ）。詳細は 2.2 章の warn ボックス参照</td>
   </tr>
   <tr>
     <td>ブラウザで <code>localhost:3838</code> に接続できない</td>
