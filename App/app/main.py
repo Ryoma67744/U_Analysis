@@ -63,6 +63,7 @@ from app.callbacks import share_callbacks  # noqa: E402, F401
 from app.callbacks import preset_callbacks  # noqa: E402, F401
 from app.callbacks import interactive_batch_save  # noqa: E402, F401
 from app.callbacks import interactive_data_export  # noqa: E402, F401
+from app.callbacks import scils_converter_callbacks  # noqa: E402, F401
 
 if __name__ == "__main__":
     app.run(debug=True, host=APP_HOST, port=APP_PORT)

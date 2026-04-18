@@ -141,6 +141,10 @@ def create_sidebar():
                     ["🗂 バックアップ"], id="open_backup_list_btn",
                     size="sm", color="secondary", outline=True,
                 ),
+                dbc.Button(
+                    ["🔄 SCiLS 変換"], id="open_scils_converter_modal",
+                    size="sm", color="primary", outline=True,
+                ),
             ],
         ),
     ])

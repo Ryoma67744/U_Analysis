@@ -208,6 +208,13 @@
 </table>
 <p>アプリ内のファイルブラウザから任意のフォルダを指定することも可能です。</p>
 
+<div class="note">
+  <strong>SCiLS Lab 出力からの変換</strong>:
+  SCiLS Lab で <em>Export → Feature list (CSV)</em> したフォルダは、アプリ起動後の
+  サイドバー <strong>「🔄 SCiLS 変換」</strong> ボタンから <code>.parquet</code> に変換できます。
+  変換後そのまま TIMS 解析のデータフォルダとして使えます（詳細は操作マニュアル 第4.1章）。
+</div>
+
 <h2>外部データフォルダの設定 (推奨)</h2>
 <div class="note">
   生データをリポジトリ外の固定パスに置くと、アプリ更新（<code>git pull</code> や再 clone）の

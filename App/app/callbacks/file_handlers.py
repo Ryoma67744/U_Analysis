@@ -564,6 +564,9 @@ _BROWSE_BUTTONS = {
     "browse_restore_scan_folder": ("folder", "restore_scan_folder"),
     # TIMS 追加データフォルダ
     "btn_add_extra_folder": ("folder", "extra_folder_pending_store"),
+    # SCiLS 変換モーダル
+    "browse_scils_input_folder": ("folder", "scils_input_folder"),
+    "browse_scils_output_folder": ("folder", "scils_output_folder"),
 }
 
 # 全対象入力フィールドIDの一覧（_BROWSE_BUTTONSのvalue[1]を収集）
@@ -578,6 +581,7 @@ _DEFAULT_START_DIR = {
     "reanalysis_data_folder": DESI_DATA_DIR,
     "default_tims_data_folder": TIMS_DATA_DIR,
     "default_tims_output_dir": TIMS_DATA_DIR,
+    "scils_output_folder": TIMS_DATA_DIR,
 }
 
 # dcc.Store は "data" プロパティ、dbc.Input/dcc.Input は "value" プロパティ

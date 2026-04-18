@@ -183,7 +183,7 @@
 
 <div class="header-bar">
   <h1>MSI Analysis Application</h1>
-  <p>操作マニュアル v2.4</p>
+  <p>操作マニュアル v2.5</p>
 </div>
 
 <!-- ===== 目次 ===== -->
@@ -506,6 +506,21 @@ TIMS_DATA_DIR=C:\Users\your-name\MSI_Data\TIMS</pre>
 <h3>データの準備</h3>
 <p>TIMS装置で取得したデータファイル（<code>.parquet</code>、<code>.csv</code>、<code>.txt</code> 等）を
   1つのフォルダにまとめておきます。1ファイル＝1サンプルとして認識されます。</p>
+
+<h4>SCiLS Lab 出力からの変換（ショートカット）</h4>
+<p>SCiLS Lab で <strong>Export → Feature list (CSV)</strong> した出力フォルダは、
+  サイドバーの <strong>「🔄 SCiLS 変換」</strong> ボタンから <code>.parquet</code> に一括変換できます。</p>
+<ol>
+  <li>サイドバー下部の <strong>「🔄 SCiLS 変換」</strong> をクリック</li>
+  <li>「入力フォルダ」に SCiLS の出力先（例: <code>260402_SCiLS_Annotation</code>）を指定</li>
+  <li>「出力先フォルダ」は既定で <code>TIMS_DATA_DIR</code>。必要なら変更</li>
+  <li>「サンプル名」を入力（空欄なら入力フォルダ名を自動採用）</li>
+  <li><strong>「変換実行」</strong> をクリックすると <code>&lt;サンプル名&gt;.parquet</code> が生成されます</li>
+</ol>
+<p>Long 形式 (<code>id/x/y/mz/intensity</code>) / Wide 形式（m/z 値を列名に持つ形式）を
+  自動判定し、列名のエイリアス（<code>Spot Index</code> → <code>id</code>、<code>m/z</code> → <code>mz</code>、
+  <code>Region</code> → <code>annotation</code> 等）も吸収します。
+  変換後そのまま TIMS 解析のデータフォルダとして指定できます。</p>
 
 <h3>解析設定の手順</h3>
 <ol>
@@ -1207,7 +1222,7 @@ UMAP-WebApp-ClaudeCode/        ← プロジェクトルート（配布 ZIP 解�
 
 <hr>
 <p style="text-align:center; color:#999; margin-top:40px; font-size:0.85em;">
-  MSI Analysis Application 操作マニュアル v2.4<br>
+  MSI Analysis Application 操作マニュアル v2.5<br>
   最終更新: 2026年4月
 </p>
 

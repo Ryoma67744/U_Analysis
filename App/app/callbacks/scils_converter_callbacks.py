@@ -1,0 +1,114 @@
+# =============================================================================
+# MSI Analysis Application - SCiLS Converter Callbacks
+# SCiLS 変換モーダルの開閉・変換実行ロジック
+# =============================================================================
+
+import logging
+from pathlib import Path
+
+from dash import callback, Input, Output, State, no_update, html
+import dash_bootstrap_components as dbc
+
+from app.services.scils_converter import convert_scils_to_parquet
+
+logger = logging.getLogger("msi.scils_converter_callbacks")
+
+
+# ---------------------------------------------------------------------------
+# モーダル開閉
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("scils_converter_modal", "is_open"),
+    Output("scils_conversion_result", "children", allow_duplicate=True),
+    Input("open_scils_converter_modal", "n_clicks"),
+    Input("scils_cancel_btn", "n_clicks"),
+    State("scils_converter_modal", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_scils_converter_modal(open_clicks, cancel_clicks, is_open):
+    if not (open_clicks or cancel_clicks):
+        return no_update, no_update
+    # 開く時は結果表示をクリア
+    if not is_open:
+        return True, ""
+    return False, no_update
+
+
+# ---------------------------------------------------------------------------
+# 変換実行
+# ---------------------------------------------------------------------------
+
+def _auto_sample_name(input_folder: str) -> str:
+    """入力フォルダ名をベースにサンプル名を生成"""
+    name = Path(input_folder).name or "converted_sample"
+    # 危険文字除去
+    for bad in ("/", "\\", ":", "*", "?", "\"", "<", ">", "|"):
+        name = name.replace(bad, "_")
+    return name
+
+
+@callback(
+    Output("scils_conversion_result", "children"),
+    Input("scils_run_btn", "n_clicks"),
+    State("scils_input_folder", "value"),
+    State("scils_output_folder", "value"),
+    State("scils_sample_name", "value"),
+    prevent_initial_call=True,
+)
+def run_scils_conversion(n_clicks, input_folder, output_folder, sample_name):
+    if not n_clicks:
+        return no_update
+
+    if not input_folder:
+        return dbc.Alert("入力フォルダを指定してください。", color="warning")
+    if not output_folder:
+        return dbc.Alert("出力先フォルダを指定してください。", color="warning")
+
+    sample = (sample_name or "").strip() or _auto_sample_name(input_folder)
+    if not sample.lower().endswith(".parquet"):
+        sample = f"{sample}.parquet"
+
+    out_path = str(Path(output_folder) / sample)
+
+    try:
+        result = convert_scils_to_parquet(input_folder, out_path)
+    except FileNotFoundError as exc:
+        logger.warning("SCiLS 変換失敗 (入力不備): %s", exc)
+        return dbc.Alert(str(exc), color="danger")
+    except ValueError as exc:
+        logger.warning("SCiLS 変換失敗 (形式不一致): %s", exc)
+        return dbc.Alert(str(exc), color="danger")
+    except Exception as exc:  # noqa: BLE001 — UI にエラーを出して継続
+        logger.exception("SCiLS 変換で予期せぬエラー")
+        return dbc.Alert(f"変換エラー: {exc}", color="danger")
+
+    return _render_success(result)
+
+
+def _render_success(result) -> html.Div:
+    """ConversionResult を成功パネルとしてレンダリング"""
+    warning_items = [html.Li(w) for w in result.warnings]
+    return html.Div([
+        dbc.Alert("✅ 変換完了", color="success", className="mb-2"),
+        html.Dl(className="mb-0", children=[
+            html.Dt("出力ファイル"), html.Dd(result.output_path),
+            html.Dt("読込 CSV"), html.Dd(result.source_csv),
+            html.Dt("行数 (spot 数)"), html.Dd(f"{result.n_rows:,}"),
+            html.Dt("m/z 列数"), html.Dd(f"{result.n_mz_features:,}"),
+            html.Dt("annotation 列"),
+            html.Dd("あり" if result.has_annotation else "なし"),
+            html.Dt("検出形式"), html.Dd(result.shape),
+        ]),
+        html.Div(
+            style={"marginTop": "8px"} if warning_items else {"display": "none"},
+            children=[
+                html.Strong("警告:"),
+                html.Ul(warning_items),
+            ],
+        ),
+        html.Small(
+            "解析タブの「データフォルダ」に出力先を指定するとそのまま読込できます。",
+            className="text-muted d-block mt-2",
+        ),
+    ])
