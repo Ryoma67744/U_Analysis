@@ -31,10 +31,17 @@ RUN pip3 install --no-cache-dir --break-system-packages -r /app/App/requirements
 # アプリケーション全体をコピー (App/ + Data/ + ルート設定ファイル)
 COPY . /app
 
-# 永続化ディレクトリを作成し権限を付与 (Data/ 配下)
-RUN mkdir -p /app/Data/sessions /app/Data/projects /app/Data/projects/backups \
-    /app/Data/presets /app/Data/shares /app/Data/logs /app/Data/cache \
-    /app/Data/DESI/Data /app/Data/TIMS/Data /app/Data/output \
+# 永続化ディレクトリを作成し権限を付与 (Data/ 配下: DESI/TIMS 入力 + Other/ 内部データ)
+RUN mkdir -p \
+    /app/Data/DESI/Data /app/Data/TIMS/Data \
+    /app/Data/Other/Common \
+    /app/Data/Other/sessions \
+    /app/Data/Other/projects /app/Data/Other/projects/backups \
+    /app/Data/Other/presets \
+    /app/Data/Other/shares \
+    /app/Data/Other/cache \
+    /app/Data/Other/logs \
+    /app/Data/Other/output \
     && chown -R msiapp:msiapp /app
 
 # アプリの作業ディレクトリ

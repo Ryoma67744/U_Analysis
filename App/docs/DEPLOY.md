@@ -272,6 +272,57 @@ docker exec msi-analysis-app ls -la /app/Data/DESI/Data/
 docker exec msi-analysis-app ls -la /app/Data/TIMS/Data/
 ```
 
+### 7.3 既存デプロイの移行（`Data/Other/` 再編）
+
+`Data/` 直下を `DESI/ / TIMS/ / Other/` の 3 枠に集約した際、Docker ボリューム
+（`msi-sessions` / `msi-projects` / `msi-presets` / `msi-shares` / `msi-cache` /
+`msi-output`）のコンテナ内マウント先が
+`/app/Data/<name>/` から `/app/Data/Other/<name>/` に変わりました。
+ボリューム名は従来通りのため、ボリューム自体のデータは保持されます。
+
+**移行が不要なケース**: 新規デプロイ、または上記ボリュームに既存データがない場合。
+
+**移行が必要なケース**: 旧バージョンで既に projects / sessions / presets /
+shares / cache / output にデータが蓄積されている環境。以下の手順で退避 →
+再投入します。
+
+```bash
+# 1) コンテナを停止
+docker compose down
+
+# 2) 旧パスのデータを一時ディレクトリへエクスポート (ボリュームごと)
+for name in sessions projects presets shares cache output; do
+    mkdir -p /tmp/msi-migration/$name
+    docker run --rm -v msi-$name:/data -v /tmp/msi-migration/$name:/backup \
+        alpine sh -c 'cp -a /data/. /backup/ 2>/dev/null || true'
+done
+
+# 3) ボリュームを一旦削除 (中身を空にして新マウントと整合させる)
+docker volume rm msi-sessions msi-projects msi-presets msi-shares msi-cache msi-output
+
+# 4) 新バージョンで起動 (/app/Data/Other/ 配下にマウントされる)
+docker compose up -d
+
+# 5) 退避データを新マウントへ投入
+for name in sessions projects presets shares cache output; do
+    docker cp /tmp/msi-migration/$name/. \
+        msi-analysis-app:/app/Data/Other/$name/
+done
+
+# 6) 権限を復元
+docker exec -u root msi-analysis-app chown -R msiapp:msiapp /app/Data/Other/
+
+# 7) 再起動
+docker compose restart
+
+# 8) 動作確認
+docker exec msi-analysis-app ls /app/Data/Other/
+# → Common  cache  logs  output  presets  projects  sessions  shares
+```
+
+DESI/TIMS 入力データ（`msi-desi-data` / `msi-tims-data`）は `/app/Data/DESI/Data/`
+および `/app/Data/TIMS/Data/` のままで変更ありません。
+
 ---
 
 ## 8. 運用・メンテナンス

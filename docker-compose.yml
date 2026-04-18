@@ -16,17 +16,17 @@ services:
       - APP_PASSWORD=${APP_PASSWORD:-}
       - SHARE_BASE_URL=${SHARE_BASE_URL:-}
     volumes:
-      # 永続化データ (Data/ 配下)
-      - msi-sessions:/app/Data/sessions
-      - msi-projects:/app/Data/projects
-      - msi-presets:/app/Data/presets
-      - msi-shares:/app/Data/shares
-      - msi-cache:/app/Data/cache
+      # 永続化データ (Data/Other/ 配下のアプリ内部データ)
+      - msi-sessions:/app/Data/Other/sessions
+      - msi-projects:/app/Data/Other/projects
+      - msi-presets:/app/Data/Other/presets
+      - msi-shares:/app/Data/Other/shares
+      - msi-cache:/app/Data/Other/cache
       # 解析データ（ユーザーがアップロード）
       - msi-desi-data:/app/Data/DESI/Data
       - msi-tims-data:/app/Data/TIMS/Data
       # 解析出力
-      - msi-output:/app/Data/output
+      - msi-output:/app/Data/Other/output
     restart: unless-stopped
     mem_limit: 12g
 

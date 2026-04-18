@@ -51,7 +51,9 @@ TIMS_DIR = DATA_DIR / "TIMS"  # 後方互換
 
 # Common（DESI/TIMS共通）スクリプトのパス
 COMMON_SCRIPT_DIR = APP_DIR / "Script" / "Common"
-COMMON_DIR = DATA_DIR / "Common"  # 後方互換
+# Data/Other/ — アプリ内部データ (セッション/プロジェクト/プリセット/共有/キャッシュ/ログ/出力/Common)
+OTHER_DIR = DATA_DIR / "Other"
+COMMON_DIR = OTHER_DIR / "Common"  # 後方互換
 MERGE_CLUSTERS_SCRIPT_PATH = COMMON_SCRIPT_DIR / "UMAP_Merge_Clusters_ver1.R"
 
 # DESI用スクリプトのパス
@@ -103,18 +105,18 @@ MATRIX_REFERENCE_MZ = {
 V8_TEMPLATE_PATH = DESI_V8_TEMPLATE_PATH
 CLUSTER_FILTER_PATH = DESI_CLUSTER_FILTER_PATH
 
-# セッションディレクトリ (Data/ 配下 — App/ 差し替えで失われない)
-SESSIONS_DIR = DATA_DIR / "sessions"
+# セッションディレクトリ (Data/Other/ 配下 — App/ 差し替えで失われない)
+SESSIONS_DIR = OTHER_DIR / "sessions"
 
 # プロジェクトディレクトリ・ファイル
-PROJECTS_DIR = DATA_DIR / "projects"
+PROJECTS_DIR = OTHER_DIR / "projects"
 PROJECTS_FILE = PROJECTS_DIR / "projects.json"
 
 # プリセットディレクトリ
-PRESETS_DIR = DATA_DIR / "presets"
+PRESETS_DIR = OTHER_DIR / "presets"
 
 # 共有リンク管理
-SHARES_DIR = DATA_DIR / "shares"
+SHARES_DIR = OTHER_DIR / "shares"
 SHARES_FILE = SHARES_DIR / "shares.json"
 DEFAULT_SHARE_EXPIRY_DAYS = 30
 # 共有URL生成用ベースURL

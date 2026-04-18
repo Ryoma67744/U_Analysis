@@ -3,18 +3,20 @@ Data/DESI/Data/*
 !Data/DESI/Data/.gitkeep
 Data/TIMS/Data/*
 !Data/TIMS/Data/.gitkeep
-Data/Common/*
-!Data/Common/.gitkeep
-Data/sessions/*
-!Data/sessions/.gitkeep
-Data/shares/*
-!Data/shares/.gitkeep
-Data/cache/*
-!Data/cache/.gitkeep
-Data/logs/*
-!Data/logs/.gitkeep
-Data/output/*
-!Data/output/.gitkeep
+Data/Other/Common/*
+!Data/Other/Common/.gitkeep
+Data/Other/sessions/*
+!Data/Other/sessions/.gitkeep
+Data/Other/shares/*
+!Data/Other/shares/.gitkeep
+Data/Other/cache/*
+!Data/Other/cache/.gitkeep
+Data/Other/logs/*
+!Data/Other/logs/.gitkeep
+Data/Other/output/*
+!Data/Other/output/.gitkeep
+# projects/ と presets/ は JSON 実体ファイルを追跡 (バックアップ/履歴は下で除外)
+Data/Other/projects/backups/
 Analysis_*/
 
 # 大容量DBファイル（GitHub 100MB制限）
@@ -32,5 +34,5 @@ nul
 # 環境設定（機密情報を含む可能性あり）
 .env
 
-# Rセッション（レガシー）
+# Rセッション（レガシー、リポジトリルート直下の旧 Other/ — Data/Other/ とは別物）
 Other/sessions/

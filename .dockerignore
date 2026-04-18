@@ -13,10 +13,10 @@ logs/
 cache/
 
 # セッション・プロジェクトデータ（ボリュームで管理）
-Data/sessions/
-Data/projects/
-Data/shares/
-Data/presets/
+Data/Other/sessions/
+Data/Other/projects/
+Data/Other/shares/
+Data/Other/presets/
 
 # ユーザーデータ（ボリュームで管理）
 Data/DESI/Data/
@@ -24,11 +24,11 @@ Data/TIMS/Data/
 
 # 解析出力
 Analysis_*/
-Data/output/
-Data/cache/
-Data/logs/
+Data/Other/output/
+Data/Other/cache/
+Data/Other/logs/
 
-# レガシー・アーカイブ
+# レガシー・アーカイブ（リポジトリルート直下の旧 Other/ — Data/Other/ とは別物）
 Other/
 
 # 開発用ファイル

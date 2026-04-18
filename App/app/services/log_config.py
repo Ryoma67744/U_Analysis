@@ -14,14 +14,14 @@ def setup_logging(log_dir: Path = None, level=logging.INFO):
     Parameters
     ----------
     log_dir : Path, optional
-        ログファイル出力ディレクトリ。None の場合は Data/logs/。
+        ログファイル出力ディレクトリ。None の場合は Data/Other/logs/。
     level : int
         ログレベル（デフォルト: INFO）。
     """
     if log_dir is None:
         # App/app/services/log_config.py → 4 階層上 = UMAP/
         root = Path(__file__).parent.parent.parent.parent
-        log_dir = root / "Data" / "logs"
+        log_dir = root / "Data" / "Other" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
     formatter = logging.Formatter(
