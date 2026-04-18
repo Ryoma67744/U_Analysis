@@ -79,6 +79,13 @@ def create_landing_page():
                                 style={"whiteSpace": "nowrap"},
                                 children=[
                                     dbc.Button(
+                                        "⚙ 環境設定",
+                                        id="open_env_settings_modal_landing",
+                                        color="dark",
+                                        outline=True,
+                                        className="me-1",
+                                    ),
+                                    dbc.Button(
                                         "インタラクティブ解析",
                                         id="open_interactive_from_landing_btn",
                                         color="info",

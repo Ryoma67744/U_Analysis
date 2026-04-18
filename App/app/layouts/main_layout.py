@@ -89,6 +89,10 @@ def create_main_layout():
         dcc.Store(id="current_sub_project_id", data=""),
         dcc.Store(id="interactive_entry_mode", data=""),
 
+        # ========== グローバルに表示可能なモーダル ==========
+        # 環境設定 (.env) は landing からも analysis からも開けるよう最上位に配置
+        create_env_settings_modal(),
+
         # ========== Page 1: Landing (プロジェクト一覧) ==========
         create_landing_page(),
 
@@ -179,9 +183,6 @@ def create_main_layout():
 
                         # SCiLS 変換モーダル
                         create_scils_converter_modal(),
-
-                        # 環境設定 (.env) モーダル
-                        create_env_settings_modal(),
 
                         # ファイルブラウザの状態
                         dcc.Store(id="fb_state", data={

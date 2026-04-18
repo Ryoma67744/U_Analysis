@@ -38,13 +38,16 @@ assert set(_INPUT_IDS) == set(EDITABLE_KEYS)
     Output("env_settings_result", "children", allow_duplicate=True),
     *[Output(_INPUT_IDS[k], "value") for k in EDITABLE_KEYS],
     Input("open_env_settings_modal", "n_clicks"),
+    Input("open_env_settings_modal_landing", "n_clicks"),
     Input("env_settings_cancel_btn", "n_clicks"),
     State("env_settings_modal", "is_open"),
     prevent_initial_call=True,
 )
-def toggle_env_settings_modal(open_clicks, cancel_clicks, is_open):
+def toggle_env_settings_modal(
+    sidebar_clicks, landing_clicks, cancel_clicks, is_open,
+):
     n_inputs = len(EDITABLE_KEYS)
-    if not (open_clicks or cancel_clicks):
+    if not (sidebar_clicks or landing_clicks or cancel_clicks):
         return (no_update, no_update) + (no_update,) * n_inputs
 
     if not is_open:
