@@ -145,6 +145,10 @@ def create_sidebar():
                     ["🔄 SCiLS 変換"], id="open_scils_converter_modal",
                     size="sm", color="primary", outline=True,
                 ),
+                dbc.Button(
+                    ["⚙ 環境設定"], id="open_env_settings_modal",
+                    size="sm", color="dark", outline=True,
+                ),
             ],
         ),
     ])

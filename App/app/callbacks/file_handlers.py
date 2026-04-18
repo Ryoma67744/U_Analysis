@@ -567,6 +567,10 @@ _BROWSE_BUTTONS = {
     # SCiLS 変換モーダル
     "browse_scils_input_folder": ("folder", "scils_input_folder"),
     "browse_scils_output_folder": ("folder", "scils_output_folder"),
+    # 環境設定 (.env) モーダル
+    "browse_env_tims_data_dir": ("folder", "env_tims_data_dir"),
+    "browse_env_desi_data_dir": ("folder", "env_desi_data_dir"),
+    "browse_env_r_home": ("folder", "env_r_home"),
 }
 
 # 全対象入力フィールドIDの一覧（_BROWSE_BUTTONSのvalue[1]を収集）
@@ -582,6 +586,8 @@ _DEFAULT_START_DIR = {
     "default_tims_data_folder": TIMS_DATA_DIR,
     "default_tims_output_dir": TIMS_DATA_DIR,
     "scils_output_folder": TIMS_DATA_DIR,
+    "env_tims_data_dir": TIMS_DATA_DIR,
+    "env_desi_data_dir": DESI_DATA_DIR,
 }
 
 # dcc.Store は "data" プロパティ、dbc.Input/dcc.Input は "value" プロパティ
