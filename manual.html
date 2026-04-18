@@ -331,24 +331,31 @@
 <h3>R のインストール（推奨）</h3>
 <p>R は UMAP解析・クラスタリングの実行に必要です。インタラクティブ解析のみ使用する場合は不要です。</p>
 <ol>
-  <li><a href="https://cran.r-project.org/bin/windows/base/" target="_blank">CRAN</a> から R 4.4.x をダウンロードします</li>
+  <li>OS に合わせて R 4.4.x をダウンロードします:
+    <ul>
+      <li><strong>Windows</strong>: <a href="https://cran.r-project.org/bin/windows/base/" target="_blank">CRAN (Windows)</a></li>
+      <li><strong>macOS</strong>: <a href="https://cran.r-project.org/bin/macosx/" target="_blank">CRAN (macOS)</a></li>
+      <li><strong>Linux (Ubuntu/Debian)</strong>: <code>sudo apt install r-base r-base-dev</code></li>
+    </ul>
+  </li>
   <li>インストーラを実行し、デフォルト設定のまま進めます</li>
-  <li>インストール先はデフォルトの <code>C:\Program Files\R\R-4.4.x</code> を推奨します</li>
+  <li>Windows ではインストール先 <code>C:\Program Files\R\R-4.4.x</code> を推奨します</li>
 </ol>
 
 <div class="tip">
-  R のインストール先を変更した場合は、アプリの設定ファイル（<code>app/config.py</code>）内の
-  <code>R_HOME</code> を修正する必要があります。
+  R のインストール先を変更した場合、または Mac/Linux で <code>which R</code> が標準と異なる場合は、
+  <code>App/app/config.py</code> 内の <code>R_HOME</code> を修正してください。
+  Mac の Homebrew 版 R や Linux の <code>/usr/lib/R</code> は <code>setup.sh</code> が自動検出します。
 </div>
 
 <h2 id="ch2-2">2.2 アプリのセットアップ</h2>
 
 <h3>フォルダの配置</h3>
-<p>アプリ一式が入ったフォルダ（<code>UMAP_Claudecode</code>）を任意の場所にコピーします。</p>
+<p>アプリ一式が入ったフォルダ（<code>UMAP-WebApp-ClaudeCode</code>）を任意の場所にコピーします。</p>
 
-<h3>セットアップの実行</h3>
+<h3>セットアップの実行（Windows）</h3>
 <ol>
-  <li>エクスプローラーで <code>UMAP_Claudecode</code> フォルダを開きます</li>
+  <li>エクスプローラーで <code>UMAP-WebApp-ClaudeCode/App/</code> フォルダを開きます</li>
   <li><strong><code>setup.bat</code></strong> をダブルクリックします</li>
   <li>コマンドプロンプトが開き、以下の処理が自動実行されます:
     <ul>
@@ -360,33 +367,63 @@
   </li>
   <li>「セットアップが完了しました」と表示されたら完了です。何かキーを押してウィンドウを閉じます</li>
 </ol>
-<!-- setup.bat スクリーンショットは省略 -->
+
+<h3>セットアップの実行（macOS / Linux）</h3>
+<ol>
+  <li>ターミナルを開き、<code>UMAP-WebApp-ClaudeCode/App/</code> へ移動します:
+    <pre>cd ~/path/to/UMAP-WebApp-ClaudeCode/App</pre>
+  </li>
+  <li>セットアップスクリプトに実行権限を付与し、実行します:
+    <pre>chmod +x setup.sh run_app.sh
+./setup.sh</pre>
+  </li>
+  <li>処理内容は Windows と同じです（Python・R パッケージのインストール）</li>
+</ol>
+
+<div class="warn">
+  <strong>macOS で Gatekeeper 警告が出る場合</strong>:
+  ダウンロードした <code>setup.sh</code> / <code>run_app.sh</code> はネット由来扱いとなり、ダブルクリックでブロックされることがあります。
+  ターミナルから <code>./setup.sh</code> として直接起動するか、以下で隔離属性を解除してください:
+  <pre>xattr -dr com.apple.quarantine ~/path/to/UMAP-WebApp-ClaudeCode</pre>
+</div>
 
 <div class="note">
   セットアップは初回のみ実行すれば十分です。
-  Python や R のバージョンを変更した場合は再度 <code>setup.bat</code> を実行してください。
+  Python や R のバージョンを変更した場合は再度 <code>setup.bat</code> / <code>setup.sh</code> を実行してください。
 </div>
 
 <h2 id="ch2-3">2.3 アプリの起動と終了</h2>
 
-<h3>起動</h3>
+<h3>起動（Windows）</h3>
 <ol>
-  <li><code>UMAP_Claudecode</code> フォルダ内の <strong><code>run_app.bat</code></strong> をダブルクリックします</li>
+  <li><code>UMAP-WebApp-ClaudeCode/App/</code> フォルダ内の <strong><code>run_app.bat</code></strong> をダブルクリックします</li>
   <li>コマンドプロンプトが開き、<code>Starting MSI Analysis Application on http://127.0.0.1:3838</code> と表示されます</li>
   <li>Webブラウザ（Google Chrome 推奨）を開き、アドレスバーに以下を入力します:
     <pre>http://localhost:3838</pre>
   </li>
   <li>アプリのトップ画面（プロジェクト一覧）が表示されれば起動完了です</li>
 </ol>
+
+<h3>起動（macOS / Linux）</h3>
+<ol>
+  <li>ターミナルで <code>UMAP-WebApp-ClaudeCode/App/</code> に移動します</li>
+  <li>起動スクリプトを実行します:
+    <pre>./run_app.sh</pre>
+  </li>
+  <li>同様に <code>http://localhost:3838</code> をブラウザで開きます</li>
+</ol>
+
 <img src="images/01_landing.png" alt="アプリのトップ画面（プロジェクト一覧）" class="screenshot">
 <p class="caption">図: アプリ起動後のプロジェクト一覧画面</p>
 
 <div class="tip">
   同じネットワーク上の別PCからアクセスする場合は、<code>http://[このPCのIPアドレス]:3838</code> で接続できます。
+  外部ネットワークから共有する場合は、第10章「共有リンク」と <code>App/docs/DEPLOY.md</code> を参照してください。
 </div>
 
 <h3>終了</h3>
-<p>アプリを終了するには、<code>run_app.bat</code> のコマンドプロンプトウィンドウを閉じてください。
+<p>アプリを終了するには、起動した <code>run_app.bat</code> または <code>run_app.sh</code> のターミナル/コマンドプロンプトウィンドウを閉じてください
+  （または <code>Ctrl+C</code> で停止してから閉じます）。
   ブラウザのタブを閉じるだけではアプリは終了しません。</p>
 
 <!-- ===================================================================== -->
@@ -1022,19 +1059,24 @@
     <td>Python を再インストールし「Add Python to PATH」にチェックを入れる</td>
   </tr>
   <tr>
+    <td>macOS で <code>run_app.sh</code> をダブルクリックしてもメモが開く / Gatekeeper でブロックされる</td>
+    <td>シェルスクリプトが「テキスト」または「ダウンロード隔離」扱いされている</td>
+    <td>ターミナルから <code>./run_app.sh</code> として直接実行する。または <code>xattr -dr com.apple.quarantine ~/path/to/UMAP-WebApp-ClaudeCode</code> で隔離属性を解除する</td>
+  </tr>
+  <tr>
     <td>ブラウザで <code>localhost:3838</code> に接続できない</td>
     <td>アプリが起動していない / ポートが競合している</td>
-    <td>コマンドプロンプトにエラーが出ていないか確認する。他のアプリがポート3838を使用していないか確認する</td>
+    <td>コマンドプロンプト/ターミナルにエラーが出ていないか確認する。他のアプリがポート3838を使用していないか確認する</td>
   </tr>
   <tr>
     <td>解析実行ボタンを押してもエラーになる</td>
     <td>R がインストールされていない / Rパッケージ不足</td>
-    <td>R をインストール後、<code>setup.bat</code> を再実行する</td>
+    <td>R をインストール後、<code>setup.bat</code>（Windows）または <code>./setup.sh</code>（macOS / Linux）を再実行する</td>
   </tr>
   <tr>
     <td>RDS ファイルの読み込みが失敗する</td>
     <td>R のバージョン不一致 / Seurat パッケージ不足</td>
-    <td><code>setup.bat</code> を再実行し、R パッケージを再インストールする</td>
+    <td><code>setup.bat</code> または <code>./setup.sh</code> を再実行し、R パッケージを再インストールする</td>
   </tr>
   <tr>
     <td>インタラクティブ画面が真っ白になる</td>
@@ -1102,7 +1144,7 @@ UMAP-WebApp-ClaudeCode/        ← プロジェクトルート（配布 ZIP 解�
 
 <table>
   <tr><th>項目</th><th>最低要件</th><th>推奨</th></tr>
-  <tr><td>OS</td><td>Windows 10 (64bit)</td><td>Windows 10/11 (64bit)</td></tr>
+  <tr><td>OS</td><td>Windows 10 (64bit) / macOS 11+ / Ubuntu 20.04+</td><td>Windows 10/11 (64bit) / macOS 13+ / Ubuntu 22.04 LTS</td></tr>
   <tr><td>CPU</td><td>4コア</td><td>8コア以上</td></tr>
   <tr><td>メモリ</td><td>8 GB</td><td>16 GB 以上</td></tr>
   <tr><td>ストレージ</td><td>10 GB 空き</td><td>50 GB 以上の空き</td></tr>
@@ -1113,7 +1155,7 @@ UMAP-WebApp-ClaudeCode/        ← プロジェクトルート（配布 ZIP 解�
 
 <hr>
 <p style="text-align:center; color:#999; margin-top:40px; font-size:0.85em;">
-  MSI Analysis Application 操作マニュアル v2.3<br>
+  MSI Analysis Application 操作マニュアル v2.3.1<br>
   最終更新: 2026年4月
 </p>
 
