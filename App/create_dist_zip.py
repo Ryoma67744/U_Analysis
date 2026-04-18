@@ -3,10 +3,16 @@
 使い方:
     cd App && python create_dist_zip.py
 
-プロジェクトルート (UMAP/) に MSI_Analysis_App_v2.1.0.zip を生成します。
-ZIP 内には App/ フォルダ一式が含まれ、これを解凍して既存の App/ を
-丸ごと差し替えるだけでアプリ更新が完了します。
+プロジェクトルート (UMAP-WebApp-ClaudeCode/) に
+MSI_Analysis_App_v2.3.0.zip を生成します。
 
+ZIP 構造:
+    MSI_Analysis_App_v2.3.0/
+        manual.html, SETUP_GUIDE.html, images/   ← ルート直下
+        App/                                     ← 差し替え対象
+            run_app.sh, setup.sh, ...
+
+解凍後は App/ を既存の App/ に上書きするだけで更新完了です。
 Data/ 配下のユーザデータ・キャッシュ・ログ等は含まれません。
 """
 
@@ -18,13 +24,13 @@ from pathlib import Path
 # 設定
 # ---------------------------------------------------------------------------
 
-VERSION = "2.1.0"
-ZIP_ROOT = "App"  # ZIP 内のルートフォルダ名 (差し替え対象)
+VERSION = "2.3.0"
+ZIP_ROOT = "App"  # ZIP 内のアプリフォルダ名 (差し替え対象)
 OUTPUT_NAME = f"MSI_Analysis_App_v{VERSION}.zip"
 
 # App/ フォルダ = このスクリプトがあるディレクトリ
 APP_DIR = Path(__file__).parent
-# プロジェクトルート (UMAP/) に ZIP を出力
+# プロジェクトルート (UMAP-WebApp-ClaudeCode/) に ZIP を出力
 PROJECT_DIR = APP_DIR.parent
 
 # App/ 配下で ZIP に含めるトップレベルファイル
@@ -54,6 +60,17 @@ INCLUDE_DIRS = [
     "DB",
     "docs",
     "tests",
+]
+
+# プロジェクトルート直下で ZIP に含めるファイル (App と同階層に展開)
+ROOT_INCLUDE_FILES = [
+    "manual.html",
+    "SETUP_GUIDE.html",
+]
+
+# プロジェクトルート直下で ZIP に含めるディレクトリ (App と同階層に展開)
+ROOT_INCLUDE_DIRS = [
+    "images",
 ]
 
 # 除外パターン（パス内にこの文字列が含まれる場合は除外）
@@ -116,6 +133,23 @@ def collect_files() -> list[tuple[Path, str]]:
                 rel = fpath.relative_to(APP_DIR).as_posix()
                 if not should_exclude(rel, fname):
                     files.append((fpath, f"{ZIP_ROOT}/{rel}"))
+
+    # プロジェクトルート直下のドキュメント類 (App と同階層に配置)
+    for fname in ROOT_INCLUDE_FILES:
+        fpath = PROJECT_DIR / fname
+        if fpath.exists():
+            files.append((fpath, fname))
+
+    for dir_rel in ROOT_INCLUDE_DIRS:
+        dir_path = PROJECT_DIR / dir_rel
+        if not dir_path.exists():
+            continue
+        for root, _dirs, filenames in os.walk(dir_path):
+            for fname in filenames:
+                fpath = Path(root) / fname
+                rel = fpath.relative_to(PROJECT_DIR).as_posix()
+                if not should_exclude(rel, fname):
+                    files.append((fpath, rel))
 
     return files
 

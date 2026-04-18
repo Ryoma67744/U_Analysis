@@ -38,6 +38,11 @@ App/docs/take_screenshots*.py
 *.bat
 App/create_dist_zip.py
 
+# ドキュメント (配布用、Docker コンテナでは未使用)
+manual.html
+SETUP_GUIDE.html
+images/
+
 # 環境ファイル
 .env
 .env.docker

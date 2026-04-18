@@ -336,6 +336,9 @@ cd /path/to/App
 <h2>フォルダ構成</h2>
 <pre>
 MSI_Analysis_App/              (配布 ZIP 解凍後)
+  manual.html                  ... 操作マニュアル
+  SETUP_GUIDE.html             ... 本ガイド
+  images/                      ... マニュアル画像
   App/                         ... アプリ本体 (差し替え対象)
     run_app.bat                ... Windows 起動
     setup.bat                  ... Windows 初回セットアップ
@@ -355,7 +358,7 @@ MSI_Analysis_App/              (配布 ZIP 解凍後)
     DB/
       DESI/                    ... DESI アノテーション DB
       TIMS/                    ... TIMS アノテーション DB
-    docs/                      ... ドキュメント
+    docs/                      ... 開発者向け資料 (DEPLOY.md 等)
     tests/                     ... テストコード
   Data/                        ... ユーザデータ (差し替え対象外)
     DESI/Data/                 ... DESI 入力データ
@@ -370,6 +373,12 @@ MSI_Analysis_App/              (配布 ZIP 解凍後)
       cache/                   ... キャッシュ
       logs/                    ... ログ
 </pre>
+
+<div class="note">
+  操作マニュアル (<code>manual.html</code>) とセットアップガイド (<code>SETUP_GUIDE.html</code>) は
+  配布 ZIP を解凍すると <strong><code>App/</code> と同じ階層（トップディレクトリ直下）</strong> に展開されます。
+  ブラウザで直接開いてご利用ください。
+</div>
 
 </body>
 </html>
