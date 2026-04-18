@@ -1,10 +1,13 @@
 """MSI Analysis Application 配布用 ZIP を作成するスクリプト。
 
 使い方:
-    python create_dist_zip.py
+    cd App && python create_dist_zip.py
 
-プロジェクトルートに MSI_Analysis_App_v2.0.0.zip を生成します。
-ユーザーデータ・キャッシュ・開発ファイルは除外されます。
+プロジェクトルート (UMAP/) に MSI_Analysis_App_v2.1.0.zip を生成します。
+ZIP 内には App/ フォルダ一式が含まれ、これを解凍して既存の App/ を
+丸ごと差し替えるだけでアプリ更新が完了します。
+
+Data/ 配下のユーザデータ・キャッシュ・ログ等は含まれません。
 """
 
 import os
@@ -16,12 +19,15 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 VERSION = "2.1.0"
-ZIP_ROOT = "MSI_Analysis_App"  # ZIP 内のルートフォルダ名
+ZIP_ROOT = "App"  # ZIP 内のルートフォルダ名 (差し替え対象)
 OUTPUT_NAME = f"MSI_Analysis_App_v{VERSION}.zip"
 
-PROJECT_DIR = Path(__file__).parent
+# App/ フォルダ = このスクリプトがあるディレクトリ
+APP_DIR = Path(__file__).parent
+# プロジェクトルート (UMAP/) に ZIP を出力
+PROJECT_DIR = APP_DIR.parent
 
-# 含めるトップレベルファイル
+# App/ 配下で ZIP に含めるトップレベルファイル
 INCLUDE_FILES = [
     "run_app.py",
     "run_app.bat",
@@ -30,17 +36,14 @@ INCLUDE_FILES = [
     "pyproject.toml",
     "requirements.txt",
     ".env.example",
+    "create_dist_zip.py",
 ]
 
-# 含めるディレクトリ（再帰的に全ファイルを含む）
+# App/ 配下で ZIP に含めるディレクトリ (再帰的に全ファイル)
 INCLUDE_DIRS = [
     "app",
-    "data/TIMS/Script",
-    "data/TIMS/DB",
-    "data/DESI/Script",
-    "data/DESI/DB",
-    "data/Common/Script",
-    "data/Common_Script",
+    "Script",
+    "DB",
     "docs",
     "tests",
 ]
@@ -49,11 +52,6 @@ INCLUDE_DIRS = [
 EXCLUDE_PATTERNS = [
     "__pycache__",
     ".pyc",
-    # ユーザー固有データ
-    "app/sessions",
-    "app/shares",
-    "app/projects/backups",
-    "app/projects/projects.json",
     # ドキュメントの一時ファイル
     ".tmp.",
     "take_screenshots",
@@ -76,10 +74,8 @@ EXCLUDE_FILENAMES = {
 
 def should_exclude(rel_path: str, filename: str) -> bool:
     """除外すべきファイルかどうかを判定する。"""
-    # ファイル名の完全一致チェック
     if filename in EXCLUDE_FILENAMES:
         return True
-    # パスパターンチェック
     normalized = rel_path.replace("\\", "/")
     for pattern in EXCLUDE_PATTERNS:
         if pattern in normalized:
@@ -95,21 +91,21 @@ def collect_files() -> list[tuple[Path, str]]:
     """
     files = []
 
-    # トップレベルファイル
+    # App/ 直下のファイル
     for fname in INCLUDE_FILES:
-        fpath = PROJECT_DIR / fname
+        fpath = APP_DIR / fname
         if fpath.exists():
             files.append((fpath, f"{ZIP_ROOT}/{fname}"))
 
-    # ディレクトリ
+    # App/ 配下のディレクトリ
     for dir_rel in INCLUDE_DIRS:
-        dir_path = PROJECT_DIR / dir_rel
+        dir_path = APP_DIR / dir_rel
         if not dir_path.exists():
             continue
         for root, _dirs, filenames in os.walk(dir_path):
             for fname in filenames:
                 fpath = Path(root) / fname
-                rel = fpath.relative_to(PROJECT_DIR).as_posix()
+                rel = fpath.relative_to(APP_DIR).as_posix()
                 if not should_exclude(rel, fname):
                     files.append((fpath, f"{ZIP_ROOT}/{rel}"))
 
@@ -126,17 +122,6 @@ def create_zip(files: list[tuple[Path, str]]):
     with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for fpath, arcname in files:
             zf.write(fpath, arcname)
-
-        # 空フォルダ用 .gitkeep
-        zf.writestr(f"{ZIP_ROOT}/data/TIMS/Data/.gitkeep", "")
-        zf.writestr(f"{ZIP_ROOT}/data/DESI/Data/.gitkeep", "")
-        zf.writestr(f"{ZIP_ROOT}/app/sessions/.gitkeep", "")
-        zf.writestr(f"{ZIP_ROOT}/app/shares/.gitkeep", "")
-        zf.writestr(f"{ZIP_ROOT}/app/presets/.gitkeep", "")
-
-        # 空の projects.json（初期状態）
-        zf.writestr(f"{ZIP_ROOT}/app/projects/projects.json",
-                     '{\n  "projects": []\n}')
 
     size_mb = output_path.stat().st_size / (1024 * 1024)
     print(f"  Output: {output_path}")

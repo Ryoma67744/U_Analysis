@@ -21,21 +21,24 @@ RUN useradd -m -s /bin/bash msiapp
 WORKDIR /app
 
 # R パッケージインストール（キャッシュ効率のため先に実行、最も時間がかかるレイヤー）
-COPY install_r_packages.R /app/
-RUN Rscript install_r_packages.R
+COPY App/install_r_packages.R /app/App/
+RUN Rscript /app/App/install_r_packages.R
 
 # Python パッケージインストール
-COPY requirements.txt /app/
-RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
+COPY App/requirements.txt /app/App/
+RUN pip3 install --no-cache-dir --break-system-packages -r /app/App/requirements.txt
 
-# アプリケーションコードをコピー
+# アプリケーション全体をコピー (App/ + Data/ + ルート設定ファイル)
 COPY . /app
 
-# 永続化ディレクトリを作成し権限を付与
-RUN mkdir -p /app/app/sessions /app/app/projects /app/app/projects/backups \
-    /app/app/presets /app/app/shares /app/logs /app/cache \
-    /app/data/DESI/Data /app/data/TIMS/Data /app/output \
+# 永続化ディレクトリを作成し権限を付与 (Data/ 配下)
+RUN mkdir -p /app/Data/sessions /app/Data/projects /app/Data/projects/backups \
+    /app/Data/presets /app/Data/shares /app/Data/logs /app/Data/cache \
+    /app/Data/DESI/Data /app/Data/TIMS/Data /app/Data/output \
     && chown -R msiapp:msiapp /app
+
+# アプリの作業ディレクトリ
+WORKDIR /app/App
 
 # 環境変数
 ENV R_HOME=/usr/lib/R

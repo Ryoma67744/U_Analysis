@@ -13,27 +13,30 @@ logs/
 cache/
 
 # セッション・プロジェクトデータ（ボリュームで管理）
-app/sessions/
-app/projects/
-app/shares/
+Data/sessions/
+Data/projects/
+Data/shares/
+Data/presets/
 
 # ユーザーデータ（ボリュームで管理）
-data/DESI/Data/
-data/TIMS/Data/
+Data/DESI/Data/
+Data/TIMS/Data/
 
 # 解析出力
 Analysis_*/
-output/
+Data/output/
+Data/cache/
+Data/logs/
 
 # レガシー・アーカイブ
 Other/
 
 # 開発用ファイル
-tests/
-docs/images/
-docs/take_screenshots*.py
+App/tests/
+App/docs/images/
+App/docs/take_screenshots*.py
 *.bat
-create_dist_zip.py
+App/create_dist_zip.py
 
 # 環境ファイル
 .env

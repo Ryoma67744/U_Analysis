@@ -1,10 +1,24 @@
-# データフォルダ
-data/DESI/Data/
-data/TIMS/Data/
+# ユーザデータ (Data/ 配下は永続領域)
+Data/DESI/Data/*
+!Data/DESI/Data/.gitkeep
+Data/TIMS/Data/*
+!Data/TIMS/Data/.gitkeep
+Data/Common/*
+!Data/Common/.gitkeep
+Data/sessions/*
+!Data/sessions/.gitkeep
+Data/shares/*
+!Data/shares/.gitkeep
+Data/cache/*
+!Data/cache/.gitkeep
+Data/logs/*
+!Data/logs/.gitkeep
+Data/output/*
+!Data/output/.gitkeep
 Analysis_*/
 
 # 大容量DBファイル（GitHub 100MB制限）
-data/TIMS/DB/260228-hmdb_metabolites_charge_aware_merged_with_list.csv
+App/DB/TIMS/260228-hmdb_metabolites_charge_aware_merged_with_list.csv
 
 # Python キャッシュ
 __pycache__/
@@ -18,9 +32,5 @@ nul
 # 環境設定（機密情報を含む可能性あり）
 .env
 
-# アプリケーションログ
-logs/
-
 # Rセッション（レガシー）
 Other/sessions/
-

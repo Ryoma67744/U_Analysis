@@ -12,8 +12,10 @@ from dotenv import load_dotenv
 load_dotenv()  # .env ファイルがあれば読み込み
 
 # アプリケーションのベースディレクトリ
-# app/ の親ディレクトリ = プロジェクトルート (UMAP_Claudecode/)
-APP_BASE_DIR = Path(__file__).parent.parent
+# App/app/config.py → parent.parent.parent = プロジェクトルート (UMAP/)
+APP_BASE_DIR = Path(__file__).parent.parent.parent
+APP_DIR = APP_BASE_DIR / "App"
+DATA_DIR = APP_BASE_DIR / "Data"
 
 # R実行環境
 _R_DEFAULT = r"C:\Program Files\R\R-4.4.2" if platform.system() == "Windows" else "/usr/lib/R"
@@ -21,20 +23,20 @@ R_HOME = Path(os.environ.get("R_HOME", _R_DEFAULT))
 RSCRIPT_PATH = R_HOME / "bin" / ("Rscript.exe" if platform.system() == "Windows" else "Rscript")
 
 # DESI用フォルダのパス
-DESI_DIR = APP_BASE_DIR / "data" / "DESI"
-DESI_SCRIPT_DIR = DESI_DIR / "Script"
-DESI_DB_DIR = DESI_DIR / "DB"
-DESI_DATA_DIR = DESI_DIR / "Data"
+DESI_SCRIPT_DIR = APP_DIR / "Script" / "DESI"
+DESI_DB_DIR = APP_DIR / "DB" / "DESI"
+DESI_DATA_DIR = DATA_DIR / "DESI" / "Data"
+DESI_DIR = DATA_DIR / "DESI"  # 後方互換 (Data 配下)
 
 # TIMS用フォルダのパス
-TIMS_DIR = APP_BASE_DIR / "data" / "TIMS"
-TIMS_SCRIPT_DIR = TIMS_DIR / "Script"
-TIMS_DB_DIR = TIMS_DIR / "DB"
-TIMS_DATA_DIR = TIMS_DIR / "Data"
+TIMS_SCRIPT_DIR = APP_DIR / "Script" / "TIMS"
+TIMS_DB_DIR = APP_DIR / "DB" / "TIMS"
+TIMS_DATA_DIR = DATA_DIR / "TIMS" / "Data"
+TIMS_DIR = DATA_DIR / "TIMS"  # 後方互換
 
 # Common（DESI/TIMS共通）スクリプトのパス
-COMMON_DIR = APP_BASE_DIR / "data" / "Common"
-COMMON_SCRIPT_DIR = COMMON_DIR / "Script"
+COMMON_SCRIPT_DIR = APP_DIR / "Script" / "Common"
+COMMON_DIR = DATA_DIR / "Common"  # 後方互換
 MERGE_CLUSTERS_SCRIPT_PATH = COMMON_SCRIPT_DIR / "UMAP_Merge_Clusters_ver1.R"
 
 # DESI用スクリプトのパス
@@ -45,8 +47,8 @@ DESI_CLUSTER_FILTER_PATH = DESI_SCRIPT_DIR / "DESI_RDS_ClusterFilter_ver2.R"
 TIMS_V8_TEMPLATE_PATH = TIMS_SCRIPT_DIR / "260308_DBSCAN_With_cluster_ver17.R"
 TIMS_CLUSTER_FILTER_PATH = TIMS_SCRIPT_DIR / "260312_DBSCAN_ver17_Cluster_Filter_ReUMAP.R"
 
-# R ヘルパースクリプトのパス
-R_HELPERS_DIR = Path(__file__).parent / "r_helpers"
+# R ヘルパースクリプトのパス (App/Script/helpers/)
+R_HELPERS_DIR = APP_DIR / "Script" / "helpers"
 
 # DESI用デフォルト設定
 DEFAULT_DESI_DATA_FOLDER = str(DESI_DATA_DIR)
@@ -86,18 +88,18 @@ MATRIX_REFERENCE_MZ = {
 V8_TEMPLATE_PATH = DESI_V8_TEMPLATE_PATH
 CLUSTER_FILTER_PATH = DESI_CLUSTER_FILTER_PATH
 
-# セッションディレクトリ
-SESSIONS_DIR = APP_BASE_DIR / "app" / "sessions"
+# セッションディレクトリ (Data/ 配下 — App/ 差し替えで失われない)
+SESSIONS_DIR = DATA_DIR / "sessions"
 
 # プロジェクトディレクトリ・ファイル
-PROJECTS_DIR = APP_BASE_DIR / "app" / "projects"
+PROJECTS_DIR = DATA_DIR / "projects"
 PROJECTS_FILE = PROJECTS_DIR / "projects.json"
 
 # プリセットディレクトリ
-PRESETS_DIR = APP_BASE_DIR / "app" / "presets"
+PRESETS_DIR = DATA_DIR / "presets"
 
 # 共有リンク管理
-SHARES_DIR = APP_BASE_DIR / "app" / "shares"
+SHARES_DIR = DATA_DIR / "shares"
 SHARES_FILE = SHARES_DIR / "shares.json"
 DEFAULT_SHARE_EXPIRY_DAYS = 30
 # 共有URL生成用ベースURL

@@ -255,21 +255,21 @@ docker volume inspect msi-desi-data
 scp -r ./my_desi_data/* user@<サーバーIP>:/tmp/desi_upload/
 
 # サーバー上でボリュームにコピー
-docker cp /tmp/desi_upload/. msi-analysis-app:/app/data/DESI/Data/
+docker cp /tmp/desi_upload/. msi-analysis-app:/app/Data/DESI/Data/
 ```
 
 **TIMS データの場合:**
 ```bash
 scp -r ./my_tims_data/* user@<サーバーIP>:/tmp/tims_upload/
-docker cp /tmp/tims_upload/. msi-analysis-app:/app/data/TIMS/Data/
+docker cp /tmp/tims_upload/. msi-analysis-app:/app/Data/TIMS/Data/
 ```
 
 ### 7.2 データの確認
 
 ```bash
 # コンテナ内のデータを確認
-docker exec msi-analysis-app ls -la /app/data/DESI/Data/
-docker exec msi-analysis-app ls -la /app/data/TIMS/Data/
+docker exec msi-analysis-app ls -la /app/Data/DESI/Data/
+docker exec msi-analysis-app ls -la /app/Data/TIMS/Data/
 ```
 
 ---

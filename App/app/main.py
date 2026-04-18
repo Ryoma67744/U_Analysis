@@ -11,7 +11,7 @@ import dash_bootstrap_components as dbc
 import diskcache
 from dash.long_callback import DiskcacheManager
 
-from app.config import APP_PORT, APP_HOST, SESSIONS_DIR
+from app.config import APP_PORT, APP_HOST, SESSIONS_DIR, DATA_DIR
 from app.layouts.main_layout import create_main_layout
 
 # 前回設定をクリア（毎回クリーンな初期値で起動）
@@ -19,9 +19,11 @@ _last_settings = SESSIONS_DIR / "last_settings.json"
 if _last_settings.exists():
     _last_settings.unlink(missing_ok=True)
 
-# バックグラウンドコールバック用キャッシュ
+# バックグラウンドコールバック用キャッシュ (Data/cache)
 _launch_uid = uuid4()
-_cache = diskcache.Cache("./cache")
+_cache_dir = DATA_DIR / "cache"
+_cache_dir.mkdir(parents=True, exist_ok=True)
+_cache = diskcache.Cache(str(_cache_dir))
 _background_manager = DiskcacheManager(
     _cache, cache_by=[lambda: _launch_uid], expire=300,
 )
