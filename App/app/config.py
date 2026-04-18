@@ -40,14 +40,22 @@ if not RSCRIPT_PATH.exists():
 # DESI用フォルダのパス
 DESI_SCRIPT_DIR = APP_DIR / "Script" / "DESI"
 DESI_DB_DIR = APP_DIR / "DB" / "DESI"
-DESI_DATA_DIR = DATA_DIR / "DESI" / "Data"
+# 生データ格納先: .env の DESI_DATA_DIR で外部パスに切り替え可能。
+# 未設定時は同梱の Data/DESI/Data を参照。
+DESI_DATA_DIR = Path(os.environ.get("DESI_DATA_DIR", str(DATA_DIR / "DESI" / "Data")))
+DESI_DATA_DIR_LEGACY = DATA_DIR / "DESI" / "Data"  # 旧パス (fallback 検索用)
 DESI_DIR = DATA_DIR / "DESI"  # 後方互換 (Data 配下)
 
 # TIMS用フォルダのパス
 TIMS_SCRIPT_DIR = APP_DIR / "Script" / "TIMS"
 TIMS_DB_DIR = APP_DIR / "DB" / "TIMS"
-TIMS_DATA_DIR = DATA_DIR / "TIMS" / "Data"
+TIMS_DATA_DIR = Path(os.environ.get("TIMS_DATA_DIR", str(DATA_DIR / "TIMS" / "Data")))
+TIMS_DATA_DIR_LEGACY = DATA_DIR / "TIMS" / "Data"
 TIMS_DIR = DATA_DIR / "TIMS"  # 後方互換
+
+# データ探索時に順番に検索する候補リスト (path_resolver が使用)
+DESI_DATA_CANDIDATES = [DESI_DATA_DIR, DESI_DATA_DIR_LEGACY]
+TIMS_DATA_CANDIDATES = [TIMS_DATA_DIR, TIMS_DATA_DIR_LEGACY]
 
 # Common（DESI/TIMS共通）スクリプトのパス
 COMMON_SCRIPT_DIR = APP_DIR / "Script" / "Common"

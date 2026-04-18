@@ -15,6 +15,9 @@ services:
       - APP_PORT=3838
       - APP_PASSWORD=${APP_PASSWORD:-}
       - SHARE_BASE_URL=${SHARE_BASE_URL:-}
+      # 生データ外部パス (.env で上書き可。未設定時は named volume にフォールバック)
+      - DESI_DATA_DIR=/app/Data/DESI/Data
+      - TIMS_DATA_DIR=/app/Data/TIMS/Data
     volumes:
       # 永続化データ (Data/Other/ 配下のアプリ内部データ)
       - msi-sessions:/app/Data/Other/sessions
@@ -23,8 +26,9 @@ services:
       - msi-shares:/app/Data/Other/shares
       - msi-cache:/app/Data/Other/cache
       # 解析データ（ユーザーがアップロード）
-      - msi-desi-data:/app/Data/DESI/Data
-      - msi-tims-data:/app/Data/TIMS/Data
+      # .env で DESI_DATA_HOST / TIMS_DATA_HOST を指定すればホストの固定パスをマウント
+      - ${DESI_DATA_HOST:-msi-desi-data}:/app/Data/DESI/Data
+      - ${TIMS_DATA_HOST:-msi-tims-data}:/app/Data/TIMS/Data
       # 解析出力
       - msi-output:/app/Data/Other/output
     restart: unless-stopped

@@ -208,6 +208,23 @@
 </table>
 <p>アプリ内のファイルブラウザから任意のフォルダを指定することも可能です。</p>
 
+<h2>外部データフォルダの設定 (推奨)</h2>
+<div class="note">
+  生データをリポジトリ外の固定パスに置くと、アプリ更新（<code>git pull</code> や再 clone）の
+  たびに重いデータを移す必要がなくなり、<strong>過去プロジェクトもそのまま復活</strong>できます。
+</div>
+<p><code>.env</code> に DESI / TIMS ごとの保存先を記載します（任意・未設定時は同梱フォルダを参照）:</p>
+<pre>DESI_DATA_DIR=C:\Users\your-name\MSI_Data\DESI
+TIMS_DATA_DIR=C:\Users\your-name\MSI_Data\TIMS</pre>
+<p><strong>過去プロジェクトの復活手順:</strong></p>
+<ol>
+  <li>上記の <code>DESI_DATA_DIR</code> / <code>TIMS_DATA_DIR</code> に過去の生データを配置（once only）</li>
+  <li>アプリを起動し、サイドバー「プロジェクト復元」を実行</li>
+  <li>旧マシン由来の絶対パスが自動補正され、過去プロジェクトが一覧に復活</li>
+</ol>
+<p>旧パス（<code>Data/DESI/Data/</code> 等）に既に置いてあるデータも引き続き参照されるため、
+  この設定は既存ユーザにも後方互換です。</p>
+
 <h2>トラブルシューティング</h2>
 
 <h3>「Python が見つかりません」と表示される</h3>

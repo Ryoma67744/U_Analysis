@@ -13,8 +13,31 @@ from pathlib import Path
 from typing import Optional
 
 from app.config import RSCRIPT_PATH
+from app.services.path_resolver import resolve_data_path
 
 logger = logging.getLogger("msi.analysis_runner")
+
+
+def _resolve_or_raise(data_folder: str) -> str:
+    """data_folder が存在しなければ DATA_CANDIDATES 配下で再解決する。
+
+    別マシン由来の絶対パスが projects.json に残っている場合の救済。
+    """
+    if not data_folder:
+        return data_folder
+    if Path(data_folder).exists():
+        return data_folder
+    resolved = resolve_data_path(data_folder, modality="auto", is_file=False)
+    if resolved:
+        logger.warning(
+            "data_folder が見つからないため自動補正: %s → %s",
+            data_folder, resolved,
+        )
+        return str(resolved)
+    raise FileNotFoundError(
+        f"データフォルダが見つかりません: {data_folder}\n"
+        f".env の DESI_DATA_DIR / TIMS_DATA_DIR を確認してください。"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -172,8 +195,11 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
     with open(template_path, "r", encoding="utf-8") as f:
         lines = [line.rstrip("\n") for line in f.readlines()]
 
+    # data_folder が存在しない場合 (別マシン由来の古いパス) は自動補正を試行
+    resolved_data_folder = _resolve_or_raise(params["data_folder"])
+
     # パラメータを置換
-    lines = _replace_assign(lines, "data_folder", _r_str(params["data_folder"]))
+    lines = _replace_assign(lines, "data_folder", _r_str(resolved_data_folder))
     lines = _replace_assign(lines, "output_dir", _r_str(output_dir))
     lines = _replace_assign(
         lines, "RESUME_FROM_RDS",

@@ -569,6 +569,17 @@ _BROWSE_BUTTONS = {
 # 全対象入力フィールドIDの一覧（_BROWSE_BUTTONSのvalue[1]を収集）
 _ALL_TARGET_IDS = list(dict.fromkeys(v[1] for v in _BROWSE_BUTTONS.values()))
 
+# target_id → デフォルト起点ディレクトリのマッピング
+# (環境変数 DESI_DATA_DIR / TIMS_DATA_DIR が優先される)
+_DEFAULT_START_DIR = {
+    "data_folder": DESI_DATA_DIR,
+    "default_desi_data_folder": DESI_DATA_DIR,
+    "default_desi_output_dir": DESI_DATA_DIR,
+    "reanalysis_data_folder": DESI_DATA_DIR,
+    "default_tims_data_folder": TIMS_DATA_DIR,
+    "default_tims_output_dir": TIMS_DATA_DIR,
+}
+
 # dcc.Store は "data" プロパティ、dbc.Input/dcc.Input は "value" プロパティ
 _STORE_TARGETS = {"result_folder_manual", "extra_folder_pending_store"}
 
@@ -602,7 +613,12 @@ def open_file_browser(*args):
         drives = get_available_drives()
 
         # 対応する入力欄の現在値を取得し、初期ディレクトリを決定
-        initial_dir = str(APP_BASE_DIR)
+        # 優先順: 入力欄の現在値 → target_id 既定 (DESI/TIMS DATA_DIR) → APP_BASE_DIR
+        default_start = _DEFAULT_START_DIR.get(target_id)
+        if default_start and default_start.is_dir():
+            initial_dir = str(default_start)
+        else:
+            initial_dir = str(APP_BASE_DIR)
         try:
             idx = _ALL_TARGET_IDS.index(target_id)
             current_val = target_values[idx]

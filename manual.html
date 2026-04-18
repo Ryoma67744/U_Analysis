@@ -410,6 +410,20 @@ Apple は、"run_app.sh" に Mac に損害を与えたり、プライバシー�
   Python や R のバージョンを変更した場合は再度 <code>setup.bat</code> / <code>setup.sh</code> を実行してください。
 </div>
 
+<h3>外部データフォルダの設定（推奨・任意）</h3>
+<p>重い生データをリポジトリ外の固定パスに置いておけば、アプリを更新（<code>git pull</code> や再 clone）しても
+  再コピー不要で <strong>過去プロジェクトをそのまま復活</strong>できます。</p>
+<ol>
+  <li><code>App/.env.example</code> を <code>App/.env</code> にコピーします</li>
+  <li><code>.env</code> に以下を追記します（任意・DESI / TIMS それぞれ別パスに設定可）:
+    <pre>DESI_DATA_DIR=C:\Users\your-name\MSI_Data\DESI
+TIMS_DATA_DIR=C:\Users\your-name\MSI_Data\TIMS</pre>
+  </li>
+  <li>アプリ起動後、サイドバー「プロジェクト復元」からスキャンすると、
+    旧マシン由来の絶対パスが自動補正され過去プロジェクトが復活します（詳細は第8章）。</li>
+</ol>
+<p>未設定時は従来通り同梱の <code>Data/DESI/Data/</code> / <code>Data/TIMS/Data/</code> を参照します。</p>
+
 <h2 id="ch2-3">2.3 アプリの起動と終了</h2>
 
 <h3>起動（Windows）</h3>
@@ -927,6 +941,26 @@ Apple は、"run_app.sh" に Mac に損害を与えたり、プライバシー�
 <div class="note">
   セッションデータは <code>Data/Other/sessions/</code> フォルダに保存されます。
   アプリのフォルダ (App/) を別のPCにコピーしても、セッションは Data/ 側に残ります。
+</div>
+
+<h3>プロジェクト復元（外部生データからの自動復活）</h3>
+<p>アプリを別マシンで再 clone したり <code>git pull</code> で更新した場合、<code>projects.json</code> に
+  保存された絶対パスは旧マシン由来で壊れています。本機能は、
+  <strong>現在の <code>DESI_DATA_DIR</code> / <code>TIMS_DATA_DIR</code> 配下を再帰スキャン</strong>し、
+  末尾フォルダ名が一致するデータを見つけて <strong>パスを自動補正</strong>します。</p>
+<ol>
+  <li>事前に <code>App/.env</code> で <code>DESI_DATA_DIR</code> / <code>TIMS_DATA_DIR</code> を設定
+    （第2.2章「外部データフォルダの設定」参照）</li>
+  <li>サイドバーの <strong>「🔄 プロジェクト復元」</strong> ボタンをクリック</li>
+  <li>外部 DATA_ROOT 配下に残っている <code>_project_meta.json</code> が検出され、
+    破損パスが自動補正された状態で一覧表示されます</li>
+  <li>「復元」ボタンで <code>projects.json</code> に登録されます</li>
+</ol>
+<p>補正に失敗したパス（同名フォルダが見つからない場合）は警告として列挙されるので、
+  必要に応じてファイルブラウザから手動指定してください。</p>
+<div class="note">
+  旧パス（<code>Data/DESI/Data/</code> 等）も探索対象（legacy fallback）に含まれるため、
+  <code>.env</code> を設定していない既存ユーザでも問題なく復元できます。
 </div>
 
 <!-- ===================================================================== -->

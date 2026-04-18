@@ -14,6 +14,7 @@ from typing import Optional
 logger = logging.getLogger("msi.project_manager")
 
 from app.config import PROJECTS_DIR, PROJECTS_FILE
+from app.services.path_resolver import resolve_project_paths
 
 # メタデータファイル名（結果フォルダに自動保存）
 _META_FILENAME = "_project_meta.json"
@@ -384,6 +385,9 @@ def restore_projects_from_meta(
         existing_proj = get_project(proj_id)
 
         if action == "restore":
+            # --- 破損した絶対パスを現在の DATA_CANDIDATES 配下で再解決 ---
+            sub_info, unresolved = resolve_project_paths(sub_info)
+
             # --- プロジェクトが存在しなければ作成 ---
             if not existing_proj:
                 create_project(
@@ -415,10 +419,13 @@ def restore_projects_from_meta(
                     force_id=sub_id,
                     extra_fields=extra,
                 )
-                messages.append(
+                label = (
                     f"✅ 復元: {proj_info.get('name', '')} / "
                     f"{sub_info.get('name', '')}"
                 )
+                if unresolved:
+                    label += f" (未解決パス {len(unresolved)} 件)"
+                messages.append(label)
             else:
                 messages.append(
                     f"⏭ スキップ（既存）: {proj_info.get('name', '')} / "
