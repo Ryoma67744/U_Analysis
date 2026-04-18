@@ -10,7 +10,7 @@ echo   MSI Analysis Application - Setup
 echo ============================================================
 echo.
 
-cd /d "%~dp0"
+cd /d "%~dp0App"
 
 REM ============================================================
 REM  Step 1: Python チェック

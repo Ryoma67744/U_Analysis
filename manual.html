@@ -355,7 +355,7 @@
 
 <h3>セットアップの実行（Windows）</h3>
 <ol>
-  <li>エクスプローラーで <code>UMAP-WebApp-ClaudeCode/App/</code> フォルダを開きます</li>
+  <li>エクスプローラーで <code>UMAP-WebApp-ClaudeCode/</code> フォルダを開きます</li>
   <li><strong><code>setup.bat</code></strong> をダブルクリックします</li>
   <li>コマンドプロンプトが開き、以下の処理が自動実行されます:
     <ul>
@@ -370,8 +370,8 @@
 
 <h3>セットアップの実行（macOS / Linux）</h3>
 <ol>
-  <li>ターミナルを開き、<code>UMAP-WebApp-ClaudeCode/App/</code> へ移動します:
-    <pre>cd ~/path/to/UMAP-WebApp-ClaudeCode/App</pre>
+  <li>ターミナルを開き、<code>UMAP-WebApp-ClaudeCode/</code> へ移動します:
+    <pre>cd ~/path/to/UMAP-WebApp-ClaudeCode</pre>
   </li>
   <li>セットアップスクリプトに実行権限を付与し、実行します:
     <pre>chmod +x setup.sh run_app.sh
@@ -396,7 +396,7 @@
 
 <h3>起動（Windows）</h3>
 <ol>
-  <li><code>UMAP-WebApp-ClaudeCode/App/</code> フォルダ内の <strong><code>run_app.bat</code></strong> をダブルクリックします</li>
+  <li><code>UMAP-WebApp-ClaudeCode/</code> フォルダ内の <strong><code>run_app.bat</code></strong> をダブルクリックします</li>
   <li>コマンドプロンプトが開き、<code>Starting MSI Analysis Application on http://127.0.0.1:3838</code> と表示されます</li>
   <li>Webブラウザ（Google Chrome 推奨）を開き、アドレスバーに以下を入力します:
     <pre>http://localhost:3838</pre>
@@ -406,7 +406,7 @@
 
 <h3>起動（macOS / Linux）</h3>
 <ol>
-  <li>ターミナルで <code>UMAP-WebApp-ClaudeCode/App/</code> に移動します</li>
+  <li>ターミナルで <code>UMAP-WebApp-ClaudeCode/</code> に移動します</li>
   <li>起動スクリプトを実行します:
     <pre>./run_app.sh</pre>
   </li>
@@ -1101,11 +1101,11 @@ UMAP-WebApp-ClaudeCode/        ← プロジェクトルート（配布 ZIP 解�
 ├── manual.html                ← 本マニュアル
 ├── SETUP_GUIDE.html           ← セットアップガイド
 ├── images/                    ← マニュアル画像
+├── run_app.bat                ← Windows 起動バッチ
+├── run_app.sh                 ← macOS / Linux 起動スクリプト
+├── setup.bat                  ← Windows 初期セットアップ
+├── setup.sh                   ← macOS / Linux 初期セットアップ
 ├── App/                       ← アプリ本体（差し替え対象）
-│   ├── run_app.bat            ← Windows 起動バッチ
-│   ├── run_app.sh             ← macOS / Linux 起動スクリプト
-│   ├── setup.bat              ← Windows 初期セットアップ
-│   ├── setup.sh               ← macOS / Linux 初期セットアップ
 │   ├── run_app.py             ← Python エントリポイント
 │   ├── requirements.txt       ← Python 依存パッケージ
 │   ├── install_r_packages.R   ← R パッケージインストーラ

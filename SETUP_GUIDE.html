@@ -275,8 +275,8 @@
 
 <h3>Step M-3: ZIP の展開とセットアップ</h3>
 <div class="step-box">
-  <p>配布 ZIP (<code>MSI_Analysis_App_v2.1.0.zip</code>) を任意のフォルダに展開し、ターミナルで以下を実行します。</p>
-  <pre>cd /path/to/App
+  <p>配布 ZIP (<code>MSI_Analysis_App_v2.3.0.zip</code>) を任意のフォルダに展開し、ターミナルで以下を実行します。</p>
+  <pre>cd /path/to/UMAP-WebApp-ClaudeCode
 ./setup.sh</pre>
   <p>自動で以下が実行されます:</p>
   <ol>
@@ -304,7 +304,7 @@ bash run_app.sh</pre>
   <div class="tip">
     <strong>Gatekeeper の警告が出た場合:</strong>
     <code>.sh</code> はシェルスクリプトのため通常ブロックされませんが、
-    もし起動しない場合は <code>python3 run_app.py</code> を直接実行することもできます。
+    もし起動しない場合は <code>cd App && python3 run_app.py</code> を直接実行することもできます。
   </div>
 </div>
 
@@ -326,7 +326,7 @@ bash run_app.sh</pre>
 <div class="step-box">
   <p>Ubuntu / Debian 系の例:</p>
   <pre>sudo apt install python3 python3-pip r-base
-cd /path/to/App
+cd /path/to/UMAP-WebApp-ClaudeCode
 ./setup.sh
 ./run_app.sh</pre>
   <p>それ以外のディストリビューションでも、Python 3.10+ と R 4.4+ が入っていれば同じ手順で動作します。
@@ -339,11 +339,11 @@ MSI_Analysis_App/              (配布 ZIP 解凍後)
   manual.html                  ... 操作マニュアル
   SETUP_GUIDE.html             ... 本ガイド
   images/                      ... マニュアル画像
+  run_app.bat                  ... Windows 起動
+  setup.bat                    ... Windows 初回セットアップ
+  run_app.sh                   ... macOS / Linux 起動
+  setup.sh                     ... macOS / Linux 初回セットアップ
   App/                         ... アプリ本体 (差し替え対象)
-    run_app.bat                ... Windows 起動
-    setup.bat                  ... Windows 初回セットアップ
-    run_app.sh                 ... macOS / Linux 起動
-    setup.sh                   ... macOS / Linux 初回セットアップ
     run_app.py                 ... Python エントリーポイント
     pyproject.toml             ... パッケージ定義
     requirements.txt           ... Python 依存パッケージ

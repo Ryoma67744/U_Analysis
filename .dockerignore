@@ -38,6 +38,10 @@ App/docs/take_screenshots*.py
 *.bat
 App/create_dist_zip.py
 
+# ローカル/配布用ランチャー (Docker は CMD で直接 run_app.py を起動)
+run_app.sh
+setup.sh
+
 # ドキュメント (配布用、Docker コンテナでは未使用)
 manual.html
 SETUP_GUIDE.html

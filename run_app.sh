@@ -3,9 +3,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-cd "$SCRIPT_DIR"
+cd "$SCRIPT_DIR/App"
 
-# .env があれば読み込み (R_HOME 等)
+# .env があれば読み込み (R_HOME 等) — App/.env を優先
 if [ -f ".env" ]; then
   set -a
   . ./.env

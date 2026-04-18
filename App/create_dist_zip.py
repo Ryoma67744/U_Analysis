@@ -36,10 +36,6 @@ PROJECT_DIR = APP_DIR.parent
 # App/ 配下で ZIP に含めるトップレベルファイル
 INCLUDE_FILES = [
     "run_app.py",
-    "run_app.bat",
-    "setup.bat",
-    "run_app.sh",
-    "setup.sh",
     "install_r_packages.R",
     "pyproject.toml",
     "requirements.txt",
@@ -66,6 +62,10 @@ INCLUDE_DIRS = [
 ROOT_INCLUDE_FILES = [
     "manual.html",
     "SETUP_GUIDE.html",
+    "run_app.bat",
+    "run_app.sh",
+    "setup.bat",
+    "setup.sh",
 ]
 
 # プロジェクトルート直下で ZIP に含めるディレクトリ (App と同階層に展開)
