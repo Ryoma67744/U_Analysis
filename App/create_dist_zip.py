@@ -32,12 +32,20 @@ INCLUDE_FILES = [
     "run_app.py",
     "run_app.bat",
     "setup.bat",
+    "run_app.sh",
+    "setup.sh",
     "install_r_packages.R",
     "pyproject.toml",
     "requirements.txt",
     ".env.example",
     "create_dist_zip.py",
 ]
+
+# 実行ビット (0o755) を付与するファイル (macOS / Linux で展開時に chmod 不要にする)
+EXECUTABLE_FILES = {
+    "run_app.sh",
+    "setup.sh",
+}
 
 # App/ 配下で ZIP に含めるディレクトリ (再帰的に全ファイル)
 INCLUDE_DIRS = [
@@ -112,6 +120,12 @@ def collect_files() -> list[tuple[Path, str]]:
     return files
 
 
+def _is_executable(arcname: str) -> bool:
+    """ZIP 内ファイルが実行ビット (0o755) を持つべきかを判定する。"""
+    basename = arcname.rsplit("/", 1)[-1]
+    return basename in EXECUTABLE_FILES
+
+
 def create_zip(files: list[tuple[Path, str]]):
     """ZIP ファイルを生成する。"""
     output_path = PROJECT_DIR / OUTPUT_NAME
@@ -121,7 +135,17 @@ def create_zip(files: list[tuple[Path, str]]):
 
     with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for fpath, arcname in files:
-            zf.write(fpath, arcname)
+            # .sh 等は実行ビットを立てて書き込む (macOS/Linux 展開時 chmod 不要)
+            if _is_executable(arcname):
+                zi = zipfile.ZipInfo.from_file(fpath, arcname)
+                zi.compress_type = zipfile.ZIP_DEFLATED
+                # external_attr の上位 16bit に UNIX モード (regular file | 0o755) を格納
+                # 0o100000 = regular file ビット、0o755 = rwxr-xr-x
+                zi.external_attr = ((0o100000 | 0o755) << 16) | (zi.external_attr & 0xFFFF)
+                with open(fpath, "rb") as fh:
+                    zf.writestr(zi, fh.read())
+            else:
+                zf.write(fpath, arcname)
 
     size_mb = output_path.stat().st_size / (1024 * 1024)
     print(f"  Output: {output_path}")

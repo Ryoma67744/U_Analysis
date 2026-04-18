@@ -5,6 +5,7 @@
 
 import os
 import platform
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -17,10 +18,24 @@ APP_BASE_DIR = Path(__file__).parent.parent.parent
 APP_DIR = APP_BASE_DIR / "App"
 DATA_DIR = APP_BASE_DIR / "Data"
 
-# R実行環境
-_R_DEFAULT = r"C:\Program Files\R\R-4.4.2" if platform.system() == "Windows" else "/usr/lib/R"
+# R実行環境 (OS 別デフォルト + PATH フォールバック)
+_SYS = platform.system()
+if _SYS == "Windows":
+    _R_DEFAULT = r"C:\Program Files\R\R-4.4.2"
+elif _SYS == "Darwin":
+    _R_DEFAULT = "/Library/Frameworks/R.framework/Resources"  # CRAN 公式 macOS
+else:
+    _R_DEFAULT = "/usr/lib/R"  # Linux
+
 R_HOME = Path(os.environ.get("R_HOME", _R_DEFAULT))
-RSCRIPT_PATH = R_HOME / "bin" / ("Rscript.exe" if platform.system() == "Windows" else "Rscript")
+_RSCRIPT_NAME = "Rscript.exe" if _SYS == "Windows" else "Rscript"
+RSCRIPT_PATH = R_HOME / "bin" / _RSCRIPT_NAME
+
+# R_HOME/bin/Rscript が存在しない場合、PATH 上の Rscript を拾う (Homebrew 等)
+if not RSCRIPT_PATH.exists():
+    _which = shutil.which(_RSCRIPT_NAME) or shutil.which("Rscript")
+    if _which:
+        RSCRIPT_PATH = Path(_which)
 
 # DESI用フォルダのパス
 DESI_SCRIPT_DIR = APP_DIR / "Script" / "DESI"

@@ -115,6 +115,9 @@
 
 <h1>MSI Analysis Application - セットアップガイド</h1>
 <p>別の PC でアプリケーションを実行するための環境構築手順です。</p>
+<p>本アプリは <strong>Windows / macOS / Linux</strong> で動作します。本ガイドの前半は Windows 向け、
+  末尾に <a href="#mac-section">macOS 向けセクション</a>・
+  <a href="#linux-section">Linux 向けセクション</a>を記載しています。</p>
 
 <h2>必要なもの</h2>
 <table>
@@ -232,30 +235,138 @@
   <li><code>setup.bat</code> を再実行して R パッケージをインストールしてください</li>
 </ul>
 
+<h2 id="mac-section">macOS でのセットアップ</h2>
+<p>macOS (Intel / Apple Silicon どちらも対応) では <code>run_app.sh</code> / <code>setup.sh</code> を使用します。</p>
+
+<h3>Step M-1: Python のインストール</h3>
+<div class="step-box">
+  <p>どちらかの方法で Python 3.10+ を導入します。</p>
+  <ul>
+    <li><strong>Homebrew (推奨)</strong>:
+      <pre>brew install python@3.11</pre>
+    </li>
+    <li><strong>公式インストーラ</strong>:
+      <a href="https://www.python.org/downloads/macos/" target="_blank">https://www.python.org/downloads/macos/</a>
+    </li>
+  </ul>
+  <pre>python3 --version
+# 出力例: Python 3.11.x</pre>
+</div>
+
+<h3>Step M-2: R のインストール（任意）</h3>
+<div class="step-box">
+  <p>解析を実行する場合のみ必要です。ビューア機能だけなら不要です。</p>
+  <ul>
+    <li><strong>Homebrew</strong>:
+      <pre>brew install --cask r</pre>
+    </li>
+    <li><strong>CRAN 公式</strong>:
+      <a href="https://cran.r-project.org/bin/macosx/" target="_blank">https://cran.r-project.org/bin/macosx/</a>
+      <br>
+      インストール先: <code>/Library/Frameworks/R.framework/Resources</code> (既定)
+    </li>
+  </ul>
+  <div class="note">
+    CRAN 公式インストーラの既定パスは <code>config.py</code> がデフォルトで認識します。
+    Homebrew 版は PATH 上の <code>Rscript</code> を自動検出するため、追加設定なしで動作します。
+    それ以外のパスにインストールした場合は <code>.env</code> で <code>R_HOME</code> を指定してください。
+  </div>
+</div>
+
+<h3>Step M-3: ZIP の展開とセットアップ</h3>
+<div class="step-box">
+  <p>配布 ZIP (<code>MSI_Analysis_App_v2.1.0.zip</code>) を任意のフォルダに展開し、ターミナルで以下を実行します。</p>
+  <pre>cd /path/to/App
+./setup.sh</pre>
+  <p>自動で以下が実行されます:</p>
+  <ol>
+    <li>Python 存在チェック</li>
+    <li>Python パッケージのインストール</li>
+    <li>Rscript 存在チェック (見つからない場合はスキップ)</li>
+    <li>R パッケージのインストール (初回は 10〜20 分)</li>
+  </ol>
+  <div class="warn">
+    <strong>実行ビットが外れている場合:</strong>
+    配布 ZIP には実行ビット (0o755) を付与していますが、Finder の解凍ユーティリティや
+    一部の解凍ツールでは属性が落ちることがあります。エラー
+    <code>Permission denied</code> が出た場合は以下を実行してください:
+    <pre>chmod +x run_app.sh setup.sh</pre>
+    もしくは直接 bash で起動することもできます:
+    <pre>bash setup.sh
+bash run_app.sh</pre>
+  </div>
+</div>
+
+<h3>Step M-4: アプリの起動</h3>
+<div class="step-box">
+  <pre>./run_app.sh</pre>
+  <p>起動後、ブラウザで <a href="http://127.0.0.1:3838/" target="_blank">http://127.0.0.1:3838/</a> にアクセスします。</p>
+  <div class="tip">
+    <strong>Gatekeeper の警告が出た場合:</strong>
+    <code>.sh</code> はシェルスクリプトのため通常ブロックされませんが、
+    もし起動しない場合は <code>python3 run_app.py</code> を直接実行することもできます。
+  </div>
+</div>
+
+<h3>macOS トラブルシューティング</h3>
+<h4>Rscript が見つからない (Homebrew でインストール済みなのに)</h4>
+<ul>
+  <li><code>which Rscript</code> で PATH 上に存在するか確認</li>
+  <li>Apple Silicon で Homebrew 版を使う場合、<code>/opt/homebrew/bin</code> が PATH に入っている必要あり
+    (zsh なら <code>~/.zshrc</code> に <code>eval "$(/opt/homebrew/bin/brew shellenv)"</code>)</li>
+</ul>
+
+<h4>Seurat / harmony のビルドに失敗する</h4>
+<ul>
+  <li>Xcode Command Line Tools が必要: <code>xcode-select --install</code></li>
+  <li>Apple Silicon では R 4.4 以降を推奨 (arm64 ネイティブバイナリが提供されています)</li>
+</ul>
+
+<h2 id="linux-section">Linux でのセットアップ</h2>
+<div class="step-box">
+  <p>Ubuntu / Debian 系の例:</p>
+  <pre>sudo apt install python3 python3-pip r-base
+cd /path/to/App
+./setup.sh
+./run_app.sh</pre>
+  <p>それ以外のディストリビューションでも、Python 3.10+ と R 4.4+ が入っていれば同じ手順で動作します。
+    Docker 経由で実行する場合は、プロジェクトルートの <code>Dockerfile</code> / <code>docker-compose.yml</code> を使用してください。</p>
+</div>
+
 <h2>フォルダ構成</h2>
 <pre>
-MSI_Analysis_App/
-  run_app.bat          ... アプリ起動
-  setup.bat            ... 初回セットアップ
-  run_app.py           ... Python エントリーポイント
-  pyproject.toml       ... パッケージ定義
-  requirements.txt     ... Python 依存パッケージ
-  .env.example         ... 環境設定テンプレート
-  install_r_packages.R ... R パッケージインストーラ
-  app/                 ... アプリケーション本体
-  data/
-    TIMS/
-      Script/          ... TIMS 解析用 R スクリプト
-      DB/              ... アノテーション DB
-      Data/            ... (ここにデータを配置)
-    DESI/
-      Script/          ... DESI 解析用 R スクリプト
-      DB/              ... アノテーション DB
-      Data/            ... (ここにデータを配置)
-    Common/
-      Script/          ... 共通 R スクリプト
-  docs/                ... ドキュメント
-  tests/               ... テストコード
+MSI_Analysis_App/              (配布 ZIP 解凍後)
+  App/                         ... アプリ本体 (差し替え対象)
+    run_app.bat                ... Windows 起動
+    setup.bat                  ... Windows 初回セットアップ
+    run_app.sh                 ... macOS / Linux 起動
+    setup.sh                   ... macOS / Linux 初回セットアップ
+    run_app.py                 ... Python エントリーポイント
+    pyproject.toml             ... パッケージ定義
+    requirements.txt           ... Python 依存パッケージ
+    .env.example               ... 環境設定テンプレート
+    install_r_packages.R       ... R パッケージインストーラ
+    app/                       ... アプリケーションソース
+    Script/
+      DESI/                    ... DESI 解析用 R スクリプト
+      TIMS/                    ... TIMS 解析用 R スクリプト
+      Common/                  ... 共通 R スクリプト
+      helpers/                 ... R ヘルパー
+    DB/
+      DESI/                    ... DESI アノテーション DB
+      TIMS/                    ... TIMS アノテーション DB
+    docs/                      ... ドキュメント
+    tests/                     ... テストコード
+  Data/                        ... ユーザデータ (差し替え対象外)
+    DESI/Data/                 ... DESI 入力データ
+    TIMS/Data/                 ... TIMS 入力データ
+    sessions/                  ... セッション
+    projects/                  ... プロジェクト
+    presets/                   ... プリセット
+    shares/                    ... 共有リンク
+    output/                    ... 解析出力
+    cache/                     ... キャッシュ
+    logs/                      ... ログ
 </pre>
 
 </body>
