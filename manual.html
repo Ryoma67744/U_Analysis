@@ -519,19 +519,56 @@ TIMS_DATA_DIR=C:\Users\your-name\MSI_Data\TIMS</pre>
 </div>
 
 <h4>SCiLS Lab 出力からの変換（ショートカット）</h4>
-<p>SCiLS Lab で <strong>Export → Feature list (CSV)</strong> した出力フォルダは、
-  サイドバーの <strong>「🔄 SCiLS 変換」</strong> ボタンから <code>.parquet</code> に一括変換できます。</p>
+<p>SCiLS Lab で <strong>Export</strong> した <code>Intensity CSV</code> + <code>Spot CSV</code>
+  （+ 任意の <code>Annotation CSV</code> 複数）を、サイドバーの <strong>「🔄 SCiLS 変換」</strong>
+  ボタンから本アプリ用の <code>.parquet</code> に一括変換できます。</p>
+
+<p><strong>必要な入力ファイル（同一フォルダ内）:</strong></p>
+<ul>
+  <li><code>&lt;BASE&gt;_Intensity.csv</code> — 先頭列が m/z 値、それ以降の列ヘッダが <code>Spot 32011</code> 等
+    （SCiLS Lab で「m/z × Spot」の Intensity matrix を Export したもの）</li>
+  <li><code>&lt;BASE&gt;_Spot.csv</code> — <code>SpotIndex / X / Y</code> のマスター座標表</li>
+  <li><code>&lt;LABEL&gt;_Annotation.csv</code> （任意・複数可）— 各組織領域の Spot サブセット
+    （ファイル名の <code>&lt;LABEL&gt;</code> 部分が annotation 値として採用されます）</li>
+</ul>
+<p>ヘッダ構造とファイルサイズで役割を自動判定するため、ファイル名の厳密な一致は不要です
+  （Intensity = <code>Spot N</code> 列を持つ最大ファイル、Spot = <code>SpotIndex/X/Y</code> 構造の最大ファイル、
+  Annotation = それ以外の <code>SpotIndex/X/Y</code> 構造ファイル）。</p>
+
+<p><strong>操作手順:</strong></p>
 <ol>
   <li>サイドバー下部の <strong>「🔄 SCiLS 変換」</strong> をクリック</li>
-  <li>「入力フォルダ」に SCiLS の出力先（例: <code>260402_SCiLS_Annotation</code>）を指定</li>
+  <li>「入力フォルダ」に上記 CSV 群が入ったフォルダを指定</li>
   <li>「出力先フォルダ」は既定で <code>TIMS_DATA_DIR</code>。必要なら変更</li>
   <li>「サンプル名」を入力（空欄なら入力フォルダ名を自動採用）</li>
+  <li>必要に応じて <strong>「詳細設定」</strong> を展開:
+    <ul>
+      <li><strong>サブフォルダに整理</strong>（既定 ON）: 変換後、入力フォルダ内に
+        <code>&lt;BASE&gt;_Transform/</code> サブフォルダを作り、出力 Parquet と元 CSV をすべてそこに移動します</li>
+      <li><strong>float32 で保存</strong>（既定 ON）: Parquet 容量がほぼ半減します（解析精度には実用上影響なし）</li>
+      <li><strong>spot ブロックサイズ</strong>（既定 200）: 大ファイルでメモリ使用量を制御するチャンク単位</li>
+    </ul>
+  </li>
   <li><strong>「変換実行」</strong> をクリックすると <code>&lt;サンプル名&gt;.parquet</code> が生成されます</li>
 </ol>
-<p>Long 形式 (<code>id/x/y/mz/intensity</code>) / Wide 形式（m/z 値を列名に持つ形式）を
-  自動判定し、列名のエイリアス（<code>Spot Index</code> → <code>id</code>、<code>m/z</code> → <code>mz</code>、
-  <code>Region</code> → <code>annotation</code> 等）も吸収します。
-  変換後そのまま TIMS 解析のデータフォルダとして指定できます。</p>
+
+<p><strong>変換時の整合性チェック:</strong></p>
+<ul>
+  <li>Intensity ヘッダの spot 番号と Spot CSV の SpotIndex を完全一致で検証
+    （±1 の全体シフトのみ自動補正、それ以外の不一致は中断）</li>
+  <li>Annotation CSV が複数あっても、同一 spot が複数ファイルにまたがる場合や、
+    座標がマスター Spot CSV と不一致の場合はエラー停止</li>
+  <li>どの Annotation にも属さない spot は <code>Unannotated</code> ラベルが自動付与されます</li>
+</ul>
+
+<p><strong>大ファイル対応:</strong> 内部で polars（無ければ pyarrow）のストリーミング変換を使うため、
+  数 GB 規模の Intensity CSV でも低メモリで処理できます。
+  変換中は入力フォルダ直下に <code>&lt;BASE&gt;_temp.parquet</code> という一時ファイルが作成され、成功時に自動削除されます
+  （入力 CSV の 30〜60% 程度のディスク空き容量が必要）。</p>
+
+<p>変換後そのまま TIMS 解析のデータフォルダとして指定できます。
+  「サブフォルダに整理 ON」で出力した場合、<code>&lt;BASE&gt;_Transform/</code> をデータフォルダに指定してください
+  （Parquet 優先ルールにより同居する元 CSV は自動で隠れます）。</p>
 
 <h3>解析設定の手順</h3>
 <ol>
