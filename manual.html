@@ -507,6 +507,17 @@ TIMS_DATA_DIR=C:\Users\your-name\MSI_Data\TIMS</pre>
 <p>TIMS装置で取得したデータファイル（<code>.parquet</code>、<code>.csv</code>、<code>.txt</code> 等）を
   1つのフォルダにまとめておきます。1ファイル＝1サンプルとして認識されます。</p>
 
+<div class="note" style="background: #fffbea; border-left: 4px solid #f0b429; padding: 10px 14px; margin: 10px 0;">
+  <strong>データフォルダの優先ルール:</strong>
+  <ul style="margin-top: 6px;">
+    <li>同じフォルダ内に <code>.parquet</code> / <code>.pq</code> が <strong>1 本でもあれば、Parquet のみ</strong> がサンプル候補として表示されます
+      （複数 Parquet は並列解析可）。共存する <code>.csv</code> / <code>.tsv</code> / <code>.txt</code> は自動的に非表示になります。</li>
+    <li>Parquet が 1 本も無い場合のみ、<code>.csv</code> / <code>.tsv</code> / <code>.txt</code> がすべてサンプル候補として表示されます。</li>
+    <li>この仕様により、SCiLS 変換の「サブフォルダ整理 OFF」で生成された中間ファイル
+      （<code>*_Intensity.csv</code>、<code>*_Spot.csv</code>、<code>*_Annotation.csv</code>）は、最終の <code>.parquet</code> が同居していれば自動で隠れます。</li>
+  </ul>
+</div>
+
 <h4>SCiLS Lab 出力からの変換（ショートカット）</h4>
 <p>SCiLS Lab で <strong>Export → Feature list (CSV)</strong> した出力フォルダは、
   サイドバーの <strong>「🔄 SCiLS 変換」</strong> ボタンから <code>.parquet</code> に一括変換できます。</p>

@@ -20,28 +20,56 @@ def list_msi_files(data_folder: str) -> list[str]:
     return sorted([f.stem for f in folder.glob("*.txt")])
 
 
-def list_tims_files(data_folder: str) -> list[str]:
-    """データフォルダ内のTIMSファイル一覧を取得（拡張子なし）
-    対応形式: .parquet, .pq, .csv, .tsv, .txt
+_PARQUET_EXTS = {".parquet", ".pq"}
+_CSV_EXTS = {".csv", ".tsv", ".txt"}
+
+
+def _filter_tims_candidates(folder: Path) -> list[Path]:
+    """TIMS 解析対象候補ファイルを優先度ルールで絞り込む。
+
+    - Parquet (.parquet/.pq) が 1 本以上あれば Parquet のみを返す
+    - それ以外は CSV/TSV/TXT を返す
+    - いずれもソート済み
     """
-    folder = Path(data_folder)
     if not folder.is_dir():
         return []
-    extensions = {".parquet", ".pq", ".csv", ".tsv", ".txt"}
-    files = [f.stem for f in folder.iterdir() if f.suffix.lower() in extensions]
-    return sorted(files)
+    parquets = sorted(
+        f for f in folder.iterdir()
+        if f.is_file() and f.suffix.lower() in _PARQUET_EXTS
+    )
+    if parquets:
+        csv_count = sum(
+            1 for f in folder.iterdir()
+            if f.is_file() and f.suffix.lower() in _CSV_EXTS
+        )
+        if csv_count:
+            logger.debug(
+                "Parquet 優先: %d 件の CSV/TSV/TXT をサンプル候補から除外 (%s)",
+                csv_count, folder,
+            )
+        return parquets
+    return sorted(
+        f for f in folder.iterdir()
+        if f.is_file() and f.suffix.lower() in _CSV_EXTS
+    )
+
+
+def list_tims_files(data_folder: str) -> list[str]:
+    """データフォルダ内のTIMSファイル一覧を取得（拡張子なし）
+
+    対応形式: .parquet, .pq, .csv, .tsv, .txt
+    優先度: Parquet があれば Parquet のみ、無ければ CSV/TSV/TXT
+    """
+    return [f.stem for f in _filter_tims_candidates(Path(data_folder))]
 
 
 def build_tims_input_paths(data_folder: str) -> list[str]:
     """データフォルダ内のTIMSファイルのフルパスリストを返す。
+
     Rスクリプトの INPUT_PATHS / ORIGINAL_INPUT_PATHS に対応。
+    優先度: Parquet があれば Parquet のみ、無ければ CSV/TSV/TXT
     """
-    folder = Path(data_folder)
-    if not folder.is_dir():
-        return []
-    extensions = {".parquet", ".pq", ".csv", ".tsv", ".txt"}
-    files = [str(f) for f in folder.iterdir() if f.suffix.lower() in extensions]
-    return sorted(files)
+    return [str(f) for f in _filter_tims_candidates(Path(data_folder))]
 
 
 def list_tims_files_multi(data_folders: list[str]) -> list[str]:
@@ -111,8 +139,8 @@ def _read_tims_raw(folder: Path, sample_name: str = None) -> Optional[pd.DataFra
     """TIMS 生データ（parquet/csv/tsv/txt）から mz_ 列の平均を取得。"""
     import re as _re
 
-    extensions = {".parquet", ".pq", ".csv", ".tsv", ".txt"}
-    files = sorted(f for f in folder.iterdir() if f.suffix.lower() in extensions)
+    # Parquet 優先フィルタを適用 (Spot/Annotation CSV 等の中間ファイルを除外)
+    files = _filter_tims_candidates(folder)
     if not files:
         return None
 
