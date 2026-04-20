@@ -1,6 +1,6 @@
 # =============================================================================
 # MSI Analysis Application - SCiLS Converter Modal
-# SCiLS Lab 出力フォルダ (CSV) を Parquet に変換する UI
+# SCiLS Lab 出力フォルダ (Intensity + Spot + Annotation CSV) を Parquet に変換する UI
 # =============================================================================
 
 from dash import html
@@ -20,8 +20,9 @@ def create_scils_converter_modal():
             dbc.ModalHeader(dbc.ModalTitle("🔄 SCiLS データ変換")),
             dbc.ModalBody([
                 html.P(
-                    "SCiLS Lab で Export → Feature list (CSV) した "
-                    "フォルダをアプリの読込形式 (.parquet) に変換します。",
+                    "SCiLS Lab で Export した Intensity CSV + Spot CSV "
+                    "(+ 任意の Annotation CSV) が入ったフォルダを指定してください。"
+                    "ヘッダ構造とサイズで役割を自動検出し、Parquet に変換します。",
                     className="text-muted small mb-3",
                 ),
 
@@ -31,7 +32,7 @@ def create_scils_converter_modal():
                     children=[
                         dbc.Input(
                             id="scils_input_folder",
-                            placeholder="例: /path/to/260402_SCiLS_Annotation",
+                            placeholder="例: /path/to/260402_SCiLS_Export",
                             size="sm",
                             style={"flex": "1"},
                         ),
@@ -68,6 +69,57 @@ def create_scils_converter_modal():
                     id="scils_sample_name",
                     placeholder="例: 260402_Liver_Positive (拡張子は自動付与)",
                     size="sm",
+                ),
+
+                html.Hr(),
+                dbc.Accordion(
+                    id="scils_advanced_accordion",
+                    start_collapsed=True,
+                    flush=True,
+                    children=[
+                        dbc.AccordionItem(
+                            title="詳細設定",
+                            children=[
+                                dbc.Checklist(
+                                    id="scils_organize_check",
+                                    options=[{
+                                        "label": "変換後に元 CSV を <BASE>_Transform/ サブフォルダに移動",
+                                        "value": "on",
+                                    }],
+                                    value=["on"],
+                                    switch=True,
+                                    className="small",
+                                ),
+                                dbc.Checklist(
+                                    id="scils_float32_check",
+                                    options=[{
+                                        "label": "Parquet を float32 で保存 (容量半減)",
+                                        "value": "on",
+                                    }],
+                                    value=["on"],
+                                    switch=True,
+                                    className="small mt-2",
+                                ),
+                                dbc.Label(
+                                    "spot ブロックサイズ (チャンク処理単位)",
+                                    className="small fw-bold mt-3",
+                                ),
+                                dbc.Input(
+                                    id="scils_spot_block",
+                                    type="number",
+                                    min=10,
+                                    max=10000,
+                                    step=10,
+                                    value=200,
+                                    size="sm",
+                                ),
+                                html.Small(
+                                    "大ファイルではメモリ使用量に影響します。既定 200。",
+                                    className="text-muted",
+                                ),
+                            ],
+                        ),
+                    ],
                 ),
 
                 html.Hr(),

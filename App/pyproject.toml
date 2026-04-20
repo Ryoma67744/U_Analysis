@@ -17,6 +17,7 @@ dependencies = [
     "numpy>=1.26",
     "openpyxl>=3.1",
     "pyarrow>=14.0",
+    "polars>=0.20",
     "psutil>=5.9",
     "python-pptx>=0.6.21",
     "kaleido>=0.2.1",

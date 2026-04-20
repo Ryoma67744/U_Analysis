@@ -566,16 +566,26 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
     # [P4] スキーマから列名取得→必要列のみ読込（メモリ節約）
     pf <- arrow::ParquetFileReader$create(file_path)
     all_names <- pf$GetSchema()$names
-    mz_cols <- grep("^mz_", all_names, value = TRUE)
+    # m/z 列 = 予約列 (id/x/y/annotation) 以外で、列名が数値として解釈可能なもの
+    # 例: "100.500000", "200.123456" (新 SCiLS 変換は mz_ プレフィックス無し)
+    reserved <- c("id", "x", "y", "annotation")
+    candidate <- setdiff(all_names, reserved)
+    mz_num_try <- suppressWarnings(as.numeric(candidate))
+    mz_cols <- candidate[!is.na(mz_num_try)]
+    # 後方互換: 旧 Parquet (mz_ プレフィックス付き) もサポート
+    if (length(mz_cols) == 0) {
+      mz_cols <- grep("^mz_", all_names, value = TRUE)
+    }
     need_cols <- c("id", "x", "y", mz_cols)
     if ("annotation" %in% all_names) need_cols <- c(need_cols, "annotation")
     df <- arrow::read_parquet(file_path, col_select = dplyr::all_of(need_cols), as_data_frame = TRUE)
 
     miss <- setdiff(c("id", "x", "y"), colnames(df))
     if (length(miss) > 0) stop("Parquet is missing required columns: ", paste(miss, collapse = ", "))
-    if (length(mz_cols) == 0) stop("No mz_ columns found in Parquet: ", file_path)
+    if (length(mz_cols) == 0) stop("No m/z columns found in Parquet: ", file_path)
 
     # Build metabolite names to MATCH CSV pipeline naming exactly: "m/z %.5f"
+    # 列名から mz_ プレフィックス (あれば) を除去してから数値化
     mz_num <- suppressWarnings(as.numeric(sub("^mz_", "", mz_cols)))
     if (anyNA(mz_num)) {
       # fallback: strip non-numeric
