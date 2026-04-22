@@ -287,10 +287,17 @@
 <h2 id="ch1-2">1.2 対応装置</h2>
 <table>
   <tr><th>装置</th><th>解析手法</th><th>スクリプトバージョン</th></tr>
-  <tr><td>DESI-MSI</td><td>UMAP Template 解析</td><td>v13</td></tr>
-  <tr><td>TIMS-MSI</td><td>DBSCAN + UMAP 解析</td><td>ver13</td></tr>
+  <tr><td>DESI-MSI</td><td>UMAP Template 解析</td><td>v14（slim RDS 対応）</td></tr>
+  <tr><td>TIMS-MSI</td><td>DBSCAN + UMAP 解析</td><td>ver3_slim（slim RDS 対応）</td></tr>
 </table>
 <p>どちらの装置でも、新規解析と再解析（クラスタフィルター）に対応しています。</p>
+<p>
+  <strong>RDS サイズについて:</strong> v14 / ver3_slim から Step1/2/3 の .rds ファイルを
+  <code>DietSeurat</code>（<code>scale.data</code> を削除）と
+  <code>qs</code> 圧縮で軽量化しており、従来比で約 70〜85% サイズ削減されます。
+  情報は失われず、旧形式（<code>saveRDS</code> で作成済みの <code>.rds</code>）も
+  そのまま読み込めるため、既存の解析資産との後方互換性は保たれます。
+</p>
 
 <h2 id="ch1-3">1.3 全体ワークフロー</h2>
 <p>本アプリを使った解析は、以下のステップで進めます。</p>
@@ -1208,6 +1215,15 @@ TIMS_DATA_DIR=C:\Users\your-name\MSI_Data\TIMS</pre>
     <td>kaleido の不具合</td>
     <td><code>pip install kaleido==0.2.1</code> でバージョンを固定する</td>
   </tr>
+  <tr>
+    <td>過去に作った .rds ファイルのサイズが大きくディスク圧迫 / Dropbox 同期が重い</td>
+    <td>旧版（saveRDS 形式）のまま保存されている</td>
+    <td>
+      以下のコマンドで既存 RDS を一括で軽量化できます（アトミック置換のため安全）。<br>
+      <code>Rscript App/Script/helpers/slim_existing_rds.R &lt;対象フォルダ&gt; --backup</code><br>
+      <code>--dry-run</code> を付けると削減見込みだけを表示します。
+    </td>
+  </tr>
 </table>
 
 <h2 id="app-b">B. フォルダ構成一覧</h2>
@@ -1232,10 +1248,14 @@ UMAP-WebApp-ClaudeCode/        ← プロジェクトルート（配布 ZIP 解�
 │   │   ├── callbacks/         ← 画面操作のロジック
 │   │   └── services/          ← データ処理サービス
 │   ├── Script/                ← R スクリプト
-│   │   ├── DESI/              ← DESI 解析
-│   │   ├── TIMS/              ← TIMS 解析
+│   │   ├── DESI/              ← DESI 解析（260422_DESI-UMAP_Template_v14.R ほか）
+│   │   ├── TIMS/              ← TIMS 解析（260422_DBSCAN_With_cluster_ver3_no-png_slim.R ほか）
 │   │   ├── Common/            ← 共通処理
 │   │   └── helpers/           ← R ヘルパー
+│   │       ├── rds_io.R             ← 軽量 RDS I/O（DietSeurat + qs、旧形式も自動判定）
+│   │       ├── slim_existing_rds.R  ← 既存 RDS を一括で軽量化する CLI ツール
+│   │       ├── extract_seurat_data.R ← Python 用 Seurat データ抽出
+│   │       └── extract_features.R    ← 単一 Feature 抽出
 │   ├── DB/                    ← アノテーション DB
 │   │   ├── DESI/
 │   │   └── TIMS/
