@@ -414,6 +414,7 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
 def start_analysis_process(
     script_path: str,
     output_dir: str,
+    extra_args=None,
 ) -> dict:
     """Rスクリプトを外部プロセスで非同期実行
     R版: start_analysis_process() in analysis_runner.R
@@ -422,6 +423,12 @@ def start_analysis_process(
     - .batファイルを経由せず subprocess.Popen で直接起動
     - PIDを正確に取得（R版はPID取得不可だった）
     - CREATE_NO_WINDOW でコンソール非表示
+
+    Args:
+        script_path: 実行する R スクリプトの絶対パス
+        output_dir:  ログや進捗ファイルを書き出すディレクトリ
+        extra_args:  R スクリプトに渡す追加コマンドライン引数 (list[str] | None)
+                     例: ["/path/to/folder", "--dry-run", "--backup"]
     """
     if not Path(script_path).exists():
         return {
@@ -452,8 +459,11 @@ def start_analysis_process(
     log_fh = None
     try:
         log_fh = open(log_file, "w", encoding="utf-8")
+        cmd = [rscript, "--vanilla", script_path] + [
+            str(a) for a in (extra_args or [])
+        ]
         process = subprocess.Popen(
-            [rscript, "--vanilla", script_path],
+            cmd,
             stdout=log_fh,
             stderr=subprocess.STDOUT,
             cwd=str(Path(script_path).parent),
