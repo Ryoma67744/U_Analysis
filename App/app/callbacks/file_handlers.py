@@ -571,6 +571,8 @@ _BROWSE_BUTTONS = {
     "browse_env_tims_data_dir": ("folder", "env_tims_data_dir"),
     "browse_env_desi_data_dir": ("folder", "env_desi_data_dir"),
     "browse_env_r_home": ("folder", "env_r_home"),
+    # RDS メンテナンスモーダル
+    "browse_rds_maint_folder": ("folder", "rds_maint_folder"),
 }
 
 # 全対象入力フィールドIDの一覧（_BROWSE_BUTTONSのvalue[1]を収集）
