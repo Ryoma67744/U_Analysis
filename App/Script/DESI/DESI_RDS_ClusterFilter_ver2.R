@@ -18,6 +18,32 @@
 
 message("=== RUNNING: DESI_RDS_ClusterFilter_ExportTxt_and_ReUMAP  [v5] ===")
 
+# ---- 共通 RDS I/O ヘルパーの読み込み (slim RDS / 旧 RDS の両対応) ----
+local({
+  helper_path <- NULL
+  env_dir <- Sys.getenv("R_HELPERS_DIR", unset = NA)
+  if (!is.na(env_dir) && nzchar(env_dir)) {
+    cand <- file.path(env_dir, "rds_io.R")
+    if (file.exists(cand)) helper_path <- cand
+  }
+  if (is.null(helper_path)) {
+    args <- commandArgs(trailingOnly = FALSE)
+    file_arg <- grep("^--file=", args, value = TRUE)
+    if (length(file_arg) > 0) {
+      this_dir <- dirname(normalizePath(sub("^--file=", "", file_arg[1]),
+                                        mustWork = FALSE))
+      cand <- file.path(this_dir, "..", "helpers", "rds_io.R")
+      if (file.exists(cand)) helper_path <- cand
+    }
+  }
+  if (is.null(helper_path)) {
+    stop("rds_io.R が見つかりません。",
+         " 環境変数 R_HELPERS_DIR を設定するか、",
+         " App/Script/helpers/rds_io.R の配置を確認してください。")
+  }
+  source(helper_path, local = FALSE)
+})
+
 # ------------------------------------------------------------
 # [USER SETTINGS] ここだけ編集
 # ------------------------------------------------------------
@@ -331,7 +357,7 @@ replace_assign_line <- function(code_vec, var, new_rhs) {
 # ------------------------------------------------------------
 message(">> Loading Seurat RDS: ", RDS_PATH)
 .stopif(file.exists(RDS_PATH), paste0("RDSが見つかりません: ", RDS_PATH))
-seu <- readRDS(RDS_PATH)
+seu <- load_rds_compact(RDS_PATH)
 
 # seurat_clusters が無い場合、Identsから作る（念のため）
 if (!("seurat_clusters" %in% colnames(seu@meta.data))) {

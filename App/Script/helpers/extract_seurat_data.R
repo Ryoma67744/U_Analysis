@@ -22,7 +22,12 @@ dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 cat("Loading Seurat object:", rds_path, "\n")
 suppressPackageStartupMessages(library(Seurat))
 
-obj <- readRDS(rds_path)
+# 共通 I/O ヘルパーを読み込み (slim qs 形式 / 旧 saveRDS 形式の両対応)
+source(file.path(dirname(normalizePath(sub("^--file=", "",
+        grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)[1]),
+        mustWork = FALSE)), "rds_io.R"))
+
+obj <- load_rds_compact(rds_path)
 
 # TIMS ver13 互換: list(obj=seu, ...) 形式の場合、Seuratオブジェクトを取り出す
 if (is.list(obj) && !inherits(obj, "Seurat") && "obj" %in% names(obj)) {

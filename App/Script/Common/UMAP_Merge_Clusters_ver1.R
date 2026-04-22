@@ -21,6 +21,36 @@
 
 message("=== RUNNING: UMAP_Merge_Clusters  [ver1] ===")
 
+# ---- 共通 RDS I/O ヘルパーの読み込み (slim RDS / 旧 RDS の両対応) ----
+# 呼び出し元で既に source() 済みなら重複読み込みを避ける
+if (!exists("load_rds_compact", mode = "function")) {
+  local({
+    helper_path <- NULL
+    env_dir <- Sys.getenv("R_HELPERS_DIR", unset = NA)
+    if (!is.na(env_dir) && nzchar(env_dir)) {
+      cand <- file.path(env_dir, "rds_io.R")
+      if (file.exists(cand)) helper_path <- cand
+    }
+    if (is.null(helper_path)) {
+      args <- commandArgs(trailingOnly = FALSE)
+      file_arg <- grep("^--file=", args, value = TRUE)
+      if (length(file_arg) > 0) {
+        this_dir <- dirname(normalizePath(sub("^--file=", "", file_arg[1]),
+                                          mustWork = FALSE))
+        # Common -> ../helpers
+        cand <- file.path(this_dir, "..", "helpers", "rds_io.R")
+        if (file.exists(cand)) helper_path <- cand
+      }
+    }
+    if (is.null(helper_path)) {
+      stop("rds_io.R が見つかりません。",
+           " 環境変数 R_HELPERS_DIR を設定するか、",
+           " App/Script/helpers/rds_io.R の配置を確認してください。")
+    }
+    source(helper_path, local = FALSE)
+  })
+}
+
 # ------------------------------------------------------------
 # [USER SETTINGS] ここだけ編集（Python側から自動注入される）
 # ------------------------------------------------------------
@@ -138,7 +168,7 @@ if (!exists("RERUN_REDUCTION"))     RERUN_REDUCTION <- "umap"
 # --- Seurat オブジェクトのロード（list wrapper 対応） ---
 .load_seurat <- function(rds_path) {
   .stopif(file.exists(rds_path), paste0("RDS が見つかりません: ", rds_path))
-  obj <- readRDS(rds_path)
+  obj <- load_rds_compact(rds_path)
   if (is.list(obj) && !inherits(obj, "Seurat") && "obj" %in% names(obj)) {
     message("  Detected list-wrapped Seurat object. Extracting $obj...")
     obj <- obj$obj
@@ -386,9 +416,9 @@ merge_clusters <- function(base_seu, rerun_seu,
     message(">> [Merge] Spatial mapping skipped (x_coord/y_coord not found in metadata)")
   }
 
-  # --- 9. RDS 保存 ---
+  # --- 9. RDS 保存 (slim: DietSeurat + qs) ---
   rds_path <- file.path(out_dir, paste0(out_prefix, "_seurat.rds"))
-  saveRDS(seu2, rds_path)
+  save_rds_compact(seu2, rds_path)
   message(">> [Merge] Saved: ", rds_path)
 
   # サブクラスタの統計情報をログ出力

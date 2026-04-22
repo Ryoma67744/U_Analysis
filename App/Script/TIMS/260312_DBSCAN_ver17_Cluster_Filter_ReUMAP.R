@@ -17,6 +17,32 @@
 
 message("=== RUNNING: ClusterFilter_ReUMAP for DBSCAN ver13 ===")
 
+# ---- 共通 RDS I/O ヘルパーの読み込み (slim RDS / 旧 RDS の両対応) ----
+local({
+  helper_path <- NULL
+  env_dir <- Sys.getenv("R_HELPERS_DIR", unset = NA)
+  if (!is.na(env_dir) && nzchar(env_dir)) {
+    cand <- file.path(env_dir, "rds_io.R")
+    if (file.exists(cand)) helper_path <- cand
+  }
+  if (is.null(helper_path)) {
+    args <- commandArgs(trailingOnly = FALSE)
+    file_arg <- grep("^--file=", args, value = TRUE)
+    if (length(file_arg) > 0) {
+      this_dir <- dirname(normalizePath(sub("^--file=", "", file_arg[1]),
+                                        mustWork = FALSE))
+      cand <- file.path(this_dir, "..", "helpers", "rds_io.R")
+      if (file.exists(cand)) helper_path <- cand
+    }
+  }
+  if (is.null(helper_path)) {
+    stop("rds_io.R が見つかりません。",
+         " 環境変数 R_HELPERS_DIR を設定するか、",
+         " App/Script/helpers/rds_io.R の配置を確認してください。")
+  }
+  source(helper_path, local = FALSE)
+})
+
 # ------------------------------------------------------------
 # [USER SETTINGS] ここだけ編集
 # ------------------------------------------------------------
@@ -935,8 +961,8 @@ apply_reumap_replace <- function(base_seu, rerun_seu,
   # ggplot2::ggsave(file.path(out_dir, paste0(out_prefix, "_before_after.png")),
   #        p_pair, width = 14, height = 6, dpi = 300, bg = "white", limitsize = FALSE)
 
-  # Save Seurat object (RDS)
-  saveRDS(seu2, file.path(out_dir, paste0(out_prefix, "_seurat_with_umap_replaced.rds")))
+  # Save Seurat object (RDS, slim: DietSeurat + qs)
+  save_rds_compact(seu2, file.path(out_dir, paste0(out_prefix, "_seurat_with_umap_replaced.rds")))
 
   message(">> Saved: ", file.path(out_dir, paste0(out_prefix, "_before_after.png")))
   message(">> Saved: ", file.path(out_dir, paste0(out_prefix, "_seurat_with_umap_replaced.rds")))
@@ -948,7 +974,7 @@ apply_reumap_replace <- function(base_seu, rerun_seu,
 RDS_RESOLVED <- resolve_rds_path(RDS_PATH, RDS_RUN_DIR, CLUSTER_SOURCE)
 message(">> Loading Seurat RDS: ", RDS_RESOLVED)
 .stopif(file.exists(RDS_RESOLVED), paste0("RDSが見つかりません: ", RDS_RESOLVED))
-rds_obj <- readRDS(RDS_RESOLVED)
+rds_obj <- load_rds_compact(RDS_RESOLVED)
 
 # Step2/Step3 は list(obj=..., reduction=...) の形式になっている場合がある
 seu <- rds_obj
@@ -1124,7 +1150,7 @@ if (isTRUE(ENABLE_REUMAP_REPLACE)) {
 
   .stopif(file.exists(rerun_rds), paste0("ReUMAP側のRDSが見つかりません: ", rerun_rds))
   message(">> Loading ReUMAP (rerun) RDS: ", rerun_rds)
-  r2 <- readRDS(rerun_rds)
+  r2 <- load_rds_compact(rerun_rds)
   rerun_seu <- r2
   if (is.list(r2) && !is.null(r2$obj) && inherits(r2$obj, "Seurat")) rerun_seu <- r2$obj
   .stopif(inherits(rerun_seu, "Seurat"), "ReUMAP側RDSからSeuratオブジェクトを取得できません。")
