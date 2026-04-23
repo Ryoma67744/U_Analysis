@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from app.config import RSCRIPT_PATH
+from app.config import R_HELPERS_DIR, RSCRIPT_PATH
 from app.services.path_resolver import resolve_data_path
 
 logger = logging.getLogger("msi.analysis_runner")
@@ -456,6 +456,12 @@ def start_analysis_process(
         rscript = "Rscript"  # PATH上のRscriptにフォールバック
 
     # サブプロセスを起動（stdout/stderrをログファイルにリダイレクト）
+    # R スクリプトが App/Script/helpers/rds_io.R を解決できるよう、
+    # R_HELPERS_DIR を子プロセスの環境変数に必ず渡す。
+    # （本解析はランタイムコピーを <output_dir>/log/*.R として生成して
+    #   起動するため、R 側の相対探索 ../helpers/rds_io.R はヒットしない）
+    env = {**os.environ, "R_HELPERS_DIR": str(R_HELPERS_DIR)}
+
     log_fh = None
     try:
         log_fh = open(log_file, "w", encoding="utf-8")
@@ -468,6 +474,7 @@ def start_analysis_process(
             stderr=subprocess.STDOUT,
             cwd=str(Path(script_path).parent),
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            env=env,
         )
         pid_file.write_text(str(process.pid), encoding="utf-8")
     except Exception as e:
