@@ -422,6 +422,7 @@ def start_analysis_process(
     - .batファイルを経由せず subprocess.Popen で直接起動
     - PIDを正確に取得（R版はPID取得不可だった）
     - CREATE_NO_WINDOW でコンソール非表示
+    - 起動前に同時解析数と空きメモリをチェック（OOM対策）
     """
     if not Path(script_path).exists():
         return {
@@ -429,6 +430,40 @@ def start_analysis_process(
             "message": "スクリプトが見つかりません",
             "process": None,
         }
+
+    # --- 同時解析ブロック・空きメモリチェック（クラウド多人数運用対策） ---
+    import psutil
+    try:
+        running_r = [
+            p for p in psutil.process_iter(["name"])
+            if "rscript" in (p.info.get("name") or "").lower()
+        ]
+    except Exception:
+        running_r = []
+    if len(running_r) >= 1:
+        return {
+            "success": False,
+            "message": (
+                f"別の解析が実行中です（{len(running_r)} 件）。"
+                "完了してから再実行してください。"
+            ),
+            "process": None,
+        }
+
+    try:
+        available_gb = psutil.virtual_memory().available / (1024 ** 3)
+    except Exception:
+        available_gb = float("inf")
+    if available_gb < 10.0:
+        return {
+            "success": False,
+            "message": (
+                f"空きメモリが不足しています（残 {available_gb:.1f} GB）。"
+                "他の解析の完了をお待ちください。"
+            ),
+            "process": None,
+        }
+    # --- ここまで ---
 
     output_path = Path(output_dir)
     log_dir = output_path / "log"
@@ -448,6 +483,12 @@ def start_analysis_process(
     if not Path(rscript).exists():
         rscript = "Rscript"  # PATH上のRscriptにフォールバック
 
+    # R内部の数値計算ライブラリのスレッド数を制限（CPU独占を防止）
+    child_env = os.environ.copy()
+    child_env.setdefault("OMP_NUM_THREADS", "4")
+    child_env.setdefault("OPENBLAS_NUM_THREADS", "4")
+    child_env.setdefault("MKL_NUM_THREADS", "4")
+
     # サブプロセスを起動（stdout/stderrをログファイルにリダイレクト）
     log_fh = None
     try:
@@ -457,6 +498,7 @@ def start_analysis_process(
             stdout=log_fh,
             stderr=subprocess.STDOUT,
             cwd=str(Path(script_path).parent),
+            env=child_env,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         pid_file.write_text(str(process.pid), encoding="utf-8")

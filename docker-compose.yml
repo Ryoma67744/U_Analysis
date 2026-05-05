@@ -33,6 +33,7 @@ services:
       - msi-output:/app/Data/Other/output
     restart: unless-stopped
     mem_limit: 12g
+    cpus: '6'
 
 volumes:
   msi-sessions:
