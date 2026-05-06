@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import dotenv_values, set_key
+from filelock import FileLock
 
 logger = logging.getLogger("msi.env_file_manager")
 
@@ -19,6 +20,9 @@ logger = logging.getLogger("msi.env_file_manager")
 APP_DIR = Path(__file__).parent.parent.parent  # App/
 ENV_PATH = APP_DIR / ".env"
 ENV_EXAMPLE_PATH = APP_DIR / ".env.example"
+
+# `.env` 同時編集のロストアップデート防止用ロック
+_ENV_LOCK = FileLock(str(ENV_PATH) + ".lock", timeout=30)
 
 # UI で編集可能なキー一覧 (定義順 = モーダル表示順)
 EDITABLE_KEYS: tuple[str, ...] = (
@@ -53,7 +57,8 @@ def read_env_values() -> dict[str, str]:
     """現在の `.env` から EDITABLE_KEYS の値を読み取る (キー欠落時は空文字)"""
     if not ENV_PATH.exists():
         return {k: "" for k in EDITABLE_KEYS}
-    values = dotenv_values(ENV_PATH)
+    with _ENV_LOCK:
+        values = dotenv_values(ENV_PATH)
     return {k: (values.get(k) or "") for k in EDITABLE_KEYS}
 
 
@@ -62,21 +67,24 @@ def write_env_values(updates: dict[str, Optional[str]]) -> Path:
 
     - 値が空文字 / None のキーはスキップ (既存値を消したい場合は `unset` 推奨だが UI 上は空欄維持で足りる)
     - ファイルが無ければ .env.example から複製 or 空ファイルで作成
+    - filelock で他プロセスとの同時書き込みを排他制御（ロストアップデート防止）
     """
     ensure_env_file_exists()
-    for key, raw in updates.items():
-        if key not in EDITABLE_KEYS:
-            logger.warning("編集非対象キーを無視: %s", key)
-            continue
-        value = (raw or "").strip()
-        if not value:
-            # 空欄は「未変更 / 既定に戻したい」と解釈し書き込まない
-            continue
-        set_key(
-            str(ENV_PATH), key, value,
-            quote_mode="never",  # パスのバックスラッシュ等を素直に書く
-            export=False,
-        )
+    with _ENV_LOCK:
+        # ロック内で全 set_key 呼び出しを連続実行（read-modify-write の原子性確保）
+        for key, raw in updates.items():
+            if key not in EDITABLE_KEYS:
+                logger.warning("編集非対象キーを無視: %s", key)
+                continue
+            value = (raw or "").strip()
+            if not value:
+                # 空欄は「未変更 / 既定に戻したい」と解釈し書き込まない
+                continue
+            set_key(
+                str(ENV_PATH), key, value,
+                quote_mode="never",  # パスのバックスラッシュ等を素直に書く
+                export=False,
+            )
     logger.info(".env を更新: %s (keys=%s)", ENV_PATH, list(updates.keys()))
     return ENV_PATH
 

@@ -14,7 +14,11 @@ logger = logging.getLogger("msi.interactive.project")
 
 
 # 共有状態を interactive_callbacks から参照
-from app.callbacks.interactive_callbacks import _interactive_data
+from app.callbacks.interactive_callbacks import (
+    _interactive_data,
+    _drop_state,
+    _set_active_key,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -125,14 +129,9 @@ def reset_interactive_on_project_change(project_id, skip_reset):
     if skip_reset:
         return no_update, no_update, False, no_update
 
-    _interactive_data["plot_data"] = None
-    _interactive_data["cluster_stats"] = None
-    _interactive_data["features_list"] = None
-    _interactive_data["meta"] = None
-    _interactive_data["rds_path"] = None
-    _interactive_data["cache_dir"] = None
-    _interactive_data["deg_cache_key"] = None
-    _interactive_data["deg_cache_data"] = None
+    # アクティブプロジェクトの state エントリを破棄（プロジェクト別キャッシュ対応）
+    _drop_state()
+    _set_active_key(None)
 
     if not project_id:
         return {"display": "none"}, "", False, {"display": "none"}
@@ -158,13 +157,9 @@ def set_interactive_folders_from_sub_project(sub_id, project_id, skip_reset):
     if skip_reset:
         return (no_update,) * 6 + (False,)
 
-    # 前のプロジェクトのデータをクリア
-    _interactive_data["plot_data"] = None
-    _interactive_data["cluster_stats"] = None
-    _interactive_data["features_list"] = None
-    _interactive_data["meta"] = None
-    _interactive_data["rds_path"] = None
-    _interactive_data["cache_dir"] = None
+    # 前のプロジェクトの state を破棄（複数プロジェクト同時閲覧時の混線防止）
+    _drop_state()
+    _set_active_key(None)
 
     if not sub_id or not project_id:
         return no_update, no_update, no_update, no_update, {"display": "none"}, False, {"display": "none"}

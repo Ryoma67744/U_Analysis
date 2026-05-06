@@ -207,6 +207,32 @@ def create_shared_view_layout():
                             # --- DEG 結果 ---
                             html.Div(id="sv_deg_section", style={"display": "none"},
                                      children=[
+                                # Volcano Plot（クラスタ選択 + ホバーで化合物名表示）
+                                html.Div(className="card mb-3", children=[
+                                    html.H5("Volcano Plot"),
+                                    dbc.Row(className="mb-2", children=[
+                                        dbc.Col(width=4, children=[
+                                            dcc.Dropdown(
+                                                id="sv_volcano_cluster_select",
+                                                placeholder="クラスタを選択",
+                                                clearable=True,
+                                            ),
+                                        ]),
+                                    ]),
+                                    dcc.Loading(
+                                        dcc.Graph(
+                                            id="sv_volcano_plot",
+                                            style={"height": "450px"},
+                                            config={
+                                                "scrollZoom": True,
+                                                "toImageButtonOptions": {
+                                                    "format": "png", "scale": 3,
+                                                },
+                                            },
+                                        ),
+                                    ),
+                                ]),
+
                                 html.Div(className="card mb-3", children=[
                                     html.H5("DEG マーカー"),
                                     dash_table.DataTable(

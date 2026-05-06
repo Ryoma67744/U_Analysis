@@ -17,6 +17,7 @@ from app.layouts.env_settings_modal import create_env_settings_modal
 from app.layouts.landing_page import create_landing_page
 from app.layouts.action_page import create_action_page
 from app.layouts.shared_view import create_shared_view_layout
+from app.layouts.lite_view import create_lite_view_layout
 from app.layouts.tooltips import (
     get_sidebar_tooltips, get_settings_tooltips,
     get_interactive_tooltips, get_results_tooltips,
@@ -257,6 +258,20 @@ def create_main_layout():
                     className="main-container",
                     style={"maxWidth": "1400px", "padding": "20px"},
                     children=[create_shared_view_layout()],
+                ),
+            ],
+        ),
+
+        # ========== Page 5: Lite View (軽量ビューア・認証なし) ==========
+        html.Div(
+            id="page_lite",
+            style={"display": "none"},
+            children=[
+                dbc.Container(
+                    fluid=True,
+                    className="main-container",
+                    style={"maxWidth": "1400px", "padding": "20px"},
+                    children=[create_lite_view_layout()],
                 ),
             ],
         ),

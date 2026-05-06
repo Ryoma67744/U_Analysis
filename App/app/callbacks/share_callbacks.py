@@ -6,6 +6,8 @@
 import base64
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
 from dash import (
@@ -28,6 +30,7 @@ from app.callbacks.interactive_callbacks import (
 )
 from app.callbacks.interactive_umap import _build_umap_integrated_fig
 from app.callbacks.interactive_spatial import _create_single_spatial_fig
+from app.utils.deg_utils import is_meaningful_annotation as _is_meaningful_annotation
 
 # Seuratブリッジ
 _sv_bridge = SeuratBridge()
@@ -503,3 +506,97 @@ def sv_update_deg_table(deg_data):
     if not deg_data:
         return []
     return deg_data
+
+
+# =========================================================================
+# Volcano Plot（軽量・読み取り専用、ホバーで化合物名表示）
+# =========================================================================
+
+@callback(
+    [Output("sv_volcano_plot", "figure"),
+     Output("sv_volcano_cluster_select", "options")],
+    [Input("sv_volcano_cluster_select", "value"),
+     Input("sv_deg_data_store", "data")],
+)
+def sv_update_volcano_plot(cluster, deg_data):
+    """共有ページ用 Volcano Plot
+
+    - クラスタ選択ドロップダウンの選択肢を deg_data から動的生成
+    - ホバーで化合物名（annotation）を表示
+    - 標準的な閾値線・配色（編集UIは省略）
+    """
+    empty = go.Figure()
+    if not deg_data:
+        return empty, []
+
+    df = pd.DataFrame(deg_data)
+    if "p_val_adj_raw" in df.columns:
+        df["p_num"] = pd.to_numeric(df["p_val_adj_raw"], errors="coerce")
+    else:
+        df["p_num"] = pd.to_numeric(df["p_val_adj"], errors="coerce")
+    df["avg_log2FC"] = pd.to_numeric(df["avg_log2FC"], errors="coerce")
+    min_p = (df.loc[df["p_num"] > 0, "p_num"].min()
+             if (df["p_num"] > 0).any() else 5e-324)
+    df["neg_log10_p"] = -np.log10(df["p_num"].clip(lower=min_p))
+
+    # ホバー表示テキスト：annotation があれば化合物名を含める
+    if "annotation" in df.columns:
+        df["display_text"] = df.apply(
+            lambda r: f"{r['gene']}<br>({r['annotation']})"
+            if _is_meaningful_annotation(r.get('annotation', ''), r.get('gene', ''))
+            else r['gene'],
+            axis=1,
+        )
+    else:
+        df["display_text"] = df["gene"]
+
+    # クラスタ選択肢を deg_data から生成
+    clusters = sorted(df["cluster"].astype(str).unique(), key=_cluster_sort_key)
+    cluster_opts = [{"label": f"Cluster {c}", "value": c} for c in clusters]
+
+    if cluster:
+        df = df[df["cluster"].astype(str) == str(cluster)]
+
+    fc_thresh, p_thresh = 0.5, 1.3
+
+    fig = go.Figure()
+    for reg, color, label in [
+        ("Up", "#FF2D2D", "Up-regulated"),
+        ("Down", "#1E5BFF", "Down-regulated"),
+        ("NS", "#7A7A7A", "Not significant"),
+    ]:
+        if reg == "Up":
+            mask = (df["neg_log10_p"] >= p_thresh) & (df["avg_log2FC"] >= fc_thresh)
+        elif reg == "Down":
+            mask = (df["neg_log10_p"] >= p_thresh) & (df["avg_log2FC"] <= -fc_thresh)
+        else:
+            mask = ~((df["neg_log10_p"] >= p_thresh)
+                     & (df["avg_log2FC"].abs() >= fc_thresh))
+        sub = df[mask]
+        if len(sub) > 0:
+            fig.add_trace(go.Scatter(
+                x=sub["avg_log2FC"], y=sub["neg_log10_p"],
+                mode="markers",
+                marker=dict(size=8, color=color, opacity=0.7),
+                name=label,
+                text=sub["display_text"],
+                hovertemplate=("<b>%{text}</b><br>"
+                               "log2FC: %{x:.3f}<br>"
+                               "-log10(p): %{y:.2f}<extra></extra>"),
+            ))
+
+    fig.add_hline(y=p_thresh, line_dash="dash", line_color="gray", opacity=0.5)
+    fig.add_vline(x=fc_thresh, line_dash="dash", line_color="gray", opacity=0.5)
+    fig.add_vline(x=-fc_thresh, line_dash="dash", line_color="gray", opacity=0.5)
+
+    title = f"Volcano Plot - Cluster {cluster}" if cluster else "Volcano Plot (全クラスタ)"
+    fig.update_layout(
+        title=dict(text=title, x=0.5),
+        xaxis_title="avg_log2FC",
+        yaxis_title="-log10(p_val_adj)",
+        template="plotly_white",
+        margin=dict(l=50, r=20, t=40, b=40),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.18,
+                    xanchor="center", x=0.5),
+    )
+    return fig, cluster_opts

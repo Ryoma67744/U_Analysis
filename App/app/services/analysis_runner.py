@@ -467,13 +467,39 @@ def start_analysis_process(
 
     output_path = Path(output_dir)
     log_dir = output_path / "log"
+    log_history_dir = log_dir / "history"
     log_dir.mkdir(parents=True, exist_ok=True)
+    log_history_dir.mkdir(parents=True, exist_ok=True)
     progress_file = log_dir / "analysis_progress.txt"
     log_file = log_dir / "analysis_log.txt"
     pid_file = log_dir / "analysis_pid.txt"
     status_file = log_dir / "analysis_status.txt"
 
-    # 初期化
+    # 旧ログを history/ にタイムスタンプ付きで退避（並行解析時の上書き消失防止）
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    for src, prefix in [
+        (log_file, "analysis_log"),
+        (progress_file, "analysis_progress"),
+        (status_file, "analysis_status"),
+        (pid_file, "analysis_pid"),
+    ]:
+        if src.exists():
+            try:
+                src.replace(log_history_dir / f"{prefix}_{ts}.txt")
+            except OSError:
+                pass
+
+    # 履歴上限：各種類最新20件まで保持
+    for prefix in ["analysis_log_", "analysis_progress_",
+                   "analysis_status_", "analysis_pid_"]:
+        files = sorted(log_history_dir.glob(f"{prefix}*"))
+        for old in files[:-20]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+
+    # 新規ログ初期化
     progress_file.write_text("0|準備中|0|1", encoding="utf-8")
     log_file.write_text("解析を開始しています...\n", encoding="utf-8")
     status_file.write_text("running", encoding="utf-8")

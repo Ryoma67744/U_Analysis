@@ -8,11 +8,32 @@ offset computation.
 
 import json
 import logging
+import os
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
+from app.utils.file_locks import get_or_create_lock
+
 logger = logging.getLogger(__name__)
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    """JSON を原子的に書き込む（同ディレクトリに tmp 作成 → os.replace）"""
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), suffix=".tmp", prefix=path.stem + "_",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, str(path))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -78,20 +99,83 @@ def load_interactive_settings(rds_path: str | None) -> dict:
 
 
 def save_interactive_settings(key: str, value, rds_path: str | None) -> None:
-    """interactive_settings.json の指定キーを更新して書き込む"""
+    """interactive_settings.json の指定キーを filelock + 原子的に書き込む。
+
+    同一プロジェクトを複数タブで開いた際のロストアップデート防止のため、
+    ロック内で「読込→改変→atomic write」を一貫して実行する。
+    """
     path = get_interactive_settings_path(rds_path)
     if not path:
         return
     try:
-        existing = load_interactive_settings(rds_path)
-        existing[key] = value
-        existing["_saved_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        path.write_text(
-            json.dumps(existing, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock = get_or_create_lock(path)
+        with lock:
+            existing = {}
+            if path.exists():
+                try:
+                    existing = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    existing = {}
+            existing[key] = value
+            existing["_saved_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            _atomic_write_json(path, existing)
     except Exception as e:
         logger.warning("インタラクティブ設定の保存に失敗: %s", e)
+
+
+def save_label_positions(
+    positions: dict,
+    rds_path: str | None,
+    method: str | None = None,
+    merge: bool = True,
+) -> None:
+    """label_positions.json を filelock + 原子的に書き込む。
+
+    Args:
+        positions: 保存する辞書。merge=False なら全置換。
+        rds_path: RDSパス（保存先決定用）
+        method: 統合手法（None なら共有ファイル、指定時は手法別ファイル）
+        merge: True ならファイル内既存エントリにマージ、False なら全置換
+
+    Note:
+        merge=True の場合、各セクション (umap_integrated / spatial_<sample> 等) に
+        対して既存値と新規値を merge_label_positions でディープマージする。
+    """
+    path = get_label_positions_path(rds_path, method)
+    if not path:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock = get_or_create_lock(path)
+        with lock:
+            if merge:
+                existing = {}
+                if path.exists():
+                    try:
+                        existing = json.loads(path.read_text(encoding="utf-8"))
+                    except Exception:
+                        existing = {}
+                for section, section_data in (positions or {}).items():
+                    saved_section = existing.get(section, {})
+                    if section == "umap_integrated":
+                        merge_label_positions(saved_section, section_data)
+                    else:
+                        # spatial_<sample> 等：sample → cluster の二段構造
+                        if isinstance(section_data, dict):
+                            for sample_name, pos_dict in section_data.items():
+                                sample_saved = saved_section.get(sample_name, {})
+                                if isinstance(pos_dict, dict):
+                                    merge_label_positions(sample_saved, pos_dict)
+                                saved_section[sample_name] = sample_saved
+                        else:
+                            saved_section = section_data
+                    existing[section] = saved_section
+                _atomic_write_json(path, existing)
+            else:
+                _atomic_write_json(path, positions or {})
+    except Exception as e:
+        logger.warning("ラベル位置の保存に失敗: %s", e)
 
 
 # ---------------------------------------------------------------------------
