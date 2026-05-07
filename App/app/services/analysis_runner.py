@@ -463,6 +463,30 @@ def start_analysis_process(
             ),
             "process": None,
         }
+
+    # ディスク空き容量チェック（output_dir 配下のディスク）
+    # output_dir が未作成のことがあるため、存在する最も近い祖先で確認する
+    try:
+        check_path = Path(output_dir)
+        while not check_path.exists() and check_path != check_path.parent:
+            check_path = check_path.parent
+        free_gb = psutil.disk_usage(str(check_path)).free / (1024 ** 3)
+    except Exception:
+        free_gb = float("inf")
+    if free_gb < 10.0:
+        return {
+            "success": False,
+            "message": (
+                f"ディスク空き容量が不足しています（残 {free_gb:.1f} GB）。"
+                "古いプロジェクトを整理するか、ストレージを拡張してください。"
+            ),
+            "process": None,
+        }
+    elif free_gb < 30.0:
+        logger.warning(
+            "ディスク空き容量が逼迫しています（残 %.1f GB）。近いうちに整理を推奨します。",
+            free_gb,
+        )
     # --- ここまで ---
 
     output_path = Path(output_dir)

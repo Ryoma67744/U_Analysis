@@ -531,14 +531,60 @@ docker compose up -d --build
 
 ### 9.2 バックアップ
 
-```bash
-# プロジェクトデータのバックアップ
-docker run --rm -v msi-projects:/data -v $(pwd)/backups:/backup \
-    alpine tar czf /backup/projects-$(date +%Y%m%d).tar.gz -C /data .
+このアプリには**2 層のバックアップ**機構があります：
 
-# セッションデータのバックアップ
-docker run --rm -v msi-sessions:/data -v $(pwd)/backups:/backup \
-    alpine tar czf /backup/sessions-$(date +%Y%m%d).tar.gz -C /data .
+| 層 | 仕組み | 対象 | 頻度 |
+|---|---|---|---|
+| **アプリ内** | `App/app/services/backup_manager.py`（実装済み） | `projects.json` / `shares.json` / `last_settings.json` のみ | アプリ起動毎 + 保存毎、5世代保持 |
+| **Volume 全体** | `backup.sh`（リポジトリ直下、cron 用） | `msi-projects` / `msi-sessions` / `msi-presets` / `msi-shares` / `msi-output` の Docker Volume 全体 | cron で週次など、30日保持 |
+
+アプリ内バックアップは JSON ファイル単位の破損対策、`backup.sh` は災害復旧
+（Volume 削除事故・サーバー丸ごと故障）用。両方が補完的に動作します。
+
+#### 手動でバックアップを実行する
+
+```bash
+# 出力先は ./backups/ (環境変数 BACKUP_DIR で上書き可)
+./backup.sh
+
+# 任意の場所に出力する場合
+BACKUP_DIR=/mnt/external_disk/msi-backup ./backup.sh
+```
+
+出力例：
+```
+backups/
+├── backup.log
+├── msi-projects-20260507-030000.tar.gz
+├── msi-sessions-20260507-030000.tar.gz
+├── msi-presets-20260507-030000.tar.gz
+├── msi-shares-20260507-030000.tar.gz
+└── msi-output-20260507-030000.tar.gz
+```
+
+#### cron での定期実行（推奨）
+
+```bash
+# crontab -e で以下を追加（毎週日曜 3:00 にバックアップ）
+0 3 * * 0 cd /home/ubuntu/umap-webapp-claudecode && ./backup.sh
+
+# 別ディスクへ保存する場合
+0 3 * * 0 cd /home/ubuntu/umap-webapp-claudecode && BACKUP_DIR=/mnt/backup ./backup.sh
+```
+
+`backup.sh` は 30 日以上古い `*.tar.gz` を自動削除します（環境変数 `RETENTION_DAYS` で調整可）。
+ログは `${BACKUP_DIR}/backup.log` に追記。
+
+#### バックアップから復元する
+
+```bash
+# 例: msi-projects を復元
+docker compose down
+docker volume rm msi-projects
+docker volume create msi-projects
+docker run --rm -v msi-projects:/data -v $(pwd)/backups:/backup \
+    alpine tar xzf /backup/msi-projects-20260507-030000.tar.gz -C /data
+docker compose up -d
 ```
 
 ### 9.3 リソース監視
@@ -546,7 +592,19 @@ docker run --rm -v msi-sessions:/data -v $(pwd)/backups:/backup \
 ```bash
 # コンテナの CPU/メモリ使用量をリアルタイム表示
 docker stats msi-analysis-app
+
+# ホストのディスク使用量を確認（80% 超は要整理、95% 超は危険）
+df -h | grep -v tmpfs
+
+# Docker 関連の使用量を確認（イメージ・ボリューム・キャッシュ）
+docker system df
+
+# 不要な Docker キャッシュ削除（ディスク逼迫時の応急処置）
+docker system prune -a --volumes  # ⚠ named volume も対象。実行前にバックアップ推奨
 ```
+
+> **アプリ内のディスク監視**: 解析開始時に `psutil.disk_usage()` でチェックされ、
+> 残 10 GB 未満で解析を拒否、残 30 GB 未満で警告ログ出力（`Data/Other/logs/msi_app.log`）。
 
 ---
 
@@ -571,6 +629,8 @@ docker exec msi-analysis-app Rscript -e "library(Seurat); cat('OK\n')"
 
 ### メモリ不足
 
+解析開始時に「空きメモリが不足しています（残 X.X GB）」と表示される場合：
+
 ```bash
 # ホストのメモリ使用量を確認
 free -h
@@ -580,6 +640,34 @@ free -h
 #   さくらVPS 16GB プラン: mem_limit: 10g
 #   さくらVPS 32GB プラン: mem_limit: 24g
 ```
+
+### ディスク容量不足
+
+解析開始時に「ディスク空き容量が不足しています（残 X.X GB）」と表示される場合：
+
+```bash
+# 1. ホストのディスク使用量を確認
+df -h | grep -v tmpfs
+# → 80% 超なら要整理、95% 超は危険
+
+# 2. アプリ側で大きいプロジェクトを特定（Docker volume のサイズ確認）
+docker run --rm -v msi-projects:/data alpine du -sh /data
+docker run --rm -v msi-output:/data alpine du -sh /data
+
+# 3. 不要なプロジェクトを UI から削除、または手動で:
+docker exec -u root msi-analysis-app rm -rf /app/Data/Other/projects/<旧プロジェクト名>
+
+# 4. 古いバックアップアーカイブを削除
+ls -la backups/
+rm backups/msi-*-202[0-5]*.tar.gz
+
+# 5. Docker キャッシュを掃除（named volume は除外）
+docker image prune -a
+docker builder prune -a
+```
+
+> 残 30 GB 未満では警告ログのみが出ます（解析は継続）。
+> ログ位置: `Data/Other/logs/msi_app.log`（または `docker compose logs msi-app`）。
 
 ### ポートにアクセスできない
 
