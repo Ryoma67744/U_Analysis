@@ -23,12 +23,15 @@ from app.services.project_manager import get_project, get_sub_project
 from app.callbacks.interactive_callbacks import (
     _detect_integration_methods,
     _cluster_sort_key,
+    _get_cluster_color_map,
+    _get_cluster_colorscale,
 )
 from app.callbacks.share_callbacks import (
     _shared_data, _sv_bridge,
     _load_deg_results, _is_meaningful_annotation,
 )
 from app.callbacks.interactive_umap import _build_umap_integrated_fig
+from app.callbacks.interactive_spatial import _create_single_spatial_fig
 
 _LITE_URL_RE = re.compile(r"^/lite/([^/]+)/([^/]+)/?$")
 
@@ -66,6 +69,8 @@ def route_lite_url(pathname):
      Output("lv_integration_method", "data"),
      Output("lv_data_info", "children"),
      Output("lv_umap_highlight_cluster", "options"),
+     Output("lv_spatial_highlight_cluster", "options"),
+     Output("lv_spatial_sample", "options"),
      Output("lv_feature_select", "options"),
      Output("lv_cluster_stats_table", "data"),
      Output("lv_cluster_stats_table", "columns"),
@@ -78,7 +83,7 @@ def initialize_lite_view(target):
     """target = {"project_id": ..., "sub_project_id": ...} を受け、データをロードして UI を初期化"""
     hide, show = {"display": "none"}, {}
     if not target or not target.get("project_id"):
-        return (hide, hide, "", "", "", "", "", [], [], [], [], None, hide)
+        return (hide, hide, "", "", "", "", "", [], [], [], [], [], [], None, hide)
 
     project_id = target["project_id"]
     sub_id = target["sub_project_id"]
@@ -87,13 +92,13 @@ def initialize_lite_view(target):
     if not sub:
         return (hide, show,
                 f"プロジェクトまたはサブプロジェクトが見つかりません: {project_id}/{sub_id}",
-                "", "", "", "", [], [], [], [], None, hide)
+                "", "", "", "", [], [], [], [], [], [], None, hide)
 
     result_dir = sub.get("last_result_dir") or sub.get("output_dir", "")
     rds_map = _detect_integration_methods(result_dir) if result_dir else {}
     if not rds_map:
         return (hide, show, "解析結果が見つかりません（解析がまだ実行されていない可能性があります）。",
-                "", "", "", "", [], [], [], [], None, hide)
+                "", "", "", "", [], [], [], [], [], [], None, hide)
 
     integration_method = "Harmony" if "Harmony" in rds_map else next(iter(rds_map))
     rds_path = rds_map[integration_method]
@@ -126,7 +131,7 @@ def initialize_lite_view(target):
             }
         except Exception as e:
             return (hide, show, f"RDS読込エラー: {e}", metadata,
-                    "", "", "", [], [], [], [], None, hide)
+                    "", "", "", [], [], [], [], [], [], None, hide)
 
     data = _shared_data[cache_key]
     df_plot = data["plot_data"]
@@ -134,10 +139,14 @@ def initialize_lite_view(target):
     features = data["features_list"]
 
     cluster_options = []
+    sample_options = []
     if df_plot is not None and "Cluster" in df_plot.columns:
         clusters = sorted(df_plot["Cluster"].unique(), key=_cluster_sort_key)
         cluster_options = [{"label": f"Cluster {c}", "value": str(c)}
                            for c in clusters]
+    if df_plot is not None and "Sample" in df_plot.columns:
+        samples = sorted(df_plot["Sample"].unique())
+        sample_options = [{"label": s, "value": s} for s in samples]
     feature_options = ([{"label": f, "value": f} for f in features[:100]]
                        if features else [])
     stats_data = df_stats.to_dict("records") if df_stats is not None else []
@@ -155,7 +164,8 @@ def initialize_lite_view(target):
 
     return (show, hide, "", metadata,
             rds_path, integration_method, info,
-            cluster_options, feature_options,
+            cluster_options, cluster_options, sample_options,
+            feature_options,
             stats_data, stats_columns,
             deg_records, volcano_style)
 
@@ -195,6 +205,87 @@ def lv_update_umap(color_by, highlight_clusters, show_legend, show_labels,
         show_legend, show_labels,
         marker_size=marker_size or 2,
     )
+
+
+# =========================================================================
+# Spatial Mapping（軽量、サンプル別グリッド + ハイライト）
+# =========================================================================
+
+@callback(
+    Output("lv_spatial_container", "children"),
+    [Input("lv_spatial_highlight_cluster", "value"),
+     Input("lv_spatial_sample", "value")],
+    [State("lite_target_store", "data"),
+     State("lv_integration_method", "data")],
+)
+def lv_update_spatial(highlight_clusters, sample_filter, target, integration_method):
+    """軽量ビューア用 Spatial Mapping（共有ページ実装をミラー）"""
+    if not target or not target.get("project_id"):
+        return html.Div("データなし", className="text-muted")
+
+    cache_key = f"lite::{target['project_id']}::{target['sub_project_id']}::{integration_method}"
+    if cache_key not in _shared_data:
+        return html.Div("データなし", className="text-muted")
+
+    df = _shared_data[cache_key].get("plot_data")
+    if df is None or df.empty or "SpatialX" not in df.columns:
+        return html.Div("Spatial データなし", className="text-muted")
+
+    color_map = _get_cluster_color_map(df["Cluster"])
+    cluster_to_idx, discrete_cscale = _get_cluster_colorscale(df["Cluster"])
+
+    if sample_filter:
+        samples = [sample_filter]
+    else:
+        samples = sorted(df["Sample"].unique())
+
+    graphs = []
+    for s in samples:
+        df_s = df[df["Sample"] == s]
+        if df_s.empty:
+            continue
+        fig = _create_single_spatial_fig(
+            df_s, color_map, highlight_clusters or [],
+            selected_cell_ids=None,
+            title=s, embed_legend=True,
+            cluster_to_idx=cluster_to_idx,
+            discrete_cscale=discrete_cscale,
+        )
+        graphs.append(
+            html.Div(
+                style={"flex": "1 1 46%", "minWidth": "300px", "maxWidth": "50%",
+                       "border": "1px solid #dee2e6", "borderRadius": "6px",
+                       "padding": "5px", "backgroundColor": "#fff"},
+                children=[
+                    dcc.Graph(figure=fig, style={"height": "350px"},
+                              config={"scrollZoom": True}),
+                ],
+            )
+        )
+
+    if not graphs:
+        return html.Div("表示するサンプルがありません", className="text-muted")
+
+    return html.Div(
+        style={"display": "flex", "flexWrap": "wrap", "gap": "10px"},
+        children=graphs,
+    )
+
+
+# =========================================================================
+# DEG テーブル
+# =========================================================================
+
+@callback(
+    Output("lv_deg_table", "data"),
+    Input("lv_deg_data_store", "data"),
+    prevent_initial_call=True,
+)
+def lv_update_deg_table(deg_data):
+    """DEGデータストアの変更時にテーブルを更新"""
+    if not deg_data:
+        return []
+    return deg_data
 
 
 # =========================================================================

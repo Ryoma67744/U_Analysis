@@ -27,6 +27,8 @@ def create_shared_view_layout():
                     html.Div(id="sv_share_info", className="text-muted small"),
                 ],
             ),
+            # メタデータカード（プロジェクト名・サブプロジェクト名・統合手法・解析日時）
+            html.Div(id="sv_metadata_card", className="mt-2"),
             html.Div(id="sv_share_error", style={"display": "none"},
                      className="alert alert-danger mt-2"),
         ]),

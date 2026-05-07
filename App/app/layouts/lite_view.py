@@ -90,7 +90,33 @@ def create_lite_view_layout():
                 ),
             ]),
 
-            # --- Volcano（DEG が利用可能な場合のみ表示） ---
+            # --- Spatial Mapping ---
+            html.Div(className="card mb-3", children=[
+                html.H5("Spatial Mapping"),
+                dbc.Row(className="mb-2 align-items-center", children=[
+                    dbc.Col(width=3, children=[
+                        dbc.Label("ハイライト", className="small"),
+                        dcc.Dropdown(
+                            id="lv_spatial_highlight_cluster",
+                            multi=True,
+                            placeholder="ハイライトクラスタ",
+                        ),
+                    ]),
+                    dbc.Col(width=3, children=[
+                        dbc.Label("サンプル", className="small"),
+                        dcc.Dropdown(
+                            id="lv_spatial_sample",
+                            placeholder="サンプル（空=全表示）",
+                            clearable=True,
+                        ),
+                    ]),
+                ]),
+                dcc.Loading(
+                    html.Div(id="lv_spatial_container"),
+                ),
+            ]),
+
+            # --- Volcano + DEG マーカー（DEG が利用可能な場合のみ表示） ---
             html.Div(id="lv_volcano_section", style={"display": "none"}, children=[
                 html.Div(className="card mb-3", children=[
                     html.H5("Volcano Plot"),
@@ -112,6 +138,29 @@ def create_lite_view_layout():
                                 "toImageButtonOptions": {"format": "png", "scale": 3},
                             },
                         ),
+                    ),
+                ]),
+
+                html.Div(className="card mb-3", children=[
+                    html.H5("DEG マーカー"),
+                    dash_table.DataTable(
+                        id="lv_deg_table",
+                        columns=[
+                            {"name": "Gene/m/z", "id": "gene"},
+                            {"name": "Cluster", "id": "cluster"},
+                            {"name": "avg_log2FC", "id": "avg_log2FC"},
+                            {"name": "p_val_adj", "id": "p_val_adj"},
+                            {"name": "pct.1", "id": "pct.1"},
+                            {"name": "pct.2", "id": "pct.2"},
+                        ],
+                        sort_action="native",
+                        filter_action="native",
+                        style_table={"overflowX": "auto"},
+                        style_cell={"textAlign": "left", "padding": "6px",
+                                    "fontSize": "0.85rem"},
+                        style_header={"backgroundColor": "#f8f9fa",
+                                      "fontWeight": "600"},
+                        page_size=50,
                     ),
                 ]),
             ]),

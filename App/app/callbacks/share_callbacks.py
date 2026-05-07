@@ -67,6 +67,7 @@ def route_share_url(pathname):
      Output("sv_share_error", "style"),
      Output("sv_share_error", "children"),
      Output("sv_share_info", "children"),
+     Output("sv_metadata_card", "children"),
      Output("sv_result_dir_store", "data"),
      Output("sv_rds_path_store", "data"),
      Output("sv_integration_method_store", "data"),
@@ -91,13 +92,13 @@ def initialize_shared_view(token):
     show = {}
 
     if not token:
-        return (hide, hide, "", "", "", "", "", "",
+        return (hide, hide, "", "", "", "", "", "", "",
                 [], [], [], [], [], [], hide, None, [], [])
 
     # トークン検証
     share = get_share(token)
     if not share:
-        return (hide, show, "このリンクは無効か、有効期限が切れています。", "",
+        return (hide, show, "このリンクは無効か、有効期限が切れています。", "", "",
                 "", "", "", "", [], [], [], [], [], [], hide, None, [], [])
 
     result_dir = share.get("result_dir", "")
@@ -106,6 +107,22 @@ def initialize_shared_view(token):
     info_text = (
         f"{share.get('project_name', '')} / {share.get('sub_project_name', '')} — "
         f"有効期限: {share.get('expires_at', '不明')}"
+    )
+    metadata_card = dbc.Card(
+        dbc.CardBody(
+            dbc.Row([
+                dbc.Col([html.Strong("プロジェクト: "),
+                         html.Span(share.get("project_name", "—"))], width="auto"),
+                dbc.Col([html.Strong("サブプロジェクト: "),
+                         html.Span(share.get("sub_project_name", "—"))], width="auto"),
+                dbc.Col([html.Strong("統合手法: "),
+                         html.Span(integration_method or "—")], width="auto"),
+                dbc.Col([html.Strong("共有日時: "),
+                         html.Span(share.get("created_at", "—"))], width="auto"),
+            ], className="g-3"),
+            className="py-2",
+        ),
+        className="bg-light border-0",
     )
 
     # --- ギャラリー用: サブフォルダ・クラスタ ---
@@ -188,6 +205,7 @@ def initialize_shared_view(token):
         hide,                    # sv_share_error style
         "",                      # sv_share_error children
         info_text,               # sv_share_info children
+        metadata_card,           # sv_metadata_card children
         result_dir,              # sv_result_dir_store
         rds_path,                # sv_rds_path_store
         integration_method,      # sv_integration_method_store
