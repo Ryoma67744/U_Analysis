@@ -1,13 +1,23 @@
 # =============================================================================
 # MSI Analysis Application - Caddy リバースプロキシ設定
 #
-# ドメイン名を取得後、下記の "msi.example.com" を実際のドメインに置換してください。
-# Caddy が Let's Encrypt から自動でSSL証明書を取得します。
+# 【手順】
+#  1. 独自ドメインを取得し、A レコードを VPS の IP アドレスに向ける
+#     （詳細: App/docs/DEPLOY.md セクション 7.1〜7.2）
+#  2. 下記の "msi.example.com" を実際のドメインに置換:
+#       sed -i 's/msi\.example\.com/msi.yourlab.com/g' Caddyfile
+#  3. 本番構成で起動:
+#       docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 #
-# IP アドレスでの直接アクセス（HTTPのみ）の場合:
-#   :80 {
-#       reverse_proxy msi-app:3838
-#   }
+# Caddy が Let's Encrypt から SSL 証明書を自動取得・自動更新します。
+# 取得には TCP 80 / 443 が外部から到達可能である必要があります。
+#
+# 【ドメインを取らず IP アドレス直アクセス（HTTPのみ・非推奨）の場合】
+#   下記ブロックを削除し、代わりに以下を記述:
+#     :80 {
+#         reverse_proxy msi-app:3838
+#     }
+#   ※ パスワードが平文で流れるためチーム共有運用には不向き
 # =============================================================================
 
 msi.example.com {
