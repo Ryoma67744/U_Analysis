@@ -146,6 +146,10 @@ def create_sidebar():
                     size="sm", color="primary", outline=True,
                 ),
                 dbc.Button(
+                    ["🧹 RDS 軽量化"], id="open_rds_maintenance_modal",
+                    size="sm", color="primary", outline=True,
+                ),
+                dbc.Button(
                     ["⚙ 環境設定"], id="open_env_settings_modal",
                     size="sm", color="dark", outline=True,
                 ),

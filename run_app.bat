@@ -1,4 +1,5 @@
-@echo off
+﻿@echo off
+chcp 65001 >nul 2>&1
 REM MSI Analysis Application Launcher (Python Dash version)
 REM 質量分析イメージングデータ解析アプリケーション
 

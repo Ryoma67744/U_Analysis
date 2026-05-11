@@ -22,6 +22,7 @@ packages <- c(
   "readxl",
   "jsonlite",
   "arrow",
+  "qs",  # 高速・高圧縮 R オブジェクトシリアライザ (RDS 軽量化用)
 
   # 可視化
   "ggplot2",

@@ -79,6 +79,7 @@ from app.callbacks import interactive_data_export  # noqa: E402, F401
 from app.callbacks import scils_converter_callbacks  # noqa: E402, F401
 from app.callbacks import env_settings_callbacks  # noqa: E402, F401
 from app.callbacks import lite_view_callbacks  # noqa: E402, F401
+from app.callbacks import rds_maintenance_callbacks  # noqa: E402, F401
 
 if __name__ == "__main__":
     app.run(debug=True, host=APP_HOST, port=APP_PORT)

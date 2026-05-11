@@ -14,6 +14,7 @@ from app.layouts.interactive_tab import create_interactive_tab
 from app.layouts.file_browser_modal import create_file_browser_modal
 from app.layouts.scils_converter_modal import create_scils_converter_modal
 from app.layouts.env_settings_modal import create_env_settings_modal
+from app.layouts.rds_maintenance_modal import create_rds_maintenance_modal
 from app.layouts.landing_page import create_landing_page
 from app.layouts.action_page import create_action_page
 from app.layouts.shared_view import create_shared_view_layout
@@ -184,6 +185,9 @@ def create_main_layout():
 
                         # SCiLS 変換モーダル
                         create_scils_converter_modal(),
+
+                        # RDS 軽量化モーダル
+                        create_rds_maintenance_modal(),
 
                         # ファイルブラウザの状態
                         dcc.Store(id="fb_state", data={

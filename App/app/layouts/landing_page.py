@@ -79,6 +79,13 @@ def create_landing_page():
                                 style={"whiteSpace": "nowrap"},
                                 children=[
                                     dbc.Button(
+                                        "🧹 RDS 軽量化",
+                                        id="open_rds_maintenance_modal_landing",
+                                        color="primary",
+                                        outline=True,
+                                        className="me-1",
+                                    ),
+                                    dbc.Button(
                                         "⚙ 環境設定",
                                         id="open_env_settings_modal_landing",
                                         color="dark",
