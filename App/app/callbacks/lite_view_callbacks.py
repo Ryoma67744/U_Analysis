@@ -4,14 +4,19 @@
 # /lite/<project_id>/<sub_project_id> の「レポート型」サマリビュー。
 # PPT 出力と同等の構造をブラウザ上で即時表示する。
 #
-# 大きく 3 系統の callback:
+# 大きく 5 系統の callback:
 #   1. URL ルーティング (route_lite_url + navigate_to_lite_page)
 #       url_bar.pathname を lite_target_store に変換し、その後ページ遷移
 #       2 段に分けているのは share_callbacks.route_share_url とのハッシュ衝突回避のため
 #   2. レポート初期化 (initialize_lite_view)
 #       lite_target_store → 全レポート HTML を一気に組み立てて lv_report_body に投入
+#       per-cluster カードの詳細部は遅延挿入のため初期 DOM に含まれない
 #   3. Volcano 開閉 (toggle_volcano_section)
 #       pattern-matching で各カードの Volcano セクションを折りたたむ
+#   4. クラスタカード開閉 (toggle_cluster_card)
+#       pattern-matching で各クラスタの UMAP/Spatial/Volcano グリッドを遅延描画
+#   5. 全クラスタ一括展開 (expand_all_clusters)
+#       1 クリックで全カードを開閉
 # =============================================================================
 
 import re
@@ -22,7 +27,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
 from dash import (
-    Input, Output, State, callback, html, dcc, dash_table, no_update, MATCH,
+    Input, Output, State, callback, html, dcc, dash_table, no_update,
+    MATCH, ALL,
     clientside_callback,
 )
 
@@ -160,6 +166,18 @@ def initialize_lite_view(target, method_data):
     custom_color_map = settings.get("custom_color_map") or None
     saved_positions_all = load_label_positions(rds_path, integration_method) or {}
 
+    # per-cluster カード遅延展開時に再利用するため bundle をキャッシュ
+    color_map = _get_cluster_color_map(df_plot["Cluster"], custom_color_map)
+    _shared_data[cache_key]["_lite_bundle"] = {
+        "df_plot": df_plot,
+        "color_map": color_map,
+        "deg_records": deg_records,
+        "cluster_name_map": cluster_name_map,
+        "sample_name_map": sample_name_map,
+        "spatial_rotation": spatial_rotation,
+        "saved_positions_all": saved_positions_all,
+    }
+
     # レポート組み立て
     body = _build_report_body(
         project=project,
@@ -210,6 +228,206 @@ def toggle_volcano_section(n_clicks, is_open):
 
 
 # =============================================================================
+# クラスタカード遅延展開
+# =============================================================================
+
+def _resolve_lite_data_for_target(target, method_data):
+    """target/method から per-cluster カードの展開に必要な bundle を返す。
+
+    initialize_lite_view が事前に `_shared_data[cache_key]["_lite_bundle"]` を
+    詰めるため、通常はこのキャッシュをそのまま返すだけ（高速）。
+    キャッシュ未ヒット時のみ RDS 再読込 + 設定ロードを実施する。
+
+    Returns: dict(df_plot, color_map, deg_records, cluster_name_map,
+                  sample_name_map, spatial_rotation, saved_positions_all)
+             失敗時は None。
+    """
+    if not target or not target.get("project_id"):
+        return None
+    project_id = target["project_id"]
+    sub_id = target.get("sub_project_id")
+    if not sub_id:
+        return None
+
+    project = get_project(project_id)
+    sub = get_sub_project(project_id, sub_id) if project else None
+    if not sub:
+        return None
+
+    result_dir = sub.get("last_result_dir") or sub.get("output_dir", "")
+    rds_map = _detect_integration_methods(result_dir) if result_dir else {}
+    if not rds_map:
+        return None
+
+    requested_method = (method_data or {}).get("method")
+    if requested_method and requested_method in rds_map:
+        integration_method = requested_method
+    else:
+        integration_method = (
+            "Harmony" if "Harmony" in rds_map else next(iter(rds_map))
+        )
+    rds_path = rds_map[integration_method]
+
+    cache_key = f"lite::{project_id}::{sub_id}::{integration_method}"
+    cached = _shared_data.get(cache_key)
+    if cached and "_lite_bundle" in cached:
+        return cached["_lite_bundle"]
+
+    # キャッシュ未ヒット: RDS 抽出から再構築（initialize_lite_view 未実行などの
+    # レアケース。サーバ再起動後にユーザーが lite ページに留まっていた場合など）
+    try:
+        if not cached:
+            extracted = _sv_bridge.extract_data(rds_path)
+            _shared_data[cache_key] = {
+                "plot_data": extracted["plot_data"],
+                "cluster_stats": extracted["cluster_stats"],
+                "features_list": extracted["features_list"],
+                "meta": extracted["meta"],
+                "rds_path": rds_path,
+                "cache_dir": str(extracted["cache_dir"]),
+            }
+            cached = _shared_data[cache_key]
+    except Exception:
+        return None
+
+    df_plot = cached["plot_data"]
+    deg_records = []
+    if result_dir and Path(result_dir).is_dir():
+        deg_records = _load_deg_results(Path(result_dir), integration_method) or []
+
+    settings = load_interactive_settings(rds_path) or {}
+    cluster_name_map = settings.get("cluster_name_map") or {}
+    sample_name_map = settings.get("sample_name_map") or {}
+    spatial_rotation = settings.get("spatial_rotation") or {}
+    custom_color_map = settings.get("custom_color_map") or None
+    saved_positions_all = load_label_positions(rds_path, integration_method) or {}
+    color_map = _get_cluster_color_map(df_plot["Cluster"], custom_color_map)
+
+    bundle = {
+        "df_plot": df_plot,
+        "color_map": color_map,
+        "deg_records": deg_records,
+        "cluster_name_map": cluster_name_map,
+        "sample_name_map": sample_name_map,
+        "spatial_rotation": spatial_rotation,
+        "saved_positions_all": saved_positions_all,
+    }
+    cached["_lite_bundle"] = bundle
+    return bundle
+
+
+@callback(
+    Output({"type": "lv_card_collapse", "cluster": MATCH}, "is_open"),
+    Output({"type": "lv_card_body", "cluster": MATCH}, "children"),
+    Output({"type": "lv_card_toggle", "cluster": MATCH}, "children"),
+    Input({"type": "lv_card_toggle", "cluster": MATCH}, "n_clicks"),
+    State({"type": "lv_card_collapse", "cluster": MATCH}, "is_open"),
+    State({"type": "lv_card_toggle", "cluster": MATCH}, "id"),
+    State({"type": "lv_card_body", "cluster": MATCH}, "children"),
+    State("lite_target_store", "data"),
+    State("lv_method_store", "data"),
+    prevent_initial_call=True,
+)
+def toggle_cluster_card(n_clicks, is_open, btn_id, current_body,
+                          target, method_data):
+    """個別カードの「詳細を表示／閉じる」トグル。
+
+    開く操作のみ重量パートを生成する。閉じるときは children を保持
+    （再展開を高速化）。
+    """
+    if not n_clicks:
+        return no_update, no_update, no_update
+    new_open = not is_open
+    if new_open:
+        if current_body:
+            # 既に展開済みの DOM を保持していた場合は再構築不要
+            return True, no_update, "▼ 詳細を閉じる"
+        bundle = _resolve_lite_data_for_target(target, method_data)
+        if bundle is None:
+            return no_update, no_update, no_update
+        contents = _build_cluster_card_expand_contents(
+            btn_id["cluster"],
+            df_plot=bundle["df_plot"],
+            color_map=bundle["color_map"],
+            deg_records=[
+                r for r in bundle["deg_records"]
+                if str(r.get("cluster", "")) == str(btn_id["cluster"])
+            ],
+            cluster_name_map=bundle["cluster_name_map"],
+            sample_name_map=bundle["sample_name_map"],
+            spatial_rotation=bundle["spatial_rotation"],
+            saved_positions_all=bundle["saved_positions_all"],
+        )
+        return True, contents, "▼ 詳細を閉じる"
+    return False, no_update, "▶ 詳細を表示 (UMAP / Spatial / Volcano)"
+
+
+@callback(
+    Output({"type": "lv_card_collapse", "cluster": ALL}, "is_open"),
+    Output({"type": "lv_card_body", "cluster": ALL}, "children"),
+    Output({"type": "lv_card_toggle", "cluster": ALL}, "children"),
+    Input("lv_expand_all_clusters", "n_clicks"),
+    State({"type": "lv_card_collapse", "cluster": ALL}, "is_open"),
+    State({"type": "lv_card_collapse", "cluster": ALL}, "id"),
+    State({"type": "lv_card_body", "cluster": ALL}, "children"),
+    State("lite_target_store", "data"),
+    State("lv_method_store", "data"),
+    prevent_initial_call=True,
+)
+def expand_all_clusters(n_clicks, opens, ids, current_bodies,
+                         target, method_data):
+    """全クラスタカードを一括で開閉。
+
+    どれか 1 つでも閉じていれば全部開く動作。すべて開いていれば全部閉じる。
+    """
+    if not n_clicks or not ids:
+        return no_update, no_update, no_update
+
+    any_closed = not all(opens)
+    if any_closed:
+        bundle = _resolve_lite_data_for_target(target, method_data)
+        if bundle is None:
+            return no_update, no_update, no_update
+
+        deg_by_cluster = {}
+        for r in bundle["deg_records"]:
+            c = str(r.get("cluster", ""))
+            deg_by_cluster.setdefault(c, []).append(r)
+
+        new_opens = []
+        new_bodies = []
+        new_labels = []
+        for idx, id_ in enumerate(ids):
+            cluster_key = id_["cluster"]
+            new_opens.append(True)
+            if current_bodies and current_bodies[idx]:
+                # 既に展開済みの DOM は再利用
+                new_bodies.append(no_update)
+            else:
+                new_bodies.append(
+                    _build_cluster_card_expand_contents(
+                        cluster_key,
+                        df_plot=bundle["df_plot"],
+                        color_map=bundle["color_map"],
+                        deg_records=deg_by_cluster.get(str(cluster_key), []),
+                        cluster_name_map=bundle["cluster_name_map"],
+                        sample_name_map=bundle["sample_name_map"],
+                        spatial_rotation=bundle["spatial_rotation"],
+                        saved_positions_all=bundle["saved_positions_all"],
+                    )
+                )
+            new_labels.append("▼ 詳細を閉じる")
+        return new_opens, new_bodies, new_labels
+
+    n = len(ids)
+    return (
+        [False] * n,
+        [no_update] * n,
+        ["▶ 詳細を表示 (UMAP / Spatial / Volcano)"] * n,
+    )
+
+
+# =============================================================================
 # レポート構築ヘルパー（Phase 2 で /share/ に流用できる純関数として分離）
 # =============================================================================
 
@@ -233,9 +451,6 @@ def _build_report_body(project, sub, integration_method, available_methods,
         _build_per_cluster_cards(
             df_plot, deg_records, color_map,
             cluster_name_map=cluster_name_map,
-            sample_name_map=sample_name_map,
-            spatial_rotation=spatial_rotation,
-            saved_positions_all=saved_positions_all,
         ),
         _build_heatmap_section(deg_records, cluster_name_map=cluster_name_map),
     ]
@@ -599,10 +814,14 @@ def _build_cluster_ratio_pie(df_plot, color_map, cluster_name_map=None):
 
 
 def _build_per_cluster_cards(df_plot, deg_records, color_map,
-                              cluster_name_map=None, sample_name_map=None,
-                              spatial_rotation=None,
-                              saved_positions_all=None):
-    """クラスタごとに 1 カード"""
+                              cluster_name_map=None):
+    """クラスタごとに 1 カード（軽量版）。
+
+    カード詳細（UMAP/Spatial/Volcano）は遅延描画のため、ここでは
+    ヘッダ + Top5 + トグルボタン + 空 Collapse のみ生成する。
+    sample_name_map / spatial_rotation / saved_positions_all は
+    toggle_cluster_card 側で _resolve_lite_data_for_target 経由で参照する。
+    """
     if "Cluster" not in df_plot.columns:
         return html.Div()
 
@@ -627,81 +846,59 @@ def _build_per_cluster_cards(df_plot, deg_records, color_map,
                 color=color,
                 n_cells=n_c,
                 pct=pct,
-                df_plot=df_plot,
-                color_map=color_map,
                 deg_records=deg_by_cluster.get(c, []),
                 cluster_name_map=cluster_name_map,
-                sample_name_map=sample_name_map,
-                spatial_rotation=spatial_rotation,
-                saved_positions_all=saved_positions_all,
             )
         )
+
+    expand_all_btn = dbc.Button(
+        "📂 全クラスタの詳細を一括展開 / 折りたたみ",
+        id="lv_expand_all_clusters",
+        color="primary", outline=True, size="sm",
+        className="mb-3",
+        n_clicks=0,
+    )
 
     return html.Div(
         className="per-cluster-section mb-5",
         children=[
             html.H4("Per-cluster Summary",
                     className="mb-3 border-bottom pb-2"),
+            expand_all_btn,
             *cards,
         ],
     )
 
 
 def _build_one_cluster_card(cluster_id, color, n_cells, pct,
-                            df_plot, color_map, deg_records,
-                            cluster_name_map=None, sample_name_map=None,
-                            spatial_rotation=None,
-                            saved_positions_all=None):
-    """1 クラスタぶんのカード"""
-    saved_positions_all = saved_positions_all or {}
-    umap_per_sample_pos = saved_positions_all.get("umap_per_sample") or {}
-    spatial_pos = saved_positions_all.get("spatial") or {}
+                            deg_records,
+                            cluster_name_map=None):
+    """1 クラスタぶんのカード（軽量版: ヘッダ + Top5 + 詳細トグル）
 
-    # サンプル別ハイライト UMAP グリッド（背景を 0.4 に濃く）
-    hl_umap_grid = _build_per_sample_highlight_umap_grid(
-        df_plot, color_map, highlight_cluster=cluster_id,
-        cluster_name_map=cluster_name_map,
-        sample_name_map=sample_name_map,
-        saved_positions_per_sample=umap_per_sample_pos,
-        bg_opacity=0.4,
-        panel_height=280,
+    詳細パート（per-sample UMAP/Spatial/Volcano）はユーザーが「詳細を表示」を
+    押すまで DOM に挿入されない。toggle_cluster_card callback が
+    `lv_card_body` の children を差し込む。
+    """
+    cluster_key = str(cluster_id)
+    cluster_display = (cluster_name_map or {}).get(
+        cluster_key, f"Cluster {cluster_id}",
     )
-
-    # ハイライト Spatial グリッド（rotation/flip 反映）
-    hl_spatial = _build_per_sample_spatial(
-        df_plot, color_map, highlight_clusters=[cluster_id],
-        cluster_name_map=cluster_name_map,
-        sample_name_map=sample_name_map,
-        spatial_rotation=spatial_rotation,
-        saved_positions_per_sample=spatial_pos,
-        show_labels=False,
-        panel_height=240,
-    )
-
     top_markers_view = _build_top_markers_table(deg_records, top_n=5)
 
-    if deg_records:
-        volcano_fig = _build_volcano_fig(deg_records, cluster_id)
-        volcano_toggle = dbc.Button(
-            "▼ Volcano Plot を表示",
-            id={"type": "lv_volcano_toggle", "cluster": cluster_id},
-            size="sm", color="secondary", outline=True,
-            className="mt-2",
-        )
-        volcano_collapse = dbc.Collapse(
-            dcc.Graph(figure=volcano_fig,
-                      config={"displayModeBar": True})
-            if volcano_fig is not None
-            else html.Div("Volcano 描画不可", className="text-muted small"),
-            id={"type": "lv_volcano_collapse", "cluster": cluster_id},
-            is_open=False,
-        )
-    else:
-        volcano_toggle = None
-        volcano_collapse = None
-
-    cluster_display = (cluster_name_map or {}).get(
-        str(cluster_id), f"Cluster {cluster_id}",
+    toggle_btn = dbc.Button(
+        "▶ 詳細を表示 (UMAP / Spatial / Volcano)",
+        id={"type": "lv_card_toggle", "cluster": cluster_key},
+        size="sm", color="secondary", outline=True,
+        className="mt-2",
+        n_clicks=0,
+    )
+    collapse = dbc.Collapse(
+        html.Div(
+            id={"type": "lv_card_body", "cluster": cluster_key},
+            children=[],
+        ),
+        id={"type": "lv_card_collapse", "cluster": cluster_key},
+        is_open=False,
     )
 
     return dbc.Card(
@@ -723,23 +920,85 @@ def _build_one_cluster_card(cluster_id, color, n_cells, pct,
                 ],
                 className="cluster-card-header mb-3 pb-2 border-bottom",
             ),
-            html.H6("Highlighted UMAP (per sample)",
-                    className="text-muted small"),
-            hl_umap_grid,
-            html.H6("Highlighted Spatial (per sample)",
-                    className="text-muted small mt-3"),
-            hl_spatial,
             html.Div([
                 html.H6(
                     "Top 5 Up-regulated Markers",
-                    className="text-muted small mt-3",
+                    className="text-muted small",
                 ),
                 top_markers_view,
             ], className="mb-2"),
-            volcano_toggle,
-            volcano_collapse,
+            toggle_btn,
+            collapse,
         ]),
     )
+
+
+def _build_cluster_card_expand_contents(cluster_id, df_plot, color_map,
+                                         deg_records,
+                                         cluster_name_map=None,
+                                         sample_name_map=None,
+                                         spatial_rotation=None,
+                                         saved_positions_all=None):
+    """カード展開時に lv_card_body に差し込む重量パート。
+
+    Per-sample Highlighted UMAP グリッド / Per-sample Spatial /
+    Volcano (内側トグル付き) を返す children リスト。
+    """
+    saved_positions_all = saved_positions_all or {}
+    umap_per_sample_pos = saved_positions_all.get("umap_per_sample") or {}
+    spatial_pos = saved_positions_all.get("spatial") or {}
+
+    hl_umap_grid = _build_per_sample_highlight_umap_grid(
+        df_plot, color_map, highlight_cluster=cluster_id,
+        cluster_name_map=cluster_name_map,
+        sample_name_map=sample_name_map,
+        saved_positions_per_sample=umap_per_sample_pos,
+        bg_opacity=0.4,
+        panel_height=280,
+    )
+
+    hl_spatial = _build_per_sample_spatial(
+        df_plot, color_map, highlight_clusters=[cluster_id],
+        cluster_name_map=cluster_name_map,
+        sample_name_map=sample_name_map,
+        spatial_rotation=spatial_rotation,
+        saved_positions_per_sample=spatial_pos,
+        show_labels=False,
+        panel_height=240,
+    )
+
+    children = [
+        html.H6("Highlighted UMAP (per sample)",
+                className="text-muted small mt-3"),
+        hl_umap_grid,
+        html.H6("Highlighted Spatial (per sample)",
+                className="text-muted small mt-3"),
+        hl_spatial,
+    ]
+
+    if deg_records:
+        volcano_fig = _build_volcano_fig(deg_records, cluster_id)
+        cluster_key = str(cluster_id)
+        children.extend([
+            dbc.Button(
+                "▼ Volcano Plot を表示",
+                id={"type": "lv_volcano_toggle", "cluster": cluster_key},
+                size="sm", color="secondary", outline=True,
+                className="mt-2",
+                n_clicks=0,
+            ),
+            dbc.Collapse(
+                dcc.Graph(figure=volcano_fig,
+                          config={"displayModeBar": True})
+                if volcano_fig is not None
+                else html.Div("Volcano 描画不可",
+                              className="text-muted small"),
+                id={"type": "lv_volcano_collapse", "cluster": cluster_key},
+                is_open=False,
+            ),
+        ])
+
+    return children
 
 
 def _build_top_markers_table(deg_records, top_n=5):
