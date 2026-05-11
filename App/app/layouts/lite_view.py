@@ -38,6 +38,9 @@ def create_lite_view_layout():
             # /lite/<pid>/<sid> から書かれるルーティング Store
             dcc.Store(id="lite_target_store", data={}),
 
+            # 統合手法（Harmony / RPCA）切り替え用 Store
+            dcc.Store(id="lv_method_store", data={}),
+
             # エラー表示（callback が is_open=True にする）
             dbc.Alert(
                 "",
