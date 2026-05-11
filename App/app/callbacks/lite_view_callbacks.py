@@ -37,6 +37,10 @@ from app.callbacks.share_callbacks import _shared_data, _sv_bridge
 from app.callbacks.interactive_umap import _build_umap_integrated_fig
 from app.callbacks.interactive_spatial import _create_single_spatial_fig
 from app.utils.deg_utils import is_meaningful_annotation
+from app.utils.label_persistence import (
+    load_interactive_settings,
+    load_label_positions,
+)
 
 _LITE_URL_RE = re.compile(r"^/lite/([^/]+)/([^/]+)/?$")
 
@@ -86,11 +90,12 @@ def navigate_to_lite_page(target):
     [Output("lv_report_body", "children"),
      Output("lv_error", "is_open"),
      Output("lv_error", "children")],
-    Input("lite_target_store", "data"),
+    [Input("lite_target_store", "data"),
+     Input("lv_method_store", "data")],
     prevent_initial_call=True,
 )
-def initialize_lite_view(target):
-    """lite_target_store の更新で全レポートを構築する。"""
+def initialize_lite_view(target, method_data):
+    """lite_target_store / lv_method_store の更新で全レポートを構築する。"""
     if not target or not target.get("project_id"):
         return no_update, False, ""
 
@@ -115,7 +120,12 @@ def initialize_lite_view(target):
             "解析結果が見つかりません（解析がまだ実行されていない可能性があります）。",
         )
 
-    integration_method = "Harmony" if "Harmony" in rds_map else next(iter(rds_map))
+    # 切り替え対応: lv_method_store 優先、無効値ならデフォルトにフォールバック
+    requested_method = (method_data or {}).get("method")
+    if requested_method and requested_method in rds_map:
+        integration_method = requested_method
+    else:
+        integration_method = "Harmony" if "Harmony" in rds_map else next(iter(rds_map))
     rds_path = rds_map[integration_method]
 
     # データロード（lite 専用 cache key で _shared_data を流用）
@@ -142,16 +152,45 @@ def initialize_lite_view(target):
     if result_dir and Path(result_dir).is_dir():
         deg_records = _load_deg_results(Path(result_dir), integration_method) or []
 
+    # メイン解析で永続化されたインタラクティブ設定 + ラベル位置を読み込む
+    settings = load_interactive_settings(rds_path) or {}
+    cluster_name_map = settings.get("cluster_name_map") or {}
+    sample_name_map = settings.get("sample_name_map") or {}
+    spatial_rotation = settings.get("spatial_rotation") or {}
+    custom_color_map = settings.get("custom_color_map") or None
+    saved_positions_all = load_label_positions(rds_path, integration_method) or {}
+
     # レポート組み立て
     body = _build_report_body(
         project=project,
         sub=sub,
         integration_method=integration_method,
+        available_methods=list(rds_map.keys()),
         df_plot=df_plot,
         df_stats=df_stats,
         deg_records=deg_records,
+        cluster_name_map=cluster_name_map,
+        sample_name_map=sample_name_map,
+        spatial_rotation=spatial_rotation,
+        custom_color_map=custom_color_map,
+        saved_positions_all=saved_positions_all,
     )
     return body, False, ""
+
+
+# Harmony / RPCA 切替: ラジオボタン → lv_method_store
+@callback(
+    Output("lv_method_store", "data"),
+    Input("lv_method_selector", "value"),
+    State("lv_method_store", "data"),
+    prevent_initial_call=True,
+)
+def update_method_store(value, current):
+    if not value:
+        return no_update
+    if (current or {}).get("method") == value:
+        return no_update
+    return {"method": value}
 
 
 # =============================================================================
@@ -174,20 +213,46 @@ def toggle_volcano_section(n_clicks, is_open):
 # レポート構築ヘルパー（Phase 2 で /share/ に流用できる純関数として分離）
 # =============================================================================
 
-def _build_report_body(project, sub, integration_method, df_plot,
-                       df_stats, deg_records):
+def _build_report_body(project, sub, integration_method, available_methods,
+                       df_plot, df_stats, deg_records,
+                       cluster_name_map=None, sample_name_map=None,
+                       spatial_rotation=None, custom_color_map=None,
+                       saved_positions_all=None):
     """全体レポートを html.Div の children リストとして返す。"""
-    color_map = _get_cluster_color_map(df_plot["Cluster"], None)
+    color_map = _get_cluster_color_map(df_plot["Cluster"], custom_color_map)
     return [
-        _build_header(project, sub, integration_method, df_plot, df_stats),
-        _build_overview_section(df_plot, df_stats, color_map),
-        _build_per_cluster_cards(df_plot, deg_records, color_map),
-        _build_heatmap_section(deg_records),
+        _build_header(project, sub, integration_method, available_methods,
+                      df_plot, df_stats, sample_name_map),
+        _build_overview_section(
+            df_plot, df_stats, color_map,
+            cluster_name_map=cluster_name_map,
+            sample_name_map=sample_name_map,
+            spatial_rotation=spatial_rotation,
+            saved_positions_all=saved_positions_all,
+        ),
+        _build_per_cluster_cards(
+            df_plot, deg_records, color_map,
+            cluster_name_map=cluster_name_map,
+            sample_name_map=sample_name_map,
+            spatial_rotation=spatial_rotation,
+            saved_positions_all=saved_positions_all,
+        ),
+        _build_heatmap_section(deg_records, cluster_name_map=cluster_name_map),
     ]
 
 
-def _build_header(project, sub, integration_method, df_plot, df_stats):
-    """ヘッダー: プロジェクト名 / 統計サマリ / サンプル名リスト"""
+def _resolve_sample_label(sample, sample_name_map):
+    """サンプル名マップがあれば表示名を返す（無ければ元名）"""
+    if sample_name_map and sample in sample_name_map:
+        v = sample_name_map.get(sample)
+        if v:
+            return str(v)
+    return str(sample)
+
+
+def _build_header(project, sub, integration_method, available_methods,
+                  df_plot, df_stats, sample_name_map=None):
+    """ヘッダー: プロジェクト名 / 統合手法選択 / 統計サマリ / サンプル名リスト"""
     samples = (
         sorted(df_plot["Sample"].unique())
         if "Sample" in df_plot.columns
@@ -201,26 +266,62 @@ def _build_header(project, sub, integration_method, df_plot, df_stats):
     n_cells = len(df_plot) if df_plot is not None else 0
 
     meta_items = [
-        ("統合手法", integration_method or "—"),
         ("サンプル数", str(len(samples))),
         ("クラスタ数", str(n_clusters)),
         ("総セル数", f"{n_cells:,}"),
         ("解析日時",
          sub.get("last_modified") or sub.get("created_at", "不明")),
     ]
+    meta_spans = [
+        html.Span(
+            [html.Strong(f"{label}: ", className="text-secondary"),
+             html.Span(value)]
+        ) for label, value in meta_items
+    ]
+
+    # 統合手法トグル（複数あるときだけ操作可能、1 つのときは表示のみ）
+    methods = list(available_methods or [integration_method])
+    if len(methods) >= 2:
+        method_control = html.Span(
+            [
+                html.Strong("統合手法: ", className="text-secondary"),
+                dcc.RadioItems(
+                    id="lv_method_selector",
+                    options=[{"label": m, "value": m} for m in methods],
+                    value=integration_method,
+                    inline=True,
+                    inputStyle={"marginRight": "4px", "marginLeft": "8px"},
+                    labelStyle={"marginRight": "10px"},
+                ),
+            ],
+            style={"display": "inline-flex", "alignItems": "center"},
+        )
+    else:
+        method_control = html.Span(
+            [
+                html.Strong("統合手法: ", className="text-secondary"),
+                html.Span(integration_method or "—"),
+                # 単一手法でも callback の Input id 解決ができるように非表示で残す
+                dcc.RadioItems(
+                    id="lv_method_selector",
+                    options=[{"label": integration_method,
+                              "value": integration_method}],
+                    value=integration_method,
+                    style={"display": "none"},
+                ),
+            ],
+        )
+
     meta_row = html.Div(
-        style={"display": "flex", "gap": "20px", "flexWrap": "wrap"},
-        children=[
-            html.Span(
-                [html.Strong(f"{label}: ", className="text-secondary"),
-                 html.Span(value)]
-            ) for label, value in meta_items
-        ],
+        style={"display": "flex", "gap": "20px", "flexWrap": "wrap",
+               "alignItems": "center"},
+        children=[method_control, *meta_spans],
     )
 
+    sample_labels = [_resolve_sample_label(s, sample_name_map) for s in samples]
     samples_line = (
         html.Small(
-            [html.Strong("サンプル: "), ", ".join(samples)],
+            [html.Strong("サンプル: "), ", ".join(sample_labels)],
             className="text-muted d-block mt-2",
         )
         if samples else None
@@ -244,51 +345,71 @@ def _build_header(project, sub, integration_method, df_plot, df_stats):
     )
 
 
-def _build_overview_section(df_plot, df_stats, color_map):
-    """Overview: 統合 UMAP / Per-sample Spatial / Stats Table / Ratio Pie"""
-    # Integrated UMAP
-    umap_fig = _build_umap_integrated_fig(
-        df_plot, color_by="Cluster", highlight_clusters=None,
-        show_legend=True, show_labels=True, marker_size=2,
-        custom_colors=color_map,
+def _build_overview_section(df_plot, df_stats, color_map,
+                              cluster_name_map=None, sample_name_map=None,
+                              spatial_rotation=None,
+                              saved_positions_all=None):
+    """Overview: Sample 色統合 UMAP / Per-sample UMAP グリッド /
+    Per-sample Spatial（クラスタ番号ラベル付き）/ Stats Table / Ratio Pie"""
+    saved_positions_all = saved_positions_all or {}
+    umap_pos = saved_positions_all.get("umap_integrated") or {}
+    umap_per_sample_pos = saved_positions_all.get("umap_per_sample") or {}
+    spatial_pos = saved_positions_all.get("spatial") or {}
+
+    # 1. Sample 色分け統合 UMAP
+    sample_umap_fig = _build_umap_integrated_fig(
+        df_plot, color_by="Sample", highlight_clusters=None,
+        show_legend=True, show_labels=False, marker_size=2,
     )
-    umap_fig.update_layout(
-        height=400, margin=dict(l=10, r=10, t=10, b=10),
+    sample_umap_fig.update_layout(
+        height=420, margin=dict(l=10, r=10, t=10, b=10),
     )
 
+    # 2. Per-sample UMAP（Cluster 色）グリッド
+    per_sample_umap_grid = _build_per_sample_umap_grid(
+        df_plot, color_map,
+        cluster_name_map=cluster_name_map,
+        sample_name_map=sample_name_map,
+        saved_positions_per_sample=umap_per_sample_pos,
+    )
+
+    # 3. Per-sample Spatial（クラスタ番号ラベル + 回転反映）
     spatial_grid = _build_per_sample_spatial(
-        df_plot, color_map, highlight_clusters=None, panel_height=300,
+        df_plot, color_map, highlight_clusters=None,
+        cluster_name_map=cluster_name_map,
+        sample_name_map=sample_name_map,
+        spatial_rotation=spatial_rotation,
+        saved_positions_per_sample=spatial_pos,
+        show_labels=True,
+        panel_height=320,
     )
 
-    # Cluster Stats Table
     stats_table = _build_cluster_stats_table(df_stats)
-
-    # Ratio Pie
-    pie_fig = _build_cluster_ratio_pie(df_plot, color_map)
+    pie_fig = _build_cluster_ratio_pie(df_plot, color_map, cluster_name_map)
 
     return html.Div(
         className="overview-section mb-5",
         children=[
             html.H4("Overview", className="mb-3 border-bottom pb-2"),
+            html.H6("Integrated UMAP (sample-colored)",
+                    className="text-muted small"),
+            dcc.Graph(figure=sample_umap_fig,
+                      config={"displayModeBar": True}),
+            html.H6("Per-sample UMAP (cluster-colored)",
+                    className="text-muted small mt-4"),
+            per_sample_umap_grid,
+            html.H6("Per-sample Spatial Mapping",
+                    className="text-muted small mt-4"),
+            spatial_grid,
             dbc.Row([
                 dbc.Col([
-                    html.H6("Integrated UMAP", className="text-muted small"),
-                    dcc.Graph(figure=umap_fig,
-                              config={"displayModeBar": True}),
-                ], lg=6, md=12, className="mb-3"),
-                dbc.Col([
-                    html.H6("Per-sample Spatial Mapping",
-                            className="text-muted small"),
-                    spatial_grid,
-                ], lg=6, md=12, className="mb-3"),
-            ]),
-            dbc.Row([
-                dbc.Col([
-                    html.H6("Cluster Statistics", className="text-muted small"),
+                    html.H6("Cluster Statistics",
+                            className="text-muted small mt-4"),
                     stats_table,
                 ], lg=6, md=12, className="mb-3"),
                 dbc.Col([
-                    html.H6("Cluster Ratio", className="text-muted small"),
+                    html.H6("Cluster Ratio",
+                            className="text-muted small mt-4"),
                     dcc.Graph(figure=pie_fig,
                               config={"displayModeBar": False}),
                 ], lg=6, md=12, className="mb-3"),
@@ -297,9 +418,52 @@ def _build_overview_section(df_plot, df_stats, color_map):
     )
 
 
+def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
+                                  sample_name_map=None,
+                                  saved_positions_per_sample=None,
+                                  panel_height=340):
+    """サンプル別 Cluster 色分け UMAP グリッド（画像2 相当）"""
+    if "Sample" not in df_plot.columns:
+        return html.Div("Sample 列なし", className="text-muted small")
+    samples = sorted(df_plot["Sample"].unique())
+    if not samples:
+        return html.Div("サンプルなし", className="text-muted small")
+
+    saved_positions_per_sample = saved_positions_per_sample or {}
+    cols = []
+    for s in samples:
+        df_s = df_plot[df_plot["Sample"] == s]
+        sample_pos = saved_positions_per_sample.get(s)
+        title = _resolve_sample_label(s, sample_name_map)
+        fig = _build_umap_integrated_fig(
+            df_s, color_by="Cluster", highlight_clusters=None,
+            show_legend=True, show_labels=False, marker_size=2,
+            custom_colors=color_map,
+            cluster_name_map=cluster_name_map,
+            saved_positions=sample_pos,
+            title=title,
+        )
+        fig.update_layout(
+            height=panel_height,
+            margin=dict(l=10, r=10, t=30, b=10),
+        )
+        cols.append(dbc.Col(
+            dcc.Graph(figure=fig, config={"displayModeBar": False}),
+            lg=6, md=12, className="mb-2",
+        ))
+    return dbc.Row(cols, className="g-2")
+
+
 def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
+                              cluster_name_map=None, sample_name_map=None,
+                              spatial_rotation=None,
+                              saved_positions_per_sample=None,
+                              show_labels=False,
                               panel_height=250):
-    """各サンプル 1 パネルの Spatial グリッド（横並び・改行可）"""
+    """各サンプル 1 パネルの Spatial グリッド（横並び・改行可）
+
+    メイン解析で保存された rotation/flip/ラベル位置/サンプル名/クラスタ名を反映する。
+    """
     if "Sample" not in df_plot.columns:
         return html.Div("Spatial データなし",
                         className="text-muted small")
@@ -307,13 +471,24 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
     if not samples:
         return html.Div("サンプルなし", className="text-muted small")
 
+    spatial_rotation = spatial_rotation or {}
+    saved_positions_per_sample = saved_positions_per_sample or {}
+
     cols = []
     for s in samples:
         df_sample = df_plot[df_plot["Sample"] == s]
+        rot = spatial_rotation.get(s, {}) or {}
+        title = _resolve_sample_label(s, sample_name_map)
         fig = _create_single_spatial_fig(
             df_sample, color_map, highlight_clusters,
             selected_cell_ids=None,
-            title=s, marker_size=2, embed_legend=False,
+            rotation_deg=rot.get("angle", 0) or 0,
+            flip_h=bool(rot.get("flip_h", False)),
+            flip_v=bool(rot.get("flip_v", False)),
+            show_labels=show_labels,
+            cluster_name_map=cluster_name_map,
+            saved_positions=saved_positions_per_sample.get(s),
+            title=title, marker_size=2, embed_legend=False,
         )
         fig.update_layout(
             height=panel_height,
@@ -327,6 +502,49 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
                 lg=6, md=12, className="mb-2",
             )
         )
+    return dbc.Row(cols, className="g-2")
+
+
+def _build_per_sample_highlight_umap_grid(
+    df_plot, color_map, highlight_cluster,
+    cluster_name_map=None, sample_name_map=None,
+    saved_positions_per_sample=None,
+    bg_opacity=0.4, panel_height=300,
+):
+    """サンプル別ハイライト UMAP グリッド（per-cluster カード用）
+
+    background opacity を 0.4 に上げて、非ハイライト部分の輪郭が見える濃さにする。
+    """
+    if "Sample" not in df_plot.columns:
+        return html.Div("Sample 列なし", className="text-muted small")
+    samples = sorted(df_plot["Sample"].unique())
+    if not samples:
+        return html.Div("サンプルなし", className="text-muted small")
+
+    saved_positions_per_sample = saved_positions_per_sample or {}
+    cols = []
+    for s in samples:
+        df_s = df_plot[df_plot["Sample"] == s]
+        sample_pos = saved_positions_per_sample.get(s)
+        title = _resolve_sample_label(s, sample_name_map)
+        fig = _build_umap_integrated_fig(
+            df_s, color_by="Cluster",
+            highlight_clusters=[highlight_cluster],
+            show_legend=False, show_labels=False, marker_size=2,
+            custom_colors=color_map,
+            cluster_name_map=cluster_name_map,
+            saved_positions=sample_pos,
+            bg_opacity=bg_opacity,
+            title=title,
+        )
+        fig.update_layout(
+            height=panel_height,
+            margin=dict(l=10, r=10, t=30, b=10),
+        )
+        cols.append(dbc.Col(
+            dcc.Graph(figure=fig, config={"displayModeBar": False}),
+            lg=6, md=12, className="mb-1",
+        ))
     return dbc.Row(cols, className="g-2")
 
 
@@ -346,7 +564,7 @@ def _build_cluster_stats_table(df_stats):
     )
 
 
-def _build_cluster_ratio_pie(df_plot, color_map):
+def _build_cluster_ratio_pie(df_plot, color_map, cluster_name_map=None):
     """クラスタ構成比の Donut Pie"""
     if "Cluster" not in df_plot.columns:
         return go.Figure()
@@ -357,10 +575,14 @@ def _build_cluster_ratio_pie(df_plot, color_map):
     labels = sorted(counts.index, key=_cluster_sort_key)
     values = [int(counts[c]) for c in labels]
     colors = [color_map.get(c, "#888") for c in labels]
+    cluster_name_map = cluster_name_map or {}
+    display_labels = [
+        cluster_name_map.get(c, f"Cluster {c}") for c in labels
+    ]
 
     fig = go.Figure(data=[
         go.Pie(
-            labels=[f"Cluster {c}" for c in labels],
+            labels=display_labels,
             values=values,
             marker=dict(colors=colors),
             hole=0.3,
@@ -376,7 +598,10 @@ def _build_cluster_ratio_pie(df_plot, color_map):
     return fig
 
 
-def _build_per_cluster_cards(df_plot, deg_records, color_map):
+def _build_per_cluster_cards(df_plot, deg_records, color_map,
+                              cluster_name_map=None, sample_name_map=None,
+                              spatial_rotation=None,
+                              saved_positions_all=None):
     """クラスタごとに 1 カード"""
     if "Cluster" not in df_plot.columns:
         return html.Div()
@@ -405,6 +630,10 @@ def _build_per_cluster_cards(df_plot, deg_records, color_map):
                 df_plot=df_plot,
                 color_map=color_map,
                 deg_records=deg_by_cluster.get(c, []),
+                cluster_name_map=cluster_name_map,
+                sample_name_map=sample_name_map,
+                spatial_rotation=spatial_rotation,
+                saved_positions_all=saved_positions_all,
             )
         )
 
@@ -419,29 +648,38 @@ def _build_per_cluster_cards(df_plot, deg_records, color_map):
 
 
 def _build_one_cluster_card(cluster_id, color, n_cells, pct,
-                            df_plot, color_map, deg_records):
+                            df_plot, color_map, deg_records,
+                            cluster_name_map=None, sample_name_map=None,
+                            spatial_rotation=None,
+                            saved_positions_all=None):
     """1 クラスタぶんのカード"""
-    # ハイライト UMAP
-    hl_umap = _build_umap_integrated_fig(
-        df_plot, color_by="Cluster",
-        highlight_clusters=[cluster_id],
-        show_legend=False, show_labels=False, marker_size=2,
-        custom_colors=color_map, bg_opacity=0.08,
-    )
-    hl_umap.update_layout(
-        height=350, margin=dict(l=10, r=10, t=10, b=10),
+    saved_positions_all = saved_positions_all or {}
+    umap_per_sample_pos = saved_positions_all.get("umap_per_sample") or {}
+    spatial_pos = saved_positions_all.get("spatial") or {}
+
+    # サンプル別ハイライト UMAP グリッド（背景を 0.4 に濃く）
+    hl_umap_grid = _build_per_sample_highlight_umap_grid(
+        df_plot, color_map, highlight_cluster=cluster_id,
+        cluster_name_map=cluster_name_map,
+        sample_name_map=sample_name_map,
+        saved_positions_per_sample=umap_per_sample_pos,
+        bg_opacity=0.4,
+        panel_height=280,
     )
 
-    # ハイライト Spatial グリッド
+    # ハイライト Spatial グリッド（rotation/flip 反映）
     hl_spatial = _build_per_sample_spatial(
         df_plot, color_map, highlight_clusters=[cluster_id],
-        panel_height=220,
+        cluster_name_map=cluster_name_map,
+        sample_name_map=sample_name_map,
+        spatial_rotation=spatial_rotation,
+        saved_positions_per_sample=spatial_pos,
+        show_labels=False,
+        panel_height=240,
     )
 
-    # Top 5 Up-regulated markers テーブル
     top_markers_view = _build_top_markers_table(deg_records, top_n=5)
 
-    # Volcano 折りたたみ
     if deg_records:
         volcano_fig = _build_volcano_fig(deg_records, cluster_id)
         volcano_toggle = dbc.Button(
@@ -462,6 +700,10 @@ def _build_one_cluster_card(cluster_id, color, n_cells, pct,
         volcano_toggle = None
         volcano_collapse = None
 
+    cluster_display = (cluster_name_map or {}).get(
+        str(cluster_id), f"Cluster {cluster_id}",
+    )
+
     return dbc.Card(
         className="cluster-card mb-3",
         children=dbc.CardBody([
@@ -472,7 +714,7 @@ def _build_one_cluster_card(cluster_id, color, n_cells, pct,
                         style={"color": color, "marginRight": "8px",
                                "fontSize": "1.4em"},
                     ),
-                    f"Cluster {cluster_id}",
+                    cluster_display,
                     html.Span(
                         f"  {n_cells:,} cells ({pct:.1f}%)",
                         style={"fontWeight": "normal", "color": "#666",
@@ -481,18 +723,12 @@ def _build_one_cluster_card(cluster_id, color, n_cells, pct,
                 ],
                 className="cluster-card-header mb-3 pb-2 border-bottom",
             ),
-            dbc.Row([
-                dbc.Col([
-                    html.H6("Highlighted UMAP", className="text-muted small"),
-                    dcc.Graph(figure=hl_umap,
-                              config={"displayModeBar": False}),
-                ], lg=6, md=12, className="mb-2"),
-                dbc.Col([
-                    html.H6("Highlighted Spatial",
-                            className="text-muted small"),
-                    hl_spatial,
-                ], lg=6, md=12, className="mb-2"),
-            ]),
+            html.H6("Highlighted UMAP (per sample)",
+                    className="text-muted small"),
+            hl_umap_grid,
+            html.H6("Highlighted Spatial (per sample)",
+                    className="text-muted small mt-3"),
+            hl_spatial,
             html.Div([
                 html.H6(
                     "Top 5 Up-regulated Markers",
@@ -642,9 +878,19 @@ def _build_volcano_fig(deg_records, cluster_id):
                   line_color="gray", opacity=0.5)
     fig.add_vline(x=-fc_thresh, line_dash="dash",
                   line_color="gray", opacity=0.5)
+
+    # 95 percentile auto cap: 極端に小さい p 値 (=非常に大きな -log10) で
+    # y 軸が引き伸ばされ大多数の点が圧縮されるのを防ぐ
+    if len(df) > 0:
+        p95 = float(df["neg_log10_p"].quantile(0.95))
+        y_max = max(p_thresh * 2, p95 * 1.1)
+    else:
+        y_max = 10.0
+
     fig.update_layout(
         xaxis_title="log2 Fold Change",
         yaxis_title="-log10(p-value)",
+        yaxis=dict(range=[0, y_max]),
         height=400,
         margin=dict(l=50, r=10, t=10, b=40),
         showlegend=True,
@@ -653,7 +899,8 @@ def _build_volcano_fig(deg_records, cluster_id):
     return fig
 
 
-def _build_heatmap_section(deg_records, top_n_per_cluster=3):
+def _build_heatmap_section(deg_records, top_n_per_cluster=3,
+                            cluster_name_map=None):
     """全クラスタ × 各クラスタ Top N markers の Z-score ヒートマップ"""
     if not deg_records:
         return html.Div(
@@ -713,9 +960,14 @@ def _build_heatmap_section(deg_records, top_n_per_cluster=3):
     cluster_cols = [c for c in clusters if c in pivot.columns]
     pivot = pivot[cluster_cols].fillna(0.0)
 
+    cluster_name_map = cluster_name_map or {}
+    x_labels = [
+        cluster_name_map.get(str(c), f"C{c}") for c in pivot.columns
+    ]
+
     fig = go.Figure(data=go.Heatmap(
         z=pivot.values,
-        x=[f"C{c}" for c in pivot.columns],
+        x=x_labels,
         y=pivot.index.astype(str),
         colorscale="RdBu_r",
         zmid=0,
