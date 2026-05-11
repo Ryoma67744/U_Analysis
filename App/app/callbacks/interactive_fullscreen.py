@@ -27,6 +27,7 @@ from app.utils.display_helpers import (
 from app.utils.label_persistence import (
     extract_annotation_positions_by_name as _extract_annotation_positions_by_name,
     merge_label_positions as _merge_label_positions,
+    save_label_positions as _save_label_positions,
 )
 
 # 共有状態・ヘルパーを interactive_callbacks / interactive_umap から参照
@@ -661,28 +662,21 @@ def _accumulate_core(triggered_id, existing, excl_fn):
 
 
 def _auto_save_label_positions(accumulated):
-    """ラベル位置をJSONファイルへ自動保存する（relayoutDataベースのみ）。"""
+    """ラベル位置をJSONファイルへ自動保存する（relayoutDataベースのみ）。
+
+    filelock + 原子的書き込みで、同一プロジェクト同時編集時のロストアップデートを防ぐ。
+    """
     try:
         path = _get_label_positions_path()
         if not path:
             return
-        existing = _load_label_positions()
-        acc = accumulated or {}
-        for section in ("umap_integrated", "umap_per_sample", "spatial"):
-            acc_section = acc.get(section)
-            if not acc_section:
-                continue
-            saved_section = existing.get(section, {})
-            if section == "umap_integrated":
-                _merge_label_positions(saved_section, acc_section)
-            else:
-                for sample_name, pos_dict in acc_section.items():
-                    sample_saved = saved_section.get(sample_name, {})
-                    _merge_label_positions(sample_saved, pos_dict)
-                    saved_section[sample_name] = sample_saved
-            existing[section] = saved_section
-        path.write_text(json.dumps(existing, indent=2, ensure_ascii=False),
-                        encoding="utf-8")
+        # filelock 内で読込→マージ→atomic write を一貫実行
+        _save_label_positions(
+            accumulated or {},
+            _interactive_data.get("rds_path"),
+            _interactive_data.get("method"),
+            merge=True,
+        )
     except Exception as e:
         print(f"[LABEL] ラベル位置自動保存エラー: {e}")
 
@@ -767,32 +761,26 @@ def accumulate_annotation_positions_fs_spatial(fs_spatial_rds, existing, fs_spat
 
 
 def _do_save_label_positions(accumulated, snapshot):
-    """ラベル位置保存の共通ロジック。蓄積データ + DOM スナップショット → JSON。"""
+    """ラベル位置保存の共通ロジック。蓄積データ + DOM スナップショット → JSON。
+
+    accumulated と snapshot から「patch dict」を構築し、save_label_positions
+    （filelock + 原子的書き込み）にマージ保存させる。これにより同一プロジェクト
+    複数タブ同時編集時のロストアップデートを防ぐ。
+    """
     try:
         path = _get_label_positions_path()
         if not path:
             return no_update, "ラベル位置の保存に失敗しました（データ未読込）", True
 
-        # JSON ファイルの既存データ
-        existing = _load_label_positions()
-
-        # --- Primary: 蓄積データからマージ ---
+        # patch を組み立てる（既存ファイル状態に依存せずに新規分のみまとめる）
+        patch: dict = {}
         acc = accumulated or {}
         for section in ("umap_integrated", "umap_per_sample", "spatial"):
             acc_section = acc.get(section)
-            if not acc_section:
-                continue
-            saved_section = existing.get(section, {})
-            if section == "umap_integrated":
-                _merge_label_positions(saved_section, acc_section)
-            else:
-                for sample_name, pos_dict in acc_section.items():
-                    sample_saved = saved_section.get(sample_name, {})
-                    _merge_label_positions(sample_saved, pos_dict)
-                    saved_section[sample_name] = sample_saved
-            existing[section] = saved_section
+            if acc_section:
+                patch[section] = dict(acc_section)
 
-        # --- Backup: DOM スナップショットからマージ ---
+        # --- DOM スナップショットからの追加分 ---
         if snapshot and snapshot.get("timestamp"):
             def _anns_to_dict(anns_list):
                 d = {}
@@ -808,34 +796,38 @@ def _do_save_label_positions(accumulated, snapshot):
                 umap_anns = snapshot.get("umap_integrated") or []
             umap_dict = _anns_to_dict(umap_anns)
             if umap_dict:
-                umap_saved = existing.get("umap_integrated", {})
-                _merge_label_positions(umap_saved, umap_dict)
-                existing["umap_integrated"] = umap_saved
+                base = patch.get("umap_integrated", {})
+                _merge_label_positions(base, umap_dict)
+                patch["umap_integrated"] = base
 
             # サンプル別 UMAP
             for sample_name, anns in (snapshot.get("umap_per_sample") or {}).items():
                 sd = _anns_to_dict(anns)
                 if sd:
-                    ps_saved = existing.get("umap_per_sample", {})
-                    ss = ps_saved.get(sample_name, {})
+                    sect = patch.get("umap_per_sample", {})
+                    ss = sect.get(sample_name, {})
                     _merge_label_positions(ss, sd)
-                    ps_saved[sample_name] = ss
-                    existing["umap_per_sample"] = ps_saved
+                    sect[sample_name] = ss
+                    patch["umap_per_sample"] = sect
 
             # Spatial（FS 優先）
             for src_key in ("spatial", "fs_spatial"):
                 for sample_name, anns in (snapshot.get(src_key) or {}).items():
                     sd = _anns_to_dict(anns)
                     if sd:
-                        sp_saved = existing.get("spatial", {})
-                        ss = sp_saved.get(sample_name, {})
+                        sect = patch.get("spatial", {})
+                        ss = sect.get(sample_name, {})
                         _merge_label_positions(ss, sd)
-                        sp_saved[sample_name] = ss
-                        existing["spatial"] = sp_saved
+                        sect[sample_name] = ss
+                        patch["spatial"] = sect
 
-        # JSON 書き込み
-        path.write_text(json.dumps(existing, indent=2, ensure_ascii=False),
-                        encoding="utf-8")
+        # filelock + 原子的書き込みでマージ保存
+        _save_label_positions(
+            patch,
+            _interactive_data.get("rds_path"),
+            _interactive_data.get("method"),
+            merge=True,
+        )
 
         print(f"[LABEL] ラベル位置を保存しました: {path}")
         return datetime.now().isoformat(), "ラベル位置を保存しました", True

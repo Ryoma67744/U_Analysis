@@ -59,17 +59,19 @@ def _sort_items(items, sort_order):
     [Output("page_landing", "style"),
      Output("page_action", "style"),
      Output("page_analysis", "style"),
-     Output("page_shared", "style")],
+     Output("page_shared", "style"),
+     Output("page_lite", "style")],
     Input("current_page", "data"),
 )
 def toggle_pages(current_page):
     """current_page Store の値に応じてページの表示/非表示を切り替え"""
     hide = {"display": "none"}
     pages = {
-        "landing": [{}, hide, hide, hide],
-        "action": [hide, {}, hide, hide],
-        "analysis": [hide, hide, {}, hide],
-        "shared": [hide, hide, hide, {}],
+        "landing":  [{},   hide, hide, hide, hide],
+        "action":   [hide, {},   hide, hide, hide],
+        "analysis": [hide, hide, {},   hide, hide],
+        "shared":   [hide, hide, hide, {},   hide],
+        "lite":     [hide, hide, hide, hide, {}],
     }
     return pages.get(current_page, pages["landing"])
 

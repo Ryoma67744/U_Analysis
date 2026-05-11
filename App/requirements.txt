@@ -13,3 +13,4 @@ python-dotenv>=1.0
 Pillow>=10.0
 matplotlib>=3.7
 dash-auth>=2.0
+filelock>=3.13

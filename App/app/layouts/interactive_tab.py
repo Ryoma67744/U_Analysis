@@ -544,6 +544,25 @@ def create_interactive_tab():
                                 className="mt-1 text-muted",
                                 style={"fontSize": "0.85rem"},
                             ),
+
+                            # --- 軽量ビューア ---
+                            html.Hr(className="my-2"),
+                            dbc.Row(className="g-2 align-items-center", children=[
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button(
+                                        "🔗 軽量ビューアを開く（新タブ）",
+                                        id="btn_open_lite_viewer",
+                                        color="info", outline=True, size="sm",
+                                        n_clicks=0,
+                                    ),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    html.Span(
+                                        "PPTX出力よりも高速・URL共有可能",
+                                        className="small text-muted",
+                                    ),
+                                ]),
+                            ]),
                         ]),
 
                         # --- クラスタ情報 ---

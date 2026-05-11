@@ -422,6 +422,7 @@ def start_analysis_process(
     - .batファイルを経由せず subprocess.Popen で直接起動
     - PIDを正確に取得（R版はPID取得不可だった）
     - CREATE_NO_WINDOW でコンソール非表示
+    - 起動前に同時解析数と空きメモリをチェック（OOM対策）
     """
     if not Path(script_path).exists():
         return {
@@ -430,15 +431,99 @@ def start_analysis_process(
             "process": None,
         }
 
+    # --- 同時解析ブロック・空きメモリチェック（クラウド多人数運用対策） ---
+    import psutil
+    try:
+        running_r = [
+            p for p in psutil.process_iter(["name"])
+            if "rscript" in (p.info.get("name") or "").lower()
+        ]
+    except Exception:
+        running_r = []
+    if len(running_r) >= 1:
+        return {
+            "success": False,
+            "message": (
+                f"別の解析が実行中です（{len(running_r)} 件）。"
+                "完了してから再実行してください。"
+            ),
+            "process": None,
+        }
+
+    try:
+        available_gb = psutil.virtual_memory().available / (1024 ** 3)
+    except Exception:
+        available_gb = float("inf")
+    if available_gb < 10.0:
+        return {
+            "success": False,
+            "message": (
+                f"空きメモリが不足しています（残 {available_gb:.1f} GB）。"
+                "他の解析の完了をお待ちください。"
+            ),
+            "process": None,
+        }
+
+    # ディスク空き容量チェック（output_dir 配下のディスク）
+    # output_dir が未作成のことがあるため、存在する最も近い祖先で確認する
+    try:
+        check_path = Path(output_dir)
+        while not check_path.exists() and check_path != check_path.parent:
+            check_path = check_path.parent
+        free_gb = psutil.disk_usage(str(check_path)).free / (1024 ** 3)
+    except Exception:
+        free_gb = float("inf")
+    if free_gb < 10.0:
+        return {
+            "success": False,
+            "message": (
+                f"ディスク空き容量が不足しています（残 {free_gb:.1f} GB）。"
+                "古いプロジェクトを整理するか、ストレージを拡張してください。"
+            ),
+            "process": None,
+        }
+    elif free_gb < 30.0:
+        logger.warning(
+            "ディスク空き容量が逼迫しています（残 %.1f GB）。近いうちに整理を推奨します。",
+            free_gb,
+        )
+    # --- ここまで ---
+
     output_path = Path(output_dir)
     log_dir = output_path / "log"
+    log_history_dir = log_dir / "history"
     log_dir.mkdir(parents=True, exist_ok=True)
+    log_history_dir.mkdir(parents=True, exist_ok=True)
     progress_file = log_dir / "analysis_progress.txt"
     log_file = log_dir / "analysis_log.txt"
     pid_file = log_dir / "analysis_pid.txt"
     status_file = log_dir / "analysis_status.txt"
 
-    # 初期化
+    # 旧ログを history/ にタイムスタンプ付きで退避（並行解析時の上書き消失防止）
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    for src, prefix in [
+        (log_file, "analysis_log"),
+        (progress_file, "analysis_progress"),
+        (status_file, "analysis_status"),
+        (pid_file, "analysis_pid"),
+    ]:
+        if src.exists():
+            try:
+                src.replace(log_history_dir / f"{prefix}_{ts}.txt")
+            except OSError:
+                pass
+
+    # 履歴上限：各種類最新20件まで保持
+    for prefix in ["analysis_log_", "analysis_progress_",
+                   "analysis_status_", "analysis_pid_"]:
+        files = sorted(log_history_dir.glob(f"{prefix}*"))
+        for old in files[:-20]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+
+    # 新規ログ初期化
     progress_file.write_text("0|準備中|0|1", encoding="utf-8")
     log_file.write_text("解析を開始しています...\n", encoding="utf-8")
     status_file.write_text("running", encoding="utf-8")
@@ -447,6 +532,12 @@ def start_analysis_process(
     rscript = str(RSCRIPT_PATH)
     if not Path(rscript).exists():
         rscript = "Rscript"  # PATH上のRscriptにフォールバック
+
+    # R内部の数値計算ライブラリのスレッド数を制限（CPU独占を防止）
+    child_env = os.environ.copy()
+    child_env.setdefault("OMP_NUM_THREADS", "4")
+    child_env.setdefault("OPENBLAS_NUM_THREADS", "4")
+    child_env.setdefault("MKL_NUM_THREADS", "4")
 
     # サブプロセスを起動（stdout/stderrをログファイルにリダイレクト）
     log_fh = None
@@ -457,6 +548,7 @@ def start_analysis_process(
             stdout=log_fh,
             stderr=subprocess.STDOUT,
             cwd=str(Path(script_path).parent),
+            env=child_env,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         pid_file.write_text(str(process.pid), encoding="utf-8")

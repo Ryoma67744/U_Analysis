@@ -10,12 +10,23 @@
 1. [前提条件](#1-前提条件)
 2. [選択肢A: Oracle Cloud Always Free（永久無料）](#2-選択肢a-oracle-cloud-always-free永久無料)
 3. [選択肢B: GCP Free Trial（90日間無料）](#3-選択肢b-gcp-free-trial90日間無料)
-4. [共通: サーバー初期設定](#4-共通-サーバー初期設定)
-5. [アプリケーションのデプロイ](#5-アプリケーションのデプロイ)
-6. [HTTPS対応（任意）](#6-https対応任意)
-7. [データのアップロード](#7-データのアップロード)
-8. [運用・メンテナンス](#8-運用メンテナンス)
-9. [トラブルシューティング](#9-トラブルシューティング)
+4. [選択肢C: さくらVPS（推奨：長期運用・大容量データ）](#4-選択肢c-さくらvps推奨長期運用大容量データ)
+5. [共通: サーバー初期設定](#5-共通-サーバー初期設定)
+6. [アプリケーションのデプロイ](#6-アプリケーションのデプロイ)
+7. [HTTPS対応（推奨：チーム共有用）](#7-https対応推奨チーム共有用)
+8. [データのアップロード](#8-データのアップロード)
+9. [運用・メンテナンス](#9-運用メンテナンス)
+10. [トラブルシューティング](#10-トラブルシューティング)
+
+---
+
+## どのプランを選ぶか（ユースケース別早見表）
+
+| 利用シーン | 推奨 | 理由 |
+|---|---|---|
+| 短期検証・無料で試したい | 選択肢A: Oracle Cloud | 永久無料、24GB メモリまで使える |
+| 90日以内の検証 | 選択肢B: GCP | $300 クレジット、起動が早い |
+| **長期運用 (年単位) ・数十プロジェクト・数百GB データ** | **選択肢C: さくらVPS** | **月額固定で予算明確、国内サポート、初学者向け資料が豊富** |
 
 ---
 
@@ -70,7 +81,7 @@
 ssh -i ~/.ssh/your_private_key ubuntu@<パブリックIPアドレス>
 ```
 
-→ [4. 共通: サーバー初期設定](#4-共通-サーバー初期設定) へ進む
+→ [5. 共通: サーバー初期設定](#5-共通-サーバー初期設定) へ進む
 
 ---
 
@@ -114,15 +125,97 @@ gcloud compute ssh msi-analysis-app --zone=asia-northeast1-b
 
 または Google Cloud Console の「SSH」ボタンからブラウザ経由で接続
 
-→ [4. 共通: サーバー初期設定](#4-共通-サーバー初期設定) へ進む
+→ [5. 共通: サーバー初期設定](#5-共通-サーバー初期設定) へ進む
 
 ---
 
-## 4. 共通: サーバー初期設定
+## 4. 選択肢C: さくらVPS（推奨：長期運用・大容量データ）
+
+長期運用（年単位）・大容量データ（数百GB〜）・初学者を主対象とした
+**月額固定料金**の国内サービス。料金がシンプルで、Docker がそのまま動く。
+
+**目安料金（2026年時点）**:
+- メモリ16GB プラン: 月額数千円台後半
+- 独自ドメイン: 年間 1,000〜2,000 円
+- 合計: 年間 5〜10 万円程度
+
+> 価格は変動するため、契約前に [https://vps.sakura.ad.jp/](https://vps.sakura.ad.jp/) で要確認。
+
+### 4.1 さくらアカウント作成
+
+1. [https://vps.sakura.ad.jp/](https://vps.sakura.ad.jp/) にアクセス
+2. 「会員登録」をクリック → メール・住所・支払い方法（クレジットカード or 銀行振込）を入力
+3. 会員ID 発行のメールが届く
+
+### 4.2 SSH 鍵の準備（ローカル PC で実施）
+
+未作成の場合、ローカル PC で SSH 鍵を生成します。
+
+```bash
+# Mac / Linux / WSL
+ssh-keygen -t ed25519 -C "your-email@example.com"
+# → ~/.ssh/id_ed25519（秘密鍵）と ~/.ssh/id_ed25519.pub（公開鍵）が生成
+
+# 公開鍵の中身を表示（コピーして 4.3 で貼り付ける）
+cat ~/.ssh/id_ed25519.pub
+```
+
+> Windows の場合は WSL2 か Git Bash で同じコマンドが使えます。
+
+### 4.3 VPS インスタンス作成
+
+1. さくらVPS 公式サイト → 「お申し込み」
+2. 以下の設定で申し込み:
+
+| 項目 | 推奨設定 | 備考 |
+|------|----------|------|
+| プラン | **メモリ 16GB プラン** | CPU 8コア / SSD 800GB 相当 |
+| リージョン | 東京 または 石狩 | 東京の方がレイテンシが低い |
+| OS テンプレート | Ubuntu 22.04 amd64 | 本手順書と整合 |
+| 認証方式 | **SSH 公開鍵認証のみ**（パスワード認証は無効） | セキュリティのため必須 |
+| 公開鍵 | 4.2 で取得した `id_ed25519.pub` の内容 | コピペで登録 |
+| スタートアップスクリプト | なし | 後で手動セットアップ |
+
+> **データが 1TB を超える見込みの場合**: メモリ 32GB プラン（SSD 1.6TB 相当）を検討。
+> または 16GB プラン + 追加 SSD オプション。
+
+3. 「お申し込み完了」後、コントロールパネルに**サーバーのグローバル IP アドレス**が表示される（例: `133.242.x.x`）→ メモする
+
+### 4.4 パケットフィルタ（ファイアウォール）設定
+
+さくらVPS コントロールパネル → 対象サーバー → 「パケットフィルタ設定」で
+以下のポートを許可:
+
+| プロトコル | ポート | 用途 |
+|----------|--------|------|
+| TCP | 22 | SSH |
+| TCP | 80 | HTTP（Let's Encrypt 認証用） |
+| TCP | 443 | HTTPS |
+
+> **3838 番ポートは開放しない**。Caddy が 443 → 3838 に内部転送するため、
+> 外部から直接アクセスする必要がない。直接開放するとパスワードが平文で
+> 流れてしまう。
+
+### 4.5 SSH 接続
+
+```bash
+ssh ubuntu@<サーバーのグローバル IP>
+# 初回接続時:
+#   "The authenticity of host '...' can't be established."
+#   "Are you sure you want to continue connecting?" → yes
+```
+
+接続できれば、サーバー上のシェル（プロンプトが `ubuntu@os3-...` などになる）に入ります。
+
+→ [5. 共通: サーバー初期設定](#5-共通-サーバー初期設定) へ進む
+
+---
+
+## 5. 共通: サーバー初期設定
 
 SSH でサーバーに接続後、以下のコマンドを順に実行します。
 
-### 4.1 Docker のインストール
+### 5.1 Docker のインストール
 
 ```bash
 # パッケージを更新
@@ -146,7 +239,7 @@ docker --version
 docker compose version
 ```
 
-### 4.2 リポジトリの取得
+### 5.2 リポジトリの取得
 
 ```bash
 # ホームディレクトリに移動
@@ -162,9 +255,9 @@ git checkout v2
 
 ---
 
-## 5. アプリケーションのデプロイ
+## 6. アプリケーションのデプロイ
 
-### 5.1 環境変数の設定
+### 6.1 環境変数の設定
 
 ```bash
 # テンプレートから .env を作成
@@ -179,7 +272,23 @@ nano .env
 APP_PASSWORD=your-secure-password-here
 ```
 
-### 5.2 ビルドと起動
+### 6.2 メモリ上限の調整（VPSプランに合わせる）
+
+`docker-compose.yml` の `mem_limit` は既定 `12g`。**サーバー全体メモリの 75% 以下**を
+目安に、OS と Caddy 用の余裕を残してください。
+
+| サーバーメモリ | 推奨 `mem_limit` | 備考 |
+|---|---|---|
+| 16 GB（さくらVPS 16GB プラン） | **`10g`** | OS + Caddy 用に 6GB 残す |
+| 24 GB（Oracle Cloud A1 Flex） | `18g` | 既定の `12g` でも可 |
+| 32 GB 以上 | `24g` | 大規模解析用 |
+
+```bash
+# 例: 16GB サーバーで 10g に下げる
+sed -i 's/mem_limit: 12g/mem_limit: 10g/' docker-compose.yml
+```
+
+### 6.3 ビルドと起動
 
 ```bash
 # Docker イメージをビルド（初回は15〜30分かかります）
@@ -192,7 +301,7 @@ docker compose logs -f
 `Starting MSI Analysis Application on http://0.0.0.0:3838` が表示されたら起動完了です。
 `Ctrl+C` でログ表示を終了。
 
-### 5.3 アクセス確認
+### 6.4 アクセス確認
 
 ブラウザで以下にアクセス:
 ```
@@ -205,44 +314,117 @@ http://<サーバーのパブリックIP>:3838
 
 ---
 
-## 6. HTTPS対応（任意）
+## 7. HTTPS対応（推奨：チーム共有用）
 
-ドメインを取得済みの場合、Let's Encrypt で自動HTTPS化できます。
+チームでの長期共有運用では HTTPS 必須。Caddy が Let's Encrypt から
+証明書を自動取得・自動更新するため、設定は数行で済みます。
 
-### 6.1 ドメインの DNS 設定
+> **HTTP のみの直接アクセス（IPアドレス）でも動作はしますが、ブラウザ警告
+> が出る・共有リンクが信頼されない・パスワードが平文で流れるため、
+> チーム共有運用ではこの章の手順を強く推奨します。**
 
-ドメインの A レコードをサーバーの IP アドレスに向けてください。
+### 7.1 ドメインの取得（持っていない場合）
 
-### 6.2 Caddyfile の編集
+| 業者 | URL | 特徴 |
+|------|-----|------|
+| お名前.com | https://www.onamae.com/ | 国内最大手、日本語UI |
+| Value-Domain | https://www.value-domain.com/ | 安価、国内 |
+| Cloudflare Registrar | https://www.cloudflare.com/products/registrar/ | 卸売価格、要英語 |
+
+**目安**: `.com` で年間 1,000〜2,000 円程度。例: `msi-yourlab.com`
+
+### 7.2 ドメインの DNS 設定
+
+ドメイン取得業者の DNS 管理画面で、A レコードを追加します。
+
+| 項目 | 設定値 |
+|------|--------|
+| ホスト名 (サブドメイン) | `msi`（→ `msi.yourlab.com` でアクセス）または `@`（→ `yourlab.com`）|
+| タイプ | A |
+| 値 | サーバーのグローバル IP アドレス |
+| TTL | 3600 (1時間) |
+
+#### DNS 反映の確認
+
+ローカル PC で:
+```bash
+# Mac / Linux / WSL
+dig msi.yourlab.com +short
+# → 設定した IP アドレスが返ってくれば反映済み
+
+# Windows (PowerShell)
+nslookup msi.yourlab.com
+```
+
+通常 10 分〜1 時間で反映。世界全体への伝搬には最大 24〜48 時間かかる場合あり。
+
+### 7.3 Caddyfile の編集（実ドメインに置換）
 
 ```bash
+# サーバー上のリポジトリ直下で
 nano Caddyfile
 ```
 
-`msi.example.com` を実際のドメインに置換:
+テンプレートの `msi.example.com` を実際のドメインに置換:
 ```
-msi.yourdomain.com {
+msi.yourlab.com {
     reverse_proxy msi-app:3838
 }
 ```
 
-### 6.3 本番構成で起動
+> **シェルで一括置換する場合**:
+> ```bash
+> sed -i 's/msi\.example\.com/msi.yourlab.com/g' Caddyfile
+> ```
+
+### 7.4 `.env` の SHARE_BASE_URL を本番URLに更新
+
+共有リンク（`/share/<token>`）を正しい URL で生成するため、`.env` の
+`SHARE_BASE_URL` を **HTTPS の本番ドメイン**に書き換えます:
+
+```bash
+nano .env
+```
+
+```
+SHARE_BASE_URL=https://msi.yourlab.com
+```
+
+> 未設定だとリクエスト Host から推定されますが、リバースプロキシ越しでは
+> 不正確になり得るため、本番運用では必ず明示してください。
+
+### 7.5 本番構成で起動
 
 ```bash
 # 一度停止
 docker compose down
 
-# HTTPS 対応の本番構成で起動
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# HTTPS 対応の本番構成で起動（Caddy + アプリ）
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+
+# 起動ログを確認（Let's Encrypt の証明書取得が完了するまで待つ）
+docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f caddy
+# → "certificate obtained successfully" が出れば取得成功
+# Ctrl+C で抜ける
 ```
 
-ブラウザで `https://msi.yourdomain.com` にアクセスして確認。
+### 7.6 確認
+
+- ブラウザで `https://msi.yourlab.com` にアクセス
+- ブラウザの鍵マークが緑（証明書有効）になっていれば成功
+- BasicAuth ダイアログ → ユーザー名 `msi` + `.env` のパスワード
+- アプリのトップ画面が出れば完了
+
+> **証明書が取得できない場合**:
+> - ポート 80 が開いていない（Let's Encrypt は HTTP-01 認証で 80 を使用）
+> - DNS が反映されていない（7.2 の dig で確認）
+> - `caddy` コンテナのログを確認: `docker compose logs caddy`
 
 ---
 
-## 7. データのアップロード
+## 8. データのアップロード
 
-### 7.1 SCP でファイルを転送
+### 8.1 SCP でファイルを転送
 
 ローカル PC からサーバーへデータを転送します。
 
@@ -264,7 +446,7 @@ scp -r ./my_tims_data/* user@<サーバーIP>:/tmp/tims_upload/
 docker cp /tmp/tims_upload/. msi-analysis-app:/app/Data/TIMS/Data/
 ```
 
-### 7.2 データの確認
+### 8.2 データの確認
 
 ```bash
 # コンテナ内のデータを確認
@@ -272,7 +454,7 @@ docker exec msi-analysis-app ls -la /app/Data/DESI/Data/
 docker exec msi-analysis-app ls -la /app/Data/TIMS/Data/
 ```
 
-### 7.3 既存デプロイの移行（`Data/Other/` 再編）
+### 8.3 既存デプロイの移行（`Data/Other/` 再編）
 
 `Data/` 直下を `DESI/ / TIMS/ / Other/` の 3 枠に集約した際、Docker ボリューム
 （`msi-sessions` / `msi-projects` / `msi-presets` / `msi-shares` / `msi-cache` /
@@ -325,9 +507,9 @@ DESI/TIMS 入力データ（`msi-desi-data` / `msi-tims-data`）は `/app/Data/D
 
 ---
 
-## 8. 運用・メンテナンス
+## 9. 運用・メンテナンス
 
-### 8.1 よく使うコマンド
+### 9.1 よく使うコマンド
 
 ```bash
 # 状態確認
@@ -347,28 +529,86 @@ git pull origin v2
 docker compose up -d --build
 ```
 
-### 8.2 バックアップ
+### 9.2 バックアップ
+
+このアプリには**2 層のバックアップ**機構があります：
+
+| 層 | 仕組み | 対象 | 頻度 |
+|---|---|---|---|
+| **アプリ内** | `App/app/services/backup_manager.py`（実装済み） | `projects.json` / `shares.json` / `last_settings.json` のみ | アプリ起動毎 + 保存毎、5世代保持 |
+| **Volume 全体** | `backup.sh`（リポジトリ直下、cron 用） | `msi-projects` / `msi-sessions` / `msi-presets` / `msi-shares` / `msi-output` の Docker Volume 全体 | cron で週次など、30日保持 |
+
+アプリ内バックアップは JSON ファイル単位の破損対策、`backup.sh` は災害復旧
+（Volume 削除事故・サーバー丸ごと故障）用。両方が補完的に動作します。
+
+#### 手動でバックアップを実行する
 
 ```bash
-# プロジェクトデータのバックアップ
-docker run --rm -v msi-projects:/data -v $(pwd)/backups:/backup \
-    alpine tar czf /backup/projects-$(date +%Y%m%d).tar.gz -C /data .
+# 出力先は ./backups/ (環境変数 BACKUP_DIR で上書き可)
+./backup.sh
 
-# セッションデータのバックアップ
-docker run --rm -v msi-sessions:/data -v $(pwd)/backups:/backup \
-    alpine tar czf /backup/sessions-$(date +%Y%m%d).tar.gz -C /data .
+# 任意の場所に出力する場合
+BACKUP_DIR=/mnt/external_disk/msi-backup ./backup.sh
 ```
 
-### 8.3 リソース監視
+出力例：
+```
+backups/
+├── backup.log
+├── msi-projects-20260507-030000.tar.gz
+├── msi-sessions-20260507-030000.tar.gz
+├── msi-presets-20260507-030000.tar.gz
+├── msi-shares-20260507-030000.tar.gz
+└── msi-output-20260507-030000.tar.gz
+```
+
+#### cron での定期実行（推奨）
+
+```bash
+# crontab -e で以下を追加（毎週日曜 3:00 にバックアップ）
+0 3 * * 0 cd /home/ubuntu/umap-webapp-claudecode && ./backup.sh
+
+# 別ディスクへ保存する場合
+0 3 * * 0 cd /home/ubuntu/umap-webapp-claudecode && BACKUP_DIR=/mnt/backup ./backup.sh
+```
+
+`backup.sh` は 30 日以上古い `*.tar.gz` を自動削除します（環境変数 `RETENTION_DAYS` で調整可）。
+ログは `${BACKUP_DIR}/backup.log` に追記。
+
+#### バックアップから復元する
+
+```bash
+# 例: msi-projects を復元
+docker compose down
+docker volume rm msi-projects
+docker volume create msi-projects
+docker run --rm -v msi-projects:/data -v $(pwd)/backups:/backup \
+    alpine tar xzf /backup/msi-projects-20260507-030000.tar.gz -C /data
+docker compose up -d
+```
+
+### 9.3 リソース監視
 
 ```bash
 # コンテナの CPU/メモリ使用量をリアルタイム表示
 docker stats msi-analysis-app
+
+# ホストのディスク使用量を確認（80% 超は要整理、95% 超は危険）
+df -h | grep -v tmpfs
+
+# Docker 関連の使用量を確認（イメージ・ボリューム・キャッシュ）
+docker system df
+
+# 不要な Docker キャッシュ削除（ディスク逼迫時の応急処置）
+docker system prune -a --volumes  # ⚠ named volume も対象。実行前にバックアップ推奨
 ```
+
+> **アプリ内のディスク監視**: 解析開始時に `psutil.disk_usage()` でチェックされ、
+> 残 10 GB 未満で解析を拒否、残 30 GB 未満で警告ログ出力（`Data/Other/logs/msi_app.log`）。
 
 ---
 
-## 9. トラブルシューティング
+## 10. トラブルシューティング
 
 ### アプリが起動しない
 
@@ -389,17 +629,51 @@ docker exec msi-analysis-app Rscript -e "library(Seurat); cat('OK\n')"
 
 ### メモリ不足
 
+解析開始時に「空きメモリが不足しています（残 X.X GB）」と表示される場合：
+
 ```bash
 # ホストのメモリ使用量を確認
 free -h
 
-# docker-compose.yml の mem_limit を調整
-# Oracle Cloud の場合: 最大 24GB まで利用可能
+# docker-compose.yml の mem_limit を調整（6.2 のガイド参照）
+#   Oracle Cloud A1 Flex: 最大 24GB → mem_limit: 18g
+#   さくらVPS 16GB プラン: mem_limit: 10g
+#   さくらVPS 32GB プラン: mem_limit: 24g
 ```
+
+### ディスク容量不足
+
+解析開始時に「ディスク空き容量が不足しています（残 X.X GB）」と表示される場合：
+
+```bash
+# 1. ホストのディスク使用量を確認
+df -h | grep -v tmpfs
+# → 80% 超なら要整理、95% 超は危険
+
+# 2. アプリ側で大きいプロジェクトを特定（Docker volume のサイズ確認）
+docker run --rm -v msi-projects:/data alpine du -sh /data
+docker run --rm -v msi-output:/data alpine du -sh /data
+
+# 3. 不要なプロジェクトを UI から削除、または手動で:
+docker exec -u root msi-analysis-app rm -rf /app/Data/Other/projects/<旧プロジェクト名>
+
+# 4. 古いバックアップアーカイブを削除
+ls -la backups/
+rm backups/msi-*-202[0-5]*.tar.gz
+
+# 5. Docker キャッシュを掃除（named volume は除外）
+docker image prune -a
+docker builder prune -a
+```
+
+> 残 30 GB 未満では警告ログのみが出ます（解析は継続）。
+> ログ位置: `Data/Other/logs/msi_app.log`（または `docker compose logs msi-app`）。
 
 ### ポートにアクセスできない
 
-- ファイアウォール設定でポート 3838 が開放されているか確認
+- HTTP 直接アクセス（IP:3838）の場合: ポート 3838 が開放されているか確認
+- HTTPS 経由（推奨）の場合: ポート 80 / 443 が開放されているか確認
+- さくらVPS の場合: コントロールパネルの「パケットフィルタ」と OS の `iptables` 両方を確認
 - Oracle Cloud: セキュリティリスト + OS の iptables 両方を確認
   ```bash
   sudo iptables -I INPUT -p tcp --dport 3838 -j ACCEPT
