@@ -4,12 +4,19 @@
 # =============================================================================
 
 import json
+import os
 import secrets
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+from filelock import FileLock
+
 from app.config import SHARES_DIR, SHARES_FILE, DEFAULT_SHARE_EXPIRY_DAYS
+
+# プロセス横断の排他ロック（複数ユーザー同時保存対策）
+_shares_lock = FileLock(str(SHARES_FILE) + ".lock", timeout=30)
 
 
 def _ensure_shares_file() -> None:
@@ -31,10 +38,21 @@ def _load_all() -> dict:
 
 
 def _save_all(data: dict) -> None:
-    """shares.json 全体を保存"""
+    """shares.json 全体を原子的に保存（書き込み中断による破損を防止）"""
     _ensure_shares_file()
-    with open(SHARES_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(SHARES_DIR), suffix=".tmp", prefix="shares_"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, str(SHARES_FILE))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     # 自動バックアップ
     try:
         from app.services.backup_manager import backup_on_save
@@ -78,9 +96,10 @@ def create_share(
         "memo": memo,
     }
 
-    data = _load_all()
-    data["shares"].append(share)
-    _save_all(data)
+    with _shares_lock:
+        data = _load_all()
+        data["shares"].append(share)
+        _save_all(data)
     return share
 
 
@@ -112,23 +131,25 @@ def list_shares() -> list[dict]:
 
 def delete_share(token: str) -> bool:
     """共有リンクを削除"""
-    data = _load_all()
-    original_len = len(data["shares"])
-    data["shares"] = [s for s in data["shares"] if s["token"] != token]
-    if len(data["shares"]) < original_len:
-        _save_all(data)
-        return True
+    with _shares_lock:
+        data = _load_all()
+        original_len = len(data["shares"])
+        data["shares"] = [s for s in data["shares"] if s["token"] != token]
+        if len(data["shares"]) < original_len:
+            _save_all(data)
+            return True
     return False
 
 
 def cleanup_expired() -> int:
     """期限切れの共有リンクを全て削除。削除件数を返す"""
-    data = _load_all()
-    original_len = len(data["shares"])
-    data["shares"] = [s for s in data["shares"] if not _is_expired(s)]
-    removed = original_len - len(data["shares"])
-    if removed > 0:
-        _save_all(data)
+    with _shares_lock:
+        data = _load_all()
+        original_len = len(data["shares"])
+        data["shares"] = [s for s in data["shares"] if not _is_expired(s)]
+        removed = original_len - len(data["shares"])
+        if removed > 0:
+            _save_all(data)
     return removed
 
 

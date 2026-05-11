@@ -41,6 +41,19 @@ app = dash.Dash(
 # Flask サーバーへの参照（画像配信用）
 server = app.server
 
+# ヘルスチェック用エンドポイント（BasicAuth をバイパスする軽量応答）
+# Docker healthcheck や外部監視サービスから利用される。
+# dash_auth.BasicAuth より前に before_request を登録することで、
+# /healthz は認証無しで応答する。
+from flask import request as _flask_request  # noqa: E402
+
+
+@server.before_request
+def _healthz_bypass():
+    if _flask_request.path == "/healthz":
+        return ("OK", 200, {"Content-Type": "text/plain"})
+
+
 # パスワード認証（クラウドデプロイ用）
 # APP_PASSWORD 環境変数が設定されている場合のみ有効化
 _app_password = os.environ.get("APP_PASSWORD")
@@ -65,6 +78,7 @@ from app.callbacks import interactive_batch_save  # noqa: E402, F401
 from app.callbacks import interactive_data_export  # noqa: E402, F401
 from app.callbacks import scils_converter_callbacks  # noqa: E402, F401
 from app.callbacks import env_settings_callbacks  # noqa: E402, F401
+from app.callbacks import lite_view_callbacks  # noqa: E402, F401
 from app.callbacks import rds_maintenance_callbacks  # noqa: E402, F401
 
 if __name__ == "__main__":

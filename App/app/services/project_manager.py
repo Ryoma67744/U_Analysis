@@ -5,11 +5,15 @@
 
 import json
 import logging
+import os
 import sys
+import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+from filelock import FileLock
 
 logger = logging.getLogger("msi.project_manager")
 
@@ -18,6 +22,9 @@ from app.services.path_resolver import resolve_project_paths
 
 # メタデータファイル名（結果フォルダに自動保存）
 _META_FILENAME = "_project_meta.json"
+
+# プロセス横断の排他ロック（複数ユーザー同時保存対策）
+_projects_lock = FileLock(str(PROJECTS_FILE) + ".lock", timeout=30)
 
 
 def _ensure_projects_file() -> None:
@@ -46,10 +53,22 @@ def _load_all() -> dict:
 
 
 def _save_all(data: dict) -> None:
-    """projects.json 全体を保存"""
+    """projects.json 全体を原子的に保存（書き込み中断による破損を防止）"""
     _ensure_projects_file()
-    with open(PROJECTS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    # 一時ファイルに書いてから os.replace() で原子的に差し替える
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(PROJECTS_DIR), suffix=".tmp", prefix="projects_"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, str(PROJECTS_FILE))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     # 自動バックアップ
     try:
         from app.services.backup_manager import backup_on_save
@@ -102,35 +121,38 @@ def create_project(
         "created_at": now,
         "last_modified": now,
     }
-    data = _load_all()
-    data["projects"].append(project)
-    _save_all(data)
+    with _projects_lock:
+        data = _load_all()
+        data["projects"].append(project)
+        _save_all(data)
     return project
 
 
 def update_project(project_id: str, updates: dict) -> Optional[dict]:
     """プロジェクト情報を更新"""
-    data = _load_all()
-    for p in data["projects"]:
-        if p["id"] == project_id:
-            p.update(updates)
-            p["last_modified"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-            _save_all(data)
-            # メタデータを結果フォルダへバックアップ
-            for s in p.get("sub_projects", []):
-                _write_meta_to_folder(project_id, s["id"])
-            return p
+    with _projects_lock:
+        data = _load_all()
+        for p in data["projects"]:
+            if p["id"] == project_id:
+                p.update(updates)
+                p["last_modified"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                _save_all(data)
+                # メタデータを結果フォルダへバックアップ
+                for s in p.get("sub_projects", []):
+                    _write_meta_to_folder(project_id, s["id"])
+                return p
     return None
 
 
 def delete_project(project_id: str) -> bool:
     """プロジェクトを削除（データファイルは削除しない）"""
-    data = _load_all()
-    original_len = len(data["projects"])
-    data["projects"] = [p for p in data["projects"] if p["id"] != project_id]
-    if len(data["projects"]) < original_len:
-        _save_all(data)
-        return True
+    with _projects_lock:
+        data = _load_all()
+        original_len = len(data["projects"])
+        data["projects"] = [p for p in data["projects"] if p["id"] != project_id]
+        if len(data["projects"]) < original_len:
+            _save_all(data)
+            return True
     return False
 
 
@@ -179,31 +201,32 @@ def create_sub_project(
     extra_fields : dict, optional
         復元時に last_analysis_settings 等の追加フィールドをマージする。
     """
-    data = _load_all()
-    for p in data["projects"]:
-        if p["id"] == project_id:
-            now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-            sub = {
-                "id": force_id if force_id else str(uuid.uuid4())[:8],
-                "name": name,
-                "experiment_date": experiment_date,
-                "target_compound": target_compound,
-                "ms_instrument": ms_instrument,
-                "polarity": polarity or [],
-                "memo": memo,
-                "data_folder": data_folder,
-                "output_dir": output_dir,
-                "created_at": now,
-                "last_modified": now,
-            }
-            if extra_fields:
-                sub.update(extra_fields)
-            if "sub_projects" not in p:
-                p["sub_projects"] = []
-            p["sub_projects"].append(sub)
-            p["last_modified"] = now
-            _save_all(data)
-            return sub
+    with _projects_lock:
+        data = _load_all()
+        for p in data["projects"]:
+            if p["id"] == project_id:
+                now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                sub = {
+                    "id": force_id if force_id else str(uuid.uuid4())[:8],
+                    "name": name,
+                    "experiment_date": experiment_date,
+                    "target_compound": target_compound,
+                    "ms_instrument": ms_instrument,
+                    "polarity": polarity or [],
+                    "memo": memo,
+                    "data_folder": data_folder,
+                    "output_dir": output_dir,
+                    "created_at": now,
+                    "last_modified": now,
+                }
+                if extra_fields:
+                    sub.update(extra_fields)
+                if "sub_projects" not in p:
+                    p["sub_projects"] = []
+                p["sub_projects"].append(sub)
+                p["last_modified"] = now
+                _save_all(data)
+                return sub
     return None
 
 
@@ -211,18 +234,19 @@ def update_sub_project(
     project_id: str, sub_id: str, updates: dict
 ) -> Optional[dict]:
     """サブプロジェクト情報を更新"""
-    data = _load_all()
-    for p in data["projects"]:
-        if p["id"] == project_id:
-            for s in p.get("sub_projects", []):
-                if s["id"] == sub_id:
-                    s.update(updates)
-                    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-                    s["last_modified"] = now
-                    p["last_modified"] = now
-                    _save_all(data)
-                    _write_meta_to_folder(project_id, sub_id)
-                    return s
+    with _projects_lock:
+        data = _load_all()
+        for p in data["projects"]:
+            if p["id"] == project_id:
+                for s in p.get("sub_projects", []):
+                    if s["id"] == sub_id:
+                        s.update(updates)
+                        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                        s["last_modified"] = now
+                        p["last_modified"] = now
+                        _save_all(data)
+                        _write_meta_to_folder(project_id, sub_id)
+                        return s
     return None
 
 
@@ -230,18 +254,19 @@ def save_sub_project_settings(
     project_id: str, sub_id: str, settings: dict
 ) -> bool:
     """サブプロジェクトに解析設定を保存"""
-    data = _load_all()
-    for p in data["projects"]:
-        if p["id"] == project_id:
-            for s in p.get("sub_projects", []):
-                if s["id"] == sub_id:
-                    s["last_analysis_settings"] = settings
-                    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-                    s["last_modified"] = now
-                    p["last_modified"] = now
-                    _save_all(data)
-                    _write_meta_to_folder(project_id, sub_id)
-                    return True
+    with _projects_lock:
+        data = _load_all()
+        for p in data["projects"]:
+            if p["id"] == project_id:
+                for s in p.get("sub_projects", []):
+                    if s["id"] == sub_id:
+                        s["last_analysis_settings"] = settings
+                        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                        s["last_modified"] = now
+                        p["last_modified"] = now
+                        _save_all(data)
+                        _write_meta_to_folder(project_id, sub_id)
+                        return True
     return False
 
 
@@ -259,36 +284,38 @@ def save_sub_project_result_dir(
     project_id: str, sub_id: str, result_dir: str
 ) -> bool:
     """サブプロジェクトに最新の解析結果ディレクトリを保存"""
-    data = _load_all()
-    for p in data["projects"]:
-        if p["id"] == project_id:
-            for s in p.get("sub_projects", []):
-                if s["id"] == sub_id:
-                    s["last_result_dir"] = result_dir
-                    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-                    s["last_modified"] = now
-                    p["last_modified"] = now
-                    _save_all(data)
-                    _write_meta_to_folder(project_id, sub_id)
-                    return True
+    with _projects_lock:
+        data = _load_all()
+        for p in data["projects"]:
+            if p["id"] == project_id:
+                for s in p.get("sub_projects", []):
+                    if s["id"] == sub_id:
+                        s["last_result_dir"] = result_dir
+                        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                        s["last_modified"] = now
+                        p["last_modified"] = now
+                        _save_all(data)
+                        _write_meta_to_folder(project_id, sub_id)
+                        return True
     return False
 
 
 def delete_sub_project(project_id: str, sub_id: str) -> bool:
     """サブプロジェクトを削除"""
-    data = _load_all()
-    for p in data["projects"]:
-        if p["id"] == project_id:
-            original_len = len(p.get("sub_projects", []))
-            p["sub_projects"] = [
-                s for s in p.get("sub_projects", []) if s["id"] != sub_id
-            ]
-            if len(p["sub_projects"]) < original_len:
-                p["last_modified"] = datetime.now().strftime(
-                    "%Y-%m-%dT%H:%M:%S"
-                )
-                _save_all(data)
-                return True
+    with _projects_lock:
+        data = _load_all()
+        for p in data["projects"]:
+            if p["id"] == project_id:
+                original_len = len(p.get("sub_projects", []))
+                p["sub_projects"] = [
+                    s for s in p.get("sub_projects", []) if s["id"] != sub_id
+                ]
+                if len(p["sub_projects"]) < original_len:
+                    p["last_modified"] = datetime.now().strftime(
+                        "%Y-%m-%dT%H:%M:%S"
+                    )
+                    _save_all(data)
+                    return True
     return False
 
 

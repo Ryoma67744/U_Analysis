@@ -4,9 +4,13 @@
 # =============================================================================
 
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+from filelock import FileLock
 
 from app.config import APP_VERSION
 
@@ -18,6 +22,9 @@ from app.config import SESSIONS_DIR
 # ---------------------------------------------------------------------------
 
 _LAST_SETTINGS_FILE = SESSIONS_DIR / "last_settings.json"
+
+# プロセス横断の排他ロック（複数ユーザー同時保存対策）
+_last_settings_lock = FileLock(str(_LAST_SETTINGS_FILE) + ".lock", timeout=30)
 
 # 自動保存対象のキー一覧
 _AUTO_SAVE_KEYS = [
@@ -49,16 +56,29 @@ _AUTO_SAVE_KEYS = [
 
 
 def save_last_settings(settings: dict) -> None:
-    """前回の設定を自動保存（既存の保存済みデータとマージ）"""
+    """前回の設定を自動保存（既存の保存済みデータとマージ・原子的書き込み）"""
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    # 既存データを読み込んでマージ
-    existing = load_last_settings()
-    for k, v in settings.items():
-        if k in _AUTO_SAVE_KEYS:
-            existing[k] = v
-    existing["_saved_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    with open(_LAST_SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(existing, f, indent=2, ensure_ascii=False)
+    with _last_settings_lock:
+        # 既存データを読み込んでマージ
+        existing = load_last_settings()
+        for k, v in settings.items():
+            if k in _AUTO_SAVE_KEYS:
+                existing[k] = v
+        existing["_saved_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        # 一時ファイルに書いてから原子的に差し替え
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(SESSIONS_DIR), suffix=".tmp", prefix="last_settings_"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(existing, f, indent=2, ensure_ascii=False)
+            os.replace(tmp_path, str(_LAST_SETTINGS_FILE))
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
 
 def load_last_settings() -> dict:

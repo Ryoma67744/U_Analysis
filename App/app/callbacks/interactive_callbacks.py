@@ -78,18 +78,118 @@ from app.utils.pptx_helpers import (
 # Seuratブリッジのシングルトン
 _bridge = SeuratBridge()
 
-# モジュールレベルのデータキャッシュ
-_interactive_data = {
-    "plot_data": None,
-    "cluster_stats": None,
-    "features_list": None,
-    "meta": None,
-    "rds_path": None,
-    "cache_dir": None,
-    "deg_cache_key": None,
-    "deg_cache_data": None,
-    "method": None,
-}
+# ---------------------------------------------------------------------------
+# プロジェクト別データキャッシュ
+# ---------------------------------------------------------------------------
+# 旧: _interactive_data = {...} はプロセス内 1 個のグローバル dict だったため、
+# 異プロジェクトを同時閲覧した際にラベル位置の保存先などが上書きされていた。
+# 新: project_key (= RDS path) ごとに state を分離し、proxy 経由で透過アクセスする。
+# ---------------------------------------------------------------------------
+
+import threading
+
+_project_states: dict[str, dict] = {}
+_state_lock = threading.RLock()
+_DEFAULT_KEY = "__default__"
+
+
+def _state_template() -> dict:
+    """新規 state の初期値"""
+    return {
+        "plot_data": None,
+        "cluster_stats": None,
+        "features_list": None,
+        "meta": None,
+        "rds_path": None,
+        "cache_dir": None,
+        "deg_cache_key": None,
+        "deg_cache_data": None,
+        "method": None,
+    }
+
+
+def _get_state(project_key: str | None = None) -> dict:
+    """プロジェクト別 state を取得（なければ生成）。
+
+    Args:
+        project_key: RDS path 等のキー。None なら __active_key__ または default。
+    """
+    key = project_key or _project_states.get("__active_key__") or _DEFAULT_KEY
+    with _state_lock:
+        if key not in _project_states:
+            _project_states[key] = _state_template()
+        return _project_states[key]
+
+
+def _set_active_key(project_key: str | None) -> None:
+    """アクティブプロジェクトキーを設定（None でクリア）"""
+    with _state_lock:
+        if project_key is None:
+            _project_states.pop("__active_key__", None)
+        else:
+            _project_states["__active_key__"] = project_key
+
+
+def _drop_state(project_key: str | None = None) -> None:
+    """指定プロジェクトの state を破棄。None ならアクティブ state を破棄。"""
+    key = project_key or _project_states.get("__active_key__")
+    if not key:
+        return
+    with _state_lock:
+        _project_states.pop(key, None)
+        if _project_states.get("__active_key__") == key:
+            _project_states.pop("__active_key__", None)
+
+
+class _InteractiveDataProxy:
+    """既存の dict-like API を保持しつつ、内部でアクティブ state にルーティング。
+
+    `_interactive_data["plot_data"]` / `_interactive_data.get(...)` /
+    `_interactive_data["plot_data"] = ...` / `key in _interactive_data` 等の
+    既存呼び出しがそのまま動作する。
+    """
+    def __getitem__(self, key):
+        return _get_state()[key]
+
+    def __setitem__(self, key, value):
+        _get_state()[key] = value
+
+    def get(self, key, default=None):
+        return _get_state().get(key, default)
+
+    def __contains__(self, key):
+        return key in _get_state()
+
+    def update(self, *args, **kwargs):
+        _get_state().update(*args, **kwargs)
+
+    def pop(self, key, *args):
+        return _get_state().pop(key, *args)
+
+    def setdefault(self, key, default=None):
+        return _get_state().setdefault(key, default)
+
+    def keys(self):
+        return _get_state().keys()
+
+    def values(self):
+        return _get_state().values()
+
+    def items(self):
+        return _get_state().items()
+
+    def __iter__(self):
+        return iter(_get_state())
+
+    def __len__(self):
+        return len(_get_state())
+
+    def __repr__(self):
+        return f"<InteractiveDataProxy active={_project_states.get('__active_key__')!r}>"
+
+
+# モジュール公開シンボル（既存 import 互換）
+_interactive_data = _InteractiveDataProxy()
 
 
 # キャリブレーション・アノテーション関連は interactive_calibration.py に分離済み
@@ -429,13 +529,17 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
     try:
         result = _bridge.extract_data(rds_path)
 
-        _interactive_data["plot_data"] = result["plot_data"]
-        _interactive_data["cluster_stats"] = result["cluster_stats"]
-        _interactive_data["features_list"] = result["features_list"]
-        _interactive_data["meta"] = result["meta"]
-        _interactive_data["rds_path"] = rds_path
-        _interactive_data["cache_dir"] = result.get("cache_dir")
-        _interactive_data["method"] = integration_method
+        # rds_path をプロジェクトキーとして state を切替（複数プロジェクト同時閲覧対応）
+        state = _get_state(rds_path)
+        state["plot_data"] = result["plot_data"]
+        state["cluster_stats"] = result["cluster_stats"]
+        state["features_list"] = result["features_list"]
+        state["meta"] = result["meta"]
+        state["rds_path"] = rds_path
+        state["cache_dir"] = result.get("cache_dir")
+        state["method"] = integration_method
+        # 後続コールバックがアクティブ state を参照できるようにキーを設定
+        _set_active_key(rds_path)
 
         meta = result["meta"]
         info_text = (

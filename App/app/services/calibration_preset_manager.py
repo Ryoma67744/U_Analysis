@@ -4,12 +4,19 @@
 # =============================================================================
 
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
+
+from filelock import FileLock
 
 from app.config import PRESETS_DIR
 
 CAL_PRESETS_FILE = PRESETS_DIR / "calibration_presets.json"
+
+# プロセス横断の排他ロック（複数ユーザー同時保存対策）
+_cal_presets_lock = FileLock(str(CAL_PRESETS_FILE) + ".lock", timeout=30)
 
 
 def _load_all() -> dict:
@@ -24,10 +31,21 @@ def _load_all() -> dict:
 
 
 def _save_all(data: dict) -> None:
-    """プリセットファイルに書き出し"""
+    """プリセットファイルに原子的に書き出し（書き込み中断による破損を防止）"""
     PRESETS_DIR.mkdir(parents=True, exist_ok=True)
-    with open(CAL_PRESETS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(PRESETS_DIR), suffix=".tmp", prefix="cal_presets_"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, str(CAL_PRESETS_FILE))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def list_calibration_presets() -> list[dict]:
@@ -46,9 +64,6 @@ def list_calibration_presets() -> list[dict]:
 
 def save_calibration_preset(name: str, params: dict) -> None:
     """プリセットを保存（同名は上書き）"""
-    data = _load_all()
-    presets = data.get("presets", [])
-
     params["_saved_at"] = datetime.now().isoformat()
 
     entry = {
@@ -57,11 +72,14 @@ def save_calibration_preset(name: str, params: dict) -> None:
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
 
-    # 同名があれば上書き
-    presets = [p for p in presets if p.get("name") != name]
-    presets.append(entry)
-    data["presets"] = presets
-    _save_all(data)
+    with _cal_presets_lock:
+        data = _load_all()
+        presets = data.get("presets", [])
+        # 同名があれば上書き
+        presets = [p for p in presets if p.get("name") != name]
+        presets.append(entry)
+        data["presets"] = presets
+        _save_all(data)
 
 
 def load_calibration_preset(name: str) -> dict | None:
@@ -75,11 +93,12 @@ def load_calibration_preset(name: str) -> dict | None:
 
 def delete_calibration_preset(name: str) -> bool:
     """プリセットを削除（成功で True）"""
-    data = _load_all()
-    presets = data.get("presets", [])
-    new_presets = [p for p in presets if p.get("name") != name]
-    if len(new_presets) == len(presets):
-        return False
-    data["presets"] = new_presets
-    _save_all(data)
-    return True
+    with _cal_presets_lock:
+        data = _load_all()
+        presets = data.get("presets", [])
+        new_presets = [p for p in presets if p.get("name") != name]
+        if len(new_presets) == len(presets):
+            return False
+        data["presets"] = new_presets
+        _save_all(data)
+        return True

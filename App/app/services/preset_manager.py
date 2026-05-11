@@ -4,12 +4,19 @@
 # =============================================================================
 
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
+
+from filelock import FileLock
 
 from app.config import PRESETS_DIR
 
 PRESETS_FILE = PRESETS_DIR / "presets.json"
+
+# プロセス横断の排他ロック（複数ユーザー同時保存対策）
+_presets_lock = FileLock(str(PRESETS_FILE) + ".lock", timeout=30)
 
 # プリセットに保存する解析パラメータキー（パスは除外）
 PRESET_KEYS = [
@@ -38,10 +45,21 @@ def _load_all() -> dict:
 
 
 def _save_all(data: dict) -> None:
-    """プリセットファイルに書き出し"""
+    """プリセットファイルに原子的に書き出し（書き込み中断による破損を防止）"""
     PRESETS_DIR.mkdir(parents=True, exist_ok=True)
-    with open(PRESETS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(PRESETS_DIR), suffix=".tmp", prefix="presets_"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, str(PRESETS_FILE))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def list_presets() -> list[dict]:
@@ -55,9 +73,6 @@ def list_presets() -> list[dict]:
 
 def save_preset(name: str, params: dict) -> None:
     """プリセットを保存（同名は上書き）"""
-    data = _load_all()
-    presets = data.get("presets", [])
-
     # PRESET_KEYS のみ保存
     filtered = {k: params[k] for k in PRESET_KEYS if k in params}
     filtered["_saved_at"] = datetime.now().isoformat()
@@ -68,11 +83,14 @@ def save_preset(name: str, params: dict) -> None:
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
 
-    # 同名があれば上書き
-    presets = [p for p in presets if p.get("name") != name]
-    presets.append(entry)
-    data["presets"] = presets
-    _save_all(data)
+    with _presets_lock:
+        data = _load_all()
+        presets = data.get("presets", [])
+        # 同名があれば上書き
+        presets = [p for p in presets if p.get("name") != name]
+        presets.append(entry)
+        data["presets"] = presets
+        _save_all(data)
 
 
 def load_preset(name: str) -> dict | None:
@@ -86,11 +104,12 @@ def load_preset(name: str) -> dict | None:
 
 def delete_preset(name: str) -> bool:
     """プリセットを削除（成功で True）"""
-    data = _load_all()
-    presets = data.get("presets", [])
-    new_presets = [p for p in presets if p.get("name") != name]
-    if len(new_presets) == len(presets):
-        return False
-    data["presets"] = new_presets
-    _save_all(data)
-    return True
+    with _presets_lock:
+        data = _load_all()
+        presets = data.get("presets", [])
+        new_presets = [p for p in presets if p.get("name") != name]
+        if len(new_presets) == len(presets):
+            return False
+        data["presets"] = new_presets
+        _save_all(data)
+        return True
