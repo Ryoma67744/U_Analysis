@@ -41,19 +41,36 @@ _LITE_URL_RE = re.compile(r"^/lite/([^/]+)/([^/]+)/?$")
 # =========================================================================
 
 @callback(
-    [Output("current_page", "data", allow_duplicate=True),
-     Output("lite_target_store", "data")],
+    Output("lite_target_store", "data"),
     Input("url_bar", "pathname"),
     prevent_initial_call=True,
 )
 def route_lite_url(pathname):
-    """URL パスが /lite/<project_id>/<sub_project_id> なら軽量ビューに遷移"""
+    """URL パスが /lite/<project_id>/<sub_project_id> なら lite_target_store に書く"""
     if not pathname:
-        return no_update, no_update
+        return no_update
     m = _LITE_URL_RE.match(pathname)
     if not m:
-        return no_update, no_update
-    return "lite", {"project_id": m.group(1), "sub_project_id": m.group(2)}
+        return no_update
+    return {"project_id": m.group(1), "sub_project_id": m.group(2)}
+
+
+@callback(
+    Output("current_page", "data", allow_duplicate=True),
+    Input("lite_target_store", "data"),
+    prevent_initial_call=True,
+)
+def navigate_to_lite_page(target):
+    """lite_target_store の更新をトリガに lite ページへ遷移。
+
+    route_lite_url から current_page.data 出力を分離することで、
+    share_callbacks.route_share_url（同じ Input=url_bar.pathname,
+    Output=current_page.data allow_duplicate）と Dash の
+    allow_duplicate ハッシュが衝突しないようにする。
+    """
+    if target and target.get("project_id") and target.get("sub_project_id"):
+        return "lite"
+    return no_update
 
 
 # =========================================================================
