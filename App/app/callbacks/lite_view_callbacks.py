@@ -23,6 +23,7 @@ import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
 from dash import (
     Input, Output, State, callback, html, dcc, dash_table, no_update, MATCH,
+    clientside_callback,
 )
 
 from app.services.project_manager import get_project, get_sub_project
@@ -736,3 +737,27 @@ def _build_heatmap_section(deg_records, top_n_per_cluster=3):
             dcc.Graph(figure=fig, config={"displayModeBar": True}),
         ],
     )
+
+
+# =============================================================================
+# 「軽量ビューアを開く」ボタン
+# メイン解析画面（インタラクティブ解析タブ）から新タブで /lite/<pid>/<sid> を開く
+# =============================================================================
+
+clientside_callback(
+    """
+    function(n_clicks, project_id, sub_project_id) {
+        if (!n_clicks || !project_id || !sub_project_id) {
+            return window.dash_clientside.no_update;
+        }
+        const url = `/lite/${encodeURIComponent(project_id)}/${encodeURIComponent(sub_project_id)}`;
+        window.open(url, '_blank');
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("btn_open_lite_viewer", "n_clicks"),
+    Input("btn_open_lite_viewer", "n_clicks"),
+    [State("interactive_project_select", "value"),
+     State("interactive_sub_project_select", "value")],
+    prevent_initial_call=True,
+)
