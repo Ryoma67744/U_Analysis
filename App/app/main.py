@@ -77,8 +77,37 @@ from flask import request as _flask_request  # noqa: E402
 
 @server.before_request
 def _healthz_bypass():
+    """ヘルスチェック endpoint。BasicAuth より前で応答。
+
+    /healthz       → 軽量応答 (Docker / load balancer 用)。プロセス生存のみ確認。
+    /healthz/ready → Dash の callback registry / layout を実検査 (READY 確認用)。
+                     起動直後の不完全な状態を弾けるため、CI/CD / deploy 時推奨。
+    """
     if _flask_request.path == "/healthz":
         return ("OK", 200, {"Content-Type": "text/plain"})
+    if _flask_request.path == "/healthz/ready":
+        # Dash の中身を軽く検査:
+        # 1. layout が None でない (起動完了)
+        # 2. _dash-dependencies 経由で callback registry が機能
+        # 3. project_manager の projects.json アクセス可能
+        try:
+            if app.layout is None:
+                return ("NOT_READY: layout missing", 503,
+                        {"Content-Type": "text/plain"})
+            # Dash 公式 API: 内部 _callback_list に登録された callback 数
+            # (起動完了後は数百規模になる)
+            try:
+                cb_count = len(getattr(app, "_callback_list", []) or [])
+            except Exception:
+                cb_count = -1
+            # projects.json (PR-E のプロジェクト分離基盤) が機能するか
+            from app.services.project_manager import list_projects
+            _ = list_projects()
+            return (f"READY callbacks={cb_count}", 200,
+                    {"Content-Type": "text/plain"})
+        except Exception as e:
+            return (f"NOT_READY: {type(e).__name__}", 503,
+                    {"Content-Type": "text/plain"})
 
 
 @server.before_request
