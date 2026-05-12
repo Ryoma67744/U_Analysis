@@ -61,3 +61,44 @@ def short_display_id(sid: Optional[str]) -> str:
     if not sid or len(sid) < 5:
         return "Unknown user"
     return f"User {sid[:5]}"
+
+
+def get_display_name() -> str:
+    """現在のリクエストの「表示用ユーザー名」を取得。
+
+    優先順位:
+    1. BasicAuth 認証済みの場合 → authorization.username（例: "alice"）
+    2. session_id Cookie があれば → "User abcde"（先頭 5 文字）
+    3. それも無ければ → "Unknown user"
+
+    Flask request context 内でのみ呼び出し可能。
+    Context 外で呼ばれた場合も短縮 ID 返却で例外を投げない。
+    """
+    try:
+        auth = request.authorization
+        if auth and auth.username:
+            return auth.username
+    except (RuntimeError, AttributeError):
+        pass
+    return short_display_id(get_session_id_or_none())
+
+
+def parse_app_users(s: str) -> dict[str, str]:
+    """APP_USERS 環境変数をパース。
+
+    形式: 'alice:pw1,bob:pw2,charlie:pw3'
+    Returns: {"alice": "pw1", "bob": "pw2", "charlie": "pw3"}
+
+    不正な形式（コロン無し / 空のユーザー or パスワード）はスキップ。
+    """
+    if not s:
+        return {}
+    result: dict[str, str] = {}
+    for pair in s.split(","):
+        pair = pair.strip()
+        if ":" in pair:
+            u, p = pair.split(":", 1)
+            u, p = u.strip(), p.strip()
+            if u and p:
+                result[u] = p
+    return result
