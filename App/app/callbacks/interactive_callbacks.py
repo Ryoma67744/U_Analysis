@@ -86,11 +86,19 @@ _bridge = SeuratBridge()
 # 新: project_key (= RDS path) ごとに state を分離し、proxy 経由で透過アクセスする。
 # ---------------------------------------------------------------------------
 
+import contextvars
 import threading
 
 _project_states: dict[str, dict] = {}
 _state_lock = threading.RLock()
 _DEFAULT_KEY = "__default__"
+# 各リクエストスレッド / background_callback subprocess で独立した値を保持。
+# 旧実装は _project_states["__active_key__"] という共有エントリを使っていたため、
+# User A と User B が異なるプロジェクトを開くと衝突して片方のデータがもう片方に
+# 漏れていた。ContextVar で per-request isolation を実現する。
+_active_key_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "active_project_key", default=None
+)
 
 
 def _state_template() -> dict:
@@ -112,9 +120,9 @@ def _get_state(project_key: str | None = None) -> dict:
     """プロジェクト別 state を取得（なければ生成）。
 
     Args:
-        project_key: RDS path 等のキー。None なら __active_key__ または default。
+        project_key: RDS path 等のキー。None ならアクティブ ContextVar or default。
     """
-    key = project_key or _project_states.get("__active_key__") or _DEFAULT_KEY
+    key = project_key or _active_key_var.get() or _DEFAULT_KEY
     with _state_lock:
         if key not in _project_states:
             _project_states[key] = _state_template()
@@ -122,23 +130,20 @@ def _get_state(project_key: str | None = None) -> dict:
 
 
 def _set_active_key(project_key: str | None) -> None:
-    """アクティブプロジェクトキーを設定（None でクリア）"""
-    with _state_lock:
-        if project_key is None:
-            _project_states.pop("__active_key__", None)
-        else:
-            _project_states["__active_key__"] = project_key
+    """現在のリクエストスレッド / subprocess に対してのみアクティブキーを設定。
+    他のユーザーのリクエストには影響しない（ContextVar 経由でスレッド毎に独立）。"""
+    _active_key_var.set(project_key)
 
 
 def _drop_state(project_key: str | None = None) -> None:
     """指定プロジェクトの state を破棄。None ならアクティブ state を破棄。"""
-    key = project_key or _project_states.get("__active_key__")
+    key = project_key or _active_key_var.get()
     if not key:
         return
     with _state_lock:
         _project_states.pop(key, None)
-        if _project_states.get("__active_key__") == key:
-            _project_states.pop("__active_key__", None)
+    if _active_key_var.get() == key:
+        _active_key_var.set(None)
 
 
 class _InteractiveDataProxy:
