@@ -10,13 +10,29 @@
 """
 from __future__ import annotations
 
+import os
 import uuid
 from typing import Optional
 
 from flask import after_this_request, request
 
 COOKIE_NAME = "msi_session_id"
-COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 日
+# COOKIE_MAX_AGE は環境変数で上書き可能。デフォルト 1 日 (86400 秒)。
+# 過去 30 日設定は Session 固定攻撃のリスク大、本番運用では 1-7 日推奨。
+COOKIE_MAX_AGE = int(os.environ.get("SESSION_COOKIE_MAX_AGE_SEC", 60 * 60 * 24))
+
+
+def _is_https_request() -> bool:
+    """現在のリクエストが HTTPS 経由か判定。
+
+    優先順位:
+    1. X-Forwarded-Proto (Caddy 等のリバースプロキシ経由)
+    2. request.is_secure (直接接続)
+    """
+    proto = request.headers.get("X-Forwarded-Proto", "").lower()
+    if proto:
+        return proto == "https"
+    return bool(request.is_secure)
 
 
 def get_or_create_session_id() -> str:
@@ -24,11 +40,13 @@ def get_or_create_session_id() -> str:
 
     Flask の request context 内でのみ呼び出し可能。
     Returns:
-        16 桁の hex 文字列 (uuid4.hex)
+        32 桁の hex 文字列 (uuid4.hex)
     """
     sid = request.cookies.get(COOKIE_NAME)
     if not sid:
         sid = uuid.uuid4().hex
+        # HTTPS 経由なら secure=True (HTTP 経由には Cookie 送信されない)
+        is_https = _is_https_request()
 
         @after_this_request
         def _set_cookie(resp):
@@ -37,8 +55,7 @@ def get_or_create_session_id() -> str:
                 max_age=COOKIE_MAX_AGE,
                 httponly=False,  # clientside JS で読めるようにする (UI ロックで必要)
                 samesite="Lax",
-                # Note: HTTPS 終端 (Caddy) 配下なら secure=True が推奨。
-                # ローカル開発 (HTTP) では secure=False のため、明示しない (Flask デフォルト)。
+                secure=is_https,  # HTTPS 経由なら secure 強制
             )
             return resp
     return sid
