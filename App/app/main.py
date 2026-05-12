@@ -82,4 +82,6 @@ from app.callbacks import lite_view_callbacks  # noqa: E402, F401
 from app.callbacks import rds_maintenance_callbacks  # noqa: E402, F401
 
 if __name__ == "__main__":
-    app.run(debug=True, host=APP_HOST, port=APP_PORT)
+    # Docker CMD は run_app.py 経由。ここは bare-metal 開発用のフォールバック。
+    # 本番環境でもブラウザに stack trace を漏らさないよう debug=False で固定。
+    app.run(debug=False, host=APP_HOST, port=APP_PORT)
