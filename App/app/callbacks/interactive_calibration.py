@@ -1123,8 +1123,9 @@ def execute_reannotation(n_clicks,
                     csv_path = csv_path_alt
             if csv_path.parent.exists():
                 try:
+                    from app.utils.file_locks import atomic_write_csv
                     df_out = pd.DataFrame(updated)
-                    df_out.to_csv(csv_path, index=False, encoding="utf-8")
+                    atomic_write_csv(df_out, csv_path, index=False, encoding="utf-8")
                     csv_saved_msg = f" | CSV保存済み"
                 except Exception as e:
                     csv_saved_msg = f" | CSV保存失敗: {e}"
