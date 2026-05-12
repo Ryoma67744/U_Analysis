@@ -8,7 +8,7 @@ pyarrow>=14.0
 polars>=0.20
 psutil>=5.9
 python-pptx>=0.6.21
-kaleido>=0.2.1
+kaleido==0.2.1  # plotly 5.x との互換性のため固定（1.x 系は plotly 6.1+ 必須）
 python-dotenv>=1.0
 Pillow>=10.0
 matplotlib>=3.7

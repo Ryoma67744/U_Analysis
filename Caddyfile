@@ -21,5 +21,14 @@
 # =============================================================================
 
 msi.example.com {
-    reverse_proxy msi-app:3838
+    reverse_proxy msi-app:3838 {
+        transport http {
+            read_timeout 600s
+            write_timeout 600s
+            dial_timeout 30s
+        }
+    }
+    request_body {
+        max_size 500MB
+    }
 }

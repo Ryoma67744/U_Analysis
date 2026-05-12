@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 import tempfile
@@ -101,14 +102,30 @@ def standardize_deg_df(df: pd.DataFrame) -> list[dict] | None:
         return None
 
 
+def _r_escape_path(p: Path) -> str:
+    """R 文字列リテラル内に埋め込むための簡易エスケープ。
+
+    バックスラッシュとダブルクォートをエスケープし、`f'"...{escaped}..."'`
+    のように埋め込んでも R パーサーが破損しないようにする。
+    内部生成のパスでも防衛的に通すための関数。
+    """
+    s = p.as_posix()
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def read_deg_rds(rds_path: Path) -> list[dict] | None:
     """TIMS ver13 が出力する deg_FindAllMarkers_raw_*.rds を読み込む。
     R subprocess で RDS -> 一時CSV -> pandas DataFrame に変換。"""
-    tmp_csv = Path(tempfile.mktemp(suffix=".csv"))
+    # mkstemp は TOCTOU 安全（mktemp と異なり原子的にファイルを作成）
+    fd, tmp_csv_str = tempfile.mkstemp(suffix=".csv")
+    os.close(fd)  # subprocess 側で書き直すため fd は即 close
+    tmp_csv = Path(tmp_csv_str)
     try:
+        rds_escaped = _r_escape_path(rds_path)
+        tmp_csv_escaped = _r_escape_path(tmp_csv)
         r_cmd = (
-            f'deg <- readRDS("{rds_path.as_posix()}");\n'
-            f'write.csv(deg, "{tmp_csv.as_posix()}", row.names=TRUE)'
+            f'deg <- readRDS("{rds_escaped}");\n'
+            f'write.csv(deg, "{tmp_csv_escaped}", row.names=TRUE)'
         )
         result = subprocess.run(
             ["Rscript", "-e", r_cmd],
