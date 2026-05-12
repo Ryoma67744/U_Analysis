@@ -287,6 +287,11 @@ def update_feature_plot(feature_name, sample, marker_size,
         name_map = {}
 
     try:
+        # 必要時に expression_matrix.parquet を生成（初回 feature plot で 20-60 秒、以降は即座）
+        try:
+            _bridge.ensure_expression_matrix(rds_path)
+        except Exception:
+            pass  # 失敗時は R subprocess fallback に委ねる
         # Parquet からの高速読み込みを優先
         expression = None
         if cache_dir_str:

@@ -2,16 +2,21 @@
 # MSI Analysis Application - Seurat Data Extractor
 # Seurat RDS → Parquet/CSV 変換ヘルパー
 #
-# Usage: Rscript extract_seurat_data.R <rds_path> <output_dir>
+# Usage: Rscript extract_seurat_data.R <rds_path> <output_dir> [--with-expression]
+#
+# --with-expression: expression_matrix.parquet を生成（dense 100k×18k で 14GB 級になり
+#                    20-60 秒かかる）。Feature plot / m/z キャリブレーション時のみ
+#                    必要なので、初回データロードでは省略するのが推奨。
 # =============================================================================
 
 args <- commandArgs(trailingOnly = TRUE)
 if (length(args) < 2) {
-  stop("Usage: Rscript extract_seurat_data.R <rds_path> <output_dir>")
+  stop("Usage: Rscript extract_seurat_data.R <rds_path> <output_dir> [--with-expression]")
 }
 
-rds_path   <- args[1]
-output_dir <- args[2]
+rds_path        <- args[1]
+output_dir      <- args[2]
+with_expression <- length(args) >= 3 && any(args[-c(1, 2)] == "--with-expression")
 
 if (!file.exists(rds_path)) {
   stop("RDS file not found: ", rds_path)
@@ -137,20 +142,25 @@ writeLines(features, file.path(output_dir, "features_list.txt"))
 cat("Wrote features_list.txt (", length(features), " features)\n")
 
 # --- Expression matrix (for fast Python-side feature queries) ---
-tryCatch({
-  suppressPackageStartupMessages(library(arrow))
-  cat("Exporting expression matrix to Parquet...\n")
-  expr_dense <- as.matrix(expr_data)
-  expr_df <- as.data.frame(t(expr_dense), check.names = FALSE)
-  expr_df$CellID <- cell_ids
-  # CellID を先頭カラムに
-  expr_df <- expr_df[, c("CellID", setdiff(names(expr_df), "CellID"))]
-  arrow::write_parquet(expr_df, file.path(output_dir, "expression_matrix.parquet"))
-  cat("Wrote expression_matrix.parquet (", ncol(expr_df) - 1, " features)\n")
-}, error = function(e) {
-  cat("Warning: expression matrix export failed:", conditionMessage(e), "\n")
-  cat("Feature queries will fall back to R subprocess.\n")
-})
+# 遅延化: Feature plot / m/z キャリブレーションが必要なときのみ --with-expression で生成。
+if (with_expression) {
+  tryCatch({
+    suppressPackageStartupMessages(library(arrow))
+    cat("Exporting expression matrix to Parquet...\n")
+    expr_dense <- as.matrix(expr_data)
+    expr_df <- as.data.frame(t(expr_dense), check.names = FALSE)
+    expr_df$CellID <- cell_ids
+    # CellID を先頭カラムに
+    expr_df <- expr_df[, c("CellID", setdiff(names(expr_df), "CellID"))]
+    arrow::write_parquet(expr_df, file.path(output_dir, "expression_matrix.parquet"))
+    cat("Wrote expression_matrix.parquet (", ncol(expr_df) - 1, " features)\n")
+  }, error = function(e) {
+    cat("Warning: expression matrix export failed:", conditionMessage(e), "\n")
+    cat("Feature queries will fall back to R subprocess.\n")
+  })
+} else {
+  cat("Skipping expression_matrix.parquet (use --with-expression to generate)\n")
+}
 
 # --- Merged cluster data (if available) ---
 has_merged <- "seurat_clusters_merged" %in% colnames(obj@meta.data)

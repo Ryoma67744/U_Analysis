@@ -896,9 +896,20 @@ def apply_int_calibration(n_clicks, cal_enable, cal_table_data,
                 features_list, matched_pairs, regression_mode=reg_mode,
             )
         elif ref_only_mz:
+            # 必要時に expression_matrix.parquet を on-demand 生成
+            rds_path = _interactive_data.get("rds_path")
             cache_dir = _interactive_data.get("cache_dir")
-            expr_path = (Path(cache_dir) / "expression_matrix.parquet"
-                         if cache_dir else None)
+            expr_path = None
+            if rds_path:
+                try:
+                    from app.callbacks.interactive_callbacks import _bridge
+                    expr_path = _bridge.ensure_expression_matrix(rds_path)
+                except Exception:
+                    expr_path = None
+            if expr_path is None and cache_dir:
+                fallback = Path(cache_dir) / "expression_matrix.parquet"
+                if fallback.exists():
+                    expr_path = fallback
             if expr_path and expr_path.exists():
                 expr_df = pd.read_parquet(expr_path)
                 sw = float(cal_search_window or 0.5)
