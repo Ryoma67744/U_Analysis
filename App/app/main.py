@@ -24,12 +24,35 @@ _launch_uid = uuid4()
 _cache_dir = OTHER_DIR / "cache"
 _cache_dir.mkdir(parents=True, exist_ok=True)
 _cache = diskcache.Cache(str(_cache_dir))
+
+
+def _bg_cache_key_contributor():
+    """DiskcacheManager の cache_by 用関数。
+
+    キャッシュキーに以下を含めることで、複数ユーザー並行実行時の
+    progress/result 混線を防ぐ:
+    - _launch_uid: アプリ再起動時のキャッシュ無効化用 (既存挙動)
+    - session_id: ユーザー (ブラウザ) 単位でキャッシュ分離
+
+    Flask request context 外で呼ばれた場合は "no-session" を返し例外を投げない。
+    """
+    try:
+        from flask import has_request_context, request
+        if has_request_context():
+            sid = request.cookies.get("msi_session_id", "no-session")
+        else:
+            sid = "no-session"
+    except Exception:
+        sid = "no-session"
+    return f"{_launch_uid}:{sid}"
+
+
 # Note: DiskcacheManager は各 background_callback 起動毎に
 # multiprocess.Process を spawn する仕様のため、明示的な workers 設定は不要。
 # 複数ユーザーの background_callback (load_interactive_data, cb_export_report)
 # は自動的に並列実行される。リソース制限は OS / Docker レベルで管理。
 _background_manager = DiskcacheManager(
-    _cache, cache_by=[lambda: _launch_uid], expire=300,
+    _cache, cache_by=[_bg_cache_key_contributor], expire=300,
 )
 
 # Dash アプリケーション作成

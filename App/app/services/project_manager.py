@@ -81,17 +81,30 @@ def _save_all(data: dict) -> None:
 # プロジェクト CRUD
 # =========================================================================
 
-def list_projects() -> list[dict]:
-    """プロジェクト一覧を返す（最終更新日時の降順）"""
+def list_projects(*, include_deleted: bool = False) -> list[dict]:
+    """プロジェクト一覧を返す（最終更新日時の降順）。
+
+    Parameters
+    ----------
+    include_deleted : bool, default False
+        True なら soft delete されたプロジェクトも含む (ゴミ箱表示用)。
+    """
     data = _load_all()
     projects = data.get("projects", [])
+    if not include_deleted:
+        projects = [p for p in projects if not p.get("deleted_at")]
     projects.sort(key=lambda p: p.get("last_modified", ""), reverse=True)
     return projects
 
 
-def get_project(project_id: str) -> Optional[dict]:
-    """IDでプロジェクトを検索"""
-    for p in list_projects():
+def get_project(project_id: str, *, include_deleted: bool = False) -> Optional[dict]:
+    """ID でプロジェクトを検索。
+
+    include_deleted=False (デフォルト) は soft delete 済みを返さない。
+    解析実行中の background callback など、UI 不可視でもデータアクセスが
+    必要な場合は include_deleted=True で取得可能。
+    """
+    for p in list_projects(include_deleted=include_deleted):
         if p["id"] == project_id:
             return p
     return None
@@ -188,14 +201,29 @@ class ProjectAccessDenied(PermissionError):
     """プロジェクトの所有者でないユーザーによる変更操作を拒否したことを示す例外。"""
 
 
-def delete_project(project_id: str, *, enforce_owner: bool = True) -> bool:
+def delete_project(
+    project_id: str,
+    *,
+    enforce_owner: bool = True,
+    hard_delete: bool = False,
+) -> bool:
     """プロジェクトを削除（データファイルは削除しない）。
+
+    デフォルトは soft delete: ``deleted_at`` フィールドを付与するのみ。
+    list_projects() / get_project() の結果からは除外されるが、projects.json
+    にはエントリが残り、restore_project() で復元可能。
+
+    並行アクセス対策: 他ユーザーが解析中でも、データファイルは残るので
+    R 側の analysis は継続可能。projects.json 上は消えるため UI 上は不可視に
+    なるが、`get_project(..., include_deleted=True)` で参照可能。
 
     Parameters
     ----------
     enforce_owner : bool, default True
         True なら現在のユーザーが creator でない場合に ProjectAccessDenied を raise。
-        False なら所有権チェックなし (管理者操作 / 復元処理用)。
+    hard_delete : bool, default False
+        True なら projects.json エントリ自体を削除 (復元不可)。
+        通常は False (soft delete) で運用し、運用者が手動で hard_delete する想定。
     """
     with _projects_lock:
         data = _load_all()
@@ -212,9 +240,43 @@ def delete_project(project_id: str, *, enforce_owner: bool = True) -> bool:
                 f"プロジェクト '{target.get('name', project_id)}' は {owner} さんのもので、"
                 f"削除権限がありません。"
             )
-        data["projects"] = [p for p in data["projects"] if p["id"] != project_id]
+        if hard_delete:
+            data["projects"] = [p for p in data["projects"] if p["id"] != project_id]
+        else:
+            # Soft delete: deleted_at を付与
+            target["deleted_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            try:
+                target["deleted_by"] = _safe_current_user()
+            except Exception:
+                pass
         _save_all(data)
         return True
+
+
+def restore_project(project_id: str) -> bool:
+    """soft delete されたプロジェクトを復元 (deleted_at を削除)。
+
+    Returns:
+        True なら復元成功、False なら対象が存在しない or 元から deleted_at が無い。
+    """
+    with _projects_lock:
+        data = _load_all()
+        for p in data["projects"]:
+            if p["id"] == project_id and "deleted_at" in p:
+                p.pop("deleted_at", None)
+                p.pop("deleted_by", None)
+                p["last_modified"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                _save_all(data)
+                return True
+    return False
+
+
+def list_deleted_projects() -> list[dict]:
+    """soft delete されたプロジェクトの一覧を返す (deleted_at の降順)。"""
+    data = _load_all()
+    deleted = [p for p in data.get("projects", []) if p.get("deleted_at")]
+    deleted.sort(key=lambda p: p.get("deleted_at", ""), reverse=True)
+    return deleted
 
 
 # =========================================================================
