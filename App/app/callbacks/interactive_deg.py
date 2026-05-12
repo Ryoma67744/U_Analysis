@@ -840,14 +840,13 @@ def update_heatmap(top_n, scale, annotation_on, merge_toggle, selected_cluster,
         )
         return fig
 
-    # 利用可能な遺伝子のみ読み込み
-    available = []
-    for g in genes:
-        try:
-            pd.read_parquet(expr_path, columns=[g])
-            available.append(g)
-        except Exception:
-            continue
+    # 利用可能な遺伝子を Parquet schema から一括判定（I/O 1 回で完結）
+    import pyarrow.parquet as pq
+    try:
+        schema_names = set(pq.read_schema(expr_path).names)
+    except Exception:
+        schema_names = set()
+    available = [g for g in genes if g in schema_names]
 
     if not available:
         fig = go.Figure()
