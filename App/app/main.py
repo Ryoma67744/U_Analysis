@@ -70,12 +70,25 @@ def _ensure_session_id():
     get_or_create_session_id()  # 副作用で after_this_request 経由で set-cookie
 
 
-# パスワード認証（クラウドデプロイ用）
-# APP_PASSWORD 環境変数が設定されている場合のみ有効化
+# 認証設定 (クラウドデプロイ用)
+#   優先順位 1: APP_USERS=alice:pw1,bob:pw2,...  → 複数ユーザー BasicAuth
+#   優先順位 2: APP_PASSWORD=...                → 単一 "msi" ユーザー (後方互換)
+#   両方未設定                                 → 認証なし (ローカル開発時)
+from app.services.session_id import parse_app_users
+
+_app_users = parse_app_users(os.environ.get("APP_USERS", ""))
 _app_password = os.environ.get("APP_PASSWORD")
-if _app_password:
+
+_auth_dict = None
+if _app_users:
+    _auth_dict = _app_users
+elif _app_password and _app_password != "CHANGE_ME_BEFORE_DEPLOY":
+    # CHANGE_ME_BEFORE_DEPLOY のプレースホルダーで認証を有効化しない
+    _auth_dict = {"msi": _app_password}
+
+if _auth_dict:
     import dash_auth
-    dash_auth.BasicAuth(app, {"msi": _app_password})
+    dash_auth.BasicAuth(app, _auth_dict)
 
 # レイアウト設定
 app.layout = create_main_layout()
