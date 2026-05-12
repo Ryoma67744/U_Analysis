@@ -62,13 +62,16 @@ logger = logging.getLogger("msi.interactive.fullscreen")
      State("spatial_rotation_store", "data"),
      State("custom_color_map_store", "data"),
      State("spatial_columns_per_row", "value"),
-     State("cluster_name_map_store", "data")],
+     State("cluster_name_map_store", "data"),
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
 def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                       umap_fig, feat_container_children, spatial_fig_data, deg_data,
                       rotation_store, custom_colors, spatial_columns_per_row,
-                      cluster_name_map=None):
+                      cluster_name_map=None, rds_path=None):
+    from app.callbacks.interactive_callbacks import _set_active_key
+    _set_active_key(rds_path)
     # 遅延 import（循環参照回避）
     from app.callbacks.interactive_umap import _build_umap_integrated_fig
     from app.callbacks.interactive_spatial import _create_single_spatial_fig
@@ -418,13 +421,16 @@ def on_fullscreen_close(is_open, current_val):
     [State("custom_color_map_store", "data"),
      State("umap_columns_per_row", "value"),
      State("accumulated_label_positions", "data"),
-     State("cluster_name_map_store", "data")],
+     State("cluster_name_map_store", "data"),
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
 def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
                    height_val, width_val, marker_size, exclude_clusters, label_size,
                    custom_color_map, columns_per_row, accumulated_positions,
-                   cluster_name_map=None):
+                   cluster_name_map=None, rds_path=None):
+    from app.callbacks.interactive_callbacks import _set_active_key
+    _set_active_key(rds_path)
     # 遅延 import（循環参照回避）
     from app.callbacks.interactive_umap import (
         _build_umap_integrated_fig,
@@ -498,13 +504,17 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
     [State("custom_color_map_store", "data"),
      State("spatial_columns_per_row", "value"),
      State("accumulated_label_positions", "data"),
-     State("cluster_name_map_store", "data")],
+     State("cluster_name_map_store", "data"),
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
 def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                       exclude_clusters, marker_size, height_val, width_val,
                       label_size, custom_colors, columns_per_row,
-                      accumulated_positions, cluster_name_map=None):
+                      accumulated_positions, cluster_name_map=None,
+                      rds_path=None):
+    from app.callbacks.interactive_callbacks import _set_active_key
+    _set_active_key(rds_path)
     # 遅延 import（循環参照回避）
     from app.callbacks.interactive_spatial import _create_single_spatial_fig
 

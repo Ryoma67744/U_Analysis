@@ -66,9 +66,13 @@ def update_cluster_stats(rds_path, cluster_name_map=None):
     [Input("cluster_stats_table", "selected_rows"),
      Input("umap_highlight_cluster", "value"),
      Input("cluster_stats_table", "data")],
-    State("cluster_name_map_store", "data"),
+    [State("cluster_name_map_store", "data"),
+     State("seurat_rds_path_store", "data")],
 )
-def update_cluster_info(selected_rows, highlight, table_data, cluster_name_map=None):
+def update_cluster_info(selected_rows, highlight, table_data,
+                        cluster_name_map=None, rds_path=None):
+    from app.callbacks.interactive_callbacks import _set_active_key
+    _set_active_key(rds_path)
     df = _interactive_data.get("plot_data")
     if df is None:
         return "データを読み込んでください"
@@ -139,10 +143,13 @@ def update_cluster_dashboard(rds_path, cluster_name_map=None):
     Output("cluster_top_markers_panel", "children"),
     Input("deg_data_store", "data"),
     Input("cluster_name_map_store", "data"),
+    State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
-def update_cluster_top_markers(deg_data, cluster_name_map=None):
+def update_cluster_top_markers(deg_data, cluster_name_map=None, rds_path=None):
     """クラスタ別 Top 5 マーカー一覧"""
+    from app.callbacks.interactive_callbacks import _set_active_key
+    _set_active_key(rds_path)
     if not deg_data:
         return html.P("DEGデータなし", className="text-muted small")
 

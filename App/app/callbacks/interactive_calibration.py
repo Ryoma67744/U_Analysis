@@ -985,16 +985,22 @@ def auto_switch_reann_adduct(ion_mode):
      State("reann_tolerance", "value"),
      State("interactive_result_folder", "value"),
      State("interactive_integration_method", "value"),
-     State("reann_overwrite_csv", "value")],
+     State("reann_overwrite_csv", "value"),
+     State("interactive_rds_map", "data")],
     prevent_initial_call=True,
 )
 def execute_reannotation(n_clicks,
                          annotation_path, ion_mode, adduct_filter,
                          tolerance, result_folder, integration_method,
-                         overwrite_csv):
+                         overwrite_csv, rds_map=None):
     """再アノテーション実行: 既存DEGデータに対してPython側で化合物名を再マッピングする。"""
     if not n_clicks:
         raise PreventUpdate
+
+    # 現在の閲覧プロジェクトを ContextVar にスコープ
+    if rds_map and integration_method and integration_method in rds_map:
+        from app.callbacks.interactive_callbacks import _set_active_key
+        _set_active_key(rds_map[integration_method])
 
     import dash_bootstrap_components as dbc
     from app.callbacks.interactive_callbacks import (
