@@ -8,11 +8,75 @@ import logging
 import os
 import re
 import subprocess
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from app.config import R_HELPERS_DIR, RSCRIPT_PATH
+
+# PR-H3 C2: R subprocess の wallclock timeout (秒)。0 で無効化。
+# 巨大データロード時の OOM / 無限ループ等で 1 ユーザーが全リソースを
+# 占有するのを防止。Docker mem_limit と組み合わせて安定運用。
+R_ANALYSIS_TIMEOUT_SEC = int(os.environ.get("R_ANALYSIS_TIMEOUT_SEC", 0))
+
+# R 内部メモリ上限 (GB)。R >= 3.5 の R_MAX_VSIZE で利用。
+# 0 / 未設定なら制限なし (Docker mem_limit に委ねる)。
+R_MAX_VSIZE_GB = int(os.environ.get("R_MAX_VSIZE_GB", 0))
+
+# プロセスごとの watchdog timer 管理 (PID → Timer)。check_process_completion で
+# 終了検知時に timer を cancel し、不要な kill を防ぐ。
+_watchdog_timers: dict[int, threading.Timer] = {}
+_watchdog_lock = threading.Lock()
+
+
+def _schedule_watchdog(process: subprocess.Popen) -> None:
+    """R subprocess に対する wallclock timeout 監視を開始。
+
+    R_ANALYSIS_TIMEOUT_SEC > 0 の場合のみ動作。N 秒経過してもプロセスが
+    生きていれば SIGTERM → 5 秒後でも生きていれば SIGKILL を送る。
+    """
+    if R_ANALYSIS_TIMEOUT_SEC <= 0:
+        return
+
+    def _kill_if_alive():
+        try:
+            if process.poll() is None:
+                logger.warning(
+                    "R subprocess pid=%s が R_ANALYSIS_TIMEOUT_SEC=%ds を超過、SIGTERM 送信",
+                    process.pid, R_ANALYSIS_TIMEOUT_SEC,
+                )
+                process.terminate()
+                # 5 秒待って強制 kill
+                def _force_kill():
+                    try:
+                        if process.poll() is None:
+                            logger.warning(
+                                "R subprocess pid=%s が SIGTERM 後も生存、SIGKILL 送信",
+                                process.pid,
+                            )
+                            process.kill()
+                    except Exception:
+                        pass
+                t2 = threading.Timer(5.0, _force_kill)
+                t2.daemon = True
+                t2.start()
+        except Exception:
+            pass
+
+    timer = threading.Timer(R_ANALYSIS_TIMEOUT_SEC, _kill_if_alive)
+    timer.daemon = True
+    timer.start()
+    with _watchdog_lock:
+        _watchdog_timers[process.pid] = timer
+
+
+def _cancel_watchdog(pid: int) -> None:
+    """プロセス正常終了時に watchdog を取り消す。"""
+    with _watchdog_lock:
+        timer = _watchdog_timers.pop(pid, None)
+    if timer:
+        timer.cancel()
 from app.services.path_resolver import resolve_data_path
 
 logger = logging.getLogger("msi.analysis_runner")
@@ -549,6 +613,13 @@ def start_analysis_process(
     child_env.setdefault("OPENBLAS_NUM_THREADS", "4")
     child_env.setdefault("MKL_NUM_THREADS", "4")
 
+    # PR-H3 C2: R 内部メモリ上限 (R >= 3.5)。R_MAX_VSIZE_GB > 0 で有効化。
+    # R が指定上限を超えると "Error: vector memory exhausted" で安全に終了し、
+    # システム全体の OOM を回避できる。
+    if R_MAX_VSIZE_GB > 0:
+        # R_MAX_VSIZE は "<n>Gb" 形式の文字列で受け取る
+        child_env["R_MAX_VSIZE"] = f"{R_MAX_VSIZE_GB}Gb"
+
     # サブプロセスを起動（stdout/stderrをログファイルにリダイレクト）
     # R スクリプトが App/Script/helpers/rds_io.R を解決できるよう、
     # R_HELPERS_DIR を子プロセスの環境変数に必ず渡す。
@@ -571,6 +642,8 @@ def start_analysis_process(
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         pid_file.write_text(str(process.pid), encoding="utf-8")
+        # PR-H3 C2: wallclock timeout 監視を開始
+        _schedule_watchdog(process)
     except Exception as e:
         if log_fh:
             log_fh.close()
@@ -678,6 +751,12 @@ def check_process_completion(
     """
     if process is None or process.poll() is None:
         return None  # まだ実行中
+
+    # PR-H3 C2: 正常終了したので watchdog を取り消す
+    try:
+        _cancel_watchdog(process.pid)
+    except Exception:
+        pass
 
     # プロセス終了 → ログファイルハンドルを閉じる
     if log_file_handle:
