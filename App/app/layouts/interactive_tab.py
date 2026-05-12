@@ -151,6 +151,12 @@ def create_interactive_tab():
                                 id="int_cal_detail_panel",
                                 style={"display": "none"},
                                 children=[
+                                    # PR-G3: UI ロック表示（他ユーザーが編集中の表示）
+                                    html.Div(
+                                        id="calibration_panel_lock_indicator",
+                                        className="text-warning small mb-2",
+                                        children="",
+                                    ),
                                     # Row: イオンモード + 付加イオン + マトリクス
                                     dbc.Row(className="mb-2", children=[
                                         dbc.Col(width=3, children=[

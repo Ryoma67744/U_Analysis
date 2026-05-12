@@ -97,3 +97,78 @@ def release_lock_for_callback(
     if not (rds_path and session_id):
         return False
     return elm.release(rds_path, field_id, session_id)
+
+
+# ---------------------------------------------------------------------------
+# PR-G3: キャリブレーション設定パネル全体を 1 ロックで管理
+# ---------------------------------------------------------------------------
+# パネル内の全フィールド (enable, ion_mode, matrix, adduct_filter, table_data,
+# annotation_path, search_window, min_peaks, regression_mode) が変更されたら
+# パネル全体に対する 1 ロック "calibration_panel" を取得。
+# 他ユーザーには「⚠ alice がキャリブ設定を編集中」表示 + パネル内全フィールド disabled。
+
+@callback(
+    Output("calibration_panel_lock_indicator", "children", allow_duplicate=True),
+    [Input("int_cal_enable", "value"),
+     Input("int_cal_ion_mode", "value"),
+     Input("int_cal_matrix", "value"),
+     Input("int_cal_adduct_filter", "value"),
+     Input("int_cal_table_data", "data"),
+     Input("int_cal_annotation_path", "value"),
+     Input("int_cal_search_window", "value"),
+     Input("int_cal_min_peaks", "value"),
+     Input("int_cal_regression_mode", "value")],
+    [State("seurat_rds_path_store", "data"),
+     State("session_id_store", "data")],
+    prevent_initial_call=True,
+)
+def acquire_calibration_panel_lock(*args):
+    """キャリブ設定の任意フィールドが変更された瞬間にパネルロック取得。"""
+    rds_path = args[-2]
+    session_id = args[-1]
+    if not rds_path or not session_id:
+        return no_update
+    acquire_lock_for_callback(rds_path, "calibration_panel", session_id)
+    return no_update
+
+
+@callback(
+    [Output("int_cal_enable", "disabled"),
+     Output("int_cal_ion_mode", "options"),
+     Output("int_cal_matrix", "disabled"),
+     Output("int_cal_adduct_filter", "disabled"),
+     Output("int_cal_table", "editable"),
+     Output("int_cal_annotation_path", "disabled"),
+     Output("int_cal_search_window", "disabled"),
+     Output("int_cal_min_peaks", "disabled"),
+     Output("int_cal_regression_mode", "disabled"),
+     Output("int_cal_apply", "disabled"),
+     Output("calibration_panel_lock_indicator", "children", allow_duplicate=True)],
+    Input("edit_lock_state", "data"),
+    State("session_id_store", "data"),
+    prevent_initial_call="initial_duplicate",
+)
+def reflect_calibration_panel_lock(lock_state, my_session_id):
+    """edit_lock_state を見て、キャリブパネル全フィールドの disabled / editable を一括反映。"""
+    # Default (no lock): すべて編集可能
+    default_ion_options = [
+        {"label": "Positive", "value": "Positive"},
+        {"label": "Negative", "value": "Negative"},
+    ]
+    disabled_ion_options = [
+        {"label": "Positive", "value": "Positive", "disabled": True},
+        {"label": "Negative", "value": "Negative", "disabled": True},
+    ]
+
+    if not lock_state:
+        return (False, default_ion_options, False, False, True,
+                False, False, False, False, False, "")
+
+    owner = lock_state.get("calibration_panel")
+    if owner and owner.get("user_id") != my_session_id:
+        msg = f"⚠ {owner.get('user_display', '?')} がキャリブ設定を編集中"
+        # 全フィールド disabled / editable=False
+        return (True, disabled_ion_options, True, True, False,
+                True, True, True, True, True, msg)
+    return (False, default_ion_options, False, False, True,
+            False, False, False, False, False, "")
