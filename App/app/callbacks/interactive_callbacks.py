@@ -577,9 +577,10 @@ def load_interactive_data(set_progress, n_clicks, integration_method, rds_map, r
         samples = sorted(_interactive_data["plot_data"]["Sample"].unique())
         sample_options = [{"label": s, "value": s} for s in samples]
 
-        # Feature選択肢（全件、dcc.Dropdownのsearch機能でフィルタ）
+        # Feature選択肢: 初期は上位 500 件のみ（18k 件 eager 送信を回避）
+        # 検索すると filter_features callback がサーバサイドで全 features から再フィルタする
         features = result["features_list"]
-        feature_options = [{"label": f, "value": f} for f in features]
+        feature_options = [{"label": f, "value": f} for f in features[:500]]
 
         # DEG 結果を探す（選択した統合手法のフォルダを優先）
         set_progress((65, 100, "DEG マーカー読込中..."))
