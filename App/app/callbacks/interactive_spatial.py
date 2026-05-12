@@ -12,7 +12,7 @@ import numpy as np
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
 from dash import (Input, Output, State, callback, ctx, no_update, html, dcc,
-                  ALL)
+                  ALL, MATCH)
 from dash.exceptions import PreventUpdate
 
 from app.config import CLUSTER_PRESET_COLORS, HIGHLIGHT_GRAY
@@ -339,6 +339,11 @@ def create_spatial_controls(rds_path, rotation_store, name_map, custom_color_map
                             value=display_s if display_s != s else "",
                             placeholder=s,
                             size="sm", debounce=True,
+                        ),
+                        html.Small(
+                            id={"type": "sample_rename_lock_indicator", "index": s},
+                            className="text-warning",
+                            children="",
                         ),
                     ]),
                     dbc.Col(width=5, children=[
@@ -779,6 +784,11 @@ def create_umap_name_controls(rds_path, name_map):
                                 placeholder=s,
                                 size="sm", debounce=True,
                             ),
+                            html.Small(
+                                id={"type": "umap_sample_rename_lock_indicator", "index": s},
+                                className="text-warning",
+                                children="",
+                            ),
                         ]),
                     ]),
                     html.Hr(className="my-1") if i < len(samples) - 1 else html.Div(),
@@ -978,3 +988,89 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
     # 代表figureをStoreに保存（HTMLエクスポート用）
     store_data = representative_fig.to_dict() if representative_fig else None
     return container, store_data, batch_fig_dicts
+
+
+# ---------------------------------------------------------------------------
+# PR-G2: sample_rename_input / umap_sample_rename_input の UI ロック
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output({"type": "sample_rename_lock_indicator", "index": ALL}, "id"),
+    Input({"type": "sample_rename_input", "index": ALL}, "value"),
+    [State("seurat_rds_path_store", "data"),
+     State("session_id_store", "data"),
+     State({"type": "sample_rename_input", "index": ALL}, "id")],
+    prevent_initial_call=True,
+)
+def acquire_sample_rename_lock(values, rds_path, session_id, ids):
+    """Spatial サイドのサンプル名変更入力でロック取得。"""
+    from app.callbacks.edit_lock_callbacks import acquire_lock_for_callback
+    triggered = ctx.triggered_id
+    if not isinstance(triggered, dict) or not rds_path or not session_id:
+        return [no_update] * len(ids)
+    target_index = triggered.get("index")
+    if target_index is None:
+        return [no_update] * len(ids)
+    # sample_rename / umap_sample_rename は同じサンプルに対する別 UI なので
+    # 同一 field_id "sample_rename:{s}" で 1 ロックを共有する。
+    field_id = f"sample_rename:{target_index}"
+    acquire_lock_for_callback(rds_path, field_id, session_id)
+    return [no_update] * len(ids)
+
+
+@callback(
+    Output({"type": "umap_sample_rename_lock_indicator", "index": ALL}, "id"),
+    Input({"type": "umap_sample_rename_input", "index": ALL}, "value"),
+    [State("seurat_rds_path_store", "data"),
+     State("session_id_store", "data"),
+     State({"type": "umap_sample_rename_input", "index": ALL}, "id")],
+    prevent_initial_call=True,
+)
+def acquire_umap_sample_rename_lock(values, rds_path, session_id, ids):
+    """UMAP サイドのサンプル名変更入力でロック取得。
+    Spatial 側と同じ field_id を共有 (同一サンプルへの編集は 1 ロック)。"""
+    from app.callbacks.edit_lock_callbacks import acquire_lock_for_callback
+    triggered = ctx.triggered_id
+    if not isinstance(triggered, dict) or not rds_path or not session_id:
+        return [no_update] * len(ids)
+    target_index = triggered.get("index")
+    if target_index is None:
+        return [no_update] * len(ids)
+    field_id = f"sample_rename:{target_index}"  # Spatial 側と共有
+    acquire_lock_for_callback(rds_path, field_id, session_id)
+    return [no_update] * len(ids)
+
+
+@callback(
+    [Output({"type": "sample_rename_input", "index": MATCH}, "disabled"),
+     Output({"type": "sample_rename_lock_indicator", "index": MATCH}, "children")],
+    Input("edit_lock_state", "data"),
+    [State({"type": "sample_rename_input", "index": MATCH}, "id"),
+     State("session_id_store", "data")],
+)
+def reflect_sample_rename_lock(lock_state, comp_id, my_session_id):
+    if not lock_state or not comp_id:
+        return False, ""
+    field_id = f"sample_rename:{comp_id.get('index')}"
+    owner = lock_state.get(field_id)
+    if owner and owner.get("user_id") != my_session_id:
+        return True, f"編集中: {owner.get('user_display', '?')}"
+    return False, ""
+
+
+@callback(
+    [Output({"type": "umap_sample_rename_input", "index": MATCH}, "disabled"),
+     Output({"type": "umap_sample_rename_lock_indicator", "index": MATCH}, "children")],
+    Input("edit_lock_state", "data"),
+    [State({"type": "umap_sample_rename_input", "index": MATCH}, "id"),
+     State("session_id_store", "data")],
+)
+def reflect_umap_sample_rename_lock(lock_state, comp_id, my_session_id):
+    """UMAP 側も Spatial 側と同じ field_id (sample_rename:{s}) を見る。"""
+    if not lock_state or not comp_id:
+        return False, ""
+    field_id = f"sample_rename:{comp_id.get('index')}"
+    owner = lock_state.get(field_id)
+    if owner and owner.get("user_id") != my_session_id:
+        return True, f"編集中: {owner.get('user_display', '?')}"
+    return False, ""
