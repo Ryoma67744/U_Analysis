@@ -48,8 +48,17 @@ clientside_callback(
     prevent_initial_call=False,
 )
 def refresh_edit_lock_state(_n, rds_path, _session_id):
-    """heartbeat 間隔で全 lock 状態を Store に同期 + 期限切れを削除。"""
+    """heartbeat 間隔で全 lock 状態を Store に同期 + 期限切れを削除。
+
+    並行して _project_states の stale eviction も実行 (リソースリーク防止)。
+    """
     elm.cleanup_expired()
+    # PR-H3 C1: project state も heartbeat で stale eviction
+    try:
+        from app.callbacks.interactive_callbacks import evict_stale_project_states
+        evict_stale_project_states()
+    except Exception:
+        pass
     if not rds_path:
         return {}
     return elm.get_locks_for_project(rds_path)
