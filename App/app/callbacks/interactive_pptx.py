@@ -1431,8 +1431,8 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
         try:
             if rds_path:
                 _bridge.ensure_expression_matrix(rds_path)
-        except Exception:
-            pass  # PPT 内の feature 関連レンダリングは fallback or スキップ
+        except Exception as e:
+            logger.warning(f"発現データ準備失敗、feature レンダリングは fallback or スキップ: {e}")
 
         # ------------------------------------------------------------------
         # 出力対象手法リストの決定（export_method_selector に基づく）

@@ -445,7 +445,8 @@ def start_analysis_process(
             p for p in psutil.process_iter(["name"])
             if "rscript" in (p.info.get("name") or "").lower()
         ]
-    except Exception:
+    except Exception as e:
+        logger.warning(f"psutil による R プロセス列挙失敗: {e}")
         running_r = []
     if len(running_r) >= 1:
         return {
@@ -459,7 +460,8 @@ def start_analysis_process(
 
     try:
         available_gb = psutil.virtual_memory().available / (1024 ** 3)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"利用可能メモリ取得失敗、無制限と見做す: {e}")
         available_gb = float("inf")
     if available_gb < 10.0:
         return {
@@ -478,7 +480,8 @@ def start_analysis_process(
         while not check_path.exists() and check_path != check_path.parent:
             check_path = check_path.parent
         free_gb = psutil.disk_usage(str(check_path)).free / (1024 ** 3)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"ディスク空き容量取得失敗、無制限と見做す: {e}")
         free_gb = float("inf")
     if free_gb < 10.0:
         return {
@@ -597,7 +600,8 @@ def get_analysis_log(log_file: str, last_n: int = 50) -> str:
         if len(lines) > last_n:
             lines = lines[-last_n:]
         return "\n".join(lines)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"ログ末尾読込失敗: {e}")
         return ""
 
 
@@ -605,7 +609,8 @@ def get_analysis_log_full(log_file: str) -> str:
     """解析プロセスのログ全文を取得（行数制限なし）"""
     try:
         return Path(log_file).read_text(encoding="utf-8")
-    except Exception:
+    except Exception as e:
+        logger.warning(f"ログ全文読込失敗: {e}")
         return ""
 
 
@@ -678,8 +683,8 @@ def check_process_completion(
     if log_file_handle:
         try:
             log_file_handle.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"ログハンドルクローズ失敗（非重大）: {e}")
 
     exit_code = process.returncode
     status = "finished" if exit_code == 0 else "error"
@@ -701,8 +706,8 @@ def stop_analysis_process(
     if log_file_handle:
         try:
             log_file_handle.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"ログハンドルクローズ失敗（非重大）: {e}")
 
     if process is None:
         return False

@@ -4,6 +4,7 @@
 # =============================================================================
 
 import json
+import logging
 import os
 import secrets
 import tempfile
@@ -14,6 +15,8 @@ from typing import Optional
 from filelock import FileLock
 
 from app.config import SHARES_DIR, SHARES_FILE, DEFAULT_SHARE_EXPIRY_DAYS
+
+logger = logging.getLogger("msi.share_manager")
 
 # プロセス横断の排他ロック（複数ユーザー同時保存対策）
 _shares_lock = FileLock(str(SHARES_FILE) + ".lock", timeout=30)
@@ -33,7 +36,8 @@ def _load_all() -> dict:
     try:
         with open(SHARES_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"shares.json 読込失敗、空で初期化: {e}")
         return {"shares": []}
 
 
@@ -57,8 +61,8 @@ def _save_all(data: dict) -> None:
     try:
         from app.services.backup_manager import backup_on_save
         backup_on_save(SHARES_FILE)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"shares.json 自動バックアップ失敗（処理続行）: {e}")
 
 
 # =========================================================================
