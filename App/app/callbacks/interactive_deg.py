@@ -625,12 +625,17 @@ def update_volcano_plot(cluster, fc_thresh, p_thresh, y_max, marker_size,
     df["neg_log10_p"] = -np.log10(df["p_num"].clip(lower=min_nonzero_p))
 
     # annotation列があれば、表示テキストに化合物名を含める
+    # is_meaningful_annotation の判定をベクトル化（行ごと apply を回避）
     if "annotation" in df.columns:
-        df["display_text"] = df.apply(
-            lambda r: f"{r['gene']}\n({r['annotation']})"
-            if _is_meaningful_annotation(r.get('annotation', ''), r.get('gene', ''))
-            else r['gene'],
-            axis=1,
+        gene_s = df["gene"].fillna("").astype(str)
+        ann_s = df["annotation"].fillna("").astype(str).str.strip()
+        meaningful = (
+            (ann_s != "")
+            & (~ann_s.str.match(r"^[\d.]+$"))
+            & (ann_s != gene_s)
+        )
+        df["display_text"] = np.where(
+            meaningful, gene_s + "\n(" + ann_s + ")", gene_s
         )
     else:
         df["display_text"] = df["gene"]
