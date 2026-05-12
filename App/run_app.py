@@ -22,6 +22,40 @@ from app.config import APP_HOST, APP_PORT
 # PR-H3 C3: graceful shutdown 用フラグ + 同期
 _shutdown_event = threading.Event()
 
+# PR-H5 E7: メモリ・FD 計測の定期ログ (1 時間ごと)
+_METRICS_LOG_INTERVAL_SEC = int(__import__("os").environ.get(
+    "METRICS_LOG_INTERVAL_SEC", 3600
+))
+
+
+def _periodic_metrics_logger():
+    """1 時間ごとにメモリ / fd / project_states を WARNING で記録。
+    異常値検知の post-mortem 用ベースライン。
+    """
+    try:
+        import psutil
+        import os as _os
+        proc = psutil.Process(_os.getpid())
+        rss_mb = proc.memory_info().rss / (1024 * 1024)
+        num_fds = proc.num_fds() if hasattr(proc, "num_fds") else 0
+        threads = proc.num_threads()
+        try:
+            from app.callbacks.interactive_callbacks import get_project_states_size
+            ps_size = get_project_states_size()
+        except Exception:
+            ps_size = -1
+        logger.info(
+            "metrics rss_mb=%.0f num_fds=%d threads=%d project_states=%d",
+            rss_mb, num_fds, threads, ps_size,
+        )
+    except Exception as e:
+        logger.debug("metrics logging failed (non-critical): %s", e)
+    # 次回の Timer を schedule
+    if not _shutdown_event.is_set() and _METRICS_LOG_INTERVAL_SEC > 0:
+        t = threading.Timer(_METRICS_LOG_INTERVAL_SEC, _periodic_metrics_logger)
+        t.daemon = True
+        t.start()
+
 
 def _flush_logs_and_caches() -> None:
     """SIGTERM 受信時のクリーンアップ: ログ flush + 進行中タスクの整理。
@@ -90,6 +124,11 @@ def main():
     logger.info(
         "Starting MSI Analysis Application on http://%s:%s", APP_HOST, APP_PORT
     )
+
+    # PR-H5 E7: 起動 5 秒後から定期メトリクス logging を開始
+    if _METRICS_LOG_INTERVAL_SEC > 0:
+        threading.Timer(5.0, _periodic_metrics_logger).start()
+
     try:
         app.run(debug=False, host=APP_HOST, port=APP_PORT)
     except SystemExit:
