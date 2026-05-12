@@ -97,12 +97,45 @@ def get_project(project_id: str) -> Optional[dict]:
     return None
 
 
+def _safe_current_user() -> str:
+    """現在のリクエストの「作成者」名を取得。
+
+    BasicAuth username (alice 等) → session_id 短縮 → "Unknown user" の優先順位。
+    Flask context 外で呼ばれた場合も "Unknown user" を返し例外を投げない。
+    """
+    try:
+        from app.services.session_id import get_display_name
+        return get_display_name()
+    except Exception:
+        return "Unknown user"
+
+
+def can_modify_project(project: dict, *, current_user: Optional[str] = None) -> bool:
+    """指定プロジェクトを現在のユーザーが変更 (削除/編集) できるか判定。
+
+    ルール:
+    - created_by フィールドが無い (旧プロジェクト) → 全員 OK (後方互換)
+    - created_by が "Unknown user" → 全員 OK (匿名作成、後方互換)
+    - 上記以外 → current_user (display_name) が一致する場合のみ OK
+
+    本関数はサーバ側ガード用。UI 側でも事前判定して非表示にすることを推奨。
+    """
+    if not project:
+        return False
+    creator = project.get("created_by")
+    if not creator or creator == "Unknown user":
+        return True  # 後方互換: owner 不在プロジェクトは全員操作可
+    user = current_user if current_user is not None else _safe_current_user()
+    return creator == user
+
+
 def create_project(
     name: str,
     experiment_date: str = "",
     memo: str = "",
     *,
     force_id: str = "",
+    created_by: Optional[str] = None,
 ) -> dict:
     """新規プロジェクト作成
 
@@ -110,8 +143,14 @@ def create_project(
     ----------
     force_id : str, optional
         復元時に元のIDを保持するために使用。空文字の場合は自動生成。
+    created_by : str, optional
+        作成者の display_name (BasicAuth username など)。
+        指定が無ければ Flask request context から自動取得。
+        Context 外なら "Unknown user"。
     """
     now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    if created_by is None:
+        created_by = _safe_current_user()
     project = {
         "id": force_id if force_id else str(uuid.uuid4())[:8],
         "name": name,
@@ -120,6 +159,7 @@ def create_project(
         "sub_projects": [],
         "created_at": now,
         "last_modified": now,
+        "created_by": created_by,
     }
     with _projects_lock:
         data = _load_all()
@@ -144,16 +184,37 @@ def update_project(project_id: str, updates: dict) -> Optional[dict]:
     return None
 
 
-def delete_project(project_id: str) -> bool:
-    """プロジェクトを削除（データファイルは削除しない）"""
+class ProjectAccessDenied(PermissionError):
+    """プロジェクトの所有者でないユーザーによる変更操作を拒否したことを示す例外。"""
+
+
+def delete_project(project_id: str, *, enforce_owner: bool = True) -> bool:
+    """プロジェクトを削除（データファイルは削除しない）。
+
+    Parameters
+    ----------
+    enforce_owner : bool, default True
+        True なら現在のユーザーが creator でない場合に ProjectAccessDenied を raise。
+        False なら所有権チェックなし (管理者操作 / 復元処理用)。
+    """
     with _projects_lock:
         data = _load_all()
-        original_len = len(data["projects"])
+        target = None
+        for p in data["projects"]:
+            if p["id"] == project_id:
+                target = p
+                break
+        if target is None:
+            return False
+        if enforce_owner and not can_modify_project(target):
+            owner = target.get("created_by", "Unknown user")
+            raise ProjectAccessDenied(
+                f"プロジェクト '{target.get('name', project_id)}' は {owner} さんのもので、"
+                f"削除権限がありません。"
+            )
         data["projects"] = [p for p in data["projects"] if p["id"] != project_id]
-        if len(data["projects"]) < original_len:
-            _save_all(data)
-            return True
-    return False
+        _save_all(data)
+        return True
 
 
 # =========================================================================
@@ -300,12 +361,27 @@ def save_sub_project_result_dir(
     return False
 
 
-def delete_sub_project(project_id: str, sub_id: str) -> bool:
-    """サブプロジェクトを削除"""
+def delete_sub_project(
+    project_id: str, sub_id: str, *, enforce_owner: bool = True
+) -> bool:
+    """サブプロジェクトを削除
+
+    Parameters
+    ----------
+    enforce_owner : bool, default True
+        True なら現在のユーザーが parent project の creator でない場合
+        ProjectAccessDenied を raise。False なら所有権チェックなし。
+    """
     with _projects_lock:
         data = _load_all()
         for p in data["projects"]:
             if p["id"] == project_id:
+                if enforce_owner and not can_modify_project(p):
+                    owner = p.get("created_by", "Unknown user")
+                    raise ProjectAccessDenied(
+                        f"プロジェクト '{p.get('name', project_id)}' は {owner} さんのもので、"
+                        f"サブプロジェクト削除権限がありません。"
+                    )
                 original_len = len(p.get("sub_projects", []))
                 p["sub_projects"] = [
                     s for s in p.get("sub_projects", []) if s["id"] != sub_id

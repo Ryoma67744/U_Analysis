@@ -20,6 +20,7 @@ from app.services.project_manager import (
     get_sub_project_settings,
     scan_project_meta,
     restore_projects_from_meta,
+    ProjectAccessDenied,
 )
 from app.services.share_manager import (
     create_share,
@@ -775,7 +776,10 @@ def toggle_delete_modal(delete_clicks, cancel_clicks, confirm_clicks, target_id)
 
 @callback(
     [Output("delete_target_project_id", "data", allow_duplicate=True),
-     Output("project_list_refresh", "data", allow_duplicate=True)],
+     Output("project_list_refresh", "data", allow_duplicate=True),
+     Output("notification_toast", "is_open", allow_duplicate=True),
+     Output("notification_toast", "children", allow_duplicate=True),
+     Output("notification_toast", "icon", allow_duplicate=True)],
     Input("confirm_delete_project", "n_clicks"),
     [State("delete_target_project_id", "data"),
      State("project_list_refresh", "data")],
@@ -783,9 +787,17 @@ def toggle_delete_modal(delete_clicks, cancel_clicks, confirm_clicks, target_id)
 )
 def handle_delete_project(n_clicks, project_id, refresh):
     if not n_clicks or not project_id:
-        return no_update, no_update
-    delete_project(project_id)
-    return "", (refresh or 0) + 1
+        return no_update, no_update, no_update, no_update, no_update
+    try:
+        delete_project(project_id)
+    except ProjectAccessDenied as e:
+        # 所有権が無いユーザーの削除試行を拒否
+        return "", no_update, True, str(e), "danger"
+    except Exception as e:
+        import logging as _logging
+        _logging.getLogger("msi.project_callbacks").exception("削除失敗")
+        return "", no_update, True, "削除に失敗しました。ログを確認してください。", "danger"
+    return "", (refresh or 0) + 1, no_update, no_update, no_update
 
 
 # =========================================================================
@@ -972,10 +984,17 @@ def toggle_delete_sub_modal(
 )
 def handle_delete_sub_project(n_clicks, sub_id, project, refresh):
     if not n_clicks or not sub_id or not project:
-        return no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update
     project_id = project.get("id", "")
-    delete_sub_project(project_id, sub_id)
-    return "", (refresh or 0) + 1
+    try:
+        delete_sub_project(project_id, sub_id)
+    except ProjectAccessDenied as e:
+        return "", no_update, True, str(e), "danger"
+    except Exception:
+        import logging as _logging
+        _logging.getLogger("msi.project_callbacks").exception("サブプロジェクト削除失敗")
+        return "", no_update, True, "削除に失敗しました。ログを確認してください。", "danger"
+    return "", (refresh or 0) + 1, no_update, no_update, no_update
 
 
 # =========================================================================
