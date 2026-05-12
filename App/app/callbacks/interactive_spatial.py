@@ -356,6 +356,11 @@ def create_spatial_controls(rds_path, rotation_store, name_map, custom_color_map
                                 id={"type": "per_sample_flip_v", "index": s},
                                 label="<-> 上下", value=transform.get("flip_v", False),
                             ),
+                            html.Small(
+                                id={"type": "sample_rotation_lock_indicator", "index": s},
+                                className="text-warning ms-2",
+                                children="",
+                            ),
                         ]),
                     ]),
                 ]),
@@ -450,6 +455,11 @@ def create_spatial_controls(rds_path, rotation_store, name_map, custom_color_map
                             style={"width": "32px", "height": "24px", "padding": "1px",
                                    "border": "1px solid #ccc", "cursor": "pointer",
                                    "flexShrink": "0"},
+                        ),
+                        html.Small(
+                            id={"type": "cluster_color_lock_indicator", "index": cl_str},
+                            className="text-warning ms-1",
+                            children="",
                         ),
                     ],
                 ),
@@ -1070,6 +1080,98 @@ def reflect_umap_sample_rename_lock(lock_state, comp_id, my_session_id):
     if not lock_state or not comp_id:
         return False, ""
     field_id = f"sample_rename:{comp_id.get('index')}"
+    owner = lock_state.get(field_id)
+    if owner and owner.get("user_id") != my_session_id:
+        return True, f"編集中: {owner.get('user_display', '?')}"
+    return False, ""
+
+
+# ---------------------------------------------------------------------------
+# PR-G2: per_sample_rotation / flip_h / flip_v (1 ロックで 3 コンポーネント共有)
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output({"type": "sample_rotation_lock_indicator", "index": ALL}, "id"),
+    [Input({"type": "per_sample_rotation", "index": ALL}, "value"),
+     Input({"type": "per_sample_flip_h", "index": ALL}, "value"),
+     Input({"type": "per_sample_flip_v", "index": ALL}, "value")],
+    [State("seurat_rds_path_store", "data"),
+     State("session_id_store", "data"),
+     State({"type": "sample_rotation_lock_indicator", "index": ALL}, "id")],
+    prevent_initial_call=True,
+)
+def acquire_sample_rotation_lock(_rotvals, _hvals, _vvals, rds_path, session_id, ids):
+    """回転/反転コンポーネントいずれかの変更でロック取得。
+    field_id = "sample_rotation:{s}" でサンプル単位に 3 コンポーネント共有。"""
+    from app.callbacks.edit_lock_callbacks import acquire_lock_for_callback
+    triggered = ctx.triggered_id
+    if not isinstance(triggered, dict) or not rds_path or not session_id:
+        return [no_update] * len(ids)
+    target_index = triggered.get("index")
+    if target_index is None:
+        return [no_update] * len(ids)
+    field_id = f"sample_rotation:{target_index}"
+    acquire_lock_for_callback(rds_path, field_id, session_id)
+    return [no_update] * len(ids)
+
+
+@callback(
+    [Output({"type": "per_sample_rotation", "index": MATCH}, "disabled"),
+     Output({"type": "per_sample_flip_h", "index": MATCH}, "disabled"),
+     Output({"type": "per_sample_flip_v", "index": MATCH}, "disabled"),
+     Output({"type": "sample_rotation_lock_indicator", "index": MATCH}, "children")],
+    Input("edit_lock_state", "data"),
+    [State({"type": "per_sample_rotation", "index": MATCH}, "id"),
+     State("session_id_store", "data")],
+)
+def reflect_sample_rotation_lock(lock_state, comp_id, my_session_id):
+    """回転/反転 3 コンポーネントを 1 ロックで一括 disabled。"""
+    if not lock_state or not comp_id:
+        return False, False, False, ""
+    field_id = f"sample_rotation:{comp_id.get('index')}"
+    owner = lock_state.get(field_id)
+    if owner and owner.get("user_id") != my_session_id:
+        msg = f"編集中: {owner.get('user_display', '?')}"
+        return True, True, True, msg
+    return False, False, False, ""
+
+
+# ---------------------------------------------------------------------------
+# PR-G2: cluster_color_picker
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output({"type": "cluster_color_lock_indicator", "index": ALL}, "id"),
+    Input({"type": "cluster_color_picker", "index": ALL}, "value"),
+    [State("seurat_rds_path_store", "data"),
+     State("session_id_store", "data"),
+     State({"type": "cluster_color_lock_indicator", "index": ALL}, "id")],
+    prevent_initial_call=True,
+)
+def acquire_cluster_color_lock(_vals, rds_path, session_id, ids):
+    from app.callbacks.edit_lock_callbacks import acquire_lock_for_callback
+    triggered = ctx.triggered_id
+    if not isinstance(triggered, dict) or not rds_path or not session_id:
+        return [no_update] * len(ids)
+    target_index = triggered.get("index")
+    if target_index is None:
+        return [no_update] * len(ids)
+    field_id = f"cluster_color:{target_index}"
+    acquire_lock_for_callback(rds_path, field_id, session_id)
+    return [no_update] * len(ids)
+
+
+@callback(
+    [Output({"type": "cluster_color_picker", "index": MATCH}, "disabled"),
+     Output({"type": "cluster_color_lock_indicator", "index": MATCH}, "children")],
+    Input("edit_lock_state", "data"),
+    [State({"type": "cluster_color_picker", "index": MATCH}, "id"),
+     State("session_id_store", "data")],
+)
+def reflect_cluster_color_lock(lock_state, comp_id, my_session_id):
+    if not lock_state or not comp_id:
+        return False, ""
+    field_id = f"cluster_color:{comp_id.get('index')}"
     owner = lock_state.get(field_id)
     if owner and owner.get("user_id") != my_session_id:
         return True, f"編集中: {owner.get('user_display', '?')}"
