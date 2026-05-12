@@ -87,9 +87,20 @@ _bridge = SeuratBridge()
 # ---------------------------------------------------------------------------
 
 import contextvars
+import os
 import threading
+import time
+from collections import OrderedDict
 
-_project_states: dict[str, dict] = {}
+# LRU 設定 (環境変数で調整可、デフォルトは 8 件 / 30 分)
+_MAX_PROJECT_STATES = int(os.environ.get("MAX_PROJECT_STATES", 8))
+_PROJECT_STATE_TTL_SEC = int(os.environ.get("PROJECT_STATE_TTL_SEC", 30 * 60))
+
+# OrderedDict で LRU: 最近アクセスされたエントリを末尾に維持し、
+# サイズ超過時は先頭 (最古) を pop する。各エントリに last_access (epoch) を持たせ、
+# TTL 超過分も明示的にクリーンアップ可能。
+_project_states: "OrderedDict[str, dict]" = OrderedDict()
+_state_access_time: dict[str, float] = {}
 _state_lock = threading.RLock()
 _DEFAULT_KEY = "__default__"
 # 各リクエストスレッド / background_callback subprocess で独立した値を保持。
@@ -116,16 +127,65 @@ def _state_template() -> dict:
     }
 
 
+def _evict_stale_states_unsafe() -> int:
+    """ロック取得済みの状態で stale state を eviction する内部関数。
+
+    1. TTL 超過エントリを優先的に削除 (_DEFAULT_KEY は除外)
+    2. サイズ上限超過時は LRU (古い順) で削除
+    Returns: 削除エントリ数
+    """
+    removed = 0
+    now = time.time()
+    # 1. TTL eviction
+    expired = [
+        k for k, ts in _state_access_time.items()
+        if k != _DEFAULT_KEY and (now - ts) > _PROJECT_STATE_TTL_SEC
+    ]
+    for k in expired:
+        _project_states.pop(k, None)
+        _state_access_time.pop(k, None)
+        removed += 1
+    # 2. LRU eviction (上限超過分)
+    while len(_project_states) > _MAX_PROJECT_STATES:
+        k, _ = _project_states.popitem(last=False)  # 最古
+        _state_access_time.pop(k, None)
+        removed += 1
+    return removed
+
+
+def evict_stale_project_states() -> int:
+    """外部 (heartbeat / 監視) から呼べる stale state クリーンアップ関数。
+
+    Returns: 削除エントリ数
+    """
+    with _state_lock:
+        return _evict_stale_states_unsafe()
+
+
+def get_project_states_size() -> int:
+    """現在保持中の state エントリ数 (監視用)。"""
+    with _state_lock:
+        return len(_project_states)
+
+
 def _get_state(project_key: str | None = None) -> dict:
     """プロジェクト別 state を取得（なければ生成）。
+
+    LRU: アクセス時に末尾へ移動。サイズ超過 or TTL 超過は自動 evict。
 
     Args:
         project_key: RDS path 等のキー。None ならアクティブ ContextVar or default。
     """
     key = project_key or _active_key_var.get() or _DEFAULT_KEY
     with _state_lock:
-        if key not in _project_states:
+        if key in _project_states:
+            # LRU update: 末尾へ移動
+            _project_states.move_to_end(key)
+        else:
             _project_states[key] = _state_template()
+            # 新規追加時に上限チェック (古いエントリを evict)
+            _evict_stale_states_unsafe()
+        _state_access_time[key] = time.time()
         return _project_states[key]
 
 
