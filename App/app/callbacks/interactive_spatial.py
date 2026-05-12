@@ -133,7 +133,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
             else:
                 bg_marker = dict(size=marker_size, symbol="square", color=HIGHLIGHT_GRAY, opacity=0.2)
                 bg_name = "Other"
-            fig.add_trace(go.Scatter(
+            fig.add_trace(go.Scattergl(
                 x=plot_x[mask_bg],
                 y=plot_y[mask_bg],
                 mode="markers",
@@ -141,7 +141,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 name=bg_name, showlegend=False, hoverinfo="skip",
             ))
         if mask_selected.any():
-            fig.add_trace(go.Scatter(
+            fig.add_trace(go.Scattergl(
                 x=plot_x[mask_selected],
                 y=plot_y[mask_selected],
                 mode="markers",
@@ -161,7 +161,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
             else:
                 bg_marker = dict(size=marker_size, symbol="square", color=HIGHLIGHT_GRAY, opacity=0.2)
                 bg_name = "Other"
-            fig.add_trace(go.Scatter(
+            fig.add_trace(go.Scattergl(
                 x=plot_x[mask_bg.values],
                 y=plot_y[mask_bg.values],
                 mode="markers",
@@ -172,7 +172,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
         for cl in sorted(highlight_clusters, key=lambda x: _cluster_sort_key(x), reverse=True):
             mask = (df_sample["Cluster"].astype(str) == str(cl)).values
             if mask.any():
-                fig.add_trace(go.Scatter(
+                fig.add_trace(go.Scattergl(
                     x=plot_x[mask],
                     y=plot_y[mask],
                     mode="markers",
@@ -186,7 +186,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
             for cl in sorted(df_sample["Cluster"].unique(), key=_cluster_sort_key):
                 mask = (df_sample["Cluster"].astype(str) == str(cl)).values
                 if mask.any():
-                    fig.add_trace(go.Scatter(
+                    fig.add_trace(go.Scattergl(
                         x=plot_x[mask], y=plot_y[mask], mode="markers",
                         marker=dict(size=marker_size, symbol="square",
                                     color=color_map.get(str(cl), "#999999")),
@@ -202,7 +202,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 [cluster_to_idx.get(str(cl), 0) for cl in df_sample["Cluster"]]
             )
             point_normalized = (point_values + 0.5) / n_clusters
-            fig.add_trace(go.Scatter(
+            fig.add_trace(go.Scattergl(
                 x=plot_x, y=plot_y, mode="markers",
                 marker=dict(
                     size=marker_size,
@@ -219,7 +219,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
         else:
             # フォールバック: HEX文字列配列方式
             point_colors = [color_map.get(str(cl), "#999999") for cl in df_sample["Cluster"]]
-            fig.add_trace(go.Scatter(
+            fig.add_trace(go.Scattergl(
                 x=plot_x, y=plot_y, mode="markers",
                 marker=dict(size=marker_size, symbol="square", color=point_colors),
                 text=[_cluster_display_name(cl, cluster_name_map) for cl in df_sample["Cluster"]],
@@ -230,7 +230,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
         if embed_legend:
             for cl in sorted(df_sample["Cluster"].unique(), key=_cluster_sort_key):
                 rank = _cluster_sort_key(cl)[0] if str(cl).isdigit() else 1000
-                fig.add_trace(go.Scatter(
+                fig.add_trace(go.Scattergl(
                     x=[None], y=[None],
                     mode="markers",
                     marker=dict(size=10, symbol="square", color=color_map.get(str(cl), "#999999")),
@@ -857,7 +857,8 @@ def auto_feature_marker(n_clicks, rotation_store, sample):
      Input("spatial_columns_per_row", "value"),
      Input("cluster_name_map_store", "data"),
      Input("umap_merge_toggle", "value"),
-     Input("umap_merge_color_mode", "value")],
+     Input("umap_merge_color_mode", "value"),
+     Input("interactive_accordion", "active_item")],
     State("accumulated_label_positions", "data"),
 )
 def update_spatial_plots(sample, highlight_clusters, selected_data,
@@ -865,7 +866,10 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
                          exclude_clusters, label_size, rds_path, name_map,
                          _fs_trigger, custom_colors, columns_per_row,
                          cluster_name_map, merge_toggle, merge_color_mode,
-                         accumulated_positions):
+                         active_items, accumulated_positions):
+    active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
+    if "acc_spatial" not in active_list:
+        return no_update, no_update, no_update
     from app.callbacks.interactive_callbacks import _interactive_data
     from app.callbacks.interactive_umap import _get_merged_label_positions
     df = _interactive_data.get("plot_data")

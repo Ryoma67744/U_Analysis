@@ -1397,6 +1397,14 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
         top_n = top_n or 5
         saved_positions = _get_merged_label_positions(accumulated_positions)
 
+        # expression_matrix.parquet を必要時に on-demand 生成（feature plot / heatmap が利用）
+        set_progress((1, 100, "発現データ準備中（初回は数十秒かかります）..."))
+        try:
+            if rds_path:
+                _bridge.ensure_expression_matrix(rds_path)
+        except Exception:
+            pass  # PPT 内の feature 関連レンダリングは fallback or スキップ
+
         # ------------------------------------------------------------------
         # 出力対象手法リストの決定（export_method_selector に基づく）
         # ------------------------------------------------------------------

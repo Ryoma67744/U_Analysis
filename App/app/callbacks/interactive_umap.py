@@ -61,7 +61,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
         highlight_set = set(str(c) for c in highlight_clusters)
         mask_bg = ~df["Cluster"].astype(str).isin(highlight_set)
         if mask_bg.any():
-            fig.add_trace(go.Scatter(
+            fig.add_trace(go.Scattergl(
                 x=df.loc[mask_bg, "UMAP_1"],
                 y=df.loc[mask_bg, "UMAP_2"],
                 mode="markers",
@@ -71,7 +71,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
         for cl in highlight_clusters:
             mask = df["Cluster"].astype(str) == str(cl)
             if mask.any():
-                fig.add_trace(go.Scatter(
+                fig.add_trace(go.Scattergl(
                     x=df.loc[mask, "UMAP_1"],
                     y=df.loc[mask, "UMAP_2"],
                     mode="markers",
@@ -88,7 +88,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
         for cat in categories:
             mask = df[color_col] == cat
             rank = _cluster_sort_key(cat)[0] if str(cat).isdigit() else 1000
-            fig.add_trace(go.Scatter(
+            fig.add_trace(go.Scattergl(
                 x=df.loc[mask, "UMAP_1"],
                 y=df.loc[mask, "UMAP_2"],
                 mode="markers",
@@ -177,7 +177,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
             mask_hl = df_s["Cluster"].astype(str).isin(hl_set)
             mask_bg_s = ~mask_hl
             if mask_bg_s.any():
-                fig.add_trace(go.Scatter(
+                fig.add_trace(go.Scattergl(
                     x=df_s.loc[mask_bg_s, "UMAP_1"],
                     y=df_s.loc[mask_bg_s, "UMAP_2"],
                     mode="markers",
@@ -187,7 +187,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
             for cl in highlight_clusters:
                 mask_cl = df_s["Cluster"].astype(str) == str(cl)
                 if mask_cl.any():
-                    fig.add_trace(go.Scatter(
+                    fig.add_trace(go.Scattergl(
                         x=df_s.loc[mask_cl, "UMAP_1"],
                         y=df_s.loc[mask_cl, "UMAP_2"],
                         mode="markers",
@@ -198,7 +198,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
         else:
             for cl in sorted(df_s["Cluster"].unique(), key=_cluster_sort_key):
                 mask_cl = df_s["Cluster"] == cl
-                fig.add_trace(go.Scatter(
+                fig.add_trace(go.Scattergl(
                     x=df_s.loc[mask_cl, "UMAP_1"],
                     y=df_s.loc[mask_cl, "UMAP_2"],
                     mode="markers",
@@ -211,7 +211,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
         if show_legend:
             for cl in sorted(df["Cluster"].unique(), key=_cluster_sort_key):
                 rank = _cluster_sort_key(cl)[0] if str(cl).isdigit() else 1000
-                fig.add_trace(go.Scatter(
+                fig.add_trace(go.Scattergl(
                     x=[None], y=[None], mode="markers",
                     marker=dict(size=10, color=color_map.get(str(cl), "#999999")),
                     name=_cluster_display_name(cl, cluster_name_map), showlegend=True, legendrank=rank,
@@ -323,13 +323,18 @@ def _get_merged_label_positions(accumulated_positions=None):
      Input("custom_color_map_store", "data"),
      Input("cluster_name_map_store", "data"),
      Input("umap_merge_toggle", "value"),
-     Input("umap_merge_color_mode", "value")],
+     Input("umap_merge_color_mode", "value"),
+     Input("interactive_accordion", "active_item")],
     State("accumulated_label_positions", "data"),
 )
 def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
                      display_mode, marker_size, exclude_clusters, label_size,
                      rds_path, _fs_trigger, custom_colors, cluster_name_map,
-                     merge_toggle, merge_color_mode, accumulated_positions):
+                     merge_toggle, merge_color_mode, active_items,
+                     accumulated_positions):
+    active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
+    if "acc_umap" not in active_list:
+        return no_update
     from app.callbacks.interactive_callbacks import _interactive_data
     if display_mode == "per_sample":
         return go.Figure()
@@ -412,14 +417,19 @@ def toggle_merge_controls(_rds_path, _fs_trigger):
      Input("fullscreen_closed_trigger", "data"),
      Input("custom_color_map_store", "data"),
      Input("umap_columns_per_row", "value"),
-     Input("cluster_name_map_store", "data")],
+     Input("cluster_name_map_store", "data"),
+     Input("interactive_accordion", "active_item")],
     State("accumulated_label_positions", "data"),
 )
 def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
                             marker_size, exclude_clusters, label_size, rds_path,
                             show_legend, name_map, _fs_trigger, custom_colors,
-                            columns_per_row, cluster_name_map, accumulated_positions):
+                            columns_per_row, cluster_name_map, active_items,
+                            accumulated_positions):
     """表示モード「サンプル別」の場合、各サンプルのUMAPを並列表示"""
+    active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
+    if "acc_umap" not in active_list:
+        return no_update, no_update
     from app.callbacks.interactive_callbacks import _interactive_data
     if display_mode != "per_sample":
         return "", []

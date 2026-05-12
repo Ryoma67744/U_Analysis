@@ -79,11 +79,18 @@ def create_interactive_tab():
             ]),
             html.Div(
                 style={"display": "flex", "gap": "10px", "marginTop": "10px",
-                       "alignItems": "center"},
+                       "alignItems": "center", "flexWrap": "wrap"},
                 children=[
                     dbc.Button(
                         "データを読み込む", id="load_interactive_data",
                         color="primary",
+                    ),
+                    dbc.Button(
+                        "キャンセル",
+                        id="btn_cancel_load",
+                        color="danger", outline=True, size="sm",
+                        style={"display": "none"},
+                        n_clicks=0,
                     ),
                     html.Div(
                         id="sap_btn_wrapper",
@@ -95,6 +102,24 @@ def create_interactive_tab():
                                 color="success", outline=True,
                             ),
                         ],
+                    ),
+                ],
+            ),
+            # ロード進捗 UI（background_callback の running により表示制御）
+            html.Div(
+                id="load_progress_container",
+                style={"display": "none", "marginTop": "10px"},
+                children=[
+                    dbc.Progress(
+                        id="load_progress_bar",
+                        value=0, max=100,
+                        striped=True, animated=True,
+                        style={"height": "20px"},
+                    ),
+                    html.Div(
+                        id="load_progress_label",
+                        className="text-muted small mt-1",
+                        children="準備中...",
                     ),
                 ],
             ),
@@ -450,13 +475,14 @@ def create_interactive_tab():
                 # セクションだけ展開することで、Plotly グラフ群の
                 # レイアウト計算負荷を遅延させる。
                 dbc.Accordion(
+                    id="interactive_accordion",
                     always_open=True,
                     start_collapsed=True,
                     flush=True,
                     className="mt-3",
                     children=[
                         # --- エクスポート ---
-                        dbc.AccordionItem(title="エクスポート", className="accordion-export", children=[
+                        dbc.AccordionItem(title="エクスポート", item_id="acc_export", className="accordion-export", children=[
                             dbc.Row(className="align-items-center", children=[
                                 dbc.Col(width="auto", children=[
                                     dbc.Button(
@@ -569,7 +595,7 @@ def create_interactive_tab():
                         ]),
 
                         # --- クラスタ情報 ---
-                        dbc.AccordionItem(title="クラスタ情報", className="accordion-cluster", children=[
+                        dbc.AccordionItem(title="クラスタ情報", item_id="acc_cluster", className="accordion-cluster", children=[
                             html.Pre(id="cluster_info_text",
                                      style={"fontSize": "0.85rem", "maxHeight": "120px",
                                             "overflowY": "auto"}),
@@ -638,7 +664,7 @@ def create_interactive_tab():
                         ]),
 
                         # --- UMAP プロット ---
-                        dbc.AccordionItem(title="UMAP", className="accordion-umap", children=[
+                        dbc.AccordionItem(title="UMAP", item_id="acc_umap", className="accordion-umap", children=[
                             html.Div(className="d-flex justify-content-end gap-2", children=[
                                 dbc.Button("📷 一括保存", id="btn_batch_save_umap", size="sm",
                                            color="outline-secondary",
@@ -788,7 +814,7 @@ def create_interactive_tab():
                         ]),
 
                         # --- Spatial Mapping ---
-                        dbc.AccordionItem(title="Spatial Mapping", className="accordion-spatial", children=[
+                        dbc.AccordionItem(title="Spatial Mapping", item_id="acc_spatial", className="accordion-spatial", children=[
                             html.Div(className="d-flex justify-content-end gap-2", children=[
                                 dbc.Button("📷 一括保存", id="btn_batch_save_spatial", size="sm",
                                            color="outline-secondary",
@@ -873,7 +899,7 @@ def create_interactive_tab():
                         ]),
 
                         # --- Feature Plot ---
-                        dbc.AccordionItem(title="Feature Plot", className="accordion-feature", children=[
+                        dbc.AccordionItem(title="Feature Plot", item_id="acc_feature", className="accordion-feature", children=[
                             html.Div(className="d-flex justify-content-end gap-2", children=[
                                 dbc.Button("📷 一括保存", id="btn_batch_save_feature", size="sm",
                                            color="outline-secondary",
@@ -1004,7 +1030,7 @@ def create_interactive_tab():
                         ]),
 
                         # --- DEG マーカー ---
-                        dbc.AccordionItem(title="DEG マーカー", className="accordion-deg", children=[
+                        dbc.AccordionItem(title="DEG マーカー", item_id="acc_deg", className="accordion-deg", children=[
                             html.Div(
                                 id="deg_results_section",
                                 style={"display": "none"},

@@ -490,9 +490,24 @@ def toggle_integration_method(n, is_open):
      State("interactive_project_select", "value"),
      State("interactive_sub_project_select", "value"),
      State("default_annotation_csv", "value")],
+    background=True,
+    running=[
+        (Output("load_interactive_data", "disabled"), True, False),
+        (Output("load_progress_container", "style"),
+         {"display": "block", "marginTop": "10px"},
+         {"display": "none", "marginTop": "10px"}),
+        (Output("btn_cancel_load", "style"),
+         {"display": "inline-block"}, {"display": "none"}),
+    ],
+    progress=[
+        Output("load_progress_bar", "value"),
+        Output("load_progress_bar", "max"),
+        Output("load_progress_label", "children"),
+    ],
+    cancel=[Input("btn_cancel_load", "n_clicks")],
     prevent_initial_call=True,
 )
-def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
+def load_interactive_data(set_progress, n_clicks, integration_method, rds_map, result_folder,
                           cal_enable, cal_matrix, cal_table_data,
                           cal_search_window, cal_min_peaks,
                           cal_regression_mode,
@@ -503,6 +518,7 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
         _build_feature_annotation_map, _calibrate_mz, _calibrate_mz_from_pairs,
         _reannotate_with_calibration,
     )
+    set_progress((5, 100, "入力チェック中..."))
     _n_out = 32
     _no_cal = (no_update,) * 11  # キャリブレーション設定復元用
     _sap_hide = ({"display": "none"},)  # sap_btn_wrapper 非表示
@@ -527,7 +543,9 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
         ) + _no_cal + _sap_hide + _no_label_clear
 
     try:
+        set_progress((15, 100, "RDS 抽出中（重い解析では数十秒かかります）..."))
         result = _bridge.extract_data(rds_path)
+        set_progress((50, 100, "プロットデータ準備中..."))
 
         # rds_path をプロジェクトキーとして state を切替（複数プロジェクト同時閲覧対応）
         state = _get_state(rds_path)
@@ -564,6 +582,7 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
         feature_options = [{"label": f, "value": f} for f in features]
 
         # DEG 結果を探す（選択した統合手法のフォルダを優先）
+        set_progress((65, 100, "DEG マーカー読込中..."))
         deg_data = None
         if result_folder:
             result_base = Path(result_folder)
@@ -575,6 +594,7 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
 
         # --- m/z キャリブレーション（有効時のみ） ---
         if cal_enable and deg_data and mrm_path and cal_table_data:
+            set_progress((80, 100, "m/z キャリブレーション処理中..."))
             try:
                 # テーブルから use="Yes" のペアを抽出
                 matched_pairs = []
@@ -607,9 +627,11 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
                     )
                 elif ref_only_mz:
                     # obs未入力行あり → 自動検出にフォールバック
-                    cache_dir = result.get("cache_dir")
-                    expr_path = (Path(cache_dir) / "expression_matrix.parquet"
-                                 if cache_dir else None)
+                    # expression_matrix が無ければ on-demand 生成
+                    try:
+                        expr_path = _bridge.ensure_expression_matrix(rds_path)
+                    except Exception:
+                        expr_path = None
                     if expr_path and expr_path.exists():
                         expr_df = pd.read_parquet(expr_path)
                         sw = float(cal_search_window or 0.5)
@@ -678,6 +700,7 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
             r_reg = cal_regression_mode or "poly3"
 
         # --- アノテーションマップの構築（Feature検索用） ---
+        set_progress((90, 100, "アノテーション構築 / 設定復元中..."))
         try:
             _interactive_data["annotation_map"] = _build_feature_annotation_map(
                 result["features_list"],
@@ -701,6 +724,7 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
             except Exception as e:
                 warn_user(f"サブプロジェクト情報の取得に失敗: {e}")
 
+        set_progress((100, 100, "完了"))
         return (
             info_text,
             {},  # 可視化コンテナ表示

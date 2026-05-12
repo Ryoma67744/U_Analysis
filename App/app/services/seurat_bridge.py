@@ -50,8 +50,14 @@ class SeuratBridge:
         has_plot = (cache_dir / "plot_data.parquet").exists() or (cache_dir / "plot_data.csv").exists()
         return has_plot and all((cache_dir / f).exists() for f in required)
 
-    def extract_data(self, rds_path: str) -> dict:
+    def extract_data(self, rds_path: str, with_expression: bool = False) -> dict:
         """Seurat RDS からデータを抽出。キャッシュがあればそれを使用。
+
+        Args:
+            rds_path: RDSファイルパス
+            with_expression: True なら expression_matrix.parquet も生成
+                （dense 100k×18k で 14GB 級になり 20-60 秒追加。
+                初回データロードでは省略推奨、Feature plot/m/z キャリブで必要時のみ True）
 
         Returns:
             {
@@ -65,7 +71,7 @@ class SeuratBridge:
         cache_dir = self._get_cache_dir(rds_path)
 
         if not self._is_cached(cache_dir):
-            self._run_extraction(rds_path, cache_dir)
+            self._run_extraction(rds_path, cache_dir, with_expression=with_expression)
 
         try:
             result = self._load_extracted_data(cache_dir)
@@ -73,11 +79,32 @@ class SeuratBridge:
             # キャッシュ破損の可能性 → 削除して再抽出
             shutil.rmtree(cache_dir, ignore_errors=True)
             cache_dir.mkdir(parents=True, exist_ok=True)
-            self._run_extraction(rds_path, cache_dir)
+            self._run_extraction(rds_path, cache_dir, with_expression=with_expression)
             result = self._load_extracted_data(cache_dir)
 
         result["cache_dir"] = cache_dir
         return result
+
+    def ensure_expression_matrix(self, rds_path: str) -> Path:
+        """expression_matrix.parquet を必要時に生成して Path を返す。
+
+        既に存在する（過去セッションで生成済み or 明示的に with_expression=True で
+        生成済み）場合は即座に返す。不在の場合は R 抽出を再実行して生成する。
+
+        Feature plot や m/z キャリブレーション callback の頭で呼び出すと、
+        初回の重いコストを「ユーザーがその機能を使ったとき」に限定できる。
+        """
+        cache_dir = self._get_cache_dir(rds_path)
+        parquet_path = cache_dir / "expression_matrix.parquet"
+        if parquet_path.exists():
+            return parquet_path
+        # 不在 → R 抽出を with_expression=True で再実行
+        self._run_extraction(rds_path, cache_dir, with_expression=True)
+        if not parquet_path.exists():
+            raise RuntimeError(
+                f"expression_matrix.parquet の生成に失敗しました: {parquet_path}"
+            )
+        return parquet_path
 
     def get_feature_expression(
         self, rds_path: str, feature_name: str
@@ -110,8 +137,12 @@ class SeuratBridge:
         except (KeyError, Exception):
             return None
 
-    def _run_extraction(self, rds_path: str, output_dir: Path):
-        """R ヘルパースクリプトで Seurat データを抽出"""
+    def _run_extraction(self, rds_path: str, output_dir: Path,
+                        with_expression: bool = False):
+        """R ヘルパースクリプトで Seurat データを抽出
+
+        with_expression=True で expression_matrix.parquet も生成（重い処理）。
+        """
         script = R_HELPERS_DIR / "extract_seurat_data.R"
         rscript = str(RSCRIPT_PATH)
         if not Path(rscript).exists():
@@ -121,6 +152,8 @@ class SeuratBridge:
             rscript, "--vanilla",
             str(script), rds_path, str(output_dir),
         ]
+        if with_expression:
+            cmd.append("--with-expression")
         result = subprocess.run(
             cmd, capture_output=True, timeout=600,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
