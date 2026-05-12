@@ -678,7 +678,7 @@ def _auto_save_label_positions(accumulated):
             merge=True,
         )
     except Exception as e:
-        print(f"[LABEL] ラベル位置自動保存エラー: {e}")
+        logger.error(f"ラベル位置自動保存エラー: {e}")
 
 
 def _excl_set(val):
@@ -829,9 +829,8 @@ def _do_save_label_positions(accumulated, snapshot):
             merge=True,
         )
 
-        print(f"[LABEL] ラベル位置を保存しました: {path}")
+        logger.info(f"ラベル位置を保存しました: {path}")
         return datetime.now().isoformat(), "ラベル位置を保存しました", True
     except Exception as e:
-        print(f"[LABEL] ラベル位置保存エラー: {e}")
-        import traceback; traceback.print_exc()
+        logger.error(f"ラベル位置保存エラー: {e}", exc_info=True)
         return no_update, f"ラベル位置の保存エラー: {e}", True

@@ -4,10 +4,13 @@
 # =============================================================================
 
 import base64
+import logging
 from pathlib import Path
 
 from dash import Input, Output, State, callback, ctx, no_update, html, ALL
 import dash_bootstrap_components as dbc
+
+logger = logging.getLogger("msi.results")
 
 from app.services.data_manager import list_result_folders
 from app.services.results_viewer import (
@@ -138,7 +141,7 @@ def render_gallery(result_folder, subfolder, category, cluster, page, n_interval
                 img_data = base64.b64encode(f.read()).decode()
             src = f"data:image/png;base64,{img_data}"
         except Exception as e:
-            print(f"[WARNING] 画像読み込み失敗 ({p.name}): {e}")
+            logger.warning(f"画像読み込み失敗 ({p.name}): {e}")
             src = ""
 
         cards.append(

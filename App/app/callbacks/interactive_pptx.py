@@ -387,7 +387,7 @@ def _build_heatmap_for_cluster(deg_data, cluster, df, cache_dir, top_n,
         )
         return fig.to_dict()
     except Exception as e:
-        print(f"[PPTX] Per-cluster heatmap error (cluster {cluster}): {e}")
+        logger.error(f"Per-cluster heatmap error (cluster {cluster}): {e}")
         return None
 
 
@@ -1515,8 +1515,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
         for method_name in methods_to_export:
             method_rds = rds_map.get(method_name)
             if not method_rds or not Path(method_rds).exists():
-                print(f"[Export] {method_name}: "
-                      f"RDSファイルが見つかりません → スキップ")
+                logger.info(f"{method_name}: RDS ファイルが見つかりません → スキップ")
                 continue
 
             set_progress((
@@ -1527,7 +1526,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
             try:
                 result = _bridge.extract_data(method_rds)
             except Exception as e:
-                print(f"[Export] {method_name}: データ抽出エラー: {e}")
+                logger.error(f"{method_name}: データ抽出エラー: {e}")
                 continue
 
             method_df = result["plot_data"]
@@ -1852,7 +1851,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
             try:
                 _pptx_add_sections(prs, section_map)
             except Exception as e:
-                print(f"[Export] セクション追加エラー（無視）: {e}")
+                logger.warning(f"PPTX セクション追加エラー（無視して継続）: {e}")
 
         # --- 結合 PPTX をバイト列に変換 ---
         output = BytesIO()
