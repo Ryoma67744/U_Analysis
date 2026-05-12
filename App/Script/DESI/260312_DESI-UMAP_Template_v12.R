@@ -54,7 +54,7 @@ if (!requireNamespace("future", quietly = TRUE)) install.packages("future", repo
 if (!requireNamespace("leiden", quietly = TRUE)) install.packages("leiden", repos = "https://cran.rstudio.com/")
 library(future)
 plan(multisession, workers = min(4, max(1, parallel::detectCores(logical = FALSE) - 1)))
-options(future.globals.maxSize = 2 * 1024^3)  # 2GB制限
+options(future.globals.maxSize = 4 * 1024^3)  # 4GB制限
 
 # ---- 設定: プロット設定 & 解析パラメータ & 途中再開設定 ----
 PLOT_POINT_SIZE <- 1.6

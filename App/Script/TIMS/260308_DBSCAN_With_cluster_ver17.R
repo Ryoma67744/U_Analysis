@@ -44,7 +44,7 @@ if (!requireNamespace("future", quietly = TRUE)) install.packages("future", repo
 if (!requireNamespace("leiden", quietly = TRUE)) install.packages("leiden", repos = "https://cran.rstudio.com/")
 library(future)
 plan(multisession, workers = max(1, parallel::detectCores() - 1))
-options(future.globals.maxSize = 2 * 1024^3)  # 2GB制限
+options(future.globals.maxSize = 4 * 1024^3)  # 4GB制限
 
 `%||%` <- function(a,b) if (!is.null(a)) a else b
 

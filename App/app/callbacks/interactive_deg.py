@@ -63,14 +63,9 @@ def filter_features(search_value, filter_mode, cluster_filter,
     if not features:
         return []
 
-    # annotation マッピング: キャッシュ済みマップ + DEGデータを統合
-    ann_map = dict(_interactive_data.get("annotation_map") or {})
-    if deg_data:
-        for r in deg_data:
-            gene = r.get("gene", "")
-            ann = r.get("annotation", "")
-            if gene and _is_meaningful_annotation(ann, gene):
-                ann_map[gene] = ann  # DEGデータが優先
+    # annotation マッピングは load_interactive_data / m/z キャリブで既に
+    # DEG マージ済みのため、ここでは直接参照のみ（検索のたびの再構築を回避）
+    ann_map = _interactive_data.get("annotation_map") or {}
 
     def _make_option(f, rank=None):
         """フィーチャー名からドロップダウン用オプションを生成"""
@@ -630,12 +625,17 @@ def update_volcano_plot(cluster, fc_thresh, p_thresh, y_max, marker_size,
     df["neg_log10_p"] = -np.log10(df["p_num"].clip(lower=min_nonzero_p))
 
     # annotation列があれば、表示テキストに化合物名を含める
+    # is_meaningful_annotation の判定をベクトル化（行ごと apply を回避）
     if "annotation" in df.columns:
-        df["display_text"] = df.apply(
-            lambda r: f"{r['gene']}\n({r['annotation']})"
-            if _is_meaningful_annotation(r.get('annotation', ''), r.get('gene', ''))
-            else r['gene'],
-            axis=1,
+        gene_s = df["gene"].fillna("").astype(str)
+        ann_s = df["annotation"].fillna("").astype(str).str.strip()
+        meaningful = (
+            (ann_s != "")
+            & (~ann_s.str.match(r"^[\d.]+$"))
+            & (ann_s != gene_s)
+        )
+        df["display_text"] = np.where(
+            meaningful, gene_s + "\n(" + ann_s + ")", gene_s
         )
     else:
         df["display_text"] = df["gene"]
@@ -840,14 +840,13 @@ def update_heatmap(top_n, scale, annotation_on, merge_toggle, selected_cluster,
         )
         return fig
 
-    # 利用可能な遺伝子のみ読み込み
-    available = []
-    for g in genes:
-        try:
-            pd.read_parquet(expr_path, columns=[g])
-            available.append(g)
-        except Exception:
-            continue
+    # 利用可能な遺伝子を Parquet schema から一括判定（I/O 1 回で完結）
+    import pyarrow.parquet as pq
+    try:
+        schema_names = set(pq.read_schema(expr_path).names)
+    except Exception:
+        schema_names = set()
+    available = [g for g in genes if g in schema_names]
 
     if not available:
         fig = go.Figure()
