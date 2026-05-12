@@ -27,8 +27,28 @@ msi.example.com {
             write_timeout 600s
             dial_timeout 30s
         }
+        # X-Forwarded-Proto を渡し、Flask 側で secure Cookie / HTTPS 判別を可能に
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-For {remote_host}
     }
+
     request_body {
         max_size 500MB
+    }
+
+    # セキュリティヘッダー (HSTS / clickjacking / sniff / referrer)
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        # /healthz は cache 不要、その他は SPA なので no-store でも OK
+        Cache-Control "no-store"
+    }
+
+    # Caddy アクセスログ (json) を stdout に。docker logs で確認可能。
+    log {
+        output stdout
+        format json
     }
 }
