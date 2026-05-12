@@ -260,8 +260,9 @@ def update_feature_plot(feature_name, sample, marker_size,
                         name_map, _fs_trigger, columns_per_row,
                         rds_path, cache_dir_str, rotation_store,
                         deg_data):
-    from app.callbacks.interactive_callbacks import _interactive_data, _bridge
+    from app.callbacks.interactive_callbacks import _interactive_data, _bridge, _set_active_key
     from app.callbacks.interactive_spatial import _transform_coords, _calc_zero_gap_marker_size
+    _set_active_key(rds_path)
     # 名前変更・フルスクリーン閉鎖トリガーだがFeature未選択 -> スキップ
     if ctx.triggered_id in ("sample_name_map_store", "fullscreen_closed_trigger") and not feature_name:
         return no_update, no_update, no_update, no_update

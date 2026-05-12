@@ -834,6 +834,11 @@ def apply_int_calibration(n_clicks, cal_enable, cal_table_data,
     if not n_clicks:
         raise PreventUpdate
 
+    # 現在の閲覧プロジェクトを ContextVar にスコープ
+    if rds_map and integration_method and integration_method in rds_map:
+        from app.callbacks.interactive_callbacks import _set_active_key
+        _set_active_key(rds_map[integration_method])
+
     from app.callbacks.interactive_callbacks import (
         _interactive_data, _save_interactive_settings, _load_deg_results,
     )

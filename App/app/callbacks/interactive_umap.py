@@ -335,7 +335,8 @@ def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
     active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
     if "acc_umap" not in active_list:
         return no_update
-    from app.callbacks.interactive_callbacks import _interactive_data
+    from app.callbacks.interactive_callbacks import _interactive_data, _set_active_key
+    _set_active_key(rds_path)
     if display_mode == "per_sample":
         return go.Figure()
     df = _interactive_data.get("plot_data")
@@ -391,7 +392,8 @@ def toggle_umap_integrated_visibility(mode):
 )
 def toggle_merge_controls(_rds_path, _fs_trigger):
     """マージデータの有無で UI 表示を制御"""
-    from app.callbacks.interactive_callbacks import _interactive_data
+    from app.callbacks.interactive_callbacks import _interactive_data, _set_active_key
+    _set_active_key(_rds_path)
     df = _interactive_data.get("plot_data")
     if df is not None and "Cluster_merged" in df.columns:
         return {"display": "block"}
@@ -430,7 +432,8 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
     active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
     if "acc_umap" not in active_list:
         return no_update, no_update
-    from app.callbacks.interactive_callbacks import _interactive_data
+    from app.callbacks.interactive_callbacks import _interactive_data, _set_active_key
+    _set_active_key(rds_path)
     if display_mode != "per_sample":
         return "", []
     df = _interactive_data.get("plot_data")
