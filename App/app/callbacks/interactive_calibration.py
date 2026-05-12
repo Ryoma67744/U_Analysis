@@ -806,39 +806,16 @@ def toggle_int_cal_annotation_section(ms_instrument):
 
 
 # INT-CB11: キャリブレーション適用
-@callback(
-    [Output("deg_data_store", "data", allow_duplicate=True),
-     Output("int_cal_apply_status", "children")],
-    Input("int_cal_apply", "n_clicks"),
-    [State("int_cal_enable", "value"),
-     State("int_cal_table_data", "data"),
-     State("int_cal_search_window", "value"),
-     State("int_cal_min_peaks", "value"),
-     State("int_cal_regression_mode", "value"),
-     State("int_cal_annotation_path", "value"),
-     State("tolerance_mz", "value"),
-     State("interactive_result_folder", "value"),
-     State("interactive_integration_method", "value"),
-     State("interactive_rds_map", "data"),
-     State("default_annotation_csv", "value"),
-     State("int_cal_ion_mode", "value"),
-     State("int_cal_adduct_filter", "value")],
-    prevent_initial_call=True,
-)
-def apply_int_calibration(n_clicks, cal_enable, cal_table_data,
-                          cal_search_window, cal_min_peaks,
-                          cal_regression_mode, mrm_path_str,
-                          tolerance_mz, result_folder,
-                          integration_method, rds_map,
-                          annotation_csv, ion_mode, adduct_filter):
-    if not n_clicks:
-        raise PreventUpdate
+def _apply_int_calibration_inner(cal_enable, cal_table_data,
+                                  cal_search_window, cal_min_peaks,
+                                  cal_regression_mode, mrm_path_str,
+                                  tolerance_mz, result_folder,
+                                  integration_method, rds_map,
+                                  annotation_csv, ion_mode, adduct_filter):
+    """apply_int_calibration の内部ロジック。FileLock 内で実行する想定。
 
-    # 現在の閲覧プロジェクトを ContextVar にスコープ
-    if rds_map and integration_method and integration_method in rds_map:
-        from app.callbacks.interactive_callbacks import _set_active_key
-        _set_active_key(rds_map[integration_method])
-
+    本関数を直接 callback として呼ばないこと（active_key は呼出元で設定済みの前提）。
+    """
     from app.callbacks.interactive_callbacks import (
         _interactive_data, _save_interactive_settings, _load_deg_results,
     )
@@ -956,6 +933,65 @@ def apply_int_calibration(n_clicks, cal_enable, cal_table_data,
 
     except Exception as e:
         return no_update, f"キャリブレーションエラー: {e}"
+
+
+@callback(
+    [Output("deg_data_store", "data", allow_duplicate=True),
+     Output("int_cal_apply_status", "children")],
+    Input("int_cal_apply", "n_clicks"),
+    [State("int_cal_enable", "value"),
+     State("int_cal_table_data", "data"),
+     State("int_cal_search_window", "value"),
+     State("int_cal_min_peaks", "value"),
+     State("int_cal_regression_mode", "value"),
+     State("int_cal_annotation_path", "value"),
+     State("tolerance_mz", "value"),
+     State("interactive_result_folder", "value"),
+     State("interactive_integration_method", "value"),
+     State("interactive_rds_map", "data"),
+     State("default_annotation_csv", "value"),
+     State("int_cal_ion_mode", "value"),
+     State("int_cal_adduct_filter", "value")],
+    prevent_initial_call=True,
+)
+def apply_int_calibration(n_clicks, cal_enable, cal_table_data,
+                          cal_search_window, cal_min_peaks,
+                          cal_regression_mode, mrm_path_str,
+                          tolerance_mz, result_folder,
+                          integration_method, rds_map,
+                          annotation_csv, ion_mode, adduct_filter):
+    """m/z キャリブレーション適用 callback。
+
+    同一プロジェクトの同時実行は FileLock で順番待ちさせる
+    （_calibration_result の上書き競合を防止）。
+    """
+    if not n_clicks:
+        raise PreventUpdate
+
+    # 現在の閲覧プロジェクトを ContextVar にスコープ + FileLock 準備
+    lock_ctx = None
+    if rds_map and integration_method and integration_method in rds_map:
+        from app.callbacks.interactive_callbacks import _set_active_key
+        from app.utils.file_locks import get_or_create_lock
+        _set_active_key(rds_map[integration_method])
+        rds_path_for_lock = Path(rds_map[integration_method])
+        lock_ctx = get_or_create_lock(
+            rds_path_for_lock.parent / ".calibration.lock", timeout=600
+        )
+        lock_ctx.acquire()
+
+    try:
+        return _apply_int_calibration_inner(
+            cal_enable, cal_table_data, cal_search_window, cal_min_peaks,
+            cal_regression_mode, mrm_path_str, tolerance_mz, result_folder,
+            integration_method, rds_map, annotation_csv, ion_mode, adduct_filter,
+        )
+    finally:
+        if lock_ctx is not None and lock_ctx.is_locked:
+            try:
+                lock_ctx.release()
+            except Exception:
+                pass
 
 
 # =========================================================================

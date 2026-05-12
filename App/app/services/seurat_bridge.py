@@ -93,13 +93,22 @@ class SeuratBridge:
 
         Feature plot や m/z キャリブレーション callback の頭で呼び出すと、
         初回の重いコストを「ユーザーがその機能を使ったとき」に限定できる。
+
+        複数ユーザーが同一 RDS の Feature plot を同時に初めて開いても、
+        FileLock により R 抽出は 1 回のみ実行され、後発プロセスは生成完了を待つ。
         """
+        from app.utils.file_locks import get_or_create_lock
         cache_dir = self._get_cache_dir(rds_path)
         parquet_path = cache_dir / "expression_matrix.parquet"
         if parquet_path.exists():
             return parquet_path
-        # 不在 → R 抽出を with_expression=True で再実行
-        self._run_extraction(rds_path, cache_dir, with_expression=True)
+        # 不在 → 排他取得して生成（R 抽出最大 10 分 → timeout=900）
+        lock = get_or_create_lock(parquet_path, timeout=900)
+        with lock:
+            # ロック取得後に再チェック（先行プロセスが既に生成完了している可能性）
+            if parquet_path.exists():
+                return parquet_path
+            self._run_extraction(rds_path, cache_dir, with_expression=True)
         if not parquet_path.exists():
             raise RuntimeError(
                 f"expression_matrix.parquet の生成に失敗しました: {parquet_path}"

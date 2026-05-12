@@ -58,6 +58,18 @@ def _healthz_bypass():
         return ("OK", 200, {"Content-Type": "text/plain"})
 
 
+@server.before_request
+def _ensure_session_id():
+    """全リクエストで Cookie セッション ID を確保（/healthz は除外）。
+
+    複数ユーザー識別のため各ブラウザに UUID を発行する。
+    """
+    if _flask_request.path == "/healthz":
+        return  # ヘルスチェックは Cookie 不要
+    from app.services.session_id import get_or_create_session_id
+    get_or_create_session_id()  # 副作用で after_this_request 経由で set-cookie
+
+
 # パスワード認証（クラウドデプロイ用）
 # APP_PASSWORD 環境変数が設定されている場合のみ有効化
 _app_password = os.environ.get("APP_PASSWORD")
@@ -84,6 +96,7 @@ from app.callbacks import scils_converter_callbacks  # noqa: E402, F401
 from app.callbacks import env_settings_callbacks  # noqa: E402, F401
 from app.callbacks import lite_view_callbacks  # noqa: E402, F401
 from app.callbacks import rds_maintenance_callbacks  # noqa: E402, F401
+from app.callbacks import edit_lock_callbacks  # noqa: E402, F401
 
 if __name__ == "__main__":
     # Docker CMD は run_app.py 経由。ここは bare-metal 開発用のフォールバック。

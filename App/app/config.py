@@ -195,3 +195,12 @@ CLUSTER_PRESET_COLORS = [
 APP_VERSION = "2.1.0"
 APP_PORT = int(os.environ.get("APP_PORT", "3838"))
 APP_HOST = os.environ.get("APP_HOST", "0.0.0.0")  # LAN + Cloudflare Tunnel 対応
+
+# UI ロック設定（複数ユーザー同時編集時の排他制御）
+# EDIT_LOCK_TIMEOUT_SEC: ロック自動解放までの秒数 (heartbeat で延長される)
+# EDIT_LOCK_HEARTBEAT_INTERVAL_SEC: ブラウザ → サーバの heartbeat 間隔
+#   通常 TIMEOUT の 1/3 を推奨 (10s/30s, 30s/90s, 60s/300s 等)
+EDIT_LOCK_TIMEOUT_SEC = int(os.environ.get("EDIT_LOCK_TIMEOUT_SEC", "30"))
+EDIT_LOCK_HEARTBEAT_INTERVAL_SEC = int(
+    os.environ.get("EDIT_LOCK_HEARTBEAT_INTERVAL_SEC", "10")
+)
