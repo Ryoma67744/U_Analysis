@@ -5,7 +5,9 @@ interactive_callbacks.py から抽出した PPTX 生成ユーティリティ。
 
 import logging
 import uuid
+from concurrent.futures import Future, ProcessPoolExecutor
 from io import BytesIO
+from typing import Optional
 
 import plotly.graph_objects as go
 import plotly.io as pio
@@ -31,6 +33,51 @@ def fig_to_png_bytes(fig_dict, width=1200, height=800, scale=2):
         return pio.to_image(fig, format="png", width=width, height=height, scale=scale)
     except Exception:
         return None
+
+
+class RenderQueue:
+    """kaleido PNG レンダリングを ProcessPool で並列化するキュー。
+
+    kaleido は Chromium プロセスを介したレンダリング (1 回 200-500ms) で、
+    内部状態がプロセス単位のため ThreadPool では並列化できない。
+    ProcessPoolExecutor で各 worker が独立した Chromium を持つことで真の並列化を実現する。
+
+    使い方:
+        with RenderQueue(max_workers=4) as q:
+            fut1 = q.submit(fig_dict1, 800, 600, 2)
+            fut2 = q.submit(fig_dict2, 1200, 800, 2)
+            # ... 他の処理を進める間にバックグラウンドでレンダリング
+            png1 = fut1.result()  # ここで block (すでに並列で進んでいる)
+            png2 = fut2.result()
+
+    注意:
+        - 各 worker は独立した kaleido / Chromium を起動するため初期化 1-2 秒のオーバーヘッド
+          (worker あたり 50-100MB の RAM を消費)
+        - fig_dict は pickle 可能な dict であること (plotly Figure を .to_dict() したもの)
+        - context manager 外で submit() を呼ぶと RuntimeError
+    """
+
+    def __init__(self, max_workers: int = 4):
+        self._pool: Optional[ProcessPoolExecutor] = None
+        self._max_workers = max_workers
+
+    def __enter__(self) -> "RenderQueue":
+        self._pool = ProcessPoolExecutor(max_workers=self._max_workers)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self._pool is not None:
+            self._pool.shutdown(wait=True)
+            self._pool = None
+
+    def submit(self, fig_dict, width: int = 1200, height: int = 800,
+               scale: int = 2) -> Future:
+        """fig_dict のレンダリングをバックグラウンドで開始。Future を返す。"""
+        if self._pool is None:
+            raise RuntimeError(
+                "RenderQueue は context manager (with) として使ってください"
+            )
+        return self._pool.submit(fig_to_png_bytes, fig_dict, width, height, scale)
 
 
 # ---------------------------------------------------------------------------
