@@ -309,19 +309,23 @@ http://<サーバーのパブリックIP>:3838
 ```
 
 - Basic Auth のダイアログが表示されたら:
-  - ユーザー名: `msi`
+  - ユーザー名: `msi`（または `APP_USERS` で設定した個別 ID）
   - パスワード: `.env` で設定したパスワード
+
+> ⚠️ **重要**: この HTTP 直接アクセスは **動作確認専用**。
+> 実運用では **必ず次章 (7. HTTPS 対応) を完了してから** チームメンバーに URL を共有してください。
+> HTTP 経由では BasicAuth のパスワードが **平文** で流れます。
 
 ---
 
-## 7. HTTPS対応（推奨：チーム共有用）
+## 7. HTTPS対応（**本番運用では必須**）
 
-チームでの長期共有運用では HTTPS 必須。Caddy が Let's Encrypt から
-証明書を自動取得・自動更新するため、設定は数行で済みます。
+> 🔒 **本章は省略不可です。**
+> 複数人での共有運用、社外からのアクセス、グローバル IP 公開時はすべて HTTPS 必須。
+> HTTP のみで本番運用するとパスワード盗聴・セッションハイジャック・情報漏洩のリスクがあります。
+> 例外: **完全に閉じた社内 LAN 内で、IP もファイアウォールで限定的に許可された場合のみ** HTTP 運用を許容します（その場合でも HTTPS への移行を推奨）。
 
-> **HTTP のみの直接アクセス（IPアドレス）でも動作はしますが、ブラウザ警告
-> が出る・共有リンクが信頼されない・パスワードが平文で流れるため、
-> チーム共有運用ではこの章の手順を強く推奨します。**
+Caddy が Let's Encrypt から証明書を自動取得・自動更新するため、設定は数行で済みます。
 
 ### 7.1 ドメインの取得（持っていない場合）
 
@@ -368,7 +372,24 @@ nano Caddyfile
 テンプレートの `msi.example.com` を実際のドメインに置換:
 ```
 msi.yourlab.com {
-    reverse_proxy msi-app:3838
+    # X-Forwarded-Proto を渡し、Flask 側が secure Cookie を有効化できるようにする
+    reverse_proxy msi-app:3838 {
+        header_up X-Forwarded-Proto https
+    }
+
+    # セキュリティヘッダー (HSTS / clickjacking / XSS)
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    # 認証失敗の連続を抑止 (Brute force 緩和)
+    # 上限: 1 IP あたり 5 分間に 30 リクエストまで認証関連のエンドポイントへ
+    # (アプリ全体は別途 reverse_proxy で通す)
+    # ※ rate_limit module を使う場合は xcaddy ビルドが必要。
+    # Caddy 標準のみで運用する場合は fail2ban を OS 側で導入することを推奨。
 }
 ```
 
