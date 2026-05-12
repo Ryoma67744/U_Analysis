@@ -911,7 +911,7 @@ def create_interactive_tab():
                                 dbc.Col(width=3, children=[
                                     dcc.Dropdown(
                                         id="feature_select",
-                                        placeholder="m/z Feature を検索・選択",
+                                        placeholder="m/z を入力して検索（例: 100.5）...",
                                         search_value="",
                                         optionHeight=50,
                                     ),
