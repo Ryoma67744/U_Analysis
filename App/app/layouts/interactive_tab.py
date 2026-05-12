@@ -446,9 +446,12 @@ def create_interactive_tab():
                 ], className="mb-2", id="integration_method_wrapper"),
 
                 # アコーディオン（各セクション折りたたみ可能）
+                # 初期表示は全セクション折りたたみ。ユーザーが必要な
+                # セクションだけ展開することで、Plotly グラフ群の
+                # レイアウト計算負荷を遅延させる。
                 dbc.Accordion(
                     always_open=True,
-                    start_collapsed=False,
+                    start_collapsed=True,
                     flush=True,
                     className="mt-3",
                     children=[
