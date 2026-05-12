@@ -17,7 +17,7 @@ from typing import Optional
 from dash import ClientsideFunction, Input, Output, State, callback, clientside_callback
 
 from app.services import edit_lock_manager as elm
-from app.services.session_id import short_display_id
+from app.services.session_id import get_display_name, short_display_id
 
 logger = logging.getLogger("msi.edit_lock")
 
@@ -78,7 +78,12 @@ def acquire_lock_for_callback(
     """
     if not (rds_path and session_id):
         return False, "Unknown"
-    user_display = short_display_id(session_id)
+    # 表示名は BasicAuth username 優先、なければ session_id ベース
+    # (Flask request context 外で呼ばれた場合は session_id ベースに fallback)
+    try:
+        user_display = get_display_name()
+    except Exception:
+        user_display = short_display_id(session_id)
     ok, entry = elm.try_acquire(rds_path, field_id, session_id, user_display)
     return ok, (entry.user_display if entry else "Unknown")
 
