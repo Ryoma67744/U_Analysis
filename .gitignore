@@ -34,5 +34,9 @@ nul
 # 環境設定（機密情報を含む可能性あり）
 .env
 
+# Python 仮想環境
+.venv/
+venv/
+
 # Rセッション（レガシー、リポジトリルート直下の旧 Other/ — Data/Other/ とは別物）
 Other/sessions/

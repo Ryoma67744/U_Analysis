@@ -44,6 +44,7 @@ from app.utils.pptx_helpers import (
     square_tile_dims as _square_tile_dims,
     build_cluster_legend_fig as _build_cluster_legend_fig,
     pptx_add_sections as _pptx_add_sections,
+    RenderQueue as _RenderQueue,
 )
 
 # 共有状態・ヘルパーを分離モジュールから参照
@@ -1006,7 +1007,11 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
             else cache_dir
         )
 
-        for cl in clusters:
+        # === cluster loop を RenderQueue で囲み、kaleido を ProcessPool 並列化 ===
+        # 各クラスタの feature plot / volcano / heatmap を並列レンダリング。
+        # Slide A の combined/umap は 1 枚のみなので逐次のままにする。
+        with _RenderQueue(max_workers=4) as _rq:
+         for cl in clusters:
             cl_str = str(cl)
             _cl_name = _cluster_display_name(cl_str, cluster_name_map)
 
@@ -1072,6 +1077,12 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
 
             # Volcano Plot を先に生成（レイアウト計算に必要）
             volcano_cl = _build_volcano_fig_for_cluster(deg_data, cl_str)
+            # 先回り submit: Volcano レンダリングを Down feature plot 配置と並列実行
+            volcano_fut = None
+            if volcano_cl is not None:
+                v_dict = (volcano_cl.to_dict()
+                          if hasattr(volcano_cl, "to_dict") else volcano_cl)
+                volcano_fut = _rq.submit(v_dict, 800, 700, 2)
 
             # ---- 自動レイアウト計算 ----
             has_up = bool(up_features)
@@ -1131,7 +1142,9 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                 lp.font.color.rgb = RGBColor(0xFF, 0x2D, 0x2D)
                 lp.font.bold = True
 
-            # Feature Plot 画像配置 — Up
+            # Feature Plot 画像配置 — Up（並列レンダリング: 2 パス）
+            # Pass 1: 全 fig 構築 → RenderQueue へ submit（kaleido が ProcessPool で並列実行）
+            up_render_futs = []
             for i, feat in enumerate(up_features):
                 is_last_up = (i == len(up_features) - 1)
                 feat_fig = _build_feature_plot_fig(
@@ -1141,21 +1154,29 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                     show_colorbar=is_last_up,
                     auto_marker_size=True)
                 if feat_fig:
-                    # アノテーション付きタイトルに上書き
                     _feat_title = feat
                     if feat in _gene_ann_map:
                         _feat_title = f"{feat}\n({_gene_ann_map[feat]})"
                     feat_fig.update_layout(
                         title=dict(text=_feat_title, font=dict(size=14), x=0.5),
                         margin=dict(t=70))
-                    png = _fig_to_png_bytes(
-                        feat_fig, width=400, height=280, scale=2)
-                    left = Inches(0.3 + i * (12.5 / max(top_n, 1)))
-                    _pptx_add_image_preserve_ratio(
-                        slide_b, png,
-                        int(left), Inches(_up_plot_y),
-                        feat_w, feat_h,
-                        png_w=400, png_h=280)
+                    up_render_futs.append(_rq.submit(
+                        feat_fig.to_dict(), 400, 280, 2))
+                else:
+                    up_render_futs.append(None)
+            # Pass 2: 結果取得 + スライド配置（submit 済みの kaleido が並列で進行中）
+            for i, fut in enumerate(up_render_futs):
+                if fut is None:
+                    continue
+                png = fut.result()
+                if not png:
+                    continue
+                left = Inches(0.3 + i * (12.5 / max(top_n, 1)))
+                _pptx_add_image_preserve_ratio(
+                    slide_b, png,
+                    int(left), Inches(_up_plot_y),
+                    feat_w, feat_h,
+                    png_w=400, png_h=280)
 
             # Up features 間の縦区切り線
             _tile_w_feat = 12.5 / max(top_n, 1)
@@ -1179,7 +1200,8 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                 lp.font.color.rgb = RGBColor(0x1E, 0x5B, 0xFF)
                 lp.font.bold = True
 
-            # Feature Plot 画像配置 — Down
+            # Feature Plot 画像配置 — Down（並列レンダリング: 2 パス）
+            down_render_futs = []
             for i, feat in enumerate(down_features):
                 is_last_down = (i == len(down_features) - 1)
                 feat_fig = _build_feature_plot_fig(
@@ -1189,21 +1211,28 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                     show_colorbar=is_last_down,
                     auto_marker_size=True)
                 if feat_fig:
-                    # アノテーション付きタイトルに上書き
                     _feat_title = feat
                     if feat in _gene_ann_map:
                         _feat_title = f"{feat}\n({_gene_ann_map[feat]})"
                     feat_fig.update_layout(
                         title=dict(text=_feat_title, font=dict(size=14), x=0.5),
                         margin=dict(t=70))
-                    png = _fig_to_png_bytes(
-                        feat_fig, width=400, height=280, scale=2)
-                    left = Inches(0.3 + i * (12.5 / max(top_n, 1)))
-                    _pptx_add_image_preserve_ratio(
-                        slide_b, png,
-                        int(left), Inches(_down_plot_y),
-                        feat_w, feat_h,
-                        png_w=400, png_h=280)
+                    down_render_futs.append(_rq.submit(
+                        feat_fig.to_dict(), 400, 280, 2))
+                else:
+                    down_render_futs.append(None)
+            for i, fut in enumerate(down_render_futs):
+                if fut is None:
+                    continue
+                png = fut.result()
+                if not png:
+                    continue
+                left = Inches(0.3 + i * (12.5 / max(top_n, 1)))
+                _pptx_add_image_preserve_ratio(
+                    slide_b, png,
+                    int(left), Inches(_down_plot_y),
+                    feat_w, feat_h,
+                    png_w=400, png_h=280)
 
             # Down features 間の縦区切り線
             for i in range(1, len(down_features)):
@@ -1216,9 +1245,9 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                 _sep.fill.fore_color.rgb = RGBColor(0xCC, 0xCC, 0xCC)
                 _sep.line.fill.background()
 
-            # Volcano Plot (下段) — XY比を保持して最大サイズで配置
+            # Volcano Plot (下段) — 並列レンダリング済みの結果を取得して配置
             if has_volcano:
-                vpng = _fig_to_png_bytes(volcano_cl, width=800, height=700, scale=2)
+                vpng = volcano_fut.result() if volcano_fut else None
                 v_aspect = 800 / 700  # ≈ 1.14
                 v_height = Inches(_volcano_h)
                 v_width = int(v_height * v_aspect)
