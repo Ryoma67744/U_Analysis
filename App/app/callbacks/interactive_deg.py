@@ -63,14 +63,9 @@ def filter_features(search_value, filter_mode, cluster_filter,
     if not features:
         return []
 
-    # annotation マッピング: キャッシュ済みマップ + DEGデータを統合
-    ann_map = dict(_interactive_data.get("annotation_map") or {})
-    if deg_data:
-        for r in deg_data:
-            gene = r.get("gene", "")
-            ann = r.get("annotation", "")
-            if gene and _is_meaningful_annotation(ann, gene):
-                ann_map[gene] = ann  # DEGデータが優先
+    # annotation マッピングは load_interactive_data / m/z キャリブで既に
+    # DEG マージ済みのため、ここでは直接参照のみ（検索のたびの再構築を回避）
+    ann_map = _interactive_data.get("annotation_map") or {}
 
     def _make_option(f, rank=None):
         """フィーチャー名からドロップダウン用オプションを生成"""
