@@ -24,6 +24,10 @@ _launch_uid = uuid4()
 _cache_dir = OTHER_DIR / "cache"
 _cache_dir.mkdir(parents=True, exist_ok=True)
 _cache = diskcache.Cache(str(_cache_dir))
+# Note: DiskcacheManager は各 background_callback 起動毎に
+# multiprocess.Process を spawn する仕様のため、明示的な workers 設定は不要。
+# 複数ユーザーの background_callback (load_interactive_data, cb_export_report)
+# は自動的に並列実行される。リソース制限は OS / Docker レベルで管理。
 _background_manager = DiskcacheManager(
     _cache, cache_by=[lambda: _launch_uid], expire=300,
 )
