@@ -5,14 +5,60 @@
 
 import hashlib
 import json
+import logging
+import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 
 from app.config import R_HELPERS_DIR, RSCRIPT_PATH, SEURAT_CACHE_DIR
+
+logger = logging.getLogger("msi.seurat_bridge")
+
+# Seurat キャッシュの LRU 上限。新規エントリ追加時に超過分は古い順に削除。
+# /tmp/msi_seurat_cache が無制限に膨らむのを防ぐ。
+SEURAT_CACHE_MAX_ENTRIES = int(os.environ.get("SEURAT_CACHE_MAX_ENTRIES", 12))
+
+
+def _evict_seurat_cache_lru(cache_base: Path, max_entries: int) -> int:
+    """SEURAT_CACHE_DIR 内のサブディレクトリを mtime 降順で max_entries 件まで残し、
+    それより古い (mtime 小) サブディレクトリを物理削除する。
+
+    Returns: 削除したサブディレクトリ数
+    """
+    try:
+        if not cache_base.exists():
+            return 0
+        sub_dirs = []
+        for child in cache_base.iterdir():
+            if child.is_dir():
+                try:
+                    mt = child.stat().st_mtime
+                except OSError:
+                    mt = 0
+                sub_dirs.append((mt, child))
+        if len(sub_dirs) <= max_entries:
+            return 0
+        # mtime 昇順 (古いものから) で並べる
+        sub_dirs.sort(key=lambda t: t[0])
+        to_evict = sub_dirs[: len(sub_dirs) - max_entries]
+        removed = 0
+        for mt, path in to_evict:
+            try:
+                shutil.rmtree(path, ignore_errors=True)
+                removed += 1
+                logger.info("Evicted stale Seurat cache: %s (age=%.0fs)",
+                            path.name, time.time() - mt)
+            except Exception as e:
+                logger.warning("Failed to evict %s: %s", path.name, e)
+        return removed
+    except Exception as e:
+        logger.warning("LRU eviction error: %s", e)
+        return 0
 
 
 class SeuratBridge:
@@ -36,7 +82,14 @@ class SeuratBridge:
     def _get_cache_dir(self, rds_path: str) -> Path:
         key = self._get_cache_key(rds_path)
         cache_dir = self._cache_base / key
+        is_new = not cache_dir.exists()
         cache_dir.mkdir(parents=True, exist_ok=True)
+        # 新規キャッシュ作成時に LRU evict をトリガー (頻繁すぎず適度)
+        if is_new and SEURAT_CACHE_MAX_ENTRIES > 0:
+            try:
+                _evict_seurat_cache_lru(self._cache_base, SEURAT_CACHE_MAX_ENTRIES)
+            except Exception as e:
+                logger.debug("LRU eviction failed (non-critical): %s", e)
         return cache_dir
 
     def get_cache_dir(self, rds_path: str) -> Path:

@@ -598,6 +598,29 @@ backups/
 
 #### バックアップから復元する
 
+リポジトリ直下の `restore.sh` を使うのが安全です。dry-run / バックアップ一覧
+表示 / 既存 volume の上書き確認を含みます。
+
+```bash
+# バックアップ一覧を確認
+./restore.sh --list
+
+# 復元前の確認 (実際には実行しない)
+./restore.sh --dry-run msi-projects backups/msi-projects-20260507-030000.tar.gz
+
+# 実際に復元する (既存 volume の上書き確認あり)
+./restore.sh msi-projects backups/msi-projects-20260507-030000.tar.gz
+```
+
+restore.sh は次の手順を自動化:
+1. バックアップファイルの破損チェック (`tar tzf`)
+2. 既存 volume があれば確認プロンプト
+3. `docker compose down`
+4. 既存 volume 削除 → 空 volume 作成
+5. tar 展開
+6. `docker compose up -d`
+
+手動で実行する場合 (非推奨):
 ```bash
 # 例: msi-projects を復元
 docker compose down
@@ -821,3 +844,98 @@ document.cookie
 
 別ブラウザ（Incognito ウィンドウ）でアクセスすると別の session_id が発行され、
 UI ロックの動作確認ができます。
+
+---
+
+## 11. セキュリティ強化 (PR-H で導入)
+
+### 11.1 Brute force 対策 (fail2ban 導入推奨)
+
+BasicAuth の N 回失敗で IP をブロックする標準的な対策。Caddy 単体では
+rate limit 機能が無いため fail2ban を OS 側に導入する:
+
+```bash
+# Ubuntu 24.04 で fail2ban 導入
+sudo apt update && sudo apt install -y fail2ban
+
+# Caddy ログ用 jail 設定
+sudo tee /etc/fail2ban/jail.d/caddy-basicauth.conf << 'EOF'
+[caddy-basicauth]
+enabled = true
+port    = http,https
+filter  = caddy-basicauth
+logpath = /var/log/caddy/access.log
+findtime = 600
+maxretry = 5
+bantime  = 3600
+EOF
+
+# Caddy ログから 401 を検知するフィルター
+sudo tee /etc/fail2ban/filter.d/caddy-basicauth.conf << 'EOF'
+[Definition]
+failregex = ^.*"status":401.*"remote_ip":"<HOST>".*$
+ignoreregex =
+EOF
+
+sudo systemctl restart fail2ban
+sudo fail2ban-client status caddy-basicauth
+```
+
+5 分間に 5 回 401 失敗で 1 時間 IP ブロック。
+
+### 11.2 監視メトリクス endpoint
+
+PR-H5 で `/metrics` endpoint を追加。psutil ベースの軽量メトリクス
+(認証バイパス、ローカルアクセス前提):
+
+```bash
+# サーバ上で確認
+curl http://127.0.0.1:3838/metrics
+# rss_bytes=1234567
+# vms_bytes=2345678
+# num_fds=42
+# num_threads=8
+# cpu_percent=12.3
+# project_states_size=3
+# diskcache_mb=45.2
+```
+
+Prometheus に取り込む場合は適宜 exporter / textfile_collector を介する。
+
+外部監視 (Datadog / Mackerel 等) からも参照可能。**外部公開する場合は
+Caddyfile で /metrics を内部 IP のみに制限すること** (機微情報は含まない
+が、無闇に晒すべきではない)。
+
+### 11.3 1 時間ごとの自動 metrics ログ
+
+`METRICS_LOG_INTERVAL_SEC` (デフォルト 3600) ごとに RSS / fd / project_states
+が INFO ログに記録される。post-mortem の baseline 取得用。
+
+```
+2026-05-12 10:00:00 [INFO] msi.startup: metrics rss_mb=512 num_fds=120 threads=8 project_states=3
+```
+
+### 11.4 セキュリティヘッダー
+
+PR-H5 で Flask after_request に追加された自動付与ヘッダー:
+
+| ヘッダー | 値 | 効果 |
+|---|---|---|
+| X-Frame-Options | DENY | clickjacking 対策 (iframe 埋込禁止) |
+| X-Content-Type-Options | nosniff | MIME 推測攻撃対策 |
+| Referrer-Policy | strict-origin-when-cross-origin | リファラ漏洩抑止 |
+| Content-Security-Policy | self + unsafe-inline (Dash 要件) | XSS / リソース取込抑止 |
+
+`/healthz` / `/metrics` には付与されない (monitoring 用)。Caddy 側でも
+同等のヘッダーを設定済み (リバプロ層と Flask 層の二重防御)。
+
+### 11.5 Cookie 設定
+
+| 設定 | 値 |
+|---|---|
+| max_age | 1 日 (SESSION_COOKIE_MAX_AGE_SEC で上書き可) |
+| secure | HTTPS 経由のみ True (X-Forwarded-Proto で自動判別) |
+| samesite | Lax |
+| httponly | False (UI ロックの clientside JS 用) |
+
+旧 30 日固定から 1 日に短縮し Session 固定攻撃のリスクを低減。

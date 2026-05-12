@@ -85,6 +85,44 @@ def _healthz_bypass():
     """
     if _flask_request.path == "/healthz":
         return ("OK", 200, {"Content-Type": "text/plain"})
+    if _flask_request.path == "/metrics":
+        # PR-H5 E7: psutil ベースの軽量メトリクス。auth bypass で外部監視から取得可能。
+        # Prometheus-style ではなく単純な key=value 形式 (依存軽量化)。
+        try:
+            import psutil
+            import os as _os
+            proc = psutil.Process(_os.getpid())
+            with proc.oneshot():
+                rss = proc.memory_info().rss
+                vms = proc.memory_info().vms
+                num_fds = proc.num_fds() if hasattr(proc, "num_fds") else 0
+                threads = proc.num_threads()
+                cpu_pct = proc.cpu_percent(interval=None)
+            try:
+                from app.callbacks.interactive_callbacks import get_project_states_size
+                ps_size = get_project_states_size()
+            except Exception:
+                ps_size = -1
+            try:
+                cache_size_mb = sum(
+                    f.stat().st_size for f in _cache_dir.rglob("*") if f.is_file()
+                ) / (1024 * 1024)
+            except Exception:
+                cache_size_mb = -1
+            body = (
+                f"rss_bytes={rss}\n"
+                f"vms_bytes={vms}\n"
+                f"num_fds={num_fds}\n"
+                f"num_threads={threads}\n"
+                f"cpu_percent={cpu_pct:.1f}\n"
+                f"project_states_size={ps_size}\n"
+                f"diskcache_mb={cache_size_mb:.1f}\n"
+            )
+            return (body, 200, {"Content-Type": "text/plain"})
+        except Exception as e:
+            return (f"metrics_error: {type(e).__name__}\n", 500,
+                    {"Content-Type": "text/plain"})
+
     if _flask_request.path == "/healthz/ready":
         # Dash の中身を軽く検査:
         # 1. layout が None でない (起動完了)
@@ -120,6 +158,34 @@ def _ensure_session_id():
         return  # ヘルスチェックは Cookie 不要
     from app.services.session_id import get_or_create_session_id
     get_or_create_session_id()  # 副作用で after_this_request 経由で set-cookie
+
+
+@server.after_request
+def _security_headers(response):
+    """PR-H5 E8: セキュリティヘッダー (clickjacking / MIME sniff / referrer)。
+
+    Caddy 経由でも同等のヘッダーを設定しているが、Flask 直接アクセス
+    (ローカル開発 / リバプロバイパス) でも 安全性を確保。
+    """
+    # /healthz / /metrics は monitoring 用なので header は最小限に
+    if _flask_request.path in ("/healthz", "/healthz/ready", "/metrics"):
+        return response
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    # CSP: Dash は inline script を使うため 'unsafe-inline' が必要。
+    # 'self' のみで外部リソースを禁止、frame-ancestors 'none' で iframe 埋込禁止。
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; "
+        "font-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'",
+    )
+    return response
 
 
 # 認証設定 (クラウドデプロイ用)
