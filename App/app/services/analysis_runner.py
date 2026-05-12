@@ -251,8 +251,9 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
     """
     template_path = params["template_path"]
     if not Path(template_path).exists():
+        logger.error("v8 Template が見つかりません: %s", template_path)
         raise FileNotFoundError(
-            f"v8 Templateスクリプトが見つかりません: {template_path}"
+            f"v8 Template スクリプトが見つかりません: {Path(template_path).name}"
         )
 
     # 元スクリプトを読み込み
@@ -373,8 +374,9 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
     """
     template_path = params["template_path"]
     if not Path(template_path).exists():
+        logger.error("Cluster Filter テンプレが見つかりません: %s", template_path)
         raise FileNotFoundError(
-            f"Cluster Filterスクリプトが見つかりません: {template_path}"
+            f"Cluster Filter スクリプトが見つかりません: {Path(template_path).name}"
         )
 
     with open(template_path, "r", encoding="utf-8") as f:
