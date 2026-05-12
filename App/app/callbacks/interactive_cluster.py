@@ -8,7 +8,7 @@ import logging
 import pandas as pd
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
-from dash import Input, Output, State, callback, ctx, no_update, html, ALL
+from dash import Input, Output, State, callback, ctx, no_update, html, ALL, MATCH
 
 from app.config import CLUSTER_PRESET_COLORS
 from app.utils.color_utils import (
@@ -235,10 +235,59 @@ def populate_cluster_rename_panel(rds_path, current_map):
                         placeholder=cl_str,
                         size="sm",
                     ),
+                    html.Small(
+                        id={"type": "cluster_rename_lock_indicator", "index": cl_str},
+                        className="text-warning",
+                        children="",  # ロック中のみ「編集中: alice」が入る
+                    ),
                 ]),
             ]),
         )
     return rows
+
+
+# ---------------------------------------------------------------------------
+# PR-G2: cluster_rename_input の UI ロック
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output({"type": "cluster_rename_lock_indicator", "index": ALL}, "id"),
+    Input({"type": "cluster_rename_input", "index": ALL}, "value"),
+    [State("seurat_rds_path_store", "data"),
+     State("session_id_store", "data"),
+     State({"type": "cluster_rename_input", "index": ALL}, "id")],
+    prevent_initial_call=True,
+)
+def acquire_cluster_rename_lock(values, rds_path, session_id, ids):
+    """値変更時にロック取得。出力 id は Pattern matching を成立させるためのダミー。"""
+    from app.callbacks.edit_lock_callbacks import acquire_lock_for_callback
+    triggered = ctx.triggered_id
+    if not isinstance(triggered, dict) or not rds_path or not session_id:
+        return [no_update] * len(ids)
+    target_index = triggered.get("index")
+    if target_index is None:
+        return [no_update] * len(ids)
+    field_id = f"cluster_rename:{target_index}"
+    acquire_lock_for_callback(rds_path, field_id, session_id)
+    return [no_update] * len(ids)
+
+
+@callback(
+    [Output({"type": "cluster_rename_input", "index": MATCH}, "disabled"),
+     Output({"type": "cluster_rename_lock_indicator", "index": MATCH}, "children")],
+    Input("edit_lock_state", "data"),
+    [State({"type": "cluster_rename_input", "index": MATCH}, "id"),
+     State("session_id_store", "data")],
+)
+def reflect_cluster_rename_lock(lock_state, comp_id, my_session_id):
+    """edit_lock_state を見て disabled + 編集中表示を反映。"""
+    if not lock_state or not comp_id:
+        return False, ""
+    field_id = f"cluster_rename:{comp_id.get('index')}"
+    owner = lock_state.get(field_id)
+    if owner and owner.get("user_id") != my_session_id:
+        return True, f"編集中: {owner.get('user_display', '?')}"
+    return False, ""
 
 
 @callback(
