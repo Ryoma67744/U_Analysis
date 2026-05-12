@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import subprocess
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -123,6 +125,52 @@ def read_deg_rds(rds_path: Path) -> list[dict] | None:
         tmp_csv.unlink(missing_ok=True)
 
 
+def _write_deg_index(
+    result_base: Path,
+    method: str,
+    file_path: Path,
+    file_type: str,
+) -> None:
+    """発見した DEG ファイル情報を deg_index.json にマージ書き込み。
+
+    結果フォルダ直下に deg_index.json を作成 / 更新し、次回ロード時に
+    glob 22 パターンを走査せず直接ファイルを開けるようにする。
+    書き込み失敗（read-only フォルダ等）時は silent skip。
+    """
+    meta_path = result_base / "deg_index.json"
+    try:
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                if not isinstance(meta, dict):
+                    meta = {}
+            except Exception:
+                meta = {}
+        else:
+            meta = {}
+
+        meta.setdefault("version", 1)
+        meta["generated_at"] = datetime.now().isoformat()
+        meta["generated_by"] = "umap-webapp"
+        meta.setdefault("deg_results", {})
+        try:
+            rel = str(file_path.relative_to(result_base))
+        except ValueError:
+            rel = str(file_path)
+        meta["deg_results"][method] = {"type": file_type, "path": rel}
+
+        # 原子的書き込み（temp → rename）
+        tmp = meta_path.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(meta, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        tmp.replace(meta_path)
+    except Exception as e:
+        # read-only フォルダ等の書き込み失敗は無視（fallback 動作に影響なし）
+        logger.debug(f"deg_index.json 書き込みスキップ: {e}")
+
+
 def load_deg_results(
     result_base: Path,
     integration_method: str | None = None,
@@ -156,6 +204,43 @@ def load_deg_results(
     else:
         method_dir = "Harmony"
 
+    def _cache_and_return(data):
+        """DEG結果をキャッシュして返す（meta.json 経路 / glob fallback 共通）"""
+        if cache is not None:
+            cache["deg_cache_key"] = cache_key
+            cache["deg_cache_data"] = data
+        return data
+
+    # NEW: deg_index.json があれば優先使用（glob 22 パターンを 1 ファイル読込に削減）
+    meta_path = result_base / "deg_index.json"
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if meta.get("version") == 1:
+                entry = meta.get("deg_results", {}).get(method_dir)
+                if entry and entry.get("path"):
+                    abs_path = result_base / entry["path"]
+                    if abs_path.exists():
+                        if entry.get("type") == "csv":
+                            try:
+                                df = pd.read_csv(abs_path, encoding="utf-8")
+                                result = standardize_deg_df(df)
+                                if result:
+                                    logger.info(f"deg_index.json 経路 (CSV) ヒット: {abs_path}")
+                                    return _cache_and_return(result)
+                            except Exception as e:
+                                logger.warning(f"deg_index.json CSV 読込失敗、glob fallback: {e}")
+                        elif entry.get("type") == "rds":
+                            try:
+                                result = read_deg_rds(abs_path)
+                                if result:
+                                    logger.info(f"deg_index.json 経路 (RDS) ヒット: {abs_path}")
+                                    return _cache_and_return(result)
+                            except Exception as e:
+                                logger.warning(f"deg_index.json RDS 読込失敗、glob fallback: {e}")
+        except Exception as e:
+            logger.warning(f"deg_index.json パース失敗、glob fallback: {e}")
+
     # --- 1. CSV ファイル検索 ---
     csv_patterns = [
         f"{method_dir}/*deg*markers*.csv",
@@ -174,15 +259,8 @@ def load_deg_results(
         "markers_mz_only*.csv",
     ]
 
-    def _cache_and_return(data):
-        """DEG結果をキャッシュして返す"""
-        if cache is not None:
-            cache["deg_cache_key"] = cache_key
-            cache["deg_cache_data"] = data
-        return data
-
     def _try_load_csv(matches):
-        """マッチしたCSVファイルの読み込みを試行"""
+        """マッチしたCSVファイルの読み込みを試行。成功時は (result, csv_path) を返す。"""
         for csv_path in matches:
             try:
                 df = pd.read_csv(csv_path, encoding="utf-8")
@@ -192,21 +270,22 @@ def load_deg_results(
                 result = standardize_deg_df(df)
                 if result:
                     logger.info(f"読み込み成功: {len(result)} レコード")
-                    return result
+                    return result, csv_path
                 else:
                     logger.warning(
                         f"standardize_deg_df が None を返しました: {csv_path}"
                     )
             except Exception as e:
                 logger.error(f"CSV読み込みエラー: {csv_path} -- {e}")
-        return None
+        return None, None
 
     # 第1段階: result_base 直下を glob で検索
     for pattern in csv_patterns:
         matches = sorted(result_base.glob(pattern))
         if matches:
-            result = _try_load_csv(matches)
+            result, found = _try_load_csv(matches)
             if result:
+                _write_deg_index(result_base, method_dir, found, "csv")
                 return _cache_and_return(result)
 
     # 第2段階: result_base 以下を rglob で再帰検索
@@ -224,8 +303,9 @@ def load_deg_results(
             method_lower = method_dir.lower()
             prioritized = [m for m in matches if method_lower in m.parent.name.lower()]
             ordered = prioritized + [m for m in matches if m not in prioritized]
-            result = _try_load_csv(ordered)
+            result, found = _try_load_csv(ordered)
             if result:
+                _write_deg_index(result_base, method_dir, found, "csv")
                 return _cache_and_return(result)
 
     # --- 2. DEG RDS ファイル検索（TIMS ver13 が出力する deg_FindAllMarkers_raw_*.rds） ---
@@ -242,6 +322,7 @@ def load_deg_results(
                 result = read_deg_rds(matches[0])
                 if result:
                     logger.info(f"RDS読み込み成功: {len(result)} レコード")
+                    _write_deg_index(result_base, method_dir, matches[0], "rds")
                     return _cache_and_return(result)
                 else:
                     logger.warning(
@@ -258,6 +339,7 @@ def load_deg_results(
             logger.info(f"RDS発見(rglob): {rds_rglob_matches[0]}")
             result = read_deg_rds(rds_rglob_matches[0])
             if result:
+                _write_deg_index(result_base, method_dir, rds_rglob_matches[0], "rds")
                 logger.info(f"RDS読み込み成功: {len(result)} レコード")
                 return _cache_and_return(result)
         except Exception as e:
