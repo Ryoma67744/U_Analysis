@@ -6,6 +6,7 @@
 from dash import html, dcc, dash_table
 import dash_bootstrap_components as dbc
 
+from app.config import EDIT_LOCK_HEARTBEAT_INTERVAL_SEC
 from app.layouts.tooltips import help_badge
 from app.services.session_manager import load_last_settings
 
@@ -1203,6 +1204,15 @@ def create_interactive_tab():
                 dbc.ModalHeader(dbc.ModalTitle(id="fullscreen_modal_title"), close_button=True),
                 dbc.ModalBody(id="fullscreen_modal_body", style={"padding": "10px"}),
             ],
+        ),
+
+        # PR-F: UI ロック用 Store + Interval (複数ユーザー同時編集対応)
+        dcc.Store(id="session_id_store", data=None),
+        dcc.Store(id="edit_lock_state", data={}),
+        dcc.Interval(
+            id="edit_lock_heartbeat",
+            interval=EDIT_LOCK_HEARTBEAT_INTERVAL_SEC * 1000,
+            n_intervals=0,
         ),
 
         # Seuratブリッジのキャッシュパスを保持
