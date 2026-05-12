@@ -296,7 +296,8 @@ _SPATIAL_IMG_CONFIG = {
 )
 def create_spatial_controls(rds_path, rotation_store, name_map, custom_color_map, cluster_name_map=None):
     """データ読み込み後、サンプル別の回転/反転 + サンプル名変更コントロールを生成"""
-    from app.callbacks.interactive_callbacks import _interactive_data, _save_interactive_settings
+    from app.callbacks.interactive_callbacks import _interactive_data, _save_interactive_settings, _set_active_key
+    _set_active_key(rds_path)
     df = _interactive_data.get("plot_data")
     if df is None or "SpatialX" not in df.columns:
         return ""
@@ -674,12 +675,14 @@ def update_rotation_store_from_per_sample(rotations, flip_hs, flip_vs, current_s
     Output("sample_name_map_store", "data"),
     [Input({"type": "sample_rename_input", "index": ALL}, "value"),
      Input({"type": "umap_sample_rename_input", "index": ALL}, "value")],
+    State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
-def update_sample_name_map(spatial_values, umap_values):
+def update_sample_name_map(spatial_values, umap_values, rds_path=None):
     """サンプル名変更入力（Spatial側 + UMAP側）から表示名マッピングを更新。
     両側の値をマージし、トリガーされた側の値を高優先とする。"""
-    from app.callbacks.interactive_callbacks import _interactive_data, _save_interactive_settings
+    from app.callbacks.interactive_callbacks import _interactive_data, _save_interactive_settings, _set_active_key
+    _set_active_key(rds_path)
     triggered = ctx.triggered_id
     triggered_type = triggered.get("type", "") if isinstance(triggered, dict) else ""
 
@@ -716,11 +719,13 @@ def update_sample_name_map(spatial_values, umap_values):
     [Output("interactive_sample", "options", allow_duplicate=True),
      Output("feature_sample_select", "options", allow_duplicate=True)],
     Input("sample_name_map_store", "data"),
+    State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
-def update_sample_dropdown_labels(name_map):
+def update_sample_dropdown_labels(name_map, rds_path=None):
     """サンプル名変更時にSpatial Mapping & Feature Plotサンプルドロップダウンのラベルを更新"""
-    from app.callbacks.interactive_callbacks import _interactive_data
+    from app.callbacks.interactive_callbacks import _interactive_data, _set_active_key
+    _set_active_key(rds_path)
     df = _interactive_data.get("plot_data")
     if df is None:
         return no_update, no_update
@@ -742,7 +747,8 @@ def update_sample_dropdown_labels(name_map):
 )
 def create_umap_name_controls(rds_path, name_map):
     """データ読み込み後、UMAP側にサンプル名変更UIを生成"""
-    from app.callbacks.interactive_callbacks import _interactive_data
+    from app.callbacks.interactive_callbacks import _interactive_data, _set_active_key
+    _set_active_key(rds_path)
     df = _interactive_data.get("plot_data")
     if df is None:
         return ""
@@ -870,6 +876,8 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
     active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
     if "acc_spatial" not in active_list:
         return no_update, no_update, no_update
+    from app.callbacks.interactive_callbacks import _set_active_key
+    _set_active_key(rds_path)
     from app.callbacks.interactive_callbacks import _interactive_data
     from app.callbacks.interactive_umap import _get_merged_label_positions
     df = _interactive_data.get("plot_data")

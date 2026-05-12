@@ -52,13 +52,15 @@ _FEATURE_IMG_CONFIG = {
      Input("feature_filter_mode", "value"),
      Input("feature_cluster_filter", "value")],
     [State("feature_mz_filtered_list", "data"),
-     State("deg_data_store", "data")],
+     State("deg_data_store", "data"),
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
 def filter_features(search_value, filter_mode, cluster_filter,
-                    mz_filtered, deg_data):
+                    mz_filtered, deg_data, rds_path=None):
     """フィーチャードロップダウンの検索値に基づいてオプションをフィルタ"""
-    from app.callbacks.interactive_callbacks import _interactive_data
+    from app.callbacks.interactive_callbacks import _interactive_data, _set_active_key
+    _set_active_key(rds_path)
     features = _interactive_data.get("features_list")
     if not features:
         return []
@@ -188,12 +190,14 @@ def filter_features(search_value, filter_mode, cluster_filter,
     Output("feature_mz_filtered_list", "data"),
     Input("apply_feature_mz_filter", "n_clicks"),
     [State("feature_mz_min", "value"),
-     State("feature_mz_max", "value")],
+     State("feature_mz_max", "value"),
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def apply_mz_filter(n_clicks, mz_min, mz_max):
+def apply_mz_filter(n_clicks, mz_min, mz_max, rds_path=None):
     """m/z最小値・最大値で feature リストを絞り込み、Storeに保存"""
-    from app.callbacks.interactive_callbacks import _interactive_data
+    from app.callbacks.interactive_callbacks import _interactive_data, _set_active_key
+    _set_active_key(rds_path)
     features = _interactive_data.get("features_list")
     if not features:
         return None
@@ -217,11 +221,13 @@ def apply_mz_filter(n_clicks, mz_min, mz_max):
 @callback(
     Output("feature_select", "options", allow_duplicate=True),
     Input("feature_mz_filtered_list", "data"),
+    State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
-def update_feature_options_on_mz_filter(mz_filtered):
+def update_feature_options_on_mz_filter(mz_filtered, rds_path=None):
     """m/zフィルタ適用後、ドロップダウンの選択肢を即時更新"""
-    from app.callbacks.interactive_callbacks import _interactive_data
+    from app.callbacks.interactive_callbacks import _interactive_data, _set_active_key
+    _set_active_key(rds_path)
     if mz_filtered is None:
         # フィルタ解除 -> 全件に戻す
         features = _interactive_data.get("features_list")
@@ -260,8 +266,9 @@ def update_feature_plot(feature_name, sample, marker_size,
                         name_map, _fs_trigger, columns_per_row,
                         rds_path, cache_dir_str, rotation_store,
                         deg_data):
-    from app.callbacks.interactive_callbacks import _interactive_data, _bridge
+    from app.callbacks.interactive_callbacks import _interactive_data, _bridge, _set_active_key
     from app.callbacks.interactive_spatial import _transform_coords, _calc_zero_gap_marker_size
+    _set_active_key(rds_path)
     # 名前変更・フルスクリーン閉鎖トリガーだがFeature未選択 -> スキップ
     if ctx.triggered_id in ("sample_name_map_store", "fullscreen_closed_trigger") and not feature_name:
         return no_update, no_update, no_update, no_update
@@ -603,12 +610,15 @@ def update_volcano_cluster_options(deg_data, cluster_name_map=None):
      Input("volcano_annotation_switch", "value")],
     State("deg_data_store", "data"),
     State("cluster_name_map_store", "data"),
+    State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
 def update_volcano_plot(cluster, fc_thresh, p_thresh, y_max, marker_size,
                         highlight_mz, highlight_names, label_top_n,
                         annotation_on,
-                        deg_data, cluster_name_map=None):
+                        deg_data, cluster_name_map=None, rds_path=None):
+    from app.callbacks.interactive_callbacks import _set_active_key
+    _set_active_key(rds_path)
     """DEGデータからVolcano Plotを生成"""
     if not deg_data:
         return go.Figure()
@@ -794,12 +804,16 @@ def update_volcano_plot(cluster, fc_thresh, p_thresh, y_max, marker_size,
     [State("deg_data_store", "data"),
      State("seurat_cache_dir_store", "data"),
      State("annotation_path", "value"),
-     State("cluster_name_map_store", "data")],
+     State("cluster_name_map_store", "data"),
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
 def update_heatmap(top_n, scale, annotation_on, merge_toggle, selected_cluster,
-                   deg_data, cache_dir_str, mrm_path_str, cluster_name_map=None):
+                   deg_data, cache_dir_str, mrm_path_str,
+                   cluster_name_map=None, rds_path=None):
     """DEG Top N マーカーのクラスタ別平均発現量ヒートマップを生成"""
+    from app.callbacks.interactive_callbacks import _set_active_key
+    _set_active_key(rds_path)
     from app.callbacks.interactive_callbacks import _interactive_data
     from app.callbacks.interactive_calibration import (
         _build_mz_to_compound_map, _annotate_gene_labels,

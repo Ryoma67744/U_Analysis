@@ -420,6 +420,10 @@ def cb_export_data(
     """
     if not n_clicks:
         return no_update, no_update
+    # 現在の閲覧プロジェクトを ContextVar にスコープ（他ユーザーと干渉しないように）
+    if rds_map and current_method and current_method in rds_map:
+        from app.callbacks.interactive_callbacks import _set_active_key
+        _set_active_key(rds_map[current_method])
 
     logger.info("[DataExport] cb_export_data 発火: data_folder=%s", data_folder)
 
