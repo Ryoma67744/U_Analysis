@@ -343,7 +343,7 @@ bash run_app.sh</pre>
       <li><code>xattr -dr com.apple.quarantine /path/to/UMAP-WebApp-ClaudeCode</code> で隔離属性を解除する</li>
     </ul>
     上記で起動しない場合は <code>cd App && python3 run_app.py</code> を直接実行することもできます。
-    詳細は <code>manual.html</code> 2.2 章を参照。
+    詳細はアプリ起動後にヘッダー右端の「❓ ヘルプ」ボタン（または <code>/help/registration</code>）を参照。
   </div>
 </div>
 
@@ -375,9 +375,8 @@ cd /path/to/UMAP-WebApp-ClaudeCode
 <h2>フォルダ構成</h2>
 <pre>
 MSI_Analysis_App/              (配布 ZIP 解凍後)
-  manual.html                  ... 操作マニュアル
   SETUP_GUIDE.html             ... 本ガイド
-  images/                      ... マニュアル画像
+  images/                      ... マニュアル画像 (旧 manual.html 用、現在はアプリ内 /help/* 配信)
   run_app.bat                  ... Windows 起動
   setup.bat                    ... Windows 初回セットアップ
   run_app.sh                   ... macOS / Linux 起動
@@ -414,9 +413,10 @@ MSI_Analysis_App/              (配布 ZIP 解凍後)
 </pre>
 
 <div class="note">
-  操作マニュアル (<code>manual.html</code>) とセットアップガイド (<code>SETUP_GUIDE.html</code>) は
-  配布 ZIP を解凍すると <strong><code>App/</code> と同じ階層（トップディレクトリ直下）</strong> に展開されます。
-  ブラウザで直接開いてご利用ください。
+  操作マニュアルはアプリ起動後にヘッダー右端の「❓ ヘルプ」ボタンから、
+  または直接 <code>http://localhost:3838/help/registration</code>（登録画面）
+  <code>http://localhost:3838/help/analysis</code>（解析画面）にアクセスして閲覧できます。
+  セットアップガイド (<code>SETUP_GUIDE.html</code>) は配布 ZIP を解凍するとトップディレクトリ直下に展開されますので、ブラウザで直接開いてご利用ください。
 </div>
 
 </body>
