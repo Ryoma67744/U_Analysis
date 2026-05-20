@@ -5,6 +5,7 @@
 {% block nav_ana %}active{% endblock %}
 
 {% block content %}
+
 <div class="help-alert tip">
   <div class="alert-title">💡 このページについて</div>
   プロジェクトを選択した後に表示される「解析画面」の使い方をまとめています。
@@ -26,8 +27,486 @@
   </ol>
 </div>
 
-<p class="text-muted">
-  ※ このページは詳細執筆中です。各セクションの本文は Step 4 で追加されます。
-  プロジェクト管理の使い方は <a href="/help/registration">🏠 登録画面ガイド</a> を参照してください。
+<!-- ============================================ -->
+<h2 class="section-heading" id="intro">🌟 1. はじめに</h2>
+
+<p>
+  解析画面は <strong>4つのタブ</strong> から構成されています:
 </p>
+
+<div class="row g-3">
+  <div class="col-md-3 col-sm-6">
+    <div class="ui-card">
+      <span class="icon">⚙️</span>
+      <div class="name">解析設定</div>
+      <p class="small mb-0">データフォルダ・サンプル・パラメータ指定 → ▶実行</p>
+    </div>
+  </div>
+  <div class="col-md-3 col-sm-6">
+    <div class="ui-card">
+      <span class="icon">📊</span>
+      <div class="name">結果閲覧</div>
+      <p class="small mb-0">UMAPプロット・クラスタ図・代謝物リスト</p>
+    </div>
+  </div>
+  <div class="col-md-3 col-sm-6">
+    <div class="ui-card">
+      <span class="icon">🎨</span>
+      <div class="name">インタラクティブ</div>
+      <p class="small mb-0">クラスタ操作・色変更・マージ・再描画</p>
+    </div>
+  </div>
+  <div class="col-md-3 col-sm-6">
+    <div class="ui-card">
+      <span class="icon">🗂</span>
+      <div class="name">セッション履歴</div>
+      <p class="small mb-0">過去の解析履歴の閲覧・再現</p>
+    </div>
+  </div>
+</div>
+
+<h3 class="subsection-heading">🧬 DESI と TIMS の違い</h3>
+<table class="help-table">
+  <thead>
+    <tr><th>項目</th><th>DESI</th><th>TIMS</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>正式名称</td><td>Desorption Electrospray Ionization</td><td>Trapped Ion Mobility Spectrometry</td></tr>
+    <tr><td>入力ファイル</td><td><code>.imzML</code> + <code>.ibd</code> (Bruker/Waters)</td><td><code>.d</code> フォルダ (Bruker) + Parquet annotation</td></tr>
+    <tr><td>サンプル選択</td><td>1サンプル = 1切片 = 1フォルダ</td><td>1サンプル = 複数アノテーション切片</td></tr>
+    <tr><td>主な解析手法</td><td>UMAP + クラスタリング</td><td>UMAP + DBSCAN + アノテーション</td></tr>
+    <tr><td>解析時間目安</td><td>5〜30分（サンプル数次第）</td><td>10〜60分（イオン数次第）</td></tr>
+  </tbody>
+</table>
+
+<div class="help-alert tip">
+  <div class="alert-title">💡 解析全体の流れ</div>
+  どちらのモダリティでも、基本的な流れは <strong>「データ準備 → 設定 → 実行 → 結果確認 → インタラクティブ調整」</strong>
+  です。下の図で全体を把握してから、各セクションを読むとスムーズです。
+</div>
+
+<div class="figure-frame">
+  <svg viewBox="0 0 800 200" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="anaGrad" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stop-color="#667eea"/>
+        <stop offset="100%" stop-color="#764ba2"/>
+      </linearGradient>
+    </defs>
+    <!-- ステップ1 -->
+    <rect x="10" y="50" width="130" height="80" rx="10" fill="#e3f2fd" stroke="#1976d2" stroke-width="2"/>
+    <text x="75" y="80" text-anchor="middle" fill="#1976d2" font-size="24">📁</text>
+    <text x="75" y="105" text-anchor="middle" fill="#1976d2" font-size="12" font-weight="bold">データ準備</text>
+    <text x="75" y="120" text-anchor="middle" fill="#1976d2" font-size="10">SFTP / 配置</text>
+    <polygon points="145,80 165,90 145,100" fill="#5e72e4"/>
+
+    <!-- ステップ2 -->
+    <rect x="170" y="50" width="130" height="80" rx="10" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="2"/>
+    <text x="235" y="80" text-anchor="middle" fill="#7b1fa2" font-size="24">⚙️</text>
+    <text x="235" y="105" text-anchor="middle" fill="#7b1fa2" font-size="12" font-weight="bold">設定</text>
+    <text x="235" y="120" text-anchor="middle" fill="#7b1fa2" font-size="10">フォルダ/Param</text>
+    <polygon points="305,80 325,90 305,100" fill="#5e72e4"/>
+
+    <!-- ステップ3 -->
+    <rect x="330" y="50" width="130" height="80" rx="10" fill="#fff3e0" stroke="#f57c00" stroke-width="2"/>
+    <text x="395" y="80" text-anchor="middle" fill="#f57c00" font-size="24">▶</text>
+    <text x="395" y="105" text-anchor="middle" fill="#f57c00" font-size="12" font-weight="bold">実行</text>
+    <text x="395" y="120" text-anchor="middle" fill="#f57c00" font-size="10">R/Python処理</text>
+    <polygon points="465,80 485,90 465,100" fill="#5e72e4"/>
+
+    <!-- ステップ4 -->
+    <rect x="490" y="50" width="130" height="80" rx="10" fill="#e8f5e9" stroke="#388e3c" stroke-width="2"/>
+    <text x="555" y="80" text-anchor="middle" fill="#388e3c" font-size="24">📊</text>
+    <text x="555" y="105" text-anchor="middle" fill="#388e3c" font-size="12" font-weight="bold">結果確認</text>
+    <text x="555" y="120" text-anchor="middle" fill="#388e3c" font-size="10">UMAP/クラスタ</text>
+    <polygon points="625,80 645,90 625,100" fill="#5e72e4"/>
+
+    <!-- ステップ5 -->
+    <rect x="650" y="50" width="140" height="80" rx="10" fill="#fce4ec" stroke="#c2185b" stroke-width="2"/>
+    <text x="720" y="80" text-anchor="middle" fill="#c2185b" font-size="24">🎨</text>
+    <text x="720" y="105" text-anchor="middle" fill="#c2185b" font-size="12" font-weight="bold">調整・共有</text>
+    <text x="720" y="120" text-anchor="middle" fill="#c2185b" font-size="10">色変更/マージ</text>
+
+    <!-- 番号ラベル -->
+    <circle cx="20" cy="60" r="11" fill="url(#anaGrad)"/>
+    <text x="20" y="64" text-anchor="middle" fill="white" font-size="11" font-weight="bold">1</text>
+    <circle cx="180" cy="60" r="11" fill="url(#anaGrad)"/>
+    <text x="180" y="64" text-anchor="middle" fill="white" font-size="11" font-weight="bold">2</text>
+    <circle cx="340" cy="60" r="11" fill="url(#anaGrad)"/>
+    <text x="340" y="64" text-anchor="middle" fill="white" font-size="11" font-weight="bold">3</text>
+    <circle cx="500" cy="60" r="11" fill="url(#anaGrad)"/>
+    <text x="500" y="64" text-anchor="middle" fill="white" font-size="11" font-weight="bold">4</text>
+    <circle cx="660" cy="60" r="11" fill="url(#anaGrad)"/>
+    <text x="660" y="64" text-anchor="middle" fill="white" font-size="11" font-weight="bold">5</text>
+
+    <text x="400" y="170" text-anchor="middle" fill="#6c757d" font-size="11">5ステップを順に進めれば、初心者でも解析→結果取得まで一気通貫で行えます</text>
+  </svg>
+  <div class="figure-caption">図1: 解析の5ステップ全体フロー</div>
+</div>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="prepare">📁 2. データ準備</h2>
+
+<p>解析の前提として、生データを <strong>サーバー上の固定パス</strong> に配置する必要があります。</p>
+
+<div class="figure-frame">
+  <svg viewBox="0 0 800 320" xmlns="http://www.w3.org/2000/svg">
+    <!-- PC -->
+    <rect x="10" y="40" width="170" height="120" rx="8" fill="#fff" stroke="#1976d2" stroke-width="2"/>
+    <text x="95" y="68" text-anchor="middle" fill="#1976d2" font-size="16" font-weight="bold">💻 自分のPC</text>
+    <text x="95" y="92" text-anchor="middle" fill="#2c3e50" font-size="11">C:\実験データ\</text>
+    <text x="95" y="108" text-anchor="middle" fill="#6c757d" font-size="11">📁 sample_001/</text>
+    <text x="95" y="124" text-anchor="middle" fill="#6c757d" font-size="11">📁 sample_002/</text>
+    <text x="95" y="140" text-anchor="middle" fill="#6c757d" font-size="11">📁 sample_003/</text>
+
+    <!-- SFTP -->
+    <text x="220" y="80" text-anchor="middle" fill="#5e72e4" font-size="14" font-weight="bold">SFTP</text>
+    <text x="220" y="95" text-anchor="middle" fill="#5e72e4" font-size="11">(WinSCP /</text>
+    <text x="220" y="110" text-anchor="middle" fill="#5e72e4" font-size="11">Cyberduck)</text>
+    <line x1="180" y1="100" x2="260" y2="100" stroke="#5e72e4" stroke-width="3" stroke-dasharray="5,3"/>
+    <polygon points="255,95 265,100 255,105" fill="#5e72e4"/>
+
+    <!-- VPS -->
+    <rect x="270" y="40" width="240" height="120" rx="8" fill="#fff" stroke="#7b1fa2" stroke-width="2"/>
+    <text x="390" y="68" text-anchor="middle" fill="#7b1fa2" font-size="16" font-weight="bold">🌐 さくらVPS</text>
+    <text x="390" y="92" text-anchor="middle" fill="#2c3e50" font-size="11">/srv/msi/</text>
+    <text x="290" y="108" fill="#2c3e50" font-size="11">📁 desi_data/ ← DESIをここへ</text>
+    <text x="290" y="124" fill="#2c3e50" font-size="11">📁 tims_data/ ← TIMSをここへ</text>
+    <text x="290" y="140" fill="#2c3e50" font-size="11">📁 output/    ← 結果は自動生成</text>
+
+    <!-- アプリ -->
+    <line x1="510" y1="100" x2="590" y2="100" stroke="#5e72e4" stroke-width="3"/>
+    <polygon points="585,95 595,100 585,105" fill="#5e72e4"/>
+    <text x="550" y="92" text-anchor="middle" fill="#5e72e4" font-size="11">Docker</text>
+    <text x="550" y="108" text-anchor="middle" fill="#5e72e4" font-size="11">マウント</text>
+
+    <rect x="600" y="40" width="190" height="120" rx="8" fill="#fff" stroke="#388e3c" stroke-width="2"/>
+    <text x="695" y="68" text-anchor="middle" fill="#388e3c" font-size="16" font-weight="bold">📱 アプリ</text>
+    <text x="695" y="92" text-anchor="middle" fill="#2c3e50" font-size="11">「データ管理」タブ</text>
+    <text x="615" y="112" fill="#6c757d" font-size="11">✅ desi_data 一覧表示</text>
+    <text x="615" y="128" fill="#6c757d" font-size="11">✅ tims_data 一覧表示</text>
+    <text x="615" y="144" fill="#6c757d" font-size="11">✅ output 一覧表示</text>
+
+    <!-- ポイント -->
+    <rect x="10" y="200" width="780" height="100" rx="8" fill="#fff8e1" stroke="#f9a825" stroke-dasharray="4,4"/>
+    <text x="400" y="225" text-anchor="middle" fill="#f57f17" font-size="14" font-weight="bold">⚡ ポイント</text>
+    <text x="400" y="248" text-anchor="middle" fill="#2c3e50" font-size="12">• アプリ経由ではなく <tspan font-weight="bold" fill="#7b1fa2">SFTP で直接サーバーに配置</tspan> → 数GBでも高速転送</text>
+    <text x="400" y="270" text-anchor="middle" fill="#2c3e50" font-size="12">• 全PCで <tspan font-weight="bold" fill="#7b1fa2">同じパスを参照</tspan> → メンバー間で表示が共通化</text>
+    <text x="400" y="290" text-anchor="middle" fill="#2c3e50" font-size="12">• Docker 外マウントなので <tspan font-weight="bold" fill="#7b1fa2">アプリ更新時もデータ保持</tspan></text>
+  </svg>
+  <div class="figure-caption">図2: SFTP直アップロード → サーバー固定パス → アプリ表示 のデータフロー</div>
+</div>
+
+<h3 class="subsection-heading">SFTP接続の詳細手順</h3>
+<p>
+  WinSCP / Cyberduck のインストールから初回接続までの手順は、
+  <code>App/docs/SFTP_GUIDE.md</code> を参照してください。
+  接続情報（ホスト名・ユーザー名・パスワード）はサーバー管理者から取得します。
+</p>
+
+<div class="help-alert warn">
+  <div class="alert-title">⚠️ フォルダ命名規則</div>
+  サンプルフォルダ名は <strong>ASCII英数 + アンダースコア</strong> を推奨します（例: <code>sample_001</code>, <code>250621_Ohashi</code>）。
+  日本語・スペース・特殊文字を含むと、R スクリプトの読み込みで文字化けや失敗の原因になります。
+</div>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="settings">⚙️ 3. 解析設定タブ</h2>
+
+<p>サブプロジェクトを開くと、まず「解析設定」タブが開きます。画面は <strong>サイドバー（左）+ メインパネル（右）</strong> 構成です。</p>
+
+<div class="figure-frame">
+  <svg viewBox="0 0 800 380" xmlns="http://www.w3.org/2000/svg">
+    <!-- ヘッダー -->
+    <rect x="10" y="10" width="780" height="50" rx="6" fill="#667eea"/>
+    <text x="30" y="40" fill="white" font-size="14" font-weight="bold">MSI Analysis Application</text>
+    <text x="600" y="38" fill="white" font-size="11">❓ ヘルプ  |  ログアウト  |  &lt; プロジェクトに戻る</text>
+
+    <!-- タブバー -->
+    <rect x="10" y="65" width="780" height="35" fill="white" stroke="#dee2e6"/>
+    <rect x="15" y="68" width="100" height="32" fill="#667eea"/>
+    <text x="40" y="89" fill="white" font-size="12" font-weight="bold">⚙️ 解析設定</text>
+    <text x="135" y="89" fill="#6c757d" font-size="12">📊 結果閲覧</text>
+    <text x="230" y="89" fill="#6c757d" font-size="12">🎨 インタラクティブ</text>
+    <text x="370" y="89" fill="#6c757d" font-size="12">🗂 セッション履歴</text>
+
+    <!-- サブタブ (解析設定 / データ管理) -->
+    <rect x="10" y="100" width="780" height="30" fill="#f8f9fa" stroke="#dee2e6"/>
+    <text x="30" y="120" fill="#764ba2" font-size="12" font-weight="bold">▼ 解析設定</text>
+    <text x="120" y="120" fill="#6c757d" font-size="12">データ管理</text>
+
+    <!-- サイドバー -->
+    <rect x="10" y="135" width="200" height="240" rx="6" fill="#f8f9fa" stroke="#dee2e6"/>
+    <text x="20" y="155" fill="#2c3e50" font-size="11" font-weight="bold">🎯 解析手法選択</text>
+    <rect x="20" y="160" width="180" height="20" fill="#fff" stroke="#667eea" stroke-width="1.5"/>
+    <text x="30" y="174" fill="#2c3e50" font-size="10">⚫ DESI UMAP</text>
+    <rect x="20" y="183" width="180" height="20" fill="#fff" stroke="#dee2e6"/>
+    <text x="30" y="197" fill="#6c757d" font-size="10">⚪ DESI ClusterFilter</text>
+    <rect x="20" y="206" width="180" height="20" fill="#fff" stroke="#dee2e6"/>
+    <text x="30" y="220" fill="#6c757d" font-size="10">⚪ TIMS UMAP</text>
+    <rect x="20" y="229" width="180" height="20" fill="#fff" stroke="#dee2e6"/>
+    <text x="30" y="243" fill="#6c757d" font-size="10">⚪ TIMS ClusterFilter</text>
+
+    <text x="20" y="278" fill="#2c3e50" font-size="11" font-weight="bold">📋 スクリプトパス</text>
+    <rect x="20" y="283" width="180" height="50" fill="#fff" stroke="#dee2e6"/>
+    <text x="30" y="300" fill="#6c757d" font-size="9">DESI_v8: ...</text>
+    <text x="30" y="315" fill="#6c757d" font-size="9">DESI_CF: ...</text>
+
+    <!-- メインパネル -->
+    <rect x="220" y="135" width="570" height="240" rx="6" fill="white" stroke="#dee2e6"/>
+    <text x="240" y="155" fill="#2c3e50" font-size="12" font-weight="bold">📁 データフォルダ・サンプル選択</text>
+    <rect x="240" y="160" width="450" height="22" fill="#f8f9fa" stroke="#ced4da"/>
+    <text x="250" y="176" fill="#2c3e50" font-size="11">/srv/msi/desi_data/sample_001</text>
+    <rect x="695" y="160" width="80" height="22" fill="#6c757d"/>
+    <text x="715" y="176" fill="white" font-size="11" font-weight="bold">📂 参照...</text>
+
+    <text x="240" y="205" fill="#2c3e50" font-size="11">☑ section_01  ☑ section_02  ☐ section_03</text>
+
+    <text x="240" y="232" fill="#2c3e50" font-size="12" font-weight="bold">🧪 解析パラメータ</text>
+    <text x="240" y="252" fill="#6c757d" font-size="11">m/z range: 100-1000   tolerance: 0.01</text>
+    <text x="240" y="270" fill="#6c757d" font-size="11">adduct: [+H +Na +NH4 +K]   ion mode: Positive</text>
+
+    <text x="240" y="298" fill="#2c3e50" font-size="12" font-weight="bold">📤 出力先</text>
+    <rect x="240" y="305" width="450" height="22" fill="#f8f9fa" stroke="#ced4da"/>
+    <text x="250" y="321" fill="#2c3e50" font-size="11">/srv/msi/output/myproject/</text>
+
+    <rect x="240" y="338" width="120" height="30" rx="4" fill="#667eea"/>
+    <text x="285" y="358" fill="white" font-size="13" font-weight="bold">▶ 解析実行</text>
+  </svg>
+  <div class="figure-caption">図3: 解析設定タブの画面構成（サイドバー + メインパネル）</div>
+</div>
+
+<h3 class="subsection-heading">主要な入力項目</h3>
+<table class="help-table">
+  <thead>
+    <tr><th>項目</th><th>用途</th><th>「参照...」ボタン</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>📁 データフォルダ</td><td>生データの場所</td><td>✅ ファイルブラウザ起動</td></tr>
+    <tr><td>📋 アノテーションファイル</td><td>m/z リスト (xlsx / csv)</td><td>✅</td></tr>
+    <tr><td>📤 出力先</td><td>解析結果の保存先</td><td>✅</td></tr>
+    <tr><td>☑ サンプル選択</td><td>解析対象切片の選択</td><td>自動列挙</td></tr>
+    <tr><td>⚙️ パラメータ</td><td>m/z範囲・tolerance等</td><td>直接入力</td></tr>
+  </tbody>
+</table>
+
+<div class="help-alert tip">
+  <div class="alert-title">💡 「参照...」ボタン + ショートカット</div>
+  ファイルブラウザモーダル上部に <strong>「DESI生データ / TIMS生データ / 解析出力 / アプリ内部データ」</strong>
+  のショートカットボタンが並んでいます。ワンクリックで対応する <code>/srv/msi/...</code> へジャンプできるので、
+  パスを毎回入力する必要はありません。
+</div>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="run">▶ 4. 解析実行 + 進捗確認</h2>
+
+<p>設定が終わったら <strong>▶ 解析実行</strong> ボタンをクリック。</p>
+
+<div class="ms-2">
+  <p><span class="step-badge">1</span> 実行ボタンが <strong>⏹ 実行停止</strong> に切り替わる</p>
+  <p><span class="step-badge">2</span> 進捗バー（緑色アニメーション）が表示される</p>
+  <p><span class="step-badge">3</span> 黒背景のログコンソールに R スクリプトの出力が流れる</p>
+  <p><span class="step-badge">4</span> セクション処理ごとに「N/M セクション」表示が更新</p>
+  <p><span class="step-badge">5</span> 完了すると進捗バーが消え、結果閲覧タブに自動切替</p>
+</div>
+
+<h3 class="subsection-heading">ログ表示の便利機能</h3>
+<div class="row g-3">
+  <div class="col-md-4">
+    <div class="ui-card">
+      <span class="icon">🔍</span>
+      <div class="name">検索</div>
+      <p class="small mb-0">ログ内文字列を絞り込み表示</p>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="ui-card">
+      <span class="icon">⚠️</span>
+      <div class="name">レベルフィルタ</div>
+      <p class="small mb-0">Error / Warning のみ表示</p>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="ui-card">
+      <span class="icon">📜</span>
+      <div class="name">行数選択</div>
+      <p class="small mb-0">50 / 100 / 200 / 全行</p>
+    </div>
+  </div>
+</div>
+
+<div class="help-alert warn">
+  <div class="alert-title">⚠️ 解析中の操作</div>
+  解析中もブラウザを閉じてOK。サーバー側でバックグラウンド処理が続行されます。
+  再度アクセスすると、完了済み or 進行中の状態が表示されます。
+  ただし <strong>「⏹ 実行停止」</strong> は他のメンバーには無効に見えるので、必要なら声掛けを。
+</div>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="results">📊 5. 結果閲覧タブ</h2>
+
+<p>解析完了後、自動的に「結果閲覧」タブに遷移します。表示内容:</p>
+
+<div class="row g-3">
+  <div class="col-md-6">
+    <div class="ui-card">
+      <span class="icon">🎯</span>
+      <div class="name">UMAPプロット</div>
+      <p class="small mb-0">2D空間に各ピクセルをマッピング。色はクラスタID。
+        ホバーでm/z値・座標を確認。</p>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="ui-card">
+      <span class="icon">🗺</span>
+      <div class="name">クラスタ画像</div>
+      <p class="small mb-0">組織切片上にクラスタを色塗り表示。
+        ピクセル単位の代謝物分布を可視化。</p>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="ui-card">
+      <span class="icon">📋</span>
+      <div class="name">代謝物リスト</div>
+      <p class="small mb-0">アノテーション付きの m/z 一覧。
+        強度・付加体・分子式・スコアで並び替え可。</p>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="ui-card">
+      <span class="icon">📥</span>
+      <div class="name">ダウンロード</div>
+      <p class="small mb-0">PNG / CSV / RDS をローカルに保存。
+        SFTPでフォルダごと取得もできる。</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="interactive">🎨 6. インタラクティブ解析</h2>
+
+<p>結果を見て「ここのクラスタをマージしたい」「色を変えたい」と思ったら、
+   <strong>インタラクティブタブ</strong> で対話的に修正できます。</p>
+
+<h3 class="subsection-heading">主な操作</h3>
+<table class="help-table">
+  <thead>
+    <tr><th>操作</th><th>やり方</th><th>用途</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>🖱 クラスタ選択</td><td>UMAPプロット上で囲み選択</td><td>特定クラスタを抽出</td></tr>
+    <tr><td>🎨 色変更</td><td>カラーピッカーで色指定</td><td>論文用に色を統一</td></tr>
+    <tr><td>🔗 マージ</td><td>複数クラスタ選択 → マージボタン</td><td>過分割の修正</td></tr>
+    <tr><td>✂️ 分割</td><td>クラスタ選択 → 再UMAP</td><td>過合併の修正</td></tr>
+    <tr><td>🚫 除外</td><td>クラスタ選択 → 除外ボタン</td><td>背景・ノイズ除去</td></tr>
+    <tr><td>💾 保存</td><td>「結果を保存」ボタン</td><td>新しいRDSとして書き出し</td></tr>
+  </tbody>
+</table>
+
+<div class="help-alert tip">
+  <div class="alert-title">💡 操作はサーバー側で逐次保存</div>
+  クラスタ操作の途中状態は自動的にサーバー側にキャッシュされます。
+  ブラウザを閉じて別のPCで再アクセスしても、続きから操作可能です。
+  ただし最終結果は <strong>「💾 結果を保存」</strong> ボタンで明示的にRDSに書き出す必要があります。
+</div>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="history">🗂 7. セッション履歴</h2>
+
+<p>過去の解析実行履歴を一覧表示します。各エントリには以下の情報:</p>
+<ul>
+  <li>実行日時 + 実行ユーザー</li>
+  <li>使用したパラメータ（m/z range, tolerance, adduct 等）</li>
+  <li>処理時間・出力先パス</li>
+  <li>「再実行」ボタン: 同じパラメータで再解析</li>
+  <li>「結果を開く」ボタン: 結果閲覧タブにジャンプ</li>
+</ul>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="errors">🛟 8. よくあるエラーと対処法</h2>
+
+<div class="row g-3">
+  <div class="col-md-6">
+    <div class="help-alert danger">
+      <div class="alert-title">🛑 Permission denied (/srv/msi/...)</div>
+      <p class="small mb-1"><strong>原因</strong>: ユーザーが <code>msi-lab</code> グループに属していない</p>
+      <p class="small mb-0"><strong>対処</strong>: 管理者に <code>sudo usermod -aG msi-lab &lt;username&gt;</code> を依頼 → 再ログイン</p>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="help-alert danger">
+      <div class="alert-title">🛑 対応ファイルが見つかりません</div>
+      <p class="small mb-1"><strong>原因</strong>: データフォルダのパスが間違っている／ファイル拡張子が想定外</p>
+      <p class="small mb-0"><strong>対処</strong>: 「参照...」→ショートカットで正しいパスを選び直す</p>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="help-alert danger">
+      <div class="alert-title">🛑 R script timeout</div>
+      <p class="small mb-1"><strong>原因</strong>: 大規模データで <code>R_ANALYSIS_TIMEOUT_SEC</code> 超過</p>
+      <p class="small mb-0"><strong>対処</strong>: <code>.env</code> の <code>R_ANALYSIS_TIMEOUT_SEC</code> を増やすか、サンプル数を減らす</p>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="help-alert danger">
+      <div class="alert-title">🛑 vector memory exhausted</div>
+      <p class="small mb-1"><strong>原因</strong>: Rのメモリ上限超過</p>
+      <p class="small mb-0"><strong>対処</strong>: <code>.env</code> の <code>R_MAX_VSIZE_GB</code> を増やす or Docker mem_limit を引き上げる</p>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="help-alert danger">
+      <div class="alert-title">🛑 編集ロック失効 (Lock expired)</div>
+      <p class="small mb-1"><strong>原因</strong>: 30秒間の無操作でロック自動解放</p>
+      <p class="small mb-0"><strong>対処</strong>: ページ再読み込み → ロック再取得 → 操作再開</p>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="help-alert danger">
+      <div class="alert-title">🛑 解析画面が真っ白</div>
+      <p class="small mb-1"><strong>原因</strong>: ブラウザキャッシュの古い JS が残存</p>
+      <p class="small mb-0"><strong>対処</strong>: <strong>Ctrl+Shift+R</strong> で強制再読込</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="faq">❓ 9. よくある質問 (FAQ)</h2>
+
+<div class="row g-3">
+  <div class="col-md-6">
+    <div class="ui-card">
+      <div class="name">❓ 解析の途中で停止できる？</div>
+      <p class="small">はい。実行中に表示される「⏹ 実行停止」ボタンで中断可能。
+        ただし途中までの出力ファイルは残らないことが多いです。</p>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="ui-card">
+      <div class="name">❓ 別のラボメンバーが解析中だと、自分も使える？</div>
+      <p class="small">使えます。各ユーザーのセッションは独立しており、別プロジェクトを同時に解析できます。
+        ただし同じプロジェクトの同じサブプロを編集すると、編集ロックが競合します。</p>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="ui-card">
+      <div class="name">❓ 結果をPNGでまとめてダウンロードしたい</div>
+      <p class="small">結果閲覧タブの「📥 全画像をダウンロード」または、SFTPで
+        <code>/srv/msi/output/&lt;プロジェクト名&gt;/</code> をフォルダごと取得。</p>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="ui-card">
+      <div class="name">❓ プロジェクト管理の使い方は？</div>
+      <p class="small">ランディングページでの操作（新規作成・復元・共有）は
+        <a href="/help/registration">🏠 登録画面ガイド</a> を参照。</p>
+    </div>
+  </div>
+</div>
+
+<hr class="my-5">
+<p class="text-center text-muted small">
+  操作上の疑問は <a href="/help/registration">🏠 登録画面ガイド</a> も合わせて参照してください。
+</p>
+
 {% endblock %}
