@@ -33,6 +33,31 @@ def _cal_preset_options():
 
 
 def create_settings_tab():
+    """設定タブ本体: 「解析設定」「データ管理」のサブタブで構成"""
+    return dbc.Tabs(
+        id="settings_subtabs",
+        active_tab="settings_subtab_analysis",
+        className="mt-2",
+        children=[
+            dbc.Tab(
+                label="解析設定",
+                tab_id="settings_subtab_analysis",
+                children=_create_analysis_settings_subtab(),
+            ),
+            dbc.Tab(
+                label="データ管理",
+                tab_id="settings_subtab_data",
+                children=html.Div(
+                    "（Step 5 で実装予定）",
+                    className="p-3 text-muted",
+                ),
+            ),
+        ],
+    )
+
+
+def _create_analysis_settings_subtab():
+    """解析設定サブタブ本体 (旧 create_settings_tab の中身)"""
     ls = load_last_settings()  # 前回の設定を復元
     return html.Div(className="card", style={"marginTop": "15px"}, children=[
         # UMAP解析設定（DESI/TIMS共通）
