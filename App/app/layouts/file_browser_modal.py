@@ -10,6 +10,8 @@ from pathlib import Path
 from dash import html, dcc
 import dash_bootstrap_components as dbc
 
+from app.config import BROWSER_SHORTCUTS
+
 
 def create_file_browser_modal():
     """ファイルブラウザモーダルのレイアウト"""
@@ -30,6 +32,23 @@ def create_file_browser_modal():
                             dbc.Input(id="fb_path_input", placeholder="パスを入力..."),
                             dbc.Button("移動", id="fb_go_btn", color="primary", size="sm"),
                         ]),
+                    ]),
+                ]),
+                # ショートカットバー: サーバー上の主要パスへワンクリック移動
+                dbc.Row(className="mb-2", children=[
+                    dbc.Col(width=12, children=[
+                        html.Small("ショートカット:", className="text-muted me-2"),
+                        *[
+                            dbc.Button(
+                                sc["label"],
+                                id={"type": "fb_shortcut", "path": sc["path"]},
+                                color="info",
+                                outline=True,
+                                size="sm",
+                                className="me-1",
+                            )
+                            for sc in BROWSER_SHORTCUTS
+                        ],
                     ]),
                 ]),
                 # パンくずナビ
