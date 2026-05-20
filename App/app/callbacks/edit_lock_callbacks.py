@@ -87,7 +87,7 @@ def acquire_lock_for_callback(
     """
     if not (rds_path and session_id):
         return False, "Unknown"
-    # 表示名は BasicAuth username 優先、なければ session_id ベース
+    # 表示名は Flask session analyst_name 優先、なければ session_id ベース
     # (Flask request context 外で呼ばれた場合は session_id ベースに fallback)
     try:
         user_display = get_display_name()

@@ -25,6 +25,71 @@ from app.layouts.tooltips import (
 )
 
 
+def _create_change_password_modal():
+    """パスワード変更モーダル (Tier A のみ。Master Password 必須)。"""
+    return dbc.Modal(
+        id="change_password_modal",
+        is_open=False,
+        centered=True,
+        children=[
+            dbc.ModalHeader(dbc.ModalTitle("パスワード変更")),
+            dbc.ModalBody([
+                html.Div(
+                    "Master Password を入力後、変更したいパスワードのみ入力してください。"
+                    "空欄のフィールドは更新されません。",
+                    className="text-muted small mb-3",
+                ),
+                dbc.Label("Master Password", className="small fw-bold"),
+                dbc.Input(
+                    id="cp_master",
+                    type="password",
+                    placeholder="サーバー管理者から提供",
+                    size="sm",
+                    className="mb-3",
+                ),
+                dbc.Label(
+                    "新しい Password A (空欄なら変更なし)",
+                    className="small fw-bold",
+                ),
+                dbc.Input(
+                    id="cp_new_a",
+                    type="password",
+                    placeholder="解析者用 (フル機能)",
+                    size="sm",
+                    className="mb-2",
+                ),
+                dbc.Label(
+                    "新しい Password B (空欄なら変更なし)",
+                    className="small fw-bold",
+                ),
+                dbc.Input(
+                    id="cp_new_b",
+                    type="password",
+                    placeholder="共有 URL 閲覧用",
+                    size="sm",
+                    className="mb-2",
+                ),
+                html.Div(id="cp_status", className="mt-2 small"),
+            ]),
+            dbc.ModalFooter([
+                dbc.Button(
+                    "キャンセル",
+                    id="cp_cancel_btn",
+                    color="secondary",
+                    outline=True,
+                    size="sm",
+                ),
+                dbc.Button(
+                    "保存",
+                    id="cp_submit_btn",
+                    color="primary",
+                    size="sm",
+                ),
+            ]),
+        ],
+    )
+
+
 def _create_preset_modal():
     """プリセット管理モーダル"""
     return dbc.Modal(
@@ -79,6 +144,12 @@ def create_main_layout():
         dcc.Location(id="url_bar", refresh=False),
         dcc.Store(id="share_token", data=""),
 
+        # ========== 認証情報 (clientside callback で /api/whoami から読み込み) ==========
+        dcc.Store(id="current_analyst", data={"name": "", "tier": ""}),
+
+        # ========== パスワード変更モーダル (Tier A のみ操作可) ==========
+        _create_change_password_modal(),
+
         # ========== ページ状態管理 ==========
         dcc.Store(id="current_page", data="landing"),
         dcc.Store(id="selected_project", data={}),
@@ -131,11 +202,32 @@ def create_main_layout():
                                                 "データ解析システム",
                                             ),
                                         ]),
-                                        dbc.Button(
-                                            "< プロジェクトに戻る",
-                                            id="back_to_action_from_analysis",
-                                            color="light",
-                                            size="sm",
+                                        html.Div(
+                                            style={
+                                                "display": "flex",
+                                                "gap": "8px",
+                                                "alignItems": "center",
+                                            },
+                                            children=[
+                                                html.Span(
+                                                    id="header_analyst_label_analysis",
+                                                    className="text-muted small",
+                                                ),
+                                                html.A(
+                                                    "ログアウト",
+                                                    href="/logout",
+                                                    className=(
+                                                        "btn btn-outline-secondary"
+                                                        " btn-sm"
+                                                    ),
+                                                ),
+                                                dbc.Button(
+                                                    "< プロジェクトに戻る",
+                                                    id="back_to_action_from_analysis",
+                                                    color="light",
+                                                    size="sm",
+                                                ),
+                                            ],
                                         ),
                                     ],
                                 ),

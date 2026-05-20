@@ -13,7 +13,13 @@ services:
       - R_HOME=/usr/lib/R
       - APP_HOST=0.0.0.0
       - APP_PORT=3838
-      - APP_PASSWORD=${APP_PASSWORD:-}
+      # 認証 (Tier A: 解析者用 / Tier B: 共有 URL 閲覧用 / Master: 変更権限)
+      - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-}
+      - MASTER_PASSWORD=${MASTER_PASSWORD:-}
+      - INITIAL_PASSWORD_A=${INITIAL_PASSWORD_A:-}
+      - INITIAL_PASSWORD_B=${INITIAL_PASSWORD_B:-}
+      - SESSION_COOKIE_MAX_AGE_SEC=${SESSION_COOKIE_MAX_AGE_SEC:-86400}
+      - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-}
       - SHARE_BASE_URL=${SHARE_BASE_URL:-}
       # 生データ外部パス (.env で上書き可。未設定時は named volume にフォールバック)
       - DESI_DATA_DIR=/app/Data/DESI/Data
@@ -25,6 +31,8 @@ services:
       - msi-presets:/app/Data/Other/presets
       - msi-shares:/app/Data/Other/shares
       - msi-cache:/app/Data/Other/cache
+      # 認証設定 (auth.json: bcrypt ハッシュ + password_version)
+      - msi-common:/app/Data/Other/common
       # 解析データ（ユーザーがアップロード）
       # .env で DESI_DATA_HOST / TIMS_DATA_HOST を指定すればホストの固定パスをマウント
       - ${DESI_DATA_HOST:-msi-desi-data}:/app/Data/DESI/Data
@@ -47,6 +55,7 @@ volumes:
   msi-presets:
   msi-shares:
   msi-cache:
+  msi-common:
   msi-desi-data:
   msi-tims-data:
   msi-output:

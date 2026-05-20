@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ログイン - MSI Analysis</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootswatch@5.3.3/dist/flatly/bootstrap.min.css">
+  <style>
+    body { background: #f6f8fa; }
+    .login-card {
+      max-width: 420px;
+      margin: 80px auto;
+      padding: 32px 28px;
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+    }
+    .login-card h3 { margin-bottom: 4px; }
+    .login-card .subtitle {
+      color: #6c757d;
+      font-size: 0.9rem;
+      margin-bottom: 24px;
+    }
+    .badge-tier {
+      font-size: 0.78rem;
+      padding: 3px 8px;
+      margin-right: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div class="login-card">
+    <h3>MSI Analysis</h3>
+    <div class="subtitle">解析者名とパスワードを入力してください</div>
+
+    {% if error %}
+    <div class="alert alert-danger" role="alert">{{ error }}</div>
+    {% endif %}
+
+    <form method="POST" action="/login" novalidate>
+      <input type="hidden" name="next" value="{{ next_url|default('/') }}">
+
+      <div class="mb-3">
+        <label for="analyst_name" class="form-label">
+          解析者名 <span class="text-danger">*</span>
+        </label>
+        <input
+          type="text"
+          class="form-control"
+          id="analyst_name"
+          name="analyst_name"
+          maxlength="50"
+          required
+          autofocus
+          autocomplete="username">
+        <div class="form-text">
+          あなたの名前 (1-50 文字)。操作ログに記録されます。
+        </div>
+      </div>
+
+      <div class="mb-3">
+        <label for="password" class="form-label">
+          パスワード <span class="text-danger">*</span>
+        </label>
+        <input
+          type="password"
+          class="form-control"
+          id="password"
+          name="password"
+          required
+          autocomplete="current-password">
+        <div class="form-text">
+          <span class="badge bg-primary badge-tier">A</span>解析者用 /
+          <span class="badge bg-secondary badge-tier">B</span>共有 URL 閲覧用
+          のいずれかを入力。
+        </div>
+      </div>
+
+      <button type="submit" class="btn btn-primary w-100">ログイン</button>
+    </form>
+  </div>
+</body>
+</html>

@@ -1,12 +1,8 @@
 """匿名 Cookie セッション ID 管理。
 
 ログイン不要で、各ブラウザに UUID を発行して識別する。
-複数ユーザーが同じ BasicAuth パスワードでアクセスしても、ブラウザ毎に
-異なる session_id を持つため UI ロックの「誰が編集中」を判別可能。
-
-使用例:
-    sid = get_or_create_session_id()  # Flask request コンテキスト内で呼出
-    display = short_display_id(sid)   # "User abc12"
+UI ロックや diskcache のキーに使われる「ブラウザ識別子」であり、
+Flask の認証セッション (analyst_name) とは独立。
 """
 from __future__ import annotations
 
@@ -14,7 +10,7 @@ import os
 import uuid
 from typing import Optional
 
-from flask import after_this_request, request
+from flask import after_this_request, request, session
 
 COOKIE_NAME = "msi_session_id"
 # COOKIE_MAX_AGE は環境変数で上書き可能。デフォルト 1 日 (86400 秒)。
@@ -84,38 +80,16 @@ def get_display_name() -> str:
     """現在のリクエストの「表示用ユーザー名」を取得。
 
     優先順位:
-    1. BasicAuth 認証済みの場合 → authorization.username（例: "alice"）
+    1. Flask session に保存された解析者名 (ログイン時に入力)
     2. session_id Cookie があれば → "User abcde"（先頭 5 文字）
     3. それも無ければ → "Unknown user"
 
-    Flask request context 内でのみ呼び出し可能。
-    Context 外で呼ばれた場合も短縮 ID 返却で例外を投げない。
+    Flask request context 外で呼ばれた場合も例外を投げない。
     """
     try:
-        auth = request.authorization
-        if auth and auth.username:
-            return auth.username
-    except (RuntimeError, AttributeError):
+        name = session.get("analyst_name")
+        if name:
+            return str(name)
+    except RuntimeError:
         pass
     return short_display_id(get_session_id_or_none())
-
-
-def parse_app_users(s: str) -> dict[str, str]:
-    """APP_USERS 環境変数をパース。
-
-    形式: 'alice:pw1,bob:pw2,charlie:pw3'
-    Returns: {"alice": "pw1", "bob": "pw2", "charlie": "pw3"}
-
-    不正な形式（コロン無し / 空のユーザー or パスワード）はスキップ。
-    """
-    if not s:
-        return {}
-    result: dict[str, str] = {}
-    for pair in s.split(","):
-        pair = pair.strip()
-        if ":" in pair:
-            u, p = pair.split(":", 1)
-            u, p = u.strip(), p.strip()
-            if u and p:
-                result[u] = p
-    return result
