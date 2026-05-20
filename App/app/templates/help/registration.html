@@ -1,0 +1,360 @@
+{% extends "help/base.html" %}
+
+{% block title %}登録画面ガイド | MSI Analysis App{% endblock %}
+{% block header_subtitle %}🏠 登録画面（プロジェクト管理）の使い方{% endblock %}
+{% block nav_reg %}active{% endblock %}
+
+{% block content %}
+
+<div class="help-alert tip">
+  <div class="alert-title">💡 このページについて</div>
+  ログイン直後に表示される「登録画面（ランディングページ）」の使い方をまとめています。
+  プロジェクトの作成・サブプロジェクトの管理・復元・共有URL発行などはここで行います。
+</div>
+
+<div class="toc">
+  <h3>📑 目次</h3>
+  <ol>
+    <li><a href="#intro">🌟 はじめに</a></li>
+    <li><a href="#login">🔐 ログイン</a></li>
+    <li><a href="#layout">🏠 画面構成</a></li>
+    <li><a href="#create-project">➕ プロジェクト新規作成</a></li>
+    <li><a href="#sub-project">📂 サブプロジェクト管理</a></li>
+    <li><a href="#search">🔍 検索・フィルタ</a></li>
+    <li><a href="#restore">📥 復元（データ管理サブタブ）</a></li>
+    <li><a href="#share">🔗 共有URL発行</a></li>
+    <li><a href="#faq">❓ FAQ</a></li>
+  </ol>
+</div>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="intro">🌟 1. はじめに</h2>
+
+<p>
+  MSI Analysis Application は、<strong>質量分析イメージング (Mass Spectrometry Imaging)</strong>
+  の生データを統計的に処理し、組織切片上の代謝物分布を UMAP / DBSCAN 等で可視化するための
+  Webアプリケーションです。
+</p>
+
+<h3 class="subsection-heading">📖 用語ミニ辞書</h3>
+<table class="help-table">
+  <thead>
+    <tr><th>用語</th><th>意味</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>🧬 <strong>DESI</strong></td><td>Desorption Electrospray Ionization。常圧下で組織片に溶媒スプレーを当てて分析する手法</td></tr>
+    <tr><td>⚡ <strong>TIMS</strong></td><td>Trapped Ion Mobility Spectrometry。イオンの移動度で分離する手法</td></tr>
+    <tr><td>🗂 <strong>プロジェクト</strong></td><td>研究テーマ単位。サブプロジェクトを束ねる箱</td></tr>
+    <tr><td>📊 <strong>サブプロジェクト</strong></td><td>個別の解析実行単位。1サブプロ＝1解析結果</td></tr>
+    <tr><td>📁 <strong>生データ</strong></td><td>.imzML / .ibd / .d などの未加工データ</td></tr>
+    <tr><td>📈 <strong>UMAP</strong></td><td>次元削減アルゴリズム。代謝物パターンをクラスタリング</td></tr>
+  </tbody>
+</table>
+
+<div class="help-alert tip">
+  <div class="alert-title">💡 全体の流れ</div>
+  <strong>① ログイン</strong> → <strong>② プロジェクト作成</strong> →
+  <strong>③ サブプロジェクト追加</strong> → <strong>④ 解析実行</strong> →
+  <strong>⑤ 結果閲覧・共有</strong>
+</div>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="login">🔐 2. ログイン</h2>
+
+<p>アプリには <strong>2段階のパスワード認証</strong> があります:</p>
+
+<div class="row g-3">
+  <div class="col-md-6">
+    <div class="ui-card">
+      <span class="icon">🔬</span>
+      <div class="name">Tier A: 解析者用</div>
+      <p class="small mb-0">プロジェクトの作成・編集・解析実行など、すべての機能が使えます。
+        ラボのメンバーはこちらを使用します。</p>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="ui-card">
+      <span class="icon">👀</span>
+      <div class="name">Tier B: 閲覧用</div>
+      <p class="small mb-0">共有URL (<code>/share/&lt;token&gt;</code>) の結果のみ閲覧可能。
+        ラボ外の協力者に結果だけ見せたい時に使用。</p>
+    </div>
+  </div>
+</div>
+
+<div class="help-alert warn">
+  <div class="alert-title">⚠️ パスワード変更</div>
+  初回ログイン後は速やかに、ヘッダー右上の「<strong>パスワード変更</strong>」ボタンから
+  自分専用のパスワードに変更してください。
+  変更には <strong>Master Password</strong>（サーバー管理者から共有）が必要です。
+</div>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="layout">🏠 3. 画面構成</h2>
+
+<p>ログイン後のランディングページは以下の4エリアに分かれています:</p>
+
+<div class="figure-frame">
+  <svg viewBox="0 0 800 460" xmlns="http://www.w3.org/2000/svg">
+    <!-- ヘッダー -->
+    <defs>
+      <linearGradient id="hdrGrad" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stop-color="#667eea"/>
+        <stop offset="100%" stop-color="#764ba2"/>
+      </linearGradient>
+    </defs>
+    <rect x="10" y="10" width="780" height="70" rx="6" fill="url(#hdrGrad)"/>
+    <text x="30" y="40" fill="white" font-size="18" font-weight="bold">MSI Analysis Application</text>
+    <text x="30" y="62" fill="#e0e0ff" font-size="12">質量分析イメージングデータ解析システム</text>
+    <rect x="540" y="25" width="80" height="28" rx="4" fill="rgba(255,255,255,0.2)"/>
+    <text x="555" y="44" fill="white" font-size="11">パスワード変更</text>
+    <rect x="630" y="25" width="60" height="28" rx="4" fill="rgba(255,193,7,0.3)" stroke="#ffc107" stroke-width="1.5"/>
+    <text x="643" y="44" fill="white" font-size="11" font-weight="bold">❓ ヘルプ</text>
+    <rect x="700" y="25" width="70" height="28" rx="4" fill="rgba(255,255,255,0.2)"/>
+    <text x="715" y="44" fill="white" font-size="11">ログアウト</text>
+    <!-- 検索・新規作成バー -->
+    <rect x="10" y="95" width="780" height="50" rx="6" fill="#fff" stroke="#dee2e6"/>
+    <text x="30" y="125" fill="#2c3e50" font-size="14" font-weight="bold">📋 プロジェクト一覧</text>
+    <rect x="220" y="108" width="320" height="28" rx="4" fill="#f8f9fa" stroke="#ced4da"/>
+    <text x="235" y="127" fill="#6c757d" font-size="12">🔍 プロジェクト名で検索...</text>
+    <rect x="600" y="108" width="100" height="28" rx="4" fill="#28a745"/>
+    <text x="615" y="127" fill="white" font-size="11" font-weight="bold">➕ 新規作成</text>
+    <rect x="710" y="108" width="70" height="28" rx="4" fill="#17a2b8"/>
+    <text x="722" y="127" fill="white" font-size="11">📥 復元</text>
+    <!-- プロジェクトカード一覧 -->
+    <rect x="10" y="160" width="252" height="130" rx="8" fill="white" stroke="#667eea" stroke-width="2"/>
+    <text x="25" y="185" fill="#764ba2" font-size="14" font-weight="bold">🧬 マウス脳切片解析</text>
+    <text x="25" y="205" fill="#6c757d" font-size="11">作成日: 2026/05/15</text>
+    <text x="25" y="222" fill="#6c757d" font-size="11">サブプロジェクト: 3 件</text>
+    <text x="25" y="245" fill="#2c3e50" font-size="11">小腸組織のリピド分布解析</text>
+    <rect x="25" y="260" width="55" height="22" rx="3" fill="#667eea"/>
+    <text x="35" y="275" fill="white" font-size="10">📂 開く</text>
+    <rect x="90" y="260" width="55" height="22" rx="3" fill="#fff" stroke="#6c757d"/>
+    <text x="100" y="275" fill="#6c757d" font-size="10">✏ 編集</text>
+    <rect x="155" y="260" width="55" height="22" rx="3" fill="#fff" stroke="#dc3545"/>
+    <text x="167" y="275" fill="#dc3545" font-size="10">🗑 削除</text>
+
+    <rect x="274" y="160" width="252" height="130" rx="8" fill="white" stroke="#dee2e6"/>
+    <text x="289" y="185" fill="#764ba2" font-size="14" font-weight="bold">⚗ ヒト腎臓代謝解析</text>
+    <text x="289" y="205" fill="#6c757d" font-size="11">作成日: 2026/05/10</text>
+    <text x="289" y="222" fill="#6c757d" font-size="11">サブプロジェクト: 5 件</text>
+
+    <rect x="538" y="160" width="252" height="130" rx="8" fill="white" stroke="#dee2e6"/>
+    <text x="553" y="185" fill="#764ba2" font-size="14" font-weight="bold">🍃 植物アルカロイド</text>
+    <text x="553" y="205" fill="#6c757d" font-size="11">作成日: 2026/04/22</text>
+    <text x="553" y="222" fill="#6c757d" font-size="11">サブプロジェクト: 2 件</text>
+
+    <!-- 注釈 -->
+    <text x="20" y="320" fill="#e74c3c" font-size="12" font-weight="bold">① ヘッダー: アプリ全体の操作 (パスワード変更・ヘルプ・ログアウト)</text>
+    <text x="20" y="345" fill="#e74c3c" font-size="12" font-weight="bold">② 検索バー＋アクション: プロジェクトの検索・新規作成・復元</text>
+    <text x="20" y="370" fill="#e74c3c" font-size="12" font-weight="bold">③ プロジェクトカード一覧: 各プロジェクトを開閉・編集・削除</text>
+    <text x="20" y="395" fill="#e74c3c" font-size="12" font-weight="bold">④ プロジェクトを「開く」→ サブプロジェクト一覧画面へ遷移</text>
+  </svg>
+  <div class="figure-caption">図1: ランディングページの画面構成</div>
+</div>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="create-project">➕ 4. プロジェクト新規作成</h2>
+
+<p>新しい研究テーマを始める時の手順:</p>
+
+<div class="ms-2">
+  <p><span class="step-badge">1</span> 検索バー右の <strong>「➕ 新規作成」</strong> ボタンをクリック</p>
+  <p><span class="step-badge">2</span> モーダルダイアログが表示される</p>
+  <p><span class="step-badge">3</span> 以下を入力:</p>
+  <table class="help-table ms-4" style="width: auto;">
+    <thead>
+      <tr><th>項目</th><th>例</th><th>必須</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>プロジェクト名</td><td>マウス脳代謝解析_2026</td><td>✅</td></tr>
+      <tr><td>実験日</td><td>2026-05-20</td><td>⚪</td></tr>
+      <tr><td>メモ</td><td>C57BL/6J雄6週齢 5匹</td><td>⚪</td></tr>
+    </tbody>
+  </table>
+  <p><span class="step-badge">4</span> <strong>「作成」</strong> をクリック → プロジェクト一覧に追加される</p>
+</div>
+
+<div class="help-alert tip">
+  <div class="alert-title">💡 命名のコツ</div>
+  プロジェクト名は <strong>テーマ＋年月</strong> など、後で判別しやすい名前に。
+  実際のサンプル名はサブプロジェクト側で管理するので、ここはざっくりでOK。
+</div>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="sub-project">📂 5. サブプロジェクト管理</h2>
+
+<p>プロジェクトカードの <strong>「📂 開く」</strong> をクリックすると、
+   そのプロジェクトに属する <strong>サブプロジェクト一覧画面</strong> に遷移します。</p>
+
+<h3 class="subsection-heading">サブプロジェクトとは？</h3>
+<p>1つの実験（プロジェクト）の中で、サンプルや切片ごとに解析結果を分けて保管する単位です。</p>
+
+<div class="row g-3 my-3">
+  <div class="col-md-4">
+    <div class="ui-card">
+      <span class="icon">➕</span>
+      <div class="name">新規サブプロジェクト</div>
+      <p class="small mb-0">サンプル名・実験日・対象化合物・MS装置名などを入力して作成</p>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="ui-card">
+      <span class="icon">⚙️</span>
+      <div class="name">解析実行</div>
+      <p class="small mb-0">サブプロを開くと「解析画面」に遷移。データフォルダ指定→▶実行</p>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="ui-card">
+      <span class="icon">🔗</span>
+      <div class="name">共有・編集</div>
+      <p class="small mb-0">結果が出たら共有URL発行、または名前・メモを後から編集可能</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="search">🔍 6. 検索・フィルタ</h2>
+
+<p>プロジェクトが多くなってきたら、検索バーで絞り込みできます:</p>
+<ul>
+  <li>プロジェクト名の <strong>部分一致</strong> で即座にフィルタ</li>
+  <li>大文字小文字を区別しない</li>
+  <li>日本語・英数字両対応</li>
+  <li>検索キーワードを消すと全件表示に戻る</li>
+</ul>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="restore">📥 7. 復元（データ管理サブタブ）</h2>
+
+<p>
+  アプリのアップデートや別マシンへの移行時、<code>projects.json</code> がリセットされても
+  <strong>解析出力フォルダ内の <code>_project_meta.json</code> から自動復元</strong> できます。
+</p>
+
+<div class="figure-frame">
+  <svg viewBox="0 0 800 320" xmlns="http://www.w3.org/2000/svg">
+    <!-- ステージ1: SFTPアップ -->
+    <rect x="10" y="40" width="170" height="80" rx="8" fill="#e3f2fd" stroke="#1976d2" stroke-width="2"/>
+    <text x="95" y="65" text-anchor="middle" fill="#1976d2" font-size="13" font-weight="bold">① SFTP アップ</text>
+    <text x="95" y="85" text-anchor="middle" fill="#1976d2" font-size="11">WinSCP / Cyberduck</text>
+    <text x="95" y="103" text-anchor="middle" fill="#1976d2" font-size="11">→ /srv/msi/desi_data/</text>
+
+    <!-- 矢印 -->
+    <line x1="180" y1="80" x2="220" y2="80" stroke="#5e72e4" stroke-width="2"/>
+    <polygon points="215,75 225,80 215,85" fill="#5e72e4"/>
+
+    <!-- ステージ2: 解析実行 -->
+    <rect x="230" y="40" width="170" height="80" rx="8" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="2"/>
+    <text x="315" y="65" text-anchor="middle" fill="#7b1fa2" font-size="13" font-weight="bold">② 解析実行</text>
+    <text x="315" y="85" text-anchor="middle" fill="#7b1fa2" font-size="11">出力に</text>
+    <text x="315" y="103" text-anchor="middle" fill="#7b1fa2" font-size="11">_project_meta.json 生成</text>
+
+    <!-- 矢印 -->
+    <line x1="400" y1="80" x2="440" y2="80" stroke="#5e72e4" stroke-width="2"/>
+    <polygon points="435,75 445,80 435,85" fill="#5e72e4"/>
+
+    <!-- ステージ3: スキャン -->
+    <rect x="450" y="40" width="170" height="80" rx="8" fill="#fff3e0" stroke="#f57c00" stroke-width="2"/>
+    <text x="535" y="65" text-anchor="middle" fill="#f57c00" font-size="13" font-weight="bold">③ 復元スキャン</text>
+    <text x="535" y="85" text-anchor="middle" fill="#f57c00" font-size="11">データ管理タブ →</text>
+    <text x="535" y="103" text-anchor="middle" fill="#f57c00" font-size="11">「🔍 出力をスキャン」</text>
+
+    <!-- 矢印 -->
+    <line x1="620" y1="80" x2="660" y2="80" stroke="#5e72e4" stroke-width="2"/>
+    <polygon points="655,75 665,80 655,85" fill="#5e72e4"/>
+
+    <!-- ステージ4: 復元 -->
+    <rect x="670" y="40" width="120" height="80" rx="8" fill="#e8f5e9" stroke="#388e3c" stroke-width="2"/>
+    <text x="730" y="65" text-anchor="middle" fill="#388e3c" font-size="13" font-weight="bold">④ 復元</text>
+    <text x="730" y="85" text-anchor="middle" fill="#388e3c" font-size="11">「↩ 復元」</text>
+    <text x="730" y="103" text-anchor="middle" fill="#388e3c" font-size="11">ワンクリック</text>
+
+    <!-- 復元後の効果 -->
+    <rect x="10" y="170" width="780" height="100" rx="8" fill="#fff" stroke="#dee2e6" stroke-dasharray="4,4"/>
+    <text x="400" y="195" text-anchor="middle" fill="#2c3e50" font-size="14" font-weight="bold">復元の効果</text>
+    <text x="400" y="220" text-anchor="middle" fill="#6c757d" font-size="12">✅ プロジェクト一覧に自動追加 (projects.json が再構築)</text>
+    <text x="400" y="240" text-anchor="middle" fill="#6c757d" font-size="12">✅ サブプロジェクトのデータパス・出力パスが現環境に自動補正 (path_resolver)</text>
+    <text x="400" y="260" text-anchor="middle" fill="#6c757d" font-size="12">✅ 既存の結果ファイル (RDS / PNG / CSV) は元の場所に保持されたまま、再利用可能</text>
+  </svg>
+  <div class="figure-caption">図2: アプリ更新後のワンクリック復元フロー</div>
+</div>
+
+<h3 class="subsection-heading">復元手順</h3>
+<ol>
+  <li>プロジェクトを <strong>開く</strong> → 「解析設定」タブ → サブタブ <strong>「データ管理」</strong> をクリック</li>
+  <li>セクション3 <strong>「📥 検出済みプロジェクトと復元」</strong> までスクロール</li>
+  <li><strong>「🔍 出力フォルダをスキャン」</strong> をクリック</li>
+  <li>検出されたサブプロジェクトのリストが表示される</li>
+  <li>復元したい項目の右側 <strong>「↩ 復元」</strong> をクリック</li>
+  <li>ランディングページに自動的に追加され、トースト通知が出る</li>
+</ol>
+
+<div class="help-alert tip">
+  <div class="alert-title">💡 別マシンからのデータ移行にも有効</div>
+  別PCで解析した結果（出力フォルダごと持参）を新環境に取り込むときも、
+  この手順で <code>_project_meta.json</code> をスキャンするだけで丸ごと取り込めます。
+</div>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="share">🔗 8. 共有URL発行</h2>
+
+<p>解析結果を <strong>ラボ外の協力者</strong> と共有したい場合:</p>
+
+<ol>
+  <li>共有したいサブプロジェクトを開く（解析画面に遷移）</li>
+  <li>右上または結果閲覧タブの <strong>「🔗 共有URL発行」</strong> ボタンをクリック</li>
+  <li>有効期限（既定30日）を選択</li>
+  <li>生成された URL（例: <code>https://msi.example.com/share/abc123...</code>）をコピー</li>
+  <li>協力者に Slack / メール で送る → 協力者は Tier B パスワードでログイン → 結果閲覧のみ可能</li>
+</ol>
+
+<div class="help-alert warn">
+  <div class="alert-title">⚠️ 共有URLの取り扱い</div>
+  共有URLは <strong>トークンを知っている人なら誰でも</strong>（Tier Bログイン後に）閲覧可能です。
+  論文投稿前など機密性の高い結果を扱う場合は、有効期限を短く設定するか、不要になったら
+  該当サブプロのページから「無効化」してください。
+</div>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="faq">❓ 9. よくある質問 (FAQ)</h2>
+
+<div class="row g-3">
+  <div class="col-md-6">
+    <div class="ui-card">
+      <div class="name">❓ プロジェクトを間違えて削除した</div>
+      <p class="small">「データ管理」タブの「復元」機能で、出力フォルダから自動復元できます。
+        ※削除後すぐであれば、起動時バックアップ (<code>Data/Other/projects/backups/</code>)
+        からの復元も可能（管理者対応）。</p>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="ui-card">
+      <div class="name">❓ プロジェクト名は後から変えられる？</div>
+      <p class="small">はい。プロジェクトカードの「✏ 編集」ボタンから変更可能。
+        サブプロジェクトと既存の解析結果はそのまま維持されます。</p>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="ui-card">
+      <div class="name">❓ 他のラボメンバーと同時に編集できる？</div>
+      <p class="small">基本可能ですが、同じサブプロジェクトを同時に編集すると競合します。
+        編集ロック機能で30秒間の排他制御が入ります（離席すると自動解除）。</p>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="ui-card">
+      <div class="name">❓ 解析画面の使い方は？</div>
+      <p class="small">サブプロジェクトを開いた後の「解析画面」の使い方は、
+        <a href="/help/analysis">⚙️ 解析画面ガイド</a> を参照してください。</p>
+    </div>
+  </div>
+</div>
+
+<hr class="my-5">
+<p class="text-center text-muted small">
+  続いて <a href="/help/analysis">⚙️ 解析画面の使い方</a> も読んで、データ解析を始めてみましょう。
+</p>
+
+{% endblock %}

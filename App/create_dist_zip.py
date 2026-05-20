@@ -8,9 +8,12 @@ MSI_Analysis_App_v2.3.0.zip を生成します。
 
 ZIP 構造:
     MSI_Analysis_App_v2.3.0/
-        manual.html, SETUP_GUIDE.html, images/   ← ルート直下
+        SETUP_GUIDE.html, images/                ← ルート直下
         App/                                     ← 差し替え対象
             run_app.sh, setup.sh, ...
+
+取扱説明書 (旧 manual.html) は廃止され、アプリ起動後に
+/help/registration および /help/analysis でブラウザ別タブから閲覧可能です。
 
 解凍後は App/ を既存の App/ に上書きするだけで更新完了です。
 Data/ 配下のユーザデータ・キャッシュ・ログ等は含まれません。
@@ -59,8 +62,8 @@ INCLUDE_DIRS = [
 ]
 
 # プロジェクトルート直下で ZIP に含めるファイル (App と同階層に展開)
+# 取扱説明書はアプリ内 /help/* で配信するため manual.html は配布物から除外
 ROOT_INCLUDE_FILES = [
-    "manual.html",
     "SETUP_GUIDE.html",
     "run_app.bat",
     "run_app.sh",

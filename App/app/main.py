@@ -225,6 +225,24 @@ from app.services.auth_middleware import register as register_auth  # noqa: E402
 auth_service.init_from_env()
 register_auth(server)
 
+
+# ヘルプページ（取扱説明書）: 認証不要
+# auth_middleware._BYPASS_PREFIXES に "/help/" を登録済み
+from flask import render_template as _render_template  # noqa: E402
+
+
+@server.route("/help/registration")
+def _help_registration():
+    """登録画面（ランディングページ）の取扱説明書を別タブで表示"""
+    return _render_template("help/registration.html")
+
+
+@server.route("/help/analysis")
+def _help_analysis():
+    """解析画面の取扱説明書を別タブで表示"""
+    return _render_template("help/analysis.html")
+
+
 # レイアウト設定
 app.layout = create_main_layout()
 
@@ -246,6 +264,7 @@ from app.callbacks import lite_view_callbacks  # noqa: E402, F401
 from app.callbacks import rds_maintenance_callbacks  # noqa: E402, F401
 from app.callbacks import edit_lock_callbacks  # noqa: E402, F401
 from app.callbacks import auth_callbacks  # noqa: E402, F401
+from app.callbacks import data_management_callbacks  # noqa: E402, F401
 
 if __name__ == "__main__":
     # Docker CMD は run_app.py 経由。ここは bare-metal 開発用のフォールバック。

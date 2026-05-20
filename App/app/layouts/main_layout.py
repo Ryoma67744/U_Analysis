@@ -214,6 +214,16 @@ def create_main_layout():
                                                     className="text-muted small",
                                                 ),
                                                 html.A(
+                                                    "❓ ヘルプ",
+                                                    href="/help/analysis",
+                                                    target="_blank",
+                                                    rel="noopener noreferrer",
+                                                    title="解析画面の取扱説明書を別タブで開く",
+                                                    className=(
+                                                        "btn btn-outline-info btn-sm"
+                                                    ),
+                                                ),
+                                                html.A(
                                                     "ログアウト",
                                                     href="/logout",
                                                     className=(

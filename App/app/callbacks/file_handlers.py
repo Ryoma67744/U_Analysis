@@ -12,7 +12,7 @@ from dash import dcc
 from app.config import (
     DEFAULT_DESI_DATA_FOLDER, DEFAULT_ANNOTATION_FILE_PATH,
     DEFAULT_TIMS_DATA_FOLDER, DEFAULT_ANNOTATION_CSV_PATH,
-    DESI_DATA_DIR, TIMS_DATA_DIR, APP_BASE_DIR,
+    DESI_DATA_DIR, TIMS_DATA_DIR, OUTPUT_DATA_DIR, APP_BASE_DIR,
     DESI_V8_TEMPLATE_PATH, DESI_CLUSTER_FILTER_PATH,
     TIMS_V8_TEMPLATE_PATH, TIMS_CLUSTER_FILTER_PATH,
 )
@@ -579,17 +579,20 @@ _BROWSE_BUTTONS = {
 _ALL_TARGET_IDS = list(dict.fromkeys(v[1] for v in _BROWSE_BUTTONS.values()))
 
 # target_id → デフォルト起点ディレクトリのマッピング
-# (環境変数 DESI_DATA_DIR / TIMS_DATA_DIR が優先される)
+# (環境変数 DESI_DATA_DIR / TIMS_DATA_DIR / OUTPUT_DATA_DIR が優先される)
 _DEFAULT_START_DIR = {
     "data_folder": DESI_DATA_DIR,
     "default_desi_data_folder": DESI_DATA_DIR,
-    "default_desi_output_dir": DESI_DATA_DIR,
+    "default_desi_output_dir": OUTPUT_DATA_DIR,
     "reanalysis_data_folder": DESI_DATA_DIR,
     "default_tims_data_folder": TIMS_DATA_DIR,
-    "default_tims_output_dir": TIMS_DATA_DIR,
+    "default_tims_output_dir": OUTPUT_DATA_DIR,
     "scils_output_folder": TIMS_DATA_DIR,
     "env_tims_data_dir": TIMS_DATA_DIR,
     "env_desi_data_dir": DESI_DATA_DIR,
+    "output_dir": OUTPUT_DATA_DIR,
+    "default_output_dir": OUTPUT_DATA_DIR,
+    "restore_scan_folder": OUTPUT_DATA_DIR,
 }
 
 # dcc.Store は "data" プロパティ、dbc.Input/dcc.Input は "value" プロパティ
@@ -788,6 +791,26 @@ def apply_file_browser_selection(n_clicks, state):
 )
 def close_file_browser(n):
     return False
+
+
+# ショートカットボタン押下 → fb_state.current_dir を指定パスに切替
+# 既存の update_file_browser が fb_state を Input にしているため、
+# state を更新するだけで一覧が再描画される。
+@callback(
+    Output("fb_state", "data", allow_duplicate=True),
+    Input({"type": "fb_shortcut", "path": ALL}, "n_clicks"),
+    State("fb_state", "data"),
+    prevent_initial_call=True,
+)
+def handle_fb_shortcut(clicks, state):
+    if not ctx.triggered_id or not any(c for c in clicks if c):
+        return no_update
+    target_path = ctx.triggered_id.get("path")
+    if not target_path or not Path(target_path).is_dir():
+        return no_update
+    new_state = dict(state or {})
+    new_state["current_dir"] = target_path
+    return new_state
 
 
 # ---------------------------------------------------------------------------

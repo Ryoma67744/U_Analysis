@@ -43,7 +43,6 @@ run_app.sh
 setup.sh
 
 # ドキュメント (配布用、Docker コンテナでは未使用)
-manual.html
 SETUP_GUIDE.html
 images/
 

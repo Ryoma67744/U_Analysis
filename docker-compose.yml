@@ -21,9 +21,10 @@ services:
       - SESSION_COOKIE_MAX_AGE_SEC=${SESSION_COOKIE_MAX_AGE_SEC:-86400}
       - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-}
       - SHARE_BASE_URL=${SHARE_BASE_URL:-}
-      # 生データ外部パス (.env で上書き可。未設定時は named volume にフォールバック)
+      # 生データ・出力外部パス (.env で上書き可。未設定時は named volume にフォールバック)
       - DESI_DATA_DIR=/app/Data/DESI/Data
       - TIMS_DATA_DIR=/app/Data/TIMS/Data
+      - OUTPUT_DATA_DIR=/app/Data/Other/output
     volumes:
       # 永続化データ (Data/Other/ 配下のアプリ内部データ)
       - msi-sessions:/app/Data/Other/sessions
@@ -37,8 +38,8 @@ services:
       # .env で DESI_DATA_HOST / TIMS_DATA_HOST を指定すればホストの固定パスをマウント
       - ${DESI_DATA_HOST:-msi-desi-data}:/app/Data/DESI/Data
       - ${TIMS_DATA_HOST:-msi-tims-data}:/app/Data/TIMS/Data
-      # 解析出力
-      - msi-output:/app/Data/Other/output
+      # 解析出力（.env で OUTPUT_DATA_HOST を指定すればホストの固定パスをマウント）
+      - ${OUTPUT_DATA_HOST:-msi-output}:/app/Data/Other/output
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3838/healthz', timeout=5)"]
