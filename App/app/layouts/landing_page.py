@@ -50,6 +50,16 @@ def create_landing_page():
                                         size="sm",
                                     ),
                                     html.A(
+                                        "❓ ヘルプ",
+                                        href="/help/registration",
+                                        target="_blank",
+                                        rel="noopener noreferrer",
+                                        title="登録画面の取扱説明書を別タブで開く",
+                                        className=(
+                                            "btn btn-outline-info btn-sm"
+                                        ),
+                                    ),
+                                    html.A(
                                         "ログアウト",
                                         href="/logout",
                                         className=(
