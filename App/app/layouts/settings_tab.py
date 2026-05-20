@@ -17,6 +17,7 @@ from app.config import (
 from app.services.session_manager import load_last_settings
 from app.services.calibration_preset_manager import list_calibration_presets
 from app.layouts.tooltips import help_badge
+from app.layouts.data_management_subtab import create_data_management_subtab
 
 
 def _cal_preset_options():
@@ -47,10 +48,7 @@ def create_settings_tab():
             dbc.Tab(
                 label="データ管理",
                 tab_id="settings_subtab_data",
-                children=html.Div(
-                    "（Step 5 で実装予定）",
-                    className="p-3 text-muted",
-                ),
+                children=create_data_management_subtab(),
             ),
         ],
     )
