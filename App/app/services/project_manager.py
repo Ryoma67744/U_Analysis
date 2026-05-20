@@ -113,7 +113,7 @@ def get_project(project_id: str, *, include_deleted: bool = False) -> Optional[d
 def _safe_current_user() -> str:
     """現在のリクエストの「作成者」名を取得。
 
-    BasicAuth username (alice 等) → session_id 短縮 → "Unknown user" の優先順位。
+    Flask session の analyst_name → session_id 短縮 → "Unknown user" の優先順位。
     Flask context 外で呼ばれた場合も "Unknown user" を返し例外を投げない。
     """
     try:

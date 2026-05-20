@@ -16,10 +16,50 @@ def create_landing_page():
             html.Div(
                 className="app-header",
                 children=[
-                    html.H1("MSI Analysis Application"),
-                    html.P(
-                        className="subtitle",
-                        children="質量分析イメージングデータ解析システム",
+                    html.Div(
+                        style={
+                            "display": "flex",
+                            "justifyContent": "space-between",
+                            "alignItems": "center",
+                        },
+                        children=[
+                            html.Div([
+                                html.H1("MSI Analysis Application"),
+                                html.P(
+                                    className="subtitle",
+                                    children="質量分析イメージング"
+                                    "データ解析システム",
+                                ),
+                            ]),
+                            html.Div(
+                                style={
+                                    "display": "flex",
+                                    "gap": "8px",
+                                    "alignItems": "center",
+                                },
+                                children=[
+                                    html.Span(
+                                        id="header_analyst_label_landing",
+                                        className="text-muted small",
+                                    ),
+                                    dbc.Button(
+                                        "パスワード変更",
+                                        id="open_change_password_btn",
+                                        color="warning",
+                                        outline=True,
+                                        size="sm",
+                                    ),
+                                    html.A(
+                                        "ログアウト",
+                                        href="/logout",
+                                        className=(
+                                            "btn btn-outline-secondary"
+                                            " btn-sm"
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        ],
                     ),
                 ],
             ),

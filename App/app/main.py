@@ -4,12 +4,15 @@
 # =============================================================================
 
 import os
+from datetime import timedelta
+from pathlib import Path
 from uuid import uuid4
 
 import dash
 import dash_bootstrap_components as dbc
 import diskcache
 from dash.long_callback import DiskcacheManager
+from flask import Flask
 
 from app.config import APP_PORT, APP_HOST, SESSIONS_DIR, OTHER_DIR
 from app.layouts.main_layout import create_main_layout
@@ -56,6 +59,9 @@ _background_manager = DiskcacheManager(
 )
 
 # Dash アプリケーション作成
+# 認証ログイン画面のテンプレート用に Flask インスタンスを明示生成
+_templates_dir = Path(__file__).parent / "templates"
+_flask_server = Flask(__name__, template_folder=str(_templates_dir))
 app = dash.Dash(
     __name__,
     external_stylesheets=[dbc.themes.FLATLY],
@@ -63,21 +69,42 @@ app = dash.Dash(
     title="MSI Analysis Application",
     assets_folder="assets",
     background_callback_manager=_background_manager,
+    server=_flask_server,
 )
 
-# Flask サーバーへの参照（画像配信用）
+# Flask サーバーへの参照（画像配信用 / 認証ミドルウェア用）
 server = app.server
 
-# ヘルスチェック用エンドポイント（BasicAuth をバイパスする軽量応答）
+# Flask セッション設定 (Tier A/B 認証用)
+# SECRET_KEY は環境変数必須 (未設定なら起動失敗 = フェイルファースト)
+_secret_key = os.environ.get("FLASK_SECRET_KEY", "").strip()
+if not _secret_key:
+    raise RuntimeError(
+        "FLASK_SECRET_KEY env var is required (32+ random bytes). "
+        "Generate with: openssl rand -hex 32"
+    )
+server.config["SECRET_KEY"] = _secret_key
+server.config["PERMANENT_SESSION_LIFETIME"] = timedelta(
+    seconds=int(os.environ.get("SESSION_COOKIE_MAX_AGE_SEC", 86400))
+)
+server.config["SESSION_COOKIE_HTTPONLY"] = True
+server.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+# HTTPS 経由時は Flask セッション Cookie も secure 化
+# (msi_session_id Cookie は session_id.py 側で動的判定)
+server.config["SESSION_COOKIE_SECURE"] = (
+    os.environ.get("SESSION_COOKIE_SECURE", "").lower() in ("1", "true", "yes")
+)
+
+# ヘルスチェック用エンドポイント（認証をバイパスする軽量応答）
 # Docker healthcheck や外部監視サービスから利用される。
-# dash_auth.BasicAuth より前に before_request を登録することで、
+# auth_middleware._require_login より前に before_request を登録することで、
 # /healthz は認証無しで応答する。
 from flask import request as _flask_request  # noqa: E402
 
 
 @server.before_request
 def _healthz_bypass():
-    """ヘルスチェック endpoint。BasicAuth より前で応答。
+    """ヘルスチェック endpoint。認証 hook より前で応答。
 
     /healthz       → 軽量応答 (Docker / load balancer 用)。プロセス生存のみ確認。
     /healthz/ready → Dash の callback registry / layout を実検査 (READY 確認用)。
@@ -188,25 +215,15 @@ def _security_headers(response):
     return response
 
 
-# 認証設定 (クラウドデプロイ用)
-#   優先順位 1: APP_USERS=alice:pw1,bob:pw2,...  → 複数ユーザー BasicAuth
-#   優先順位 2: APP_PASSWORD=...                → 単一 "msi" ユーザー (後方互換)
-#   両方未設定                                 → 認証なし (ローカル開発時)
-from app.services.session_id import parse_app_users
+# 認証設定 (Tier A: 解析者用 / Tier B: 共有 URL 閲覧用)
+# - 初回起動時は INITIAL_PASSWORD_A/B から auth.json を生成
+# - before_request hook で全リクエストを Tier 判定
+# - 既存 _healthz_bypass / _ensure_session_id の後に登録 (順序重要)
+from app.services import auth_service  # noqa: E402
+from app.services.auth_middleware import register as register_auth  # noqa: E402
 
-_app_users = parse_app_users(os.environ.get("APP_USERS", ""))
-_app_password = os.environ.get("APP_PASSWORD")
-
-_auth_dict = None
-if _app_users:
-    _auth_dict = _app_users
-elif _app_password and _app_password != "CHANGE_ME_BEFORE_DEPLOY":
-    # CHANGE_ME_BEFORE_DEPLOY のプレースホルダーで認証を有効化しない
-    _auth_dict = {"msi": _app_password}
-
-if _auth_dict:
-    import dash_auth
-    dash_auth.BasicAuth(app, _auth_dict)
+auth_service.init_from_env()
+register_auth(server)
 
 # レイアウト設定
 app.layout = create_main_layout()
@@ -228,6 +245,7 @@ from app.callbacks import env_settings_callbacks  # noqa: E402, F401
 from app.callbacks import lite_view_callbacks  # noqa: E402, F401
 from app.callbacks import rds_maintenance_callbacks  # noqa: E402, F401
 from app.callbacks import edit_lock_callbacks  # noqa: E402, F401
+from app.callbacks import auth_callbacks  # noqa: E402, F401
 
 if __name__ == "__main__":
     # Docker CMD は run_app.py 経由。ここは bare-metal 開発用のフォールバック。

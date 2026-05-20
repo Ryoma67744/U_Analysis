@@ -23,10 +23,38 @@ def create_shared_view_layout():
             html.Div(
                 className="d-flex justify-content-between align-items-center",
                 children=[
-                    html.H4("MSI Analysis — 共有結果", className="mb-0"),
-                    html.Div(id="sv_share_info", className="text-muted small"),
+                    html.Div(
+                        style={"display": "flex", "alignItems": "center",
+                               "gap": "12px"},
+                        children=[
+                            html.H4("MSI Analysis — 共有結果",
+                                    className="mb-0"),
+                            html.Span(
+                                "Viewer モード (閲覧専用)",
+                                className="badge bg-secondary",
+                                style={"fontSize": "0.75rem"},
+                            ),
+                        ],
+                    ),
+                    html.Div(
+                        style={"display": "flex", "alignItems": "center",
+                               "gap": "10px"},
+                        children=[
+                            html.Span(
+                                id="header_analyst_label_shared",
+                                className="text-muted small",
+                            ),
+                            html.A(
+                                "ログアウト",
+                                href="/logout",
+                                className="btn btn-outline-secondary btn-sm",
+                            ),
+                        ],
+                    ),
                 ],
             ),
+            html.Div(id="sv_share_info",
+                     className="text-muted small mt-2"),
             # メタデータカード（プロジェクト名・サブプロジェクト名・統合手法・解析日時）
             html.Div(id="sv_metadata_card", className="mt-2"),
             html.Div(id="sv_share_error", style={"display": "none"},

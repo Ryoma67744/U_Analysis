@@ -263,14 +263,37 @@ git checkout v2
 # テンプレートから .env を作成
 cp .env.docker .env
 
-# パスワードを設定（エディタで編集）
+# 認証関連 4 変数を設定（エディタで編集）
 nano .env
 ```
 
-`.env` ファイルの `APP_PASSWORD` にチーム共有パスワードを設定:
+`.env` ファイルで以下 4 変数を必ず設定:
+
 ```
-APP_PASSWORD=your-secure-password-here
+# Flask セッション暗号鍵 (32 バイト以上の random)
+# 生成: openssl rand -hex 32
+FLASK_SECRET_KEY=<64文字のhex文字列>
+
+# Master Password (A/B 変更時のみ要求。サーバー管理者のみが知る)
+# 生成: openssl rand -base64 24
+MASTER_PASSWORD=<強いランダム文字列>
+
+# 初回起動時のみ参照される A/B パスワード
+# 起動直後にブラウザの「パスワード変更」UI から本番値に置き換えること
+INITIAL_PASSWORD_A=ChangeMe_A_FirstRun
+INITIAL_PASSWORD_B=ChangeMe_B_FirstRun
 ```
+
+**パスワードの位置付け**:
+
+| 種別 | 用途 | 変更方法 |
+|---|---|---|
+| Password A | プロジェクト一覧フル機能 (解析者用) | アプリ内 UI から (要 Master Password) |
+| Password B | `/share/<token>` 閲覧 (共有者用) | アプリ内 UI から (要 Master Password) |
+| Master | A/B 変更権限 | `.env` の `MASTER_PASSWORD` を手動編集 → 再起動 |
+
+`Data/Other/common/auth.json` に A/B のハッシュ (bcrypt) が永続化されます。
+コンテナ再起動後もパスワードは保持され、`INITIAL_PASSWORD_A/B` は無視されます。
 
 ### 6.2 メモリ上限の調整（VPSプランに合わせる）
 
@@ -308,13 +331,17 @@ docker compose logs -f
 http://<サーバーのパブリックIP>:3838
 ```
 
-- Basic Auth のダイアログが表示されたら:
-  - ユーザー名: `msi`（または `APP_USERS` で設定した個別 ID）
-  - パスワード: `.env` で設定したパスワード
+- ログイン画面 (`/login`) が表示されます:
+  - 解析者名: 自分の名前 (1-50 文字、自由入力)。操作ログに記録されます
+  - パスワード: `.env` で設定した `INITIAL_PASSWORD_A` を入力
+
+ログイン成功すると右上に「解析者: 〇〇 (A) / パスワード変更 / ログアウト」が表示されます。
+**初回ログイン直後に「パスワード変更」をクリックして本番用 A/B パスワードに変更してください。**
 
 > ⚠️ **重要**: この HTTP 直接アクセスは **動作確認専用**。
 > 実運用では **必ず次章 (7. HTTPS 対応) を完了してから** チームメンバーに URL を共有してください。
-> HTTP 経由では BasicAuth のパスワードが **平文** で流れます。
+> HTTP 経由ではパスワードと Flask セッション Cookie が **平文** で流れます。
+> HTTPS 化後は `.env` で `SESSION_COOKIE_SECURE=true` を設定すると Cookie の盗聴をさらに防げます。
 
 ---
 
@@ -433,8 +460,8 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f caddy
 
 - ブラウザで `https://msi.yourlab.com` にアクセス
 - ブラウザの鍵マークが緑（証明書有効）になっていれば成功
-- BasicAuth ダイアログ → ユーザー名 `msi` + `.env` のパスワード
-- アプリのトップ画面が出れば完了
+- `/login` 画面 → 解析者名 + `INITIAL_PASSWORD_A` を入力
+- ログイン後、ヘッダー右上の「パスワード変更」から本番用 A/B パスワードに更新
 
 > **証明書が取得できない場合**:
 > - ポート 80 が開いていない（Let's Encrypt は HTTP-01 認証で 80 を使用）
@@ -741,27 +768,41 @@ docker compose up -d
 
 複数人が同じプロジェクトを同時に閲覧 / 編集する運用を想定した機能群。
 
-### 10.1 個別ユーザー認証 (APP_USERS)
+### 10.1 二段階パスワード認証 (Tier A / Tier B)
 
-`.env` で複数ユーザーを設定すると、各人が個別 ID でログイン可能。
+各ユーザーは自分の名前を入力して同じ Password A (または B) でログインします。
+ID 管理は不要で、操作ログには入力された解析者名が記録されます。
 
 ```env
-# 推奨: 複数ユーザー個別認証
-APP_USERS=alice:pw_alice,bob:pw_bob,charlie:pw_charlie
+# Flask セッション暗号鍵 (必須・32 バイト以上の random)
+FLASK_SECRET_KEY=<openssl rand -hex 32 の出力>
 
-# 後方互換: 単一ユーザー（旧 .env の APP_PASSWORD と同じ動作）
-# APP_PASSWORD=shared_pw
+# Master Password (A/B 変更権限。サーバー管理者のみが知る)
+MASTER_PASSWORD=<強いランダム文字列>
+
+# 初回起動時のみ参照される A/B パスワード (起動後すぐに UI で変更)
+INITIAL_PASSWORD_A=ChangeMe_A_FirstRun
+INITIAL_PASSWORD_B=ChangeMe_B_FirstRun
 ```
 
-優先順位:
-1. **APP_USERS が設定** → 複数ユーザー認証（推奨、UI ロックで実名表示）
-2. **APP_PASSWORD のみ** → 全員が "msi" 共有 ID（後方互換）
-3. **どちらも未設定 or `CHANGE_ME_BEFORE_DEPLOY`** → 認証無効化（ローカル開発時のみ）
+| Tier | 用途 | パスワード | アクセス可能なパス |
+|---|---|---|---|
+| **A** | 解析者用・フル機能 | Password A | `/`, `/share/<token>` 含む全パス |
+| **B** | 共有 URL の閲覧専用 | Password B | `/share/<token>` のみ |
+
+**運用フロー**:
+1. 起動時に `.env` の `INITIAL_PASSWORD_A/B` から `Data/Other/common/auth.json` に bcrypt ハッシュ保存
+2. 解析者は自分の名前 + Password A でログイン
+3. 閲覧者は共有 URL から自分の名前 + Password B でログイン
+4. A/B のパスワードを変更したい場合は、Tier A でログイン後「パスワード変更」ボタン
+   → モーダルで Master Password と新しい A/B を入力 → 保存
+5. パスワード変更時、他のアクティブセッションは自動的に強制ログアウト (`password_version` 不一致)
 
 **メリット**:
-- UI ロック表示が「User abcde」ではなく「alice」のように実名になる
-- 操作ログで誰がやったか追跡可能（将来の監査ログ機能の前提）
-- 退職者対応で個別にパスワード無効化できる
+- ID 管理が不要 (解析者名は自由入力、ログ追跡用)
+- 解析者用と閲覧者用でパスワードを分離 (Tier B が漏れても全機能アクセスは防げる)
+- パスワード変更がアプリ内で完結 (`.env` 編集不要)
+- 全アクションが `Data/Other/logs/access.log` に `analyst=<名前> tier=<A|B>` 形式で記録
 
 ### 10.2 UI ロック（編集中表示）
 
@@ -851,7 +892,7 @@ UI ロックの動作確認ができます。
 
 ### 11.1 Brute force 対策 (fail2ban 導入推奨)
 
-BasicAuth の N 回失敗で IP をブロックする標準的な対策。Caddy 単体では
+`/login` の N 回失敗で IP をブロックする標準的な対策。Caddy 単体では
 rate limit 機能が無いため fail2ban を OS 側に導入する:
 
 ```bash

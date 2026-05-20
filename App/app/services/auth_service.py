@@ -1,0 +1,176 @@
+"""認証パスワード管理サービス。
+
+- Password A: プロジェクト一覧フル機能用 (bcrypt hash)
+- Password B: 共有 URL 閲覧用 (bcrypt hash)
+- Master Password: A/B 変更権限用 (env 直接、bcrypt 不要)
+
+保存場所: Data/Other/common/auth.json (atomic write)
+"""
+from __future__ import annotations
+
+import hmac
+import json
+import logging
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+import bcrypt
+from filelock import FileLock
+
+logger = logging.getLogger("msi.auth")
+
+
+def _default_auth_path() -> Path:
+    env = os.environ.get("AUTH_CONFIG_PATH")
+    if env:
+        return Path(env)
+    return Path("/app/Data/Other/common/auth.json")
+
+
+AUTH_CONFIG_PATH: Path = _default_auth_path()
+_LOCK_PATH = AUTH_CONFIG_PATH.with_suffix(".lock")
+_BCRYPT_ROUNDS = 12
+
+
+def _ensure_parent() -> None:
+    AUTH_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _load() -> dict:
+    if not AUTH_CONFIG_PATH.exists():
+        return {}
+    try:
+        return json.loads(AUTH_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.error("auth.json read failed: %s", e)
+        return {}
+
+
+def _save(data: dict) -> None:
+    _ensure_parent()
+    tmp = AUTH_CONFIG_PATH.with_suffix(".tmp")
+    tmp.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    tmp.replace(AUTH_CONFIG_PATH)
+
+
+def _hash(plain: str) -> str:
+    return bcrypt.hashpw(
+        plain.encode("utf-8"),
+        bcrypt.gensalt(rounds=_BCRYPT_ROUNDS),
+    ).decode("ascii")
+
+
+def _verify(plain: str, hashed: Optional[str]) -> bool:
+    if not plain or not hashed:
+        return False
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("ascii"))
+    except (ValueError, TypeError):
+        return False
+
+
+def verify_password_a(plain: str) -> bool:
+    """Password A の検証 (プロジェクト一覧フル機能)"""
+    return _verify(plain, _load().get("password_a_hash"))
+
+
+def verify_password_b(plain: str) -> bool:
+    """Password B の検証 (共有 URL 閲覧)"""
+    return _verify(plain, _load().get("password_b_hash"))
+
+
+def verify_master(plain: str) -> bool:
+    """Master Password の検証 (timing-safe 比較)"""
+    expected = os.environ.get("MASTER_PASSWORD", "")
+    if not expected or not plain:
+        return False
+    return hmac.compare_digest(plain.encode("utf-8"), expected.encode("utf-8"))
+
+
+def get_password_version() -> int:
+    """現在の password_version を返す。未設定なら 0。
+
+    パスワード変更後にこの値が増分される。Flask session の pw_version と
+    照合することで、変更時に既存セッションを失効させる。
+    """
+    return int(_load().get("password_version", 0))
+
+
+def update_password(which: str, new_plain: str, updated_by: str) -> int:
+    """A/B パスワードを更新。返り値は新しい password_version。
+
+    Args:
+        which: "a" or "b"
+        new_plain: 平文の新パスワード
+        updated_by: 解析者名 (監査ログ用)
+
+    Returns:
+        新しい password_version
+    """
+    if which not in ("a", "b"):
+        raise ValueError(f"which must be 'a' or 'b', got {which!r}")
+    if not new_plain or len(new_plain) < 4:
+        raise ValueError("password must be at least 4 characters")
+
+    with FileLock(str(_LOCK_PATH), timeout=10):
+        data = _load()
+        data[f"password_{which}_hash"] = _hash(new_plain)
+        data["password_version"] = int(data.get("password_version", 0)) + 1
+        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        data["updated_by"] = updated_by
+        _save(data)
+        new_version = int(data["password_version"])
+
+    logger.warning(
+        "Password %s updated by %s (version=%d)",
+        which.upper(), updated_by, new_version,
+    )
+    return new_version
+
+
+def is_initialized() -> bool:
+    """A/B 両方のハッシュが保存済みか"""
+    data = _load()
+    return bool(data.get("password_a_hash") and data.get("password_b_hash"))
+
+
+def init_from_env() -> None:
+    """起動時呼び出し。auth.json が無ければ INITIAL_PASSWORD_A/B から初期化する。
+
+    既に初期化済みなら何もしない。デフォルトのプレースホルダー値が
+    放置されている場合は WARNING ログを出す。
+    """
+    if is_initialized():
+        logger.info("Auth config already initialized: %s", AUTH_CONFIG_PATH)
+        return
+
+    initial_a = os.environ.get("INITIAL_PASSWORD_A", "").strip()
+    initial_b = os.environ.get("INITIAL_PASSWORD_B", "").strip()
+
+    if not initial_a or not initial_b:
+        raise RuntimeError(
+            "Auth config not initialized and INITIAL_PASSWORD_A/B not set. "
+            "Set both env vars in .env and restart."
+        )
+
+    with FileLock(str(_LOCK_PATH), timeout=10):
+        data = _load()
+        if not data.get("password_a_hash"):
+            data["password_a_hash"] = _hash(initial_a)
+        if not data.get("password_b_hash"):
+            data["password_b_hash"] = _hash(initial_b)
+        data["password_version"] = int(data.get("password_version", 0)) + 1
+        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        data["updated_by"] = "system_init"
+        _save(data)
+
+    logger.warning(
+        "Auth initialized with INITIAL_PASSWORD_A/B from env. "
+        "Change them via UI ASAP! (config=%s)",
+        AUTH_CONFIG_PATH,
+    )

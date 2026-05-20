@@ -12,5 +12,5 @@ kaleido==0.2.1  # plotly 5.x との互換性のため固定（1.x 系は plotly 
 python-dotenv>=1.0
 Pillow>=10.0
 matplotlib>=3.7
-dash-auth>=2.0
+bcrypt>=4.0
 filelock>=3.13

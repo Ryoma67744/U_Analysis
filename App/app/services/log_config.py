@@ -7,6 +7,8 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from app.services.access_logger import AnalystContextFilter, setup_access_logger
+
 
 def setup_logging(log_dir: Path = None, level=logging.INFO):
     """アプリ全体のログ設定を初期化する。
@@ -25,7 +27,8 @@ def setup_logging(log_dir: Path = None, level=logging.INFO):
     log_dir.mkdir(parents=True, exist_ok=True)
 
     formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        "%(asctime)s [%(levelname)s] [%(analyst_name)s/%(access_tier)s] "
+        "%(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
@@ -51,3 +54,8 @@ def setup_logging(log_dir: Path = None, level=logging.INFO):
     if not root.handlers:
         root.addHandler(fh)
         root.addHandler(ch)
+        # 全 handler に解析者名 / tier を注入する Filter を登録
+        root.addFilter(AnalystContextFilter())
+
+    # 監査用 access.log を別ハンドラで初期化
+    setup_access_logger(log_dir)
