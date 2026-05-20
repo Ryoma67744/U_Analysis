@@ -21,6 +21,7 @@ from typing import Literal, Optional
 from app.config import (
     DESI_DATA_CANDIDATES,
     TIMS_DATA_CANDIDATES,
+    OUTPUT_DATA_CANDIDATES,
 )
 
 logger = logging.getLogger("msi.path_resolver")
@@ -45,13 +46,21 @@ def _split_path(raw: str) -> list[str]:
     return parts
 
 
-def _candidates_for(modality: Modality) -> list[Path]:
+def _candidates_for(modality: Modality, field: Optional[str] = None) -> list[Path]:
+    """探索候補リストを返す。
+
+    field が ``output_dir`` / ``last_result_dir`` の場合は OUTPUT_DATA_CANDIDATES を
+    先頭に置き、出力フォルダ → 生データフォルダの順で検索する。
+    """
+    output_first: list[Path] = []
+    if field in ("output_dir", "last_result_dir"):
+        output_first = list(OUTPUT_DATA_CANDIDATES)
     if modality == "desi":
-        return list(DESI_DATA_CANDIDATES)
+        return output_first + list(DESI_DATA_CANDIDATES)
     if modality == "tims":
-        return list(TIMS_DATA_CANDIDATES)
+        return output_first + list(TIMS_DATA_CANDIDATES)
     # auto: DESI / TIMS 両方を試す
-    return list(DESI_DATA_CANDIDATES) + list(TIMS_DATA_CANDIDATES)
+    return output_first + list(DESI_DATA_CANDIDATES) + list(TIMS_DATA_CANDIDATES)
 
 
 def _infer_modality(path_str: str) -> Modality:
@@ -83,6 +92,7 @@ def resolve_data_path(
     broken_path: str,
     modality: Modality = "auto",
     is_file: bool = False,
+    field: Optional[str] = None,
 ) -> Optional[Path]:
     """破損した絶対パスを DATA_CANDIDATES 配下で再解決する。
 
@@ -94,6 +104,9 @@ def resolve_data_path(
         "auto" は DESI / TIMS 両方を探索
     is_file : bool
         True の場合はファイルを、False の場合はディレクトリを探す
+    field : str, optional
+        補正対象のフィールド名。``output_dir`` / ``last_result_dir`` の場合は
+        OUTPUT_DATA_CANDIDATES を優先的に検索する。
 
     Returns
     -------
@@ -115,7 +128,7 @@ def resolve_data_path(
         return None
 
     tail = parts[-1]
-    candidates = _candidates_for(modality)
+    candidates = _candidates_for(modality, field)
 
     for root in candidates:
         found = _find_by_tail(tail, root, is_file)
@@ -173,7 +186,7 @@ def resolve_project_paths(sub_info: dict) -> tuple[dict, list[str]]:
             value = new_settings.get(field, "")
             if not value:
                 continue
-            resolved = resolve_data_path(value, modality, is_file=False)
+            resolved = resolve_data_path(value, modality, is_file=False, field=field)
             if resolved:
                 new_settings[field] = str(resolved)
             else:
@@ -183,7 +196,7 @@ def resolve_project_paths(sub_info: dict) -> tuple[dict, list[str]]:
             value = new_settings.get(field, "")
             if not value:
                 continue
-            resolved = resolve_data_path(value, modality, is_file=True)
+            resolved = resolve_data_path(value, modality, is_file=True, field=field)
             if resolved:
                 new_settings[field] = str(resolved)
             else:
@@ -196,7 +209,7 @@ def resolve_project_paths(sub_info: dict) -> tuple[dict, list[str]]:
         value = corrected.get(field, "")
         if not value:
             continue
-        resolved = resolve_data_path(value, modality, is_file=False)
+        resolved = resolve_data_path(value, modality, is_file=False, field=field)
         if resolved:
             corrected[field] = str(resolved)
         elif field not in ("last_result_dir",):
