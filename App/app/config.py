@@ -64,6 +64,21 @@ OTHER_DIR = DATA_DIR / "Other"
 COMMON_DIR = OTHER_DIR / "Common"  # 後方互換
 MERGE_CLUSTERS_SCRIPT_PATH = COMMON_SCRIPT_DIR / "UMAP_Merge_Clusters_ver1.R"
 
+# 解析出力先 (output_dir): .env の OUTPUT_DATA_DIR で外部パスに切り替え可能。
+# 未設定時は Data/Other/output を参照。
+OUTPUT_DATA_DIR = Path(os.environ.get("OUTPUT_DATA_DIR", str(OTHER_DIR / "output")))
+OUTPUT_DATA_DIR_LEGACY = OTHER_DIR / "output"  # 旧パス (fallback 検索用)
+OUTPUT_DATA_CANDIDATES = [OUTPUT_DATA_DIR, OUTPUT_DATA_DIR_LEGACY]
+
+# file_browser_modal 上部に表示するショートカットボタン定義
+# (key: 内部識別子 / label: 日本語表示 / path: 遷移先絶対パス)
+BROWSER_SHORTCUTS = [
+    {"key": "desi", "label": "DESI生データ", "path": str(DESI_DATA_DIR)},
+    {"key": "tims", "label": "TIMS生データ", "path": str(TIMS_DATA_DIR)},
+    {"key": "output", "label": "解析出力", "path": str(OUTPUT_DATA_DIR)},
+    {"key": "internal", "label": "アプリ内部データ", "path": str(OTHER_DIR)},
+]
+
 # DESI用スクリプトのパス
 DESI_V8_TEMPLATE_PATH = DESI_SCRIPT_DIR / "260422_DESI-UMAP_Template_v14.R"
 DESI_CLUSTER_FILTER_PATH = DESI_SCRIPT_DIR / "DESI_RDS_ClusterFilter_ver2.R"
