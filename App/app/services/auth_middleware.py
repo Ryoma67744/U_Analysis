@@ -31,6 +31,7 @@ _BYPASS_PREFIXES = (
     "/assets/",
     "/_dash-component-suites/",
     "/_favicon.ico",
+    "/help/",  # ヘルプページ (取扱説明書) は認証なしで閲覧可
 )
 
 _BYPASS_EXACT = {

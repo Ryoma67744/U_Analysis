@@ -1,0 +1,33 @@
+{% extends "help/base.html" %}
+
+{% block title %}解析画面ガイド | MSI Analysis App{% endblock %}
+{% block header_subtitle %}⚙️ 解析画面（データ解析・結果閲覧）の使い方{% endblock %}
+{% block nav_ana %}active{% endblock %}
+
+{% block content %}
+<div class="help-alert tip">
+  <div class="alert-title">💡 このページについて</div>
+  プロジェクトを選択した後に表示される「解析画面」の使い方をまとめています。
+  データフォルダ指定・解析実行・結果閲覧・インタラクティブ操作などはここで行います。
+</div>
+
+<div class="toc">
+  <h3>📑 目次</h3>
+  <ol>
+    <li><a href="#intro">🌟 はじめに（DESI / TIMS 概要）</a></li>
+    <li><a href="#prepare">📁 データ準備（SFTPアップロード）</a></li>
+    <li><a href="#settings">⚙️ 解析設定タブ</a></li>
+    <li><a href="#run">▶ 解析実行 + 進捗確認</a></li>
+    <li><a href="#results">📊 結果閲覧タブ</a></li>
+    <li><a href="#interactive">🎨 インタラクティブ解析</a></li>
+    <li><a href="#history">🗂 セッション履歴</a></li>
+    <li><a href="#errors">🛟 よくあるエラー</a></li>
+    <li><a href="#faq">❓ FAQ</a></li>
+  </ol>
+</div>
+
+<p class="text-muted">
+  ※ このページは詳細執筆中です。各セクションの本文は Step 4 で追加されます。
+  プロジェクト管理の使い方は <a href="/help/registration">🏠 登録画面ガイド</a> を参照してください。
+</p>
+{% endblock %}

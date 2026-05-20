@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}MSI Analysis App ヘルプ{% endblock %}</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    :root {
+      --primary-start: #667eea;
+      --primary-end: #764ba2;
+      --accent-teal-start: #11998e;
+      --accent-teal-end: #38ef7d;
+      --warn-color: #f5a623;
+      --danger-color: #e74c3c;
+      --bg-color: #f8f9fa;
+      --text-color: #2c3e50;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans",
+                   "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text-color);
+      line-height: 1.7;
+    }
+
+    /* ヘッダー (アプリ本体と統一感のある紫グラデ) */
+    .help-header {
+      background: linear-gradient(135deg, var(--primary-start), var(--primary-end));
+      color: white;
+      padding: 1.5rem 2rem;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    }
+    .help-header h1 {
+      margin: 0;
+      font-size: 1.6rem;
+      font-weight: 600;
+    }
+    .help-header .subtitle {
+      font-size: 0.95rem;
+      opacity: 0.92;
+      margin-top: 0.3rem;
+    }
+
+    /* ナビゲーション (登録ガイド ↔ 解析ガイド) */
+    .help-nav {
+      background-color: white;
+      border-bottom: 1px solid #dee2e6;
+      padding: 0.6rem 2rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .help-nav a {
+      color: var(--primary-end);
+      font-weight: 500;
+      padding: 0.4rem 0.9rem;
+      border-radius: 6px;
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+    .help-nav a:hover {
+      background-color: var(--primary-start);
+      color: white;
+    }
+    .help-nav a.active {
+      background-color: var(--primary-end);
+      color: white;
+    }
+    .help-nav .nav-spacer {
+      flex: 1;
+    }
+
+    /* メインコンテンツ */
+    .help-content {
+      max-width: 960px;
+      margin: 2rem auto;
+      padding: 0 1.5rem 4rem;
+    }
+
+    /* 見出し */
+    h2.section-heading {
+      background: linear-gradient(135deg, var(--primary-start), var(--primary-end));
+      color: white;
+      padding: 0.7rem 1.2rem;
+      border-radius: 8px;
+      margin: 2.5rem 0 1.2rem;
+      font-size: 1.4rem;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+    h3.subsection-heading {
+      color: var(--primary-end);
+      border-left: 4px solid var(--primary-start);
+      padding-left: 0.8rem;
+      margin-top: 1.8rem;
+      font-size: 1.15rem;
+    }
+
+    /* ステップバッジ */
+    .step-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, var(--primary-start), var(--primary-end));
+      color: white;
+      border-radius: 50%;
+      font-weight: 700;
+      font-size: 1rem;
+      margin-right: 0.6rem;
+    }
+
+    /* Alert ボックス (重要 / 注意 / コツ) */
+    .help-alert {
+      border-left: 5px solid;
+      border-radius: 8px;
+      padding: 0.9rem 1.2rem;
+      margin: 1rem 0;
+      background-color: white;
+    }
+    .help-alert.tip {
+      border-color: var(--accent-teal-start);
+      background: linear-gradient(135deg, #f0fff4 0%, #e6fffa 100%);
+    }
+    .help-alert.warn {
+      border-color: var(--warn-color);
+      background: linear-gradient(135deg, #fffbf0 0%, #fff5e6 100%);
+    }
+    .help-alert.danger {
+      border-color: var(--danger-color);
+      background: linear-gradient(135deg, #fff5f5 0%, #ffe6e6 100%);
+    }
+    .help-alert .alert-title {
+      font-weight: 600;
+      margin-bottom: 0.4rem;
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+    }
+    .help-alert.tip .alert-title { color: var(--accent-teal-start); }
+    .help-alert.warn .alert-title { color: var(--warn-color); }
+    .help-alert.danger .alert-title { color: var(--danger-color); }
+
+    /* 画面パーツカード */
+    .ui-card {
+      background-color: white;
+      border-radius: 10px;
+      padding: 1rem 1.2rem;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+      border: 1px solid #e9ecef;
+      transition: transform 0.15s;
+      height: 100%;
+    }
+    .ui-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.15);
+    }
+    .ui-card .icon {
+      font-size: 2.2rem;
+      display: block;
+      margin-bottom: 0.3rem;
+    }
+    .ui-card .name {
+      font-weight: 600;
+      color: var(--primary-end);
+      margin-bottom: 0.3rem;
+    }
+
+    /* SVG 図解の入れ物 */
+    .figure-frame {
+      background: white;
+      padding: 1.5rem;
+      border-radius: 10px;
+      border: 1px solid #e9ecef;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+      margin: 1.2rem 0;
+    }
+    .figure-frame svg {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      margin: 0 auto;
+    }
+    .figure-caption {
+      text-align: center;
+      font-size: 0.88rem;
+      color: #6c757d;
+      margin-top: 0.6rem;
+      font-style: italic;
+    }
+
+    /* コードブロック */
+    code {
+      background-color: #f1f3f5;
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+      color: #c2185b;
+      font-size: 0.92em;
+    }
+    pre {
+      background-color: #1e1e1e;
+      color: #d4d4d4;
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.88rem;
+    }
+    pre code {
+      background-color: transparent;
+      color: inherit;
+      padding: 0;
+    }
+
+    /* テーブル */
+    table.help-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: white;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+      border-radius: 8px;
+      overflow: hidden;
+      margin: 1rem 0;
+    }
+    table.help-table th {
+      background: linear-gradient(135deg, var(--primary-start), var(--primary-end));
+      color: white;
+      padding: 0.7rem 1rem;
+      text-align: left;
+      font-weight: 600;
+    }
+    table.help-table td {
+      padding: 0.65rem 1rem;
+      border-top: 1px solid #e9ecef;
+    }
+    table.help-table tbody tr:hover {
+      background-color: #f8f9fa;
+    }
+
+    /* 目次 */
+    .toc {
+      background: white;
+      border-radius: 10px;
+      padding: 1.2rem 1.5rem;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+      margin: 1.5rem 0;
+      border-left: 4px solid var(--primary-start);
+    }
+    .toc h3 {
+      margin: 0 0 0.6rem;
+      color: var(--primary-end);
+      font-size: 1.05rem;
+    }
+    .toc ol {
+      margin: 0;
+      padding-left: 1.5rem;
+    }
+    .toc ol li {
+      margin: 0.3rem 0;
+    }
+    .toc a {
+      color: var(--text-color);
+      text-decoration: none;
+    }
+    .toc a:hover {
+      color: var(--primary-end);
+      text-decoration: underline;
+    }
+
+    /* フッター */
+    .help-footer {
+      background-color: #2c3e50;
+      color: #adb5bd;
+      padding: 1.5rem;
+      text-align: center;
+      font-size: 0.85rem;
+    }
+    .help-footer a {
+      color: #98c1ff;
+    }
+
+    /* 印刷用 */
+    @media print {
+      .help-nav, .help-footer { display: none; }
+      .help-header {
+        background: white !important;
+        color: var(--text-color) !important;
+        box-shadow: none;
+        border-bottom: 2px solid var(--primary-end);
+      }
+      h2.section-heading {
+        background: white !important;
+        color: var(--primary-end) !important;
+        border-bottom: 2px solid var(--primary-start);
+        page-break-after: avoid;
+      }
+      .help-alert, .ui-card, .figure-frame {
+        page-break-inside: avoid;
+      }
+    }
+
+    /* レスポンシブ */
+    @media (max-width: 768px) {
+      .help-header { padding: 1rem 1.2rem; }
+      .help-header h1 { font-size: 1.3rem; }
+      .help-nav { padding: 0.5rem 1rem; }
+      .help-content { padding: 0 1rem 3rem; }
+      h2.section-heading { font-size: 1.2rem; padding: 0.6rem 1rem; }
+    }
+  </style>
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+  <header class="help-header">
+    <h1>{% block header_title %}🔬 MSI Analysis Application 取扱説明書{% endblock %}</h1>
+    <div class="subtitle">{% block header_subtitle %}{% endblock %}</div>
+  </header>
+
+  <nav class="help-nav">
+    <a href="/help/registration" class="{% block nav_reg %}{% endblock %}">🏠 登録画面ガイド</a>
+    <a href="/help/analysis" class="{% block nav_ana %}{% endblock %}">⚙️ 解析画面ガイド</a>
+    <div class="nav-spacer"></div>
+    <a href="javascript:window.print()">🖨️ 印刷</a>
+    <a href="/">↩ アプリに戻る</a>
+  </nav>
+
+  <main class="help-content">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="help-footer">
+    MSI Analysis Application — このページはアプリ内ヘルプ機能で表示しています。
+    アプリ本体は <a href="/">こちら</a> から。
+  </footer>
+</body>
+</html>
