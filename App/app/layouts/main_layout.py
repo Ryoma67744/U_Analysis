@@ -42,10 +42,11 @@ def _create_change_password_modal():
                 dbc.Label("Master Password", className="small fw-bold"),
                 dbc.Input(
                     id="cp_master",
-                    type="password",
+                    type="text",
                     placeholder="サーバー管理者から提供",
                     size="sm",
                     className="mb-3",
+                    autoComplete="off",
                 ),
                 dbc.Label(
                     "新しい Password A (空欄なら変更なし)",
@@ -53,10 +54,11 @@ def _create_change_password_modal():
                 ),
                 dbc.Input(
                     id="cp_new_a",
-                    type="password",
+                    type="text",
                     placeholder="解析者用 (フル機能)",
                     size="sm",
                     className="mb-2",
+                    autoComplete="off",
                 ),
                 dbc.Label(
                     "新しい Password B (空欄なら変更なし)",
@@ -64,10 +66,11 @@ def _create_change_password_modal():
                 ),
                 dbc.Input(
                     id="cp_new_b",
-                    type="password",
+                    type="text",
                     placeholder="共有 URL 閲覧用",
                     size="sm",
                     className="mb-2",
+                    autoComplete="off",
                 ),
                 html.Div(id="cp_status", className="mt-2 small"),
             ]),
