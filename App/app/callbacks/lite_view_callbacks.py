@@ -369,9 +369,12 @@ def toggle_cluster_card(n_clicks, is_open, btn_id, current_body,
 
 
 @callback(
-    Output({"type": "lv_card_collapse", "cluster": ALL}, "is_open"),
-    Output({"type": "lv_card_body", "cluster": ALL}, "children"),
-    Output({"type": "lv_card_toggle", "cluster": ALL}, "children"),
+    Output({"type": "lv_card_collapse", "cluster": ALL}, "is_open",
+           allow_duplicate=True),
+    Output({"type": "lv_card_body", "cluster": ALL}, "children",
+           allow_duplicate=True),
+    Output({"type": "lv_card_toggle", "cluster": ALL}, "children",
+           allow_duplicate=True),
     Input("lv_expand_all_clusters", "n_clicks"),
     State({"type": "lv_card_collapse", "cluster": ALL}, "is_open"),
     State({"type": "lv_card_collapse", "cluster": ALL}, "id"),

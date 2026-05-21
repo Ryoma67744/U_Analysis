@@ -35,17 +35,34 @@ def _create_change_password_modal():
             dbc.ModalHeader(dbc.ModalTitle("パスワード変更")),
             dbc.ModalBody([
                 html.Div(
-                    "Master Password を入力後、変更したいパスワードのみ入力してください。"
-                    "空欄のフィールドは更新されません。",
+                    "現在の Master Password を入力後、変更したいパスワードのみ"
+                    "入力してください。空欄のフィールドは更新されません。",
                     className="text-muted small mb-3",
                 ),
-                dbc.Label("Master Password", className="small fw-bold"),
+                dbc.Label(
+                    "現在の Master Password (権限確認)",
+                    className="small fw-bold",
+                ),
                 dbc.Input(
                     id="cp_master",
-                    type="password",
-                    placeholder="サーバー管理者から提供",
+                    type="text",
+                    placeholder="現在の Master を入力",
                     size="sm",
                     className="mb-3",
+                    autoComplete="off",
+                ),
+                html.Hr(className="my-2"),
+                dbc.Label(
+                    "新しい Master Password (空欄なら変更なし)",
+                    className="small fw-bold",
+                ),
+                dbc.Input(
+                    id="cp_new_master",
+                    type="text",
+                    placeholder="新しい Master (8 文字以上)",
+                    size="sm",
+                    className="mb-2",
+                    autoComplete="off",
                 ),
                 dbc.Label(
                     "新しい Password A (空欄なら変更なし)",
@@ -53,10 +70,11 @@ def _create_change_password_modal():
                 ),
                 dbc.Input(
                     id="cp_new_a",
-                    type="password",
+                    type="text",
                     placeholder="解析者用 (フル機能)",
                     size="sm",
                     className="mb-2",
+                    autoComplete="off",
                 ),
                 dbc.Label(
                     "新しい Password B (空欄なら変更なし)",
@@ -64,10 +82,11 @@ def _create_change_password_modal():
                 ),
                 dbc.Input(
                     id="cp_new_b",
-                    type="password",
+                    type="text",
                     placeholder="共有 URL 閲覧用",
                     size="sm",
                     className="mb-2",
+                    autoComplete="off",
                 ),
                 html.Div(id="cp_status", className="mt-2 small"),
             ]),

@@ -41,8 +41,8 @@ def setup_logging(log_dir: Path = None, level=logging.INFO):
     )
     fh.setLevel(level)
     fh.setFormatter(formatter)
-    # Handler 側に Filter を付けないと、子ロガーから propagate してきた
-    # レコードには analyst_name が注入されず KeyError になる。
+    # 子 logger からのレコードにも analyst_name/access_tier を注入するため
+    # handler レベルに Filter を装着する (Logger.addFilter は子 logger には伝播しない)
     fh.addFilter(AnalystContextFilter())
 
     # コンソールハンドラ

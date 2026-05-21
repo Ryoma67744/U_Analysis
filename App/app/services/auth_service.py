@@ -85,11 +85,47 @@ def verify_password_b(plain: str) -> bool:
 
 
 def verify_master(plain: str) -> bool:
-    """Master Password の検証 (timing-safe 比較)"""
+    """Master Password の検証。
+
+    auth.json に master_password_hash があればそれを優先 (UI で変更済)。
+    無ければ .env の MASTER_PASSWORD と timing-safe 比較 (初回起動時)。
+    """
+    if not plain:
+        return False
+    data = _load()
+    h = data.get("master_password_hash")
+    if h:
+        return _verify(plain, h)
     expected = os.environ.get("MASTER_PASSWORD", "")
-    if not expected or not plain:
+    if not expected:
         return False
     return hmac.compare_digest(plain.encode("utf-8"), expected.encode("utf-8"))
+
+
+def update_master(new_plain: str, updated_by: str) -> int:
+    """Master Password を更新。返り値は新しい password_version。
+
+    auth.json の master_password_hash を bcrypt で更新。
+    以後 verify_master はこのハッシュを参照し、.env の MASTER_PASSWORD は
+    無視される (初回起動時のフォールバックのみ)。
+    """
+    if not new_plain or len(new_plain) < 4:
+        raise ValueError("master password must be at least 4 characters")
+
+    with FileLock(str(_LOCK_PATH), timeout=10):
+        data = _load()
+        data["master_password_hash"] = _hash(new_plain)
+        data["password_version"] = int(data.get("password_version", 0)) + 1
+        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        data["updated_by"] = updated_by
+        _save(data)
+        new_version = int(data["password_version"])
+
+    logger.warning(
+        "Master Password updated by %s (version=%d)",
+        updated_by, new_version,
+    )
+    return new_version
 
 
 def get_password_version() -> int:

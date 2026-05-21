@@ -2,10 +2,10 @@
 
 サーバーサイド callback:
 - url_bar pathname の変化を契機に Flask session から現在の解析者情報を読む
+- パスワード変更モーダルの開閉
 
 clientside callback:
 - current_analyst Store を各ヘッダー span に反映
-- パスワード変更モーダルの開閉
 - 「保存」クリック時に /api/admin/change-password を fetch
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 
 from dash import (
-    Input, Output, State, callback, no_update,
+    Input, Output, State, callback, ctx, no_update,
     ClientsideFunction, clientside_callback,
 )
 from flask import session
@@ -56,28 +56,24 @@ clientside_callback(
 )
 
 
-# ---- clientside: パスワード変更モーダル開閉 ----
+# ---- server-side: パスワード変更モーダル開閉 ----
+# clientside_callback だと callback_context の挙動が不安定なので
+# server-side @callback で確実に triggered を判定する。
 
-clientside_callback(
-    """
-    function(open_clicks, cancel_clicks, is_open) {
-        const trigger = (window.dash_clientside.callback_context.triggered || [])[0];
-        if (!trigger) return window.dash_clientside.no_update;
-        if (trigger.prop_id.indexOf("open_change_password_btn") === 0) {
-            return true;
-        }
-        if (trigger.prop_id.indexOf("cp_cancel_btn") === 0) {
-            return false;
-        }
-        return window.dash_clientside.no_update;
-    }
-    """,
+@callback(
     Output("change_password_modal", "is_open"),
     Input("open_change_password_btn", "n_clicks"),
     Input("cp_cancel_btn", "n_clicks"),
     State("change_password_modal", "is_open"),
     prevent_initial_call=True,
 )
+def toggle_change_password_modal(open_clicks, cancel_clicks, is_open):
+    triggered = ctx.triggered_id
+    if triggered == "open_change_password_btn":
+        return True
+    if triggered == "cp_cancel_btn":
+        return False
+    return no_update
 
 
 # ---- clientside: 「保存」クリックで /api/admin/change-password を fetch ----
@@ -89,10 +85,12 @@ clientside_callback(
     ),
     Output("cp_status", "children"),
     Output("cp_master", "value"),
+    Output("cp_new_master", "value"),
     Output("cp_new_a", "value"),
     Output("cp_new_b", "value"),
     Input("cp_submit_btn", "n_clicks"),
     State("cp_master", "value"),
+    State("cp_new_master", "value"),
     State("cp_new_a", "value"),
     State("cp_new_b", "value"),
     prevent_initial_call=True,

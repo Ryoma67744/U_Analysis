@@ -201,15 +201,21 @@ def _security_headers(response):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     # CSP: Dash は inline script を使うため 'unsafe-inline' が必要。
-    # 'self' のみで外部リソースを禁止、frame-ancestors 'none' で iframe 埋込禁止。
+    # style-src/font-src/connect-src で関連 CDN とフォント供給元 (Google Fonts)
+    # を許可。これは dbc.themes.FLATLY が cdn.jsdelivr.net から
+    # Bootswatch テーマ CSS を読み込むため必須 (許可しないと素の Bootstrap
+    # 表示になりボタンの色等が崩れる)。
+    # frame-ancestors 'none' で iframe 埋込禁止。
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
-        "style-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline' "
+        "https://cdn.jsdelivr.net https://fonts.googleapis.com; "
         "img-src 'self' data: blob:; "
-        "font-src 'self' data:; "
-        "connect-src 'self'; "
+        "font-src 'self' data: "
+        "https://cdn.jsdelivr.net https://fonts.gstatic.com; "
+        "connect-src 'self' https://cdn.jsdelivr.net; "
         "frame-ancestors 'none'",
     )
     return response
