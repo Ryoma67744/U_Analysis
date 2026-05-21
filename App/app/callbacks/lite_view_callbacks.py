@@ -322,9 +322,12 @@ def _resolve_lite_data_for_target(target, method_data):
 
 
 @callback(
-    Output({"type": "lv_card_collapse", "cluster": MATCH}, "is_open"),
-    Output({"type": "lv_card_body", "cluster": MATCH}, "children"),
-    Output({"type": "lv_card_toggle", "cluster": MATCH}, "children"),
+    Output({"type": "lv_card_collapse", "cluster": MATCH}, "is_open",
+           allow_duplicate=True),
+    Output({"type": "lv_card_body", "cluster": MATCH}, "children",
+           allow_duplicate=True),
+    Output({"type": "lv_card_toggle", "cluster": MATCH}, "children",
+           allow_duplicate=True),
     Input({"type": "lv_card_toggle", "cluster": MATCH}, "n_clicks"),
     State({"type": "lv_card_collapse", "cluster": MATCH}, "is_open"),
     State({"type": "lv_card_toggle", "cluster": MATCH}, "id"),
@@ -734,11 +737,11 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
             show_labels=show_labels,
             cluster_name_map=cluster_name_map,
             saved_positions=saved_positions_per_sample.get(s),
-            title=title, marker_size=2, embed_legend=False,
+            title=title, marker_size=2, embed_legend=True,
         )
         fig.update_layout(
             height=panel_height,
-            showlegend=False,
+            showlegend=True,
             margin=dict(l=10, r=10, t=30, b=10),
         )
         cols.append(
