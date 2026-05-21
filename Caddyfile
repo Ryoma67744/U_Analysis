@@ -1,33 +1,27 @@
 # =============================================================================
 # MSI Analysis Application - Caddy リバースプロキシ設定
 #
-# 【手順】
-#  1. 独自ドメインを取得し、A レコードを VPS の IP アドレスに向ける
-#     （詳細: App/docs/DEPLOY.md セクション 7.1〜7.2）
-#  2. 下記の "msi.example.com" を実際のドメインに置換:
-#       sed -i 's/msi\.example\.com/msi.yourlab.com/g' Caddyfile
-#  3. 本番構成で起動:
-#       docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-#
-# Caddy が Let's Encrypt から SSL 証明書を自動取得・自動更新します。
-# 取得には TCP 80 / 443 が外部から到達可能である必要があります。
-#
-# 【ドメインを取らず IP アドレス直アクセス（HTTPのみ・非推奨）の場合】
-#   下記ブロックを削除し、代わりに以下を記述:
-#     :80 {
-#         reverse_proxy msi-app:3838
-#     }
-#   ※ パスワードが平文で流れるためチーム共有運用には不向き
+# 現状: ドメイン未取得のため IP アドレス直アクセス + Caddy ローカル CA で
+#       自己署名証明書を発行する構成 (本番暫定)。
+# 将来ドメインを取得したら:
+#   1. {auto_https off} のグローバル設定を削除
+#   2. https://133.167.73.188 → msi.yourlab.com に置換
+#   3. tls internal の行を削除（Let's Encrypt 自動取得に戻る）
+#   4. （任意）Strict-Transport-Security ヘッダを復活させ HSTS 有効化
 # =============================================================================
 
 {
-    # ドメイン未取得のため、Caddy のローカル CA で自己署名証明書を発行。
-    # ブラウザでは初回警告 → 「詳細→進む」で利用可。
-    auto_https disable_redirects
+    # 自動 HTTPS (ACME) を完全に無効化。tls internal で内部 CA を使う。
+    # disable_redirects ではなく off にしないと、IP 用の TLS connection policy が
+    # 適切に生成されず TLSv1.3 internal error (alert 80) が発生する
+    # (caddyserver/caddy #6364)。
+    auto_https off
 }
 
-# IP 直アクセス用: ポート 443 で待ち受け、自己署名証明書を提示
-:443 {
+# Site address に IP+スキームを明示する。:443 portless ブロックは SNI を
+# 要求するため、IP 接続 (SNI 未送信) で internal error になる
+# (caddyserver/caddy #6784)。
+https://133.167.73.188 {
     tls internal
 
     reverse_proxy msi-app:3838 {
@@ -45,21 +39,23 @@
     }
 
     # セキュリティヘッダー (clickjacking / sniff / referrer)
-    # 自己署名運用では HSTS を有効化しない（ドメイン取得後の切替で詰むため）
+    # 自己署名運用では HSTS は有効化しない（ドメイン切替時に詰むため）
     header {
         X-Frame-Options "DENY"
         X-Content-Type-Options "nosniff"
         Referrer-Policy "strict-origin-when-cross-origin"
+        # /healthz は cache 不要、その他は SPA なので no-store でも OK
         Cache-Control "no-store"
     }
 
+    # Caddy アクセスログ (json) を stdout に。docker logs で確認可能。
     log {
         output stdout
         format json
     }
 }
 
-# HTTP は明示的に HTTPS へリダイレクト（auto_https を無効化したので手動で定義）
-:80 {
+# HTTP は HTTPS に 308 リダイレクト (auto_https off なので手動定義が必須)
+http://133.167.73.188 {
     redir https://{host}{uri} 308
 }
