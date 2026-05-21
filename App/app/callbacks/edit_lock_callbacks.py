@@ -14,7 +14,10 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from dash import ClientsideFunction, Input, Output, State, callback, clientside_callback
+from dash import (
+    ClientsideFunction, Input, Output, State, callback, clientside_callback,
+    no_update,
+)
 
 from app.services import edit_lock_manager as elm
 from app.services.session_id import get_display_name, short_display_id
@@ -145,7 +148,9 @@ def acquire_calibration_panel_lock(*args):
     [Output("int_cal_enable", "disabled"),
      Output("int_cal_ion_mode", "options"),
      Output("int_cal_matrix", "disabled"),
-     Output("int_cal_adduct_filter", "disabled"),
+     # int_cal_adduct_filter は dbc.Checklist のため disabled プロパティ非対応
+     # (個別 option の disabled は options で制御可能だが、ロック中は他フィールドが
+     #  既に disabled になっているため、ここは省略しても実害なし)
      Output("int_cal_table", "editable"),
      Output("int_cal_annotation_path", "disabled"),
      Output("int_cal_search_window", "disabled"),
@@ -170,14 +175,14 @@ def reflect_calibration_panel_lock(lock_state, my_session_id):
     ]
 
     if not lock_state:
-        return (False, default_ion_options, False, False, True,
+        return (False, default_ion_options, False, True,
                 False, False, False, False, False, "")
 
     owner = lock_state.get("calibration_panel")
     if owner and owner.get("user_id") != my_session_id:
         msg = f"⚠ {owner.get('user_display', '?')} がキャリブ設定を編集中"
         # 全フィールド disabled / editable=False
-        return (True, disabled_ion_options, True, True, False,
+        return (True, disabled_ion_options, True, False,
                 True, True, True, True, True, msg)
-    return (False, default_ion_options, False, False, True,
+    return (False, default_ion_options, False, True,
             False, False, False, False, False, "")
