@@ -457,3 +457,34 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
         style={"display": "flex", "flexWrap": "wrap", "gap": "15px", "marginTop": "10px"},
         children=graphs,
     ), fig_dicts
+
+
+# ---------------------------------------------------------------------------
+# UMAP 表示設定の永続化（簡易ビューアーとの共有用）
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("umap_display_save_trigger", "data"),
+    [Input("umap_marker_size", "value"),
+     Input("umap_label_size", "value"),
+     Input("umap_show_labels", "value"),
+     Input("umap_columns_per_row", "value")],
+    State("seurat_rds_path_store", "data"),
+    prevent_initial_call=True,
+)
+def save_umap_display_settings(marker_size, label_size, show_labels,
+                                columns_per_row, rds_path):
+    """UMAP表示パラメータの変更を interactive_settings.json に保存。
+
+    簡易ビューアー (/lite/...) はこの値を読み出して同じ表示を再現する。
+    """
+    if not rds_path:
+        raise PreventUpdate
+    from app.callbacks.interactive_callbacks import _save_interactive_settings
+    _save_interactive_settings("umap_display", {
+        "marker_size": marker_size if marker_size is not None else 2,
+        "label_size": label_size if label_size is not None else 14,
+        "show_labels": bool(show_labels),
+        "columns_per_row": columns_per_row if columns_per_row is not None else 0,
+    })
+    return no_update

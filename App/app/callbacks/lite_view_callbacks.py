@@ -164,6 +164,7 @@ def initialize_lite_view(target, method_data):
     sample_name_map = settings.get("sample_name_map") or {}
     spatial_rotation = settings.get("spatial_rotation") or {}
     custom_color_map = settings.get("custom_color_map") or None
+    umap_display = settings.get("umap_display") or {}
     saved_positions_all = load_label_positions(rds_path, integration_method) or {}
 
     # per-cluster カード遅延展開時に再利用するため bundle をキャッシュ
@@ -176,6 +177,7 @@ def initialize_lite_view(target, method_data):
         "sample_name_map": sample_name_map,
         "spatial_rotation": spatial_rotation,
         "saved_positions_all": saved_positions_all,
+        "umap_display": umap_display,
     }
 
     # レポート組み立て
@@ -192,6 +194,7 @@ def initialize_lite_view(target, method_data):
         spatial_rotation=spatial_rotation,
         custom_color_map=custom_color_map,
         saved_positions_all=saved_positions_all,
+        umap_display=umap_display,
     )
     return body, False, ""
 
@@ -300,6 +303,7 @@ def _resolve_lite_data_for_target(target, method_data):
     sample_name_map = settings.get("sample_name_map") or {}
     spatial_rotation = settings.get("spatial_rotation") or {}
     custom_color_map = settings.get("custom_color_map") or None
+    umap_display = settings.get("umap_display") or {}
     saved_positions_all = load_label_positions(rds_path, integration_method) or {}
     color_map = _get_cluster_color_map(df_plot["Cluster"], custom_color_map)
 
@@ -311,6 +315,7 @@ def _resolve_lite_data_for_target(target, method_data):
         "sample_name_map": sample_name_map,
         "spatial_rotation": spatial_rotation,
         "saved_positions_all": saved_positions_all,
+        "umap_display": umap_display,
     }
     cached["_lite_bundle"] = bundle
     return bundle
@@ -357,6 +362,7 @@ def toggle_cluster_card(n_clicks, is_open, btn_id, current_body,
             sample_name_map=bundle["sample_name_map"],
             spatial_rotation=bundle["spatial_rotation"],
             saved_positions_all=bundle["saved_positions_all"],
+            umap_display=bundle.get("umap_display") or {},
         )
         return True, contents, "▼ 詳細を閉じる"
     return False, no_update, "▶ 詳細を表示 (UMAP / Spatial / Volcano)"
@@ -414,6 +420,7 @@ def expand_all_clusters(n_clicks, opens, ids, current_bodies,
                         sample_name_map=bundle["sample_name_map"],
                         spatial_rotation=bundle["spatial_rotation"],
                         saved_positions_all=bundle["saved_positions_all"],
+                        umap_display=bundle.get("umap_display") or {},
                     )
                 )
             new_labels.append("▼ 詳細を閉じる")
@@ -435,7 +442,7 @@ def _build_report_body(project, sub, integration_method, available_methods,
                        df_plot, df_stats, deg_records,
                        cluster_name_map=None, sample_name_map=None,
                        spatial_rotation=None, custom_color_map=None,
-                       saved_positions_all=None):
+                       saved_positions_all=None, umap_display=None):
     """全体レポートを html.Div の children リストとして返す。"""
     color_map = _get_cluster_color_map(df_plot["Cluster"], custom_color_map)
     return [
@@ -447,6 +454,7 @@ def _build_report_body(project, sub, integration_method, available_methods,
             sample_name_map=sample_name_map,
             spatial_rotation=spatial_rotation,
             saved_positions_all=saved_positions_all,
+            umap_display=umap_display,
         ),
         _build_per_cluster_cards(
             df_plot, deg_records, color_map,
@@ -563,18 +571,21 @@ def _build_header(project, sub, integration_method, available_methods,
 def _build_overview_section(df_plot, df_stats, color_map,
                               cluster_name_map=None, sample_name_map=None,
                               spatial_rotation=None,
-                              saved_positions_all=None):
+                              saved_positions_all=None,
+                              umap_display=None):
     """Overview: Sample 色統合 UMAP / Per-sample UMAP グリッド /
     Per-sample Spatial（クラスタ番号ラベル付き）/ Stats Table / Ratio Pie"""
     saved_positions_all = saved_positions_all or {}
     umap_pos = saved_positions_all.get("umap_integrated") or {}
     umap_per_sample_pos = saved_positions_all.get("umap_per_sample") or {}
     spatial_pos = saved_positions_all.get("spatial") or {}
+    umap_display = umap_display or {}
+    marker_size = umap_display.get("marker_size", 2) or 2
 
-    # 1. Sample 色分け統合 UMAP
+    # 1. Sample 色分け統合 UMAP（ラベルなしは固定: Sample 色のため番号ラベル非対象）
     sample_umap_fig = _build_umap_integrated_fig(
         df_plot, color_by="Sample", highlight_clusters=None,
-        show_legend=True, show_labels=False, marker_size=2,
+        show_legend=True, show_labels=False, marker_size=marker_size,
     )
     sample_umap_fig.update_layout(
         height=420, margin=dict(l=10, r=10, t=10, b=10),
@@ -586,6 +597,7 @@ def _build_overview_section(df_plot, df_stats, color_map,
         cluster_name_map=cluster_name_map,
         sample_name_map=sample_name_map,
         saved_positions_per_sample=umap_per_sample_pos,
+        umap_display=umap_display,
     )
 
     # 3. Per-sample Spatial（クラスタ番号ラベル + 回転反映）
@@ -636,7 +648,8 @@ def _build_overview_section(df_plot, df_stats, color_map,
 def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
                                   sample_name_map=None,
                                   saved_positions_per_sample=None,
-                                  panel_height=340):
+                                  panel_height=340,
+                                  umap_display=None):
     """サンプル別 Cluster 色分け UMAP グリッド（画像2 相当）"""
     if "Sample" not in df_plot.columns:
         return html.Div("Sample 列なし", className="text-muted small")
@@ -645,6 +658,13 @@ def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
         return html.Div("サンプルなし", className="text-muted small")
 
     saved_positions_per_sample = saved_positions_per_sample or {}
+    umap_display = umap_display or {}
+    marker_size = umap_display.get("marker_size", 2) or 2
+    label_size = umap_display.get("label_size", 11) or 11
+    show_labels = bool(umap_display.get("show_labels", False))
+    columns_per_row = umap_display.get("columns_per_row", 0) or 0
+    col_lg = _calc_col_lg_width(columns_per_row, default_lg=6)
+
     cols = []
     for s in samples:
         df_s = df_plot[df_plot["Sample"] == s]
@@ -652,7 +672,8 @@ def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
         title = _resolve_sample_label(s, sample_name_map)
         fig = _build_umap_integrated_fig(
             df_s, color_by="Cluster", highlight_clusters=None,
-            show_legend=True, show_labels=False, marker_size=2,
+            show_legend=True, show_labels=show_labels,
+            marker_size=marker_size, label_size=label_size,
             custom_colors=color_map,
             cluster_name_map=cluster_name_map,
             saved_positions=sample_pos,
@@ -664,9 +685,16 @@ def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
         )
         cols.append(dbc.Col(
             dcc.Graph(figure=fig, config={"displayModeBar": False}),
-            lg=6, md=12, className="mb-2",
+            lg=col_lg, md=12, className="mb-2",
         ))
     return dbc.Row(cols, className="g-2")
+
+
+def _calc_col_lg_width(columns_per_row, default_lg=6):
+    """columns_per_row 値から dbc.Col の lg 幅(1-12)を算出。0 はデフォルト。"""
+    if not columns_per_row or columns_per_row <= 0:
+        return default_lg
+    return max(1, 12 // columns_per_row)
 
 
 def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
@@ -725,6 +753,7 @@ def _build_per_sample_highlight_umap_grid(
     cluster_name_map=None, sample_name_map=None,
     saved_positions_per_sample=None,
     bg_opacity=0.4, panel_height=300,
+    umap_display=None,
 ):
     """サンプル別ハイライト UMAP グリッド（per-cluster カード用）
 
@@ -737,6 +766,13 @@ def _build_per_sample_highlight_umap_grid(
         return html.Div("サンプルなし", className="text-muted small")
 
     saved_positions_per_sample = saved_positions_per_sample or {}
+    umap_display = umap_display or {}
+    marker_size = umap_display.get("marker_size", 2) or 2
+    label_size = umap_display.get("label_size", 11) or 11
+    show_labels = bool(umap_display.get("show_labels", False))
+    columns_per_row = umap_display.get("columns_per_row", 0) or 0
+    col_lg = _calc_col_lg_width(columns_per_row, default_lg=6)
+
     cols = []
     for s in samples:
         df_s = df_plot[df_plot["Sample"] == s]
@@ -745,7 +781,8 @@ def _build_per_sample_highlight_umap_grid(
         fig = _build_umap_integrated_fig(
             df_s, color_by="Cluster",
             highlight_clusters=[highlight_cluster],
-            show_legend=False, show_labels=False, marker_size=2,
+            show_legend=False, show_labels=show_labels,
+            marker_size=marker_size, label_size=label_size,
             custom_colors=color_map,
             cluster_name_map=cluster_name_map,
             saved_positions=sample_pos,
@@ -758,7 +795,7 @@ def _build_per_sample_highlight_umap_grid(
         )
         cols.append(dbc.Col(
             dcc.Graph(figure=fig, config={"displayModeBar": False}),
-            lg=6, md=12, className="mb-1",
+            lg=col_lg, md=12, className="mb-1",
         ))
     return dbc.Row(cols, className="g-2")
 
@@ -893,9 +930,13 @@ def _build_one_cluster_card(cluster_id, color, n_cells, pct,
         n_clicks=0,
     )
     collapse = dbc.Collapse(
-        html.Div(
-            id={"type": "lv_card_body", "cluster": cluster_key},
-            children=[],
+        dcc.Loading(
+            html.Div(
+                id={"type": "lv_card_body", "cluster": cluster_key},
+                children=[],
+            ),
+            type="default",
+            color="#0d6efd",
         ),
         id={"type": "lv_card_collapse", "cluster": cluster_key},
         is_open=False,
@@ -938,7 +979,8 @@ def _build_cluster_card_expand_contents(cluster_id, df_plot, color_map,
                                          cluster_name_map=None,
                                          sample_name_map=None,
                                          spatial_rotation=None,
-                                         saved_positions_all=None):
+                                         saved_positions_all=None,
+                                         umap_display=None):
     """カード展開時に lv_card_body に差し込む重量パート。
 
     Per-sample Highlighted UMAP グリッド / Per-sample Spatial /
@@ -955,6 +997,7 @@ def _build_cluster_card_expand_contents(cluster_id, df_plot, color_map,
         saved_positions_per_sample=umap_per_sample_pos,
         bg_opacity=0.4,
         panel_height=280,
+        umap_display=umap_display,
     )
 
     hl_spatial = _build_per_sample_spatial(
