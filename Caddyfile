@@ -18,8 +18,14 @@
 # =============================================================================
 
 {
+	# SNI を送らないクライアント (curl 7.77+ で IP 直アクセス、ブラウザの一部
+	# サブ接続 / pre-connect / HTTP/3 probe など) に対するフォールバック。
+	# これがないと SNI 空 ClientHello に対し Caddy は "no matching cert" を返し
+	# TLS alert internal error → ブラウザでは ERR_SSL_PROTOCOL_ERROR になる。
+	default_sni 133.167.73.188
+
 	# TLS handshake / 証明書発行の詳細をログに出す（原因切り分け用）。
-	# 問題が解決したらこの行を削除して通常運用に戻すこと。
+	# 動作が安定したらこの行を削除して通常運用に戻すこと。
 	debug
 }
 
