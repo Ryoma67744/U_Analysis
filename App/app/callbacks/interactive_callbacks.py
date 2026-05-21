@@ -555,24 +555,14 @@ def toggle_integration_method(n, is_open):
      State("interactive_project_select", "value"),
      State("interactive_sub_project_select", "value"),
      State("default_annotation_csv", "value")],
-    background=True,
-    running=[
-        (Output("load_interactive_data", "disabled"), True, False),
-        (Output("load_progress_container", "style"),
-         {"display": "block", "marginTop": "10px"},
-         {"display": "none", "marginTop": "10px"}),
-        (Output("btn_cancel_load", "style"),
-         {"display": "inline-block"}, {"display": "none"}),
-    ],
-    progress=[
-        Output("load_progress_bar", "value"),
-        Output("load_progress_bar", "max"),
-        Output("load_progress_label", "children"),
-    ],
-    cancel=[Input("btn_cancel_load", "n_clicks")],
+    background=False,  # background=True (DiskcacheManager) は fork worker で実行され
+    # _project_states がメインプロセスと共有されず plot_data が None のままになる問題が
+    # あるため foreground (メインプロセス内) で実行する。データロード中は UI が一時的に
+    # 応答しないが、確実に動作する。将来 diskcache 経由で state を永続化したら
+    # background=True に戻せる。
     prevent_initial_call=True,
 )
-def load_interactive_data(set_progress, n_clicks, integration_method, rds_map, result_folder,
+def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
                           cal_enable, cal_matrix, cal_table_data,
                           cal_search_window, cal_min_peaks,
                           cal_regression_mode,
@@ -583,7 +573,7 @@ def load_interactive_data(set_progress, n_clicks, integration_method, rds_map, r
         _build_feature_annotation_map, _calibrate_mz, _calibrate_mz_from_pairs,
         _reannotate_with_calibration,
     )
-    set_progress((5, 100, "入力チェック中..."))
+    # 進捗表示は foreground 化のため削除 (旧: set_progress(...))
     _n_out = 32
     _no_cal = (no_update,) * 11  # キャリブレーション設定復元用
     _sap_hide = ({"display": "none"},)  # sap_btn_wrapper 非表示
@@ -608,9 +598,9 @@ def load_interactive_data(set_progress, n_clicks, integration_method, rds_map, r
         ) + _no_cal + _sap_hide + _no_label_clear
 
     try:
-        set_progress((15, 100, "RDS 抽出中（重い解析では数十秒かかります）..."))
+        pass  # 旧: set_progress((15, 100, "RDS 抽出中..."))
         result = _bridge.extract_data(rds_path)
-        set_progress((50, 100, "プロットデータ準備中..."))
+        pass  # 旧: set_progress((50, 100, "プロットデータ準備中..."))
 
         # rds_path をプロジェクトキーとして state を切替（複数プロジェクト同時閲覧対応）
         state = _get_state(rds_path)
@@ -648,7 +638,7 @@ def load_interactive_data(set_progress, n_clicks, integration_method, rds_map, r
         feature_options = [{"label": f, "value": f} for f in features[:500]]
 
         # DEG 結果を探す（選択した統合手法のフォルダを優先）
-        set_progress((65, 100, "DEG マーカー読込中..."))
+        pass  # 旧: set_progress((65, 100, "DEG マーカー読込中..."))
         deg_data = None
         if result_folder:
             result_base = Path(result_folder)
@@ -660,7 +650,7 @@ def load_interactive_data(set_progress, n_clicks, integration_method, rds_map, r
 
         # --- m/z キャリブレーション（有効時のみ） ---
         if cal_enable and deg_data and mrm_path and cal_table_data:
-            set_progress((80, 100, "m/z キャリブレーション処理中..."))
+            pass  # 旧: set_progress((80, 100, "m/z キャリブレーション処理中..."))
             try:
                 # テーブルから use="Yes" のペアを抽出
                 matched_pairs = []
@@ -766,7 +756,7 @@ def load_interactive_data(set_progress, n_clicks, integration_method, rds_map, r
             r_reg = cal_regression_mode or "poly3"
 
         # --- アノテーションマップの構築（Feature検索用） ---
-        set_progress((90, 100, "アノテーション構築 / 設定復元中..."))
+        pass  # 旧: set_progress((90, 100, "アノテーション構築 / 設定復元中..."))
         try:
             _interactive_data["annotation_map"] = _build_feature_annotation_map(
                 result["features_list"],
@@ -790,7 +780,7 @@ def load_interactive_data(set_progress, n_clicks, integration_method, rds_map, r
             except Exception as e:
                 warn_user(f"サブプロジェクト情報の取得に失敗: {e}")
 
-        set_progress((100, 100, "完了"))
+        pass  # 旧: set_progress((100, 100, "完了"))
         return (
             info_text,
             {},  # 可視化コンテナ表示
