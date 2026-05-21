@@ -41,11 +41,15 @@ def setup_logging(log_dir: Path = None, level=logging.INFO):
     )
     fh.setLevel(level)
     fh.setFormatter(formatter)
+    # 子 logger からのレコードにも analyst_name/access_tier を注入するため
+    # handler レベルに Filter を装着する (Logger.addFilter は子 logger には伝播しない)
+    fh.addFilter(AnalystContextFilter())
 
     # コンソールハンドラ
     ch = logging.StreamHandler()
     ch.setLevel(level)
     ch.setFormatter(formatter)
+    ch.addFilter(AnalystContextFilter())
 
     # ルートロガー "msi" を設定
     root = logging.getLogger("msi")
@@ -54,8 +58,6 @@ def setup_logging(log_dir: Path = None, level=logging.INFO):
     if not root.handlers:
         root.addHandler(fh)
         root.addHandler(ch)
-        # 全 handler に解析者名 / tier を注入する Filter を登録
-        root.addFilter(AnalystContextFilter())
 
     # 監査用 access.log を別ハンドラで初期化
     setup_access_logger(log_dir)

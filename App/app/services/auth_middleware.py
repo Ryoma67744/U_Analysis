@@ -201,9 +201,11 @@ def _change_password_view():
 
     new_a = (payload.get("new_password_a") or "").strip()
     new_b = (payload.get("new_password_b") or "").strip()
-    if not new_a and not new_b:
+    new_master = (payload.get("new_master_password") or "").strip()
+    if not new_a and not new_b and not new_master:
         return jsonify(
-            {"ok": False, "error": "変更対象 (A または B) を指定してください"}
+            {"ok": False,
+             "error": "変更対象 (Master / A / B のいずれか) を指定してください"}
         ), 400
 
     updated = []
@@ -223,6 +225,14 @@ def _change_password_view():
                 ), 400
             auth_service.update_password("b", new_b, analyst)
             updated.append("B")
+        if new_master:
+            if len(new_master) < 8:
+                return jsonify(
+                    {"ok": False,
+                     "error": "Master Password は 8 文字以上にしてください"}
+                ), 400
+            auth_service.update_master(new_master, analyst)
+            updated.append("Master")
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
 
