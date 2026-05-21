@@ -20,11 +20,14 @@
 #   ※ パスワードが平文で流れるためチーム共有運用には不向き
 # =============================================================================
 
-msi.example.com, 133.167.73.188 {
-    # ドメイン未設定で IP 直アクセス運用のため、Caddy のローカル CA で
-    # 自己署名証明書を発行する（ブラウザでは初回警告 → 「詳細→進む」で利用可）。
-    # 実ドメインを取得して DNS を VPS に向けたら、tls internal の行を削除すれば
-    # Let's Encrypt の自動発行に戻る。
+{
+    # ドメイン未取得のため、Caddy のローカル CA で自己署名証明書を発行。
+    # ブラウザでは初回警告 → 「詳細→進む」で利用可。
+    auto_https disable_redirects
+}
+
+# IP 直アクセス用: ポート 443 で待ち受け、自己署名証明書を提示
+:443 {
     tls internal
 
     reverse_proxy msi-app:3838 {
@@ -35,7 +38,6 @@ msi.example.com, 133.167.73.188 {
         }
         # X-Forwarded-Proto を渡し、Flask 側で secure Cookie / HTTPS 判別を可能に
         header_up X-Forwarded-Proto https
-        header_up X-Forwarded-For {remote_host}
     }
 
     request_body {
@@ -43,19 +45,21 @@ msi.example.com, 133.167.73.188 {
     }
 
     # セキュリティヘッダー (clickjacking / sniff / referrer)
-    # 自己署名証明書運用では HSTS を有効化しない（ブラウザに永続キャッシュ
-    # されると、後でドメイン切替する際に取り消せず詰むため）
+    # 自己署名運用では HSTS を有効化しない（ドメイン取得後の切替で詰むため）
     header {
         X-Frame-Options "DENY"
         X-Content-Type-Options "nosniff"
         Referrer-Policy "strict-origin-when-cross-origin"
-        # /healthz は cache 不要、その他は SPA なので no-store でも OK
         Cache-Control "no-store"
     }
 
-    # Caddy アクセスログ (json) を stdout に。docker logs で確認可能。
     log {
         output stdout
         format json
     }
+}
+
+# HTTP は明示的に HTTPS へリダイレクト（auto_https を無効化したので手動で定義）
+:80 {
+    redir https://{host}{uri} 308
 }
