@@ -20,7 +20,13 @@
 #   ※ パスワードが平文で流れるためチーム共有運用には不向き
 # =============================================================================
 
-msi.example.com {
+msi.example.com, 133.167.73.188 {
+    # ドメイン未設定で IP 直アクセス運用のため、Caddy のローカル CA で
+    # 自己署名証明書を発行する（ブラウザでは初回警告 → 「詳細→進む」で利用可）。
+    # 実ドメインを取得して DNS を VPS に向けたら、tls internal の行を削除すれば
+    # Let's Encrypt の自動発行に戻る。
+    tls internal
+
     reverse_proxy msi-app:3838 {
         transport http {
             read_timeout 600s
@@ -36,9 +42,10 @@ msi.example.com {
         max_size 500MB
     }
 
-    # セキュリティヘッダー (HSTS / clickjacking / sniff / referrer)
+    # セキュリティヘッダー (clickjacking / sniff / referrer)
+    # 自己署名証明書運用では HSTS を有効化しない（ブラウザに永続キャッシュ
+    # されると、後でドメイン切替する際に取り消せず詰むため）
     header {
-        Strict-Transport-Security "max-age=31536000; includeSubDomains"
         X-Frame-Options "DENY"
         X-Content-Type-Options "nosniff"
         Referrer-Policy "strict-origin-when-cross-origin"
