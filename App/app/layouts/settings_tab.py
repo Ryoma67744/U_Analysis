@@ -149,6 +149,29 @@ def _create_analysis_settings_subtab():
                                        "marginTop": "2px", "display": "block"},
                             ),
                         ]),
+                        # DESI ROI 設定 (入力 .txt の最終列に ROI 文字列がある場合のみ意味あり)
+                        # ON にすると各 ROI を「別サンプル」として Multi-sample mode で統合解析
+                        html.Div(className="param-group", style={"marginTop": "15px"}, children=[
+                            html.H5("ROI 設定 (DESI、オプション)"),
+                            dbc.Switch(
+                                id="desi_use_roi_as_sample",
+                                label="ROI 列があれば各 ROI を別サンプルとして解析",
+                                value=ls.get("desi_use_roi_as_sample", False),
+                                className="mt-1 mb-2",
+                            ),
+                            dbc.Label("ROI フィルタ (空 = 全 ROI、カンマ区切りで指定)",
+                                      className="small"),
+                            dbc.Input(
+                                id="desi_roi_filter",
+                                value=ls.get("desi_roi_filter", ""),
+                                placeholder="例: Brain, Heart",
+                                size="sm",
+                            ),
+                            dbc.FormText(
+                                "入力 .txt の最終列に ROI 文字列がある場合のみ有効。"
+                                "OFF にするか ROI 列が無い場合はファイル全体を 1 サンプル扱い。",
+                            ),
+                        ]),
                         # TIMS イオンモード設定（TIMS選択時のみ表示）
                         html.Div(
                             id="tims_ion_settings",

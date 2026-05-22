@@ -12,6 +12,49 @@
 
 ---
 
+## 2026-05-22_ver2.0
+
+### 機能追加 (Major Bump)
+- **DESI 解析: 入力 .txt の最終列に `ROI` 列がある場合、各 ROI を「別サンプル」
+  として Multi-sample mode (Harmony/RPCA) で統合解析できる機能を追加**。
+  TIMS スクリプトに既に存在する annotation/slice_id 機能 (`260308_DBSCAN_
+  With_cluster_ver17.R`) と同等の仕組みを DESI v14 にも実装した。
+
+  実装内容:
+  - `App/Script/DESI/260422_DESI-UMAP_Template_v14.R`:
+    - USER SETTINGS に `USE_ROI_AS_SAMPLE` / `ROI_FILTER` 変数追加
+    - `read_desi_data` 関数で列数判定により ROI 列を検出
+      (`ncol(data_df) > 3 + length(metabolite_names)` ならあり)、
+      文字列カラムとして別途読込んで `coordinates$ROI` に格納
+    - メインフローで `USE_ROI_AS_SAMPLE && has_roi` の場合、各 ROI を
+      mask で subset して独立した Seurat object として `seu_list` に追加
+    - `sample_names` を ROI 別サンプル化後のリストで上書きし、後続の
+      Multi-sample mode (Harmony/RPCA) フローにそのまま乗せる
+  - `App/app/layouts/settings_tab.py`:
+    - UMAP 解析設定右カラムに「ROI 設定 (DESI、オプション)」セクション追加
+    - `dbc.Switch(id="desi_use_roi_as_sample")` トグル
+    - `dbc.Input(id="desi_roi_filter")` カンマ区切りでフィルタ可能
+  - `App/app/callbacks/analysis_callbacks.py`:
+    - `run_analysis` の State に `desi_use_roi_as_sample` /
+      `desi_roi_filter` を追加
+    - `save_last_settings` に同キーを追加 (永続化)
+    - DESI 解析時のみ `params["use_roi_as_sample"]` /
+      `params["roi_filter"]` をセット
+  - `App/app/services/analysis_runner.py`:
+    - `params` から `USE_ROI_AS_SAMPLE` / `ROI_FILTER` を R スクリプトに
+      `_replace_assign` で注入
+  - `App/app/services/session_manager.py`:
+    - 永続化許可キーに `desi_use_roi_as_sample` / `desi_roi_filter` を追加
+
+  互換性:
+  - ROI 列無しの既存データ → 従来挙動 (警告も出ない)
+  - ROI 列ありデータ + ROI モード OFF → ROI 列無視で 1 サンプル扱い
+  - ROI 列ありデータ + ROI モード ON → 各 ROI が別サンプル
+  - ROI 列なし + ROI モード ON → 警告ログ "ROI 列なし" + 従来挙動
+  - フィルタにマッチする ROI 0 件 → 警告 + 従来挙動
+
+  ※ 機能追加のため major bump (1.12 → 2.0)。
+
 ## 2026-05-22_ver1.12
 
 ### 修正

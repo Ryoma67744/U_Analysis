@@ -451,6 +451,16 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
             lines, var_name, _r_str(params["main_analysis_script_path"])
         )
 
+    # --- DESI ROI 設定の注入 (USE_ROI_AS_SAMPLE / ROI_FILTER) ---
+    # ROI 列があれば各 ROI を別サンプルとして Multi-sample mode (Harmony/RPCA) で
+    # 統合解析する設定。analysis_callbacks.py で DESI 通常解析時のみセットされる。
+    if "use_roi_as_sample" in params:
+        flag = "TRUE" if params["use_roi_as_sample"] else "FALSE"
+        lines = _replace_assign(lines, "USE_ROI_AS_SAMPLE", flag)
+    if params.get("roi_filter"):
+        roi_r = "c(" + ", ".join(_r_str(x) for x in params["roi_filter"]) + ")"
+        lines = _replace_assign(lines, "ROI_FILTER", roi_r)
+
     # --- m/z キャリブレーション（再解析） ---
     if params.get("calibration_enable"):
         lines = _replace_assign(lines, "V13_CALIBRATION_ENABLE", "TRUE")

@@ -213,6 +213,14 @@ PROJECT_NAME_PREFIX <- "250621_Ohashi_GF-CV_1"
 # MRMリストのファイルパス (化合物同定用)
 MRM_FILE_PATH <- "C:\\Users\\Cciia\\Biochem Dropbox\\Biochem's shared workspace\\Workspace\\UMAP\\DESI\\MRM\\MRM.xlsx"
 
+# ROI 別サンプル化モード (TIMS の annotation/slice_id と同等の機能)
+# - USE_ROI_AS_SAMPLE = TRUE: 各 .txt の最終列に ROI 文字列があれば、
+#   各 ROI を「別サンプル」として扱い Multi-sample mode (Harmony/RPCA) で統合解析
+# - USE_ROI_AS_SAMPLE = FALSE: ROI 列があっても無視し、ファイル全体を 1 サンプルとして従来挙動
+# - ROI_FILTER = NULL: 全 ROI を使用 / c("Brain", "Heart"): 指定 ROI のみ使用
+USE_ROI_AS_SAMPLE <- FALSE
+ROI_FILTER <- NULL
+
 # ============================================================
 # ==== USER EDITABLE SETTINGS END =============================
 # ============================================================
@@ -1682,20 +1690,44 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
     spot_id = spot_names,
     row.names = spot_names
   )
-  
+
+  # [ROI 検出] データ列数が「3 (spot_index/x/y) + length(metabolite_names)」を
+  # 超えていれば最終列を ROI として扱う (TIMS の annotation 列と同等)。
+  # ROI 列は文字列なので、freadで全体を numeric 読みした data_df では NA になる。
+  # → 該当列だけを character として別途読み直す。
+  expected_cols <- 3 + length(metabolite_names)
+  has_roi <- ncol(data_df) > expected_cols
+  if (has_roi) {
+    roi_col_idx <- ncol(data_df)
+    roi_data <- data.table::fread(file_path, sep = "\t", skip = 4,
+                                   header = FALSE, select = roi_col_idx,
+                                   colClasses = "character", fill = TRUE,
+                                   data.table = FALSE)
+    roi_vec <- as.character(roi_data[[1]])
+    # data_df を空列除去している (line 1661) ため、行数がズレることはないが念のため揃える
+    if (length(roi_vec) == nrow(coordinates)) {
+      coordinates$ROI <- roi_vec
+    } else {
+      has_roi <- FALSE
+      message(">> WARNING: ROI 列の行数 (", length(roi_vec),
+              ") が座標行数 (", nrow(coordinates), ") と不一致。ROI 列無視。")
+    }
+  }
+
   count_data <- data_df[, metabolite_cols, drop = FALSE]
   count_data[is.na(count_data)] <- 0
-  
+
   count_matrix <- t(as.matrix(count_data))
   colnames(count_matrix) <- spot_names
   rownames(count_matrix) <- metabolite_names[1:nrow(count_matrix)]
   rownames(count_matrix) <- make.unique(rownames(count_matrix))
   count_matrix <- as(count_matrix, "dgCMatrix")
-  
+
   return(list(
     count_matrix = count_matrix,
     coordinates = coordinates,
-    metabolite_names = metabolite_names[1:nrow(count_matrix)]
+    metabolite_names = metabolite_names[1:nrow(count_matrix)],
+    has_roi = has_roi
   ))
 }
 
@@ -1945,40 +1977,87 @@ if (RESUME_FROM_RDS && file.exists(rds_path1_in)) {
 } else {
   # 生データからの読み込み
   seu_list <- list()
+  expanded_sample_names <- c()  # ROI 別サンプル化後の sample 名リスト
   for(ii in seq_along(sample_names)){
     sample_name <- sample_names[ii]
     file_path <- file.path(data_folder, paste0(sample_name, ".txt"))
     desi_data <- read_desi_data(file_path, sample_prefix = sample_name)
-    count_matrix <- desi_data$count_matrix
-    coordinates_data <- desi_data$coordinates
-    spatial_coords <- coordinates_data[, c("spot_index", "x", "y", "spot_id")]
-    
-    common_spots <- intersect(colnames(count_matrix), spatial_coords$spot_id)
-    count_matrix <- count_matrix[, common_spots, drop = FALSE]
-    spatial_coords <- spatial_coords[spatial_coords$spot_id %in% common_spots, ]
-    spatial_coords <- spatial_coords[match(colnames(count_matrix), spatial_coords$spot_id), ]
-    
-    if(!inherits(count_matrix, "dgCMatrix")) count_matrix <- as(as.matrix(count_matrix), "dgCMatrix")
-    spot_coords <- spatial_coords[, c("x", "y")]
-    rownames(spot_coords) <- spatial_coords$spot_id
-    
-    seurat_obj <- CreateSeuratObject(counts = count_matrix, project = "DESI_MSI", assay = "Spatial")
-    seurat_obj$sample <- sample_name
-    seurat_obj@misc$measurement_label <- tools::file_path_sans_ext(basename(file_path))
-    seurat_obj$x_coord <- spot_coords[colnames(seurat_obj), "x"]
-    seurat_obj$y_coord <- spot_coords[colnames(seurat_obj), "y"]
-    seurat_obj$spot_index <- spatial_coords[colnames(seurat_obj), "spot_index"]
-    seurat_obj$nCount_Spatial <- colSums(count_matrix)
-    seurat_obj$nFeature_Spatial <- colSums(count_matrix > 0)
-    seurat_obj@misc$metabolite_names <- desi_data$metabolite_names
-    seurat_obj@misc$file_path <- file_path
-    
-    filtering_result_otsu <- filter_low_count_spots(
-      seurat_obj, method = "otsu", use_log_scale = TRUE,
-      n_bins = 256, plot_results = TRUE, sample_name = sample_name, outdir = od
-    )
-    seu_list[[ii]] <- filtering_result_otsu$filtered_seurat
+
+    # ROI モード ON かつ ROI 列ありなら、各 ROI を別サンプルとして subset
+    # それ以外 (OFF または ROI 列なし) はファイル全体を 1 サンプルとして処理
+    if (isTRUE(USE_ROI_AS_SAMPLE) && isTRUE(desi_data$has_roi)) {
+      roi_values <- unique(desi_data$coordinates$ROI)
+      roi_values <- roi_values[!is.na(roi_values) & nzchar(roi_values)]
+      if (!is.null(ROI_FILTER) && length(ROI_FILTER) > 0) {
+        roi_values <- intersect(roi_values, ROI_FILTER)
+      }
+      if (length(roi_values) == 0) {
+        message(">> WARNING: 有効な ROI が見つかりません (フィルタ後 0 件)。"
+                , "ファイル全体を 1 サンプルとして処理: ", sample_name)
+        sub_samples <- list(list(name = sample_name,
+                                 mask = rep(TRUE, ncol(desi_data$count_matrix))))
+      } else {
+        message(">> ROI モード ON: ", sample_name, " を ", length(roi_values),
+                " 個の ROI に分割 (",
+                paste(roi_values, collapse = ", "), ")")
+        sub_samples <- lapply(roi_values, function(r) {
+          list(name = paste0(sample_name, "_", r),
+               mask = !is.na(desi_data$coordinates$ROI) &
+                      desi_data$coordinates$ROI == r)
+        })
+      }
+    } else {
+      if (isTRUE(USE_ROI_AS_SAMPLE) && !isTRUE(desi_data$has_roi)) {
+        message(">> WARNING: ROI モード ON だが ROI 列が見つかりません。"
+                , "ファイル全体を 1 サンプルとして処理: ", sample_name)
+      }
+      sub_samples <- list(list(name = sample_name,
+                               mask = rep(TRUE, ncol(desi_data$count_matrix))))
+    }
+
+    for (sub in sub_samples) {
+      sub_name <- sub$name
+      mask <- sub$mask
+      sub_count <- desi_data$count_matrix[, mask, drop = FALSE]
+      sub_coords <- desi_data$coordinates[mask, , drop = FALSE]
+      spatial_coords <- sub_coords[, c("spot_index", "x", "y", "spot_id")]
+
+      common_spots <- intersect(colnames(sub_count), spatial_coords$spot_id)
+      sub_count <- sub_count[, common_spots, drop = FALSE]
+      spatial_coords <- spatial_coords[spatial_coords$spot_id %in% common_spots, ]
+      spatial_coords <- spatial_coords[match(colnames(sub_count), spatial_coords$spot_id), ]
+
+      if(!inherits(sub_count, "dgCMatrix")) sub_count <- as(as.matrix(sub_count), "dgCMatrix")
+      spot_coords <- spatial_coords[, c("x", "y")]
+      rownames(spot_coords) <- spatial_coords$spot_id
+
+      seurat_obj <- CreateSeuratObject(counts = sub_count, project = "DESI_MSI", assay = "Spatial")
+      seurat_obj$sample <- sub_name
+      seurat_obj@misc$measurement_label <- sub_name
+      seurat_obj$x_coord <- spot_coords[colnames(seurat_obj), "x"]
+      seurat_obj$y_coord <- spot_coords[colnames(seurat_obj), "y"]
+      seurat_obj$spot_index <- spatial_coords[colnames(seurat_obj), "spot_index"]
+      seurat_obj$nCount_Spatial <- colSums(sub_count)
+      seurat_obj$nFeature_Spatial <- colSums(sub_count > 0)
+      seurat_obj@misc$metabolite_names <- desi_data$metabolite_names
+      seurat_obj@misc$file_path <- file_path
+      # ROI 情報も Seurat metadata に保持 (検証 / 後処理用)
+      if (isTRUE(desi_data$has_roi)) {
+        sub_roi <- sub_coords$ROI[match(colnames(seurat_obj), sub_coords$spot_id)]
+        seurat_obj$ROI <- sub_roi
+      }
+
+      filtering_result_otsu <- filter_low_count_spots(
+        seurat_obj, method = "otsu", use_log_scale = TRUE,
+        n_bins = 256, plot_results = TRUE, sample_name = sub_name, outdir = od
+      )
+      seu_list[[length(seu_list) + 1]] <- filtering_result_otsu$filtered_seurat
+      expanded_sample_names <- c(expanded_sample_names, sub_name)
+    }
   }
+  # ROI 別サンプル化後の sample_names で後続処理が動くよう上書き
+  # (例: Multi-sample mode 判定 length(sample_names) > 1、UMAP 凡例など)
+  sample_names <- expanded_sample_names
   # RDS保存 (slim: DietSeurat + qs 圧縮)
   save_rds_compact(seu_list, rds_path1_out)
   gc()
