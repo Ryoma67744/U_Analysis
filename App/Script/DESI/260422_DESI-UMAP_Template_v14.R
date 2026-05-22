@@ -1743,8 +1743,11 @@ spatial_smooth_seurat <- function(seurat_obj, radius, assay = "Spatial", layer =
   smoothed_data <- matrix(0, nrow = n_features, ncol = n_spots,
                           dimnames = list(rownames(count_data), colnames(count_data)))
 
-  # 距離行列を1回だけ計算（50,000スポット以下: 高速、超過: メモリ節約のためスポットごと）
-  use_dist_mat <- (n_spots <= 50000)
+  # 距離行列を1回だけ計算（15,000スポット以下: 高速、超過: メモリ節約のためスポットごと）
+  # 25K spots では as.matrix(dist) が ~5 GB を要求し Docker メモリ上限で OOM Killer に
+  # 殺される事例があったため、閾値を 50000 -> 15000 に引き下げて防御的にループ法へ
+  # フォールバックする (~1.4 GB に抑えられる)。
+  use_dist_mat <- (n_spots <= 15000)
   if (use_dist_mat) {
     dist_mat <- as.matrix(dist(coords))
   }

@@ -12,6 +12,49 @@
 
 ---
 
+## 2026-05-22_ver2.2
+
+### バグ修正
+- **DESI ROI モードが通常 UMAP 解析で適用されない不具合を修正**。
+  ver2.0 で追加した「ROI 列があれば各 ROI を別サンプルとして解析」
+  トグル + ROI 選択チェックボックスが、再解析 (Cluster Filter) では
+  動作していたが、**通常 UMAP 解析** では UI 値が R スクリプトに
+  注入されず、ROI 列があっても無視されてファイル全体が 1 サンプル
+  として処理されていた。
+
+  症状: ユーザーが ROI トグル ON + LN/TDLN を選択しても、ログには
+  `Original spots: 49323` (ファイル全体) と単一の spot filtering
+  パスのみが現れ、`>> ROI モード ON: ... を 2 個の ROI に分割`
+  メッセージが出ない。25K spots を超える単一サンプル扱いとなり、
+  後段の `spatial_smooth_seurat` で ~5 GB の距離行列確保により
+  Docker メモリ上限で R プロセスが OOM Killer に殺され、明確な
+  R エラーログが残らないまま「エラー発生」となっていた。
+
+  実装内容:
+  - `analysis_runner.py:generate_v8_config`: `MZ_ALIGN_PPM` 注入の
+    直後に `USE_ROI_AS_SAMPLE` / `ROI_FILTER` の `_replace_assign`
+    ブロックを追加 (`generate_cluster_filter_config:454-462` と同じ
+    ロジック)。これにより通常 UMAP 解析でも UI トグル値・ROI 選択が
+    R スクリプトに反映される
+  - `260422_DESI-UMAP_Template_v14.R:spatial_smooth_seurat`:
+    `use_dist_mat` の閾値を **50000 -> 15000** に引き下げ。
+    25K spots の単一サンプルケースでも ~1.4 GB に収まるループ法へ
+    自動フォールバックし、OOM Killer による突然死を防御
+
+### 検証
+- ROI ありデータ + ROI モード ON + LN/TDLN チェック → ログに
+  `>> ROI モード ON: ... を 2 個の ROI に分割 (LN, TDLN)` が出る、
+  spot filtering メッセージが 2 回 (各 ROI 用) 表示される、
+  Harmony / RPCA で 2 サンプル統合された UMAP が完走する
+- ROI モード OFF (デフォルト) で旧データ → 従来通り 1 サンプル解析
+- ROI ありデータ + ROI モード ON + LN のみチェック → LN のみ
+  Single-sample mode で解析、TDLN は除外
+- 生成された `{output_dir}/log/v8_runtime_*.R` で
+  `USE_ROI_AS_SAMPLE <- TRUE` / `ROI_FILTER <- c("LN", "TDLN")`
+  に置換されていることを確認
+
+---
+
 ## 2026-05-22_ver2.1
 
 ### UI 改善

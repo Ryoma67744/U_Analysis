@@ -355,6 +355,16 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
     if params.get("mz_align_ppm"):
         lines = _replace_assign(lines, "MZ_ALIGN_PPM", str(params["mz_align_ppm"]))
 
+    # --- DESI ROI 設定の注入 (USE_ROI_AS_SAMPLE / ROI_FILTER) ---
+    # ROI 列があれば各 ROI を別サンプルとして Multi-sample mode (Harmony/RPCA) で
+    # 統合解析する設定。analysis_callbacks.py で DESI 通常解析時のみセットされる。
+    if "use_roi_as_sample" in params:
+        flag = "TRUE" if params["use_roi_as_sample"] else "FALSE"
+        lines = _replace_assign(lines, "USE_ROI_AS_SAMPLE", flag)
+    if params.get("roi_filter"):
+        roi_r = "c(" + ", ".join(_r_str(x) for x in params["roi_filter"]) + ")"
+        lines = _replace_assign(lines, "ROI_FILTER", roi_r)
+
     # 一時ファイルをlog/サブフォルダに保存
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     config_filename = f"v8_runtime_{timestamp}.R"
