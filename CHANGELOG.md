@@ -12,6 +12,24 @@
 
 ---
 
+## 2026-05-22_ver1.4
+
+### 修正
+- 簡易ビューアー: ver1.3 で `Plotly.Plots.resize()` を強制発火したが、
+  **一括展開時に Highlighted Spatial だけが空白のまま**残る症状があった。
+  UMAP は正常表示なのに Spatial だけ空白という非対称の原因は、
+  `_create_single_spatial_fig` (interactive_spatial.py:260-269) が
+  `xaxis.range` を明示せず autorange に依存していたため。新規 mount 時
+  に autorange 計算がスキップされると、**Spatial はピクセル座標が大きい
+  ためデータが画面外** に出て空白に見える (UMAP は座標が小さく問題に
+  出にくい)。
+  ユーザー仮説「拡大倍率の問題で見えなくなっている可能性」が決定的
+  ヒントとなった。
+  clientside callback に `Plotly.relayout(el, {xaxis.autorange: true,
+  yaxis.autorange: true, ...})` を追加し、resize 後に axis range を
+  data に合わせて再計算するようにした (= ツールバー "Autoscale" ボタン
+  の動作を自動化)。
+
 ## 2026-05-22_ver1.3
 
 ### 修正

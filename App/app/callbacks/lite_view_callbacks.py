@@ -1383,19 +1383,26 @@ clientside_callback(
 
 
 # =============================================================================
-# Plotly 強制リサイズ (clientside)
+# Plotly 強制リサイズ + autorange (clientside)
 # =============================================================================
 # 新規 mount された Plotly Graph は親要素サイズの取得タイミングによっては
-# 内部レイアウトが height=0 のまま固まることがある (lazy rendering)。
-# Plotly のツールバー "Autoscale/Reset axes" ボタンを押すと描画が走るのと
-# 同じことを clientside callback で自動的に行う。
+# 内部レイアウトが height=0 のまま固まる (lazy rendering)。さらに
+# _create_single_spatial_fig は xaxis.range を明示せず autorange に依存
+# しているため、新規 mount で autorange 計算がスキップされると **データが
+# 画面外** に出て空白に見える (UMAP は座標が小さく問題に出にくいが、
+# Spatial はピクセル座標が大きく顕在化)。
+#
+# Plotly のツールバー左上「Autoscale/Reset axes」ボタンを押すと描画が走るのと
+# 同じことを clientside callback で自動的に行う:
+#   1. Plotly.Plots.resize(el)        — レイアウト再計算
+#   2. Plotly.relayout(el, autorange) — axis range を data に合わせて再計算
 #
 # トリガー:
 #   - {"type": "lv_card_collapse", "cluster": ALL}.is_open (個別/一括展開)
 #   - lv_show_labels_switch.value (番号 Switch トグル)
 #   - lv_method_store.data (Harmony/RPCA 切替)
 #   - lite_target_store.data (初回 URL ロード)
-# 100ms / 350ms / 800ms / 1500ms と複数のタイミングで resize を呼ぶことで、
+# 100ms / 350ms / 800ms / 1500ms と複数のタイミングで処理を呼ぶことで、
 # dbc.Collapse のアニメーション完了や initialize_lite_view の重い構築完了
 # 直後など、複数の遅延ケースをまとめてカバーする。
 clientside_callback(
@@ -1404,9 +1411,21 @@ clientside_callback(
         [100, 350, 800, 1500].forEach(function(delay) {
             setTimeout(function() {
                 document.querySelectorAll('.js-plotly-plot').forEach(function(el) {
-                    if (window.Plotly && el && el.layout) {
-                        try { window.Plotly.Plots.resize(el); } catch (e) {}
-                    }
+                    if (!window.Plotly || !el || !el.layout) return;
+                    try {
+                        window.Plotly.Plots.resize(el);
+                    } catch (e) {}
+                    try {
+                        var update = {};
+                        Object.keys(el.layout).forEach(function(key) {
+                            if (key.indexOf('xaxis') === 0 || key.indexOf('yaxis') === 0) {
+                                update[key + '.autorange'] = true;
+                            }
+                        });
+                        if (Object.keys(update).length > 0) {
+                            window.Plotly.relayout(el, update);
+                        }
+                    } catch (e) {}
                 });
             }, delay);
         });
