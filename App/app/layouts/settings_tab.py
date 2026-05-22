@@ -85,6 +85,33 @@ def _create_analysis_settings_subtab():
                             html.Div(id="sample_selector"),
                             dcc.Store(id="selected_samples_store", data=[]),
                             dbc.FormText("チェックを入れたサンプルが解析対象になります"),
+                            # --- DESI ROI 設定 (TIMS の annotation_selector と同じ ---
+                            #     pattern-matching 構造。データフォルダとサンプルから
+                            #     ROI 候補を自動列挙、チェックボックスで選択。
+                            #     DESI モード時のみ意味あり (callback で非表示制御)。
+                            html.Div(
+                                style={"marginTop": "10px"},
+                                children=[
+                                    html.Hr(className="my-2"),
+                                    dbc.Switch(
+                                        id="desi_use_roi_as_sample",
+                                        label="ROI 列があれば各 ROI を別サンプルとして解析",
+                                        value=ls.get("desi_use_roi_as_sample", False),
+                                        className="mb-1",
+                                    ),
+                                    html.Div(id="desi_roi_selector",
+                                             className="mt-1"),
+                                    dcc.Store(id="desi_roi_filter_store",
+                                              data=None),
+                                    dbc.FormText(
+                                        "Switch ON でチェック ROI が「別サンプル」と"
+                                        "して統合解析されます (Harmony/RPCA)。"
+                                        "OFF または ROI 列なしの場合はファイル全体を"
+                                        " 1 サンプル扱い (従来挙動)。",
+                                        className="text-muted small",
+                                    ),
+                                ],
+                            ),
                             # --- 追加データフォルダ (TIMS複数フォルダ) ---
                             html.Div(
                                 id="extra_folders_section",
@@ -147,29 +174,6 @@ def _create_analysis_settings_subtab():
                                 id="annotation_path_path_hint", children="",
                                 style={"color": "#6c757d", "fontSize": "0.75rem",
                                        "marginTop": "2px", "display": "block"},
-                            ),
-                        ]),
-                        # DESI ROI 設定 (入力 .txt の最終列に ROI 文字列がある場合のみ意味あり)
-                        # ON にすると各 ROI を「別サンプル」として Multi-sample mode で統合解析
-                        html.Div(className="param-group", style={"marginTop": "15px"}, children=[
-                            html.H5("ROI 設定 (DESI、オプション)"),
-                            dbc.Switch(
-                                id="desi_use_roi_as_sample",
-                                label="ROI 列があれば各 ROI を別サンプルとして解析",
-                                value=ls.get("desi_use_roi_as_sample", False),
-                                className="mt-1 mb-2",
-                            ),
-                            dbc.Label("ROI フィルタ (空 = 全 ROI、カンマ区切りで指定)",
-                                      className="small"),
-                            dbc.Input(
-                                id="desi_roi_filter",
-                                value=ls.get("desi_roi_filter", ""),
-                                placeholder="例: Brain, Heart",
-                                size="sm",
-                            ),
-                            dbc.FormText(
-                                "入力 .txt の最終列に ROI 文字列がある場合のみ有効。"
-                                "OFF にするか ROI 列が無い場合はファイル全体を 1 サンプル扱い。",
                             ),
                         ]),
                         # TIMS イオンモード設定（TIMS選択時のみ表示）

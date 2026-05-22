@@ -43,7 +43,7 @@ _AUTO_SAVE_KEYS = [
     "desi_v8_script_path", "desi_cluster_filter_script_path",
     "tims_v8_script_path", "tims_cluster_filter_script_path",
     # DESI ROI 設定 (各 ROI を別サンプル化)
-    "desi_use_roi_as_sample", "desi_roi_filter",
+    "desi_use_roi_as_sample",
     "default_desi_data_folder", "default_annotation_file", "default_desi_output_dir",
     "default_tims_data_folder", "default_annotation_csv", "default_tims_output_dir",
     "default_output_dir",

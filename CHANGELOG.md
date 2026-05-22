@@ -12,6 +12,42 @@
 
 ---
 
+## 2026-05-22_ver2.1
+
+### UI 改善
+- DESI ROI 設定 UI を **テキスト入力からチェックボックス形式** に変更し、
+  **「データフォルダ・サンプル選択」の直下** に移動 (TIMS の annotation_
+  selector と同じレイアウト)。ユーザー要望: 「自身で入力するのではなく、
+  check box 形式を採用し、TIMS と同じように、データフォルダ・サンプル
+  選択の下に来るように」。
+
+  実装内容:
+  - `data_manager.py:read_desi_roi_list`: DESI .txt の最終列から ROI を
+    自動列挙する関数を新規追加 (ヘッダー 3 行目 = pre_masses 行の
+    トークン数で n_metabolite を推定し、データ行の列数超過時に
+    最終列を ROI として収集、R 側 `read_desi_data` と同じ判定ロジック)
+  - `file_handlers.py`:
+    - `update_desi_roi_selector` callback を追加。`selected_samples` /
+      `data_folder` / `analysis_method` の変化で trigger され、選択
+      サンプルの .txt から ROI 一覧を読込んで pattern-matching id
+      (`{"type": "desi_roi_check", "index": sample}`) のチェックボックスを生成
+    - `sync_desi_roi_to_store` callback を追加。全 desi_roi_check の
+      選択値を `desi_roi_filter_store` に集約
+  - `settings_tab.py`:
+    - 右カラムの「ROI 設定 (DESI、オプション)」セクションを削除
+    - 左カラム「データフォルダ・サンプル選択」内の `sample_selector` /
+      `FormText` の直後に「ROI 設定」を追加: Switch +
+      `desi_roi_selector` Div + `desi_roi_filter_store` Store
+  - `analysis_callbacks.py`:
+    - State `desi_roi_filter` (text Input) → `desi_roi_filter_store` (Store)
+    - 受け取り側を文字列分割から list 直接受け取りに変更
+    - `save_last_settings` から `desi_roi_filter` 文字列の永続化を撤去
+      (チェック状態はファイル内容に依存するためセッション復元不要)
+  - `session_manager.py`: 許可キーから `desi_roi_filter` を撤去
+
+  R スクリプト (v14) は変更なし。`params["roi_filter"]` の型が list で
+  R 側に注入される構造はそのまま。
+
 ## 2026-05-22_ver2.0
 
 ### 機能追加 (Major Bump)

@@ -265,6 +265,42 @@ def read_parquet_annotations(file_path: str) -> list[str]:
         return []
 
 
+def read_desi_roi_list(file_path: str) -> list[str]:
+    """DESI .txt の最終列が ROI 文字列ならユニークな ROI 一覧を返す。
+
+    ヘッダー 3 行目 (pre_masses) のトークン数で metabolite 数を推定し、
+    データ行の列数が「3 (spot_index/x/y) + n_metabolite」を超えていれば
+    最終列を ROI 列として扱う (R 側の `read_desi_data` と同じ判定ロジック)。
+
+    ROI 列がない / 検出失敗時は空リストを返す。
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            header_lines = []
+            for _ in range(4):
+                line = f.readline()
+                if not line:
+                    return []
+                header_lines.append(line)
+            # ヘッダー 3 行目 (index 2) = pre_masses 行、空文字を除いたトークン数 = n_metabolite
+            pre_tokens = [
+                t for t in header_lines[2].rstrip("\n").split("\t") if t.strip()
+            ]
+            n_meta = len(pre_tokens)
+            expected_cols = 3 + n_meta
+
+            roi_set: set[str] = set()
+            for raw_line in f:
+                row = raw_line.rstrip("\n").split("\t")
+                if len(row) > expected_cols:
+                    roi = row[-1].strip()
+                    if roi:
+                        roi_set.add(roi)
+            return sorted(roi_set)
+    except Exception:
+        return []
+
+
 def validate_msi_file(file_path: str) -> dict:
     """MSIファイルの妥当性チェック"""
     path = Path(file_path)
