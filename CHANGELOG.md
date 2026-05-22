@@ -12,6 +12,38 @@
 
 ---
 
+## 2026-05-22_ver1.11
+
+### 機能追加
+- 簡易ビューアー: Per-sample UMAP セクションのヘッダに **「番号」
+  Switch** を追加 (Spatial にあるものと同じ仕組み)。
+  Switch を ON にすると、各サンプル別 UMAP プロットに**クラスタ番号
+  annotation** が表示される。Spatial 側の Switch とは独立で、両者を
+  個別に ON/OFF できる。
+  実装:
+  - `_build_per_sample_umap_grid` に `show_labels` 引数を追加
+    (既存 `umap_display.get("show_labels", False)` はフォールバック
+    として維持)
+  - Switch id は `{"type": "lv_show_umap_labels_switch", "scope":
+    "main"}` の pattern-matching dict 形式 (DOM 不在ページでの
+    callback 登録失敗を防止、ver1.5 と同じ手法)
+  - 新 callback `update_umap_labels` が Switch トグルで
+    `lv_umap_container` のみを再描画
+  - clientside callback (Plotly resize/autorange) の Input にも UMAP
+    Switch を追加し、トグル時にも自動 resize が走る
+
+### 修正
+- `validate_output_dir` (`data_manager.py:385-400`) のエラーメッセージ
+  に**対象 path を含める**ように変更。ユーザーから「UMAP 解析実行時に
+  『出力先: 書き込み権限がありません』と出るが、どの path が問題か
+  分からない」というフィードバックを受けた対応。
+  変更前: `"書き込み権限がありません"`
+  変更後: `"書き込み権限がありません: /app/Data/.../UMAP_exclude2"`
+
+  ※ 本パッチはエラーメッセージの改善のみ。真の修復には VPS ホスト側
+    での `chmod` / `chown` が必要 (Docker コンテナ内のアプリ実行
+    ユーザーが該当ディレクトリに書き込めない問題)。
+
 ## 2026-05-22_ver1.10
 
 ### 修正

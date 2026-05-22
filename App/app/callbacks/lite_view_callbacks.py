@@ -409,6 +409,36 @@ def update_spatial_labels(show_labels_list, target, method_data):
     )
 
 
+@callback(
+    Output("lv_umap_container", "children"),
+    Input({"type": "lv_show_umap_labels_switch", "scope": ALL}, "value"),
+    State("lite_target_store", "data"),
+    State("lv_method_store", "data"),
+    prevent_initial_call=True,
+)
+def update_umap_labels(show_labels_list, target, method_data):
+    """「番号」Switch トグルで Per-sample UMAP grid だけを再描画する。
+
+    Switch は initialize_lite_view 後に動的生成されるため、id を
+    pattern-matching dict 形式にして Input も ALL pattern で受ける。
+    update_spatial_labels と同じ構造。
+    """
+    show_labels = bool(show_labels_list[0]) if show_labels_list else False
+    bundle = _resolve_lite_data_for_target(target, method_data)
+    if bundle is None:
+        return no_update
+    saved_positions_all = bundle["saved_positions_all"] or {}
+    umap_per_sample_pos = saved_positions_all.get("umap_per_sample") or {}
+    return _build_per_sample_umap_grid(
+        bundle["df_plot"], bundle["color_map"],
+        cluster_name_map=bundle["cluster_name_map"],
+        sample_name_map=bundle["sample_name_map"],
+        saved_positions_per_sample=umap_per_sample_pos,
+        umap_display=bundle.get("umap_display") or {},
+        show_labels=show_labels,
+    )
+
+
 # =============================================================================
 # レポート構築ヘルパー（Phase 2 で /share/ に流用できる純関数として分離）
 # =============================================================================
@@ -566,13 +596,15 @@ def _build_overview_section(df_plot, df_stats, color_map,
         height=420, margin=dict(l=10, r=10, t=10, b=10),
     )
 
-    # 2. Per-sample UMAP（Cluster 色）グリッド
+    # 2. Per-sample UMAP（Cluster 色）グリッド（初期は番号 OFF。
+    #    Switch トグルで show_labels が切り替わる）
     per_sample_umap_grid = _build_per_sample_umap_grid(
         df_plot, color_map,
         cluster_name_map=cluster_name_map,
         sample_name_map=sample_name_map,
         saved_positions_per_sample=umap_per_sample_pos,
         umap_display=umap_display,
+        show_labels=False,
     )
 
     # 3. Per-sample Spatial（インタラクティブ側と同じく初期は番号 OFF、
@@ -598,9 +630,25 @@ def _build_overview_section(df_plot, df_stats, color_map,
                     className="text-muted small"),
             dcc.Graph(figure=sample_umap_fig,
                       config={"displayModeBar": True}),
-            html.H6("Per-sample UMAP (cluster-colored)",
-                    className="text-muted small mt-4"),
-            per_sample_umap_grid,
+            html.Div(
+                style={"display": "flex", "alignItems": "center",
+                       "gap": "16px", "marginTop": "1rem"},
+                children=[
+                    html.H6("Per-sample UMAP (cluster-colored)",
+                            className="text-muted small mb-0"),
+                    dbc.Switch(
+                        id={"type": "lv_show_umap_labels_switch",
+                            "scope": "main"},
+                        label="番号",
+                        value=False,
+                        className="mb-0",
+                    ),
+                ],
+            ),
+            html.Div(
+                id="lv_umap_container",
+                children=per_sample_umap_grid,
+            ),
             html.Div(
                 style={"display": "flex", "alignItems": "center",
                        "gap": "16px", "marginTop": "1rem"},
@@ -641,8 +689,14 @@ def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
                                   sample_name_map=None,
                                   saved_positions_per_sample=None,
                                   panel_height=340,
-                                  umap_display=None):
-    """サンプル別 Cluster 色分け UMAP グリッド（画像2 相当）"""
+                                  umap_display=None,
+                                  show_labels=None):
+    """サンプル別 Cluster 色分け UMAP グリッド（画像2 相当）
+
+    show_labels は明示指定があればそれを優先、None なら既存通り
+    umap_display.show_labels をフォールバック (簡易ビューアー上部の
+    「番号」Switch から動的に切替えるために引数として受ける)。
+    """
     if "Sample" not in df_plot.columns:
         return html.Div("Sample 列なし", className="text-muted small")
     samples = sorted(df_plot["Sample"].unique())
@@ -653,7 +707,10 @@ def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
     umap_display = umap_display or {}
     marker_size = umap_display.get("marker_size", 2) or 2
     label_size = umap_display.get("label_size", 11) or 11
-    show_labels = bool(umap_display.get("show_labels", False))
+    if show_labels is None:
+        show_labels = bool(umap_display.get("show_labels", False))
+    else:
+        show_labels = bool(show_labels)
     columns_per_row = umap_display.get("columns_per_row", 0) or 0
     col_lg = _calc_col_lg_width(columns_per_row, default_lg=6)
 
@@ -1326,7 +1383,8 @@ clientside_callback(
 #
 # トリガー:
 #   - {"type": "lv_card_collapse", "cluster": ALL}.is_open (カード展開)
-#   - lv_show_labels_switch.value (番号 Switch トグル)
+#   - lv_show_labels_switch.value (Spatial 番号 Switch トグル)
+#   - lv_show_umap_labels_switch.value (UMAP 番号 Switch トグル)
 #   - lv_method_store.data (Harmony/RPCA 切替)
 #   - lite_target_store.data (初回 URL ロード)
 # 100ms / 350ms / 800ms / 1500ms と複数のタイミングで処理を呼ぶことで、
@@ -1334,7 +1392,7 @@ clientside_callback(
 # 直後など、複数の遅延ケースをまとめてカバーする。
 clientside_callback(
     """
-    function(is_open_list, switch_value, method_data, target_data) {
+    function(is_open_list, switch_value, umap_switch_value, method_data, target_data) {
         [100, 350, 800, 1500].forEach(function(delay) {
             setTimeout(function() {
                 document.querySelectorAll('.js-plotly-plot').forEach(function(el) {
@@ -1363,6 +1421,7 @@ clientside_callback(
     [
         Input({"type": "lv_card_collapse", "cluster": ALL}, "is_open"),
         Input({"type": "lv_show_labels_switch", "scope": ALL}, "value"),
+        Input({"type": "lv_show_umap_labels_switch", "scope": ALL}, "value"),
         Input("lv_method_store", "data"),
         Input("lite_target_store", "data"),
     ],

@@ -397,7 +397,7 @@ def validate_output_dir(folder_path: str) -> dict:
         test_file.unlink()
         return {"ok": True, "msg": "書き込み可能"}
     except OSError:
-        return {"ok": False, "msg": "書き込み権限がありません"}
+        return {"ok": False, "msg": f"書き込み権限がありません: {target}"}
 
 
 def validate_numeric_param(value, name: str, min_val=None, max_val=None) -> dict:
