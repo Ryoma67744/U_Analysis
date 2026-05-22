@@ -446,17 +446,23 @@ def expand_all_clusters(n_clicks, opens, ids, current_bodies,
 
 @callback(
     Output("lv_spatial_container", "children"),
-    Input("lv_show_labels_switch", "value"),
+    Input({"type": "lv_show_labels_switch", "scope": ALL}, "value"),
     State("lite_target_store", "data"),
     State("lv_method_store", "data"),
     prevent_initial_call=True,
 )
-def update_spatial_labels(show_labels, target, method_data):
+def update_spatial_labels(show_labels_list, target, method_data):
     """「番号」Switch トグルで Per-sample Spatial Mapping だけを再描画する。
+
+    Switch は initialize_lite_view 後に動的生成されるため、id を
+    pattern-matching dict 形式にして Input も ALL pattern で受ける。
+    これにより lv_show_labels_switch が DOM 不在のページ (ランディング等)
+    でも Dash が "nonexistent object" エラーを出さない。
 
     bundle は _resolve_lite_data_for_target からキャッシュで返るため RDS
     再読込は発生しない。Switch トグル → 軽量に show_labels を切替できる。
     """
+    show_labels = bool(show_labels_list[0]) if show_labels_list else False
     bundle = _resolve_lite_data_for_target(target, method_data)
     if bundle is None:
         return no_update
@@ -469,7 +475,7 @@ def update_spatial_labels(show_labels, target, method_data):
         sample_name_map=bundle["sample_name_map"],
         spatial_rotation=bundle["spatial_rotation"],
         saved_positions_per_sample=spatial_pos,
-        show_labels=bool(show_labels),
+        show_labels=show_labels,
         panel_height=350,
     )
 
@@ -673,7 +679,8 @@ def _build_overview_section(df_plot, df_stats, color_map,
                     html.H6("Per-sample Spatial Mapping",
                             className="text-muted small mb-0"),
                     dbc.Switch(
-                        id="lv_show_labels_switch",
+                        id={"type": "lv_show_labels_switch",
+                            "scope": "main"},
                         label="番号",
                         value=False,
                         className="mb-0",
@@ -1435,7 +1442,7 @@ clientside_callback(
     Output("lv_resize_trigger", "data"),
     [
         Input({"type": "lv_card_collapse", "cluster": ALL}, "is_open"),
-        Input("lv_show_labels_switch", "value"),
+        Input({"type": "lv_show_labels_switch", "scope": ALL}, "value"),
         Input("lv_method_store", "data"),
         Input("lite_target_store", "data"),
     ],

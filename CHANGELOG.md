@@ -12,6 +12,33 @@
 
 ---
 
+## 2026-05-22_ver1.5
+
+### 修正 (致命的バグ修正)
+- ver1.3 で導入した clientside callback と ver1.0 で導入した
+  `update_spatial_labels` callback が、`Input("lv_show_labels_switch",
+  "value")` のように string id で**動的生成コンポーネント**を参照
+  していたため、`lv_show_labels_switch` が DOM 上に未生成のページ
+  (ランディング / アクション / 解析 etc) で Dash が "ReferenceError:
+  A nonexistent object was used in an Input of a Dash callback" を
+  発生させていた。これにより **clientside callback 全体が登録失敗**
+  し、ver1.3 / ver1.4 で追加した `Plotly.Plots.resize()` /
+  `Plotly.relayout(autorange: true)` が実行されないままだった。
+  ユーザー DevTools Console 出力から判明。
+  対策:
+  - `dbc.Switch(id="lv_show_labels_switch", ...)` の id を
+    `{"type": "lv_show_labels_switch", "scope": "main"}` の
+    pattern-matching dict 形式に変更。
+  - `update_spatial_labels` callback の Input を `Input({"type":
+    "lv_show_labels_switch", "scope": ALL}, "value")` に変更し、
+    引数 `show_labels_list` をリストで受けて先頭要素を取り出す。
+  - clientside callback の同 Input も同様に変更。
+  ALL pattern-matching は対応コンポーネントが 0 個でも Dash が
+  エラーを出さないため、これで全ページで callback が正常登録される。
+- これにより ver1.3 で意図した一括展開時の自動 resize/autorange が
+  実際に動くようになり、「全クラスタ詳細を一括展開」で Highlighted
+  Spatial が空白のまま残る問題が解消される想定。
+
 ## 2026-05-22_ver1.4
 
 ### 修正
