@@ -1380,3 +1380,45 @@ clientside_callback(
      State("interactive_sub_project_select", "value")],
     prevent_initial_call=True,
 )
+
+
+# =============================================================================
+# Plotly 強制リサイズ (clientside)
+# =============================================================================
+# 新規 mount された Plotly Graph は親要素サイズの取得タイミングによっては
+# 内部レイアウトが height=0 のまま固まることがある (lazy rendering)。
+# Plotly のツールバー "Autoscale/Reset axes" ボタンを押すと描画が走るのと
+# 同じことを clientside callback で自動的に行う。
+#
+# トリガー:
+#   - {"type": "lv_card_collapse", "cluster": ALL}.is_open (個別/一括展開)
+#   - lv_show_labels_switch.value (番号 Switch トグル)
+#   - lv_method_store.data (Harmony/RPCA 切替)
+#   - lite_target_store.data (初回 URL ロード)
+# 100ms / 350ms / 800ms / 1500ms と複数のタイミングで resize を呼ぶことで、
+# dbc.Collapse のアニメーション完了や initialize_lite_view の重い構築完了
+# 直後など、複数の遅延ケースをまとめてカバーする。
+clientside_callback(
+    """
+    function(is_open_list, switch_value, method_data, target_data) {
+        [100, 350, 800, 1500].forEach(function(delay) {
+            setTimeout(function() {
+                document.querySelectorAll('.js-plotly-plot').forEach(function(el) {
+                    if (window.Plotly && el && el.layout) {
+                        try { window.Plotly.Plots.resize(el); } catch (e) {}
+                    }
+                });
+            }, delay);
+        });
+        return Date.now();
+    }
+    """,
+    Output("lv_resize_trigger", "data"),
+    [
+        Input({"type": "lv_card_collapse", "cluster": ALL}, "is_open"),
+        Input("lv_show_labels_switch", "value"),
+        Input("lv_method_store", "data"),
+        Input("lite_target_store", "data"),
+    ],
+    prevent_initial_call=True,
+)

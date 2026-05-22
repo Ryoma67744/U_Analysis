@@ -12,6 +12,28 @@
 
 ---
 
+## 2026-05-22_ver1.3
+
+### 修正
+- 簡易ビューアー: 「全クラスタの詳細を一括展開」で各カード内 Plotly Graph
+  が**空白のまま**になる、および Harmony→RPCA 切替時にも上部 Overview が
+  同様に空白になる症状を修正。
+  ユーザー検証で「Plotly のツールバー (左上の四角=Autoscale/Reset ボタン)
+  を押すと表示される」という決定的ヒントを得て、これが Plotly の lazy
+  rendering 問題であると特定。新規 mount された `dcc.Graph` は親要素の
+  サイズ取得タイミングによっては内部レイアウトが `height=0` のまま固まる
+  ため、`Plotly.Plots.resize()` を強制発火する必要がある。
+  `lite_view_callbacks.py` の末尾に clientside callback を追加し、以下の
+  トリガーで `document.querySelectorAll('.js-plotly-plot')` 各要素に対し
+  100ms / 350ms / 800ms / 1500ms の複数タイミングで `Plotly.Plots.resize`
+  を呼ぶようにした:
+  - 個別 / 一括カード展開 (`lv_card_collapse.is_open`)
+  - 番号 Switch トグル (`lv_show_labels_switch.value`)
+  - Harmony/RPCA 切替 (`lv_method_store.data`)
+  - 初回 URL ロード (`lite_target_store.data`)
+  `lite_view.py` layout にダミー Output 用の
+  `dcc.Store(id="lv_resize_trigger")` を追加。
+
 ## 2026-05-22_ver1.2
 
 ### 修正
