@@ -12,6 +12,29 @@
 
 ---
 
+## 2026-05-22_ver1.9
+
+### 機能追加
+- UMAP / Spatial Mapping の凡例ダブルクリック時、選択したクラスタ
+  以外を**完全非表示にせず灰色で残す**ように変更。
+  Plotly のデフォルト挙動 (ダブルクリック = 他 trace 非表示) を、
+  ユーザーの希望「他クラスタを灰色で残す」に合わせた。
+  実装方針: 各 figure の通常表示分岐の冒頭で全点を
+  `HIGHLIGHT_GRAY + opacity 0.2` でプロットする背景 trace を 1 つ
+  追加。`showlegend=False` で Plotly のダブルクリック操作対象外に
+  なるため、色付き trace が `visible=False` になっても下の灰色背景
+  trace は常に表示される仕組み。
+
+  対応関数 (`App/app/config.py:HIGHLIGHT_GRAY` を再利用):
+  - `interactive_umap.py:_build_umap_integrated_fig` の通常表示分岐
+  - `interactive_umap.py:_build_umap_per_sample_graphs` の通常表示
+    分岐
+  - `interactive_spatial.py:_create_single_spatial_fig` の
+    `embed_legend=True` ブロック
+
+  共通関数経由でインタラクティブ解析・簡易ビューアー・共有ビューア
+  すべてに自動反映される。
+
 ## 2026-05-22_ver1.8
 
 ### 撤去

@@ -182,6 +182,17 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 ))
     else:
         if embed_legend:
+            # 凡例ダブルクリック時に他クラスタを灰色で残すための背景 trace。
+            # showlegend=False のため Plotly のダブルクリック操作対象外で、
+            # 色付き trace が visible=False になっても下の灰色背景が残る。
+            fig.add_trace(go.Scattergl(
+                x=plot_x, y=plot_y,
+                mode="markers",
+                marker=dict(size=marker_size, symbol="square",
+                            color=HIGHLIGHT_GRAY, opacity=0.2),
+                showlegend=False, hoverinfo="skip",
+                name="_background_grey",
+            ))
             # 凡例リンク用: クラスタ別個別トレース（legendgroup でダミーと連動）
             for cl in sorted(df_sample["Cluster"].unique(), key=_cluster_sort_key):
                 mask = (df_sample["Cluster"].astype(str) == str(cl)).values

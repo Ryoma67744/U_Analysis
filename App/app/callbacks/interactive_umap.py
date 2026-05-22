@@ -82,6 +82,16 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                     meta=[str(cl)] * mask.sum(),
                 ))
     else:
+        # 凡例ダブルクリック時に他クラスタを灰色で残すための背景 trace。
+        # showlegend=False のため Plotly のダブルクリック操作対象外で、
+        # 色付き trace が visible=False になっても下の灰色背景が残る。
+        fig.add_trace(go.Scattergl(
+            x=df["UMAP_1"], y=df["UMAP_2"],
+            mode="markers",
+            marker=dict(size=marker_size, color=HIGHLIGHT_GRAY, opacity=0.2),
+            showlegend=False, hoverinfo="skip",
+            name="_background_grey",
+        ))
         color_col = color_by if color_by in df.columns else "Cluster"
         categories = sorted(df[color_col].unique(), key=_cluster_sort_key)
         cat_color_map = _get_cluster_color_map(categories, custom_colors)
@@ -196,6 +206,14 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                         legendgroup=_cluster_display_name(cl, cluster_name_map),
                     ))
         else:
+            # 凡例ダブルクリック時に他クラスタを灰色で残すための背景 trace
+            fig.add_trace(go.Scattergl(
+                x=df_s["UMAP_1"], y=df_s["UMAP_2"],
+                mode="markers",
+                marker=dict(size=marker_size, color=HIGHLIGHT_GRAY, opacity=0.2),
+                showlegend=False, hoverinfo="skip",
+                name="_background_grey",
+            ))
             for cl in sorted(df_s["Cluster"].unique(), key=_cluster_sort_key):
                 mask_cl = df_s["Cluster"] == cl
                 fig.add_trace(go.Scattergl(
