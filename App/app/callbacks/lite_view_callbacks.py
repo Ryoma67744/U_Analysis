@@ -4,7 +4,7 @@
 # /lite/<project_id>/<sub_project_id> の「レポート型」サマリビュー。
 # PPT 出力と同等の構造をブラウザ上で即時表示する。
 #
-# 大きく 5 系統の callback:
+# 大きく 4 系統の callback:
 #   1. URL ルーティング (route_lite_url + navigate_to_lite_page)
 #       url_bar.pathname を lite_target_store に変換し、その後ページ遷移
 #       2 段に分けているのは share_callbacks.route_share_url とのハッシュ衝突回避のため
@@ -15,8 +15,6 @@
 #       pattern-matching で各カードの Volcano セクションを折りたたむ
 #   4. クラスタカード開閉 (toggle_cluster_card)
 #       pattern-matching で各クラスタの UMAP/Spatial/Volcano グリッドを遅延描画
-#   5. 全クラスタ一括展開 (expand_all_clusters)
-#       1 クリックで全カードを開閉
 # =============================================================================
 
 import re
@@ -369,75 +367,6 @@ def toggle_cluster_card(n_clicks, is_open, btn_id, current_body,
         )
         return True, contents, "▼ 詳細を閉じる"
     return False, no_update, "▶ 詳細を表示 (UMAP / Spatial / Volcano)"
-
-
-@callback(
-    Output({"type": "lv_card_collapse", "cluster": ALL}, "is_open",
-           allow_duplicate=True),
-    Output({"type": "lv_card_body", "cluster": ALL}, "children",
-           allow_duplicate=True),
-    Output({"type": "lv_card_toggle", "cluster": ALL}, "children",
-           allow_duplicate=True),
-    Input("lv_expand_all_clusters", "n_clicks"),
-    State({"type": "lv_card_collapse", "cluster": ALL}, "is_open"),
-    State({"type": "lv_card_collapse", "cluster": ALL}, "id"),
-    State({"type": "lv_card_body", "cluster": ALL}, "children"),
-    State("lite_target_store", "data"),
-    State("lv_method_store", "data"),
-    prevent_initial_call=True,
-)
-def expand_all_clusters(n_clicks, opens, ids, current_bodies,
-                         target, method_data):
-    """全クラスタカードを一括で開閉。
-
-    どれか 1 つでも閉じていれば全部開く動作。すべて開いていれば全部閉じる。
-    """
-    if not n_clicks or not ids:
-        return no_update, no_update, no_update
-
-    any_closed = not all(opens)
-    if any_closed:
-        bundle = _resolve_lite_data_for_target(target, method_data)
-        if bundle is None:
-            return no_update, no_update, no_update
-
-        deg_by_cluster = {}
-        for r in bundle["deg_records"]:
-            c = str(r.get("cluster", ""))
-            deg_by_cluster.setdefault(c, []).append(r)
-
-        new_opens = []
-        new_bodies = []
-        new_labels = []
-        for idx, id_ in enumerate(ids):
-            cluster_key = id_["cluster"]
-            new_opens.append(True)
-            if current_bodies and current_bodies[idx]:
-                # 既に展開済みの DOM は再利用
-                new_bodies.append(no_update)
-            else:
-                new_bodies.append(
-                    _build_cluster_card_expand_contents(
-                        cluster_key,
-                        df_plot=bundle["df_plot"],
-                        color_map=bundle["color_map"],
-                        deg_records=deg_by_cluster.get(str(cluster_key), []),
-                        cluster_name_map=bundle["cluster_name_map"],
-                        sample_name_map=bundle["sample_name_map"],
-                        spatial_rotation=bundle["spatial_rotation"],
-                        saved_positions_all=bundle["saved_positions_all"],
-                        umap_display=bundle.get("umap_display") or {},
-                    )
-                )
-            new_labels.append("▼ 詳細を閉じる")
-        return new_opens, new_bodies, new_labels
-
-    n = len(ids)
-    return (
-        [False] * n,
-        [no_update] * n,
-        ["▶ 詳細を表示 (UMAP / Spatial / Volcano)"] * n,
-    )
 
 
 # =============================================================================
@@ -960,20 +889,11 @@ def _build_per_cluster_cards(df_plot, deg_records, color_map,
             )
         )
 
-    expand_all_btn = dbc.Button(
-        "📂 全クラスタの詳細を一括展開 / 折りたたみ",
-        id="lv_expand_all_clusters",
-        color="primary", outline=True, size="sm",
-        className="mb-3",
-        n_clicks=0,
-    )
-
     return html.Div(
         className="per-cluster-section mb-5",
         children=[
             html.H4("Per-cluster Summary",
                     className="mb-3 border-bottom pb-2"),
-            expand_all_btn,
             *cards,
         ],
     )
@@ -1405,7 +1325,7 @@ clientside_callback(
 #   2. Plotly.relayout(el, autorange) — axis range を data に合わせて再計算
 #
 # トリガー:
-#   - {"type": "lv_card_collapse", "cluster": ALL}.is_open (個別/一括展開)
+#   - {"type": "lv_card_collapse", "cluster": ALL}.is_open (カード展開)
 #   - lv_show_labels_switch.value (番号 Switch トグル)
 #   - lv_method_store.data (Harmony/RPCA 切替)
 #   - lite_target_store.data (初回 URL ロード)

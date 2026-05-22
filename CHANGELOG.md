@@ -12,6 +12,33 @@
 
 ---
 
+## 2026-05-22_ver1.8
+
+### 撤去
+- 簡易ビューアー: 「📂 全クラスタの詳細を一括展開 / 折りたたみ」機能を
+  撤去。ver1.0〜1.5 で複数回試みたが、新規 mount 時の Plotly レンダ
+  リング問題 (lazy rendering / axis range) が安定して解決できなかった
+  ため、機能ごと撤去する判断。
+  個別「▶ 詳細を表示」(toggle_cluster_card) は引き続き利用可能で、
+  そちらは ver1.5 で clientside callback が正しく登録された後は
+  安定動作する。
+
+撤去した要素:
+- `lite_view_callbacks.py`:
+  - `expand_all_clusters` callback (line 374-440 付近)
+  - `_build_per_cluster_cards` 内の「📂 全クラスタの詳細を一括展開」
+    ボタン (`lv_expand_all_clusters`)
+  - ヘッダコメントの「5. 全クラスタ一括展開」記述
+  - clientside callback のコメント中の「一括展開」表記
+
+残した要素:
+- `toggle_cluster_card` callback (個別展開、必須)
+- clientside callback の `Input({"type": "lv_card_collapse",
+  "cluster": ALL}, "is_open")` (個別展開時の Plotly resize/autorange
+  に必要)
+- 各カードの `lv_card_collapse` / `lv_card_body` / `lv_card_toggle`
+  関連の pattern-matching id (個別展開で使用)
+
 ## 2026-05-22_ver1.7
 
 ### 修正
