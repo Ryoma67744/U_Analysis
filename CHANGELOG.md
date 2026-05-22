@@ -12,6 +12,24 @@
 
 ---
 
+## 2026-05-22_ver1.10
+
+### 修正
+- ver1.9 で導入した「凡例ダブルクリック時の灰色背景 trace」を
+  Spatial Mapping に限り、**単色灰色から TIC (白黒) 表示** に変更。
+  ユーザー要望: 「Spatial Mapping の背景の灰色は MSI 画像の TIC を
+  白黒にしたものにしてほしい」。
+
+  既存のハイライト/選択時の挙動 (`_create_single_spatial_fig` の
+  line 128-135 / 156-160) は `TotalCount` を Greys colorscale で
+  表示しており、これと一貫性を持たせる。
+
+  実装: `_create_single_spatial_fig` の `embed_legend=True` ブロックの
+  背景 trace で、`TotalCount` 列が利用可能なら Greys colorscale で
+  TIC を描画。利用不可なら HIGHLIGHT_GRAY 単色フォールバック。
+
+  UMAP の背景灰色は変更なし (UMAP には TIC データが存在しない)。
+
 ## 2026-05-22_ver1.9
 
 ### 機能追加

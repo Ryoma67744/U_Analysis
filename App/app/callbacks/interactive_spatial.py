@@ -182,16 +182,30 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 ))
     else:
         if embed_legend:
-            # 凡例ダブルクリック時に他クラスタを灰色で残すための背景 trace。
-            # showlegend=False のため Plotly のダブルクリック操作対象外で、
-            # 色付き trace が visible=False になっても下の灰色背景が残る。
+            # 凡例ダブルクリック時に他クラスタを「TIC (白黒)」or 灰色で
+            # 残すための背景 trace。showlegend=False のため Plotly の
+            # ダブルクリック操作対象外で、色付き trace が visible=False に
+            # なっても下の背景が残る。
+            # ※ highlight_clusters / selected_cell_ids 時の既存ロジック
+            #   (line 128-135 / 156-160) と同じく TIC が利用可能なら
+            #   Greys colorscale で MSI 画像の TIC を白黒表示する。
+            if "TotalCount" in df_sample.columns:
+                bg_marker = dict(
+                    size=marker_size, symbol="square",
+                    color=df_sample["TotalCount"].values,
+                    colorscale="Greys", opacity=0.5, showscale=False,
+                )
+            else:
+                bg_marker = dict(
+                    size=marker_size, symbol="square",
+                    color=HIGHLIGHT_GRAY, opacity=0.2,
+                )
             fig.add_trace(go.Scattergl(
                 x=plot_x, y=plot_y,
                 mode="markers",
-                marker=dict(size=marker_size, symbol="square",
-                            color=HIGHLIGHT_GRAY, opacity=0.2),
+                marker=bg_marker,
                 showlegend=False, hoverinfo="skip",
-                name="_background_grey",
+                name="_background_tic",
             ))
             # 凡例リンク用: クラスタ別個別トレース（legendgroup でダミーと連動）
             for cl in sorted(df_sample["Cluster"].unique(), key=_cluster_sort_key):
