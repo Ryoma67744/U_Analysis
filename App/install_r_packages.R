@@ -39,6 +39,7 @@ packages <- c(
   "dbscan",
   "future",
   "leiden",
+  "leidenbase",  # Seurat v5 の FindClusters(algorithm = 4) で必須
 
   # ユーティリティ
   "tools",

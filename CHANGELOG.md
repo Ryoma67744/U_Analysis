@@ -12,6 +12,34 @@
 
 ---
 
+## 2026-05-22_ver1.12
+
+### 修正
+- R パッケージ `leidenbase` を `install_r_packages.R` の依存リストに
+  追加。UMAP 再解析実行時に下記エラーで R スクリプトが停止していた:
+
+  ```
+  Error in RunLeiden(...) :
+    Package 'leidenbase' is required for leiden_method = 'leidenbase'.
+    Please install it with: install.packages('leidenbase')
+  ```
+
+  原因: R スクリプト (`App/Script/DESI/260312_DESI-UMAP_Template_v13.R`
+  ほか) で `FindClusters(... algorithm = 4)` (Leiden アルゴリズム) を
+  指定しているが、Seurat の最新版で `RunLeiden` のデフォルト
+  `leiden_method` が `"leidenbase"` に変更され、同名 R パッケージが
+  必須になった。`install_r_packages.R` には `leiden` パッケージは
+  含まれていたが `leidenbase` は無く、Docker rebuild で Seurat が
+  新版に更新されたタイミングでエラーが顕在化。
+
+  本パッチで `leidenbase` をビルド時にインストールするため、Docker
+  rebuild 後は `algorithm = 4` (Leiden) の解析が正常に走る。R
+  スクリプト本体は一切変更なし (案 A 採用)。
+
+### 反映手順
+`docker compose ... up -d --build msi-app` で Docker image を再ビルド
+する必要あり (R パッケージインストール工程が走る、時間がかかる)。
+
 ## 2026-05-22_ver1.11
 
 ### 機能追加
