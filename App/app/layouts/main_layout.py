@@ -23,6 +23,7 @@ from app.layouts.tooltips import (
     get_sidebar_tooltips, get_settings_tooltips,
     get_interactive_tooltips, get_results_tooltips,
 )
+from app.version import version_label
 
 
 def _create_change_password_modal():
@@ -159,6 +160,29 @@ def _create_preset_modal():
 
 def create_main_layout():
     return html.Div([
+        # ========== グローバルバージョン表示 (全画面の右上に固定) ==========
+        # ユーザーが今見ているページが最新の修正反映後の版か即座に
+        # 判別できるよう、landing/action/analysis/shared/lite すべてで
+        # 常に右上に表示する。文字は小さく薄く、pointer-events: none で
+        # 既存ボタンのクリックを邪魔しない。
+        html.Div(
+            version_label(),
+            style={
+                "position": "fixed",
+                "top": "4px",
+                "right": "12px",
+                "fontSize": "0.7em",
+                "color": "#6c757d",
+                "fontFamily": "monospace",
+                "background": "rgba(255,255,255,0.85)",
+                "padding": "2px 6px",
+                "borderRadius": "3px",
+                "boxShadow": "0 1px 2px rgba(0,0,0,0.05)",
+                "zIndex": 9999,
+                "pointerEvents": "none",
+            },
+        ),
+
         # ========== URLルーティング ==========
         dcc.Location(id="url_bar", refresh=False),
         dcc.Store(id="share_token", data=""),

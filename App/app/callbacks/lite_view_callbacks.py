@@ -47,7 +47,6 @@ from app.utils.label_persistence import (
     load_interactive_settings,
     load_label_positions,
 )
-from app.version import version_label
 
 _LITE_URL_RE = re.compile(r"^/lite/([^/]+)/([^/]+)/?$")
 
@@ -597,20 +596,8 @@ def _build_header(project, sub, integration_method, available_methods,
             "background": "#f8f9fa",
             "borderLeft": "4px solid #0d6efd",
             "borderRadius": "4px",
-            "position": "relative",
         },
         children=[
-            html.Div(
-                version_label(),
-                style={
-                    "position": "absolute",
-                    "top": "8px",
-                    "right": "16px",
-                    "fontSize": "0.75em",
-                    "color": "#6c757d",
-                    "fontFamily": "monospace",
-                },
-            ),
             html.H3(
                 [project.get("name", ""), " / ", sub.get("name", "")],
                 className="mb-2",

@@ -12,6 +12,20 @@
 
 ---
 
+## 2026-05-22_ver1.1
+
+### 修正
+- バージョン表示を**全画面共通のグローバル固定位置 (右上)** に移動。
+  ver1.0 では簡易ビューアー (`/lite/...`) のレポートヘッダ内にしか
+  表示されておらず、プロジェクト一覧画面など他の画面では「自分が
+  最新版を見ているか」を確認できなかった。`main_layout.py` の最上位
+  に `position: fixed; top: 4px; right: 12px` で `version_label()` を
+  1 箇所だけ配置することで、landing / action / analysis / shared /
+  lite すべての画面で常に右上に表示されるようにした。
+- 重複を避けるため、簡易ビューアーの `_build_header` 内の
+  `version_label()` 表示と `position: relative` 化を撤去 (ver1.0 で
+  入れたもの)。
+
 ## 2026-05-22_ver1.0
 
 ### 修正
