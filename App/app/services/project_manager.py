@@ -180,13 +180,25 @@ def create_project(
         # 新規作成せず既存を返す (復元の冪等性確保)。
         # 過去に存在していた「同じ id のプロジェクトが何度も append される」
         # バグの再発を防ぐ。
+        # さらに、既存が soft-deleted (deleted_at 設定済) なら明示的に
+        # undelete する。これにより「削除 → 後から復元」で UI に出てこない
+        # 問題が解消する (復元機能の本来の意味)。
         if force_id:
             for existing in data["projects"]:
                 if existing.get("id") == force_id:
-                    logger.warning(
-                        "create_project: id=%s が既に存在するため新規作成を"
-                        "スキップし既存を返す", force_id,
-                    )
+                    if existing.get("deleted_at"):
+                        existing.pop("deleted_at", None)
+                        existing["last_modified"] = now
+                        _save_all(data)
+                        logger.info(
+                            "create_project: id=%s の deleted_at を解除して"
+                            "既存を返す (undelete)", force_id,
+                        )
+                    else:
+                        logger.warning(
+                            "create_project: id=%s が既に存在するため新規作成を"
+                            "スキップし既存を返す", force_id,
+                        )
                     return existing
         data["projects"].append(project)
         _save_all(data)
@@ -344,14 +356,31 @@ def create_sub_project(
                 # 既に存在すれば新規作成せず既存を返す (復元の冪等性確保)。
                 # 過去に存在していた「同じ sub_id のサブが何度も append される」
                 # バグの再発を防ぐ。
+                # さらに、既存が soft-deleted (deleted_at 設定済) なら明示的に
+                # undelete する (復元機能の本来の意味)。
                 if force_id:
                     for existing_sub in p.get("sub_projects", []):
                         if existing_sub.get("id") == force_id:
-                            logger.warning(
-                                "create_sub_project: sub_id=%s が project=%s "
-                                "に既に存在するため新規作成をスキップし既存を返す",
-                                force_id, project_id,
+                            now_ts = datetime.now().strftime(
+                                "%Y-%m-%dT%H:%M:%S"
                             )
+                            if existing_sub.get("deleted_at"):
+                                existing_sub.pop("deleted_at", None)
+                                existing_sub["last_modified"] = now_ts
+                                p["last_modified"] = now_ts
+                                _save_all(data)
+                                logger.info(
+                                    "create_sub_project: sub_id=%s の "
+                                    "deleted_at を解除 (undelete)",
+                                    force_id,
+                                )
+                            else:
+                                logger.warning(
+                                    "create_sub_project: sub_id=%s が "
+                                    "project=%s に既に存在するため新規作成を"
+                                    "スキップし既存を返す",
+                                    force_id, project_id,
+                                )
                             return existing_sub
                 now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
                 sub = {

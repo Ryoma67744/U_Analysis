@@ -12,6 +12,25 @@
 
 ---
 
+## 2026-05-22_ver1.7
+
+### 修正
+- ver1.6 で `create_project` / `create_sub_project` に `force_id` 重複
+  チェックを入れたが、**soft-deleted (`deleted_at` 設定済) なエントリを
+  そのまま返してしまう**問題があった。これにより「過去に削除した
+  プロジェクトを `_project_meta.json` から復元しようとしても、
+  UI に出てこない」症状が発生 (例: 250621_大橋_胎児 プロジェクト)。
+  ユーザー検証で `60fdbbdd 250621_大橋_胎児 deleted_at=
+  2026-05-22T05:38:13` が確認された。
+
+  対策:
+  - `create_project`: force_id 既存チェックで一致したエントリに
+    `deleted_at` があれば、`pop` して `last_modified` を更新してから
+    返すように変更。
+  - `create_sub_project`: 同様にサブの `deleted_at` を解除して返す。
+  これにより「復元」機能が本来の意味 (soft-delete されたものを再び
+  UI に戻す) を持つようになり、削除 → 復元の冪等性も確保される。
+
 ## 2026-05-22_ver1.6
 
 ### 修正 (致命的バグ修正)
