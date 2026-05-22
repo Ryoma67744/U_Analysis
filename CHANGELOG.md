@@ -12,6 +12,34 @@
 
 ---
 
+## 2026-05-22_ver1.2
+
+### 修正
+- 簡易ビューアー: ver1.1 まで残っていた以下 2 つの症状を解消:
+  - 「全クラスタの詳細を一括展開」で各カード内 Highlighted UMAP/Spatial
+    の画像本体が**空白**になる。
+  - 「番号」Switch トグルで Per-sample Spatial Mapping が**消えて**、
+    その下の Cluster Statistics / Cluster Ratio が「プルダウンが閉じる
+    ように」上に詰まってくる。
+  根本原因は、簡易ビューアー側の `dcc.Graph` に `style={"height": ...}`
+  が無く、親 div が `height: auto` に依存していたため新規 mount 直後の
+  Plotly が `height=0` で描画されていたこと (インタラクティブ側
+  `interactive_spatial.py:989` では `style={"height": "350px"}` で固定
+  していた)。簡易ビューアー側の 3 つの `dcc.Graph` 呼出しに
+  `style={"height": f"{panel_height}px"}` を明示追加して解消。
+- 簡易ビューアー: Spatial Mapping の表記方法をインタラクティブ解析と
+  一致させる:
+  - `_build_per_sample_spatial` の `_create_single_spatial_fig` 引数を
+    インタラクティブ側 (interactive_spatial.py:954-966) と揃える
+    (`marker_size=0` 自動計算 / `label_size=10` / `embed_legend=True`)。
+  - `fig.update_layout(height=..., showlegend=True, margin=...)` の
+    上書きを撤廃し、`_create_single_spatial_fig` 内 layout を尊重。
+  - Per-sample Spatial Mapping の `panel_height` を overview 350 /
+    per-cluster カード内 280 に統一。
+- 簡易ビューアー: 「番号」Switch のデフォルトを `True` → `False` に
+  変更。インタラクティブ解析の番号チェックボックスのデフォルト OFF と
+  一致。
+
 ## 2026-05-22_ver1.1
 
 ### 修正

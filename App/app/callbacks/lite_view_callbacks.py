@@ -470,7 +470,7 @@ def update_spatial_labels(show_labels, target, method_data):
         spatial_rotation=bundle["spatial_rotation"],
         saved_positions_per_sample=spatial_pos,
         show_labels=bool(show_labels),
-        panel_height=320,
+        panel_height=350,
     )
 
 
@@ -640,15 +640,16 @@ def _build_overview_section(df_plot, df_stats, color_map,
         umap_display=umap_display,
     )
 
-    # 3. Per-sample Spatial（クラスタ番号ラベル + 回転反映）
+    # 3. Per-sample Spatial（インタラクティブ側と同じく初期は番号 OFF、
+    #    高さ 350px。Switch トグルで show_labels が切り替わる）
     spatial_grid = _build_per_sample_spatial(
         df_plot, color_map, highlight_clusters=None,
         cluster_name_map=cluster_name_map,
         sample_name_map=sample_name_map,
         spatial_rotation=spatial_rotation,
         saved_positions_per_sample=spatial_pos,
-        show_labels=True,
-        panel_height=320,
+        show_labels=False,
+        panel_height=350,
     )
 
     stats_table = _build_cluster_stats_table(df_stats)
@@ -674,7 +675,7 @@ def _build_overview_section(df_plot, df_stats, color_map,
                     dbc.Switch(
                         id="lv_show_labels_switch",
                         label="番号",
-                        value=True,
+                        value=False,
                         className="mb-0",
                     ),
                 ],
@@ -740,6 +741,7 @@ def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
         )
         cols.append(dbc.Col(
             dcc.Graph(figure=fig, config={"displayModeBar": False},
+                      style={"height": f"{panel_height}px"},
                       responsive=True),
             lg=col_lg, md=12, className="mb-2",
         ))
@@ -778,6 +780,11 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
         df_sample = df_plot[df_plot["Sample"] == s]
         rot = spatial_rotation.get(s, {}) or {}
         title = _resolve_sample_label(s, sample_name_map)
+        # インタラクティブ側 (interactive_spatial.py:954-966) と引数を揃える:
+        # marker_size=0 (自動計算) / label_size=10 / embed_legend=True。
+        # fig.update_layout の上書きは行わず、_create_single_spatial_fig 内
+        # layout を尊重する。高さは dcc.Graph の style で CSS 固定する
+        # (新規 mount 時の Plotly が height=0 にならないようにするため)。
         fig = _create_single_spatial_fig(
             df_sample, color_map, highlight_clusters,
             selected_cell_ids=None,
@@ -787,17 +794,16 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
             show_labels=show_labels,
             cluster_name_map=cluster_name_map,
             saved_positions=saved_positions_per_sample.get(s),
-            title=title, marker_size=2, embed_legend=True,
-        )
-        fig.update_layout(
-            height=panel_height,
-            showlegend=True,
-            margin=dict(l=10, r=10, t=30, b=10),
+            title=title,
+            marker_size=0,
+            label_size=10,
+            embed_legend=True,
         )
         cols.append(
             dbc.Col(
                 dcc.Graph(figure=fig,
                           config={"displayModeBar": False},
+                          style={"height": f"{panel_height}px"},
                           responsive=True),
                 lg=6, md=12, className="mb-2",
             )
@@ -852,6 +858,7 @@ def _build_per_sample_highlight_umap_grid(
         )
         cols.append(dbc.Col(
             dcc.Graph(figure=fig, config={"displayModeBar": False},
+                      style={"height": f"{panel_height}px"},
                       responsive=True),
             lg=col_lg, md=12, className="mb-1",
         ))
@@ -1065,7 +1072,7 @@ def _build_cluster_card_expand_contents(cluster_id, df_plot, color_map,
         spatial_rotation=spatial_rotation,
         saved_positions_per_sample=spatial_pos,
         show_labels=False,
-        panel_height=240,
+        panel_height=280,
     )
 
     children = [
