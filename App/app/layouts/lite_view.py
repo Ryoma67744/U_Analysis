@@ -51,10 +51,15 @@ def create_lite_view_layout():
             ),
 
             # ローディング表示 + レポート本体
+            # target_components で「lv_report_body の children 更新時のみ」
+            # ローディングを表示するように絞る。これを外すと内部の
+            # lv_card_body.children 更新でも外側 Loading が triggered され、
+            # 内部の全 Plotly Graph が unmount → remount されてしまう。
             dcc.Loading(
                 id="lv_loading",
                 type="circle",
                 color="#0d6efd",
+                target_components={"lv_report_body": "children"},
                 children=html.Div(
                     id="lv_report_body",
                     children=html.Div(

@@ -47,6 +47,7 @@ from app.utils.label_persistence import (
     load_interactive_settings,
     load_label_positions,
 )
+from app.version import version_label
 
 _LITE_URL_RE = re.compile(r"^/lite/([^/]+)/([^/]+)/?$")
 
@@ -441,6 +442,40 @@ def expand_all_clusters(n_clicks, opens, ids, current_bodies,
 
 
 # =============================================================================
+# 番号 ON/OFF Switch による Per-sample Spatial Mapping の再描画
+# =============================================================================
+
+@callback(
+    Output("lv_spatial_container", "children"),
+    Input("lv_show_labels_switch", "value"),
+    State("lite_target_store", "data"),
+    State("lv_method_store", "data"),
+    prevent_initial_call=True,
+)
+def update_spatial_labels(show_labels, target, method_data):
+    """「番号」Switch トグルで Per-sample Spatial Mapping だけを再描画する。
+
+    bundle は _resolve_lite_data_for_target からキャッシュで返るため RDS
+    再読込は発生しない。Switch トグル → 軽量に show_labels を切替できる。
+    """
+    bundle = _resolve_lite_data_for_target(target, method_data)
+    if bundle is None:
+        return no_update
+    saved_positions_all = bundle["saved_positions_all"] or {}
+    spatial_pos = saved_positions_all.get("spatial") or {}
+    return _build_per_sample_spatial(
+        bundle["df_plot"], bundle["color_map"],
+        highlight_clusters=None,
+        cluster_name_map=bundle["cluster_name_map"],
+        sample_name_map=bundle["sample_name_map"],
+        spatial_rotation=bundle["spatial_rotation"],
+        saved_positions_per_sample=spatial_pos,
+        show_labels=bool(show_labels),
+        panel_height=320,
+    )
+
+
+# =============================================================================
 # レポート構築ヘルパー（Phase 2 で /share/ に流用できる純関数として分離）
 # =============================================================================
 
@@ -562,8 +597,20 @@ def _build_header(project, sub, integration_method, available_methods,
             "background": "#f8f9fa",
             "borderLeft": "4px solid #0d6efd",
             "borderRadius": "4px",
+            "position": "relative",
         },
         children=[
+            html.Div(
+                version_label(),
+                style={
+                    "position": "absolute",
+                    "top": "8px",
+                    "right": "16px",
+                    "fontSize": "0.75em",
+                    "color": "#6c757d",
+                    "fontFamily": "monospace",
+                },
+            ),
             html.H3(
                 [project.get("name", ""), " / ", sub.get("name", "")],
                 className="mb-2",
@@ -631,9 +678,24 @@ def _build_overview_section(df_plot, df_stats, color_map,
             html.H6("Per-sample UMAP (cluster-colored)",
                     className="text-muted small mt-4"),
             per_sample_umap_grid,
-            html.H6("Per-sample Spatial Mapping",
-                    className="text-muted small mt-4"),
-            spatial_grid,
+            html.Div(
+                style={"display": "flex", "alignItems": "center",
+                       "gap": "16px", "marginTop": "1rem"},
+                children=[
+                    html.H6("Per-sample Spatial Mapping",
+                            className="text-muted small mb-0"),
+                    dbc.Switch(
+                        id="lv_show_labels_switch",
+                        label="番号",
+                        value=True,
+                        className="mb-0",
+                    ),
+                ],
+            ),
+            html.Div(
+                id="lv_spatial_container",
+                children=spatial_grid,
+            ),
             dbc.Row([
                 dbc.Col([
                     html.H6("Cluster Statistics",
@@ -690,7 +752,8 @@ def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
             margin=dict(l=10, r=10, t=30, b=10),
         )
         cols.append(dbc.Col(
-            dcc.Graph(figure=fig, config={"displayModeBar": False}),
+            dcc.Graph(figure=fig, config={"displayModeBar": False},
+                      responsive=True),
             lg=col_lg, md=12, className="mb-2",
         ))
     return dbc.Row(cols, className="g-2")
@@ -747,7 +810,8 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
         cols.append(
             dbc.Col(
                 dcc.Graph(figure=fig,
-                          config={"displayModeBar": False}),
+                          config={"displayModeBar": False},
+                          responsive=True),
                 lg=6, md=12, className="mb-2",
             )
         )
@@ -800,7 +864,8 @@ def _build_per_sample_highlight_umap_grid(
             margin=dict(l=10, r=10, t=30, b=10),
         )
         cols.append(dbc.Col(
-            dcc.Graph(figure=fig, config={"displayModeBar": False}),
+            dcc.Graph(figure=fig, config={"displayModeBar": False},
+                      responsive=True),
             lg=col_lg, md=12, className="mb-1",
         ))
     return dbc.Row(cols, className="g-2")
