@@ -305,16 +305,33 @@
 <ol>
   <li>共有したいサブプロジェクトを開く（解析画面に遷移）</li>
   <li>右上または結果閲覧タブの <strong>「🔗 共有URL発行」</strong> ボタンをクリック</li>
-  <li>有効期限（既定30日）を選択</li>
-  <li>生成された URL（例: <code>https://msi.example.com/share/abc123...</code>）をコピー</li>
-  <li>協力者に Slack / メール で送る → 協力者は Tier B パスワードでログイン → 結果閲覧のみ可能</li>
+  <li>モーダル上部の <strong>「共有方式」</strong> ラジオで以下を選択（ver3.0+）:
+    <ul>
+      <li><strong>期間付き共有</strong>: <code>/share/&lt;token&gt;</code>。
+        共有先で Password B ログインが必要。有効期限を 7/14/30/90 日から選択</li>
+      <li><strong>無期限共有</strong> 🆕: <code>/view/&lt;token&gt;</code>。
+        <strong>認証なし</strong>で誰でも閲覧可。期限なし。ラボ内 wiki などに永続的に
+        貼りたい用途向け</li>
+    </ul>
+  </li>
+  <li>「統合手法」を選択（Harmony / RPCA / PCA）</li>
+  <li>生成された URL（例: <code>https://msi.example.com/share/abc123...</code> または
+    <code>/view/xyz789...</code>）をコピー</li>
+  <li>協力者に Slack / メール で送る</li>
 </ol>
 
 <div class="help-alert warn">
   <div class="alert-title">⚠️ 共有URLの取り扱い</div>
-  共有URLは <strong>トークンを知っている人なら誰でも</strong>（Tier Bログイン後に）閲覧可能です。
-  論文投稿前など機密性の高い結果を扱う場合は、有効期限を短く設定するか、不要になったら
-  該当サブプロのページから「無効化」してください。
+  <p class="small mb-1">
+    <strong>期間付き共有 (<code>/share/</code>)</strong>: トークンを知っている人なら
+    誰でも Tier B ログイン後に閲覧可。期限切れで自動失効。
+  </p>
+  <p class="small mb-0">
+    <strong>無期限共有 (<code>/view/</code>)</strong>: <strong>認証なしで誰でも閲覧可</strong>。
+    機密性の高い結果には使わず、社内 wiki への貼り付けなど用途を限定すること。
+    無効化したい場合は <code>Data/Other/shares/persistent_shares.json</code> から
+    手動で該当エントリを削除（管理者対応）。
+  </p>
 </div>
 
 <!-- ============================================ -->

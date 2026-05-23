@@ -17,13 +17,24 @@
   <ol>
     <li><a href="#intro">🌟 はじめに（DESI / TIMS 概要）</a></li>
     <li><a href="#prepare">📁 データ準備（SFTPアップロード）</a></li>
-    <li><a href="#settings">⚙️ 解析設定タブ</a></li>
+    <li><a href="#settings">⚙️ 解析設定タブ</a>
+      <ul>
+        <li><a href="#roi-mode">🆕 DESI ROI モード（複数 ROI を別サンプル扱い）</a></li>
+      </ul>
+    </li>
     <li><a href="#run">▶ 解析実行 + 進捗確認</a></li>
     <li><a href="#results">📊 結果閲覧タブ</a></li>
-    <li><a href="#interactive">🎨 インタラクティブ解析</a></li>
+    <li><a href="#interactive">🎨 インタラクティブ解析</a>
+      <ul>
+        <li><a href="#flip-rotation">🆕 サンプル別の反転・回転</a></li>
+        <li><a href="#lite-viewer">🆕 軽量ビューア（新タブ）</a></li>
+      </ul>
+    </li>
     <li><a href="#history">🗂 セッション履歴</a></li>
+    <li><a href="#sharing">🆕 🔗 共有機能（期間付き / 無期限）+ タブ別 URL</a></li>
     <li><a href="#errors">🛟 よくあるエラー</a></li>
     <li><a href="#faq">❓ FAQ</a></li>
+    <li><a href="#changelog">📝 バージョン履歴</a></li>
   </ol>
 </div>
 
@@ -297,6 +308,65 @@
   パスを毎回入力する必要はありません。
 </div>
 
+<!-- -------- DESI ROI モード (ver2.0+) -------- -->
+<h3 class="subsection-heading" id="roi-mode">🆕 DESI ROI モード（複数 ROI を別サンプル扱い）</h3>
+
+<p>
+  DESI 入力 <code>.txt</code> の <strong>最終列に <code>ROI</code> 文字列</strong>
+  (例: <code>Brain</code>, <code>Heart</code>, <code>LN</code>, <code>TDLN</code> など)
+  が含まれている場合、各 ROI を「<strong>別サンプル</strong>」として扱い
+  Multi-sample mode（Harmony / RPCA）で統合解析できます。TIMS の
+  <code>annotation</code>（slice_id）列ロジックと同等の機能で、ver2.0 で追加されました。
+</p>
+
+<div class="help-alert tip">
+  <div class="alert-title">💡 想定データ形式</div>
+  <p class="small mb-1">
+    タブ区切り <code>.txt</code>。ヘッダー 4 行の後に
+    <code>spot_index, x, y, m/z_1, m/z_2, ..., m/z_N, ROI</code> の順で並ぶ。
+  </p>
+  <p class="small mb-0">
+    ROI 列は文字列。空欄や数値（例: <code>0</code>）はそのまま「1 つの ROI」として
+    扱われる。ROI モード OFF（デフォルト）ならこの列は無視され、ファイル全体が
+    1 サンプルとして処理される。
+  </p>
+</div>
+
+<h4 class="mt-3">操作手順</h4>
+<ol>
+  <li>解析設定タブの DESI セクションで
+    <strong>「ROI 列があれば各 ROI を別サンプルとして解析」</strong>
+    トグルを ON にする</li>
+  <li>データフォルダ直下に表示される <strong>ROI チェックボックス</strong>
+    から、解析したい ROI のみ選択する（例: <code>LN</code> と <code>TDLN</code>
+    にチェック、<code>0</code> を外す）</li>
+  <li>▶ 解析実行</li>
+  <li>R スクリプトのログに
+    <code>&gt;&gt; ROI モード ON: ... を 2 個の ROI に分割 (LN, TDLN)</code>
+    と出れば成功。Spot Filtering メッセージが ROI の数だけ繰り返される</li>
+</ol>
+
+<table class="help-table mt-3">
+  <thead>
+    <tr><th>入力データ</th><th>ROI モード</th><th>挙動</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ROI 列なし</td><td>OFF</td><td>従来通り（1 サンプル）</td></tr>
+    <tr><td>ROI 列なし</td><td>ON</td><td>警告ログ出力 → 1 サンプル扱いにフォールバック</td></tr>
+    <tr><td>ROI 列あり</td><td>OFF</td><td>ROI 列は無視、ファイル全体を 1 サンプル扱い</td></tr>
+    <tr><td>ROI 列あり</td><td>ON</td><td>各 ROI を別サンプル化 + Harmony/RPCA で統合</td></tr>
+    <tr><td>ROI 列あり</td><td>ON + ROI 選択</td><td>選択した ROI のみを統合（その他は除外）</td></tr>
+  </tbody>
+</table>
+
+<div class="help-alert warn">
+  <div class="alert-title">⚠️ メモリに注意</div>
+  ROI を多く選ぶほどサンプル数が増えるため、Harmony / RPCA の統合計算で
+  メモリを多く使います。25,000 spots を超える単一 ROI を含む場合、
+  spatial smoothing で OOM を防ぐため ver2.2 で内部しきい値を引き下げています
+  （25K spots 以上は逐次計算に自動フォールバック）。
+</div>
+
 <!-- ============================================ -->
 <h2 class="section-heading" id="run">▶ 4. 解析実行 + 進捗確認</h2>
 
@@ -410,6 +480,55 @@
   ただし最終結果は <strong>「💾 結果を保存」</strong> ボタンで明示的にRDSに書き出す必要があります。
 </div>
 
+<!-- -------- flip / rotation (ver3.0+) -------- -->
+<h3 class="subsection-heading" id="flip-rotation">🆕 サンプル別の反転・回転（flip / rotation）</h3>
+
+<p>
+  Spatial プロット（組織切片上のクラスタ表示）は、サンプルごとに <strong>回転角度
+  (0/90/180/270°)</strong>・<strong>水平反転</strong>・<strong>垂直反転</strong>
+  を独立に設定できます。論文用に切片の向きを揃えたり、左右を統一したい場合に使います。
+</p>
+
+<h4>操作手順</h4>
+<ol>
+  <li>インタラクティブタブ → Spatial プロット下のコントロール</li>
+  <li>サンプルごとに「回転」セレクト / 「水平反転」「垂直反転」スイッチを操作</li>
+  <li>プロットが即時に更新される。設定は <code>interactive_settings.json</code>
+    に自動保存される（プロジェクト × サブプロジェクト単位で永続化）</li>
+</ol>
+
+<div class="help-alert tip">
+  <div class="alert-title">💡 軽量ビューアへの反映</div>
+  ver3.0 で <strong>軽量ビューア（新タブ）も flip/rotation を即時反映</strong>
+  するよう修正されました。インタラクティブで反転・回転を設定した直後に
+  軽量ビューアを開くと、最新の設定が反映された状態で表示されます
+  （内部的には、軽量ビューアを開く直前に Store → JSON への保存を完了させてから
+  新タブを開くシーケンスに変更）。
+</div>
+
+<!-- -------- 軽量ビューア (lite view) -------- -->
+<h3 class="subsection-heading" id="lite-viewer">🆕 軽量ビューア（新タブ）</h3>
+
+<p>
+  インタラクティブタブの <strong>「🔗 軽量ビューアを開く（新タブ）」</strong> ボタンで、
+  PPTX 出力と同等の構造を持つ <strong>レポート型サマリビュー</strong> を新しいタブで開けます。
+  URL は <code>/lite/&lt;project_id&gt;/&lt;sub_project_id&gt;</code> 形式で、
+  Tier A 認証下で常に最新の解析結果（UMAP, Spatial, Volcano, Cross-cluster Heatmap など）
+  を素早く確認できます。
+</p>
+
+<div class="help-alert tip">
+  <div class="alert-title">💡 PPTX 出力との違い</div>
+  <p class="small mb-1">
+    PPTX 出力は全画像をスライドに焼き込むので生成に時間がかかりますが、
+    軽量ビューアは Plotly のままブラウザ表示するので即時開きます。
+  </p>
+  <p class="small mb-0">
+    Cross-cluster Heatmap が空表示になるバグは ver3.0 で修正されました
+    （gene 名の dtype 不整合で reindex 後に全行 NaN 化していた問題を解消）。
+  </p>
+</div>
+
 <!-- ============================================ -->
 <h2 class="section-heading" id="history">🗂 7. セッション履歴</h2>
 
@@ -423,7 +542,95 @@
 </ul>
 
 <!-- ============================================ -->
-<h2 class="section-heading" id="errors">🛟 8. よくあるエラーと対処法</h2>
+<h2 class="section-heading" id="sharing">🆕 🔗 8. 共有機能（期間付き / 無期限）+ タブ別 URL</h2>
+
+<p>
+  ver3.0 から URL 体系と共有機能が拡張されました。<strong>解析画面の各タブに
+  個別の URL が割り当てられ</strong>、URL をブックマークしたり同僚に送るだけで
+  特定のタブを開けるようになりました。共有機能も「期間付き」と「無期限」の
+  2 種類から選択できます。
+</p>
+
+<h3 class="subsection-heading">A. タブ別 URL（deep link）</h3>
+
+<table class="help-table">
+  <thead>
+    <tr><th>タブ</th><th>URL</th><th>認証</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>解析設定</td><td><code>/app/settings</code></td><td>Tier A</td></tr>
+    <tr><td>結果閲覧</td><td><code>/app/results</code></td><td>Tier A</td></tr>
+    <tr><td>インタラクティブ解析</td><td><code>/app/interactive</code></td><td>Tier A</td></tr>
+    <tr><td>セッション履歴</td><td><code>/app/history</code></td><td>Tier A</td></tr>
+  </tbody>
+</table>
+
+<div class="help-alert tip">
+  <div class="alert-title">💡 双方向同期</div>
+  タブを切り替えると URL バーが <code>/app/&lt;tab_id&gt;</code> に更新されます。
+  逆に URL バーで <code>/app/results</code> 等を直接入力（または別タブで開く）
+  すれば、対応するタブが選択された状態で解析画面が開きます。
+  ブックマークすれば次回起動時も同じタブが開きます。
+</div>
+
+<h3 class="subsection-heading">B. 共有方式の選択</h3>
+
+<p>
+  サブプロジェクト画面の「共有リンク作成」モーダルで、共有方式を選択できます:
+</p>
+
+<div class="row g-3">
+  <div class="col-md-6">
+    <div class="ui-card">
+      <span class="icon">⏰</span>
+      <div class="name">期間付き共有</div>
+      <p class="small mb-1"><strong>URL</strong>: <code>/share/&lt;token&gt;</code></p>
+      <p class="small mb-1"><strong>認証</strong>: 共有先で <strong>Password B</strong> ログインが必要</p>
+      <p class="small mb-1"><strong>期限</strong>: 7 / 14 / 30 / 90 日から選択</p>
+      <p class="small mb-0"><strong>用途</strong>: 学外コラボ・査読・短期共有</p>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="ui-card">
+      <span class="icon">♾</span>
+      <div class="name">無期限共有 🆕</div>
+      <p class="small mb-1"><strong>URL</strong>: <code>/view/&lt;token&gt;</code></p>
+      <p class="small mb-1"><strong>認証</strong>: <strong>不要</strong>（URL を知る人全員が閲覧可）</p>
+      <p class="small mb-1"><strong>期限</strong>: なし</p>
+      <p class="small mb-0"><strong>用途</strong>: ラボ内 wiki への永続的なリンク・社内資料</p>
+    </div>
+  </div>
+</div>
+
+<div class="help-alert warn">
+  <div class="alert-title">⚠️ 無期限共有のセキュリティ</div>
+  <p class="small mb-1">
+    無期限共有の URL は <code>token_urlsafe(16)</code> で生成され、推測攻撃には
+    実質耐性があります（128 bit のエントロピー）。しかし以下に注意:
+  </p>
+  <ul class="small mb-0">
+    <li>URL を <strong>メール本文・チャット・公開リポジトリ</strong> に貼ると、
+      その経路を通じて閲覧可能になります</li>
+    <li>サーバーログや CDN キャッシュに URL が残る場合があります</li>
+    <li>失効させたい場合は、共有元のメンバーが手動で revoke する必要があります
+      （<code>persistent_shares.json</code> から該当エントリを削除）</li>
+  </ul>
+</div>
+
+<h3 class="subsection-heading">C. 共有 URL の作成手順</h3>
+<ol>
+  <li>サブプロジェクト一覧から該当プロジェクトを開く</li>
+  <li>「🔗 共有リンク作成」ボタンをクリック</li>
+  <li>モーダル上部の <strong>「共有方式」</strong> ラジオで
+    <code>期間付き共有</code> または <code>無期限共有</code> を選ぶ</li>
+  <li>期間付きの場合は「有効期限」を選択。無期限の場合は警告 Alert を確認</li>
+  <li>「統合手法」を選択（Harmony / RPCA / PCA）</li>
+  <li>必要に応じてメモを入力</li>
+  <li>「共有リンクを生成」 → 表示された URL をコピーして共有</li>
+</ol>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="errors">🛟 9. よくあるエラーと対処法</h2>
 
 <div class="row g-3">
   <div class="col-md-6">
@@ -471,7 +678,7 @@
 </div>
 
 <!-- ============================================ -->
-<h2 class="section-heading" id="faq">❓ 9. よくある質問 (FAQ)</h2>
+<h2 class="section-heading" id="faq">❓ 10. よくある質問 (FAQ)</h2>
 
 <div class="row g-3">
   <div class="col-md-6">
@@ -503,6 +710,53 @@
     </div>
   </div>
 </div>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="changelog">📝 11. バージョン履歴</h2>
+
+<table class="help-table">
+  <thead>
+    <tr><th>バージョン</th><th>主要変更点</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>ver3.0</strong></td>
+      <td>
+        ① インタラクティブ解析の flip/rotation を軽量ビューアにも反映するよう修正<br>
+        ② 軽量ビューアの「Cross-cluster Heatmap」空表示バグを修正<br>
+        ③ <strong>タブ別 URL</strong> (<code>/app/&lt;tab_id&gt;</code>) と
+        <strong>無期限共有 URL</strong> (<code>/view/&lt;token&gt;</code>) を追加<br>
+        ④ 本ヘルプを最新化
+      </td>
+    </tr>
+    <tr>
+      <td>ver2.2</td>
+      <td>
+        DESI 通常解析パスにも ROI モードを正しく注入（旧バージョンは reanalysis のみ機能）<br>
+        spatial smoothing の dist_mat 閾値を 50K → 15K に下げて OOM を防御
+      </td>
+    </tr>
+    <tr>
+      <td>ver2.1</td>
+      <td>DESI ROI 設定 UI をチェックボックス化、データフォルダ直下に移動</td>
+    </tr>
+    <tr>
+      <td>ver2.0</td>
+      <td>
+        <strong>DESI ROI モード</strong>を新規追加: 最終列 <code>ROI</code> を
+        各サンプルに分割して Harmony/RPCA で統合解析
+      </td>
+    </tr>
+    <tr>
+      <td>ver1.12</td>
+      <td><code>leidenbase</code> R パッケージを依存に追加</td>
+    </tr>
+    <tr>
+      <td>ver1.11</td>
+      <td>軽量ビューアの Per-sample UMAP に「番号」Switch を追加</td>
+    </tr>
+  </tbody>
+</table>
 
 <hr class="my-5">
 <p class="text-center text-muted small">

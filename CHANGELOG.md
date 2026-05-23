@@ -12,6 +12,74 @@
 
 ---
 
+## 2026-05-23_ver3.0
+
+### 新機能
+- **タブ別 URL ルーティング**を追加。解析画面の各タブに個別 URL を割り当て、
+  URL をブックマーク / コピペで意図したタブを直接開けるようにした。
+  - `/app/settings` (解析設定) / `/app/results` (結果閲覧) /
+    `/app/interactive` (インタラクティブ解析) / `/app/history` (セッション履歴)
+  - 認証は従来通り Tier A 必須
+  - 実装: `App/app/callbacks/tab_url_routing.py` (新規) で URL ↔
+    `main_tabs.active_tab` を双方向同期。`/app/*` への直接アクセス時は
+    `current_page` を `analysis` に遷移
+- **無期限共有 URL** (`/view/<token>`) を追加。期間付き共有
+  (`/share/<token>`, Tier B 必須) と並列で運用し、用途で使い分け可能。
+  - 認証不要 (`auth_middleware._BYPASS_PREFIXES` に `/view/` を追加)
+  - `token_urlsafe(16)` 由来の不推測 URL (128 bit エントロピー)
+  - 1 プロジェクト × サブプロジェクトにつき 1 token (再発行で旧 token 失効)
+  - 実装: `App/app/services/persistent_share_manager.py` (新規) で
+    `persistent_shares.json` を管理。`share_callbacks.route_share_url`
+    を拡張し、`/view/<token>` を内部的に `share_token` Store に
+    `"v:<token>"` prefix で格納 → `initialize_shared_view` で
+    `get_persistent_share` を呼ぶ分岐ロジックを追加
+- 共有作成 UI に「共有方式」ラジオを追加 (期間付き / 無期限)。
+  無期限選択時は警告 Alert を表示し、有効期限欄を非表示化
+
+### バグ修正
+- **インタラクティブ解析の flip/rotation が軽量ビューア (新タブ) に反映
+  されない問題を修正**。
+  - 「🔗 軽量ビューアを開く」ボタンの clientside_callback (`window.open`)
+    と Store → `interactive_settings.json` への保存 callback が非同期で
+    競合し、新タブが旧設定を読む競合状態だった
+  - 新規 server callback `_flush_settings_before_lite_open` で
+    クリック時に flip/rotation・サンプル名・クラスタ名・カラーマップを
+    同期 save → `lite_viewer_open_signal` Store 更新 →
+    clientside_callback が signal の変化で `window.open` する順序に変更し、
+    JSON 書込み完了後に新タブが開く事を保証
+- **軽量ビューアの「Cross-cluster Heatmap (Top 3 markers / cluster)」が
+  軸ラベルだけ残ってプロット領域が空白になる問題を修正**。
+  - `df["gene"]` / `df["cluster"]` の前後空白や型混在で `pivot_table`
+    の index と `top_genes` が一致せず `reindex` で全行 NaN 化していた
+  - `astype(str).str.strip()` で正規化 + 空文字行を除外、`reindex` 後の
+    `pivot.dropna(how="all")` + empty 判定 + フォールバック表示
+  - 副次的に DEG ロード直後と `interactive_settings.json` の mtime を
+    `logger.info` でログ出力し、再発時の切り分けを容易に
+
+### ドキュメント
+- `App/app/templates/help/analysis.html` を最新化:
+  - DESI ROI モード (ver2.0+) の使い方を 3-1 節として追加
+  - インタラクティブ解析の flip/rotation・軽量ビューアの説明を追加
+  - 新規セクション「🔗 共有機能 (期間付き / 無期限) + タブ別 URL」を追加
+  - バージョン履歴セクションを追加
+- `App/app/templates/help/registration.html` の共有 URL 発行手順に
+  期間付き / 無期限の選び方を追記
+
+### 検証
+- インタラクティブで flip 90° + 水平反転を設定 → 軽量ビューアを開いて
+  両方が反映される
+- 通常 DEG ありデータで軽量ビューア → Cross-cluster Heatmap が描画される
+- DEG 空データで軽量ビューア → 「ヒートマップ用データが生成できません」
+  の説明テキストが表示される
+- `/app/results` を直接 URL バーに入力 → 結果閲覧タブが選択された状態で
+  解析画面が開く
+- タブを切り替えると URL バーが `/app/<tab_id>` に同期する
+- 無期限共有を生成 → 別ブラウザ (未ログイン) で URL アクセス → 読み取り
+  専用ビューが表示される
+- 期間付き共有 (Tier B 必須) は従来挙動どおり動作
+
+---
+
 ## 2026-05-22_ver2.2
 
 ### バグ修正
