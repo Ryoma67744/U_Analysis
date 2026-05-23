@@ -17,6 +17,7 @@
 #       pattern-matching で各クラスタの UMAP/Spatial/Volcano グリッドを遅延描画
 # =============================================================================
 
+import logging
 import re
 from pathlib import Path
 
@@ -29,6 +30,8 @@ from dash import (
     MATCH, ALL,
     clientside_callback,
 )
+
+logger = logging.getLogger(__name__)
 
 from app.services.project_manager import get_project, get_sub_project
 from app.callbacks.interactive_callbacks import (
@@ -155,9 +158,23 @@ def initialize_lite_view(target, method_data):
     deg_records = []
     if result_dir and Path(result_dir).is_dir():
         deg_records = _load_deg_results(Path(result_dir), integration_method) or []
+    logger.info(
+        "lite_view DEG loaded: rows=%d integration=%s result_dir=%s",
+        len(deg_records), integration_method, result_dir,
+    )
 
     # メイン解析で永続化されたインタラクティブ設定 + ラベル位置を読み込む
     settings = load_interactive_settings(rds_path) or {}
+    settings_mtime = "n/a"
+    try:
+        sp = Path(rds_path).parent / "interactive_settings.json" if rds_path else None
+        if sp and sp.exists():
+            from datetime import datetime as _dt
+            settings_mtime = _dt.fromtimestamp(sp.stat().st_mtime).isoformat()
+    except Exception:
+        pass
+    logger.info("lite_view settings loaded: mtime=%s keys=%s",
+                settings_mtime, list(settings.keys()))
     cluster_name_map = settings.get("cluster_name_map") or {}
     sample_name_map = settings.get("sample_name_map") or {}
     spatial_rotation = settings.get("spatial_rotation") or {}
@@ -1278,15 +1295,20 @@ def _build_heatmap_section(deg_records, top_n_per_cluster=3,
         )
 
     df["avg_log2FC"] = pd.to_numeric(df["avg_log2FC"], errors="coerce")
+    # gene / cluster は前後空白や型不整合で reindex / pivot が空になる事があるため
+    # ここで明示的に文字列化 + strip して正規化する
+    df["gene"] = df["gene"].astype(str).str.strip()
+    df["cluster"] = df["cluster"].astype(str).str.strip()
     df = df.dropna(subset=["avg_log2FC", "cluster", "gene"])
+    df = df[(df["gene"] != "") & (df["cluster"] != "")]
 
-    clusters = sorted(df["cluster"].astype(str).unique(), key=_cluster_sort_key)
+    clusters = sorted(df["cluster"].unique(), key=_cluster_sort_key)
 
     # 各クラスタ上位 N gene を集約
     top_genes = []
     seen = set()
     for c in clusters:
-        df_c = df[df["cluster"].astype(str) == c]
+        df_c = df[df["cluster"] == c]
         for g in df_c.nlargest(top_n_per_cluster, "avg_log2FC")["gene"].tolist():
             if g not in seen:
                 top_genes.append(g)
@@ -1308,6 +1330,29 @@ def _build_heatmap_section(deg_records, top_n_per_cluster=3,
         values="avg_log2FC", aggfunc="mean",
     )
     pivot = pivot.reindex(top_genes)
+    # reindex 後に全行 NaN になる事があり (型不一致や CSV 由来の空白で起きる)、
+    # 残った有効行のみを使う。完全に空ならフォールバック表示。
+    pivot = pivot.dropna(how="all")
+    if pivot.empty:
+        logger.warning(
+            "heatmap pivot empty after reindex: deg_rows=%d clusters=%s "
+            "top_genes_sample=%s",
+            len(df), clusters[:5], top_genes[:5],
+        )
+        return html.Div(
+            className="heatmap-section mb-5",
+            children=[
+                html.H4(
+                    f"Cross-cluster Heatmap (Top {top_n_per_cluster} markers / cluster)",
+                    className="mb-3 border-bottom pb-2",
+                ),
+                html.Div(
+                    "ヒートマップ用データが生成できませんでした"
+                    "（DEG と top markers の遺伝子名がマッチしません）",
+                    className="text-muted small",
+                ),
+            ],
+        )
     cluster_cols = [c for c in clusters if c in pivot.columns]
     pivot = pivot[cluster_cols].fillna(0.0)
 
@@ -1347,10 +1392,54 @@ def _build_heatmap_section(deg_records, top_n_per_cluster=3,
 # メイン解析画面（インタラクティブ解析タブ）から新タブで /lite/<pid>/<sid> を開く
 # =============================================================================
 
+# --- Server callback: ボタンクリックで現在の Store 値を JSON へ flush ---
+#  flip/rotation・サンプル名・クラスタ名・カラーマップ など、UI 側で変更直後に
+#  Dash の非同期更新と新タブ open の競合で「軽量ビューアが古い設定を読み込む」
+#  問題を防ぐため、新タブを開く前にここで同期保存して signal を出す。
+@callback(
+    Output("lite_viewer_open_signal", "data"),
+    Input("btn_open_lite_viewer", "n_clicks"),
+    [State("spatial_rotation_store", "data"),
+     State("sample_name_map_store", "data"),
+     State("cluster_name_map_store", "data"),
+     State("custom_color_map_store", "data"),
+     State("seurat_rds_path_store", "data")],
+    prevent_initial_call=True,
+)
+def _flush_settings_before_lite_open(
+    n_clicks, spatial_rotation, sample_name_map,
+    cluster_name_map, custom_color_map, rds_path,
+):
+    if not n_clicks or not rds_path:
+        return no_update
+    from app.utils.label_persistence import save_interactive_settings
+    try:
+        if spatial_rotation:
+            save_interactive_settings("spatial_rotation", spatial_rotation, rds_path)
+        if sample_name_map:
+            save_interactive_settings("sample_name_map", sample_name_map, rds_path)
+        if cluster_name_map:
+            save_interactive_settings("cluster_name_map", cluster_name_map, rds_path)
+        if custom_color_map:
+            save_interactive_settings("custom_color_map", custom_color_map, rds_path)
+        logger.info(
+            "lite_viewer pre-open flush done: rds_path=%s rotation_keys=%d "
+            "sample_map_keys=%d cluster_map_keys=%d color_map_keys=%d",
+            rds_path,
+            len(spatial_rotation or {}), len(sample_name_map or {}),
+            len(cluster_name_map or {}), len(custom_color_map or {}),
+        )
+    except Exception as e:
+        logger.warning("lite_viewer pre-open flush failed: %s", e)
+    # シグナルとして click ID を返す（変化を伝えれば良いので n_clicks を使う）
+    import time
+    return int(time.time() * 1000)
+
+
 clientside_callback(
     """
-    function(n_clicks, project_id, sub_project_id) {
-        if (!n_clicks || !project_id || !sub_project_id) {
+    function(signal_ts, project_id, sub_project_id) {
+        if (!signal_ts || !project_id || !sub_project_id) {
             return window.dash_clientside.no_update;
         }
         const url = `/lite/${encodeURIComponent(project_id)}/${encodeURIComponent(sub_project_id)}`;
@@ -1359,7 +1448,7 @@ clientside_callback(
     }
     """,
     Output("btn_open_lite_viewer", "n_clicks"),
-    Input("btn_open_lite_viewer", "n_clicks"),
+    Input("lite_viewer_open_signal", "data"),
     [State("interactive_project_select", "value"),
      State("interactive_sub_project_select", "value")],
     prevent_initial_call=True,
