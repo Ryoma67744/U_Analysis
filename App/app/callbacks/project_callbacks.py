@@ -150,29 +150,37 @@ def render_project_cards(current_page, _refresh, sort_order, search_text):
                     children=[
                         dbc.CardBody(
                             style={
-                                "padding": 0,
+                                "padding": "12px",
                                 "display": "flex",
-                                "alignItems": "stretch",
+                                "alignItems": "flex-start",
+                                "gap": "12px",
                             },
                             children=[
-                                # 左カラム: サムネ画像 (固定幅、全高 stretch)
+                                # 左カラム: サムネ画像 (100x100 固定サイズ)
+                                # ver3.13: stretch を廃止し固定 100x100 に戻す。
+                                # カードの高さは右カラム内容で決まる。
                                 html.Img(
                                     src=f"/api/project_thumb/{p['id']}",
                                     style={
-                                        "width": "130px",
-                                        "minWidth": "130px",
+                                        "width": "100px",
+                                        "minWidth": "100px",
+                                        "height": "100px",
                                         "objectFit": "cover",
                                         "background": "#f0f0f0",
                                         "display": "block",
-                                        "alignSelf": "stretch",
+                                        "borderRadius": "6px",
+                                        "border": "1px solid #e0e0e0",
+                                        "flexShrink": 0,
                                     },
                                     **{"data-no-thumb-hide": "1"},
                                 ),
                                 # 右カラム: タイトル + メタ + 「開く」ボタン
+                                # ver3.13: CardBody 側に padding=12px を持たせたため
+                                # 右カラム自体は padding=0 (重複防止)
                                 html.Div(
                                     style={
                                         "flexGrow": 1,
-                                        "padding": "12px",
+                                        "padding": 0,
                                         "minWidth": 0,
                                         "display": "flex",
                                         "flexDirection": "column",
