@@ -676,6 +676,11 @@ def create_interactive_tab():
                                 dbc.Button("📷 一括保存", id="btn_batch_save_umap", size="sm",
                                            color="outline-secondary",
                                            style={"fontSize": "0.75rem"}),
+                                # ver3.10: 現在の UMAP をプロジェクトサムネに登録
+                                dbc.Button("📌 サムネ登録", id="btn_set_thumbnail_umap",
+                                           size="sm", color="outline-info",
+                                           style={"fontSize": "0.75rem"},
+                                           title="現在の UMAP プロット (統合 or per-sample 結合) をプロジェクトのサムネとして登録"),
                                 dbc.Button("⤢", id="expand_umap_btn", size="sm", color="light",
                                            style={"fontSize": "1.2rem", "padding": "2px 8px", "lineHeight": "1"}),
                             ]),
@@ -826,6 +831,11 @@ def create_interactive_tab():
                                 dbc.Button("📷 一括保存", id="btn_batch_save_spatial", size="sm",
                                            color="outline-secondary",
                                            style={"fontSize": "0.75rem"}),
+                                # ver3.10: 現在の Spatial をプロジェクトサムネに登録
+                                dbc.Button("📌 サムネ登録", id="btn_set_thumbnail_spatial",
+                                           size="sm", color="outline-info",
+                                           style={"fontSize": "0.75rem"},
+                                           title="現在の Spatial Mapping (横結合画像) をプロジェクトのサムネとして登録"),
                                 dbc.Button("⤢", id="expand_spatial_btn", size="sm", color="light",
                                            style={"fontSize": "1.2rem", "padding": "2px 8px", "lineHeight": "1"}),
                             ]),

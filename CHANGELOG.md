@@ -12,6 +12,41 @@
 
 ---
 
+## 2026-05-23_ver3.10
+
+### 新機能
+- **インタラクティブ解析のプロットを 1 クリックでプロジェクトサムネに登録**
+  できる「📌 サムネ登録」ボタンを追加。
+  - UMAP セクション右上 / Spatial Mapping セクション右上の「📷 一括保存」
+    ボタン横に配置
+  - ボタンクリックで現在表示中の Plotly figure を PNG 化し、
+    `Data/Other/cache/project_thumbnails_src/<project_id>_<kind>.png` に
+    保存、続けて `projects.json` の `thumbnail_source` を自動更新
+  - 複数 figure (per-sample 等) がある場合は **横一列に結合** して 1 枚化
+  - UMAP は表示モードに応じて切替:
+    - 「統合」モード → `interactive_umap_plot.figure` (2400x1800)
+    - 「サンプル別」モード → `batch_umap_figures_store.data` 横結合
+  - 登録完了は Toast で通知し、プロジェクト一覧を自動 refresh
+  - 既存の `_concat_pngs_horizontal` / `fig_to_png_bytes` を再利用
+
+### 実装内容
+- `interactive_tab.py`: UMAP / Spatial の両アコーディオン右上にボタン追加
+  (`btn_set_thumbnail_umap` / `btn_set_thumbnail_spatial`)
+- `interactive_batch_save.py`:
+  - `_save_figure_as_thumbnail` ヘルパ (PNG 化 + 保存 + project 更新)
+  - `cb_set_thumbnail_spatial` / `cb_set_thumbnail_umap` callback
+- 完成までユーザーが何度でも調整 (色変更、ラベル位置ドラッグ、回転反転、
+  クラスタ除外等) し、最後の状態をサムネとして 1 クリック登録できる
+
+### 検証
+- インタラクティブで Spatial を整える → 「📌 サムネ登録」 →
+  プロジェクト一覧でサムネが更新される
+- UMAP も同様に登録可能 (per-sample / 統合 どちらも対応)
+- 同じプロジェクトで何度でも登録し直せる (上書き)
+- 元の自動検出に戻すには編集モーダルで「サムネ画像」を空欄にして保存
+
+---
+
 ## 2026-05-23_ver3.9
 
 ### 新機能

@@ -269,3 +269,136 @@ def cb_batch_save_deg(n_clicks, volcano_fig, heatmap_fig, cluster_select):
         raise PreventUpdate
 
     return dcc.send_bytes(zip_bytes, f"DEG_{_timestamp()}.zip")
+
+
+# =============================================================================
+# ver3.10: 現在の UMAP / Spatial をプロジェクトサムネに登録
+# 図を PNG 化してサーバーに保存し、project.thumbnail_source を更新する。
+# =============================================================================
+
+def _save_figure_as_thumbnail(figures_list, width, height, scale,
+                                project_id, kind):
+    """Plotly figure(s) を PNG 化してプロジェクトサムネとして登録。
+
+    複数 figure (per-sample 等) があれば横一列に結合して 1 枚にする。
+
+    Returns
+    -------
+    tuple[bool, str]
+        (success, message)
+    """
+    from pathlib import Path
+    from app.config import OTHER_DIR
+    from app.services.project_manager import get_project, update_project
+
+    if not project_id:
+        return False, "プロジェクトが選択されていません"
+
+    project = get_project(project_id)
+    if not project:
+        return False, f"プロジェクトが見つかりません: {project_id}"
+
+    if not figures_list:
+        return False, "保存対象のプロットがありません"
+
+    # 各 figure を PNG に変換
+    png_list = []
+    for name, fig_dict in figures_list:
+        try:
+            png = fig_to_png_bytes(
+                fig_dict, width=width, height=height, scale=scale,
+            )
+            if png:
+                png_list.append(png)
+        except Exception:
+            logger.warning("PNG conversion failed for %s", name, exc_info=True)
+
+    if not png_list:
+        return False, "PNG 化に失敗しました"
+
+    # 複数なら横一列結合 (per-sample plot 用)
+    if len(png_list) >= 2:
+        merged = _concat_pngs_horizontal(png_list)
+        if merged:
+            final_png = merged
+        else:
+            final_png = png_list[0]
+    else:
+        final_png = png_list[0]
+
+    # 保存先: Data/Other/cache/project_thumbnails_src/<project_id>_<kind>.png
+    # (cache フォルダ配下にすることで、プロジェクト output_dir 削除時にも残らない)
+    save_dir = OTHER_DIR / "cache" / "project_thumbnails_src"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in project_id)
+    save_path = save_dir / f"{safe_id}_{kind}.png"
+    try:
+        with open(save_path, "wb") as f:
+            f.write(final_png)
+    except Exception as e:
+        logger.error("thumbnail PNG save failed: %s", e)
+        return False, f"保存失敗: {e}"
+
+    # project.thumbnail_source を更新
+    updated = update_project(project_id, {
+        "thumbnail_source": str(save_path),
+    })
+    if updated is None:
+        return False, "プロジェクト更新に失敗しました"
+
+    logger.info("thumbnail set: project=%s kind=%s path=%s",
+                project_id, kind, save_path)
+    return True, f"サムネを {kind} で登録しました"
+
+
+@callback(
+    Output("notification_toast", "is_open", allow_duplicate=True),
+    Output("notification_toast", "children", allow_duplicate=True),
+    Output("notification_toast", "icon", allow_duplicate=True),
+    Output("project_list_refresh", "data", allow_duplicate=True),
+    Input("btn_set_thumbnail_spatial", "n_clicks"),
+    [State("batch_spatial_figures_store", "data"),
+     State("interactive_project_select", "value"),
+     State("project_list_refresh", "data")],
+    prevent_initial_call=True,
+)
+def cb_set_thumbnail_spatial(n_clicks, spatial_figs, project_id, refresh):
+    if not n_clicks:
+        raise PreventUpdate
+    ok, msg = _save_figure_as_thumbnail(
+        spatial_figs or [], _PANEL_W, _PANEL_H_SPATIAL, _PANEL_SCALE,
+        project_id, "spatial",
+    )
+    return True, msg, ("success" if ok else "danger"), (refresh or 0) + 1
+
+
+@callback(
+    Output("notification_toast", "is_open", allow_duplicate=True),
+    Output("notification_toast", "children", allow_duplicate=True),
+    Output("notification_toast", "icon", allow_duplicate=True),
+    Output("project_list_refresh", "data", allow_duplicate=True),
+    Input("btn_set_thumbnail_umap", "n_clicks"),
+    [State("interactive_umap_plot", "figure"),
+     State("batch_umap_figures_store", "data"),
+     State("umap_display_mode", "value"),
+     State("interactive_project_select", "value"),
+     State("project_list_refresh", "data")],
+    prevent_initial_call=True,
+)
+def cb_set_thumbnail_umap(n_clicks, umap_fig, per_sample_figs,
+                          display_mode, project_id, refresh):
+    if not n_clicks:
+        raise PreventUpdate
+    # 表示モードに応じて選択: per_sample なら結合、それ以外は統合 UMAP
+    if display_mode == "per_sample" and per_sample_figs:
+        figs = per_sample_figs
+        width, height, scale = _PANEL_W, _PANEL_H_UMAP, _PANEL_SCALE
+    elif umap_fig:
+        figs = [("UMAP_integrated", umap_fig)]
+        width, height, scale = _INTEGRATED_W, _INTEGRATED_H, _INTEGRATED_SCALE
+    else:
+        return True, "UMAP プロットが見つかりません", "danger", no_update
+    ok, msg = _save_figure_as_thumbnail(
+        figs, width, height, scale, project_id, "umap",
+    )
+    return True, msg, ("success" if ok else "danger"), (refresh or 0) + 1
