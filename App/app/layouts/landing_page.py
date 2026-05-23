@@ -248,6 +248,24 @@ def _create_edit_project_modal():
                     placeholder="メモ（任意）",
                     style={"height": "80px"},
                 ),
+                # ver3.9: サムネ画像のソースパスを指定 (省略時は自動検出)
+                dbc.Label("サムネ画像 (省略時は自動検出)", className="mt-2"),
+                dbc.InputGroup([
+                    dbc.Input(
+                        id="edit_project_thumbnail",
+                        placeholder="/app/Data/.../UMAP_per_sample_harmony_ALLclusters.png",
+                    ),
+                    dbc.Button(
+                        "...",
+                        id="browse_edit_thumbnail",
+                        color="secondary",
+                    ),
+                ]),
+                html.Small(
+                    "空欄なら最新サブプロの Harmony / RPCA / PCA フォルダから "
+                    "UMAP png を自動選択します",
+                    className="text-muted",
+                ),
             ]),
             dbc.ModalFooter([
                 dbc.Button(

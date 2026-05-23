@@ -12,6 +12,48 @@
 
 ---
 
+## 2026-05-23_ver3.9
+
+### 新機能
+- **ヘッダータイトル「MSI Analysis Application」クリックでプロジェクト一覧へ**:
+  - 解析画面のヘッダー H1 を `dbc.Button(color="link")` でラップし、
+    新規 callback `header_title_to_landing` で `current_page="landing"` へ
+    遷移するように
+  - 見た目はそのまま、ホバー時にカーソルが pointer に変化
+  - 主要ファイル: `main_layout.py`, `project_callbacks.py`
+
+- **プロジェクトカードにサムネ画像 (50x50px) を表示**:
+  - カードのタイトル左に小さな UMAP / Spatial 画像を表示
+  - ユーザーが任意指定可能: プロジェクト編集モーダルに「サムネ画像」
+    入力欄 + ファイルブラウザ `[...]` ボタンを追加 (`thumbnail_source`
+    フィールドとして projects.json に保存)
+  - 省略時は自動検出: 最新サブプロの `Harmony/RPCA/PCA` フォルダから
+    `UMAP_per_sample_*_ALLclusters.png` を順次探索、それも無ければ
+    rglob で `*UMAP*.png` / `*spatial*.png` を試行
+
+### 性能設計 (プロジェクト数 100+ でも遅くならない)
+- **Pillow リサイズ + ディスクキャッシュ**: 新規 service
+  `App/app/services/thumbnail_service.py` で 60x60 JPG を
+  `Data/Other/cache/thumbnails/<project_id>_<mtime>.jpg` に保存。
+  source 画像の mtime が変わると新規 cache 生成 + 旧 cache 自動削除
+- **Flask route 配信**: `/api/project_thumb/<project_id>` で配信。
+  `Cache-Control: max-age=3600` でブラウザキャッシュも活用。
+  base64 インラインを廃止し、ネットワーク負荷を抑制
+- **フォールバック PNG**: サムネが無い場合は透明 1x1 PNG を返す
+  ことで img タグの broken-icon を抑止
+
+### 検証
+- 解析画面で「MSI Analysis Application」クリック → プロジェクト一覧
+- プロジェクト編集モーダルでサムネパス指定 → 一覧に即反映
+- 同じプロジェクトの 2 回目表示で network request 最小化 (cache hit)
+- 解析結果無しの新規プロジェクトでもカード崩れなし
+
+### 下位互換
+- 既存プロジェクト (`thumbnail_source` フィールド無し) は自動検出
+- Pillow 不在環境では cache 生成失敗 → 透明 PNG にフォールバック
+
+---
+
 ## 2026-05-23_ver3.8
 
 ### バグ修正 (R スクリプトデバッグの成果)

@@ -241,8 +241,21 @@ def create_main_layout():
                                     },
                                     children=[
                                         html.Div([
-                                            html.H1(
-                                                "MSI Analysis Application"
+                                            # ver3.9: クリックでプロジェクト一覧 (landing) に戻る
+                                            # 元の H1 をボタンでラップし、見た目はそのまま保つ
+                                            dbc.Button(
+                                                html.H1(
+                                                    "MSI Analysis Application",
+                                                    className="m-0 p-0",
+                                                ),
+                                                id="header_title_home_btn",
+                                                color="link",
+                                                className="p-0 border-0 text-decoration-none",
+                                                style={
+                                                    "color": "inherit",
+                                                    "textAlign": "left",
+                                                },
+                                                title="プロジェクト一覧に戻る",
                                             ),
                                             html.P(
                                                 className="subtitle",

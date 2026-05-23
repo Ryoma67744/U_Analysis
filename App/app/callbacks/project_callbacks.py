@@ -150,11 +150,29 @@ def render_project_cards(current_page, _refresh, sort_order, search_text):
                                     "display": "flex",
                                     "justifyContent": "space-between",
                                     "alignItems": "flex-start",
+                                    "gap": "10px",
                                 },
                                 children=[
+                                    # ver3.9: タイトル左にサムネ画像 (50x50px)。
+                                    # /api/project_thumb/<id> から配信 (キャッシュ済)
+                                    # 画像が無い (404) ときは onerror で非表示
+                                    html.Img(
+                                        src=f"/api/project_thumb/{p['id']}",
+                                        style={
+                                            "width": "50px",
+                                            "height": "50px",
+                                            "objectFit": "cover",
+                                            "borderRadius": "4px",
+                                            "flexShrink": 0,
+                                            "background": "#f0f0f0",
+                                        },
+                                        **{"data-no-thumb-hide": "1"},
+                                    ),
                                     html.H5(
                                         p["name"],
                                         className="card-title mb-1",
+                                        style={"flexGrow": 1, "minWidth": 0,
+                                               "wordBreak": "break-word"},
                                     ),
                                     html.Div([
                                         dbc.Button(
@@ -656,6 +674,22 @@ def sub_action_interactive(clicks, project):
 
 
 # =========================================================================
+# ver3.9: ヘッダータイトル「MSI Analysis Application」クリック → ホーム
+# =========================================================================
+
+@callback(
+    Output("current_page", "data", allow_duplicate=True),
+    Input("header_title_home_btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def header_title_to_landing(n_clicks):
+    """ヘッダーのタイトルクリックでプロジェクト一覧に戻る。"""
+    if not n_clicks:
+        return no_update
+    return "landing"
+
+
+# =========================================================================
 # 戻るボタン: サブプロジェクト一覧 → ランディング
 # =========================================================================
 
@@ -813,7 +847,8 @@ def handle_delete_project(n_clicks, project_id, refresh):
      Output("edit_target_project_id", "data"),
      Output("edit_project_name", "value"),
      Output("edit_project_experiment_date", "value"),
-     Output("edit_project_memo", "value")],
+     Output("edit_project_memo", "value"),
+     Output("edit_project_thumbnail", "value")],
     [Input({"type": "edit_project_btn", "index": ALL}, "n_clicks"),
      Input("cancel_edit_project", "n_clicks"),
      Input("confirm_edit_project", "n_clicks")],
@@ -825,7 +860,7 @@ def toggle_edit_project_modal(edit_clicks, cancel_clicks, confirm_clicks, target
 
     # キャンセル or 保存 → 閉じる
     if triggered == "cancel_edit_project" or triggered == "confirm_edit_project":
-        return False, "", "", None, ""
+        return False, "", "", None, "", ""
 
     # 編集ボタン → モーダルを開いて既存値をセット
     if isinstance(triggered, dict) and triggered.get("type") == "edit_project_btn":
@@ -839,9 +874,10 @@ def toggle_edit_project_modal(edit_clicks, cancel_clicks, confirm_clicks, target
                     project.get("name", ""),
                     project.get("experiment_date", None) or None,
                     project.get("memo", ""),
+                    project.get("thumbnail_source", ""),
                 )
 
-    return no_update, no_update, no_update, no_update, no_update
+    return no_update, no_update, no_update, no_update, no_update, no_update
 
 
 # =========================================================================
@@ -855,10 +891,12 @@ def toggle_edit_project_modal(edit_clicks, cancel_clicks, confirm_clicks, target
      State("edit_project_name", "value"),
      State("edit_project_experiment_date", "value"),
      State("edit_project_memo", "value"),
+     State("edit_project_thumbnail", "value"),
      State("project_list_refresh", "data")],
     prevent_initial_call=True,
 )
-def handle_edit_project(n_clicks, project_id, name, experiment_date, memo, refresh):
+def handle_edit_project(n_clicks, project_id, name, experiment_date, memo,
+                        thumbnail_source, refresh):
     if not n_clicks or not project_id or not name:
         return no_update
 
@@ -866,6 +904,7 @@ def handle_edit_project(n_clicks, project_id, name, experiment_date, memo, refre
         "name": name,
         "experiment_date": experiment_date or "",
         "memo": memo or "",
+        "thumbnail_source": (thumbnail_source or "").strip(),
     })
 
     return (refresh or 0) + 1

@@ -235,6 +235,7 @@ register_auth(server)
 # ヘルプページ（取扱説明書）: 認証不要
 # auth_middleware._BYPASS_PREFIXES に "/help/" を登録済み
 from flask import render_template as _render_template  # noqa: E402
+from flask import send_file as _send_file, make_response as _make_response  # noqa: E402
 
 
 @server.route("/help/registration")
@@ -247,6 +248,50 @@ def _help_registration():
 def _help_analysis():
     """解析画面の取扱説明書を別タブで表示"""
     return _render_template("help/analysis.html")
+
+
+# ver3.9: プロジェクトサムネ配信 (キャッシュ済 JPG / フォールバック透明 PNG)
+# 認証は Tier A 必須 (auth_middleware の bypass に含めない)
+@server.route("/api/project_thumb/<project_id>")
+def _project_thumbnail(project_id):
+    """プロジェクトカード用サムネ画像を配信する。
+
+    - 解析結果あり: source 画像から生成した 60x60 JPG (cache hit で即時)
+    - 解析結果なし: 透明 1x1 PNG をフォールバック (Img タグの broken icon 抑止)
+    """
+    import base64
+    try:
+        from app.services.project_manager import get_project
+        from app.services.thumbnail_service import (
+            get_thumbnail_path, resolve_thumbnail_source,
+        )
+        project = get_project(project_id)
+        if project:
+            source = resolve_thumbnail_source(project)
+            if source:
+                cache_path = get_thumbnail_path(project_id, source)
+                if cache_path:
+                    response = _send_file(
+                        str(cache_path), mimetype="image/jpeg"
+                    )
+                    response.headers["Cache-Control"] = "public, max-age=3600"
+                    return response
+    except Exception as e:
+        # エラー時もフォールバック画像を返す (UI 崩れ防止)
+        import logging as _logging
+        _logging.getLogger("msi.thumb").warning(
+            "thumbnail route error project=%s: %s", project_id, e,
+        )
+    # フォールバック: 透明 1x1 PNG (broken image icon を出さない)
+    transparent_png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB"
+        "0C8AAAAASUVORK5CYII="
+    )
+    response = _make_response(transparent_png)
+    response.headers["Content-Type"] = "image/png"
+    # 短めキャッシュ: 解析後に新サムネが出るまでの待ち時間を最小化
+    response.headers["Cache-Control"] = "public, max-age=60"
+    return response
 
 
 # レイアウト設定
