@@ -453,6 +453,29 @@ def auto_scan_rds_files(folder_path):
 
 
 # ---------------------------------------------------------------------------
+# ver4.0: ⑤ サブプロ/共有エントリ時にインタラクティブ解析を即時自動読込
+# ---------------------------------------------------------------------------
+# 「インタラクティブ」ボタン or 共有 URL からの遷移で
+# interactive_result_folder が prefill → auto_scan_rds_files が
+# interactive_rds_map を設定 → ここで load_interactive_data の n_clicks を
+# programmatically increment して「データを読み込む」を自動実行する。
+# (entry_mode が手動 standalone の場合は自動実行しない = 従来通り手動)
+
+@callback(
+    Output("load_interactive_data", "n_clicks", allow_duplicate=True),
+    Input("interactive_rds_map", "data"),
+    [State("interactive_integration_method", "value"),
+     State("interactive_entry_mode", "data"),
+     State("load_interactive_data", "n_clicks")],
+    prevent_initial_call=True,
+)
+def auto_load_on_rds_ready(rds_map, method, entry_mode, cur_clicks):
+    if rds_map and method and entry_mode in ("sub_project", "shared"):
+        return (cur_clicks or 0) + 1
+    return no_update
+
+
+# ---------------------------------------------------------------------------
 # MSIフォルダスキャン（ボタンクリック）
 # ---------------------------------------------------------------------------
 

@@ -523,11 +523,11 @@ def _create_share_modal():
                     id="share_kind_radio",
                     options=[
                         {
-                            "label": "期間付き共有（共有先は Password B でのログインが必要）",
+                            "label": "期間付き共有（共有先は共有パスワードでのログインが必要）",
                             "value": "expiring",
                         },
                         {
-                            "label": "無期限共有（URL を知る人全員が認証なしで閲覧可。注意!）",
+                            "label": "無期限共有（URL を知る人全員が認証なしで操作可。注意!）",
                             "value": "persistent",
                         },
                     ],
@@ -575,10 +575,12 @@ def _create_share_modal():
                     style={"display": "none"},
                     children=[
                         dbc.Alert(
-                            "⚠ 無期限共有は URL を知る人すべてが認証なしで閲覧"
-                            "できます。URL は token_urlsafe(16) で生成され推測"
-                            "は困難ですが、メール本文や公開リポジトリへの誤投稿"
-                            "など URL 漏洩に注意してください。",
+                            "⚠ 無期限共有は URL を知る人すべてが認証なしで"
+                            "インタラクティブ解析を操作でき、色変更・クラスタ"
+                            "マージ・ラベル編集などの変更は元プロジェクトに"
+                            "保存されます。URL は token_urlsafe(16) で生成され"
+                            "推測は困難ですが、メール本文や公開リポジトリへの"
+                            "誤投稿など URL 漏洩に十分注意してください。",
                             color="warning",
                             className="mb-3 small",
                         ),

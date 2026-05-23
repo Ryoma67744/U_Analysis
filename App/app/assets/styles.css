@@ -370,6 +370,9 @@
     }
 }
 
+/* 共有モード (ver4.0): インタラクティブ解析のみ表示。タブヘッダーを隠す */
+.shared-mode-tabs .nav-tabs { display: none !important; }
+
 /* アコーディオンセクション色分け */
 .accordion-export > .accordion-header > .accordion-button,
 .accordion-export > .accordion-header > .accordion-button:not(.collapsed) { background-color: #e8f5e9; }

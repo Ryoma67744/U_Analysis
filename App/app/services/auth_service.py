@@ -170,16 +170,21 @@ def update_password(which: str, new_plain: str, updated_by: str) -> int:
 
 
 def is_initialized() -> bool:
-    """A/B 両方のハッシュが保存済みか"""
+    """共有用 (B) ハッシュが保存済みか。
+
+    ver4.0: Master でログインに統合したため A は必須でなくなった。
+    共有用 (B) のみ初期化チェック対象。
+    """
     data = _load()
-    return bool(data.get("password_a_hash") and data.get("password_b_hash"))
+    return bool(data.get("password_b_hash"))
 
 
 def init_from_env() -> None:
-    """起動時呼び出し。auth.json が無ければ INITIAL_PASSWORD_A/B から初期化する。
+    """起動時呼び出し。auth.json が無ければ INITIAL_PASSWORD_B から初期化する。
 
-    既に初期化済みなら何もしない。デフォルトのプレースホルダー値が
-    放置されている場合は WARNING ログを出す。
+    ver4.0: Password A は廃止 (Master でログイン)。INITIAL_PASSWORD_A は
+    後方互換で受け付けるが必須ではない。共有用 (B) のみ必須。
+    既に初期化済みなら何もしない。
     """
     if is_initialized():
         logger.info("Auth config already initialized: %s", AUTH_CONFIG_PATH)
@@ -188,15 +193,17 @@ def init_from_env() -> None:
     initial_a = os.environ.get("INITIAL_PASSWORD_A", "").strip()
     initial_b = os.environ.get("INITIAL_PASSWORD_B", "").strip()
 
-    if not initial_a or not initial_b:
+    if not initial_b:
         raise RuntimeError(
-            "Auth config not initialized and INITIAL_PASSWORD_A/B not set. "
-            "Set both env vars in .env and restart."
+            "Auth config not initialized and INITIAL_PASSWORD_B not set. "
+            "Set INITIAL_PASSWORD_B (共有用パスワード) in .env and restart. "
+            "ログインは MASTER_PASSWORD を使用します。"
         )
 
     with FileLock(str(_LOCK_PATH), timeout=10):
         data = _load()
-        if not data.get("password_a_hash"):
+        # A は後方互換: env にあれば保存するが、無くても OK (Master ログインに統合)
+        if initial_a and not data.get("password_a_hash"):
             data["password_a_hash"] = _hash(initial_a)
         if not data.get("password_b_hash"):
             data["password_b_hash"] = _hash(initial_b)
@@ -206,7 +213,7 @@ def init_from_env() -> None:
         _save(data)
 
     logger.warning(
-        "Auth initialized with INITIAL_PASSWORD_A/B from env. "
-        "Change them via UI ASAP! (config=%s)",
+        "Auth initialized from env (B=共有用). ログインは MASTER_PASSWORD。"
+        " Change via UI ASAP! (config=%s)",
         AUTH_CONFIG_PATH,
     )

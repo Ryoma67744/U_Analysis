@@ -87,6 +87,29 @@ def toggle_pages(current_page):
 
 
 # =========================================================================
+# 共有モード表示制御 (ver4.0)
+# =========================================================================
+
+@callback(
+    [Output("main_tabs_wrapper", "className"),
+     Output("back_to_action_from_analysis", "style"),
+     Output("header_analysis_buttons", "style")],
+    Input("shared_session", "data"),
+)
+def apply_shared_mode(shared):
+    """共有 URL アクセス時はインタラクティブ解析のみを表示する。
+
+    他タブ (settings/results/history) のヘッダー・戻るボタン・ヘッダー操作
+    ボタン群を隠す。active_tab は route_share_url が "interactive" に設定し、
+    サイドバー非表示と全幅化は既存の toggle_sidebar_content が担当する。
+    """
+    if shared and shared.get("active"):
+        return ("shared-mode-tabs",
+                {"display": "none"}, {"display": "none"})
+    return ("", {}, {})
+
+
+# =========================================================================
 # プロジェクトカード一覧のレンダリング
 # =========================================================================
 

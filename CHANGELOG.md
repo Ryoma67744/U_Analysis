@@ -12,6 +12,67 @@
 
 ---
 
+## 2026-05-24_ver4.0
+
+共有モデルと認証を大きく見直したメジャーアップデート。
+
+### ① 共有 = インタラクティブ解析の全機能 (操作可・保存あり)
+- 共有リンクを従来の read-only ビューアから「インタラクティブ解析の
+  全機能」に変更。共有先での色変更・クラスタマージ・ラベル編集などの
+  操作は **元プロジェクトに保存される**。
+- `share_callbacks.py`: `route_share_url` を全面改修。`/share/<token>`
+  (期間付き) / `/view/<token>` (無期限) を解決し、`page_analysis` の
+  interactive タブへ遷移 + `shared_session` を設定する 9 出力 callback に。
+
+### ② パスワード無し共有
+- 無期限共有 (`/view/`) は認証不要で開ける (既存の bypass を活用)。
+- 共有作成モーダルの警告文を「操作可・元プロジェクトに保存される」旨に
+  更新 (`action_page.py`)。
+
+### ③ パスワード変更: ログイン済なら Master 再入力を省略
+- bcrypt 保存のため現在値の事前入力は不可。代替として Tier A
+  ログイン済なら Master 再入力なしで変更フォームを使えるよう緩和。
+- `auth_middleware.py:_change_password_view` で master を任意化
+  (入力時のみ照合)。モーダル/JS から該当必須を除去。
+
+### ④ パスワードを Master + 共有用の 2 本に統合
+- Master で日常ログイン (Tier A: プロジェクト一覧) + パスワード変更権限。
+- 共有パスワード (旧 Password B) は共有 URL 閲覧用 (Tier B)。
+- **Password A を廃止**。`_login_view` は Master→Tier A 判定に変更。
+- `auth_service.py`: 初期化必須を共有パスワードのみに緩和
+  (`password_a_hash` は後方互換で残置・参照しない)。
+- `login.html` / 変更モーダル / `auth.js` の表記・項目を 2 本構成に整理。
+
+### ⑤ 「インタラクティブ」ボタンで即時読込
+- サブプロジェクト/共有から開いた際、「スキャン」「データを読み込む」を
+  押さずに UMAP/Spatial が自動表示される。
+- `interactive_callbacks.py`: `auto_load_on_rds_ready` callback を追加。
+  RDS マップ準備完了 + entry_mode が sub_project/shared のとき自動 load。
+
+### ⑥ 共有 URL では interactive タブのみ表示
+- `project_callbacks.py`: `apply_shared_mode` callback を追加。
+  `shared_session` 有効時に他タブのヘッダー (`shared-mode-tabs` で
+  nav-tabs を非表示)・戻るボタン・ヘッダー操作ボタン群を隠す。
+- サイドバー非表示・全幅化は既存 `toggle_sidebar_content`
+  (interactive タブ選択時) が担当。
+- `main_layout.py`: `main_tabs` を `main_tabs_wrapper` div で包み、
+  `shared_session` Store を追加。`styles.css` に
+  `.shared-mode-tabs .nav-tabs { display:none; }` を追加。
+
+### 注意 / 移行
+- **セキュリティ**: 無期限共有は認証なしの第三者が元データを変更可能に
+  なる (ユーザー明示選択の仕様)。共有作成時の警告を確認すること。
+- Password A でのログインは廃止。今後は Master を使用。
+
+### 検証
+- ログイン: Master → Tier A、共有パスワード → Tier B、旧 A → 不可
+- ログイン済で「パスワード変更」が Master 再入力なしで使える
+- サブプロの「インタラクティブ」で即時表示
+- 共有 URL (`/view/`) で全機能表示・操作が元プロジェクトに保存
+- 共有 URL で interactive 以外のタブ/サイドバー/戻るボタンが非表示
+
+---
+
 ## 2026-05-24_ver3.17
 
 ### 改善

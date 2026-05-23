@@ -149,13 +149,14 @@ def _login_view():
             next_url=next_url,
         ), 400
 
-    if auth_service.verify_password_a(pw):
+    # ver4.0: Master でログイン → Tier A (フル機能)。Password A は廃止。
+    if auth_service.verify_master(pw):
         session.clear()
         session.permanent = True
         session["analyst_name"] = name
         session["access_tier"] = "A"
         session["pw_version"] = auth_service.get_password_version()
-        logger.info("Login success: analyst=%s tier=A", name)
+        logger.info("Login success: analyst=%s tier=A (master)", name)
         return redirect(next_url)
 
     if auth_service.verify_password_b(pw):
@@ -185,13 +186,22 @@ def _logout_view():
 
 
 def _change_password_view():
-    """JSON API: パスワード A/B 変更。Tier A + 正しい Master Pass が必須。"""
-    if not _session_valid_for_tier("A"):
+    """JSON API: パスワード (Master / 共有用 B) 変更。
+
+    ver4.0:
+    - ③ Tier A ログイン済なら Master 再入力を省略 (master 未指定 OK)。
+      未ログイン or master 指定時は従来どおり verify_master で検証。
+    - ④ Password A は廃止。new_master / new_password_b のみ受付。
+    """
+    is_tier_a = _session_valid_for_tier("A")
+    if not is_tier_a:
         return jsonify({"ok": False, "error": "Tier A 認証が必要です"}), 403
 
     payload = request.get_json(silent=True) or {}
-    master = payload.get("master_password", "")
-    if not auth_service.verify_master(master):
+    master = (payload.get("master_password") or "").strip()
+    # ③ ログイン済 (Tier A) なら master 再入力不要。master が送られてきた
+    # 場合のみ検証 (誤入力チェック)。未入力なら session 信頼で許可。
+    if master and not auth_service.verify_master(master):
         logger.warning(
             "Password change rejected (bad master): analyst=%s",
             session.get("analyst_name"),
@@ -200,32 +210,24 @@ def _change_password_view():
             {"ok": False, "error": "Master Password が違います"}
         ), 403
 
-    new_a = (payload.get("new_password_a") or "").strip()
     new_b = (payload.get("new_password_b") or "").strip()
     new_master = (payload.get("new_master_password") or "").strip()
-    if not new_a and not new_b and not new_master:
+    if not new_b and not new_master:
         return jsonify(
             {"ok": False,
-             "error": "変更対象 (Master / A / B のいずれか) を指定してください"}
+             "error": "変更対象 (Master / 共有パスワード) を指定してください"}
         ), 400
 
     updated = []
     analyst = session.get("analyst_name", "unknown")
     try:
-        if new_a:
-            if len(new_a) < 4:
-                return jsonify(
-                    {"ok": False, "error": "Password A は 4 文字以上"}
-                ), 400
-            auth_service.update_password("a", new_a, analyst)
-            updated.append("A")
         if new_b:
             if len(new_b) < 4:
                 return jsonify(
-                    {"ok": False, "error": "Password B は 4 文字以上"}
+                    {"ok": False, "error": "共有パスワードは 4 文字以上"}
                 ), 400
             auth_service.update_password("b", new_b, analyst)
-            updated.append("B")
+            updated.append("共有")
         if new_master:
             if len(new_master) < 8:
                 return jsonify(

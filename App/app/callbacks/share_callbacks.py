@@ -51,32 +51,84 @@ _shared_data: dict[str, dict] = {}
 
 @callback(
     [Output("current_page", "data", allow_duplicate=True),
-     Output("share_token", "data")],
+     Output("main_tabs", "active_tab", allow_duplicate=True),
+     Output("interactive_result_folder", "value", allow_duplicate=True),
+     Output("interactive_msi_folder", "value", allow_duplicate=True),
+     Output("interactive_project_select", "value", allow_duplicate=True),
+     Output("interactive_sub_project_select", "value", allow_duplicate=True),
+     Output("interactive_entry_mode", "data", allow_duplicate=True),
+     Output("current_sub_project_id", "data", allow_duplicate=True),
+     Output("shared_session", "data")],
     Input("url_bar", "pathname"),
     prevent_initial_call=True,
 )
 def route_share_url(pathname):
-    """URL パスが /share/<token> または /view/<token> なら共有ページに遷移。
+    """ver4.0: /share/<token> または /view/<token> でインタラクティブ解析
+    (全機能) を共有モードで開く。
 
-    /share/<token> は期間付き共有 (Tier B 必須)、/view/<token> は無期限共有
-    (認証バイパス)。どちらも内部的には同じ shared_view を使い、トークンの
-    解決先 (shares.json vs persistent_shares.json) で挙動を切り替える。
+    - /share/<token>: 期間付き共有 (Tier B 認証)
+    - /view/<token>: 無期限共有 (認証不要)
+    旧 read-only shared_view ではなく page_analysis の interactive タブを
+    共有モードで表示し、操作 + 保存を可能にする (① 操作可・保存あり)。
+    共有先での操作は元プロジェクトに保存される。
     """
+    _n = 9
     if not pathname:
-        return no_update, no_update
+        return (no_update,) * _n
+
+    token, kind = None, None
     if pathname.startswith("/share/"):
         token = pathname.split("/share/", 1)[1].split("/")[0].split("?")[0]
-        if token:
-            return "shared", token
-    if pathname.startswith("/view/"):
+        kind = "expiring"
+    elif pathname.startswith("/view/"):
         token = pathname.split("/view/", 1)[1].split("/")[0].split("?")[0]
+        kind = "persistent"
         if token:
-            # ビュー数をインクリメント (失敗しても致命的でないので無視)
             _persistent_increment_view(token)
-            # token 先頭に "v:" prefix を付けて initialize_shared_view 側で
-            # 期間付き vs 無期限を判別する
-            return "shared", f"v:{token}"
-    return no_update, no_update
+    if not token:
+        return (no_update,) * _n
+
+    # トークン解決
+    share = (get_persistent_share(token) if kind == "persistent"
+             else get_share(token))
+    if not share:
+        # 無効/期限切れトークン → landing にフォールバック (エラーは画面で)
+        logger.warning("share token invalid/expired: kind=%s", kind)
+        return (no_update,) * _n
+
+    result_dir = share.get("result_dir", "")
+    project_id = share.get("project_id", "")
+    sub_project_id = share.get("sub_project_id", "")
+    # MSI データフォルダはサブプロジェクトから取得
+    data_folder = ""
+    try:
+        from app.services.project_manager import get_sub_project
+        sub = get_sub_project(project_id, sub_project_id)
+        if sub:
+            data_folder = sub.get("data_folder", "")
+    except Exception:
+        pass
+
+    shared_session = {
+        "active": True,
+        "token": token,
+        "kind": kind,
+        "project_id": project_id,
+        "sub_project_id": sub_project_id,
+    }
+    logger.info("shared interactive open: kind=%s project=%s sub=%s",
+                kind, project_id, sub_project_id)
+    return (
+        "analysis",
+        "interactive",
+        result_dir or no_update,
+        data_folder or no_update,
+        project_id,
+        sub_project_id,
+        "shared",            # interactive_entry_mode → auto_load 対象
+        sub_project_id,      # current_sub_project_id
+        shared_session,
+    )
 
 
 # =========================================================================
