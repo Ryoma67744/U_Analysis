@@ -1388,57 +1388,74 @@ def render_share_links(current_page, project):
     return _render_share_links(project_id)
 
 
-# ver3.16: --- プロジェクト関連情報 (URL 3 種 + memo) のレンダリング ---
+# ver3.17: --- プロジェクト関連情報 (URL 3 種 + memo) を input にロード ---
+# ver3.16 は表示専用だったが、ユーザー要望でその場で編集 + 保存可能に変更。
 @callback(
-    Output("project_info_container", "children"),
+    [Output("project_info_google_keep_url", "value"),
+     Output("project_info_msi_share_url", "value"),
+     Output("project_info_other_url", "value"),
+     Output("project_info_memo", "value"),
+     Output("project_info_status", "children", allow_duplicate=True)],
     [Input("current_page", "data"),
      Input("selected_project", "data"),
      Input("project_list_refresh", "data")],
+    prevent_initial_call="initial_duplicate",
 )
-def render_project_info(current_page, project, _refresh):
-    """サブプロ一覧ページに、親プロジェクトの URL 3 種 + memo を整形表示。"""
+def load_project_info(current_page, project, _refresh):
+    """サブプロ一覧ページに来たら、親プロジェクトの URL 3 種 + memo を
+    編集 input にロードする。"""
     if current_page != "action" or not project:
-        return "プロジェクト情報なし"
+        return "", "", "", "", ""
     project_id = project.get("id", "")
     proj = get_project(project_id)
     if not proj:
-        return "プロジェクト情報なし"
+        return "", "", "", "", ""
+    return (
+        proj.get("google_keep_url", "") or "",
+        proj.get("msi_share_url", "") or "",
+        proj.get("other_url", "") or "",
+        proj.get("memo", "") or "",
+        "",  # status クリア
+    )
 
-    url_specs = [
-        ("📝 Google Keep", proj.get("google_keep_url", "")),
-        ("🔗 MSI Share", proj.get("msi_share_url", "")),
-        ("🌐 Other", proj.get("other_url", "")),
-    ]
-    items = []
-    for label, url in url_specs:
-        if url:
-            items.append(html.Div(className="mb-2", children=[
-                html.Span(label, className="me-2 fw-bold",
-                          style={"display": "inline-block", "minWidth": "150px"}),
-                html.A(url, href=url, target="_blank",
-                       rel="noopener noreferrer",
-                       style={"wordBreak": "break-all"}),
-            ]))
-        else:
-            items.append(html.Div(className="mb-2 text-muted small", children=[
-                html.Span(label, className="me-2",
-                          style={"display": "inline-block", "minWidth": "150px"}),
-                html.Span("(未設定)"),
-            ]))
-    # メモ
-    memo = (proj.get("memo", "") or "").strip()
-    items.append(html.Div(className="mt-3", children=[
-        html.Strong("📋 メモ:"),
-        html.Pre(memo if memo else "(なし)",
-                 style={"whiteSpace": "pre-wrap",
-                        "background": "#f8f9fa",
-                        "padding": "8px",
-                        "borderRadius": "4px",
-                        "fontSize": "0.85rem",
-                        "marginTop": "4px",
-                        "color": "#212529" if memo else "#6c757d"}),
-    ]))
-    return items
+
+# ver3.17: --- プロジェクト関連情報の保存 ---
+@callback(
+    [Output("project_info_status", "children", allow_duplicate=True),
+     Output("project_list_refresh", "data", allow_duplicate=True)],
+    Input("project_info_save_btn", "n_clicks"),
+    [State("selected_project", "data"),
+     State("project_info_google_keep_url", "value"),
+     State("project_info_msi_share_url", "value"),
+     State("project_info_other_url", "value"),
+     State("project_info_memo", "value"),
+     State("project_list_refresh", "data")],
+    prevent_initial_call=True,
+)
+def save_project_info(n_clicks, project, google_keep, msi_share, other,
+                      memo, refresh):
+    """「💾 保存」クリックでプロジェクトの URL 3 種 + memo を更新。"""
+    if not n_clicks or not project:
+        return no_update, no_update
+    project_id = project.get("id", "")
+    if not project_id:
+        return "プロジェクトが選択されていません", no_update
+    try:
+        updated = update_project(project_id, {
+            "google_keep_url": (google_keep or "").strip(),
+            "msi_share_url": (msi_share or "").strip(),
+            "other_url": (other or "").strip(),
+            "memo": memo or "",
+        })
+        if updated is None:
+            return "保存失敗 (プロジェクト未発見)", no_update
+    except Exception as e:
+        return f"保存失敗: {e}", no_update
+    from datetime import datetime
+    return (
+        f"✓ 保存しました ({datetime.now().strftime('%H:%M:%S')})",
+        (refresh or 0) + 1,
+    )
 
 
 def _render_share_links(project_id):

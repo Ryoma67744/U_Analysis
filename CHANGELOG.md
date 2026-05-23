@@ -12,6 +12,32 @@
 
 ---
 
+## 2026-05-24_ver3.17
+
+### 改善
+- **サブプロジェクト一覧の「プロジェクト関連情報」を編集可能化**:
+  - ver3.16 は表示専用 (read-only) だったが、ユーザー要望でその場で編集
+    + 保存できるよう変更
+  - `action_page.py`: 3 つの URL `InputGroup` (Google Keep / MSI Share /
+    Other) + memo `Textarea` + 💾 保存ボタンを配置
+  - `project_callbacks.py`:
+    - 旧 `render_project_info` callback を廃止
+    - 新 `load_project_info`: ページ遷移時に既存値を input にロード
+    - 新 `save_project_info`: 保存ボタンで `update_project()` を呼び、
+      保存ステータスを表示 (例: `✓ 保存しました (14:23:45)`)
+  - 保存後は `project_list_refresh` を発火してプロジェクト一覧側も同期
+- **フォントサイズを拡大** (text-muted small → 0.95-1rem):
+  - 全要素 (Label / Input / Textarea) で `fontSize: 0.95rem` を明示指定
+  - 旧 `className="text-muted small"` (0.875rem) より読みやすく
+  - URL 入力欄の左ラベル枠の min-width を 150px に統一
+
+### 検証
+- サブプロ一覧で URL/memo を編集 → 「💾 保存」 → ステータスに ✓ + 時刻
+- プロジェクト切替時に新プロジェクトの値が input に再ロードされる
+- プロジェクト一覧側にも反映 (project_list_refresh 連動)
+
+---
+
 ## 2026-05-24_ver3.16
 
 ### 新機能・改善

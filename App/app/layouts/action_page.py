@@ -136,13 +136,82 @@ def create_action_page():
                                  children="共有リンクはありません"),
                     ]),
 
-                    # ver3.16: プロジェクト関連情報 (URL 3 種 + memo)
+                    # ver3.17: プロジェクト関連情報 (URL 3 種 + memo)
+                    # 編集可能、保存ボタンで更新。フォントサイズも拡大。
                     html.Hr(className="my-4"),
                     html.Div(id="project_info_section", children=[
                         html.H5("プロジェクト関連情報"),
-                        html.Div(id="project_info_container",
-                                 className="text-muted small",
-                                 children="プロジェクト情報なし"),
+                        html.Div(
+                            id="project_info_container",
+                            style={"fontSize": "1rem"},
+                            children=[
+                                # 3 つの URL 入力欄
+                                dbc.InputGroup([
+                                    dbc.InputGroupText(
+                                        "📝 Google Keep",
+                                        style={"minWidth": "150px",
+                                               "fontSize": "0.95rem"},
+                                    ),
+                                    dbc.Input(
+                                        id="project_info_google_keep_url",
+                                        placeholder="https://keep.google.com/...",
+                                        type="url",
+                                        style={"fontSize": "0.95rem"},
+                                    ),
+                                ], className="mb-2"),
+                                dbc.InputGroup([
+                                    dbc.InputGroupText(
+                                        "🔗 MSI Share",
+                                        style={"minWidth": "150px",
+                                               "fontSize": "0.95rem"},
+                                    ),
+                                    dbc.Input(
+                                        id="project_info_msi_share_url",
+                                        placeholder="https://...",
+                                        type="url",
+                                        style={"fontSize": "0.95rem"},
+                                    ),
+                                ], className="mb-2"),
+                                dbc.InputGroup([
+                                    dbc.InputGroupText(
+                                        "🌐 Other",
+                                        style={"minWidth": "150px",
+                                               "fontSize": "0.95rem"},
+                                    ),
+                                    dbc.Input(
+                                        id="project_info_other_url",
+                                        placeholder="https://...",
+                                        type="url",
+                                        style={"fontSize": "0.95rem"},
+                                    ),
+                                ], className="mb-2"),
+                                # メモ
+                                dbc.Label("📋 メモ", className="mt-2 fw-bold",
+                                          style={"fontSize": "0.95rem"}),
+                                dbc.Textarea(
+                                    id="project_info_memo",
+                                    placeholder="メモ（任意）",
+                                    style={"height": "100px",
+                                           "fontSize": "0.95rem"},
+                                ),
+                                # 保存ボタン + 状態
+                                html.Div(
+                                    className="mt-3 d-flex align-items-center gap-3",
+                                    children=[
+                                        dbc.Button(
+                                            "💾 保存",
+                                            id="project_info_save_btn",
+                                            color="primary",
+                                            size="sm",
+                                        ),
+                                        html.Span(
+                                            id="project_info_status",
+                                            className="small text-muted",
+                                        ),
+                                    ],
+                                ),
+                            ],
+                        ),
                     ]),
                 ],
             ),
