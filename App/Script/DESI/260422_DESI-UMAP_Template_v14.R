@@ -1991,9 +1991,18 @@ if (RESUME_FROM_RDS && file.exists(rds_path1_in)) {
     if (isTRUE(USE_ROI_AS_SAMPLE) && isTRUE(desi_data$has_roi)) {
       roi_values <- unique(desi_data$coordinates$ROI)
       roi_values <- roi_values[!is.na(roi_values) & nzchar(roi_values)]
+      # ver3.8: ROI フィルタ前後の値を診断ログとして出力。
+      # ユーザー報告時に「期待した ROI が含まれていない」原因究明を容易にする。
+      roi_values_orig <- roi_values
       if (!is.null(ROI_FILTER) && length(ROI_FILTER) > 0) {
         roi_values <- intersect(roi_values, ROI_FILTER)
       }
+      .roi_filter_str <- if (is.null(ROI_FILTER) || length(ROI_FILTER) == 0) "(none)" else paste(ROI_FILTER, collapse = ", ")
+      message(sprintf(">> ROI: 検出=[%s] フィルタ=[%s] 適用後=[%s] (sample=%s)",
+                      paste(roi_values_orig, collapse = ", "),
+                      .roi_filter_str,
+                      paste(roi_values, collapse = ", "),
+                      sample_name))
       if (length(roi_values) == 0) {
         message(">> WARNING: 有効な ROI が見つかりません (フィルタ後 0 件)。"
                 , "ファイル全体を 1 サンプルとして処理: ", sample_name)
@@ -2329,7 +2338,23 @@ if (length(seu_list) == 1) {
     # 修正①: Resume時に既存RDSを出力先にもコピー
     file.copy(rds_path_harmony_in, rds_path_harmony_out, overwrite = TRUE)
   } else {
-    seu_harmony <- Reduce(function(x, y) merge(x, y, add.cell.ids = c(x$sample[1], y$sample[1])), seu_list)
+    # ver3.8: Reduce(function(x,y) merge(x,y,...), seu_list) は左結合で
+    # 逐次マージするため、中間結果が毎回拡大し O(n^2) のメモリ・時間を
+    # 要する。ROI モードで 10+ サンプル時に致命的。Seurat::merge は y= に
+    # list を渡せるため、1 回呼出しで O(n) に短縮できる。
+    add_ids <- sapply(seu_list, function(s) {
+      v <- tryCatch(s$sample[1], error = function(e) "")
+      if (is.null(v) || is.na(v)) "" else as.character(v)
+    })
+    if (length(seu_list) == 1) {
+      seu_harmony <- seu_list[[1]]
+    } else {
+      seu_harmony <- Seurat::merge(
+        x = seu_list[[1]],
+        y = seu_list[-1],
+        add.cell.ids = add_ids
+      )
+    }
     seu_harmony <- NormalizeData(seu_harmony)
     seu_harmony <- FindVariableFeatures(seu_harmony)
     seu_harmony <- ScaleData(seu_harmony)
@@ -2646,64 +2671,76 @@ dims_use_rpca <- get_safe_dims_for_rpca(seu_list_pca, max_dims = 30, reduction =
   }
   
   # DEG & Heatmap (RPCA)
+  # ver3.8: Harmony と同じ tryCatch + NULL チェックパターンを採用。
+  # FindAllMarkers が失敗しても解析全体が abort しないようにする。
   # ---- 並列化開始: FindAllMarkers用 ----
   plan(multisession, workers = min(4, max(1, parallel::detectCores(logical = FALSE) - 1)))
-  deg_markers <- FindAllMarkers(seu_rpca, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "wilcox")
+  deg_markers <- tryCatch({
+    FindAllMarkers(seu_rpca, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "wilcox")
+  }, error = function(e) {
+    message("!! DEG(RPCA) failed: ", e$message)
+    NULL
+  })
   # ---- 並列化終了: メモリ解放 ----
   plan(sequential)
-  # BH/FDR補正に置換（Seuratデフォルトの Bonferroni は探索的解析に保守的すぎるため）
-  deg_markers$p_val_adj <- p.adjust(deg_markers$p_val, method = "BH")
-  # p_val_adj=0 補正（double精度の限界で丸められた0をCSV出力前に補正）
-  if (any(deg_markers$p_val_adj == 0, na.rm = TRUE)) {
-    min_nz <- suppressWarnings(min(deg_markers$p_val_adj[deg_markers$p_val_adj > 0], na.rm = TRUE))
-    if (is.finite(min_nz)) {
-      deg_markers$p_val_adj[deg_markers$p_val_adj == 0] <- min_nz * 0.1
-    } else {
-      deg_markers$p_val_adj[deg_markers$p_val_adj == 0] <- .Machine$double.xmin
-    }
-  }
-  top5_markers <- deg_markers %>% dplyr::group_by(cluster) %>% dplyr::top_n(n = 5, wt = avg_log2FC)
-  top_genes <- unique(top5_markers$gene)
-  
-  if (length(top_genes) > 0) {
-    sampled_cells <- c()
-    for(cid in unique(Idents(seu_rpca))) {
-      cc <- WhichCells(seu_rpca, idents = cid)
-      if(length(cc) > 200) cc <- sample(cc, 200)
-      sampled_cells <- c(sampled_cells, cc)
-    }
-    if (length(sampled_cells) > 0) {
-      heatmap1 <- DoHeatmap(subset(seu_rpca, cells = sampled_cells), features = top_genes, group.by = "ident", assay = "integrated") +
-        scale_fill_gradientn(colors = c("blue", "white", "red")) + ggtitle("Top 5 Markers")
-      
-      if (!is.null(mrm_df)) {
-        mapped <- match_mrm_compound(top_genes, mrm_df, tolerance = 0.1)
-        name_map <- setNames(mapped, top_genes)
-        heatmap1 <- heatmap1 + scale_y_discrete(labels = function(x) {
-          lab <- sapply(x, function(xx) {
-            mm <- name_map[[xx]]
-            if (!is.null(mm) && !is.na(mm) && mm != xx) {
-              mm
-            } else {
-              xx
-            }
-          })
-          make.unique(lab)
-        })
+
+  if (is.null(deg_markers) || !is.data.frame(deg_markers) || nrow(deg_markers) == 0 || !("cluster" %in% colnames(deg_markers))) {
+    message(">> DEG(RPCA) skipped: no valid marker table.")
+  } else {
+    # BH/FDR補正に置換（Seuratデフォルトの Bonferroni は探索的解析に保守的すぎるため）
+    deg_markers$p_val_adj <- p.adjust(deg_markers$p_val, method = "BH")
+    # p_val_adj=0 補正（double精度の限界で丸められた0をCSV出力前に補正）
+    if (any(deg_markers$p_val_adj == 0, na.rm = TRUE)) {
+      min_nz <- suppressWarnings(min(deg_markers$p_val_adj[deg_markers$p_val_adj > 0], na.rm = TRUE))
+      if (is.finite(min_nz)) {
+        deg_markers$p_val_adj[deg_markers$p_val_adj == 0] <- min_nz * 0.1
+      } else {
+        deg_markers$p_val_adj[deg_markers$p_val_adj == 0] <- .Machine$double.xmin
       }
-      # ggsave(file.path(od,"analysis_heatmap_top5_markers_rpca.png"), heatmap1, width = 12, height = 8, dpi = 300)
     }
-  }
-  write.csv(deg_markers, file.path(od_rpca, "analysis_deg_all_markers.csv"), row.names = FALSE)
-  write.csv(top5_markers, file.path(od_rpca, "analysis_top5_markers_per_cluster.csv"), row.names = FALSE)
-  
-  # Volcano & MSI (RPCA)
-  run_volcano_and_msi(seu_rpca, deg_markers, method_tag = "rpca",
-                      sample_names = sample_names, od = od, mrm_df = mrm_df, method_outdir = od_rpca)
-  
-  # 個別のVolcano生成ループ (冗長だがレガシーコード維持)
-  if (FALSE && nrow(deg_markers) > 0) {
-    # 既存コードは残すが実行されないようにFALSE条件にしてある
+    top5_markers <- deg_markers %>% dplyr::group_by(cluster) %>% dplyr::top_n(n = 5, wt = avg_log2FC)
+    top_genes <- unique(top5_markers$gene)
+
+    if (length(top_genes) > 0) {
+      sampled_cells <- c()
+      for(cid in unique(Idents(seu_rpca))) {
+        cc <- WhichCells(seu_rpca, idents = cid)
+        if(length(cc) > 200) cc <- sample(cc, 200)
+        sampled_cells <- c(sampled_cells, cc)
+      }
+      if (length(sampled_cells) > 0) {
+        heatmap1 <- DoHeatmap(subset(seu_rpca, cells = sampled_cells), features = top_genes, group.by = "ident", assay = "integrated") +
+          scale_fill_gradientn(colors = c("blue", "white", "red")) + ggtitle("Top 5 Markers")
+
+        if (!is.null(mrm_df)) {
+          mapped <- match_mrm_compound(top_genes, mrm_df, tolerance = 0.1)
+          name_map <- setNames(mapped, top_genes)
+          heatmap1 <- heatmap1 + scale_y_discrete(labels = function(x) {
+            lab <- sapply(x, function(xx) {
+              mm <- name_map[[xx]]
+              if (!is.null(mm) && !is.na(mm) && mm != xx) {
+                mm
+              } else {
+                xx
+              }
+            })
+            make.unique(lab)
+          })
+        }
+        # ggsave(file.path(od,"analysis_heatmap_top5_markers_rpca.png"), heatmap1, width = 12, height = 8, dpi = 300)
+      }
+    }
+    write.csv(deg_markers, file.path(od_rpca, "analysis_deg_all_markers.csv"), row.names = FALSE)
+    write.csv(top5_markers, file.path(od_rpca, "analysis_top5_markers_per_cluster.csv"), row.names = FALSE)
+
+    # Volcano & MSI (RPCA) — DEG 有効時のみ実行
+    run_volcano_and_msi(seu_rpca, deg_markers, method_tag = "rpca",
+                        sample_names = sample_names, od = od, mrm_df = mrm_df, method_outdir = od_rpca)
+
+    # 個別のVolcano生成ループ (冗長だがレガシーコード維持)
+    if (FALSE && nrow(deg_markers) > 0) {
+      # 既存コードは残すが実行されないようにFALSE条件にしてある
+    }
   }
 }
 

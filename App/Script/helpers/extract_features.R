@@ -20,7 +20,32 @@ if (!file.exists(rds_path)) {
 
 suppressPackageStartupMessages(library(Seurat))
 
-obj <- readRDS(rds_path)
+# ver3.8: save_rds_compact が qs 形式で保存した RDS を読めるよう
+# load_rds_compact (旧 saveRDS / 新 qs を自動判定) を使用。
+# 旧来の readRDS() だと qs バイナリで失敗していた。
+.find_helpers_dir <- function() {
+  # Rscript --file=... 経由時にスクリプトパスを取得
+  args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- args[grep("--file=", args)]
+  if (length(file_arg) > 0) {
+    script_path <- sub("--file=", "", file_arg[1])
+    return(dirname(normalizePath(script_path, mustWork = FALSE)))
+  }
+  # source() 経由時の fallback
+  ofile <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
+  if (!is.null(ofile) && nzchar(ofile)) {
+    return(dirname(normalizePath(ofile, mustWork = FALSE)))
+  }
+  return("")
+}
+.rds_io_path <- file.path(.find_helpers_dir(), "rds_io.R")
+if (file.exists(.rds_io_path)) {
+  source(.rds_io_path)
+  obj <- load_rds_compact(rds_path)
+} else {
+  # フォールバック: helpers が見つからなければ従来通り readRDS
+  obj <- readRDS(rds_path)
+}
 
 # Seurat v5 では JoinLayers() が必要（複数レイヤー対応）
 tryCatch({

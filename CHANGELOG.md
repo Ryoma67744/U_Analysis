@@ -12,6 +12,61 @@
 
 ---
 
+## 2026-05-23_ver3.8
+
+### バグ修正 (R スクリプトデバッグの成果)
+
+ver3.7 で Python 側のデバッグを完了後、ユーザー要望で R スクリプト群と
+Python ↔ R 連携を全面調査。誤検知を除外して確実な実害バグを修正。
+
+**[High] 実害大の修正**:
+- **H1: DESI Harmony マージの O(n²) メモリ問題を解消**
+  - `260422_DESI-UMAP_Template_v14.R:2332`
+  - `Reduce(function(x,y) merge(x,y,...), seu_list)` (左結合で逐次マージ、
+    中間結果が毎回拡大して O(n²)) を `Seurat::merge(seu_list[[1]],
+    y=seu_list[-1], add.cell.ids=...)` の 1 回呼出しに置換
+  - ROI モードで 10+ サンプル時、解析時間・メモリが大幅削減
+- **H2: extract_features.R が qs 形式 RDS を読めない不具合を修正**
+  - `helpers/extract_features.R:22-25`
+  - 旧来の `readRDS()` を `rds_io.R` の `load_rds_compact()` に置換し、
+    qs 圧縮 RDS でも Feature Plot が動くように。
+  - スクリプトの絶対パス検出で helpers/rds_io.R を source する
+- **H3: DESI RPCA の `FindAllMarkers` エラーハンドリング欠落を修正**
+  - `260422_DESI-UMAP_Template_v14.R:2664-` (旧 line 2651, 2701)
+  - Harmony 側にあった `tryCatch(...) + NULL チェック + else 内処理`
+    パターンを RPCA にも適用。DEG 失敗時の致命的 abort を防ぐ
+  - 既存の `write.csv` / `run_volcano_and_msi` 呼出しも有効 DEG 時のみ
+    実行されるよう else 内に統合
+- **H4: TIMS `spatial_smooth_seurat` の dist_mat 閾値を統一**
+  - `260422_DBSCAN_With_cluster_ver3_no-png_slim.R:910`
+  - `50000 → 15000` に下げ DESI と整合。25K spots 程度の TIMS サンプルで
+    Docker メモリ上限を超えて OOM 強制終了する問題を防御
+
+**[Medium] 診断容易化**:
+- **M1: DESI ROI フィルタ前後の値を message() で出力**
+  - `260422_DESI-UMAP_Template_v14.R:1988-2008`
+  - ログから `>> ROI: 検出=[...] フィルタ=[...] 適用後=[...] (sample=...)`
+    が読めるようになり、ROI 不一致の原因究明が容易に
+- **M2: rds_io.R の DietSeurat 警告を抑制**
+  - `helpers/rds_io.R:67-95`
+  - Seurat 5.0 の `counts/data/scale.data argument deprecated` 警告
+    3 件 (毎回出る) を `suppressWarnings()` で抑制。ログのノイズ低減
+
+**[Low] 補助的**:
+- **L1: install_r_packages.R の presto 失敗メッセージを強化**
+  - 低速 wilcox フォールバックの存在と再試行手順を明示
+
+### 検証
+- DESI ROI モードでサンプル数 10+ → 解析時間・メモリが大幅削減
+- Feature Plot が qs 圧縮 RDS でも動く
+- RPCA で DEG 失敗データを与えても致命的に落ちず `>> DEG(RPCA) skipped`
+  でスキップ
+- TIMS 25K+ spots で OOM 強制終了せず完走
+- 解析ログに `>> ROI: 検出=[0,LN,TDLN] フィルタ=[LN,TDLN] 適用後=[LN,TDLN]`
+- DietSeurat の deprecated 警告 3 件が消える
+
+---
+
 ## 2026-05-23_ver3.7
 
 ### バグ修正 (全 Python スクリプトデバッグの成果)

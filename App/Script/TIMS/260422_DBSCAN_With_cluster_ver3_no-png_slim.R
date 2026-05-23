@@ -906,8 +906,11 @@ spatial_smooth_seurat <- function(seurat_obj, radius, sigma = NULL) {
   n_spots <- ncol(count_data)
   smoothed_data <- matrix(0, nrow = nrow(count_data), ncol = n_spots, dimnames = dimnames(count_data))
 
-  # 距離行列を1回だけ計算（50,000スポット以下: 高速、超過: メモリ節約のためスポットごと）
-  use_dist_mat <- (n_spots <= 50000)
+  # ver3.8: DESI と同じ閾値 15000 に統一。
+  # 50000 spots は 50000^2 * 8 bytes = 20 GB の距離行列を要求し、
+  # Docker メモリ上限を超えて R プロセスが OOM Killer に殺される。
+  # 距離行列を1回だけ計算（15,000スポット以下: 高速、超過: メモリ節約のためスポットごと）
+  use_dist_mat <- (n_spots <= 15000)
   if (use_dist_mat) {
     dist_mat <- as.matrix(dist(coords))
   }
