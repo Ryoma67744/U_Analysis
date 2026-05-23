@@ -12,6 +12,32 @@
 
 ---
 
+## 2026-05-23_ver3.6
+
+### 新機能
+- **軽量ビューアにプロットサイズ・ラベルサイズの調整 UI を追加**:
+  - Per-sample UMAP セクションの「番号」Switch 横に
+    `ラベル` / `パネル高 (px)` の数値入力を追加
+    - ラベル範囲: 8〜30 pt
+    - パネル高範囲: 200〜700 px (20 px 刻み)
+  - Per-sample Spatial Mapping セクションにも同等の入力を追加
+  - 値の変更で即座に再描画 (RDS は bundle キャッシュから再読込なし)
+  - 初期値は `interactive_settings.json` の `umap_display.label_size` /
+    `spatial_display.label_size` から復元 (インタラクティブ側で保存された値)
+
+### 実装内容
+- `lite_view_callbacks._build_overview_section`: ヘルパ `_size_toolbar` で
+  数値入力 2 個 (label + panel) を生成し、UMAP / Spatial 各セクション上部に
+  配置
+- `_build_per_sample_spatial` / `_build_per_sample_umap_grid`:
+  `label_size_override` 引数を追加し、軽量ビューア側 UI の値を
+  `spatial_display` / `umap_display` の保存値より優先
+- `update_spatial_labels` / `update_umap_labels` callback:
+  Input に `lv_*_label_size` / `lv_*_panel_size` を追加し、変更検知で
+  再描画 + 引数として渡す
+
+---
+
 ## 2026-05-23_ver3.5
 
 ### バグ修正

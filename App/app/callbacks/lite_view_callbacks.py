@@ -397,21 +397,22 @@ def toggle_cluster_card(n_clicks, is_open, btn_id, current_body,
 
 @callback(
     Output("lv_spatial_container", "children"),
-    Input({"type": "lv_show_labels_switch", "scope": ALL}, "value"),
+    [Input({"type": "lv_show_labels_switch", "scope": ALL}, "value"),
+     Input("lv_spatial_label_size", "value"),
+     Input("lv_spatial_panel_size", "value")],
     State("lite_target_store", "data"),
     State("lv_method_store", "data"),
     prevent_initial_call=True,
 )
-def update_spatial_labels(show_labels_list, target, method_data):
-    """「番号」Switch トグルで Per-sample Spatial Mapping だけを再描画する。
+def update_spatial_labels(show_labels_list, label_size, panel_size,
+                            target, method_data):
+    """「番号」Switch / ラベルサイズ / パネル高さの変更で
+    Per-sample Spatial Mapping を再描画する (ver3.6 で size 制御追加)。
 
     Switch は initialize_lite_view 後に動的生成されるため、id を
     pattern-matching dict 形式にして Input も ALL pattern で受ける。
-    これにより lv_show_labels_switch が DOM 不在のページ (ランディング等)
-    でも Dash が "nonexistent object" エラーを出さない。
-
     bundle は _resolve_lite_data_for_target からキャッシュで返るため RDS
-    再読込は発生しない。Switch トグル → 軽量に show_labels を切替できる。
+    再読込は発生しない。
     """
     show_labels = bool(show_labels_list[0]) if show_labels_list else False
     bundle = _resolve_lite_data_for_target(target, method_data)
@@ -427,24 +428,25 @@ def update_spatial_labels(show_labels_list, target, method_data):
         spatial_rotation=bundle["spatial_rotation"],
         saved_positions_per_sample=spatial_pos,
         show_labels=show_labels,
-        panel_height=350,
+        panel_height=int(panel_size) if panel_size else 350,
         spatial_display=bundle.get("spatial_display") or {},
+        label_size_override=label_size,
     )
 
 
 @callback(
     Output("lv_umap_container", "children"),
-    Input({"type": "lv_show_umap_labels_switch", "scope": ALL}, "value"),
+    [Input({"type": "lv_show_umap_labels_switch", "scope": ALL}, "value"),
+     Input("lv_umap_label_size", "value"),
+     Input("lv_umap_panel_size", "value")],
     State("lite_target_store", "data"),
     State("lv_method_store", "data"),
     prevent_initial_call=True,
 )
-def update_umap_labels(show_labels_list, target, method_data):
-    """「番号」Switch トグルで Per-sample UMAP grid だけを再描画する。
-
-    Switch は initialize_lite_view 後に動的生成されるため、id を
-    pattern-matching dict 形式にして Input も ALL pattern で受ける。
-    update_spatial_labels と同じ構造。
+def update_umap_labels(show_labels_list, label_size, panel_size,
+                        target, method_data):
+    """「番号」Switch / ラベルサイズ / パネル高さの変更で Per-sample UMAP
+    grid を再描画する (ver3.6 で size 制御追加)。
     """
     show_labels = bool(show_labels_list[0]) if show_labels_list else False
     bundle = _resolve_lite_data_for_target(target, method_data)
@@ -459,6 +461,8 @@ def update_umap_labels(show_labels_list, target, method_data):
         saved_positions_per_sample=umap_per_sample_pos,
         umap_display=bundle.get("umap_display") or {},
         show_labels=show_labels,
+        panel_height=int(panel_size) if panel_size else 340,
+        label_size_override=label_size,
     )
 
 
@@ -650,6 +654,39 @@ def _build_overview_section(df_plot, df_stats, color_map,
     stats_table = _build_cluster_stats_table(df_stats)
     pie_fig = _build_cluster_ratio_pie(df_plot, color_map, cluster_name_map)
 
+    # ver3.6: 軽量ビューア側でもプロットサイズ・ラベルサイズを調整可能に
+    # 初期値はインタラクティブ側で保存された設定 (umap_display / spatial_display)
+    # を採用し、ユーザー操作で即座に再描画される
+    umap_init_label = umap_display.get("label_size", 11) or 11
+    spatial_init_label = spatial_display.get("label_size", 10) or 10
+    umap_init_panel = 340
+    spatial_init_panel = 350
+
+    def _size_toolbar(label_id, panel_id, init_label, init_panel,
+                       label_range=(8, 30), panel_range=(200, 700)):
+        """ラベルサイズ + パネル高さの数値入力 (compact horizontal layout)"""
+        return html.Div(
+            style={"display": "flex", "alignItems": "center",
+                   "gap": "12px", "fontSize": "0.85rem"},
+            children=[
+                html.Span("ラベル", className="text-muted small"),
+                dbc.Input(
+                    id=label_id, type="number",
+                    min=label_range[0], max=label_range[1], step=1,
+                    value=int(init_label),
+                    style={"width": "70px"}, size="sm",
+                ),
+                html.Span("パネル高", className="text-muted small"),
+                dbc.Input(
+                    id=panel_id, type="number",
+                    min=panel_range[0], max=panel_range[1], step=20,
+                    value=int(init_panel),
+                    style={"width": "80px"}, size="sm",
+                ),
+                html.Span("px", className="text-muted small"),
+            ],
+        )
+
     return html.Div(
         className="overview-section mb-5",
         children=[
@@ -660,7 +697,8 @@ def _build_overview_section(df_plot, df_stats, color_map,
                       config={"displayModeBar": True}),
             html.Div(
                 style={"display": "flex", "alignItems": "center",
-                       "gap": "16px", "marginTop": "1rem"},
+                       "gap": "16px", "marginTop": "1rem",
+                       "flexWrap": "wrap"},
                 children=[
                     html.H6("Per-sample UMAP (cluster-colored)",
                             className="text-muted small mb-0"),
@@ -671,6 +709,12 @@ def _build_overview_section(df_plot, df_stats, color_map,
                         value=False,
                         className="mb-0",
                     ),
+                    _size_toolbar(
+                        label_id="lv_umap_label_size",
+                        panel_id="lv_umap_panel_size",
+                        init_label=umap_init_label,
+                        init_panel=umap_init_panel,
+                    ),
                 ],
             ),
             html.Div(
@@ -679,7 +723,8 @@ def _build_overview_section(df_plot, df_stats, color_map,
             ),
             html.Div(
                 style={"display": "flex", "alignItems": "center",
-                       "gap": "16px", "marginTop": "1rem"},
+                       "gap": "16px", "marginTop": "1rem",
+                       "flexWrap": "wrap"},
                 children=[
                     html.H6("Per-sample Spatial Mapping",
                             className="text-muted small mb-0"),
@@ -689,6 +734,12 @@ def _build_overview_section(df_plot, df_stats, color_map,
                         label="番号",
                         value=False,
                         className="mb-0",
+                    ),
+                    _size_toolbar(
+                        label_id="lv_spatial_label_size",
+                        panel_id="lv_spatial_panel_size",
+                        init_label=spatial_init_label,
+                        init_panel=spatial_init_panel,
                     ),
                 ],
             ),
@@ -718,12 +769,15 @@ def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
                                   saved_positions_per_sample=None,
                                   panel_height=340,
                                   umap_display=None,
-                                  show_labels=None):
+                                  show_labels=None,
+                                  label_size_override=None):
     """サンプル別 Cluster 色分け UMAP グリッド（画像2 相当）
 
     show_labels は明示指定があればそれを優先、None なら既存通り
     umap_display.show_labels をフォールバック (簡易ビューアー上部の
     「番号」Switch から動的に切替えるために引数として受ける)。
+    label_size_override: 軽量ビューア側 UI で変更した値があれば
+      umap_display.label_size より優先 (ver3.6)。
     """
     if "Sample" not in df_plot.columns:
         return html.Div("Sample 列なし", className="text-muted small")
@@ -735,6 +789,12 @@ def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
     umap_display = umap_display or {}
     marker_size = umap_display.get("marker_size", 2) or 2
     label_size = umap_display.get("label_size", 11) or 11
+    # ver3.6: 軽量ビューア側 UI でユーザーが変更した値を優先
+    if label_size_override is not None:
+        try:
+            label_size = int(label_size_override)
+        except (TypeError, ValueError):
+            pass
     if show_labels is None:
         show_labels = bool(umap_display.get("show_labels", False))
     else:
@@ -788,12 +848,15 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
                               saved_positions_per_sample=None,
                               show_labels=False,
                               panel_height=250,
-                              spatial_display=None):
+                              spatial_display=None,
+                              label_size_override=None):
     """各サンプル 1 パネルの Spatial グリッド（横並び・改行可）
 
     メイン解析で保存された rotation/flip/ラベル位置/サンプル名/クラスタ名/
     ラベルサイズ・マーカーサイズを反映する。
     spatial_display: interactive_settings.json の spatial_display dict。
+    label_size_override: 軽量ビューア側 UI で変更した値があれば
+      spatial_display.label_size より優先 (ver3.6)。
     """
     if "Sample" not in df_plot.columns:
         return html.Div("Spatial データなし",
@@ -807,6 +870,12 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
     spatial_display = spatial_display or {}
     # インタラクティブ側で設定された値を反映 (未設定なら従来デフォルト)
     sp_label_size = spatial_display.get("label_size") or 10
+    # ver3.6: 軽量ビューア側 UI でユーザーが変更した値を優先
+    if label_size_override is not None:
+        try:
+            sp_label_size = int(label_size_override)
+        except (TypeError, ValueError):
+            pass
     sp_marker_size = spatial_display.get("marker_size")
     if sp_marker_size is None:
         sp_marker_size = 0  # 0 = 自動計算
