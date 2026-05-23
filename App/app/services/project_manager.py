@@ -147,6 +147,9 @@ def create_project(
     experiment_date: str = "",
     memo: str = "",
     *,
+    google_keep_url: str = "",
+    msi_share_url: str = "",
+    other_url: str = "",
     force_id: str = "",
     created_by: Optional[str] = None,
 ) -> dict:
@@ -154,6 +157,9 @@ def create_project(
 
     Parameters
     ----------
+    google_keep_url, msi_share_url, other_url : str, optional (ver3.16)
+        プロジェクトに紐づく外部リンク URL。サブプロ一覧ページに
+        「プロジェクト関連情報」セクションとして表示される。
     force_id : str, optional
         復元時に元のIDを保持するために使用。空文字の場合は自動生成。
     created_by : str, optional
@@ -169,6 +175,10 @@ def create_project(
         "name": name,
         "experiment_date": experiment_date,
         "memo": memo,
+        # ver3.16: 関連 URL 3 種
+        "google_keep_url": google_keep_url,
+        "msi_share_url": msi_share_url,
+        "other_url": other_url,
         "sub_projects": [],
         "created_at": now,
         "last_modified": now,

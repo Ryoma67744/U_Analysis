@@ -17,7 +17,17 @@ def create_action_page():
             html.Div(
                 className="app-header",
                 children=[
-                    html.H1("MSI Analysis Application"),
+                    # ver3.16: クリックでプロジェクト一覧 (landing) に戻れるよう
+                    # ボタン化 (id を _action 接尾辞で別にして DOM 重複回避)
+                    dbc.Button(
+                        html.H1("MSI Analysis Application",
+                                className="m-0 p-0"),
+                        id="header_title_home_btn_action",
+                        color="link",
+                        className="p-0 border-0 text-decoration-none",
+                        style={"color": "inherit", "textAlign": "left"},
+                        title="プロジェクト一覧に戻る",
+                    ),
                     html.P(
                         className="subtitle",
                         children="質量分析イメージングデータ解析システム",
@@ -124,6 +134,15 @@ def create_action_page():
                         html.Div(id="share_links_container",
                                  className="text-muted small",
                                  children="共有リンクはありません"),
+                    ]),
+
+                    # ver3.16: プロジェクト関連情報 (URL 3 種 + memo)
+                    html.Hr(className="my-4"),
+                    html.Div(id="project_info_section", children=[
+                        html.H5("プロジェクト関連情報"),
+                        html.Div(id="project_info_container",
+                                 className="text-muted small",
+                                 children="プロジェクト情報なし"),
                     ]),
                 ],
             ),

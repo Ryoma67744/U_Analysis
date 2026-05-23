@@ -105,6 +105,11 @@ def create_landing_page():
                                     dbc.Select(
                                         id="project_sort_order",
                                         options=[
+                                            # ver3.16: 実験日ソートを新規追加 + デフォルトに
+                                            {"label": "実験日 (新しい順)",
+                                             "value": "experiment_date_desc"},
+                                            {"label": "実験日 (古い順)",
+                                             "value": "experiment_date_asc"},
                                             {"label": "更新日 (新しい順)",
                                              "value": "modified_desc"},
                                             {"label": "更新日 (古い順)",
@@ -118,7 +123,7 @@ def create_landing_page():
                                             {"label": "作成日 (古い順)",
                                              "value": "created_asc"},
                                         ],
-                                        value="modified_desc",
+                                        value="experiment_date_desc",
                                         size="sm",
                                     ),
                                 ],
@@ -200,7 +205,7 @@ def _create_new_project_modal():
                     id="new_project_name",
                     placeholder="例: 宮林Demo",
                 ),
-                dbc.Label("実験日", className="mt-2"),
+                dbc.Label("実験日 *", className="mt-2"),
                 dbc.Input(
                     id="new_project_experiment_date",
                     type="date",
@@ -211,6 +216,32 @@ def _create_new_project_modal():
                     placeholder="メモ（任意）",
                     style={"height": "80px"},
                 ),
+                # ver3.16: 関連 URL 入力欄 3 つ (任意)
+                dbc.Label("関連 URL (任意)", className="mt-3 fw-bold"),
+                dbc.InputGroup([
+                    dbc.InputGroupText("📝 Google Keep",
+                                       style={"minWidth": "140px"}),
+                    dbc.Input(id="new_project_google_keep_url",
+                              placeholder="https://keep.google.com/...",
+                              type="url"),
+                ], size="sm", className="mb-2"),
+                dbc.InputGroup([
+                    dbc.InputGroupText("🔗 MSI Share",
+                                       style={"minWidth": "140px"}),
+                    dbc.Input(id="new_project_msi_share_url",
+                              placeholder="https://ryoma67744.github.io/...",
+                              type="url"),
+                ], size="sm", className="mb-2"),
+                dbc.InputGroup([
+                    dbc.InputGroupText("🌐 Other",
+                                       style={"minWidth": "140px"}),
+                    dbc.Input(id="new_project_other_url",
+                              placeholder="https://...",
+                              type="url"),
+                ], size="sm", className="mb-2"),
+                # 入力エラー表示
+                html.Div(id="new_project_error",
+                         className="text-danger small mt-2"),
             ]),
             dbc.ModalFooter([
                 dbc.Button(
@@ -237,7 +268,7 @@ def _create_edit_project_modal():
                     id="edit_project_name",
                     placeholder="プロジェクト名",
                 ),
-                dbc.Label("実験日", className="mt-2"),
+                dbc.Label("実験日 *", className="mt-2"),
                 dbc.Input(
                     id="edit_project_experiment_date",
                     type="date",
@@ -248,8 +279,31 @@ def _create_edit_project_modal():
                     placeholder="メモ（任意）",
                     style={"height": "80px"},
                 ),
+                # ver3.16: 関連 URL 入力欄 3 つ (任意)
+                dbc.Label("関連 URL (任意)", className="mt-3 fw-bold"),
+                dbc.InputGroup([
+                    dbc.InputGroupText("📝 Google Keep",
+                                       style={"minWidth": "140px"}),
+                    dbc.Input(id="edit_project_google_keep_url",
+                              placeholder="https://keep.google.com/...",
+                              type="url"),
+                ], size="sm", className="mb-2"),
+                dbc.InputGroup([
+                    dbc.InputGroupText("🔗 MSI Share",
+                                       style={"minWidth": "140px"}),
+                    dbc.Input(id="edit_project_msi_share_url",
+                              placeholder="https://ryoma67744.github.io/...",
+                              type="url"),
+                ], size="sm", className="mb-2"),
+                dbc.InputGroup([
+                    dbc.InputGroupText("🌐 Other",
+                                       style={"minWidth": "140px"}),
+                    dbc.Input(id="edit_project_other_url",
+                              placeholder="https://...",
+                              type="url"),
+                ], size="sm", className="mb-2"),
                 # ver3.9: サムネ画像のソースパスを指定 (省略時は自動検出)
-                dbc.Label("サムネ画像 (省略時は自動検出)", className="mt-2"),
+                dbc.Label("サムネ画像 (省略時は自動検出)", className="mt-3"),
                 dbc.InputGroup([
                     dbc.Input(
                         id="edit_project_thumbnail",
@@ -266,6 +320,9 @@ def _create_edit_project_modal():
                     "UMAP png を自動選択します",
                     className="text-muted",
                 ),
+                # 入力エラー表示
+                html.Div(id="edit_project_error",
+                         className="text-danger small mt-2"),
             ]),
             dbc.ModalFooter([
                 dbc.Button(

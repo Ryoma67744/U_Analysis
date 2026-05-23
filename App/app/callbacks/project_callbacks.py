@@ -41,7 +41,12 @@ from app.services.persistent_share_manager import (
 
 def _sort_items(items, sort_order):
     """ソート順に応じてリストを並び替え"""
-    if sort_order == "modified_desc":
+    # ver3.16: experiment_date_desc/asc を追加 (ISO date 文字列ソート)
+    if sort_order == "experiment_date_desc":
+        items.sort(key=lambda x: x.get("experiment_date", ""), reverse=True)
+    elif sort_order == "experiment_date_asc":
+        items.sort(key=lambda x: x.get("experiment_date", ""))
+    elif sort_order == "modified_desc":
         items.sort(key=lambda x: x.get("last_modified", ""), reverse=True)
     elif sort_order == "modified_asc":
         items.sort(key=lambda x: x.get("last_modified", ""))
@@ -125,8 +130,8 @@ def render_project_cards(current_page, _refresh, sort_order, search_text):
                 ],
             )
 
-    # ソート
-    projects = _sort_items(projects, sort_order or "modified_desc")
+    # ソート (ver3.16: デフォルトを実験日新しい順に変更)
+    projects = _sort_items(projects, sort_order or "experiment_date_desc")
 
     cards = []
     for p in projects:
@@ -240,16 +245,10 @@ def render_project_cards(current_page, _refresh, sort_order, search_text):
                                             " | ".join(info_parts),
                                             className="card-text text-muted small",
                                         ),
-                                        # メモ (任意)
-                                        html.P(
-                                            p.get("memo", "") or "",
-                                            className="card-text small",
-                                            style={
-                                                "whiteSpace": "pre-wrap",
-                                                "maxHeight": "60px",
-                                                "overflow": "hidden",
-                                            },
-                                        ) if p.get("memo") else None,
+                                        # ver3.16: memo 表示を削除 (タイトル/実験日/
+                                        # サブプロ数/最終更新 のみカードに表示)
+                                        # データ自体は projects.json に残し、編集モーダル
+                                        # では引き続き編集可能
                                         html.Hr(className="my-2"),
                                         # 最終更新
                                         html.Small(
@@ -723,12 +722,18 @@ def sub_action_interactive(clicks, project):
 
 @callback(
     Output("current_page", "data", allow_duplicate=True),
-    Input("header_title_home_btn", "n_clicks"),
+    [Input("header_title_home_btn", "n_clicks"),
+     # ver3.16: action_page (サブプロ一覧) のヘッダーボタンも対応
+     # 別 ID にしている理由: 同じ ID を複数 page に置くと Dash の DOM
+     # 重複問題が起きるため
+     Input("header_title_home_btn_action", "n_clicks")],
     prevent_initial_call=True,
 )
-def header_title_to_landing(n_clicks):
-    """ヘッダーのタイトルクリックでプロジェクト一覧に戻る。"""
-    if not n_clicks:
+def header_title_to_landing(n_analysis, n_action):
+    """ヘッダーのタイトルクリックでプロジェクト一覧に戻る。
+    解析画面 (analysis) / サブプロ一覧 (action) どちらの header_title_home_btn*
+    クリックでも landing に遷移する。"""
+    if not (n_analysis or n_action):
         return no_update
     return "landing"
 
@@ -785,12 +790,13 @@ def back_to_action(n_clicks, entry_mode):
 @callback(
     Output("create_project_modal", "is_open"),
     [Input("open_create_project_modal", "n_clicks"),
-     Input("cancel_create_project", "n_clicks"),
-     Input("confirm_create_project", "n_clicks")],
-    State("create_project_modal", "is_open"),
+     Input("cancel_create_project", "n_clicks")],
     prevent_initial_call=True,
 )
-def toggle_create_modal(open_clicks, cancel_clicks, confirm_clicks, is_open):
+def toggle_create_modal(open_clicks, cancel_clicks):
+    """新規プロジェクト作成モーダルの open/cancel のみ制御。
+    confirm 時の close は handle_create_project が validation 後に行う。
+    """
     triggered = ctx.triggered_id
     if triggered == "open_create_project_modal":
         return True
@@ -805,26 +811,51 @@ def toggle_create_modal(open_clicks, cancel_clicks, confirm_clicks, is_open):
     [Output("new_project_name", "value"),
      Output("new_project_experiment_date", "value"),
      Output("new_project_memo", "value"),
-     Output("project_list_refresh", "data")],
+     Output("new_project_google_keep_url", "value"),
+     Output("new_project_msi_share_url", "value"),
+     Output("new_project_other_url", "value"),
+     Output("project_list_refresh", "data"),
+     Output("create_project_modal", "is_open", allow_duplicate=True),
+     Output("new_project_error", "children")],
     Input("confirm_create_project", "n_clicks"),
     [State("new_project_name", "value"),
      State("new_project_experiment_date", "value"),
      State("new_project_memo", "value"),
+     State("new_project_google_keep_url", "value"),
+     State("new_project_msi_share_url", "value"),
+     State("new_project_other_url", "value"),
      State("project_list_refresh", "data")],
     prevent_initial_call=True,
 )
-def handle_create_project(n_clicks, name, experiment_date, memo, refresh):
-    if not n_clicks or not name:
-        return no_update, no_update, no_update, no_update
+def handle_create_project(n_clicks, name, experiment_date, memo,
+                          google_keep_url, msi_share_url, other_url,
+                          refresh):
+    """ver3.16: タイトル + 実験日を必須化、URL 3 種を保存。
+
+    バリデーション失敗時はモーダルを閉じずエラーメッセージを表示。
+    """
+    if not n_clicks:
+        return (no_update,) * 9
+    name = (name or "").strip()
+    experiment_date = (experiment_date or "").strip()
+    if not name or not experiment_date:
+        # バリデーション失敗 → モーダル open 維持 + エラー表示
+        msg = "「プロジェクトタイトル」と「実験日」は必須です。"
+        return (no_update, no_update, no_update,
+                no_update, no_update, no_update,
+                no_update, True, msg)
 
     create_project(
         name=name,
-        experiment_date=experiment_date or "",
+        experiment_date=experiment_date,
         memo=memo or "",
+        google_keep_url=(google_keep_url or "").strip(),
+        msi_share_url=(msi_share_url or "").strip(),
+        other_url=(other_url or "").strip(),
     )
 
-    # フォーム入力をクリア + リフレッシュ
-    return "", None, "", (refresh or 0) + 1
+    # フォーム入力クリア + モーダル close + リフレッシュ
+    return "", None, "", "", "", "", (refresh or 0) + 1, False, ""
 
 
 # =========================================================================
@@ -892,19 +923,23 @@ def handle_delete_project(n_clicks, project_id, refresh):
      Output("edit_project_name", "value"),
      Output("edit_project_experiment_date", "value"),
      Output("edit_project_memo", "value"),
-     Output("edit_project_thumbnail", "value")],
+     Output("edit_project_thumbnail", "value"),
+     Output("edit_project_google_keep_url", "value"),
+     Output("edit_project_msi_share_url", "value"),
+     Output("edit_project_other_url", "value")],
     [Input({"type": "edit_project_btn", "index": ALL}, "n_clicks"),
-     Input("cancel_edit_project", "n_clicks"),
-     Input("confirm_edit_project", "n_clicks")],
+     Input("cancel_edit_project", "n_clicks")],
     State("edit_target_project_id", "data"),
     prevent_initial_call=True,
 )
-def toggle_edit_project_modal(edit_clicks, cancel_clicks, confirm_clicks, target_id):
+def toggle_edit_project_modal(edit_clicks, cancel_clicks, target_id):
+    """ver3.16: open/cancel のみ制御。confirm 時の close は
+    handle_edit_project が validation 後に行う。"""
     triggered = ctx.triggered_id
 
-    # キャンセル or 保存 → 閉じる
-    if triggered == "cancel_edit_project" or triggered == "confirm_edit_project":
-        return False, "", "", None, "", ""
+    # キャンセル → 閉じる
+    if triggered == "cancel_edit_project":
+        return False, "", "", None, "", "", "", "", ""
 
     # 編集ボタン → モーダルを開いて既存値をセット
     if isinstance(triggered, dict) and triggered.get("type") == "edit_project_btn":
@@ -919,9 +954,12 @@ def toggle_edit_project_modal(edit_clicks, cancel_clicks, confirm_clicks, target
                     project.get("experiment_date", None) or None,
                     project.get("memo", ""),
                     project.get("thumbnail_source", ""),
+                    project.get("google_keep_url", ""),
+                    project.get("msi_share_url", ""),
+                    project.get("other_url", ""),
                 )
 
-    return no_update, no_update, no_update, no_update, no_update, no_update
+    return (no_update,) * 9
 
 
 # =========================================================================
@@ -929,29 +967,44 @@ def toggle_edit_project_modal(edit_clicks, cancel_clicks, confirm_clicks, target
 # =========================================================================
 
 @callback(
-    Output("project_list_refresh", "data", allow_duplicate=True),
+    [Output("project_list_refresh", "data", allow_duplicate=True),
+     Output("edit_project_modal", "is_open", allow_duplicate=True),
+     Output("edit_project_error", "children")],
     Input("confirm_edit_project", "n_clicks"),
     [State("edit_target_project_id", "data"),
      State("edit_project_name", "value"),
      State("edit_project_experiment_date", "value"),
      State("edit_project_memo", "value"),
      State("edit_project_thumbnail", "value"),
+     State("edit_project_google_keep_url", "value"),
+     State("edit_project_msi_share_url", "value"),
+     State("edit_project_other_url", "value"),
      State("project_list_refresh", "data")],
     prevent_initial_call=True,
 )
 def handle_edit_project(n_clicks, project_id, name, experiment_date, memo,
-                        thumbnail_source, refresh):
-    if not n_clicks or not project_id or not name:
-        return no_update
+                        thumbnail_source, google_keep_url, msi_share_url,
+                        other_url, refresh):
+    """ver3.16: タイトル + 実験日を必須化、URL 3 種を保存。"""
+    if not n_clicks or not project_id:
+        return no_update, no_update, no_update
+    name = (name or "").strip()
+    experiment_date = (experiment_date or "").strip()
+    if not name or not experiment_date:
+        return (no_update, True,
+                "「プロジェクトタイトル」と「実験日」は必須です。")
 
     update_project(project_id, {
         "name": name,
-        "experiment_date": experiment_date or "",
+        "experiment_date": experiment_date,
         "memo": memo or "",
         "thumbnail_source": (thumbnail_source or "").strip(),
+        "google_keep_url": (google_keep_url or "").strip(),
+        "msi_share_url": (msi_share_url or "").strip(),
+        "other_url": (other_url or "").strip(),
     })
 
-    return (refresh or 0) + 1
+    return (refresh or 0) + 1, False, ""
 
 
 # =========================================================================
@@ -1333,6 +1386,59 @@ def render_share_links(current_page, project):
         return "共有リンクはありません"
     project_id = project.get("id", "")
     return _render_share_links(project_id)
+
+
+# ver3.16: --- プロジェクト関連情報 (URL 3 種 + memo) のレンダリング ---
+@callback(
+    Output("project_info_container", "children"),
+    [Input("current_page", "data"),
+     Input("selected_project", "data"),
+     Input("project_list_refresh", "data")],
+)
+def render_project_info(current_page, project, _refresh):
+    """サブプロ一覧ページに、親プロジェクトの URL 3 種 + memo を整形表示。"""
+    if current_page != "action" or not project:
+        return "プロジェクト情報なし"
+    project_id = project.get("id", "")
+    proj = get_project(project_id)
+    if not proj:
+        return "プロジェクト情報なし"
+
+    url_specs = [
+        ("📝 Google Keep", proj.get("google_keep_url", "")),
+        ("🔗 MSI Share", proj.get("msi_share_url", "")),
+        ("🌐 Other", proj.get("other_url", "")),
+    ]
+    items = []
+    for label, url in url_specs:
+        if url:
+            items.append(html.Div(className="mb-2", children=[
+                html.Span(label, className="me-2 fw-bold",
+                          style={"display": "inline-block", "minWidth": "150px"}),
+                html.A(url, href=url, target="_blank",
+                       rel="noopener noreferrer",
+                       style={"wordBreak": "break-all"}),
+            ]))
+        else:
+            items.append(html.Div(className="mb-2 text-muted small", children=[
+                html.Span(label, className="me-2",
+                          style={"display": "inline-block", "minWidth": "150px"}),
+                html.Span("(未設定)"),
+            ]))
+    # メモ
+    memo = (proj.get("memo", "") or "").strip()
+    items.append(html.Div(className="mt-3", children=[
+        html.Strong("📋 メモ:"),
+        html.Pre(memo if memo else "(なし)",
+                 style={"whiteSpace": "pre-wrap",
+                        "background": "#f8f9fa",
+                        "padding": "8px",
+                        "borderRadius": "4px",
+                        "fontSize": "0.85rem",
+                        "marginTop": "4px",
+                        "color": "#212529" if memo else "#6c757d"}),
+    ]))
+    return items
 
 
 def _render_share_links(project_id):

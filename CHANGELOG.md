@@ -12,6 +12,52 @@
 
 ---
 
+## 2026-05-24_ver3.16
+
+### 新機能・改善
+- **① 新規プロジェクト作成: タイトル + 実験日を必須化**
+  - 「実験日」ラベルに `*` を追加
+  - `handle_create_project` で `name` または `experiment_date` 空欄時は
+    モーダルを閉じずエラーメッセージを表示 (`new_project_error` Div)
+  - 編集モーダル (`handle_edit_project`) も同様に必須化
+
+- **② 新規/編集モーダルに URL 入力欄 3 つを追加**
+  - 📝 Google Keep / 🔗 MSI Share / 🌐 Other の 3 種類 (`type="url"`)
+  - `project_manager.create_project()` に
+    `google_keep_url / msi_share_url / other_url` 引数を追加
+  - projects.json に保存され、編集モーダルで既存値が復元される
+
+- **③ プロジェクト一覧のデフォルトソートを「実験日 (新しい順)」に変更**
+  - ソート選択肢に `実験日 (新しい順)/(古い順)` を追加
+  - `_sort_items` に `experiment_date_desc / experiment_date_asc` 分岐
+  - デフォルト `value` を `experiment_date_desc` に変更
+  - 編集時の自動先頭移動を防ぐ効果 (last_modified ベースではないため)
+
+- **④ プロジェクトカードから memo 表示を削除**
+  - カードには タイトル / 実験日 | サブプロ数 / 最終更新 / 「開く」のみ
+  - memo データは projects.json に残し、編集モーダルで引き続き編集可
+
+- **⑤ サブプロ一覧ページに「プロジェクト関連情報」セクションを追加**
+  - 共有リンク管理の直下に配置
+  - 3 つの URL を `📝 Google Keep / 🔗 MSI Share / 🌐 Other` の
+    クリッカブルリンク (別タブで開く) として表示
+  - 未設定の項目は「(未設定)」と表示
+  - メモは Pre タグで pre-wrap 整形表示
+
+- **⑥ サブプロ一覧 (action_page) のヘッダー「MSI Analysis Application」
+  クリックでプロジェクト一覧に戻れない不具合を修正**
+  - `action_page.py:16-26` の素の H1 を `dbc.Button(color="link")` で
+    ラップ (id="header_title_home_btn_action" — DOM 重複回避のため別 ID)
+  - `header_title_to_landing` callback の Input に追加
+
+### 影響範囲
+- `projects.json` 既存エントリには `google_keep_url` 等のフィールドが無いが、
+  `dict.get(...)` で安全に空文字 fallback (下位互換 OK)
+- `last_modified` ベースのソート挙動を期待していたユーザーは選択肢から
+  `更新日 (新しい順)` を明示選択可能
+
+---
+
 ## 2026-05-24_ver3.15
 
 ### 性能改善
