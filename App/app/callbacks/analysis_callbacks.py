@@ -115,7 +115,9 @@ def toggle_sidebar_content(active_tab):
      State("mz_align_ppm", "value"),
      State("selected_samples_store", "data"),
      State("cal_per_sample_store", "data"),
-     State("cal_sample_selector_prev", "data")],
+     State("cal_sample_selector_prev", "data"),
+     State("desi_use_roi_as_sample", "value"),
+     State("desi_roi_filter_store", "data")],
     prevent_initial_call=True,
 )
 def run_analysis(
@@ -144,6 +146,8 @@ def run_analysis(
     selected_samples,
     cal_per_sample_store,
     cal_sample_selector_prev,
+    desi_use_roi_as_sample,
+    desi_roi_filter_list,
 ):
     if not n_clicks:
         return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
@@ -174,6 +178,7 @@ def run_analysis(
             "desi_cluster_filter_script_path": desi_cluster_script,
             "tims_v8_script_path": tims_v8_script,
             "tims_cluster_filter_script_path": tims_cluster_script,
+            "desi_use_roi_as_sample": bool(desi_use_roi_as_sample),
         })
     except Exception as e:
         warn_user(f"解析設定の保存に失敗: {e}")
@@ -272,6 +277,15 @@ def run_analysis(
                         csvs = sorted(_acsv.glob("*.csv"))
                         if csvs:
                             params["annotation_csv_path"] = str(csvs[0])
+
+            # --- DESI ROI 設定 (ROI 列があれば各 ROI を別サンプルとして扱う) ---
+            # desi_roi_filter_list は Store から取得した list[str]。
+            # update_desi_roi_selector / sync_desi_roi_to_store callback で
+            # ファイルから読み取った ROI 候補のチェックボックス選択値を集約済み。
+            if analysis_type == "desi_v8":
+                params["use_roi_as_sample"] = bool(desi_use_roi_as_sample)
+                if desi_roi_filter_list:
+                    params["roi_filter"] = list(desi_roi_filter_list)
 
             # --- m/z アライメント (ppm) ---
             if analysis_type == "tims_v8":

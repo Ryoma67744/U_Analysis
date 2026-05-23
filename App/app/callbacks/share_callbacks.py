@@ -4,6 +4,7 @@
 # =============================================================================
 
 import base64
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -14,7 +15,12 @@ from dash import (
     Input, Output, State, callback, ctx, no_update,
     html, dcc, dash_table, ALL,
 )
+
+logger = logging.getLogger(__name__)
 from app.services.share_manager import get_share
+from app.services.persistent_share_manager import (
+    get_persistent_share, increment_view_count as _persistent_increment_view,
+)
 from app.services.seurat_bridge import SeuratBridge
 from app.services.results_viewer import (
     categorize_image, get_available_clusters,
@@ -50,11 +56,26 @@ _shared_data: dict[str, dict] = {}
     prevent_initial_call=True,
 )
 def route_share_url(pathname):
-    """URL パスが /share/<token> なら共有ページに遷移"""
-    if pathname and pathname.startswith("/share/"):
+    """URL パスが /share/<token> または /view/<token> なら共有ページに遷移。
+
+    /share/<token> は期間付き共有 (Tier B 必須)、/view/<token> は無期限共有
+    (認証バイパス)。どちらも内部的には同じ shared_view を使い、トークンの
+    解決先 (shares.json vs persistent_shares.json) で挙動を切り替える。
+    """
+    if not pathname:
+        return no_update, no_update
+    if pathname.startswith("/share/"):
         token = pathname.split("/share/", 1)[1].split("/")[0].split("?")[0]
         if token:
             return "shared", token
+    if pathname.startswith("/view/"):
+        token = pathname.split("/view/", 1)[1].split("/")[0].split("?")[0]
+        if token:
+            # ビュー数をインクリメント (失敗しても致命的でないので無視)
+            _persistent_increment_view(token)
+            # token 先頭に "v:" prefix を付けて initialize_shared_view 側で
+            # 期間付き vs 無期限を判別する
+            return "shared", f"v:{token}"
     return no_update, no_update
 
 
@@ -95,19 +116,39 @@ def initialize_shared_view(token):
         return (hide, hide, "", "", "", "", "", "", "",
                 [], [], [], [], [], [], hide, None, [], [])
 
-    # トークン検証
-    share = get_share(token)
+    # トークン検証 (route_share_url が "v:" prefix を付けてくる無期限共有を判別)
+    is_persistent = token.startswith("v:")
+    actual_token = token[2:] if is_persistent else token
+
+    if is_persistent:
+        share = get_persistent_share(actual_token)
+        not_found_msg = (
+            "このリンクは無効です (無期限共有が失効しているか、"
+            "URL が間違っています)。"
+        )
+    else:
+        share = get_share(actual_token)
+        not_found_msg = "このリンクは無効か、有効期限が切れています。"
+
     if not share:
-        return (hide, show, "このリンクは無効か、有効期限が切れています。", "", "",
+        return (hide, show, not_found_msg, "", "",
                 "", "", "", "", [], [], [], [], [], [], hide, None, [], [])
 
     result_dir = share.get("result_dir", "")
     rds_path = share.get("rds_path", "")
     integration_method = share.get("integration_method", "")
-    info_text = (
-        f"{share.get('project_name', '')} / {share.get('sub_project_name', '')} — "
-        f"有効期限: {share.get('expires_at', '不明')}"
-    )
+    if is_persistent:
+        info_text = (
+            f"{share.get('project_name', '')} / "
+            f"{share.get('sub_project_name', '')} — 無期限共有"
+        )
+    else:
+        info_text = (
+            f"{share.get('project_name', '')} / "
+            f"{share.get('sub_project_name', '')} — "
+            f"有効期限: {share.get('expires_at', '不明')}"
+        )
+    share_kind_label = "無期限共有" if is_persistent else "期間付き共有"
     metadata_card = dbc.Card(
         dbc.CardBody(
             dbc.Row([
@@ -119,6 +160,8 @@ def initialize_shared_view(token):
                          html.Span(integration_method or "—")], width="auto"),
                 dbc.Col([html.Strong("共有日時: "),
                          html.Span(share.get("created_at", "—"))], width="auto"),
+                dbc.Col([html.Strong("種別: "),
+                         html.Span(share_kind_label)], width="auto"),
             ], className="g-3"),
             className="py-2",
         ),
@@ -269,7 +312,10 @@ def sv_render_gallery(subfolder, category, cluster, page, result_dir):
             with open(img_path, "rb") as f:
                 img_data = base64.b64encode(f.read()).decode()
             src = f"data:image/png;base64,{img_data}"
-        except Exception:
+        except Exception as e:
+            # ver3.7: silent failure を解消。ユーザー画面では空表示のままだが、
+            # サーバーログで原因究明できるようにする
+            logger.error("image load failed (gallery) path=%s: %s", img_path, e)
             src = ""
 
         cards.append(
@@ -325,7 +371,9 @@ def sv_open_image_modal(clicks):
         with open(img_path, "rb") as f:
             img_data = base64.b64encode(f.read()).decode()
         src = f"data:image/png;base64,{img_data}"
-    except Exception:
+    except Exception as e:
+        # ver3.7: モーダル画像読込失敗を logger.error に記録
+        logger.error("image load failed (modal) path=%s: %s", img_path, e)
         return True, html.Div("画像を読み込めません"), img_path
 
     return (
@@ -352,12 +400,15 @@ def sv_open_image_modal(clicks):
 def sv_update_umap(color_by, highlight_clusters, show_legend, show_labels,
                    marker_size, token):
     empty = go.Figure()
-    if not token or token not in _shared_data:
+    # ver3.7: token check と dict アクセスを 1 段階化し競合状態 (token 削除
+    # との race) で KeyError が出ないように修正
+    data = _shared_data.get(token) if token else None
+    if data is None:
         empty.add_annotation(text="データなし", showarrow=False,
                              xref="paper", yref="paper", x=0.5, y=0.5)
         return empty
 
-    df = _shared_data[token].get("plot_data")
+    df = data.get("plot_data")
     if df is None or df.empty:
         return empty
 
@@ -379,10 +430,12 @@ def sv_update_umap(color_by, highlight_clusters, show_legend, show_labels,
     State("share_token", "data"),
 )
 def sv_update_spatial(highlight_clusters, sample_filter, token):
-    if not token or token not in _shared_data:
+    # ver3.7: race 防止のため .get() で 1 段階化
+    data = _shared_data.get(token) if token else None
+    if data is None:
         return html.Div("データなし", className="text-muted")
 
-    df = _shared_data[token].get("plot_data")
+    df = data.get("plot_data")
     if df is None or df.empty or "SpatialX" not in df.columns:
         return html.Div("Spatial データなし", className="text-muted")
 
@@ -438,12 +491,13 @@ def sv_update_spatial(highlight_clusters, sample_filter, token):
 )
 def sv_update_feature_plot(feature, token):
     empty = go.Figure()
-    if not feature or not token or token not in _shared_data:
+    # ver3.7: race 防止のため .get() で 1 段階化
+    data = _shared_data.get(token) if (feature and token) else None
+    if data is None:
         empty.add_annotation(text="Feature を選択してください", showarrow=False,
                              xref="paper", yref="paper", x=0.5, y=0.5)
         return empty
 
-    data = _shared_data[token]
     rds_path = data.get("rds_path")
     cache_dir_str = data.get("cache_dir")
     df = data.get("plot_data")

@@ -4,7 +4,7 @@
 # /lite/<project_id>/<sub_project_id> の「レポート型」サマリビュー。
 # PPT 出力と同等の構造をブラウザ上で即時表示する。
 #
-# 大きく 5 系統の callback:
+# 大きく 4 系統の callback:
 #   1. URL ルーティング (route_lite_url + navigate_to_lite_page)
 #       url_bar.pathname を lite_target_store に変換し、その後ページ遷移
 #       2 段に分けているのは share_callbacks.route_share_url とのハッシュ衝突回避のため
@@ -15,10 +15,9 @@
 #       pattern-matching で各カードの Volcano セクションを折りたたむ
 #   4. クラスタカード開閉 (toggle_cluster_card)
 #       pattern-matching で各クラスタの UMAP/Spatial/Volcano グリッドを遅延描画
-#   5. 全クラスタ一括展開 (expand_all_clusters)
-#       1 クリックで全カードを開閉
 # =============================================================================
 
+import logging
 import re
 from pathlib import Path
 
@@ -31,6 +30,8 @@ from dash import (
     MATCH, ALL,
     clientside_callback,
 )
+
+logger = logging.getLogger(__name__)
 
 from app.services.project_manager import get_project, get_sub_project
 from app.callbacks.interactive_callbacks import (
@@ -157,13 +158,30 @@ def initialize_lite_view(target, method_data):
     deg_records = []
     if result_dir and Path(result_dir).is_dir():
         deg_records = _load_deg_results(Path(result_dir), integration_method) or []
+    logger.info(
+        "lite_view DEG loaded: rows=%d integration=%s result_dir=%s",
+        len(deg_records), integration_method, result_dir,
+    )
 
     # メイン解析で永続化されたインタラクティブ設定 + ラベル位置を読み込む
     settings = load_interactive_settings(rds_path) or {}
+    settings_mtime = "n/a"
+    try:
+        sp = Path(rds_path).parent / "interactive_settings.json" if rds_path else None
+        if sp and sp.exists():
+            from datetime import datetime as _dt
+            settings_mtime = _dt.fromtimestamp(sp.stat().st_mtime).isoformat()
+    except Exception as e:
+        # ver3.7: 暗黙の握り潰しを debug ログに格上げ
+        logger.debug("interactive_settings mtime check failed: %s", e)
+    logger.info("lite_view settings loaded: mtime=%s keys=%s",
+                settings_mtime, list(settings.keys()))
     cluster_name_map = settings.get("cluster_name_map") or {}
     sample_name_map = settings.get("sample_name_map") or {}
     spatial_rotation = settings.get("spatial_rotation") or {}
     custom_color_map = settings.get("custom_color_map") or None
+    umap_display = settings.get("umap_display") or {}
+    spatial_display = settings.get("spatial_display") or {}
     saved_positions_all = load_label_positions(rds_path, integration_method) or {}
 
     # per-cluster カード遅延展開時に再利用するため bundle をキャッシュ
@@ -176,6 +194,8 @@ def initialize_lite_view(target, method_data):
         "sample_name_map": sample_name_map,
         "spatial_rotation": spatial_rotation,
         "saved_positions_all": saved_positions_all,
+        "umap_display": umap_display,
+        "spatial_display": spatial_display,
     }
 
     # レポート組み立て
@@ -192,6 +212,8 @@ def initialize_lite_view(target, method_data):
         spatial_rotation=spatial_rotation,
         custom_color_map=custom_color_map,
         saved_positions_all=saved_positions_all,
+        umap_display=umap_display,
+        spatial_display=spatial_display,
     )
     return body, False, ""
 
@@ -287,7 +309,10 @@ def _resolve_lite_data_for_target(target, method_data):
                 "cache_dir": str(extracted["cache_dir"]),
             }
             cached = _shared_data[cache_key]
-    except Exception:
+    except Exception as e:
+        # ver3.7: lite_view の bundle 再構築失敗を silent から logger.error に
+        # 変更。UI は空白表示のままだが原因究明できるようにする
+        logger.error("lite_view bundle rebuild failed rds=%s: %s", rds_path, e)
         return None
 
     df_plot = cached["plot_data"]
@@ -300,6 +325,8 @@ def _resolve_lite_data_for_target(target, method_data):
     sample_name_map = settings.get("sample_name_map") or {}
     spatial_rotation = settings.get("spatial_rotation") or {}
     custom_color_map = settings.get("custom_color_map") or None
+    umap_display = settings.get("umap_display") or {}
+    spatial_display = settings.get("spatial_display") or {}
     saved_positions_all = load_label_positions(rds_path, integration_method) or {}
     color_map = _get_cluster_color_map(df_plot["Cluster"], custom_color_map)
 
@@ -311,15 +338,20 @@ def _resolve_lite_data_for_target(target, method_data):
         "sample_name_map": sample_name_map,
         "spatial_rotation": spatial_rotation,
         "saved_positions_all": saved_positions_all,
+        "umap_display": umap_display,
+        "spatial_display": spatial_display,
     }
     cached["_lite_bundle"] = bundle
     return bundle
 
 
 @callback(
-    Output({"type": "lv_card_collapse", "cluster": MATCH}, "is_open"),
-    Output({"type": "lv_card_body", "cluster": MATCH}, "children"),
-    Output({"type": "lv_card_toggle", "cluster": MATCH}, "children"),
+    Output({"type": "lv_card_collapse", "cluster": MATCH}, "is_open",
+           allow_duplicate=True),
+    Output({"type": "lv_card_body", "cluster": MATCH}, "children",
+           allow_duplicate=True),
+    Output({"type": "lv_card_toggle", "cluster": MATCH}, "children",
+           allow_duplicate=True),
     Input({"type": "lv_card_toggle", "cluster": MATCH}, "n_clicks"),
     State({"type": "lv_card_collapse", "cluster": MATCH}, "is_open"),
     State({"type": "lv_card_toggle", "cluster": MATCH}, "id"),
@@ -357,76 +389,84 @@ def toggle_cluster_card(n_clicks, is_open, btn_id, current_body,
             sample_name_map=bundle["sample_name_map"],
             spatial_rotation=bundle["spatial_rotation"],
             saved_positions_all=bundle["saved_positions_all"],
+            umap_display=bundle.get("umap_display") or {},
         )
         return True, contents, "▼ 詳細を閉じる"
     return False, no_update, "▶ 詳細を表示 (UMAP / Spatial / Volcano)"
 
 
+# =============================================================================
+# 番号 ON/OFF Switch による Per-sample Spatial Mapping の再描画
+# =============================================================================
+
 @callback(
-    Output({"type": "lv_card_collapse", "cluster": ALL}, "is_open",
-           allow_duplicate=True),
-    Output({"type": "lv_card_body", "cluster": ALL}, "children",
-           allow_duplicate=True),
-    Output({"type": "lv_card_toggle", "cluster": ALL}, "children",
-           allow_duplicate=True),
-    Input("lv_expand_all_clusters", "n_clicks"),
-    State({"type": "lv_card_collapse", "cluster": ALL}, "is_open"),
-    State({"type": "lv_card_collapse", "cluster": ALL}, "id"),
-    State({"type": "lv_card_body", "cluster": ALL}, "children"),
+    Output("lv_spatial_container", "children"),
+    [Input({"type": "lv_show_labels_switch", "scope": ALL}, "value"),
+     Input("lv_spatial_label_size", "value"),
+     Input("lv_spatial_panel_size", "value")],
     State("lite_target_store", "data"),
     State("lv_method_store", "data"),
     prevent_initial_call=True,
 )
-def expand_all_clusters(n_clicks, opens, ids, current_bodies,
-                         target, method_data):
-    """全クラスタカードを一括で開閉。
+def update_spatial_labels(show_labels_list, label_size, panel_size,
+                            target, method_data):
+    """「番号」Switch / ラベルサイズ / パネル高さの変更で
+    Per-sample Spatial Mapping を再描画する (ver3.6 で size 制御追加)。
 
-    どれか 1 つでも閉じていれば全部開く動作。すべて開いていれば全部閉じる。
+    Switch は initialize_lite_view 後に動的生成されるため、id を
+    pattern-matching dict 形式にして Input も ALL pattern で受ける。
+    bundle は _resolve_lite_data_for_target からキャッシュで返るため RDS
+    再読込は発生しない。
     """
-    if not n_clicks or not ids:
-        return no_update, no_update, no_update
+    show_labels = bool(show_labels_list[0]) if show_labels_list else False
+    bundle = _resolve_lite_data_for_target(target, method_data)
+    if bundle is None:
+        return no_update
+    saved_positions_all = bundle["saved_positions_all"] or {}
+    spatial_pos = saved_positions_all.get("spatial") or {}
+    return _build_per_sample_spatial(
+        bundle["df_plot"], bundle["color_map"],
+        highlight_clusters=None,
+        cluster_name_map=bundle["cluster_name_map"],
+        sample_name_map=bundle["sample_name_map"],
+        spatial_rotation=bundle["spatial_rotation"],
+        saved_positions_per_sample=spatial_pos,
+        show_labels=show_labels,
+        panel_height=int(panel_size) if panel_size else 350,
+        spatial_display=bundle.get("spatial_display") or {},
+        label_size_override=label_size,
+    )
 
-    any_closed = not all(opens)
-    if any_closed:
-        bundle = _resolve_lite_data_for_target(target, method_data)
-        if bundle is None:
-            return no_update, no_update, no_update
 
-        deg_by_cluster = {}
-        for r in bundle["deg_records"]:
-            c = str(r.get("cluster", ""))
-            deg_by_cluster.setdefault(c, []).append(r)
-
-        new_opens = []
-        new_bodies = []
-        new_labels = []
-        for idx, id_ in enumerate(ids):
-            cluster_key = id_["cluster"]
-            new_opens.append(True)
-            if current_bodies and current_bodies[idx]:
-                # 既に展開済みの DOM は再利用
-                new_bodies.append(no_update)
-            else:
-                new_bodies.append(
-                    _build_cluster_card_expand_contents(
-                        cluster_key,
-                        df_plot=bundle["df_plot"],
-                        color_map=bundle["color_map"],
-                        deg_records=deg_by_cluster.get(str(cluster_key), []),
-                        cluster_name_map=bundle["cluster_name_map"],
-                        sample_name_map=bundle["sample_name_map"],
-                        spatial_rotation=bundle["spatial_rotation"],
-                        saved_positions_all=bundle["saved_positions_all"],
-                    )
-                )
-            new_labels.append("▼ 詳細を閉じる")
-        return new_opens, new_bodies, new_labels
-
-    n = len(ids)
-    return (
-        [False] * n,
-        [no_update] * n,
-        ["▶ 詳細を表示 (UMAP / Spatial / Volcano)"] * n,
+@callback(
+    Output("lv_umap_container", "children"),
+    [Input({"type": "lv_show_umap_labels_switch", "scope": ALL}, "value"),
+     Input("lv_umap_label_size", "value"),
+     Input("lv_umap_panel_size", "value")],
+    State("lite_target_store", "data"),
+    State("lv_method_store", "data"),
+    prevent_initial_call=True,
+)
+def update_umap_labels(show_labels_list, label_size, panel_size,
+                        target, method_data):
+    """「番号」Switch / ラベルサイズ / パネル高さの変更で Per-sample UMAP
+    grid を再描画する (ver3.6 で size 制御追加)。
+    """
+    show_labels = bool(show_labels_list[0]) if show_labels_list else False
+    bundle = _resolve_lite_data_for_target(target, method_data)
+    if bundle is None:
+        return no_update
+    saved_positions_all = bundle["saved_positions_all"] or {}
+    umap_per_sample_pos = saved_positions_all.get("umap_per_sample") or {}
+    return _build_per_sample_umap_grid(
+        bundle["df_plot"], bundle["color_map"],
+        cluster_name_map=bundle["cluster_name_map"],
+        sample_name_map=bundle["sample_name_map"],
+        saved_positions_per_sample=umap_per_sample_pos,
+        umap_display=bundle.get("umap_display") or {},
+        show_labels=show_labels,
+        panel_height=int(panel_size) if panel_size else 340,
+        label_size_override=label_size,
     )
 
 
@@ -438,7 +478,8 @@ def _build_report_body(project, sub, integration_method, available_methods,
                        df_plot, df_stats, deg_records,
                        cluster_name_map=None, sample_name_map=None,
                        spatial_rotation=None, custom_color_map=None,
-                       saved_positions_all=None):
+                       saved_positions_all=None, umap_display=None,
+                       spatial_display=None):
     """全体レポートを html.Div の children リストとして返す。"""
     color_map = _get_cluster_color_map(df_plot["Cluster"], custom_color_map)
     return [
@@ -450,6 +491,8 @@ def _build_report_body(project, sub, integration_method, available_methods,
             sample_name_map=sample_name_map,
             spatial_rotation=spatial_rotation,
             saved_positions_all=saved_positions_all,
+            umap_display=umap_display,
+            spatial_display=spatial_display,
         ),
         _build_per_cluster_cards(
             df_plot, deg_records, color_map,
@@ -566,44 +609,87 @@ def _build_header(project, sub, integration_method, available_methods,
 def _build_overview_section(df_plot, df_stats, color_map,
                               cluster_name_map=None, sample_name_map=None,
                               spatial_rotation=None,
-                              saved_positions_all=None):
+                              saved_positions_all=None,
+                              umap_display=None,
+                              spatial_display=None):
     """Overview: Sample 色統合 UMAP / Per-sample UMAP グリッド /
     Per-sample Spatial（クラスタ番号ラベル付き）/ Stats Table / Ratio Pie"""
     saved_positions_all = saved_positions_all or {}
     umap_pos = saved_positions_all.get("umap_integrated") or {}
     umap_per_sample_pos = saved_positions_all.get("umap_per_sample") or {}
     spatial_pos = saved_positions_all.get("spatial") or {}
+    umap_display = umap_display or {}
+    spatial_display = spatial_display or {}
+    marker_size = umap_display.get("marker_size", 2) or 2
 
-    # 1. Sample 色分け統合 UMAP
+    # 1. Sample 色分け統合 UMAP（ラベルなしは固定: Sample 色のため番号ラベル非対象）
     sample_umap_fig = _build_umap_integrated_fig(
         df_plot, color_by="Sample", highlight_clusters=None,
-        show_legend=True, show_labels=False, marker_size=2,
+        show_legend=True, show_labels=False, marker_size=marker_size,
     )
     sample_umap_fig.update_layout(
         height=420, margin=dict(l=10, r=10, t=10, b=10),
     )
 
-    # 2. Per-sample UMAP（Cluster 色）グリッド
+    # 2. Per-sample UMAP（Cluster 色）グリッド（初期は番号 OFF。
+    #    Switch トグルで show_labels が切り替わる）
     per_sample_umap_grid = _build_per_sample_umap_grid(
         df_plot, color_map,
         cluster_name_map=cluster_name_map,
         sample_name_map=sample_name_map,
         saved_positions_per_sample=umap_per_sample_pos,
+        umap_display=umap_display,
+        show_labels=False,
     )
 
-    # 3. Per-sample Spatial（クラスタ番号ラベル + 回転反映）
+    # 3. Per-sample Spatial（インタラクティブ側と同じく初期は番号 OFF、
+    #    高さ 350px。Switch トグルで show_labels が切り替わる）
     spatial_grid = _build_per_sample_spatial(
         df_plot, color_map, highlight_clusters=None,
         cluster_name_map=cluster_name_map,
         sample_name_map=sample_name_map,
         spatial_rotation=spatial_rotation,
         saved_positions_per_sample=spatial_pos,
-        show_labels=True,
-        panel_height=320,
+        show_labels=False,
+        panel_height=350,
+        spatial_display=spatial_display,
     )
 
     stats_table = _build_cluster_stats_table(df_stats)
     pie_fig = _build_cluster_ratio_pie(df_plot, color_map, cluster_name_map)
+
+    # ver3.6: 軽量ビューア側でもプロットサイズ・ラベルサイズを調整可能に
+    # 初期値はインタラクティブ側で保存された設定 (umap_display / spatial_display)
+    # を採用し、ユーザー操作で即座に再描画される
+    umap_init_label = umap_display.get("label_size", 11) or 11
+    spatial_init_label = spatial_display.get("label_size", 10) or 10
+    umap_init_panel = 340
+    spatial_init_panel = 350
+
+    def _size_toolbar(label_id, panel_id, init_label, init_panel,
+                       label_range=(8, 30), panel_range=(200, 700)):
+        """ラベルサイズ + パネル高さの数値入力 (compact horizontal layout)"""
+        return html.Div(
+            style={"display": "flex", "alignItems": "center",
+                   "gap": "12px", "fontSize": "0.85rem"},
+            children=[
+                html.Span("ラベル", className="text-muted small"),
+                dbc.Input(
+                    id=label_id, type="number",
+                    min=label_range[0], max=label_range[1], step=1,
+                    value=int(init_label),
+                    style={"width": "70px"}, size="sm",
+                ),
+                html.Span("パネル高", className="text-muted small"),
+                dbc.Input(
+                    id=panel_id, type="number",
+                    min=panel_range[0], max=panel_range[1], step=20,
+                    value=int(init_panel),
+                    style={"width": "80px"}, size="sm",
+                ),
+                html.Span("px", className="text-muted small"),
+            ],
+        )
 
     return html.Div(
         className="overview-section mb-5",
@@ -613,12 +699,58 @@ def _build_overview_section(df_plot, df_stats, color_map,
                     className="text-muted small"),
             dcc.Graph(figure=sample_umap_fig,
                       config={"displayModeBar": True}),
-            html.H6("Per-sample UMAP (cluster-colored)",
-                    className="text-muted small mt-4"),
-            per_sample_umap_grid,
-            html.H6("Per-sample Spatial Mapping",
-                    className="text-muted small mt-4"),
-            spatial_grid,
+            html.Div(
+                style={"display": "flex", "alignItems": "center",
+                       "gap": "16px", "marginTop": "1rem",
+                       "flexWrap": "wrap"},
+                children=[
+                    html.H6("Per-sample UMAP (cluster-colored)",
+                            className="text-muted small mb-0"),
+                    dbc.Switch(
+                        id={"type": "lv_show_umap_labels_switch",
+                            "scope": "main"},
+                        label="番号",
+                        value=False,
+                        className="mb-0",
+                    ),
+                    _size_toolbar(
+                        label_id="lv_umap_label_size",
+                        panel_id="lv_umap_panel_size",
+                        init_label=umap_init_label,
+                        init_panel=umap_init_panel,
+                    ),
+                ],
+            ),
+            html.Div(
+                id="lv_umap_container",
+                children=per_sample_umap_grid,
+            ),
+            html.Div(
+                style={"display": "flex", "alignItems": "center",
+                       "gap": "16px", "marginTop": "1rem",
+                       "flexWrap": "wrap"},
+                children=[
+                    html.H6("Per-sample Spatial Mapping",
+                            className="text-muted small mb-0"),
+                    dbc.Switch(
+                        id={"type": "lv_show_labels_switch",
+                            "scope": "main"},
+                        label="番号",
+                        value=False,
+                        className="mb-0",
+                    ),
+                    _size_toolbar(
+                        label_id="lv_spatial_label_size",
+                        panel_id="lv_spatial_panel_size",
+                        init_label=spatial_init_label,
+                        init_panel=spatial_init_panel,
+                    ),
+                ],
+            ),
+            html.Div(
+                id="lv_spatial_container",
+                children=spatial_grid,
+            ),
             dbc.Row([
                 dbc.Col([
                     html.H6("Cluster Statistics",
@@ -639,8 +771,18 @@ def _build_overview_section(df_plot, df_stats, color_map,
 def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
                                   sample_name_map=None,
                                   saved_positions_per_sample=None,
-                                  panel_height=340):
-    """サンプル別 Cluster 色分け UMAP グリッド（画像2 相当）"""
+                                  panel_height=340,
+                                  umap_display=None,
+                                  show_labels=None,
+                                  label_size_override=None):
+    """サンプル別 Cluster 色分け UMAP グリッド（画像2 相当）
+
+    show_labels は明示指定があればそれを優先、None なら既存通り
+    umap_display.show_labels をフォールバック (簡易ビューアー上部の
+    「番号」Switch から動的に切替えるために引数として受ける)。
+    label_size_override: 軽量ビューア側 UI で変更した値があれば
+      umap_display.label_size より優先 (ver3.6)。
+    """
     if "Sample" not in df_plot.columns:
         return html.Div("Sample 列なし", className="text-muted small")
     samples = sorted(df_plot["Sample"].unique())
@@ -648,14 +790,40 @@ def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
         return html.Div("サンプルなし", className="text-muted small")
 
     saved_positions_per_sample = saved_positions_per_sample or {}
+    umap_display = umap_display or {}
+    marker_size = umap_display.get("marker_size", 2) or 2
+    label_size = umap_display.get("label_size", 11) or 11
+    # ver3.6: 軽量ビューア側 UI でユーザーが変更した値を優先
+    if label_size_override is not None:
+        try:
+            label_size = int(label_size_override)
+        except (TypeError, ValueError):
+            pass
+    if show_labels is None:
+        show_labels = bool(umap_display.get("show_labels", False))
+    else:
+        show_labels = bool(show_labels)
+    columns_per_row = umap_display.get("columns_per_row", 0) or 0
+    col_lg = _calc_col_lg_width(columns_per_row, default_lg=6)
+    # ver3.5: インタラクティブで除外したクラスタ・凡例表示設定を反映
+    exclude_clusters = umap_display.get("exclude_cluster") or []
+    show_legend_um = umap_display.get("show_legend")
+    if show_legend_um is None:
+        show_legend_um = True
+    # ver3.7: umap_color_by もインタラクティブ側の設定を尊重
+    # (ver3.5 で保存対象に追加したが軽量ビューア側で読まれていなかった)
+    color_by = umap_display.get("color_by") or "Cluster"
+
     cols = []
     for s in samples:
         df_s = df_plot[df_plot["Sample"] == s]
         sample_pos = saved_positions_per_sample.get(s)
         title = _resolve_sample_label(s, sample_name_map)
         fig = _build_umap_integrated_fig(
-            df_s, color_by="Cluster", highlight_clusters=None,
-            show_legend=True, show_labels=False, marker_size=2,
+            df_s, color_by=color_by, highlight_clusters=None,
+            show_legend=show_legend_um, show_labels=show_labels,
+            marker_size=marker_size, label_size=label_size,
+            exclude_clusters=exclude_clusters,
             custom_colors=color_map,
             cluster_name_map=cluster_name_map,
             saved_positions=sample_pos,
@@ -666,10 +834,19 @@ def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
             margin=dict(l=10, r=10, t=30, b=10),
         )
         cols.append(dbc.Col(
-            dcc.Graph(figure=fig, config={"displayModeBar": False}),
-            lg=6, md=12, className="mb-2",
+            dcc.Graph(figure=fig, config={"displayModeBar": False},
+                      style={"height": f"{panel_height}px"},
+                      responsive=True),
+            lg=col_lg, md=12, className="mb-2",
         ))
     return dbc.Row(cols, className="g-2")
+
+
+def _calc_col_lg_width(columns_per_row, default_lg=6):
+    """columns_per_row 値から dbc.Col の lg 幅(1-12)を算出。0 はデフォルト。"""
+    if not columns_per_row or columns_per_row <= 0:
+        return default_lg
+    return max(1, 12 // columns_per_row)
 
 
 def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
@@ -677,10 +854,16 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
                               spatial_rotation=None,
                               saved_positions_per_sample=None,
                               show_labels=False,
-                              panel_height=250):
+                              panel_height=250,
+                              spatial_display=None,
+                              label_size_override=None):
     """各サンプル 1 パネルの Spatial グリッド（横並び・改行可）
 
-    メイン解析で保存された rotation/flip/ラベル位置/サンプル名/クラスタ名を反映する。
+    メイン解析で保存された rotation/flip/ラベル位置/サンプル名/クラスタ名/
+    ラベルサイズ・マーカーサイズを反映する。
+    spatial_display: interactive_settings.json の spatial_display dict。
+    label_size_override: 軽量ビューア側 UI で変更した値があれば
+      spatial_display.label_size より優先 (ver3.6)。
     """
     if "Sample" not in df_plot.columns:
         return html.Div("Spatial データなし",
@@ -691,12 +874,30 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
 
     spatial_rotation = spatial_rotation or {}
     saved_positions_per_sample = saved_positions_per_sample or {}
+    spatial_display = spatial_display or {}
+    # インタラクティブ側で設定された値を反映 (未設定なら従来デフォルト)
+    sp_label_size = spatial_display.get("label_size") or 10
+    # ver3.6: 軽量ビューア側 UI でユーザーが変更した値を優先
+    if label_size_override is not None:
+        try:
+            sp_label_size = int(label_size_override)
+        except (TypeError, ValueError):
+            pass
+    sp_marker_size = spatial_display.get("marker_size")
+    if sp_marker_size is None:
+        sp_marker_size = 0  # 0 = 自動計算
+    # ver3.5: インタラクティブで除外したクラスタも軽量ビューアに反映
+    sp_exclude = spatial_display.get("exclude_cluster") or []
 
     cols = []
     for s in samples:
         df_sample = df_plot[df_plot["Sample"] == s]
         rot = spatial_rotation.get(s, {}) or {}
         title = _resolve_sample_label(s, sample_name_map)
+        # インタラクティブ側 (interactive_spatial.py:954-966) と引数を揃える:
+        # label_size / marker_size / exclude_clusters はインタラクティブ側の
+        # 設定値を尊重 (旧: hardcode。ver3.4 で label_size 修正、ver3.5 で
+        # exclude_clusters を追加)。
         fig = _create_single_spatial_fig(
             df_sample, color_map, highlight_clusters,
             selected_cell_ids=None,
@@ -706,17 +907,18 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
             show_labels=show_labels,
             cluster_name_map=cluster_name_map,
             saved_positions=saved_positions_per_sample.get(s),
-            title=title, marker_size=2, embed_legend=False,
-        )
-        fig.update_layout(
-            height=panel_height,
-            showlegend=False,
-            margin=dict(l=10, r=10, t=30, b=10),
+            title=title,
+            marker_size=sp_marker_size,
+            label_size=sp_label_size,
+            exclude_clusters=sp_exclude,
+            embed_legend=True,
         )
         cols.append(
             dbc.Col(
                 dcc.Graph(figure=fig,
-                          config={"displayModeBar": False}),
+                          config={"displayModeBar": False},
+                          style={"height": f"{panel_height}px"},
+                          responsive=True),
                 lg=6, md=12, className="mb-2",
             )
         )
@@ -728,6 +930,7 @@ def _build_per_sample_highlight_umap_grid(
     cluster_name_map=None, sample_name_map=None,
     saved_positions_per_sample=None,
     bg_opacity=0.4, panel_height=300,
+    umap_display=None,
 ):
     """サンプル別ハイライト UMAP グリッド（per-cluster カード用）
 
@@ -740,6 +943,13 @@ def _build_per_sample_highlight_umap_grid(
         return html.Div("サンプルなし", className="text-muted small")
 
     saved_positions_per_sample = saved_positions_per_sample or {}
+    umap_display = umap_display or {}
+    marker_size = umap_display.get("marker_size", 2) or 2
+    label_size = umap_display.get("label_size", 11) or 11
+    show_labels = bool(umap_display.get("show_labels", False))
+    columns_per_row = umap_display.get("columns_per_row", 0) or 0
+    col_lg = _calc_col_lg_width(columns_per_row, default_lg=6)
+
     cols = []
     for s in samples:
         df_s = df_plot[df_plot["Sample"] == s]
@@ -748,7 +958,8 @@ def _build_per_sample_highlight_umap_grid(
         fig = _build_umap_integrated_fig(
             df_s, color_by="Cluster",
             highlight_clusters=[highlight_cluster],
-            show_legend=False, show_labels=False, marker_size=2,
+            show_legend=False, show_labels=show_labels,
+            marker_size=marker_size, label_size=label_size,
             custom_colors=color_map,
             cluster_name_map=cluster_name_map,
             saved_positions=sample_pos,
@@ -760,8 +971,10 @@ def _build_per_sample_highlight_umap_grid(
             margin=dict(l=10, r=10, t=30, b=10),
         )
         cols.append(dbc.Col(
-            dcc.Graph(figure=fig, config={"displayModeBar": False}),
-            lg=6, md=12, className="mb-1",
+            dcc.Graph(figure=fig, config={"displayModeBar": False},
+                      style={"height": f"{panel_height}px"},
+                      responsive=True),
+            lg=col_lg, md=12, className="mb-1",
         ))
     return dbc.Row(cols, className="g-2")
 
@@ -854,20 +1067,11 @@ def _build_per_cluster_cards(df_plot, deg_records, color_map,
             )
         )
 
-    expand_all_btn = dbc.Button(
-        "📂 全クラスタの詳細を一括展開 / 折りたたみ",
-        id="lv_expand_all_clusters",
-        color="primary", outline=True, size="sm",
-        className="mb-3",
-        n_clicks=0,
-    )
-
     return html.Div(
         className="per-cluster-section mb-5",
         children=[
             html.H4("Per-cluster Summary",
                     className="mb-3 border-bottom pb-2"),
-            expand_all_btn,
             *cards,
         ],
     )
@@ -896,9 +1100,13 @@ def _build_one_cluster_card(cluster_id, color, n_cells, pct,
         n_clicks=0,
     )
     collapse = dbc.Collapse(
-        html.Div(
-            id={"type": "lv_card_body", "cluster": cluster_key},
-            children=[],
+        dcc.Loading(
+            html.Div(
+                id={"type": "lv_card_body", "cluster": cluster_key},
+                children=[],
+            ),
+            type="default",
+            color="#0d6efd",
         ),
         id={"type": "lv_card_collapse", "cluster": cluster_key},
         is_open=False,
@@ -941,7 +1149,8 @@ def _build_cluster_card_expand_contents(cluster_id, df_plot, color_map,
                                          cluster_name_map=None,
                                          sample_name_map=None,
                                          spatial_rotation=None,
-                                         saved_positions_all=None):
+                                         saved_positions_all=None,
+                                         umap_display=None):
     """カード展開時に lv_card_body に差し込む重量パート。
 
     Per-sample Highlighted UMAP グリッド / Per-sample Spatial /
@@ -958,6 +1167,7 @@ def _build_cluster_card_expand_contents(cluster_id, df_plot, color_map,
         saved_positions_per_sample=umap_per_sample_pos,
         bg_opacity=0.4,
         panel_height=280,
+        umap_display=umap_display,
     )
 
     hl_spatial = _build_per_sample_spatial(
@@ -967,7 +1177,7 @@ def _build_cluster_card_expand_contents(cluster_id, df_plot, color_map,
         spatial_rotation=spatial_rotation,
         saved_positions_per_sample=spatial_pos,
         show_labels=False,
-        panel_height=240,
+        panel_height=280,
     )
 
     children = [
@@ -1189,15 +1399,20 @@ def _build_heatmap_section(deg_records, top_n_per_cluster=3,
         )
 
     df["avg_log2FC"] = pd.to_numeric(df["avg_log2FC"], errors="coerce")
+    # gene / cluster は前後空白や型不整合で reindex / pivot が空になる事があるため
+    # ここで明示的に文字列化 + strip して正規化する
+    df["gene"] = df["gene"].astype(str).str.strip()
+    df["cluster"] = df["cluster"].astype(str).str.strip()
     df = df.dropna(subset=["avg_log2FC", "cluster", "gene"])
+    df = df[(df["gene"] != "") & (df["cluster"] != "")]
 
-    clusters = sorted(df["cluster"].astype(str).unique(), key=_cluster_sort_key)
+    clusters = sorted(df["cluster"].unique(), key=_cluster_sort_key)
 
     # 各クラスタ上位 N gene を集約
     top_genes = []
     seen = set()
     for c in clusters:
-        df_c = df[df["cluster"].astype(str) == c]
+        df_c = df[df["cluster"] == c]
         for g in df_c.nlargest(top_n_per_cluster, "avg_log2FC")["gene"].tolist():
             if g not in seen:
                 top_genes.append(g)
@@ -1219,6 +1434,29 @@ def _build_heatmap_section(deg_records, top_n_per_cluster=3,
         values="avg_log2FC", aggfunc="mean",
     )
     pivot = pivot.reindex(top_genes)
+    # reindex 後に全行 NaN になる事があり (型不一致や CSV 由来の空白で起きる)、
+    # 残った有効行のみを使う。完全に空ならフォールバック表示。
+    pivot = pivot.dropna(how="all")
+    if pivot.empty:
+        logger.warning(
+            "heatmap pivot empty after reindex: deg_rows=%d clusters=%s "
+            "top_genes_sample=%s",
+            len(df), clusters[:5], top_genes[:5],
+        )
+        return html.Div(
+            className="heatmap-section mb-5",
+            children=[
+                html.H4(
+                    f"Cross-cluster Heatmap (Top {top_n_per_cluster} markers / cluster)",
+                    className="mb-3 border-bottom pb-2",
+                ),
+                html.Div(
+                    "ヒートマップ用データが生成できませんでした"
+                    "（DEG と top markers の遺伝子名がマッチしません）",
+                    className="text-muted small",
+                ),
+            ],
+        )
     cluster_cols = [c for c in clusters if c in pivot.columns]
     pivot = pivot[cluster_cols].fillna(0.0)
 
@@ -1258,10 +1496,54 @@ def _build_heatmap_section(deg_records, top_n_per_cluster=3,
 # メイン解析画面（インタラクティブ解析タブ）から新タブで /lite/<pid>/<sid> を開く
 # =============================================================================
 
+# --- Server callback: ボタンクリックで現在の Store 値を JSON へ flush ---
+#  flip/rotation・サンプル名・クラスタ名・カラーマップ など、UI 側で変更直後に
+#  Dash の非同期更新と新タブ open の競合で「軽量ビューアが古い設定を読み込む」
+#  問題を防ぐため、新タブを開く前にここで同期保存して signal を出す。
+@callback(
+    Output("lite_viewer_open_signal", "data"),
+    Input("btn_open_lite_viewer", "n_clicks"),
+    [State("spatial_rotation_store", "data"),
+     State("sample_name_map_store", "data"),
+     State("cluster_name_map_store", "data"),
+     State("custom_color_map_store", "data"),
+     State("seurat_rds_path_store", "data")],
+    prevent_initial_call=True,
+)
+def _flush_settings_before_lite_open(
+    n_clicks, spatial_rotation, sample_name_map,
+    cluster_name_map, custom_color_map, rds_path,
+):
+    if not n_clicks or not rds_path:
+        return no_update
+    from app.utils.label_persistence import save_interactive_settings
+    try:
+        if spatial_rotation:
+            save_interactive_settings("spatial_rotation", spatial_rotation, rds_path)
+        if sample_name_map:
+            save_interactive_settings("sample_name_map", sample_name_map, rds_path)
+        if cluster_name_map:
+            save_interactive_settings("cluster_name_map", cluster_name_map, rds_path)
+        if custom_color_map:
+            save_interactive_settings("custom_color_map", custom_color_map, rds_path)
+        logger.info(
+            "lite_viewer pre-open flush done: rds_path=%s rotation_keys=%d "
+            "sample_map_keys=%d cluster_map_keys=%d color_map_keys=%d",
+            rds_path,
+            len(spatial_rotation or {}), len(sample_name_map or {}),
+            len(cluster_name_map or {}), len(custom_color_map or {}),
+        )
+    except Exception as e:
+        logger.warning("lite_viewer pre-open flush failed: %s", e)
+    # シグナルとして click ID を返す（変化を伝えれば良いので n_clicks を使う）
+    import time
+    return int(time.time() * 1000)
+
+
 clientside_callback(
     """
-    function(n_clicks, project_id, sub_project_id) {
-        if (!n_clicks || !project_id || !sub_project_id) {
+    function(signal_ts, project_id, sub_project_id) {
+        if (!signal_ts || !project_id || !sub_project_id) {
             return window.dash_clientside.no_update;
         }
         const url = `/lite/${encodeURIComponent(project_id)}/${encodeURIComponent(sub_project_id)}`;
@@ -1269,9 +1551,76 @@ clientside_callback(
         return window.dash_clientside.no_update;
     }
     """,
-    Output("btn_open_lite_viewer", "n_clicks"),
-    Input("btn_open_lite_viewer", "n_clicks"),
+    # NOTE: Output は btn_open_lite_viewer.n_clicks に書き戻すと、上の
+    # server callback (n_clicks → signal) と合わせて 2 node の循環依存に
+    # なり Dash が登録段階で reject する。Dash は no_update を返しても
+    # 静的グラフ解析で循環を検出するため、ダミー Store を Output に使う。
+    Output("lite_viewer_open_dummy", "data"),
+    Input("lite_viewer_open_signal", "data"),
     [State("interactive_project_select", "value"),
      State("interactive_sub_project_select", "value")],
+    prevent_initial_call=True,
+)
+
+
+# =============================================================================
+# Plotly 強制リサイズ + autorange (clientside)
+# =============================================================================
+# 新規 mount された Plotly Graph は親要素サイズの取得タイミングによっては
+# 内部レイアウトが height=0 のまま固まる (lazy rendering)。さらに
+# _create_single_spatial_fig は xaxis.range を明示せず autorange に依存
+# しているため、新規 mount で autorange 計算がスキップされると **データが
+# 画面外** に出て空白に見える (UMAP は座標が小さく問題に出にくいが、
+# Spatial はピクセル座標が大きく顕在化)。
+#
+# Plotly のツールバー左上「Autoscale/Reset axes」ボタンを押すと描画が走るのと
+# 同じことを clientside callback で自動的に行う:
+#   1. Plotly.Plots.resize(el)        — レイアウト再計算
+#   2. Plotly.relayout(el, autorange) — axis range を data に合わせて再計算
+#
+# トリガー:
+#   - {"type": "lv_card_collapse", "cluster": ALL}.is_open (カード展開)
+#   - lv_show_labels_switch.value (Spatial 番号 Switch トグル)
+#   - lv_show_umap_labels_switch.value (UMAP 番号 Switch トグル)
+#   - lv_method_store.data (Harmony/RPCA 切替)
+#   - lite_target_store.data (初回 URL ロード)
+# 100ms / 350ms / 800ms / 1500ms と複数のタイミングで処理を呼ぶことで、
+# dbc.Collapse のアニメーション完了や initialize_lite_view の重い構築完了
+# 直後など、複数の遅延ケースをまとめてカバーする。
+clientside_callback(
+    """
+    function(is_open_list, switch_value, umap_switch_value, method_data, target_data) {
+        [100, 350, 800, 1500].forEach(function(delay) {
+            setTimeout(function() {
+                document.querySelectorAll('.js-plotly-plot').forEach(function(el) {
+                    if (!window.Plotly || !el || !el.layout) return;
+                    try {
+                        window.Plotly.Plots.resize(el);
+                    } catch (e) {}
+                    try {
+                        var update = {};
+                        Object.keys(el.layout).forEach(function(key) {
+                            if (key.indexOf('xaxis') === 0 || key.indexOf('yaxis') === 0) {
+                                update[key + '.autorange'] = true;
+                            }
+                        });
+                        if (Object.keys(update).length > 0) {
+                            window.Plotly.relayout(el, update);
+                        }
+                    } catch (e) {}
+                });
+            }, delay);
+        });
+        return Date.now();
+    }
+    """,
+    Output("lv_resize_trigger", "data"),
+    [
+        Input({"type": "lv_card_collapse", "cluster": ALL}, "is_open"),
+        Input({"type": "lv_show_labels_switch", "scope": ALL}, "value"),
+        Input({"type": "lv_show_umap_labels_switch", "scope": ALL}, "value"),
+        Input("lv_method_store", "data"),
+        Input("lite_target_store", "data"),
+    ],
     prevent_initial_call=True,
 )

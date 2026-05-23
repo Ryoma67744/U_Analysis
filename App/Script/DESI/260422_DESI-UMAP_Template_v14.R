@@ -213,6 +213,14 @@ PROJECT_NAME_PREFIX <- "250621_Ohashi_GF-CV_1"
 # MRMリストのファイルパス (化合物同定用)
 MRM_FILE_PATH <- "C:\\Users\\Cciia\\Biochem Dropbox\\Biochem's shared workspace\\Workspace\\UMAP\\DESI\\MRM\\MRM.xlsx"
 
+# ROI 別サンプル化モード (TIMS の annotation/slice_id と同等の機能)
+# - USE_ROI_AS_SAMPLE = TRUE: 各 .txt の最終列に ROI 文字列があれば、
+#   各 ROI を「別サンプル」として扱い Multi-sample mode (Harmony/RPCA) で統合解析
+# - USE_ROI_AS_SAMPLE = FALSE: ROI 列があっても無視し、ファイル全体を 1 サンプルとして従来挙動
+# - ROI_FILTER = NULL: 全 ROI を使用 / c("Brain", "Heart"): 指定 ROI のみ使用
+USE_ROI_AS_SAMPLE <- FALSE
+ROI_FILTER <- NULL
+
 # ============================================================
 # ==== USER EDITABLE SETTINGS END =============================
 # ============================================================
@@ -1682,20 +1690,44 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
     spot_id = spot_names,
     row.names = spot_names
   )
-  
+
+  # [ROI 検出] データ列数が「3 (spot_index/x/y) + length(metabolite_names)」を
+  # 超えていれば最終列を ROI として扱う (TIMS の annotation 列と同等)。
+  # ROI 列は文字列なので、freadで全体を numeric 読みした data_df では NA になる。
+  # → 該当列だけを character として別途読み直す。
+  expected_cols <- 3 + length(metabolite_names)
+  has_roi <- ncol(data_df) > expected_cols
+  if (has_roi) {
+    roi_col_idx <- ncol(data_df)
+    roi_data <- data.table::fread(file_path, sep = "\t", skip = 4,
+                                   header = FALSE, select = roi_col_idx,
+                                   colClasses = "character", fill = TRUE,
+                                   data.table = FALSE)
+    roi_vec <- as.character(roi_data[[1]])
+    # data_df を空列除去している (line 1661) ため、行数がズレることはないが念のため揃える
+    if (length(roi_vec) == nrow(coordinates)) {
+      coordinates$ROI <- roi_vec
+    } else {
+      has_roi <- FALSE
+      message(">> WARNING: ROI 列の行数 (", length(roi_vec),
+              ") が座標行数 (", nrow(coordinates), ") と不一致。ROI 列無視。")
+    }
+  }
+
   count_data <- data_df[, metabolite_cols, drop = FALSE]
   count_data[is.na(count_data)] <- 0
-  
+
   count_matrix <- t(as.matrix(count_data))
   colnames(count_matrix) <- spot_names
   rownames(count_matrix) <- metabolite_names[1:nrow(count_matrix)]
   rownames(count_matrix) <- make.unique(rownames(count_matrix))
   count_matrix <- as(count_matrix, "dgCMatrix")
-  
+
   return(list(
     count_matrix = count_matrix,
     coordinates = coordinates,
-    metabolite_names = metabolite_names[1:nrow(count_matrix)]
+    metabolite_names = metabolite_names[1:nrow(count_matrix)],
+    has_roi = has_roi
   ))
 }
 
@@ -1711,8 +1743,11 @@ spatial_smooth_seurat <- function(seurat_obj, radius, assay = "Spatial", layer =
   smoothed_data <- matrix(0, nrow = n_features, ncol = n_spots,
                           dimnames = list(rownames(count_data), colnames(count_data)))
 
-  # 距離行列を1回だけ計算（50,000スポット以下: 高速、超過: メモリ節約のためスポットごと）
-  use_dist_mat <- (n_spots <= 50000)
+  # 距離行列を1回だけ計算（15,000スポット以下: 高速、超過: メモリ節約のためスポットごと）
+  # 25K spots では as.matrix(dist) が ~5 GB を要求し Docker メモリ上限で OOM Killer に
+  # 殺される事例があったため、閾値を 50000 -> 15000 に引き下げて防御的にループ法へ
+  # フォールバックする (~1.4 GB に抑えられる)。
+  use_dist_mat <- (n_spots <= 15000)
   if (use_dist_mat) {
     dist_mat <- as.matrix(dist(coords))
   }
@@ -1945,40 +1980,96 @@ if (RESUME_FROM_RDS && file.exists(rds_path1_in)) {
 } else {
   # 生データからの読み込み
   seu_list <- list()
+  expanded_sample_names <- c()  # ROI 別サンプル化後の sample 名リスト
   for(ii in seq_along(sample_names)){
     sample_name <- sample_names[ii]
     file_path <- file.path(data_folder, paste0(sample_name, ".txt"))
     desi_data <- read_desi_data(file_path, sample_prefix = sample_name)
-    count_matrix <- desi_data$count_matrix
-    coordinates_data <- desi_data$coordinates
-    spatial_coords <- coordinates_data[, c("spot_index", "x", "y", "spot_id")]
-    
-    common_spots <- intersect(colnames(count_matrix), spatial_coords$spot_id)
-    count_matrix <- count_matrix[, common_spots, drop = FALSE]
-    spatial_coords <- spatial_coords[spatial_coords$spot_id %in% common_spots, ]
-    spatial_coords <- spatial_coords[match(colnames(count_matrix), spatial_coords$spot_id), ]
-    
-    if(!inherits(count_matrix, "dgCMatrix")) count_matrix <- as(as.matrix(count_matrix), "dgCMatrix")
-    spot_coords <- spatial_coords[, c("x", "y")]
-    rownames(spot_coords) <- spatial_coords$spot_id
-    
-    seurat_obj <- CreateSeuratObject(counts = count_matrix, project = "DESI_MSI", assay = "Spatial")
-    seurat_obj$sample <- sample_name
-    seurat_obj@misc$measurement_label <- tools::file_path_sans_ext(basename(file_path))
-    seurat_obj$x_coord <- spot_coords[colnames(seurat_obj), "x"]
-    seurat_obj$y_coord <- spot_coords[colnames(seurat_obj), "y"]
-    seurat_obj$spot_index <- spatial_coords[colnames(seurat_obj), "spot_index"]
-    seurat_obj$nCount_Spatial <- colSums(count_matrix)
-    seurat_obj$nFeature_Spatial <- colSums(count_matrix > 0)
-    seurat_obj@misc$metabolite_names <- desi_data$metabolite_names
-    seurat_obj@misc$file_path <- file_path
-    
-    filtering_result_otsu <- filter_low_count_spots(
-      seurat_obj, method = "otsu", use_log_scale = TRUE,
-      n_bins = 256, plot_results = TRUE, sample_name = sample_name, outdir = od
-    )
-    seu_list[[ii]] <- filtering_result_otsu$filtered_seurat
+
+    # ROI モード ON かつ ROI 列ありなら、各 ROI を別サンプルとして subset
+    # それ以外 (OFF または ROI 列なし) はファイル全体を 1 サンプルとして処理
+    if (isTRUE(USE_ROI_AS_SAMPLE) && isTRUE(desi_data$has_roi)) {
+      roi_values <- unique(desi_data$coordinates$ROI)
+      roi_values <- roi_values[!is.na(roi_values) & nzchar(roi_values)]
+      # ver3.8: ROI フィルタ前後の値を診断ログとして出力。
+      # ユーザー報告時に「期待した ROI が含まれていない」原因究明を容易にする。
+      roi_values_orig <- roi_values
+      if (!is.null(ROI_FILTER) && length(ROI_FILTER) > 0) {
+        roi_values <- intersect(roi_values, ROI_FILTER)
+      }
+      .roi_filter_str <- if (is.null(ROI_FILTER) || length(ROI_FILTER) == 0) "(none)" else paste(ROI_FILTER, collapse = ", ")
+      message(sprintf(">> ROI: 検出=[%s] フィルタ=[%s] 適用後=[%s] (sample=%s)",
+                      paste(roi_values_orig, collapse = ", "),
+                      .roi_filter_str,
+                      paste(roi_values, collapse = ", "),
+                      sample_name))
+      if (length(roi_values) == 0) {
+        message(">> WARNING: 有効な ROI が見つかりません (フィルタ後 0 件)。"
+                , "ファイル全体を 1 サンプルとして処理: ", sample_name)
+        sub_samples <- list(list(name = sample_name,
+                                 mask = rep(TRUE, ncol(desi_data$count_matrix))))
+      } else {
+        message(">> ROI モード ON: ", sample_name, " を ", length(roi_values),
+                " 個の ROI に分割 (",
+                paste(roi_values, collapse = ", "), ")")
+        sub_samples <- lapply(roi_values, function(r) {
+          list(name = paste0(sample_name, "_", r),
+               mask = !is.na(desi_data$coordinates$ROI) &
+                      desi_data$coordinates$ROI == r)
+        })
+      }
+    } else {
+      if (isTRUE(USE_ROI_AS_SAMPLE) && !isTRUE(desi_data$has_roi)) {
+        message(">> WARNING: ROI モード ON だが ROI 列が見つかりません。"
+                , "ファイル全体を 1 サンプルとして処理: ", sample_name)
+      }
+      sub_samples <- list(list(name = sample_name,
+                               mask = rep(TRUE, ncol(desi_data$count_matrix))))
+    }
+
+    for (sub in sub_samples) {
+      sub_name <- sub$name
+      mask <- sub$mask
+      sub_count <- desi_data$count_matrix[, mask, drop = FALSE]
+      sub_coords <- desi_data$coordinates[mask, , drop = FALSE]
+      spatial_coords <- sub_coords[, c("spot_index", "x", "y", "spot_id")]
+
+      common_spots <- intersect(colnames(sub_count), spatial_coords$spot_id)
+      sub_count <- sub_count[, common_spots, drop = FALSE]
+      spatial_coords <- spatial_coords[spatial_coords$spot_id %in% common_spots, ]
+      spatial_coords <- spatial_coords[match(colnames(sub_count), spatial_coords$spot_id), ]
+
+      if(!inherits(sub_count, "dgCMatrix")) sub_count <- as(as.matrix(sub_count), "dgCMatrix")
+      spot_coords <- spatial_coords[, c("x", "y")]
+      rownames(spot_coords) <- spatial_coords$spot_id
+
+      seurat_obj <- CreateSeuratObject(counts = sub_count, project = "DESI_MSI", assay = "Spatial")
+      seurat_obj$sample <- sub_name
+      seurat_obj@misc$measurement_label <- sub_name
+      seurat_obj$x_coord <- spot_coords[colnames(seurat_obj), "x"]
+      seurat_obj$y_coord <- spot_coords[colnames(seurat_obj), "y"]
+      seurat_obj$spot_index <- spatial_coords[colnames(seurat_obj), "spot_index"]
+      seurat_obj$nCount_Spatial <- colSums(sub_count)
+      seurat_obj$nFeature_Spatial <- colSums(sub_count > 0)
+      seurat_obj@misc$metabolite_names <- desi_data$metabolite_names
+      seurat_obj@misc$file_path <- file_path
+      # ROI 情報も Seurat metadata に保持 (検証 / 後処理用)
+      if (isTRUE(desi_data$has_roi)) {
+        sub_roi <- sub_coords$ROI[match(colnames(seurat_obj), sub_coords$spot_id)]
+        seurat_obj$ROI <- sub_roi
+      }
+
+      filtering_result_otsu <- filter_low_count_spots(
+        seurat_obj, method = "otsu", use_log_scale = TRUE,
+        n_bins = 256, plot_results = TRUE, sample_name = sub_name, outdir = od
+      )
+      seu_list[[length(seu_list) + 1]] <- filtering_result_otsu$filtered_seurat
+      expanded_sample_names <- c(expanded_sample_names, sub_name)
+    }
   }
+  # ROI 別サンプル化後の sample_names で後続処理が動くよう上書き
+  # (例: Multi-sample mode 判定 length(sample_names) > 1、UMAP 凡例など)
+  sample_names <- expanded_sample_names
   # RDS保存 (slim: DietSeurat + qs 圧縮)
   save_rds_compact(seu_list, rds_path1_out)
   gc()
@@ -2247,7 +2338,23 @@ if (length(seu_list) == 1) {
     # 修正①: Resume時に既存RDSを出力先にもコピー
     file.copy(rds_path_harmony_in, rds_path_harmony_out, overwrite = TRUE)
   } else {
-    seu_harmony <- Reduce(function(x, y) merge(x, y, add.cell.ids = c(x$sample[1], y$sample[1])), seu_list)
+    # ver3.8: Reduce(function(x,y) merge(x,y,...), seu_list) は左結合で
+    # 逐次マージするため、中間結果が毎回拡大し O(n^2) のメモリ・時間を
+    # 要する。ROI モードで 10+ サンプル時に致命的。Seurat::merge は y= に
+    # list を渡せるため、1 回呼出しで O(n) に短縮できる。
+    add_ids <- sapply(seu_list, function(s) {
+      v <- tryCatch(s$sample[1], error = function(e) "")
+      if (is.null(v) || is.na(v)) "" else as.character(v)
+    })
+    if (length(seu_list) == 1) {
+      seu_harmony <- seu_list[[1]]
+    } else {
+      seu_harmony <- Seurat::merge(
+        x = seu_list[[1]],
+        y = seu_list[-1],
+        add.cell.ids = add_ids
+      )
+    }
     seu_harmony <- NormalizeData(seu_harmony)
     seu_harmony <- FindVariableFeatures(seu_harmony)
     seu_harmony <- ScaleData(seu_harmony)
@@ -2564,64 +2671,76 @@ dims_use_rpca <- get_safe_dims_for_rpca(seu_list_pca, max_dims = 30, reduction =
   }
   
   # DEG & Heatmap (RPCA)
+  # ver3.8: Harmony と同じ tryCatch + NULL チェックパターンを採用。
+  # FindAllMarkers が失敗しても解析全体が abort しないようにする。
   # ---- 並列化開始: FindAllMarkers用 ----
   plan(multisession, workers = min(4, max(1, parallel::detectCores(logical = FALSE) - 1)))
-  deg_markers <- FindAllMarkers(seu_rpca, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "wilcox")
+  deg_markers <- tryCatch({
+    FindAllMarkers(seu_rpca, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "wilcox")
+  }, error = function(e) {
+    message("!! DEG(RPCA) failed: ", e$message)
+    NULL
+  })
   # ---- 並列化終了: メモリ解放 ----
   plan(sequential)
-  # BH/FDR補正に置換（Seuratデフォルトの Bonferroni は探索的解析に保守的すぎるため）
-  deg_markers$p_val_adj <- p.adjust(deg_markers$p_val, method = "BH")
-  # p_val_adj=0 補正（double精度の限界で丸められた0をCSV出力前に補正）
-  if (any(deg_markers$p_val_adj == 0, na.rm = TRUE)) {
-    min_nz <- suppressWarnings(min(deg_markers$p_val_adj[deg_markers$p_val_adj > 0], na.rm = TRUE))
-    if (is.finite(min_nz)) {
-      deg_markers$p_val_adj[deg_markers$p_val_adj == 0] <- min_nz * 0.1
-    } else {
-      deg_markers$p_val_adj[deg_markers$p_val_adj == 0] <- .Machine$double.xmin
-    }
-  }
-  top5_markers <- deg_markers %>% dplyr::group_by(cluster) %>% dplyr::top_n(n = 5, wt = avg_log2FC)
-  top_genes <- unique(top5_markers$gene)
-  
-  if (length(top_genes) > 0) {
-    sampled_cells <- c()
-    for(cid in unique(Idents(seu_rpca))) {
-      cc <- WhichCells(seu_rpca, idents = cid)
-      if(length(cc) > 200) cc <- sample(cc, 200)
-      sampled_cells <- c(sampled_cells, cc)
-    }
-    if (length(sampled_cells) > 0) {
-      heatmap1 <- DoHeatmap(subset(seu_rpca, cells = sampled_cells), features = top_genes, group.by = "ident", assay = "integrated") +
-        scale_fill_gradientn(colors = c("blue", "white", "red")) + ggtitle("Top 5 Markers")
-      
-      if (!is.null(mrm_df)) {
-        mapped <- match_mrm_compound(top_genes, mrm_df, tolerance = 0.1)
-        name_map <- setNames(mapped, top_genes)
-        heatmap1 <- heatmap1 + scale_y_discrete(labels = function(x) {
-          lab <- sapply(x, function(xx) {
-            mm <- name_map[[xx]]
-            if (!is.null(mm) && !is.na(mm) && mm != xx) {
-              mm
-            } else {
-              xx
-            }
-          })
-          make.unique(lab)
-        })
+
+  if (is.null(deg_markers) || !is.data.frame(deg_markers) || nrow(deg_markers) == 0 || !("cluster" %in% colnames(deg_markers))) {
+    message(">> DEG(RPCA) skipped: no valid marker table.")
+  } else {
+    # BH/FDR補正に置換（Seuratデフォルトの Bonferroni は探索的解析に保守的すぎるため）
+    deg_markers$p_val_adj <- p.adjust(deg_markers$p_val, method = "BH")
+    # p_val_adj=0 補正（double精度の限界で丸められた0をCSV出力前に補正）
+    if (any(deg_markers$p_val_adj == 0, na.rm = TRUE)) {
+      min_nz <- suppressWarnings(min(deg_markers$p_val_adj[deg_markers$p_val_adj > 0], na.rm = TRUE))
+      if (is.finite(min_nz)) {
+        deg_markers$p_val_adj[deg_markers$p_val_adj == 0] <- min_nz * 0.1
+      } else {
+        deg_markers$p_val_adj[deg_markers$p_val_adj == 0] <- .Machine$double.xmin
       }
-      # ggsave(file.path(od,"analysis_heatmap_top5_markers_rpca.png"), heatmap1, width = 12, height = 8, dpi = 300)
     }
-  }
-  write.csv(deg_markers, file.path(od_rpca, "analysis_deg_all_markers.csv"), row.names = FALSE)
-  write.csv(top5_markers, file.path(od_rpca, "analysis_top5_markers_per_cluster.csv"), row.names = FALSE)
-  
-  # Volcano & MSI (RPCA)
-  run_volcano_and_msi(seu_rpca, deg_markers, method_tag = "rpca",
-                      sample_names = sample_names, od = od, mrm_df = mrm_df, method_outdir = od_rpca)
-  
-  # 個別のVolcano生成ループ (冗長だがレガシーコード維持)
-  if (FALSE && nrow(deg_markers) > 0) {
-    # 既存コードは残すが実行されないようにFALSE条件にしてある
+    top5_markers <- deg_markers %>% dplyr::group_by(cluster) %>% dplyr::top_n(n = 5, wt = avg_log2FC)
+    top_genes <- unique(top5_markers$gene)
+
+    if (length(top_genes) > 0) {
+      sampled_cells <- c()
+      for(cid in unique(Idents(seu_rpca))) {
+        cc <- WhichCells(seu_rpca, idents = cid)
+        if(length(cc) > 200) cc <- sample(cc, 200)
+        sampled_cells <- c(sampled_cells, cc)
+      }
+      if (length(sampled_cells) > 0) {
+        heatmap1 <- DoHeatmap(subset(seu_rpca, cells = sampled_cells), features = top_genes, group.by = "ident", assay = "integrated") +
+          scale_fill_gradientn(colors = c("blue", "white", "red")) + ggtitle("Top 5 Markers")
+
+        if (!is.null(mrm_df)) {
+          mapped <- match_mrm_compound(top_genes, mrm_df, tolerance = 0.1)
+          name_map <- setNames(mapped, top_genes)
+          heatmap1 <- heatmap1 + scale_y_discrete(labels = function(x) {
+            lab <- sapply(x, function(xx) {
+              mm <- name_map[[xx]]
+              if (!is.null(mm) && !is.na(mm) && mm != xx) {
+                mm
+              } else {
+                xx
+              }
+            })
+            make.unique(lab)
+          })
+        }
+        # ggsave(file.path(od,"analysis_heatmap_top5_markers_rpca.png"), heatmap1, width = 12, height = 8, dpi = 300)
+      }
+    }
+    write.csv(deg_markers, file.path(od_rpca, "analysis_deg_all_markers.csv"), row.names = FALSE)
+    write.csv(top5_markers, file.path(od_rpca, "analysis_top5_markers_per_cluster.csv"), row.names = FALSE)
+
+    # Volcano & MSI (RPCA) — DEG 有効時のみ実行
+    run_volcano_and_msi(seu_rpca, deg_markers, method_tag = "rpca",
+                        sample_names = sample_names, od = od, mrm_df = mrm_df, method_outdir = od_rpca)
+
+    # 個別のVolcano生成ループ (冗長だがレガシーコード維持)
+    if (FALSE && nrow(deg_markers) > 0) {
+      # 既存コードは残すが実行されないようにFALSE条件にしてある
+    }
   }
 }
 

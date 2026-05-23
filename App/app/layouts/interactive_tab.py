@@ -1246,11 +1246,22 @@ def create_interactive_tab():
         dcc.Store(id="feature_history_store", data=[]),
         # フルスクリーン閉じトリガー
         dcc.Store(id="fullscreen_closed_trigger", data=0),
+        # 軽量ビューア「開く」前の設定 flush 完了シグナル（タイムスタンプ）
+        # clientside_callback はこの Store の data 変化で window.open を発火する
+        dcc.Store(id="lite_viewer_open_signal", data=0),
+        # 軽量ビューア clientside_callback の dummy Output (Dash の循環依存
+        # 検出を回避するため、btn_open_lite_viewer.n_clicks ではなくこの
+        # ダミー Store に向けて書込む)
+        dcc.Store(id="lite_viewer_open_dummy", data=0),
         # キャリブレーション対応表データ（settings_tab / interactive 共有）
         dcc.Store(id="calibration_table_data",
                   data=_ls.get("calibration_table_data", [])),
         # キャリブレーション自動保存トリガー（ダミー出力先）
         dcc.Store(id="calibration_save_trigger", data=None),
+        # UMAP表示設定の自動保存トリガー（ダミー出力先）
+        dcc.Store(id="umap_display_save_trigger", data=None),
+        # Spatial表示設定の自動保存トリガー（ダミー出力先）
+        dcc.Store(id="spatial_display_save_trigger", data=None),
         # 再解析キャリブレーション回帰データ（analysis_params.jsonから読込）
         dcc.Store(id="reanalysis_calibration_data", data=None),
         # エクスポート Top N 値ブリッジ用

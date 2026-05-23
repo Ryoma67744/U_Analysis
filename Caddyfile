@@ -1,54 +1,65 @@
 # =============================================================================
 # MSI Analysis Application - Caddy リバースプロキシ設定
 #
-# 【手順】
-#  1. 独自ドメインを取得し、A レコードを VPS の IP アドレスに向ける
-#     （詳細: App/docs/DEPLOY.md セクション 7.1〜7.2）
-#  2. 下記の "msi.example.com" を実際のドメインに置換:
-#       sed -i 's/msi\.example\.com/msi.yourlab.com/g' Caddyfile
-#  3. 本番構成で起動:
-#       docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# 現状: ドメイン未取得のため IP アドレス直アクセス + Caddy ローカル CA で
+#       自己署名証明書を発行する構成 (本番暫定)。
 #
-# Caddy が Let's Encrypt から SSL 証明書を自動取得・自動更新します。
-# 取得には TCP 80 / 443 が外部から到達可能である必要があります。
+# 構成は Caddy 公式の最小パターン:
+#   https://caddyserver.com/docs/automatic-https
+#   "192.168.1.10 { tls internal; ... }" 形式
+# auto_https は **デフォルトのまま (有効)** にする。これにより:
+#   - :443 リスナーが自動生成され、tls internal で内部 CA leaf が発行される
+#   - :80 → :443 への 308 リダイレクトも自動で構成される
 #
-# 【ドメインを取らず IP アドレス直アクセス（HTTPのみ・非推奨）の場合】
-#   下記ブロックを削除し、代わりに以下を記述:
-#     :80 {
-#         reverse_proxy msi-app:3838
-#     }
-#   ※ パスワードが平文で流れるためチーム共有運用には不向き
+# 将来ドメインを取得したら:
+#   1. 133.167.73.188 → msi.yourlab.com に置換
+#   2. tls internal の行を削除 (Let's Encrypt 自動取得に戻る)
+#   3. （任意）Strict-Transport-Security ヘッダを復活させ HSTS 有効化
 # =============================================================================
 
-msi.example.com {
-    reverse_proxy msi-app:3838 {
-        transport http {
-            read_timeout 600s
-            write_timeout 600s
-            dial_timeout 30s
-        }
-        # X-Forwarded-Proto を渡し、Flask 側で secure Cookie / HTTPS 判別を可能に
-        header_up X-Forwarded-Proto https
-        header_up X-Forwarded-For {remote_host}
-    }
+{
+	# SNI を送らないクライアント (curl 7.77+ で IP 直アクセス、ブラウザの一部
+	# サブ接続 / pre-connect / HTTP/3 probe など) に対するフォールバック。
+	# これがないと SNI 空 ClientHello に対し Caddy は "no matching cert" を返し
+	# TLS alert internal error → ブラウザでは ERR_SSL_PROTOCOL_ERROR になる。
+	default_sni 133.167.73.188
 
-    request_body {
-        max_size 500MB
-    }
+	# TLS handshake / 証明書発行の詳細をログに出す（原因切り分け用）。
+	# 動作が安定したらこの行を削除して通常運用に戻すこと。
+	debug
+}
 
-    # セキュリティヘッダー (HSTS / clickjacking / sniff / referrer)
-    header {
-        Strict-Transport-Security "max-age=31536000; includeSubDomains"
-        X-Frame-Options "DENY"
-        X-Content-Type-Options "nosniff"
-        Referrer-Policy "strict-origin-when-cross-origin"
-        # /healthz は cache 不要、その他は SPA なので no-store でも OK
-        Cache-Control "no-store"
-    }
+# Site address に IP を指定。スキーム省略 (':443' でも 'https://' でもなく)
+# が公式推奨。Caddy が IP として認識し、内部 CA で leaf を発行する。
+133.167.73.188 {
+	tls internal
 
-    # Caddy アクセスログ (json) を stdout に。docker logs で確認可能。
-    log {
-        output stdout
-        format json
-    }
+	reverse_proxy msi-app:3838 {
+		transport http {
+			read_timeout 600s
+			write_timeout 600s
+			dial_timeout 30s
+		}
+		# X-Forwarded-Proto を渡し、Flask 側で secure Cookie / HTTPS 判別を可能に
+		header_up X-Forwarded-Proto https
+	}
+
+	request_body {
+		max_size 500MB
+	}
+
+	# セキュリティヘッダー (clickjacking / sniff / referrer)
+	# 自己署名運用では HSTS は有効化しない（ドメイン切替時に詰むため）
+	header {
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Cache-Control "no-store"
+	}
+
+	# Caddy アクセスログ (json) を stdout に。docker logs で確認可能。
+	log {
+		output stdout
+		format json
+	}
 }

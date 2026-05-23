@@ -23,6 +23,7 @@ from app.layouts.tooltips import (
     get_sidebar_tooltips, get_settings_tooltips,
     get_interactive_tooltips, get_results_tooltips,
 )
+from app.version import version_label
 
 
 def _create_change_password_modal():
@@ -159,9 +160,37 @@ def _create_preset_modal():
 
 def create_main_layout():
     return html.Div([
+        # ========== グローバルバージョン表示 (全画面の右上に固定) ==========
+        # ユーザーが今見ているページが最新の修正反映後の版か即座に
+        # 判別できるよう、landing/action/analysis/shared/lite すべてで
+        # 常に右上に表示する。文字は小さく薄く、pointer-events: none で
+        # 既存ボタンのクリックを邪魔しない。
+        html.Div(
+            version_label(),
+            style={
+                "position": "fixed",
+                "top": "4px",
+                "right": "12px",
+                "fontSize": "0.7em",
+                "color": "#6c757d",
+                "fontFamily": "monospace",
+                "background": "rgba(255,255,255,0.85)",
+                "padding": "2px 6px",
+                "borderRadius": "3px",
+                "boxShadow": "0 1px 2px rgba(0,0,0,0.05)",
+                "zIndex": 9999,
+                "pointerEvents": "none",
+            },
+        ),
+
         # ========== URLルーティング ==========
         dcc.Location(id="url_bar", refresh=False),
         dcc.Store(id="share_token", data=""),
+        # /app/<tab_id> deep link 用の中間 Store (url_bar.pathname と
+        # current_page.data を直接結ぶと share_callbacks.route_share_url と
+        # Dash の allow_duplicate ハッシュ衝突で実行時エラーになるため、
+        # lite_target_store / navigate_to_lite_page と同じ二段パターンを採用)
+        dcc.Store(id="app_path_target_store", data=None),
 
         # ========== 認証情報 (clientside callback で /api/whoami から読み込み) ==========
         dcc.Store(id="current_analyst", data={"name": "", "tier": ""}),

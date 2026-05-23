@@ -39,6 +39,7 @@ packages <- c(
   "dbscan",
   "future",
   "leiden",
+  "leidenbase",  # Seurat v5 の FindClusters(algorithm = 4) で必須
 
   # ユーティリティ
   "tools",
@@ -73,7 +74,10 @@ if (!requireNamespace("presto", quietly = TRUE)) {
   cat("presto をインストール中 (immunogenomics/presto)...\n")
   devtools::install_github("immunogenomics/presto", upgrade = "never")
   if (!requireNamespace("presto", quietly = TRUE)) {
-    cat("[警告] presto のインストールに失敗しました。\n")
+    # ver3.8: 失敗時に低速 fallback の存在と対処を明示
+    message("[警告] presto のインストールに失敗しました。",
+            "\n  FindAllMarkers は標準の wilcox 実装にフォールバックします (低速)。",
+            "\n  ネットワーク復旧後に Docker image を再ビルドして再試行してください。")
   } else {
     cat("presto のインストールが完了しました。\n")
   }

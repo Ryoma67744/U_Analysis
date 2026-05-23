@@ -3,8 +3,11 @@
 # Web内蔵ファイルブラウザ モーダルダイアログ
 # =============================================================================
 
+import logging
 import os
 import string
+
+logger = logging.getLogger(__name__)
 from pathlib import Path
 
 from dash import html, dcc
@@ -110,10 +113,13 @@ def list_directory(dir_path: str, show_files: bool = True) -> list[dict]:
                     "is_dir": entry.is_dir(),
                     "icon": "📁" if entry.is_dir() else "📄",
                 })
-            except PermissionError:
+            except PermissionError as e:
+                # ver3.7: entry レベルの権限エラーを情報ログに残す
+                logger.info("PermissionError on %s: %s", entry, e)
                 continue
-    except PermissionError:
-        pass
+    except PermissionError as e:
+        # ver3.7: ディレクトリ全体への権限エラーも記録
+        logger.info("PermissionError on %s: %s", target, e)
 
     if not show_files:
         items = [i for i in items if i["is_dir"]]

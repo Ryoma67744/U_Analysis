@@ -74,19 +74,22 @@ diet_seurat_safe <- function(obj, keep_scale = FALSE, keep_graphs = FALSE) {
   if (!inherits(obj, "Seurat")) return(obj)
 
   # DietSeurat は Seurat パッケージに依存。失敗時は安全側で元を返す。
+  # ver3.8: Seurat 5.0+ で counts/data/scale.data 引数は deprecated 警告を
+  # 出すが、動作上は問題ない。警告がログを汚染するため suppressWarnings で
+  # 抑制 (将来的には layers 引数に移行すべきだが、本タスクでは抑制のみ)。
   tryCatch({
     if (!requireNamespace("Seurat", quietly = TRUE)) return(obj)
     dimreducs <- names(obj@reductions)
     if (length(dimreducs) == 0) dimreducs <- NULL
     graphs <- if (keep_graphs) names(obj@graphs) else NULL
-    Seurat::DietSeurat(
+    suppressWarnings(Seurat::DietSeurat(
       obj,
       counts = TRUE,
       data = TRUE,
       scale.data = keep_scale,
       dimreducs = dimreducs,
       graphs = graphs
-    )
+    ))
   }, error = function(e) {
     message("[rds_io] diet_seurat_safe failed, returning original: ",
             conditionMessage(e))

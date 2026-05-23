@@ -41,6 +41,12 @@ def create_lite_view_layout():
             # 統合手法（Harmony / RPCA）切り替え用 Store
             dcc.Store(id="lv_method_store", data={}),
 
+            # Plotly 強制リサイズの clientside callback 用ダミー Output
+            # 各種トリガー (カード展開 / Harmony・RPCA 切替 / 番号 Switch /
+            # 初回ロード) で Plotly.Plots.resize() を発火させ、新規 mount 時に
+            # サイズ取得失敗で空白になる問題を回避する。
+            dcc.Store(id="lv_resize_trigger", data=0),
+
             # エラー表示（callback が is_open=True にする）
             dbc.Alert(
                 "",
@@ -51,10 +57,15 @@ def create_lite_view_layout():
             ),
 
             # ローディング表示 + レポート本体
+            # target_components で「lv_report_body の children 更新時のみ」
+            # ローディングを表示するように絞る。これを外すと内部の
+            # lv_card_body.children 更新でも外側 Loading が triggered され、
+            # 内部の全 Plotly Graph が unmount → remount されてしまう。
             dcc.Loading(
                 id="lv_loading",
                 type="circle",
                 color="#0d6efd",
+                target_components={"lv_report_body": "children"},
                 children=html.Div(
                     id="lv_report_body",
                     children=html.Div(

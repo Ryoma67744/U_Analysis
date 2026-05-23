@@ -182,6 +182,31 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 ))
     else:
         if embed_legend:
+            # 凡例ダブルクリック時に他クラスタを「TIC (白黒)」or 灰色で
+            # 残すための背景 trace。showlegend=False のため Plotly の
+            # ダブルクリック操作対象外で、色付き trace が visible=False に
+            # なっても下の背景が残る。
+            # ※ highlight_clusters / selected_cell_ids 時の既存ロジック
+            #   (line 128-135 / 156-160) と同じく TIC が利用可能なら
+            #   Greys colorscale で MSI 画像の TIC を白黒表示する。
+            if "TotalCount" in df_sample.columns:
+                bg_marker = dict(
+                    size=marker_size, symbol="square",
+                    color=df_sample["TotalCount"].values,
+                    colorscale="Greys", opacity=0.5, showscale=False,
+                )
+            else:
+                bg_marker = dict(
+                    size=marker_size, symbol="square",
+                    color=HIGHLIGHT_GRAY, opacity=0.2,
+                )
+            fig.add_trace(go.Scattergl(
+                x=plot_x, y=plot_y,
+                mode="markers",
+                marker=bg_marker,
+                showlegend=False, hoverinfo="skip",
+                name="_background_tic",
+            ))
             # 凡例リンク用: クラスタ別個別トレース（legendgroup でダミーと連動）
             for cl in sorted(df_sample["Cluster"].unique(), key=_cluster_sort_key):
                 mask = (df_sample["Cluster"].astype(str) == str(cl)).values
@@ -928,7 +953,10 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
 
     color_map = _get_cluster_color_map(plot_df["Cluster"], effective_custom_colors)
     cluster_to_idx, discrete_cscale = _get_cluster_colorscale(plot_df["Cluster"], effective_custom_colors)
-    all_pos = _get_merged_label_positions(accumulated_positions)
+    # rds_path / method を引数で明示し _interactive_data 未初期化 race を回避
+    method = _interactive_data.get("method")
+    all_pos = _get_merged_label_positions(accumulated_positions,
+                                          rds_path=rds_path, method=method)
     spatial_pos = all_pos.get("spatial", {})
 
     # 表示対象サンプル
@@ -998,6 +1026,42 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
     # 代表figureをStoreに保存（HTMLエクスポート用）
     store_data = representative_fig.to_dict() if representative_fig else None
     return container, store_data, batch_fig_dicts
+
+
+# ---------------------------------------------------------------------------
+# Spatial 表示パラメータの永続化 (label_size 等)
+# 軽量ビューア (/lite/...) はこの値を読み出して同じ表示を再現する。
+# interactive_umap.save_umap_display_settings の Spatial 版。
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("spatial_display_save_trigger", "data"),
+    [Input("spatial_marker_size", "value"),
+     Input("spatial_label_size", "value"),
+     Input("spatial_show_labels", "value"),
+     Input("spatial_columns_per_row", "value"),
+     Input("spatial_exclude_cluster", "value")],
+    State("seurat_rds_path_store", "data"),
+    prevent_initial_call=True,
+)
+def save_spatial_display_settings(marker_size, label_size, show_labels,
+                                  columns_per_row, exclude_cluster, rds_path):
+    """Spatial 表示パラメータの変更を interactive_settings.json に保存。
+
+    簡易ビューアー (/lite/...) はこの値を読み出して同じ表示を再現する。
+    ver3.5: exclude_cluster も保存対象に追加。
+    """
+    if not rds_path:
+        raise PreventUpdate
+    from app.callbacks.interactive_callbacks import _save_interactive_settings
+    _save_interactive_settings("spatial_display", {
+        "marker_size": marker_size if marker_size is not None else 0,
+        "label_size": label_size if label_size is not None else 10,
+        "show_labels": bool(show_labels),
+        "columns_per_row": columns_per_row if columns_per_row is not None else 0,
+        "exclude_cluster": list(exclude_cluster) if exclude_cluster else [],
+    })
+    return no_update
 
 
 # ---------------------------------------------------------------------------

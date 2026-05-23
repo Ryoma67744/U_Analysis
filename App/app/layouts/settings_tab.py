@@ -85,6 +85,33 @@ def _create_analysis_settings_subtab():
                             html.Div(id="sample_selector"),
                             dcc.Store(id="selected_samples_store", data=[]),
                             dbc.FormText("チェックを入れたサンプルが解析対象になります"),
+                            # --- DESI ROI 設定 (TIMS の annotation_selector と同じ ---
+                            #     pattern-matching 構造。データフォルダとサンプルから
+                            #     ROI 候補を自動列挙、チェックボックスで選択。
+                            #     DESI モード時のみ意味あり (callback で非表示制御)。
+                            html.Div(
+                                style={"marginTop": "10px"},
+                                children=[
+                                    html.Hr(className="my-2"),
+                                    dbc.Switch(
+                                        id="desi_use_roi_as_sample",
+                                        label="ROI 列があれば各 ROI を別サンプルとして解析",
+                                        value=ls.get("desi_use_roi_as_sample", False),
+                                        className="mb-1",
+                                    ),
+                                    html.Div(id="desi_roi_selector",
+                                             className="mt-1"),
+                                    dcc.Store(id="desi_roi_filter_store",
+                                              data=None),
+                                    dbc.FormText(
+                                        "Switch ON でチェック ROI が「別サンプル」と"
+                                        "して統合解析されます (Harmony/RPCA)。"
+                                        "OFF または ROI 列なしの場合はファイル全体を"
+                                        " 1 サンプル扱い (従来挙動)。",
+                                        className="text-muted small",
+                                    ),
+                                ],
+                            ),
                             # --- 追加データフォルダ (TIMS複数フォルダ) ---
                             html.Div(
                                 id="extra_folders_section",

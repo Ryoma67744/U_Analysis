@@ -21,7 +21,7 @@ from app.layouts.file_browser_modal import (
 )
 from app.services.data_manager import (
     list_msi_files, list_tims_files,
-    find_tims_file_path, read_parquet_annotations,
+    find_tims_file_path, read_parquet_annotations, read_desi_roi_list,
 )
 from app.services.session_manager import save_last_settings
 from app.services.notify import warn_user
@@ -212,6 +212,81 @@ def update_annotation_selector(selected_samples, data_folder, desi_method, tims_
 )
 def sync_annotation_to_store(all_values):
     """パターンマッチング: 全annotation_checkの選択値をStoreに集約"""
+    if not all_values:
+        return None
+    merged = []
+    for vals in all_values:
+        if vals:
+            merged.extend(vals)
+    return sorted(set(merged)) if merged else None
+
+
+# ---------------------------------------------------------------------------
+# DESI ROI 選択 UI (.txt の最終列が ROI 文字列の場合)
+# ---------------------------------------------------------------------------
+
+@callback(
+    [Output("desi_roi_selector", "children"),
+     Output("desi_roi_filter_store", "data")],
+    [Input("selected_samples", "value"),
+     Input("data_folder", "value"),
+     Input("analysis_method", "value")],
+    prevent_initial_call=True,
+)
+def update_desi_roi_selector(selected_samples, data_folder, desi_method):
+    """選択された DESI ファイルごとに ROI 一覧をチェックボックスで表示。
+
+    TIMS の annotation_selector と同じ pattern-matching 構造。
+    各ファイルの最終列 ROI を読み取り、見つかった ROI をチェックボックスとして
+    並べる。デフォルトは全選択。
+    """
+    # DESI モード以外では非表示 (空)
+    if desi_method != "desi_v8":
+        return [], None
+    if not selected_samples or not data_folder or not Path(data_folder).is_dir():
+        return [], None
+
+    children = []
+    all_rois = []
+
+    for sample in selected_samples:
+        file_path = Path(data_folder) / f"{sample}.txt"
+        if not file_path.is_file():
+            continue
+        rois = read_desi_roi_list(str(file_path))
+        if not rois:
+            continue
+
+        all_rois.extend(rois)
+        children.append(html.Div([
+            html.Small(f"\U0001F4C4 {sample}", className="fw-bold"),
+            dbc.Checklist(
+                id={"type": "desi_roi_check", "index": sample},
+                options=[{"label": f" {r}", "value": r} for r in rois],
+                value=rois,  # デフォルト全選択
+                inline=True,
+                className="ms-2",
+            ),
+        ], className="mb-1"))
+
+    if not children:
+        return [], None
+
+    ui = [
+        html.Hr(className="my-1"),
+        html.Small("ROI 選択 (DESI):", className="fw-bold"),
+    ] + children
+
+    return ui, sorted(set(all_rois))
+
+
+@callback(
+    Output("desi_roi_filter_store", "data", allow_duplicate=True),
+    Input({"type": "desi_roi_check", "index": ALL}, "value"),
+    prevent_initial_call=True,
+)
+def sync_desi_roi_to_store(all_values):
+    """パターンマッチング: 全 desi_roi_check の選択値を Store に集約。"""
     if not all_values:
         return None
     merged = []

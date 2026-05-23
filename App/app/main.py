@@ -271,6 +271,7 @@ from app.callbacks import rds_maintenance_callbacks  # noqa: E402, F401
 from app.callbacks import edit_lock_callbacks  # noqa: E402, F401
 from app.callbacks import auth_callbacks  # noqa: E402, F401
 from app.callbacks import data_management_callbacks  # noqa: E402, F401
+from app.callbacks import tab_url_routing  # noqa: E402, F401
 
 if __name__ == "__main__":
     # Docker CMD は run_app.py 経由。ここは bare-metal 開発用のフォールバック。

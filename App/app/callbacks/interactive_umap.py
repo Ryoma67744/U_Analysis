@@ -82,6 +82,16 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                     meta=[str(cl)] * mask.sum(),
                 ))
     else:
+        # 凡例ダブルクリック時に他クラスタを灰色で残すための背景 trace。
+        # showlegend=False のため Plotly のダブルクリック操作対象外で、
+        # 色付き trace が visible=False になっても下の灰色背景が残る。
+        fig.add_trace(go.Scattergl(
+            x=df["UMAP_1"], y=df["UMAP_2"],
+            mode="markers",
+            marker=dict(size=marker_size, color=HIGHLIGHT_GRAY, opacity=0.2),
+            showlegend=False, hoverinfo="skip",
+            name="_background_grey",
+        ))
         color_col = color_by if color_by in df.columns else "Cluster"
         categories = sorted(df[color_col].unique(), key=_cluster_sort_key)
         cat_color_map = _get_cluster_color_map(categories, custom_colors)
@@ -196,6 +206,14 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                         legendgroup=_cluster_display_name(cl, cluster_name_map),
                     ))
         else:
+            # 凡例ダブルクリック時に他クラスタを灰色で残すための背景 trace
+            fig.add_trace(go.Scattergl(
+                x=df_s["UMAP_1"], y=df_s["UMAP_2"],
+                mode="markers",
+                marker=dict(size=marker_size, color=HIGHLIGHT_GRAY, opacity=0.2),
+                showlegend=False, hoverinfo="skip",
+                name="_background_grey",
+            ))
             for cl in sorted(df_s["Cluster"].unique(), key=_cluster_sort_key):
                 mask_cl = df_s["Cluster"] == cl
                 fig.add_trace(go.Scattergl(
@@ -280,13 +298,25 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
     return graphs
 
 
-def _get_merged_label_positions(accumulated_positions=None):
+def _get_merged_label_positions(accumulated_positions=None,
+                                rds_path=None, method=None):
     """JSON ファイル + 蓄積 Store からマージしたラベル位置を返す。
 
     蓄積データは JSON より新しいため、蓄積データで JSON をオーバーライドする。
+
+    rds_path / method を引数で渡せば、_interactive_data が未初期化でも
+    JSON ファイルを正しく解決して読込できる (race condition 回避)。
+    両方 None なら従来通り _interactive_data から解決。
     """
     from app.callbacks.interactive_callbacks import _load_label_positions
-    all_pos = _load_label_positions()
+    if rds_path is not None:
+        # 引数版で確実に読込 (_interactive_data 未初期化対策)
+        from app.utils.label_persistence import (
+            load_label_positions as _load_label_positions_util,
+        )
+        all_pos = _load_label_positions_util(rds_path, method) or {}
+    else:
+        all_pos = _load_label_positions()
     acc = accumulated_positions or {}
     for section in ("umap_integrated", "umap_per_sample", "spatial"):
         acc_section = acc.get(section)
@@ -355,7 +385,11 @@ def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
             plot_df["Cluster"], mode=merge_color_mode or "shade"
         )
 
-    all_pos = _get_merged_label_positions(accumulated_positions)
+    # rds_path / method を引数で明示することで、_interactive_data が
+    # ContextVar 切替直後で未初期化の場合にも JSON を正しく読込む。
+    method = _interactive_data.get("method")
+    all_pos = _get_merged_label_positions(accumulated_positions,
+                                          rds_path=rds_path, method=method)
     return _build_umap_integrated_fig(plot_df, color_by, highlight_clusters,
                                        show_legend, show_labels,
                                        marker_size=marker_size or 2,
@@ -440,7 +474,9 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
     if df is None:
         return "", []
     color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
-    all_pos = _get_merged_label_positions(accumulated_positions)
+    method = _interactive_data.get("method")
+    all_pos = _get_merged_label_positions(accumulated_positions,
+                                          rds_path=rds_path, method=method)
     fig_dicts = []
     graphs = _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                                             show_labels, graph_height="300px",
@@ -457,3 +493,42 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
         style={"display": "flex", "flexWrap": "wrap", "gap": "15px", "marginTop": "10px"},
         children=graphs,
     ), fig_dicts
+
+
+# ---------------------------------------------------------------------------
+# UMAP 表示設定の永続化（簡易ビューアーとの共有用）
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("umap_display_save_trigger", "data"),
+    [Input("umap_marker_size", "value"),
+     Input("umap_label_size", "value"),
+     Input("umap_show_labels", "value"),
+     Input("umap_columns_per_row", "value"),
+     Input("umap_exclude_cluster", "value"),
+     Input("umap_show_legend", "value"),
+     Input("umap_color_by", "value")],
+    State("seurat_rds_path_store", "data"),
+    prevent_initial_call=True,
+)
+def save_umap_display_settings(marker_size, label_size, show_labels,
+                                columns_per_row, exclude_cluster,
+                                show_legend, color_by, rds_path):
+    """UMAP表示パラメータの変更を interactive_settings.json に保存。
+
+    簡易ビューアー (/lite/...) はこの値を読み出して同じ表示を再現する。
+    ver3.5: exclude_cluster / show_legend / color_by も保存対象に追加。
+    """
+    if not rds_path:
+        raise PreventUpdate
+    from app.callbacks.interactive_callbacks import _save_interactive_settings
+    _save_interactive_settings("umap_display", {
+        "marker_size": marker_size if marker_size is not None else 2,
+        "label_size": label_size if label_size is not None else 14,
+        "show_labels": bool(show_labels),
+        "columns_per_row": columns_per_row if columns_per_row is not None else 0,
+        "exclude_cluster": list(exclude_cluster) if exclude_cluster else [],
+        "show_legend": bool(show_legend) if show_legend is not None else True,
+        "color_by": color_by or "Cluster",
+    })
+    return no_update
