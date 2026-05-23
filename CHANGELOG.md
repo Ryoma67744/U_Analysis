@@ -12,6 +12,33 @@
 
 ---
 
+## 2026-05-23_ver3.11
+
+### バグ修正・改善
+- **① サムネ登録時、複数切片は最初の 1 枚のみを使うように変更**:
+  - ver3.10 では per-sample で複数 figure を **横一列結合** していたが、
+    50x50 square 表示で wide image が見切れる問題があった
+  - `_save_figure_as_thumbnail` で `_concat_pngs_horizontal` 呼出を廃止し、
+    `figures_list[0]` (最初の 1 枚) のみを使うよう変更
+  - 複数切片時はトーストに `(複数切片は 1 枚目のみ使用)` を付記
+- **② サムネ表示サイズを 50x50 → 100x100 に拡大** (カードレイアウト維持):
+  - `project_callbacks.py:render_project_cards` で `width/height: 100px`、
+    `borderRadius: 6px`、薄い border を追加
+  - Bootstrap col=4 のカード幅は維持、タイトル側を `flexGrow + wordBreak`
+    で対応 (溢れたら自動折返し)
+- **キャッシュ解像度も 60x60 → 200x200 に引上げ** (sharp 表示):
+  - `thumbnail_service.py:THUMB_SIZE = (200, 200)` に変更
+  - 100x100 表示 + retina (DPR=2) でも sharp に見える
+  - cache 名に解像度 tag を含めて自動再生成 (旧 60x60 cache は次回アクセスで上書き)
+
+### 検証
+- 複数切片の per-sample Spatial で「サムネ登録」 → 1 枚目だけが
+  square なサムネとして表示される (見切れなし)
+- プロジェクト一覧で 100x100 のサムネが sharp に見える
+- カード全体の幅は変わらない (3 列レイアウト維持)
+
+---
+
 ## 2026-05-23_ver3.10
 
 ### 新機能

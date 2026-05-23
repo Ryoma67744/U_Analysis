@@ -22,7 +22,9 @@ from app.config import OTHER_DIR
 logger = logging.getLogger(__name__)
 
 THUMB_CACHE_DIR = OTHER_DIR / "cache" / "thumbnails"
-THUMB_SIZE = (60, 60)
+# ver3.11: 100x100 表示でも sharp に見えるよう 200x200 まで保持
+# (ブラウザの DPR=2 でも 200px あれば retina に十分)
+THUMB_SIZE = (200, 200)
 
 # 自動検出時の候補パス (relative to result_dir)
 _AUTO_CANDIDATES = (
@@ -88,15 +90,17 @@ def get_thumbnail_path(project_id: str, source_path: str) -> Optional[Path]:
     except OSError:
         return None
 
-    # キャッシュキー: project_id + mtime (整数秒)
+    # キャッシュキー: project_id + mtime (整数秒) + THUMB_SIZE
+    # ver3.11: ファイル名に解像度を含め、THUMB_SIZE 変更で自動再生成
     safe_id = "".join(c if c.isalnum() or c in "-_" else "_"
                       for c in (project_id or ""))
-    cache_name = f"{safe_id}_{src_mtime}.jpg"
+    size_tag = f"{THUMB_SIZE[0]}x{THUMB_SIZE[1]}"
+    cache_name = f"{safe_id}_{src_mtime}_{size_tag}.jpg"
     cache_path = THUMB_CACHE_DIR / cache_name
     if cache_path.exists():
         return cache_path
 
-    # cache miss: 同 project_id の古い cache を掃除して再生成
+    # cache miss: 同 project_id の古い cache (旧 mtime / 旧 size 含む) を掃除
     THUMB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     for old in THUMB_CACHE_DIR.glob(f"{safe_id}_*.jpg"):
         try:

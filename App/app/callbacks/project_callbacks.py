@@ -150,21 +150,23 @@ def render_project_cards(current_page, _refresh, sort_order, search_text):
                                     "display": "flex",
                                     "justifyContent": "space-between",
                                     "alignItems": "flex-start",
-                                    "gap": "10px",
+                                    "gap": "12px",
                                 },
                                 children=[
-                                    # ver3.9: タイトル左にサムネ画像 (50x50px)。
-                                    # /api/project_thumb/<id> から配信 (キャッシュ済)
-                                    # 画像が無い (404) ときは onerror で非表示
+                                    # ver3.9: タイトル左にサムネ画像。
+                                    # ver3.11: サイズを 50→100px に拡大 (見やすく)。
+                                    # カード幅 (Bootstrap col=4) は維持し、タイトル側を
+                                    # flexGrow + wordBreak で対応
                                     html.Img(
                                         src=f"/api/project_thumb/{p['id']}",
                                         style={
-                                            "width": "50px",
-                                            "height": "50px",
+                                            "width": "100px",
+                                            "height": "100px",
                                             "objectFit": "cover",
-                                            "borderRadius": "4px",
+                                            "borderRadius": "6px",
                                             "flexShrink": 0,
                                             "background": "#f0f0f0",
+                                            "border": "1px solid #e0e0e0",
                                         },
                                         **{"data-no-thumb-hide": "1"},
                                     ),

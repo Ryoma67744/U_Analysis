@@ -280,7 +280,8 @@ def _save_figure_as_thumbnail(figures_list, width, height, scale,
                                 project_id, kind):
     """Plotly figure(s) を PNG 化してプロジェクトサムネとして登録。
 
-    複数 figure (per-sample 等) があれば横一列に結合して 1 枚にする。
+    ver3.11: 複数切片 (per-sample) がある場合は **最初の 1 枚** のみ使用。
+    横結合した wide なサムネは 50x50 square で見切れるため。
 
     Returns
     -------
@@ -301,33 +302,33 @@ def _save_figure_as_thumbnail(figures_list, width, height, scale,
     if not figures_list:
         return False, "保存対象のプロットがありません"
 
-    # 各 figure を PNG に変換
-    png_list = []
-    for name, fig_dict in figures_list:
-        try:
-            png = fig_to_png_bytes(
-                fig_dict, width=width, height=height, scale=scale,
-            )
-            if png:
-                png_list.append(png)
-        except Exception:
-            logger.warning("PNG conversion failed for %s", name, exc_info=True)
+    # ver3.11: 複数 figure (per-sample 等) は **最初の 1 枚だけ** 使う。
+    # 横結合 (concat) はサムネで見切れるため廃止
+    first_entry = figures_list[0]
+    if isinstance(first_entry, (list, tuple)) and len(first_entry) >= 2:
+        first_name, first_fig = first_entry[0], first_entry[1]
+    else:
+        first_name, first_fig = "thumbnail", first_entry
 
-    if not png_list:
+    try:
+        final_png = fig_to_png_bytes(
+            first_fig, width=width, height=height, scale=scale,
+        )
+    except Exception as e:
+        logger.warning("PNG conversion failed: %s", e, exc_info=True)
+        return False, f"PNG 化に失敗しました: {e}"
+
+    if not final_png:
         return False, "PNG 化に失敗しました"
 
-    # 複数なら横一列結合 (per-sample plot 用)
-    if len(png_list) >= 2:
-        merged = _concat_pngs_horizontal(png_list)
-        if merged:
-            final_png = merged
-        else:
-            final_png = png_list[0]
-    else:
-        final_png = png_list[0]
+    n_total = len(figures_list)
+    if n_total > 1:
+        logger.info(
+            "thumbnail: %d figures available, using only first (%s)",
+            n_total, first_name,
+        )
 
     # 保存先: Data/Other/cache/project_thumbnails_src/<project_id>_<kind>.png
-    # (cache フォルダ配下にすることで、プロジェクト output_dir 削除時にも残らない)
     save_dir = OTHER_DIR / "cache" / "project_thumbnails_src"
     save_dir.mkdir(parents=True, exist_ok=True)
     safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in project_id)
@@ -346,9 +347,13 @@ def _save_figure_as_thumbnail(figures_list, width, height, scale,
     if updated is None:
         return False, "プロジェクト更新に失敗しました"
 
-    logger.info("thumbnail set: project=%s kind=%s path=%s",
-                project_id, kind, save_path)
-    return True, f"サムネを {kind} で登録しました"
+    logger.info("thumbnail set: project=%s kind=%s path=%s (used 1/%d figs)",
+                project_id, kind, save_path, n_total)
+    if n_total > 1:
+        msg = f"サムネを {kind} で登録しました (複数切片は 1 枚目のみ使用)"
+    else:
+        msg = f"サムネを {kind} で登録しました"
+    return True, msg
 
 
 @callback(
