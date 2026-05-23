@@ -160,8 +160,14 @@ def render_project_cards(current_page, _refresh, sort_order, search_text):
                                 # ver3.14: 100x100 → 150x150 に拡大。
                                 # 横長 source (R 出力の per_sample 連結画像) は
                                 # サーバー側で最左端の正方形にクロップ済 (1 枚目のみ)
+                                # ver3.15: ?t=<last_modified> でキャッシュバスター。
+                                # サムネ更新時に last_modified が変わる → URL も変わる
+                                # → ブラウザは新画像を即 fetch (古いキャッシュを無視)
                                 html.Img(
-                                    src=f"/api/project_thumb/{p['id']}",
+                                    src=(
+                                        f"/api/project_thumb/{p['id']}"
+                                        f"?t={(p.get('last_modified') or '').replace(':', '-')}"
+                                    ),
                                     style={
                                         "width": "150px",
                                         "minWidth": "150px",

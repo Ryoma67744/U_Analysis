@@ -12,6 +12,46 @@
 
 ---
 
+## 2026-05-24_ver3.15
+
+### 性能改善
+- **サムネ登録のラグを大幅短縮** (3 つのボトルネックを解消):
+
+  **A. kaleido (Plotly→PNG) 解像度を削減 — 5-10× 高速化**
+  - サムネ用 PNG 生成解像度を 1600x1400〜2400x1800 → **600x600 px (scale=1)**
+    に縮小
+  - 最終的に `thumbnail_service` で 300x300 にリサイズされるため、過剰な
+    高解像度は無駄だった
+  - `interactive_batch_save.py` に新規定数 `_THUMB_RENDER_W=600 /
+    _THUMB_RENDER_H=600 / _THUMB_RENDER_SCALE=1` を追加
+  - `cb_set_thumbnail_spatial` / `cb_set_thumbnail_umap` がサムネ専用に
+    この縮小解像度を使用
+  - **バッチ一括保存 (`cb_batch_save_*`) は高解像度維持** で別扱い
+  - 期待効果: クリック → トースト 1-5 秒 → **0.2-0.5 秒**
+
+  **B. ブラウザキャッシュバスター — 即時反映**
+  - 旧: `/api/project_thumb/<id>` URL が固定 → 再登録しても
+    `Cache-Control: max-age=3600` で **最大 1 時間古いサムネが表示** され
+    続けていた (Ctrl+Shift+R で強制リロードが必要)
+  - 修正: `project_callbacks.py:render_project_cards` の `<img src>` に
+    `?t=<last_modified>` クエリパラメータを付与
+  - `update_project()` で `last_modified` が自動更新されるため、サムネ
+    更新ごとに URL が変化 → ブラウザは新画像を即 fetch
+  - 期待効果: 最大 1 時間 (要強制リロード) → **即時反映**
+
+  **C. サーバー側 cache pre-warm**
+  - `_save_figure_as_thumbnail` 内で `update_project()` 成功直後に
+    `get_thumbnail_path()` を呼んで Pillow リサイズを完了させる
+  - 次の Flask route 呼出は cache hit で即時配信
+  - 期待効果: 100-500ms → **<100ms**
+
+### 検証
+- 「📌 サムネ登録」ボタン → トーストが 1 秒以内に表示
+- プロジェクト一覧へ戻る → 新サムネが即時表示 (強制リロード不要)
+- ブラウザ Network タブで `?t=...` 付き URL を確認
+
+---
+
 ## 2026-05-24_ver3.14
 
 ### 改善・バグ修正
