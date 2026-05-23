@@ -12,6 +12,41 @@
 
 ---
 
+## 2026-05-23_ver3.1
+
+### バグ修正
+- **ver3.0 で「復元」など複数の UI ボタンが反応しなくなる回帰を修正**。
+  ver3.0 で追加した `App/app/callbacks/tab_url_routing.py` の
+  `_sync_tab_from_url` callback が `Output("main_tabs", "active_tab")`
+  に `allow_duplicate=True` を付け忘れていた。
+
+  既存の `project_callbacks.py` (4 callback) と `session_callbacks.py`
+  (1 callback) は全て `allow_duplicate=True` で `main_tabs.active_tab`
+  に書き込んでいるため、Dash 2.x の制約により `DuplicateCallback`
+  エラーが発生。`main.py` で `suppress_callback_exceptions=True` を
+  設定しているため、エラーがログに出ず当該 Output に紐づく callback
+  群が静かに無効化されていた。
+
+  症状:
+  - ランディングの「復元」ボタンが反応しない
+  - 「開く」ボタンでサブプロ → 解析画面遷移が不安定
+  - セッション履歴からのタブ切替が動作せず
+
+  修正内容:
+  - `tab_url_routing.py:60` の `Output` に `allow_duplicate=True` を追加
+  - `prevent_initial_call` を `False` → `"initial_duplicate"` に変更
+    (duplicate output で初回ロード時にも fire させるため必須。
+    `False` は duplicate output と非互換)
+
+### 検証
+- ランディング画面で「復元」「開く」ボタンが反応する
+- サブプロ「開く」→ 解析画面遷移が `/app/settings` に同期
+- セッション履歴の「再現」ボタンで settings タブに自動切替
+- `/app/results` を直接 URL バーに入力 → 結果閲覧タブで開く
+- 起動時のサーバーログに `DuplicateCallback` 警告が出ない
+
+---
+
 ## 2026-05-23_ver3.0
 
 ### 新機能

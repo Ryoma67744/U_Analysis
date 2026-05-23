@@ -57,10 +57,17 @@ _PATH_TO_TAB = {v: k for k, v in _TAB_TO_PATH.items()}
 # ---------------------------------------------------------------------------
 
 @callback(
-    Output("main_tabs", "active_tab"),
+    # main_tabs.active_tab は project_callbacks.py / session_callbacks.py で
+    # 既に allow_duplicate=True で複数 callback が書込んでいるため、ここでも
+    # allow_duplicate=True が必須。欠落すると Dash が DuplicateCallback を
+    # 投げ、suppress_callback_exceptions=True 下で当該 Output 連動の他
+    # callback (復元ボタン等) が静かに無効化される。
+    Output("main_tabs", "active_tab", allow_duplicate=True),
     Input("url_bar", "pathname"),
     State("main_tabs", "active_tab"),
-    prevent_initial_call=False,  # 初回ロード時にも URL → タブ同期したいので False
+    # duplicate output で初回ロード時にも URL → タブ同期したいので
+    # "initial_duplicate" を指定 (False は duplicate output と非互換)。
+    prevent_initial_call="initial_duplicate",
 )
 def _sync_tab_from_url(pathname, current_active):
     if not pathname:
