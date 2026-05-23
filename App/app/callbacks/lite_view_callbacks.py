@@ -741,6 +741,11 @@ def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
         show_labels = bool(show_labels)
     columns_per_row = umap_display.get("columns_per_row", 0) or 0
     col_lg = _calc_col_lg_width(columns_per_row, default_lg=6)
+    # ver3.5: インタラクティブで除外したクラスタ・凡例表示設定を反映
+    exclude_clusters = umap_display.get("exclude_cluster") or []
+    show_legend_um = umap_display.get("show_legend")
+    if show_legend_um is None:
+        show_legend_um = True
 
     cols = []
     for s in samples:
@@ -749,8 +754,9 @@ def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
         title = _resolve_sample_label(s, sample_name_map)
         fig = _build_umap_integrated_fig(
             df_s, color_by="Cluster", highlight_clusters=None,
-            show_legend=True, show_labels=show_labels,
+            show_legend=show_legend_um, show_labels=show_labels,
             marker_size=marker_size, label_size=label_size,
+            exclude_clusters=exclude_clusters,
             custom_colors=color_map,
             cluster_name_map=cluster_name_map,
             saved_positions=sample_pos,
@@ -804,6 +810,8 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
     sp_marker_size = spatial_display.get("marker_size")
     if sp_marker_size is None:
         sp_marker_size = 0  # 0 = 自動計算
+    # ver3.5: インタラクティブで除外したクラスタも軽量ビューアに反映
+    sp_exclude = spatial_display.get("exclude_cluster") or []
 
     cols = []
     for s in samples:
@@ -811,9 +819,9 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
         rot = spatial_rotation.get(s, {}) or {}
         title = _resolve_sample_label(s, sample_name_map)
         # インタラクティブ側 (interactive_spatial.py:954-966) と引数を揃える:
-        # label_size / marker_size はインタラクティブ側の設定値を尊重する
-        # (旧: hardcode label_size=10。これだとインタラクティブで変更しても
-        # 軽量ビューアに反映されない問題があった ver3.4 で修正)。
+        # label_size / marker_size / exclude_clusters はインタラクティブ側の
+        # 設定値を尊重 (旧: hardcode。ver3.4 で label_size 修正、ver3.5 で
+        # exclude_clusters を追加)。
         fig = _create_single_spatial_fig(
             df_sample, color_map, highlight_clusters,
             selected_cell_ids=None,
@@ -826,6 +834,7 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
             title=title,
             marker_size=sp_marker_size,
             label_size=sp_label_size,
+            exclude_clusters=sp_exclude,
             embed_legend=True,
         )
         cols.append(

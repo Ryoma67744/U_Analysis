@@ -1039,15 +1039,17 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
     [Input("spatial_marker_size", "value"),
      Input("spatial_label_size", "value"),
      Input("spatial_show_labels", "value"),
-     Input("spatial_columns_per_row", "value")],
+     Input("spatial_columns_per_row", "value"),
+     Input("spatial_exclude_cluster", "value")],
     State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
 def save_spatial_display_settings(marker_size, label_size, show_labels,
-                                  columns_per_row, rds_path):
+                                  columns_per_row, exclude_cluster, rds_path):
     """Spatial 表示パラメータの変更を interactive_settings.json に保存。
 
     簡易ビューアー (/lite/...) はこの値を読み出して同じ表示を再現する。
+    ver3.5: exclude_cluster も保存対象に追加。
     """
     if not rds_path:
         raise PreventUpdate
@@ -1057,6 +1059,7 @@ def save_spatial_display_settings(marker_size, label_size, show_labels,
         "label_size": label_size if label_size is not None else 10,
         "show_labels": bool(show_labels),
         "columns_per_row": columns_per_row if columns_per_row is not None else 0,
+        "exclude_cluster": list(exclude_cluster) if exclude_cluster else [],
     })
     return no_update
 

@@ -12,6 +12,58 @@
 
 ---
 
+## 2026-05-23_ver3.5
+
+### バグ修正
+- **ver3.4 でも UMAP / Spatial クラスター番号位置がページ再オープンで
+  初期化されていた問題の真因を修正**:
+  - `accumulate_annotation_positions_normal` (interactive_fullscreen.py:702)
+    およびフルスクリーン版 2 つの relayoutData 蓄積 callback が
+    `_set_active_key(rds_path)` を呼んでおらず、`_interactive_data` を
+    使う `_auto_save_label_positions` が **ContextVar 未設定で空 dict を
+    返し、JSON save が無音で skip されていた** (multi-thread dispatch 時の
+    race condition)
+  - 3 callback すべてに `State("seurat_rds_path_store", "data")` を追加し、
+    callback 先頭で `_set_active_key(rds_path)` を呼ぶよう修正
+  - `_auto_save_label_positions(accumulated, rds_path=, method=)` に
+    引数を追加し、ContextVar に依存せず直接 rds_path/method を渡す
+  - rds_path が None の場合は `logger.warning` で明示
+
+- **インタラクティブで設定する UMAP / Spatial 表示オプションが
+  軽量ビューアに保存・反映されていない問題を修正**:
+  - `save_umap_display_settings` を拡張し、`umap_exclude_cluster` /
+    `umap_show_legend` / `umap_color_by` も `umap_display` 配下に保存
+  - `save_spatial_display_settings` を拡張し、`spatial_exclude_cluster` も
+    `spatial_display` 配下に保存
+  - `lite_view_callbacks._build_per_sample_spatial` / `_build_per_sample_umap_grid`
+    で `exclude_cluster` / `show_legend` を読み出して図表に反映
+
+### 永続化されている設定一覧 (ver3.5 時点)
+
+`interactive_settings.json` 配下:
+- `umap_display`: marker_size, label_size, show_labels, columns_per_row,
+  exclude_cluster, show_legend, color_by
+- `spatial_display`: marker_size, label_size, show_labels, columns_per_row,
+  exclude_cluster
+- `cluster_name_map` (クラスタ名変更)
+- `sample_name_map` (サンプル名変更)
+- `spatial_rotation` (回転・反転)
+- `custom_color_map` (クラスタ色変更)
+- `int_calibration` (キャリブレーション)
+- `feature_bookmarks` (Feature Plot のブックマーク)
+
+`label_positions_<method>.json` (RDS と同ディレクトリ):
+- `umap_integrated`, `umap_per_sample`, `spatial` の各セクションに
+  クラスタ番号位置 (x, y)
+
+### 検証
+- ラベルをドラッグ → サーバーログに `[label_persistence] saving:` が出る
+- ブラウザ閉じて再オープン → JSON から位置が復元される
+- インタラクティブ「軽量ビューアを開く」 → exclude_cluster / show_legend /
+  label_size などすべて反映
+
+---
+
 ## 2026-05-23_ver3.4
 
 ### バグ修正

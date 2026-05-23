@@ -671,20 +671,32 @@ def _accumulate_core(triggered_id, existing, excl_fn):
     return existing
 
 
-def _auto_save_label_positions(accumulated):
+def _auto_save_label_positions(accumulated, rds_path=None, method=None):
     """ラベル位置をJSONファイルへ自動保存する（relayoutDataベースのみ）。
 
     filelock + 原子的書き込みで、同一プロジェクト同時編集時のロストアップデートを防ぐ。
+
+    rds_path / method を引数で渡せば、ContextVar 未設定の callback コンテキスト
+    でも確実に保存できる (multi-thread / async dispatch 時の race 対策)。
+    両方 None なら従来通り _interactive_data から解決。
     """
     try:
-        path = _get_label_positions_path()
-        if not path:
+        if rds_path is None:
+            rds_path = _interactive_data.get("rds_path")
+        if method is None:
+            method = _interactive_data.get("method")
+        if not rds_path:
+            logger.warning(
+                "[label_persistence] auto_save skipped: rds_path is None "
+                "(_interactive_data not populated for this ContextVar). "
+                "Pass rds_path explicitly from callback State."
+            )
             return
         # filelock 内で読込→マージ→atomic write を一貫実行
         _save_label_positions(
             accumulated or {},
-            _interactive_data.get("rds_path"),
-            _interactive_data.get("method"),
+            rds_path,
+            method,
             merge=True,
         )
     except Exception as e:
@@ -706,16 +718,28 @@ def _excl_set(val):
      Input({"type": "spatial_graph", "index": ALL}, "relayoutData")],
     [State("accumulated_label_positions", "data"),
      State("umap_exclude_cluster", "value"),
-     State("spatial_exclude_cluster", "value")],
+     State("spatial_exclude_cluster", "value"),
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
 def accumulate_annotation_positions_normal(umap_rd, umap_ps_rds,
                                             spatial_rds, existing,
-                                            umap_exclude, spatial_exclude):
-    """通常モード: relayoutData のアノテーション位置変更をリアルタイムで蓄積。"""
+                                            umap_exclude, spatial_exclude,
+                                            rds_path):
+    """通常モード: relayoutData のアノテーション位置変更をリアルタイムで蓄積。
+
+    rds_path State を取り、_set_active_key 経由で _interactive_data
+    の正しいエントリにアクセスできるようにする (multi-thread 下での
+    ContextVar 未設定対策)。
+    """
     triggered_id = ctx.triggered_id
     if not triggered_id:
         raise PreventUpdate
+
+    # ContextVar をこの callback コンテキストに紐付け
+    from app.callbacks.interactive_callbacks import _set_active_key
+    _set_active_key(rds_path)
+    method = _interactive_data.get("method")
 
     def _get_excl(tid):
         if isinstance(tid, dict):
@@ -727,7 +751,7 @@ def accumulate_annotation_positions_normal(umap_rd, umap_ps_rds,
         return _excl_set(umap_exclude)
 
     result = _accumulate_core(triggered_id, existing, _get_excl)
-    _auto_save_label_positions(result)
+    _auto_save_label_positions(result, rds_path=rds_path, method=method)
     return result
 
 
@@ -736,16 +760,21 @@ def accumulate_annotation_positions_normal(umap_rd, umap_ps_rds,
     Output("accumulated_label_positions", "data", allow_duplicate=True),
     Input("fs_umap_integrated_graph", "relayoutData"),
     [State("accumulated_label_positions", "data"),
-     State("fs_umap_exclude_cluster", "value")],
+     State("fs_umap_exclude_cluster", "value"),
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def accumulate_annotation_positions_fs_umap(fs_umap_rd, existing, fs_umap_exclude):
+def accumulate_annotation_positions_fs_umap(fs_umap_rd, existing,
+                                              fs_umap_exclude, rds_path):
     """FS UMAP: relayoutData のアノテーション位置変更を蓄積。"""
     triggered_id = ctx.triggered_id
     if not triggered_id:
         raise PreventUpdate
+    from app.callbacks.interactive_callbacks import _set_active_key
+    _set_active_key(rds_path)
+    method = _interactive_data.get("method")
     result = _accumulate_core(triggered_id, existing, lambda _: _excl_set(fs_umap_exclude))
-    _auto_save_label_positions(result)
+    _auto_save_label_positions(result, rds_path=rds_path, method=method)
     return result
 
 
@@ -754,16 +783,21 @@ def accumulate_annotation_positions_fs_umap(fs_umap_rd, existing, fs_umap_exclud
     Output("accumulated_label_positions", "data", allow_duplicate=True),
     Input({"type": "fs_spatial_graph", "index": ALL}, "relayoutData"),
     [State("accumulated_label_positions", "data"),
-     State("fs_spatial_exclude_cluster", "value")],
+     State("fs_spatial_exclude_cluster", "value"),
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def accumulate_annotation_positions_fs_spatial(fs_spatial_rds, existing, fs_spatial_exclude):
+def accumulate_annotation_positions_fs_spatial(fs_spatial_rds, existing,
+                                                 fs_spatial_exclude, rds_path):
     """FS Spatial: relayoutData のアノテーション位置変更を蓄積。"""
     triggered_id = ctx.triggered_id
     if not triggered_id:
         raise PreventUpdate
+    from app.callbacks.interactive_callbacks import _set_active_key
+    _set_active_key(rds_path)
+    method = _interactive_data.get("method")
     result = _accumulate_core(triggered_id, existing, lambda _: _excl_set(fs_spatial_exclude))
-    _auto_save_label_positions(result)
+    _auto_save_label_positions(result, rds_path=rds_path, method=method)
     return result
 
 
