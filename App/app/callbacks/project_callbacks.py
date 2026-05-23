@@ -137,98 +137,125 @@ def render_project_cards(current_page, _refresh, sort_order, search_text):
         sub_count = len(p.get("sub_projects", []))
         info_parts.append(f"サブプロジェクト: {sub_count}件")
 
+        # ver3.12: 「左サムネ + 右内容」の 2 列レイアウトに変更
+        # CardBody を padding=0 の flex container 化し、左にサムネ画像 (固定幅
+        # 130px / 全高 stretch)、右に縦並びの内容ブロックを配置する。
         card = dbc.Col(
             width=4,
             className="mb-3",
             children=[
                 dbc.Card(
                     className="project-card h-100",
+                    style={"overflow": "hidden"},  # 角丸内に img を収める
                     children=[
-                        dbc.CardBody(style={"paddingBottom": "0.5rem"}, children=[
-                            html.Div(
-                                style={
-                                    "display": "flex",
-                                    "justifyContent": "space-between",
-                                    "alignItems": "flex-start",
-                                    "gap": "12px",
-                                },
-                                children=[
-                                    # ver3.9: タイトル左にサムネ画像。
-                                    # ver3.11: サイズを 50→100px に拡大 (見やすく)。
-                                    # カード幅 (Bootstrap col=4) は維持し、タイトル側を
-                                    # flexGrow + wordBreak で対応
-                                    html.Img(
-                                        src=f"/api/project_thumb/{p['id']}",
-                                        style={
-                                            "width": "100px",
-                                            "height": "100px",
-                                            "objectFit": "cover",
-                                            "borderRadius": "6px",
-                                            "flexShrink": 0,
-                                            "background": "#f0f0f0",
-                                            "border": "1px solid #e0e0e0",
-                                        },
-                                        **{"data-no-thumb-hide": "1"},
-                                    ),
-                                    html.H5(
-                                        p["name"],
-                                        className="card-title mb-1",
-                                        style={"flexGrow": 1, "minWidth": 0,
-                                               "wordBreak": "break-word"},
-                                    ),
-                                    html.Div([
+                        dbc.CardBody(
+                            style={
+                                "padding": 0,
+                                "display": "flex",
+                                "alignItems": "stretch",
+                            },
+                            children=[
+                                # 左カラム: サムネ画像 (固定幅、全高 stretch)
+                                html.Img(
+                                    src=f"/api/project_thumb/{p['id']}",
+                                    style={
+                                        "width": "130px",
+                                        "minWidth": "130px",
+                                        "objectFit": "cover",
+                                        "background": "#f0f0f0",
+                                        "display": "block",
+                                        "alignSelf": "stretch",
+                                    },
+                                    **{"data-no-thumb-hide": "1"},
+                                ),
+                                # 右カラム: タイトル + メタ + 「開く」ボタン
+                                html.Div(
+                                    style={
+                                        "flexGrow": 1,
+                                        "padding": "12px",
+                                        "minWidth": 0,
+                                        "display": "flex",
+                                        "flexDirection": "column",
+                                    },
+                                    children=[
+                                        # タイトル行: H5 + ✎ x
+                                        html.Div(
+                                            style={
+                                                "display": "flex",
+                                                "justifyContent": "space-between",
+                                                "alignItems": "flex-start",
+                                                "gap": "8px",
+                                            },
+                                            children=[
+                                                html.H5(
+                                                    p["name"],
+                                                    className="card-title mb-1",
+                                                    style={
+                                                        "flexGrow": 1,
+                                                        "minWidth": 0,
+                                                        "wordBreak": "break-word",
+                                                    },
+                                                ),
+                                                html.Div([
+                                                    dbc.Button(
+                                                        "✎",
+                                                        id={
+                                                            "type": "edit_project_btn",
+                                                            "index": p["id"],
+                                                        },
+                                                        color="link",
+                                                        size="sm",
+                                                        className="text-primary p-0 me-2",
+                                                    ),
+                                                    dbc.Button(
+                                                        "x",
+                                                        id={
+                                                            "type": "delete_project_btn",
+                                                            "index": p["id"],
+                                                        },
+                                                        color="link",
+                                                        size="sm",
+                                                        className="text-danger p-0",
+                                                    ),
+                                                ]),
+                                            ],
+                                        ),
+                                        # メタ情報: 実験日 | サブプロジェクト数
+                                        html.P(
+                                            " | ".join(info_parts),
+                                            className="card-text text-muted small",
+                                        ),
+                                        # メモ (任意)
+                                        html.P(
+                                            p.get("memo", "") or "",
+                                            className="card-text small",
+                                            style={
+                                                "whiteSpace": "pre-wrap",
+                                                "maxHeight": "60px",
+                                                "overflow": "hidden",
+                                            },
+                                        ) if p.get("memo") else None,
+                                        html.Hr(className="my-2"),
+                                        # 最終更新
+                                        html.Small(
+                                            f"最終更新: {p.get('last_modified', 'N/A')}",
+                                            className="text-muted",
+                                        ),
+                                        # 「開く」ボタン (右カラム幅)
                                         dbc.Button(
-                                            "✎",
+                                            "開く",
                                             id={
-                                                "type": "edit_project_btn",
+                                                "type": "select_project_btn",
                                                 "index": p["id"],
                                             },
-                                            color="link",
+                                            color="primary",
                                             size="sm",
-                                            className="text-primary p-0 me-2",
+                                            className="w-100 mt-2",
                                         ),
-                                        dbc.Button(
-                                            "x",
-                                            id={
-                                                "type": "delete_project_btn",
-                                                "index": p["id"],
-                                            },
-                                            color="link",
-                                            size="sm",
-                                            className="text-danger p-0",
-                                        ),
-                                    ]),
-                                ],
-                            ),
-                            html.P(
-                                " | ".join(info_parts),
-                                className="card-text text-muted small",
-                            ),
-                            html.P(
-                                p.get("memo", "") or "",
-                                className="card-text small",
-                                style={
-                                    "whiteSpace": "pre-wrap",
-                                    "maxHeight": "60px",
-                                    "overflow": "hidden",
-                                },
-                            ) if p.get("memo") else None,
-                            html.Hr(className="my-2"),
-                            html.Small(
-                                f"最終更新: {p.get('last_modified', 'N/A')}",
-                                className="text-muted",
-                            ),
-                            dbc.Button(
-                                "開く",
-                                id={
-                                    "type": "select_project_btn",
-                                    "index": p["id"],
-                                },
-                                color="primary",
-                                size="sm",
-                                className="w-100 mt-2",
-                            ),
-                        ]),
+                                    ],
+                                ),
+                            ],
+                        ),
                     ],
                 ),
             ],
