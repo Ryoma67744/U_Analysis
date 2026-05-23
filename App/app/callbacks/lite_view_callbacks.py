@@ -1447,7 +1447,11 @@ clientside_callback(
         return window.dash_clientside.no_update;
     }
     """,
-    Output("btn_open_lite_viewer", "n_clicks"),
+    # NOTE: Output は btn_open_lite_viewer.n_clicks に書き戻すと、上の
+    # server callback (n_clicks → signal) と合わせて 2 node の循環依存に
+    # なり Dash が登録段階で reject する。Dash は no_update を返しても
+    # 静的グラフ解析で循環を検出するため、ダミー Store を Output に使う。
+    Output("lite_viewer_open_dummy", "data"),
     Input("lite_viewer_open_signal", "data"),
     [State("interactive_project_select", "value"),
      State("interactive_sub_project_select", "value")],

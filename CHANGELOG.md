@@ -12,6 +12,46 @@
 
 ---
 
+## 2026-05-23_ver3.2
+
+### バグ修正
+- **ver3.1 適用後もプロジェクト一覧が空白で UI ボタンが反応しない問題を修正**。
+  ver3.0 で追加した軽量ビューア「開く」ボタンの callback chain が 2 node
+  の **循環依存** を形成しており、Dash が静的グラフ解析でこれを検出し、
+  callback 群の登録に失敗していた:
+  - server callback (`_flush_settings_before_lite_open`):
+    `btn_open_lite_viewer.n_clicks` → `lite_viewer_open_signal.data`
+  - clientside_callback (新タブ open):
+    `lite_viewer_open_signal.data` → `btn_open_lite_viewer.n_clicks`
+
+  clientside_callback は実装上 `no_update` を返すが、Dash は実行時の
+  返り値ではなく宣言された Output に基づいて静的にグラフを解析するため、
+  循環依存と判定される。`suppress_callback_exceptions=True` 下では
+  CircularDependency も sass エラーが握りつぶされ、結果として **無関係な
+  callback (`render_project_list` 等) も連鎖的に登録失敗** していた。
+
+  症状:
+  - プロジェクト一覧が空白
+  - 「復元」「環境設定」「+新規プロジェクト」など UI ボタンが反応しない
+  - 解析者名ラベルも表示されない
+
+  修正内容:
+  - `interactive_tab.py`: 新規 `dcc.Store(id="lite_viewer_open_dummy")`
+    を追加
+  - `lite_view_callbacks.py:1450`: clientside_callback の Output を
+    `btn_open_lite_viewer.n_clicks` → `lite_viewer_open_dummy.data`
+    に変更し、循環依存を解消
+
+### 検証
+- 起動後ログに `CircularDependency` / `DuplicateCallback` / `Error` が
+  出ない
+- プロジェクト一覧が表示される (ver2.2 時と同じ 4 つのプロジェクトカード)
+- 「復元」ボタンでモーダルが開く
+- 「+新規プロジェクト」「環境設定」「インタラクティブ解析」全てクリック可
+- 軽量ビューアを開くボタンも従来通り新タブで開く
+
+---
+
 ## 2026-05-23_ver3.1
 
 ### バグ修正
