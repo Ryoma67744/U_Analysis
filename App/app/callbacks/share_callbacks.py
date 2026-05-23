@@ -15,6 +15,9 @@ from dash import (
     html, dcc, dash_table, ALL,
 )
 from app.services.share_manager import get_share
+from app.services.persistent_share_manager import (
+    get_persistent_share, increment_view_count as _persistent_increment_view,
+)
 from app.services.seurat_bridge import SeuratBridge
 from app.services.results_viewer import (
     categorize_image, get_available_clusters,
@@ -50,11 +53,26 @@ _shared_data: dict[str, dict] = {}
     prevent_initial_call=True,
 )
 def route_share_url(pathname):
-    """URL パスが /share/<token> なら共有ページに遷移"""
-    if pathname and pathname.startswith("/share/"):
+    """URL パスが /share/<token> または /view/<token> なら共有ページに遷移。
+
+    /share/<token> は期間付き共有 (Tier B 必須)、/view/<token> は無期限共有
+    (認証バイパス)。どちらも内部的には同じ shared_view を使い、トークンの
+    解決先 (shares.json vs persistent_shares.json) で挙動を切り替える。
+    """
+    if not pathname:
+        return no_update, no_update
+    if pathname.startswith("/share/"):
         token = pathname.split("/share/", 1)[1].split("/")[0].split("?")[0]
         if token:
             return "shared", token
+    if pathname.startswith("/view/"):
+        token = pathname.split("/view/", 1)[1].split("/")[0].split("?")[0]
+        if token:
+            # ビュー数をインクリメント (失敗しても致命的でないので無視)
+            _persistent_increment_view(token)
+            # token 先頭に "v:" prefix を付けて initialize_shared_view 側で
+            # 期間付き vs 無期限を判別する
+            return "shared", f"v:{token}"
     return no_update, no_update
 
 
@@ -95,19 +113,39 @@ def initialize_shared_view(token):
         return (hide, hide, "", "", "", "", "", "", "",
                 [], [], [], [], [], [], hide, None, [], [])
 
-    # トークン検証
-    share = get_share(token)
+    # トークン検証 (route_share_url が "v:" prefix を付けてくる無期限共有を判別)
+    is_persistent = token.startswith("v:")
+    actual_token = token[2:] if is_persistent else token
+
+    if is_persistent:
+        share = get_persistent_share(actual_token)
+        not_found_msg = (
+            "このリンクは無効です (無期限共有が失効しているか、"
+            "URL が間違っています)。"
+        )
+    else:
+        share = get_share(actual_token)
+        not_found_msg = "このリンクは無効か、有効期限が切れています。"
+
     if not share:
-        return (hide, show, "このリンクは無効か、有効期限が切れています。", "", "",
+        return (hide, show, not_found_msg, "", "",
                 "", "", "", "", [], [], [], [], [], [], hide, None, [], [])
 
     result_dir = share.get("result_dir", "")
     rds_path = share.get("rds_path", "")
     integration_method = share.get("integration_method", "")
-    info_text = (
-        f"{share.get('project_name', '')} / {share.get('sub_project_name', '')} — "
-        f"有効期限: {share.get('expires_at', '不明')}"
-    )
+    if is_persistent:
+        info_text = (
+            f"{share.get('project_name', '')} / "
+            f"{share.get('sub_project_name', '')} — 無期限共有"
+        )
+    else:
+        info_text = (
+            f"{share.get('project_name', '')} / "
+            f"{share.get('sub_project_name', '')} — "
+            f"有効期限: {share.get('expires_at', '不明')}"
+        )
+    share_kind_label = "無期限共有" if is_persistent else "期間付き共有"
     metadata_card = dbc.Card(
         dbc.CardBody(
             dbc.Row([
@@ -119,6 +157,8 @@ def initialize_shared_view(token):
                          html.Span(integration_method or "—")], width="auto"),
                 dbc.Col([html.Strong("共有日時: "),
                          html.Span(share.get("created_at", "—"))], width="auto"),
+                dbc.Col([html.Strong("種別: "),
+                         html.Span(share_kind_label)], width="auto"),
             ], className="g-3"),
             className="py-2",
         ),

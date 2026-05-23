@@ -429,20 +429,44 @@ def _create_share_modal():
 
                 html.Div(id="share_target_info", className="mb-3"),
 
+                # 共有方式の選択 (期間付き = Tier B 認証 / 無期限 = 認証不要)
+                dbc.Label("共有方式", className="fw-bold"),
+                dbc.RadioItems(
+                    id="share_kind_radio",
+                    options=[
+                        {
+                            "label": "期間付き共有（共有先は Password B でのログインが必要）",
+                            "value": "expiring",
+                        },
+                        {
+                            "label": "無期限共有（URL を知る人全員が認証なしで閲覧可。注意!）",
+                            "value": "persistent",
+                        },
+                    ],
+                    value="expiring",
+                    className="mb-3",
+                ),
+
+                # 統合手法 (両方の共有方式で必要)
                 dbc.Row([
-                    dbc.Col(width=6, children=[
-                        dbc.Label("有効期限"),
-                        dbc.Select(
-                            id="share_expiry_days",
-                            options=[
-                                {"label": "7日", "value": "7"},
-                                {"label": "14日", "value": "14"},
-                                {"label": "30日（デフォルト）", "value": "30"},
-                                {"label": "90日", "value": "90"},
-                            ],
-                            value="30",
-                        ),
-                    ]),
+                    # 期間付き共有のときだけ有効期限を表示する Col (wrap で制御)
+                    dbc.Col(
+                        id="share_expiry_wrapper",
+                        width=6,
+                        children=[
+                            dbc.Label("有効期限"),
+                            dbc.Select(
+                                id="share_expiry_days",
+                                options=[
+                                    {"label": "7日", "value": "7"},
+                                    {"label": "14日", "value": "14"},
+                                    {"label": "30日（デフォルト）", "value": "30"},
+                                    {"label": "90日", "value": "90"},
+                                ],
+                                value="30",
+                            ),
+                        ],
+                    ),
                     dbc.Col(width=6, children=[
                         dbc.Label("統合手法"),
                         dbc.Select(
@@ -456,6 +480,22 @@ def _create_share_modal():
                         ),
                     ]),
                 ], className="mb-3"),
+
+                # 無期限共有時の警告
+                html.Div(
+                    id="share_persistent_warning",
+                    style={"display": "none"},
+                    children=[
+                        dbc.Alert(
+                            "⚠ 無期限共有は URL を知る人すべてが認証なしで閲覧"
+                            "できます。URL は token_urlsafe(16) で生成され推測"
+                            "は困難ですが、メール本文や公開リポジトリへの誤投稿"
+                            "など URL 漏洩に注意してください。",
+                            color="warning",
+                            className="mb-3 small",
+                        ),
+                    ],
+                ),
 
                 dbc.Label("メモ（任意）"),
                 dbc.Textarea(

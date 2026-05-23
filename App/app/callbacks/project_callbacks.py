@@ -29,6 +29,10 @@ from app.services.share_manager import (
     build_share_url,
     cleanup_expired,
 )
+from app.services.persistent_share_manager import (
+    create_persistent_share,
+    build_persistent_view_url,
+)
 
 
 # =========================================================================
@@ -1142,13 +1146,16 @@ def open_share_modal(clicks, project):
     Input("generate_share_link", "n_clicks"),
     [State("share_target_sub_id", "data"),
      State("selected_project", "data"),
+     State("share_kind_radio", "value"),
      State("share_expiry_days", "value"),
      State("share_integration_method", "value"),
      State("share_memo", "value")],
     prevent_initial_call=True,
 )
-def generate_share_link(n_clicks, sub_id, project, expiry_days,
+def generate_share_link(n_clicks, sub_id, project, share_kind, expiry_days,
                         integration_method, memo):
+    """期間付き共有 (share_manager) または無期限共有 (persistent_share_manager) を
+    生成する。share_kind_radio で分岐する。"""
     if not n_clicks or not sub_id or not project:
         return no_update, no_update, no_update
 
@@ -1171,24 +1178,53 @@ def generate_share_link(n_clicks, sub_id, project, expiry_days,
             if rds_map:
                 rds_path = next(iter(rds_map.values()))
 
-    share = create_share(
-        project_id=project_id,
-        sub_project_id=sub_id,
-        project_name=project_data.get("name", ""),
-        sub_project_name=sub.get("name", ""),
-        result_dir=result_dir,
-        rds_path=rds_path,
-        integration_method=integration_method or "Harmony",
-        expires_days=int(expiry_days) if expiry_days else None,
-        memo=memo or "",
-    )
+    if share_kind == "persistent":
+        # 無期限共有 (/view/<token>): 認証不要
+        share = create_persistent_share(
+            project_id=project_id,
+            sub_project_id=sub_id,
+            project_name=project_data.get("name", ""),
+            sub_project_name=sub.get("name", ""),
+            result_dir=result_dir,
+            rds_path=rds_path,
+            integration_method=integration_method or "Harmony",
+            memo=memo or "",
+        )
+        url = build_persistent_view_url(share["token"])
+    else:
+        # 期間付き共有 (/share/<token>): Tier B 認証必要
+        share = create_share(
+            project_id=project_id,
+            sub_project_id=sub_id,
+            project_name=project_data.get("name", ""),
+            sub_project_name=sub.get("name", ""),
+            result_dir=result_dir,
+            rds_path=rds_path,
+            integration_method=integration_method or "Harmony",
+            expires_days=int(expiry_days) if expiry_days else None,
+            memo=memo or "",
+        )
+        url = build_share_url(share["token"])
 
-    url = build_share_url(share["token"])
-
-    # 共有リンク一覧も更新
+    # 共有リンク一覧も更新 (期間付き shares のみ表示。
+    # 無期限 shares 一覧は別途追加可能だが、まずは MVP として URL を Modal で
+    # ユーザーに渡して終了)
     links_ui = _render_share_links(project_id)
 
     return {}, url, links_ui
+
+
+# --- share_kind_radio に応じて有効期限欄・警告の表示を切替 ---
+@callback(
+    [Output("share_expiry_wrapper", "style"),
+     Output("share_persistent_warning", "style")],
+    Input("share_kind_radio", "value"),
+    prevent_initial_call=False,
+)
+def _toggle_share_kind_inputs(share_kind):
+    if share_kind == "persistent":
+        return {"display": "none"}, {"display": "block"}
+    return {"display": "block"}, {"display": "none"}
 
 
 # --- モーダルを閉じる ---
