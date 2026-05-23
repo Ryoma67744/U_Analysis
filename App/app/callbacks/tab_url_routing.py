@@ -27,18 +27,44 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 0) URL → current_page: /app/* で直接 deep link されたら analysis ページへ
+#
+#    重要: url_bar.pathname を Input、current_page.data を Output に取る
+#    callback は既に share_callbacks.route_share_url が存在する。Dash 2.x
+#    では同じ (Input, Output) ペアが複数 callback に存在すると allow_
+#    duplicate=True を付けても **実行時** に "Output ... is already in use"
+#    エラーとなり、UI 全体が反応しなくなる。
+#
+#    そのため、lite_view_callbacks の route_lite_url / navigate_to_lite_page
+#    と同じ二段パターンを採用:
+#      step 1: url_bar.pathname  → app_path_target_store.data  (中間 Store)
+#      step 2: app_path_target_store.data → current_page.data  (Input が違う)
 # ---------------------------------------------------------------------------
 
 @callback(
-    Output("current_page", "data", allow_duplicate=True),
+    Output("app_path_target_store", "data"),
     Input("url_bar", "pathname"),
-    State("current_page", "data"),
-    prevent_initial_call="initial_duplicate",
+    prevent_initial_call=True,
 )
-def _route_app_url_to_analysis(pathname, current_page):
+def _detect_app_path(pathname):
+    """pathname が /app/* なら target を Store に書く。それ以外は no_update。"""
     if not pathname:
         return no_update
-    if pathname.startswith("/app/") and current_page != "analysis":
+    if pathname.startswith("/app/"):
+        return {"pathname": pathname}
+    return no_update
+
+
+@callback(
+    Output("current_page", "data", allow_duplicate=True),
+    Input("app_path_target_store", "data"),
+    State("current_page", "data"),
+    prevent_initial_call=True,
+)
+def _route_app_url_to_analysis(target, current_page):
+    """中間 Store が更新されたら current_page を analysis に遷移。"""
+    if not target:
+        return no_update
+    if current_page != "analysis":
         return "analysis"
     return no_update
 

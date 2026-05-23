@@ -12,6 +12,53 @@
 
 ---
 
+## 2026-05-23_ver3.3
+
+### バグ修正
+- **ver3.2 適用後もブラウザコンソールに "Duplicate callback outputs"
+  ランタイムエラーが残り、UI ボタンが反応しない問題を修正**。
+
+  ブラウザコンソールが下記エラーを出していた:
+  ```
+  In the callback for output(s):
+    current_page.data@<hash>
+  Output 0 (current_page.data@<hash>) is already in use.
+  ```
+
+  原因: Dash 2.x では `(Input, Output)` ペアが同じ callback が複数
+  存在すると、両方に `allow_duplicate=True` を付けても **実行時の dispatch
+  で hash 衝突を検出してエラー** を投げる。具体的には:
+  - `share_callbacks.route_share_url`:
+    Input=`url_bar.pathname` → Output=`current_page.data`
+  - `tab_url_routing._route_app_url_to_analysis` (ver3.0 で追加):
+    Input=`url_bar.pathname` → Output=`current_page.data`
+
+  この (Input, Output) ペアの重複により、コンポーネントが pathname 変化
+  時に常時エラーを発生し、結果として `render_project_list` 等の連鎖
+  callback も dispatch されない状態だった。
+
+  既存コードベースの `lite_view_callbacks.route_lite_url` /
+  `navigate_to_lite_page` が同じ問題を **中間 Store による二段 callback**
+  パターンで解決済みだったため、同じ修正を適用:
+
+  - `main_layout.py`: 新規 `dcc.Store(id="app_path_target_store")` を追加
+  - `tab_url_routing.py` を二段化:
+    - step 1 `_detect_app_path`:
+      `url_bar.pathname` → `app_path_target_store.data` (中間)
+    - step 2 `_route_app_url_to_analysis`:
+      `app_path_target_store.data` → `current_page.data`
+
+  これで `(Input=url_bar.pathname, Output=current_page.data)` の組合せ
+  が `route_share_url` 単一となり、Dash の hash 衝突を解消。
+
+### 検証
+- ブラウザコンソール (F12) に `Duplicate callback outputs` が出ない
+- プロジェクト一覧が表示される
+- 「復元」「+新規プロジェクト」「環境設定」等のボタンが反応する
+- `/app/results` 直接アクセスで結果閲覧タブが選択されて開く
+
+---
+
 ## 2026-05-23_ver3.2
 
 ### バグ修正

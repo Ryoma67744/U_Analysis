@@ -186,6 +186,11 @@ def create_main_layout():
         # ========== URLルーティング ==========
         dcc.Location(id="url_bar", refresh=False),
         dcc.Store(id="share_token", data=""),
+        # /app/<tab_id> deep link 用の中間 Store (url_bar.pathname と
+        # current_page.data を直接結ぶと share_callbacks.route_share_url と
+        # Dash の allow_duplicate ハッシュ衝突で実行時エラーになるため、
+        # lite_target_store / navigate_to_lite_page と同じ二段パターンを採用)
+        dcc.Store(id="app_path_target_store", data=None),
 
         # ========== 認証情報 (clientside callback で /api/whoami から読み込み) ==========
         dcc.Store(id="current_analyst", data={"name": "", "tier": ""}),
