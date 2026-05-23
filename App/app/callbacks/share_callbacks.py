@@ -51,7 +51,6 @@ _shared_data: dict[str, dict] = {}
 
 @callback(
     [Output("current_page", "data", allow_duplicate=True),
-     Output("main_tabs", "active_tab", allow_duplicate=True),
      Output("interactive_result_folder", "value", allow_duplicate=True),
      Output("interactive_msi_folder", "value", allow_duplicate=True),
      Output("interactive_project_select", "value", allow_duplicate=True),
@@ -71,8 +70,14 @@ def route_share_url(pathname):
     旧 read-only shared_view ではなく page_analysis の interactive タブを
     共有モードで表示し、操作 + 保存を可能にする (① 操作可・保存あり)。
     共有先での操作は元プロジェクトに保存される。
+
+    main_tabs.active_tab は url_bar.pathname を Input に取る
+    _sync_tab_from_url (tab_url_routing.py) と衝突するため、ここでは
+    設定しない。代わりに shared_session を Input に取る
+    _shared_activate_interactive_tab が "interactive" を立てる
+    (二段パターン: Input が違うので Dash の "already in use" を回避)。
     """
-    _n = 9
+    _n = 8
     if not pathname:
         return (no_update,) * _n
 
@@ -120,7 +125,6 @@ def route_share_url(pathname):
                 kind, project_id, sub_project_id)
     return (
         "analysis",
-        "interactive",
         result_dir or no_update,
         data_folder or no_update,
         project_id,
@@ -129,6 +133,25 @@ def route_share_url(pathname):
         sub_project_id,      # current_sub_project_id
         shared_session,
     )
+
+
+# ---------------------------------------------------------------------------
+# 共有セッション確定後に interactive タブを active 化 (ver4.0)
+# ---------------------------------------------------------------------------
+# main_tabs.active_tab を url_bar.pathname から直接書くと _sync_tab_from_url
+# (tab_url_routing.py) と同一 (Input, Output) になり Dash 実行時に
+# "Output ... is already in use" となる。route_share_url が立てた
+# shared_session を Input に取ることで Input を分離し衝突を避ける。
+
+@callback(
+    Output("main_tabs", "active_tab", allow_duplicate=True),
+    Input("shared_session", "data"),
+    prevent_initial_call=True,
+)
+def _shared_activate_interactive_tab(shared):
+    if shared and shared.get("active"):
+        return "interactive"
+    return no_update
 
 
 # =========================================================================
