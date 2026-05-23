@@ -156,15 +156,16 @@ def render_project_cards(current_page, _refresh, sort_order, search_text):
                                 "gap": "12px",
                             },
                             children=[
-                                # 左カラム: サムネ画像 (100x100 固定サイズ)
-                                # ver3.13: stretch を廃止し固定 100x100 に戻す。
-                                # カードの高さは右カラム内容で決まる。
+                                # 左カラム: サムネ画像 (150x150 固定サイズ)
+                                # ver3.14: 100x100 → 150x150 に拡大。
+                                # 横長 source (R 出力の per_sample 連結画像) は
+                                # サーバー側で最左端の正方形にクロップ済 (1 枚目のみ)
                                 html.Img(
                                     src=f"/api/project_thumb/{p['id']}",
                                     style={
-                                        "width": "100px",
-                                        "minWidth": "100px",
-                                        "height": "100px",
+                                        "width": "150px",
+                                        "minWidth": "150px",
+                                        "height": "150px",
                                         "objectFit": "cover",
                                         "background": "#f0f0f0",
                                         "display": "block",

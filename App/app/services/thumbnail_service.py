@@ -22,9 +22,12 @@ from app.config import OTHER_DIR
 logger = logging.getLogger(__name__)
 
 THUMB_CACHE_DIR = OTHER_DIR / "cache" / "thumbnails"
-# ver3.11: 100x100 表示でも sharp に見えるよう 200x200 まで保持
-# (ブラウザの DPR=2 でも 200px あれば retina に十分)
-THUMB_SIZE = (200, 200)
+# ver3.14: 150x150 表示 + DPR=2 で sharp に見えるよう 300x300 までキャッシュ
+THUMB_SIZE = (300, 300)
+# ver3.14: 横長 (R の UMAP_per_sample_..._ALLclusters.png のような複数切片
+# 連結画像) は最左端の正方形領域だけ切り出してサムネ化する。
+# aspect (width / height) がこの値を超えると wide とみなす。
+_WIDE_ASPECT_RATIO = 1.4
 
 # 自動検出時の候補パス (relative to result_dir)
 _AUTO_CANDIDATES = (
@@ -111,6 +114,17 @@ def get_thumbnail_path(project_id: str, source_path: str) -> Optional[Path]:
     try:
         from PIL import Image
         img = Image.open(src)
+
+        # ver3.14: 横長画像は最左端の正方形だけ切り出す
+        # (R の UMAP_per_sample_..._ALLclusters.png のように複数切片を
+        # 横一列に連結した画像 → 1 枚目だけのサムネにする)
+        w, h = img.size
+        cropped = False
+        if h > 0 and w / h > _WIDE_ASPECT_RATIO:
+            crop_size = h
+            img = img.crop((0, 0, crop_size, crop_size))
+            cropped = True
+
         img.thumbnail(THUMB_SIZE, Image.LANCZOS)
         # PNG の alpha channel を白背景に合成して JPG 保存可能に
         if img.mode in ("RGBA", "LA", "P"):
@@ -121,8 +135,10 @@ def get_thumbnail_path(project_id: str, source_path: str) -> Optional[Path]:
         else:
             img = img.convert("RGB")
         img.save(cache_path, "JPEG", quality=80, optimize=True)
-        logger.info("thumbnail generated: project=%s src=%s -> %s",
-                    project_id, src.name, cache_path.name)
+        logger.info(
+            "thumbnail generated: project=%s src=%s -> %s (cropped=%s, src_size=%dx%d)",
+            project_id, src.name, cache_path.name, cropped, w, h,
+        )
         return cache_path
     except Exception as e:
         logger.warning("thumbnail generation failed (project=%s, src=%s): %s",
