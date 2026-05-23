@@ -12,6 +12,47 @@
 
 ---
 
+## 2026-05-23_ver3.4
+
+### バグ修正
+- **簡易ビューアで Spatial クラスター番号のサイズが反映されない問題を修正**:
+  - UMAP は `save_umap_display_settings` で永続化されていたが、Spatial には
+    対応する callback が無く、簡易ビューアは `label_size=10` をハードコード
+    していた
+  - `interactive_spatial.py` に新規 `save_spatial_display_settings` callback
+    を追加し、`spatial_label_size` / `spatial_marker_size` /
+    `spatial_show_labels` / `spatial_columns_per_row` の変更を
+    `interactive_settings.json` の `spatial_display` キーに保存
+  - `interactive_tab.py` に新規 `dcc.Store(id="spatial_display_save_trigger")`
+    を追加
+  - `lite_view_callbacks.py` の `_build_per_sample_spatial` に
+    `spatial_display` 引数を追加し、`label_size` / `marker_size` を
+    インタラクティブ側の設定値から読込むように変更
+  - `_build_overview_section` / `_build_report_body` / `initialize_lite_view`
+    の各層に `spatial_display` をプロパゲート
+
+- **UMAP / Spatial クラスター番号位置が画面再オープンで初期化される問題を修正**:
+  - `_get_merged_label_positions` を `rds_path` / `method` 引数で呼び出せる
+    版に拡張
+  - `update_umap_plot` / `update_umap_per_sample` / `update_spatial_plots`
+    から `_interactive_data.get("method")` と Input の `rds_path` を渡し、
+    `_interactive_data` 未初期化時の race condition でも JSON を確実に
+    読み込めるようにした
+  - `label_persistence.py` の `load_label_positions` / `save_label_positions`
+    に診断ログ追加 (`[label_persistence] saved/loaded: path=... sections=...`)
+
+### 対応不要 (周知のみ)
+- ブラウザコンソールに出る `chrome-extension://oingodpdjohhkelnginmkagmkbplgema/
+  content.js: Cannot read properties of null (reading 'startContainer')` は
+  **「Weblio 英和辞典」Chrome 拡張** のバグで、本アプリ起因ではない。
+  気になる場合は当該サイトで拡張を無効化する
+
+### 動作確認 (要実機テスト)
+- `/app/results` を未認証で直接アクセス → ログイン → 結果閲覧タブで開く
+  (auth_middleware._safe_next が next URL を保持。コード上は問題なし)
+
+---
+
 ## 2026-05-23_ver3.3
 
 ### バグ修正

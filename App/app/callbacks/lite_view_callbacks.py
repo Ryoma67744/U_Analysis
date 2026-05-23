@@ -180,6 +180,7 @@ def initialize_lite_view(target, method_data):
     spatial_rotation = settings.get("spatial_rotation") or {}
     custom_color_map = settings.get("custom_color_map") or None
     umap_display = settings.get("umap_display") or {}
+    spatial_display = settings.get("spatial_display") or {}
     saved_positions_all = load_label_positions(rds_path, integration_method) or {}
 
     # per-cluster カード遅延展開時に再利用するため bundle をキャッシュ
@@ -193,6 +194,7 @@ def initialize_lite_view(target, method_data):
         "spatial_rotation": spatial_rotation,
         "saved_positions_all": saved_positions_all,
         "umap_display": umap_display,
+        "spatial_display": spatial_display,
     }
 
     # レポート組み立て
@@ -210,6 +212,7 @@ def initialize_lite_view(target, method_data):
         custom_color_map=custom_color_map,
         saved_positions_all=saved_positions_all,
         umap_display=umap_display,
+        spatial_display=spatial_display,
     )
     return body, False, ""
 
@@ -319,6 +322,7 @@ def _resolve_lite_data_for_target(target, method_data):
     spatial_rotation = settings.get("spatial_rotation") or {}
     custom_color_map = settings.get("custom_color_map") or None
     umap_display = settings.get("umap_display") or {}
+    spatial_display = settings.get("spatial_display") or {}
     saved_positions_all = load_label_positions(rds_path, integration_method) or {}
     color_map = _get_cluster_color_map(df_plot["Cluster"], custom_color_map)
 
@@ -331,6 +335,7 @@ def _resolve_lite_data_for_target(target, method_data):
         "spatial_rotation": spatial_rotation,
         "saved_positions_all": saved_positions_all,
         "umap_display": umap_display,
+        "spatial_display": spatial_display,
     }
     cached["_lite_bundle"] = bundle
     return bundle
@@ -423,6 +428,7 @@ def update_spatial_labels(show_labels_list, target, method_data):
         saved_positions_per_sample=spatial_pos,
         show_labels=show_labels,
         panel_height=350,
+        spatial_display=bundle.get("spatial_display") or {},
     )
 
 
@@ -464,7 +470,8 @@ def _build_report_body(project, sub, integration_method, available_methods,
                        df_plot, df_stats, deg_records,
                        cluster_name_map=None, sample_name_map=None,
                        spatial_rotation=None, custom_color_map=None,
-                       saved_positions_all=None, umap_display=None):
+                       saved_positions_all=None, umap_display=None,
+                       spatial_display=None):
     """全体レポートを html.Div の children リストとして返す。"""
     color_map = _get_cluster_color_map(df_plot["Cluster"], custom_color_map)
     return [
@@ -477,6 +484,7 @@ def _build_report_body(project, sub, integration_method, available_methods,
             spatial_rotation=spatial_rotation,
             saved_positions_all=saved_positions_all,
             umap_display=umap_display,
+            spatial_display=spatial_display,
         ),
         _build_per_cluster_cards(
             df_plot, deg_records, color_map,
@@ -594,7 +602,8 @@ def _build_overview_section(df_plot, df_stats, color_map,
                               cluster_name_map=None, sample_name_map=None,
                               spatial_rotation=None,
                               saved_positions_all=None,
-                              umap_display=None):
+                              umap_display=None,
+                              spatial_display=None):
     """Overview: Sample 色統合 UMAP / Per-sample UMAP グリッド /
     Per-sample Spatial（クラスタ番号ラベル付き）/ Stats Table / Ratio Pie"""
     saved_positions_all = saved_positions_all or {}
@@ -602,6 +611,7 @@ def _build_overview_section(df_plot, df_stats, color_map,
     umap_per_sample_pos = saved_positions_all.get("umap_per_sample") or {}
     spatial_pos = saved_positions_all.get("spatial") or {}
     umap_display = umap_display or {}
+    spatial_display = spatial_display or {}
     marker_size = umap_display.get("marker_size", 2) or 2
 
     # 1. Sample 色分け統合 UMAP（ラベルなしは固定: Sample 色のため番号ラベル非対象）
@@ -634,6 +644,7 @@ def _build_overview_section(df_plot, df_stats, color_map,
         saved_positions_per_sample=spatial_pos,
         show_labels=False,
         panel_height=350,
+        spatial_display=spatial_display,
     )
 
     stats_table = _build_cluster_stats_table(df_stats)
@@ -770,10 +781,13 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
                               spatial_rotation=None,
                               saved_positions_per_sample=None,
                               show_labels=False,
-                              panel_height=250):
+                              panel_height=250,
+                              spatial_display=None):
     """各サンプル 1 パネルの Spatial グリッド（横並び・改行可）
 
-    メイン解析で保存された rotation/flip/ラベル位置/サンプル名/クラスタ名を反映する。
+    メイン解析で保存された rotation/flip/ラベル位置/サンプル名/クラスタ名/
+    ラベルサイズ・マーカーサイズを反映する。
+    spatial_display: interactive_settings.json の spatial_display dict。
     """
     if "Sample" not in df_plot.columns:
         return html.Div("Spatial データなし",
@@ -784,6 +798,12 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
 
     spatial_rotation = spatial_rotation or {}
     saved_positions_per_sample = saved_positions_per_sample or {}
+    spatial_display = spatial_display or {}
+    # インタラクティブ側で設定された値を反映 (未設定なら従来デフォルト)
+    sp_label_size = spatial_display.get("label_size") or 10
+    sp_marker_size = spatial_display.get("marker_size")
+    if sp_marker_size is None:
+        sp_marker_size = 0  # 0 = 自動計算
 
     cols = []
     for s in samples:
@@ -791,10 +811,9 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
         rot = spatial_rotation.get(s, {}) or {}
         title = _resolve_sample_label(s, sample_name_map)
         # インタラクティブ側 (interactive_spatial.py:954-966) と引数を揃える:
-        # marker_size=0 (自動計算) / label_size=10 / embed_legend=True。
-        # fig.update_layout の上書きは行わず、_create_single_spatial_fig 内
-        # layout を尊重する。高さは dcc.Graph の style で CSS 固定する
-        # (新規 mount 時の Plotly が height=0 にならないようにするため)。
+        # label_size / marker_size はインタラクティブ側の設定値を尊重する
+        # (旧: hardcode label_size=10。これだとインタラクティブで変更しても
+        # 軽量ビューアに反映されない問題があった ver3.4 で修正)。
         fig = _create_single_spatial_fig(
             df_sample, color_map, highlight_clusters,
             selected_cell_ids=None,
@@ -805,8 +824,8 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
             cluster_name_map=cluster_name_map,
             saved_positions=saved_positions_per_sample.get(s),
             title=title,
-            marker_size=0,
-            label_size=10,
+            marker_size=sp_marker_size,
+            label_size=sp_label_size,
             embed_legend=True,
         )
         cols.append(

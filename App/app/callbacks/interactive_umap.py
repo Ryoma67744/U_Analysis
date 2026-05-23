@@ -298,13 +298,25 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
     return graphs
 
 
-def _get_merged_label_positions(accumulated_positions=None):
+def _get_merged_label_positions(accumulated_positions=None,
+                                rds_path=None, method=None):
     """JSON ファイル + 蓄積 Store からマージしたラベル位置を返す。
 
     蓄積データは JSON より新しいため、蓄積データで JSON をオーバーライドする。
+
+    rds_path / method を引数で渡せば、_interactive_data が未初期化でも
+    JSON ファイルを正しく解決して読込できる (race condition 回避)。
+    両方 None なら従来通り _interactive_data から解決。
     """
     from app.callbacks.interactive_callbacks import _load_label_positions
-    all_pos = _load_label_positions()
+    if rds_path is not None:
+        # 引数版で確実に読込 (_interactive_data 未初期化対策)
+        from app.utils.label_persistence import (
+            load_label_positions as _load_label_positions_util,
+        )
+        all_pos = _load_label_positions_util(rds_path, method) or {}
+    else:
+        all_pos = _load_label_positions()
     acc = accumulated_positions or {}
     for section in ("umap_integrated", "umap_per_sample", "spatial"):
         acc_section = acc.get(section)
@@ -373,7 +385,11 @@ def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
             plot_df["Cluster"], mode=merge_color_mode or "shade"
         )
 
-    all_pos = _get_merged_label_positions(accumulated_positions)
+    # rds_path / method を引数で明示することで、_interactive_data が
+    # ContextVar 切替直後で未初期化の場合にも JSON を正しく読込む。
+    method = _interactive_data.get("method")
+    all_pos = _get_merged_label_positions(accumulated_positions,
+                                          rds_path=rds_path, method=method)
     return _build_umap_integrated_fig(plot_df, color_by, highlight_clusters,
                                        show_legend, show_labels,
                                        marker_size=marker_size or 2,
@@ -458,7 +474,9 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
     if df is None:
         return "", []
     color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
-    all_pos = _get_merged_label_positions(accumulated_positions)
+    method = _interactive_data.get("method")
+    all_pos = _get_merged_label_positions(accumulated_positions,
+                                          rds_path=rds_path, method=method)
     fig_dicts = []
     graphs = _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                                             show_labels, graph_height="300px",

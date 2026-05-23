@@ -62,17 +62,32 @@ def load_label_positions(rds_path: str | None, method: str | None = None) -> dic
     path = get_label_positions_path(rds_path, method)
     if path and path.exists():
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            logger.info(
+                "[label_persistence] loaded: path=%s sections=%s",
+                path.name, list(data.keys()),
+            )
+            return data
+        except Exception as e:
+            logger.warning("[label_persistence] load failed: %s", e)
             return {}
     # フォールバック: 手法別ファイルがない場合、旧共有 label_positions.json を読む
     if method:
         legacy = get_label_positions_path(rds_path, None)
         if legacy and legacy.exists():
             try:
-                return json.loads(legacy.read_text(encoding="utf-8"))
+                data = json.loads(legacy.read_text(encoding="utf-8"))
+                logger.info(
+                    "[label_persistence] loaded (legacy fallback): path=%s sections=%s",
+                    legacy.name, list(data.keys()),
+                )
+                return data
             except Exception:
                 pass
+    logger.info(
+        "[label_persistence] no file found: rds_path=%s method=%s",
+        rds_path, method,
+    )
     return {}
 
 
@@ -144,7 +159,15 @@ def save_label_positions(
     """
     path = get_label_positions_path(rds_path, method)
     if not path:
+        logger.info(
+            "[label_persistence] save skipped (no path): rds_path=%s method=%s",
+            rds_path, method,
+        )
         return
+    logger.info(
+        "[label_persistence] saving: path=%s sections=%s merge=%s",
+        path.name, list((positions or {}).keys()), merge,
+    )
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         lock = get_or_create_lock(path)

@@ -953,7 +953,10 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
 
     color_map = _get_cluster_color_map(plot_df["Cluster"], effective_custom_colors)
     cluster_to_idx, discrete_cscale = _get_cluster_colorscale(plot_df["Cluster"], effective_custom_colors)
-    all_pos = _get_merged_label_positions(accumulated_positions)
+    # rds_path / method を引数で明示し _interactive_data 未初期化 race を回避
+    method = _interactive_data.get("method")
+    all_pos = _get_merged_label_positions(accumulated_positions,
+                                          rds_path=rds_path, method=method)
     spatial_pos = all_pos.get("spatial", {})
 
     # 表示対象サンプル
@@ -1023,6 +1026,39 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
     # 代表figureをStoreに保存（HTMLエクスポート用）
     store_data = representative_fig.to_dict() if representative_fig else None
     return container, store_data, batch_fig_dicts
+
+
+# ---------------------------------------------------------------------------
+# Spatial 表示パラメータの永続化 (label_size 等)
+# 軽量ビューア (/lite/...) はこの値を読み出して同じ表示を再現する。
+# interactive_umap.save_umap_display_settings の Spatial 版。
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("spatial_display_save_trigger", "data"),
+    [Input("spatial_marker_size", "value"),
+     Input("spatial_label_size", "value"),
+     Input("spatial_show_labels", "value"),
+     Input("spatial_columns_per_row", "value")],
+    State("seurat_rds_path_store", "data"),
+    prevent_initial_call=True,
+)
+def save_spatial_display_settings(marker_size, label_size, show_labels,
+                                  columns_per_row, rds_path):
+    """Spatial 表示パラメータの変更を interactive_settings.json に保存。
+
+    簡易ビューアー (/lite/...) はこの値を読み出して同じ表示を再現する。
+    """
+    if not rds_path:
+        raise PreventUpdate
+    from app.callbacks.interactive_callbacks import _save_interactive_settings
+    _save_interactive_settings("spatial_display", {
+        "marker_size": marker_size if marker_size is not None else 0,
+        "label_size": label_size if label_size is not None else 10,
+        "show_labels": bool(show_labels),
+        "columns_per_row": columns_per_row if columns_per_row is not None else 0,
+    })
+    return no_update
 
 
 # ---------------------------------------------------------------------------

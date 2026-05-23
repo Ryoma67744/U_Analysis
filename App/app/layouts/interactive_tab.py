@@ -1260,6 +1260,8 @@ def create_interactive_tab():
         dcc.Store(id="calibration_save_trigger", data=None),
         # UMAP表示設定の自動保存トリガー（ダミー出力先）
         dcc.Store(id="umap_display_save_trigger", data=None),
+        # Spatial表示設定の自動保存トリガー（ダミー出力先）
+        dcc.Store(id="spatial_display_save_trigger", data=None),
         # 再解析キャリブレーション回帰データ（analysis_params.jsonから読込）
         dcc.Store(id="reanalysis_calibration_data", data=None),
         # エクスポート Top N 値ブリッジ用
