@@ -171,8 +171,9 @@ def initialize_lite_view(target, method_data):
         if sp and sp.exists():
             from datetime import datetime as _dt
             settings_mtime = _dt.fromtimestamp(sp.stat().st_mtime).isoformat()
-    except Exception:
-        pass
+    except Exception as e:
+        # ver3.7: 暗黙の握り潰しを debug ログに格上げ
+        logger.debug("interactive_settings mtime check failed: %s", e)
     logger.info("lite_view settings loaded: mtime=%s keys=%s",
                 settings_mtime, list(settings.keys()))
     cluster_name_map = settings.get("cluster_name_map") or {}
@@ -308,7 +309,10 @@ def _resolve_lite_data_for_target(target, method_data):
                 "cache_dir": str(extracted["cache_dir"]),
             }
             cached = _shared_data[cache_key]
-    except Exception:
+    except Exception as e:
+        # ver3.7: lite_view の bundle 再構築失敗を silent から logger.error に
+        # 変更。UI は空白表示のままだが原因究明できるようにする
+        logger.error("lite_view bundle rebuild failed rds=%s: %s", rds_path, e)
         return None
 
     df_plot = cached["plot_data"]
@@ -806,6 +810,9 @@ def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
     show_legend_um = umap_display.get("show_legend")
     if show_legend_um is None:
         show_legend_um = True
+    # ver3.7: umap_color_by もインタラクティブ側の設定を尊重
+    # (ver3.5 で保存対象に追加したが軽量ビューア側で読まれていなかった)
+    color_by = umap_display.get("color_by") or "Cluster"
 
     cols = []
     for s in samples:
@@ -813,7 +820,7 @@ def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
         sample_pos = saved_positions_per_sample.get(s)
         title = _resolve_sample_label(s, sample_name_map)
         fig = _build_umap_integrated_fig(
-            df_s, color_by="Cluster", highlight_clusters=None,
+            df_s, color_by=color_by, highlight_clusters=None,
             show_legend=show_legend_um, show_labels=show_labels,
             marker_size=marker_size, label_size=label_size,
             exclude_clusters=exclude_clusters,

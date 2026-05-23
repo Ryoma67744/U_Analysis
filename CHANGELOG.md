@@ -12,6 +12,61 @@
 
 ---
 
+## 2026-05-23_ver3.7
+
+### バグ修正 (全 Python スクリプトデバッグの成果)
+
+ver3.0〜3.6 で導入した変更を全体スキャンして判明した複数の問題を一括修正:
+
+**[High] 軽量ビューア / 共有ビューの実害バグ**:
+- **H1: `umap_color_by` が軽量ビューアに反映されない**
+  - ver3.5 で `save_umap_display_settings` の保存対象に追加したが、
+    `lite_view_callbacks._build_per_sample_umap_grid` で
+    `color_by="Cluster"` をハードコードしたまま使っていた
+  - 修正: `umap_display.get("color_by") or "Cluster"` を読出して
+    `_build_umap_integrated_fig` に渡す
+- **H2: 画像読込失敗の silent failure**
+  - `share_callbacks.py` の Gallery / Modal 画像読込、`lite_view_callbacks.py`
+    の bundle 再構築失敗が `except Exception: pass/return None` で
+    ユーザーに何も伝わらなかった
+  - 修正: 全箇所で `logger.error("... path=%s: %s", path, e)` に変更
+- **H3: `_shared_data[token]` の KeyError 競合**
+  - `if token in _shared_data:` チェック後に他スレッドで削除される
+    race condition で KeyError が出る可能性
+  - 修正: `data = _shared_data.get(token) if token else None` で
+    1 段階アクセスに統一 (sv_update_umap / sv_update_spatial /
+    sv_update_feature_plot)
+
+**[Medium] silent failure を可視化**:
+- **M2: file_browser_modal の `PermissionError` 無視**
+  - `except PermissionError: pass/continue` で権限エラーが完全に
+    握り潰されていた
+  - 修正: `logger.info("PermissionError on %s: %s", path, e)` を追加
+- **M3: seurat_bridge subprocess の TimeoutExpired 処理**
+  - `subprocess.run(timeout=...)` は内部で kill するので zombie 化は
+    避けられるが、TimeoutExpired が伝播するとユーザー向けに
+    解釈不能なメッセージになる
+  - 修正: `try/except subprocess.TimeoutExpired` で捕まえて
+    `RuntimeError("Seurat extraction timed out (10min): rds=...")` に整形
+- **M4: `interactive_settings.json` mtime 取得失敗の暗黙握り潰し**
+  - `except Exception: pass` を `logger.debug` に格上げ
+
+### 対応見送り (将来課題)
+ユーザー指示により R スクリプトは対象外:
+- `Reduce(merge(...))` の O(n²) 性能問題 (多サンプル時に大きく影響)
+- `FindAllMarkers` 失敗時の NULL アクセス防御
+- TIMS スクリプトの `dist_mat` 閾値統一
+- ROI フィルタ後の log 出力
+
+### 検証
+- 軽量ビューア初期表示で `umap_color_by` の値が反映される
+- 画像読込失敗時にサーバーログに `image load failed` が出る
+- 共有ビューに複数ユーザーが同時アクセスしても KeyError で死なない
+- ファイルブラウザで権限なしフォルダにアクセス → `PermissionError on ...`
+  がログに出る (UI は破綻しない)
+
+---
+
 ## 2026-05-23_ver3.6
 
 ### 新機能

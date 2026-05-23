@@ -216,10 +216,19 @@ class SeuratBridge:
         ]
         if with_expression:
             cmd.append("--with-expression")
-        result = subprocess.run(
-            cmd, capture_output=True, timeout=600,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        # ver3.7: subprocess.run は timeout 時に内部で kill するため zombie の
+        # 心配は無いが、TimeoutExpired を捕まえてユーザー向けエラーに整形
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, timeout=600,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except subprocess.TimeoutExpired as e:
+            if output_dir.exists():
+                shutil.rmtree(output_dir, ignore_errors=True)
+            raise RuntimeError(
+                f"Seurat extraction timed out (10min): rds={rds_path}"
+            ) from e
         if result.returncode != 0:
             # 不完全なキャッシュファイルを削除
             if output_dir.exists():
@@ -242,10 +251,17 @@ class SeuratBridge:
             rscript, "--vanilla",
             str(script), rds_path, feature_name, str(output_path),
         ]
-        result = subprocess.run(
-            cmd, capture_output=True, timeout=300,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        # ver3.7: TimeoutExpired を捕まえユーザー向けエラーに整形
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, timeout=300,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError(
+                f"Feature extraction timed out (5min): "
+                f"feature={feature_name}"
+            ) from e
         if result.returncode != 0:
             stderr_text = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
             raise RuntimeError(

@@ -4,6 +4,7 @@
 # =============================================================================
 
 import base64
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,8 @@ from dash import (
     Input, Output, State, callback, ctx, no_update,
     html, dcc, dash_table, ALL,
 )
+
+logger = logging.getLogger(__name__)
 from app.services.share_manager import get_share
 from app.services.persistent_share_manager import (
     get_persistent_share, increment_view_count as _persistent_increment_view,
@@ -309,7 +312,10 @@ def sv_render_gallery(subfolder, category, cluster, page, result_dir):
             with open(img_path, "rb") as f:
                 img_data = base64.b64encode(f.read()).decode()
             src = f"data:image/png;base64,{img_data}"
-        except Exception:
+        except Exception as e:
+            # ver3.7: silent failure を解消。ユーザー画面では空表示のままだが、
+            # サーバーログで原因究明できるようにする
+            logger.error("image load failed (gallery) path=%s: %s", img_path, e)
             src = ""
 
         cards.append(
@@ -365,7 +371,9 @@ def sv_open_image_modal(clicks):
         with open(img_path, "rb") as f:
             img_data = base64.b64encode(f.read()).decode()
         src = f"data:image/png;base64,{img_data}"
-    except Exception:
+    except Exception as e:
+        # ver3.7: モーダル画像読込失敗を logger.error に記録
+        logger.error("image load failed (modal) path=%s: %s", img_path, e)
         return True, html.Div("画像を読み込めません"), img_path
 
     return (
@@ -392,12 +400,15 @@ def sv_open_image_modal(clicks):
 def sv_update_umap(color_by, highlight_clusters, show_legend, show_labels,
                    marker_size, token):
     empty = go.Figure()
-    if not token or token not in _shared_data:
+    # ver3.7: token check と dict アクセスを 1 段階化し競合状態 (token 削除
+    # との race) で KeyError が出ないように修正
+    data = _shared_data.get(token) if token else None
+    if data is None:
         empty.add_annotation(text="データなし", showarrow=False,
                              xref="paper", yref="paper", x=0.5, y=0.5)
         return empty
 
-    df = _shared_data[token].get("plot_data")
+    df = data.get("plot_data")
     if df is None or df.empty:
         return empty
 
@@ -419,10 +430,12 @@ def sv_update_umap(color_by, highlight_clusters, show_legend, show_labels,
     State("share_token", "data"),
 )
 def sv_update_spatial(highlight_clusters, sample_filter, token):
-    if not token or token not in _shared_data:
+    # ver3.7: race 防止のため .get() で 1 段階化
+    data = _shared_data.get(token) if token else None
+    if data is None:
         return html.Div("データなし", className="text-muted")
 
-    df = _shared_data[token].get("plot_data")
+    df = data.get("plot_data")
     if df is None or df.empty or "SpatialX" not in df.columns:
         return html.Div("Spatial データなし", className="text-muted")
 
@@ -478,12 +491,13 @@ def sv_update_spatial(highlight_clusters, sample_filter, token):
 )
 def sv_update_feature_plot(feature, token):
     empty = go.Figure()
-    if not feature or not token or token not in _shared_data:
+    # ver3.7: race 防止のため .get() で 1 段階化
+    data = _shared_data.get(token) if (feature and token) else None
+    if data is None:
         empty.add_annotation(text="Feature を選択してください", showarrow=False,
                              xref="paper", yref="paper", x=0.5, y=0.5)
         return empty
 
-    data = _shared_data[token]
     rds_path = data.get("rds_path")
     cache_dir_str = data.get("cache_dir")
     df = data.get("plot_data")
