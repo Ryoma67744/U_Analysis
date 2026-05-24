@@ -236,18 +236,19 @@ register_auth(server)
 # auth_middleware._BYPASS_PREFIXES に "/help/" を登録済み
 from flask import render_template as _render_template  # noqa: E402
 from flask import send_file as _send_file, make_response as _make_response  # noqa: E402
+from app.version import version_label as _version_label  # noqa: E402
 
 
 @server.route("/help/registration")
 def _help_registration():
     """登録画面（ランディングページ）の取扱説明書を別タブで表示"""
-    return _render_template("help/registration.html")
+    return _render_template("help/registration.html", app_version=_version_label())
 
 
 @server.route("/help/analysis")
 def _help_analysis():
     """解析画面の取扱説明書を別タブで表示"""
-    return _render_template("help/analysis.html")
+    return _render_template("help/analysis.html", app_version=_version_label())
 
 
 # ver3.9: プロジェクトサムネ配信 (キャッシュ済 JPG / フォールバック透明 PNG)
