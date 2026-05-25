@@ -3,6 +3,10 @@
 # プロジェクト管理・サブプロジェクト管理・ページ遷移 コールバック
 # =============================================================================
 
+import logging
+import threading
+from pathlib import Path
+
 from dash import Input, Output, State, callback, ctx, no_update, html, dcc, ALL
 import dash_bootstrap_components as dbc
 
@@ -35,6 +39,27 @@ from app.services.persistent_share_manager import (
     list_persistent_shares,
     revoke_persistent_share,
 )
+from app.services.seurat_bridge import SeuratBridge
+
+logger = logging.getLogger(__name__)
+
+# ver4.4: 共有リンク生成時に受信者の既定ビュー (RDS) を事前抽出してキャッシュを
+# 温める。受信者は初回からウォームで開けるようになる。SeuratBridge は _cache_base
+# のみ保持で実質ステートレスのため、module-level 1 インスタンスをスレッド共有可。
+_prewarm_bridge = SeuratBridge()
+
+
+def _prewarm_share_cache(rds_path: str) -> None:
+    """共有対象 RDS の Seurat 抽出をバックグラウンドで先行実行 (best-effort)。
+
+    extract_data 内の FileLock により、受信者の初回オープンと二重に R 抽出が
+    走ることはない。失敗しても共有作成には影響させない。
+    """
+    try:
+        _prewarm_bridge.extract_data(rds_path, with_expression=False)
+        logger.info("share cache prewarmed: %s", rds_path)
+    except Exception as e:
+        logger.warning("share cache prewarm failed (%s): %s", rds_path, e)
 
 
 # =========================================================================
@@ -1339,6 +1364,13 @@ def generate_share_link(n_clicks, sub_id, project, share_kind, expiry_days,
             # integration_method に該当するRDSがなければ最初のものを使用
             if rds_map:
                 rds_path = next(iter(rds_map.values()))
+        # ver4.4: 受信者が最初に見る既定手法の RDS を事前ウォーム (バックグラウンド)。
+        # auto_scan_rds_files の既定 (Harmony 優先、無ければ rds_path) に合わせる。
+        warm_rds = rds_map.get("Harmony") or rds_path
+        if warm_rds and Path(warm_rds).exists():
+            threading.Thread(
+                target=_prewarm_share_cache, args=(warm_rds,), daemon=True
+            ).start()
 
     # ver4.2: パス要否は期限と独立。スイッチ値 (既定 True) をそのまま渡す
     require_pw = bool(require_password)

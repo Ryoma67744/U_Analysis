@@ -25,6 +25,11 @@ services:
       - DESI_DATA_DIR=/app/Data/DESI/Data
       - TIMS_DATA_DIR=/app/Data/TIMS/Data
       - OUTPUT_DATA_DIR=/app/Data/Other/output
+      # ver4.4: Seurat 抽出キャッシュを永続ボリュームに置き、再デプロイで消えない
+      # ようにする (共有を開いたときのコールド R 抽出を防ぐ)。専用ディレクトリ必須
+      # (LRU 退避が配下サブディレクトリを削除するため diskcache と同居させない)。
+      - SEURAT_CACHE_DIR=/app/Data/Other/seurat_cache
+      - SEURAT_CACHE_MAX_ENTRIES=30
     volumes:
       # 永続化データ (Data/Other/ 配下のアプリ内部データ)
       - msi-sessions:/app/Data/Other/sessions
@@ -32,6 +37,8 @@ services:
       - msi-presets:/app/Data/Other/presets
       - msi-shares:/app/Data/Other/shares
       - msi-cache:/app/Data/Other/cache
+      # ver4.4: Seurat 抽出キャッシュ専用 (diskcache とは別ボリューム)
+      - msi-seurat-cache:/app/Data/Other/seurat_cache
       # 認証設定 (auth.json: bcrypt ハッシュ + password_version)
       - msi-common:/app/Data/Other/common
       # 解析データ（ユーザーがアップロード）
@@ -56,6 +63,7 @@ volumes:
   msi-presets:
   msi-shares:
   msi-cache:
+  msi-seurat-cache:
   msi-common:
   msi-desi-data:
   msi-tims-data:

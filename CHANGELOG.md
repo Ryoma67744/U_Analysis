@@ -12,6 +12,32 @@
 
 ---
 
+## 2026-05-25_ver4.4
+
+### パフォーマンス改善（共有URLを開いたときの読み込み高速化）
+- **Seurat 抽出キャッシュを永続化**（再デプロイで消えない）
+  - 従来 `/tmp/msi_seurat_cache`（Docker 非永続）→ コンテナ recreate のたびに
+    消え、共有を開く受信者が毎回コールド R 抽出（数十秒級）を踏んでいた
+  - `config.py`: `SEURAT_CACHE_DIR` を環境変数で上書き可能化（既定は従来の tempdir）
+  - `docker-compose.yml`: 専用ボリューム `msi-seurat-cache` を
+    `/app/Data/Other/seurat_cache` にマウントし `SEURAT_CACHE_DIR` を設定。
+    `SEURAT_CACHE_MAX_ENTRIES` を 12→30 に引き上げ
+  - ※専用ディレクトリ必須（LRU 退避 `_evict_seurat_cache_lru` が配下サブ
+    ディレクトリを削除するため、diskcache `/app/Data/Other/cache` とは別ボリューム）
+- **共有リンク生成時にキャッシュをバックグラウンド・プリウォーム**
+  - `project_callbacks.generate_share_link`: 受信者が最初に見る既定手法
+    （Harmony 優先）の RDS を daemon スレッドで先行抽出。受信者は初回から
+    ウォームで開ける。失敗しても共有作成には影響させない（best-effort）
+- **二重抽出の防止**
+  - `seurat_bridge.extract_data`: ベース抽出を FileLock で保護
+    （`ensure_expression_matrix` と同パターン）。プリウォームと受信者の初回
+    オープンが同時でも R 抽出は 1 回のみ。通常の同時初回オープンにも有効
+
+### 注意
+- 反映後、新パスでキャッシュを作り直すため各 RDS で初回のみコールド 1 回。以後永続。
+
+---
+
 ## 2026-05-25_ver4.3
 
 ### バグ修正

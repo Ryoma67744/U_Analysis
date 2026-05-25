@@ -152,8 +152,12 @@ DEFAULT_SHARE_EXPIRY_DAYS = 30
 SHARE_BASE_URL = os.environ.get("SHARE_BASE_URL", "")
 
 # Seuratブリッジ キャッシュディレクトリ
-# 日本語パスを含むとRscript.exeが文字化けするため、tempdir（ASCII安全）を使用
-SEURAT_CACHE_DIR = Path(tempfile.gettempdir()) / "msi_seurat_cache"
+# 日本語パスを含むとRscript.exeが文字化けするため、tempdir（ASCII安全）を既定とする。
+# ver4.4: SEURAT_CACHE_DIR env で永続ボリューム上のパスに上書き可能
+# (Docker では /tmp が再デプロイで消えるため、永続化して共有のコールド抽出を防ぐ)。
+_seurat_cache_env = os.environ.get("SEURAT_CACHE_DIR", "").strip()
+SEURAT_CACHE_DIR = (Path(_seurat_cache_env) if _seurat_cache_env
+                    else Path(tempfile.gettempdir()) / "msi_seurat_cache")
 
 # クラスタ色パレット（Rスクリプト UMAP_DISTINCT_COLORS_50 と同一）
 DESI_COLORS_50 = [
