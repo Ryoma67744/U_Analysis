@@ -21,7 +21,7 @@
     <li><a href="#create-project">➕ プロジェクト新規作成</a></li>
     <li><a href="#sub-project">📂 サブプロジェクト管理</a></li>
     <li><a href="#search">🔍 検索・フィルタ</a></li>
-    <li><a href="#restore">📥 復元（データ管理サブタブ）</a></li>
+    <li><a href="#restore">📥 復元（プロジェクト一覧から）</a></li>
     <li><a href="#share">🔗 共有URL発行</a></li>
     <li><a href="#faq">❓ FAQ</a></li>
   </ol>
@@ -61,32 +61,60 @@
 <!-- ============================================ -->
 <h2 class="section-heading" id="login">🔐 2. ログイン</h2>
 
-<p>アプリには <strong>2段階のパスワード認証</strong> があります:</p>
+<p>
+  ログイン画面では <strong>解析者名（1〜50 文字）</strong> と <strong>パスワード</strong> を入力します。
+  解析者名は操作ログに記録されます。パスワードは用途別に <strong>2 種類</strong> あります
+  （ver4.0 で従来の 3 本から 2 本に統合されました）:
+</p>
 
 <div class="row g-3">
   <div class="col-md-6">
     <div class="ui-card">
       <span class="icon">🔬</span>
-      <div class="name">Tier A: 解析者用</div>
-      <p class="small mb-0">プロジェクトの作成・編集・解析実行など、すべての機能が使えます。
-        ラボのメンバーはこちらを使用します。</p>
+      <div class="name">Master（解析者用・フル機能）</div>
+      <p class="small mb-0">
+        日常ログインに使うパスワード。プロジェクト一覧に入り、作成・編集・解析実行・共有リンク発行・
+        <strong>パスワード変更</strong>まですべて行えます（Tier A）。ラボのメンバーはこちらを使用します。
+      </p>
     </div>
   </div>
   <div class="col-md-6">
     <div class="ui-card">
       <span class="icon">👀</span>
-      <div class="name">Tier B: 閲覧用</div>
-      <p class="small mb-0">共有URL (<code>/share/&lt;token&gt;</code>) の結果のみ閲覧可能。
-        ラボ外の協力者に結果だけ見せたい時に使用。</p>
+      <div class="name">共有パスワード（共有 URL 用）</div>
+      <p class="small mb-0">
+        期間付き共有 URL（<code>/share/&lt;token&gt;</code>）を開くためのパスワード（Tier B）。
+        プロジェクト一覧には入れず、共有された解析だけを閲覧・操作できます。ラボ外の協力者に渡します。
+      </p>
     </div>
   </div>
 </div>
 
+<div class="help-alert tip">
+  <div class="alert-title">💡 どちらを入力する？</div>
+  プロジェクト一覧から作業する人は <strong>Master</strong>、共有 URL を受け取った人は
+  <strong>共有パスワード</strong> を入力してください。同じログイン画面でどちらも受け付けます。
+</div>
+
+<h3 class="subsection-heading">🔑 パスワードの変更</h3>
+<p>
+  ヘッダー右上の「<strong>パスワード変更</strong>」ボタンから、Master / 共有パスワードを変更できます。
+  変更できるのは Master でログイン済みの人（Tier A）だけです。
+</p>
+<ul>
+  <li><strong>ログイン済みなら現在の Master の再入力は不要</strong>です
+    （ver4.0。確認のため入力しても構いません — 入力した場合のみ照合します）。</li>
+  <li>モーダルの入力欄: <em>現在の Master（任意）</em> / <em>新しい Master（8 文字以上）</em> /
+    <em>新しい 共有パスワード（4 文字以上）</em>。変更したい方だけ入力すれば OK。</li>
+  <li>パスワードを変更すると、<strong>他のセッションは自動的にログアウト</strong>されます
+    （全員が再ログインを求められます）。</li>
+</ul>
+
 <div class="help-alert warn">
-  <div class="alert-title">⚠️ パスワード変更</div>
-  初回ログイン後は速やかに、ヘッダー右上の「<strong>パスワード変更</strong>」ボタンから
-  自分専用のパスワードに変更してください。
-  変更には <strong>Master Password</strong>（サーバー管理者から共有）が必要です。
+  <div class="alert-title">⚠️ 旧「Password A」は廃止されました</div>
+  ver3 以前にあった解析者用の「Password A」は ver4.0 で廃止されました。
+  今後の日常ログインは <strong>Master</strong> を使用してください
+  （初期 Master はサーバー管理者から共有されます。初回ログイン後はすみやかに変更を）。
 </div>
 
 <!-- ============================================ -->
@@ -153,6 +181,25 @@
   <div class="figure-caption">図1: ランディングページの画面構成</div>
 </div>
 
+<h3 class="subsection-heading">プロジェクト一覧バーのボタン</h3>
+<p>検索ボックスの右側に、以下のアクションボタンが並んでいます:</p>
+<table class="help-table">
+  <thead>
+    <tr><th>ボタン</th><th>用途</th><th>参照先</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>🧹 <strong>RDS 軽量化</strong></td><td>過去の <code>.rds</code> を一括圧縮してディスクを節約</td><td><a href="/help/analysis#maintenance">解析ガイド §12</a></td></tr>
+    <tr><td>⚙ <strong>環境設定</strong></td><td>データフォルダ・R 環境・ポート等（<code>.env</code>）を GUI 編集</td><td><a href="/help/analysis#maintenance">解析ガイド §12</a></td></tr>
+    <tr><td><strong>インタラクティブ解析</strong></td><td>プロジェクトを介さず、結果フォルダを直接指定してインタラクティブ解析を開く（手動読込）</td><td><a href="/help/analysis#interactive">解析ガイド §6</a></td></tr>
+    <tr><td><strong>復元</strong></td><td>結果フォルダのメタデータからプロジェクト一覧を復元（下記 §7）</td><td>§7</td></tr>
+    <tr><td>➕ <strong>新規プロジェクト</strong></td><td>新しいプロジェクトを作成（下記 §4）</td><td>§4</td></tr>
+  </tbody>
+</table>
+<p class="text-muted small">
+  並び替えセレクトでは「実験日（新しい順／古い順）・更新日・名前・作成日」で一覧をソートできます
+  （既定は実験日の新しい順）。各プロジェクトカードにはサムネ画像（解析結果から生成）が表示されます。
+</p>
+
 <!-- ============================================ -->
 <h2 class="section-heading" id="create-project">➕ 4. プロジェクト新規作成</h2>
 
@@ -167,12 +214,22 @@
       <tr><th>項目</th><th>例</th><th>必須</th></tr>
     </thead>
     <tbody>
-      <tr><td>プロジェクト名</td><td>マウス脳代謝解析_2026</td><td>✅</td></tr>
-      <tr><td>実験日</td><td>2026-05-20</td><td>⚪</td></tr>
+      <tr><td>プロジェクトタイトル</td><td>マウス脳代謝解析_2026</td><td>✅</td></tr>
+      <tr><td>実験日</td><td>2026-05-20</td><td>✅</td></tr>
       <tr><td>メモ</td><td>C57BL/6J雄6週齢 5匹</td><td>⚪</td></tr>
+      <tr><td>📝 Google Keep URL</td><td>https://keep.google.com/...</td><td>⚪</td></tr>
+      <tr><td>🔗 MSI Share URL</td><td>https://ryoma67744.github.io/...</td><td>⚪</td></tr>
+      <tr><td>🌐 Other URL</td><td>https://...</td><td>⚪</td></tr>
     </tbody>
   </table>
   <p><span class="step-badge">4</span> <strong>「作成」</strong> をクリック → プロジェクト一覧に追加される</p>
+</div>
+
+<div class="help-alert tip">
+  <div class="alert-title">💡 タイトルと実験日は必須（ver3.16）</div>
+  プロジェクトタイトルと実験日は必須項目です（空欄だとエラー表示され作成できません）。
+  関連 URL 3 種（Google Keep / MSI Share / Other）とメモは任意で、後から
+  「✏ 編集」やサブプロジェクト一覧の「プロジェクト関連情報」からも変更できます（§5）。
 </div>
 
 <div class="help-alert tip">
@@ -214,6 +271,19 @@
   </div>
 </div>
 
+<h3 class="subsection-heading">🗒 プロジェクト関連情報の編集（ver3.16–3.17）</h3>
+<p>
+  サブプロジェクト一覧画面には「<strong>プロジェクト関連情報</strong>」セクションがあり、
+  3 種類の関連 URL（📝 Google Keep / 🔗 MSI Share / 🌐 Other）とメモを<strong>その場で編集・保存</strong>
+  できます。各欄を書き換えて <strong>「💾 保存」</strong> を押すと保存時刻が表示され、プロジェクト一覧側にも反映されます。
+</p>
+
+<div class="help-alert tip">
+  <div class="alert-title">💡 共有リンク管理もこの画面</div>
+  発行済みの共有リンク（期間付き／無期限）の一覧表示・削除（無効化）も、このサブプロジェクト一覧画面の
+  「共有リンク管理」セクションから行えます（共有の作成手順は §8）。
+</div>
+
 <!-- ============================================ -->
 <h2 class="section-heading" id="search">🔍 6. 検索・フィルタ</h2>
 
@@ -226,7 +296,7 @@
 </ul>
 
 <!-- ============================================ -->
-<h2 class="section-heading" id="restore">📥 7. 復元（データ管理サブタブ）</h2>
+<h2 class="section-heading" id="restore">📥 7. 復元（プロジェクト一覧から）</h2>
 
 <p>
   アプリのアップデートや別マシンへの移行時、<code>projects.json</code> がリセットされても
@@ -258,8 +328,8 @@
     <!-- ステージ3: スキャン -->
     <rect x="450" y="40" width="170" height="80" rx="8" fill="#fff3e0" stroke="#f57c00" stroke-width="2"/>
     <text x="535" y="65" text-anchor="middle" fill="#f57c00" font-size="13" font-weight="bold">③ 復元スキャン</text>
-    <text x="535" y="85" text-anchor="middle" fill="#f57c00" font-size="11">データ管理タブ →</text>
-    <text x="535" y="103" text-anchor="middle" fill="#f57c00" font-size="11">「🔍 出力をスキャン」</text>
+    <text x="535" y="85" text-anchor="middle" fill="#f57c00" font-size="11">「復元」ボタン →</text>
+    <text x="535" y="103" text-anchor="middle" fill="#f57c00" font-size="11">スキャン開始</text>
 
     <!-- 矢印 -->
     <line x1="620" y1="80" x2="660" y2="80" stroke="#5e72e4" stroke-width="2"/>
@@ -283,12 +353,13 @@
 
 <h3 class="subsection-heading">復元手順</h3>
 <ol>
-  <li>プロジェクトを <strong>開く</strong> → 「解析設定」タブ → サブタブ <strong>「データ管理」</strong> をクリック</li>
-  <li>セクション3 <strong>「📥 検出済みプロジェクトと復元」</strong> までスクロール</li>
-  <li><strong>「🔍 出力フォルダをスキャン」</strong> をクリック</li>
-  <li>検出されたサブプロジェクトのリストが表示される</li>
-  <li>復元したい項目の右側 <strong>「↩ 復元」</strong> をクリック</li>
-  <li>ランディングページに自動的に追加され、トースト通知が出る</li>
+  <li>ランディングページ（プロジェクト一覧）右上の <strong>「復元」</strong> ボタンをクリック → 復元モーダルが開く</li>
+  <li><strong>「スキャンフォルダ」</strong> に結果フォルダのルート（例: 出力フォルダや TIMS/DESI データルート）を
+    指定する（「...」ボタンでファイルブラウザから選択可）</li>
+  <li><strong>「スキャン開始」</strong> をクリック → <code>_project_meta.json</code> を持つプロジェクトが一覧表示される</li>
+  <li>復元したいプロジェクトを選択する</li>
+  <li><strong>「選択したプロジェクトを復元」</strong> をクリック</li>
+  <li>プロジェクト一覧に自動追加され、データパス・出力パスが現環境に自動補正される（path_resolver）</li>
 </ol>
 
 <div class="help-alert tip">
@@ -300,38 +371,56 @@
 <!-- ============================================ -->
 <h2 class="section-heading" id="share">🔗 8. 共有URL発行</h2>
 
+<div class="help-alert tip">
+  <div class="alert-title">💡 ver4.0 で共有の仕組みが大きく変わりました</div>
+  従来の「閲覧専用ビューア」から、<strong>共有先でも「インタラクティブ解析」の全機能が使える</strong>
+  方式に変わりました。共有先の操作（色変更・クラスタマージ・ラベル編集など）は
+  <strong>元プロジェクトに保存されます</strong>。共有 URL では「インタラクティブ解析」だけが表示され、
+  他のタブ・サイドバー・戻るボタンは隠れます。詳細は
+  <a href="/help/analysis#sharing">解析ガイド §8 共有機能</a> を参照。
+</div>
+
 <p>解析結果を <strong>ラボ外の協力者</strong> と共有したい場合:</p>
 
+<div class="help-alert tip">
+  <div class="alert-title">🆕 ver4.2: 期限とパスワードを別々に選べます</div>
+  <strong>「有効期限の有無」</strong>と<strong>「パスワード保護の有無」</strong>は独立して設定できます。
+  無期限でもパスワード保護をかけられ、期間付きでもパスワードなしにできます（計 4 通り）。
+</div>
+
 <ol>
-  <li>共有したいサブプロジェクトを開く（解析画面に遷移）</li>
-  <li>右上または結果閲覧タブの <strong>「🔗 共有URL発行」</strong> ボタンをクリック</li>
-  <li>モーダル上部の <strong>「共有方式」</strong> ラジオで以下を選択（ver3.0+）:
+  <li>共有したいサブプロジェクトのあるプロジェクトを開く（サブプロジェクト一覧）</li>
+  <li><strong>「🔗 共有リンク作成」</strong> ボタンをクリック</li>
+  <li><strong>「共有方式（有効期限）」</strong> を選ぶ:
     <ul>
-      <li><strong>期間付き共有</strong>: <code>/share/&lt;token&gt;</code>。
-        共有先で Password B ログインが必要。有効期限を 7/14/30/90 日から選択</li>
-      <li><strong>無期限共有</strong> 🆕: <code>/view/&lt;token&gt;</code>。
-        <strong>認証なし</strong>で誰でも閲覧可。期限なし。ラボ内 wiki などに永続的に
-        貼りたい用途向け</li>
+      <li><strong>期間付き共有</strong>（<code>/share/&lt;token&gt;</code>）: 有効期限を 7/14/30/90 日から選択</li>
+      <li><strong>無期限共有</strong>（<code>/view/&lt;token&gt;</code>）: 期限なし</li>
     </ul>
   </li>
-  <li>「統合手法」を選択（Harmony / RPCA / PCA）</li>
-  <li>生成された URL（例: <code>https://msi.example.com/share/abc123...</code> または
-    <code>/view/xyz789...</code>）をコピー</li>
-  <li>協力者に Slack / メール で送る</li>
+  <li><strong>「🔒 パスワード保護」スイッチ</strong>で認証要否を選ぶ:
+    <ul>
+      <li><strong>ON</strong>: 共有先は <strong>共有パスワード</strong>（Tier B）でログインが必要</li>
+      <li><strong>OFF</strong>: 認証なしで誰でも開ける（下の警告を確認）</li>
+    </ul>
+  </li>
+  <li>「統合手法」を選択（all / Harmony / RPCA / PCA）。必要に応じてメモを入力</li>
+  <li><strong>「共有リンクを生成」</strong> → 生成された URL をコピーして協力者に送る</li>
 </ol>
 
-<div class="help-alert warn">
-  <div class="alert-title">⚠️ 共有URLの取り扱い</div>
+<div class="help-alert danger">
+  <div class="alert-title">🛑 パスワード保護 OFF のセキュリティ — 重要</div>
   <p class="small mb-1">
-    <strong>期間付き共有 (<code>/share/</code>)</strong>: トークンを知っている人なら
-    誰でも Tier B ログイン後に閲覧可。期限切れで自動失効。
+    共有先は <strong>操作可能・かつ変更が元プロジェクトに保存される</strong>ため、
+    パスワード保護 OFF は <strong>URL を知る第三者が元データを書き換えられる</strong>ことを意味します
+    （期限の有無に関係なく）。
   </p>
-  <p class="small mb-0">
-    <strong>無期限共有 (<code>/view/</code>)</strong>: <strong>認証なしで誰でも閲覧可</strong>。
-    機密性の高い結果には使わず、社内 wiki への貼り付けなど用途を限定すること。
-    無効化したい場合は <code>Data/Other/shares/persistent_shares.json</code> から
-    手動で該当エントリを削除（管理者対応）。
-  </p>
+  <ul class="small mb-0">
+    <li>機密性の高い結果や、書き換えられたくないデータには <strong>パスワード保護 ON</strong> を推奨</li>
+    <li>URL は <code>token_urlsafe(16)</code> で生成され推測は困難だが、メール・チャット・公開リポジトリ
+      への貼り付けや、サーバーログ／CDN キャッシュ経由での漏洩に注意</li>
+    <li>無効化はサブプロジェクト一覧の <strong>「共有リンク管理」</strong> から削除できます
+      （期間付き・無期限どちらも一覧・削除可能）</li>
+  </ul>
 </div>
 
 <!-- ============================================ -->

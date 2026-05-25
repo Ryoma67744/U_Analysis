@@ -44,6 +44,14 @@ _DEG_W = 700
 _DEG_H = 500
 _DEG_SCALE = 3         # 実解像度 2100×1500
 
+# ver3.15: サムネ専用の小さい解像度。
+# 最終的に thumbnail_service で 300x300 にリサイズされるので、
+# kaleido で 600x600 を生成すれば十分。バッチ保存用の高解像度より
+# 5-10x 高速 (1-3 秒 → 200-500ms)。
+_THUMB_RENDER_W = 600
+_THUMB_RENDER_H = 600
+_THUMB_RENDER_SCALE = 1
+
 
 # ---------------------------------------------------------------------------
 # 共通ユーティリティ
@@ -269,3 +277,152 @@ def cb_batch_save_deg(n_clicks, volcano_fig, heatmap_fig, cluster_select):
         raise PreventUpdate
 
     return dcc.send_bytes(zip_bytes, f"DEG_{_timestamp()}.zip")
+
+
+# =============================================================================
+# ver3.10: 現在の UMAP / Spatial をプロジェクトサムネに登録
+# 図を PNG 化してサーバーに保存し、project.thumbnail_source を更新する。
+# =============================================================================
+
+def _save_figure_as_thumbnail(figures_list, width, height, scale,
+                                project_id, kind):
+    """Plotly figure(s) を PNG 化してプロジェクトサムネとして登録。
+
+    ver3.11: 複数切片 (per-sample) がある場合は **最初の 1 枚** のみ使用。
+    横結合した wide なサムネは 50x50 square で見切れるため。
+
+    Returns
+    -------
+    tuple[bool, str]
+        (success, message)
+    """
+    from pathlib import Path
+    from app.config import OTHER_DIR
+    from app.services.project_manager import get_project, update_project
+
+    if not project_id:
+        return False, "プロジェクトが選択されていません"
+
+    project = get_project(project_id)
+    if not project:
+        return False, f"プロジェクトが見つかりません: {project_id}"
+
+    if not figures_list:
+        return False, "保存対象のプロットがありません"
+
+    # ver3.11: 複数 figure (per-sample 等) は **最初の 1 枚だけ** 使う。
+    # 横結合 (concat) はサムネで見切れるため廃止
+    first_entry = figures_list[0]
+    if isinstance(first_entry, (list, tuple)) and len(first_entry) >= 2:
+        first_name, first_fig = first_entry[0], first_entry[1]
+    else:
+        first_name, first_fig = "thumbnail", first_entry
+
+    try:
+        final_png = fig_to_png_bytes(
+            first_fig, width=width, height=height, scale=scale,
+        )
+    except Exception as e:
+        logger.warning("PNG conversion failed: %s", e, exc_info=True)
+        return False, f"PNG 化に失敗しました: {e}"
+
+    if not final_png:
+        return False, "PNG 化に失敗しました"
+
+    n_total = len(figures_list)
+    if n_total > 1:
+        logger.info(
+            "thumbnail: %d figures available, using only first (%s)",
+            n_total, first_name,
+        )
+
+    # 保存先: Data/Other/cache/project_thumbnails_src/<project_id>_<kind>.png
+    save_dir = OTHER_DIR / "cache" / "project_thumbnails_src"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in project_id)
+    save_path = save_dir / f"{safe_id}_{kind}.png"
+    try:
+        with open(save_path, "wb") as f:
+            f.write(final_png)
+    except Exception as e:
+        logger.error("thumbnail PNG save failed: %s", e)
+        return False, f"保存失敗: {e}"
+
+    # project.thumbnail_source を更新
+    updated = update_project(project_id, {
+        "thumbnail_source": str(save_path),
+    })
+    if updated is None:
+        return False, "プロジェクト更新に失敗しました"
+
+    # ver3.15: cache pre-warm。次回 Flask route 呼出は即時 hit する。
+    # 失敗してもユーザー操作には影響しないので例外は飲み込む。
+    try:
+        from app.services.thumbnail_service import get_thumbnail_path
+        get_thumbnail_path(project_id, str(save_path))
+    except Exception as e:
+        logger.debug("thumbnail cache pre-warm failed: %s", e)
+
+    logger.info("thumbnail set: project=%s kind=%s path=%s (used 1/%d figs)",
+                project_id, kind, save_path, n_total)
+    if n_total > 1:
+        msg = f"サムネを {kind} で登録しました (複数切片は 1 枚目のみ使用)"
+    else:
+        msg = f"サムネを {kind} で登録しました"
+    return True, msg
+
+
+@callback(
+    Output("notification_toast", "is_open", allow_duplicate=True),
+    Output("notification_toast", "children", allow_duplicate=True),
+    Output("notification_toast", "icon", allow_duplicate=True),
+    Output("project_list_refresh", "data", allow_duplicate=True),
+    Input("btn_set_thumbnail_spatial", "n_clicks"),
+    [State("batch_spatial_figures_store", "data"),
+     State("interactive_project_select", "value"),
+     State("project_list_refresh", "data")],
+    prevent_initial_call=True,
+)
+def cb_set_thumbnail_spatial(n_clicks, spatial_figs, project_id, refresh):
+    if not n_clicks:
+        raise PreventUpdate
+    # ver3.15: サムネ用に小さい解像度で kaleido を呼ぶ (5-10× 高速化)
+    ok, msg = _save_figure_as_thumbnail(
+        spatial_figs or [],
+        _THUMB_RENDER_W, _THUMB_RENDER_H, _THUMB_RENDER_SCALE,
+        project_id, "spatial",
+    )
+    return True, msg, ("success" if ok else "danger"), (refresh or 0) + 1
+
+
+@callback(
+    Output("notification_toast", "is_open", allow_duplicate=True),
+    Output("notification_toast", "children", allow_duplicate=True),
+    Output("notification_toast", "icon", allow_duplicate=True),
+    Output("project_list_refresh", "data", allow_duplicate=True),
+    Input("btn_set_thumbnail_umap", "n_clicks"),
+    [State("interactive_umap_plot", "figure"),
+     State("batch_umap_figures_store", "data"),
+     State("umap_display_mode", "value"),
+     State("interactive_project_select", "value"),
+     State("project_list_refresh", "data")],
+    prevent_initial_call=True,
+)
+def cb_set_thumbnail_umap(n_clicks, umap_fig, per_sample_figs,
+                          display_mode, project_id, refresh):
+    if not n_clicks:
+        raise PreventUpdate
+    # 表示モードに応じて選択: per_sample なら 1 枚目、それ以外は統合 UMAP
+    if display_mode == "per_sample" and per_sample_figs:
+        figs = per_sample_figs
+    elif umap_fig:
+        figs = [("UMAP_integrated", umap_fig)]
+    else:
+        return True, "UMAP プロットが見つかりません", "danger", no_update
+    # ver3.15: サムネ用に小さい解像度で kaleido を呼ぶ (5-10× 高速化)
+    ok, msg = _save_figure_as_thumbnail(
+        figs,
+        _THUMB_RENDER_W, _THUMB_RENDER_H, _THUMB_RENDER_SCALE,
+        project_id, "umap",
+    )
+    return True, msg, ("success" if ok else "danger"), (refresh or 0) + 1

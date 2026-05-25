@@ -78,6 +78,7 @@ def toggle_change_password_modal(open_clicks, cancel_clicks, is_open):
 
 # ---- clientside: 「保存」クリックで /api/admin/change-password を fetch ----
 
+# ver4.0: cp_new_a (Password A) を削除。Master + 共有 (B) の 2 本のみ。
 clientside_callback(
     ClientsideFunction(
         namespace="auth",
@@ -86,12 +87,10 @@ clientside_callback(
     Output("cp_status", "children"),
     Output("cp_master", "value"),
     Output("cp_new_master", "value"),
-    Output("cp_new_a", "value"),
     Output("cp_new_b", "value"),
     Input("cp_submit_btn", "n_clicks"),
     State("cp_master", "value"),
     State("cp_new_master", "value"),
-    State("cp_new_a", "value"),
     State("cp_new_b", "value"),
     prevent_initial_call=True,
 )

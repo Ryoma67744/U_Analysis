@@ -435,10 +435,15 @@ def scan_rds_files(n_clicks, folder_path):
      Output("interactive_integration_method", "value", allow_duplicate=True),
      Output("interactive_rds_map", "data", allow_duplicate=True)],
     Input("interactive_result_folder", "value"),
+    State("shared_session", "data"),
     prevent_initial_call=True,
 )
-def auto_scan_rds_files(folder_path):
-    """結果フォルダのパスが設定された時、自動で統合手法を検出"""
+def auto_scan_rds_files(folder_path, shared):
+    """結果フォルダのパスが設定された時、自動で統合手法を検出。
+
+    ver4.1: 共有モードで共有元が特定手法 (all 以外) を指定した場合は、
+    受け手に見せる手法をその 1 つに限定する。"all" / 未指定なら全手法を表示。
+    """
     if not folder_path or not Path(folder_path).is_dir():
         return no_update, no_update, no_update
 
@@ -446,10 +451,39 @@ def auto_scan_rds_files(folder_path):
     if not rds_map:
         return no_update, no_update, no_update
 
+    # 共有モードで特定手法が指定されていれば、その手法のみに限定する
+    if shared and shared.get("active"):
+        method = shared.get("integration_method")
+        if method and method != "all" and method in rds_map:
+            rds_map = {method: rds_map[method]}
+
     options = [{"label": k, "value": k} for k in rds_map.keys()]
     default = "Harmony" if "Harmony" in rds_map else list(rds_map.keys())[0]
 
     return options, default, rds_map
+
+
+# ---------------------------------------------------------------------------
+# ver4.0: ⑤ サブプロ/共有エントリ時にインタラクティブ解析を即時自動読込
+# ---------------------------------------------------------------------------
+# 「インタラクティブ」ボタン or 共有 URL からの遷移で
+# interactive_result_folder が prefill → auto_scan_rds_files が
+# interactive_rds_map を設定 → ここで load_interactive_data の n_clicks を
+# programmatically increment して「データを読み込む」を自動実行する。
+# (entry_mode が手動 standalone の場合は自動実行しない = 従来通り手動)
+
+@callback(
+    Output("load_interactive_data", "n_clicks", allow_duplicate=True),
+    Input("interactive_rds_map", "data"),
+    [State("interactive_integration_method", "value"),
+     State("interactive_entry_mode", "data"),
+     State("load_interactive_data", "n_clicks")],
+    prevent_initial_call=True,
+)
+def auto_load_on_rds_ready(rds_map, method, entry_mode, cur_clicks):
+    if rds_map and method and entry_mode in ("sub_project", "shared"):
+        return (cur_clicks or 0) + 1
+    return no_update
 
 
 # ---------------------------------------------------------------------------

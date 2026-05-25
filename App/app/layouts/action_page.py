@@ -17,7 +17,17 @@ def create_action_page():
             html.Div(
                 className="app-header",
                 children=[
-                    html.H1("MSI Analysis Application"),
+                    # ver3.16: クリックでプロジェクト一覧 (landing) に戻れるよう
+                    # ボタン化 (id を _action 接尾辞で別にして DOM 重複回避)
+                    dbc.Button(
+                        html.H1("MSI Analysis Application",
+                                className="m-0 p-0"),
+                        id="header_title_home_btn_action",
+                        color="link",
+                        className="p-0 border-0 text-decoration-none",
+                        style={"color": "inherit", "textAlign": "left"},
+                        title="プロジェクト一覧に戻る",
+                    ),
                     html.P(
                         className="subtitle",
                         children="質量分析イメージングデータ解析システム",
@@ -124,6 +134,84 @@ def create_action_page():
                         html.Div(id="share_links_container",
                                  className="text-muted small",
                                  children="共有リンクはありません"),
+                    ]),
+
+                    # ver3.17: プロジェクト関連情報 (URL 3 種 + memo)
+                    # 編集可能、保存ボタンで更新。フォントサイズも拡大。
+                    html.Hr(className="my-4"),
+                    html.Div(id="project_info_section", children=[
+                        html.H5("プロジェクト関連情報"),
+                        html.Div(
+                            id="project_info_container",
+                            style={"fontSize": "1rem"},
+                            children=[
+                                # 3 つの URL 入力欄
+                                dbc.InputGroup([
+                                    dbc.InputGroupText(
+                                        "📝 Google Keep",
+                                        style={"minWidth": "150px",
+                                               "fontSize": "0.95rem"},
+                                    ),
+                                    dbc.Input(
+                                        id="project_info_google_keep_url",
+                                        placeholder="https://keep.google.com/...",
+                                        type="url",
+                                        style={"fontSize": "0.95rem"},
+                                    ),
+                                ], className="mb-2"),
+                                dbc.InputGroup([
+                                    dbc.InputGroupText(
+                                        "🔗 MSI Share",
+                                        style={"minWidth": "150px",
+                                               "fontSize": "0.95rem"},
+                                    ),
+                                    dbc.Input(
+                                        id="project_info_msi_share_url",
+                                        placeholder="https://...",
+                                        type="url",
+                                        style={"fontSize": "0.95rem"},
+                                    ),
+                                ], className="mb-2"),
+                                dbc.InputGroup([
+                                    dbc.InputGroupText(
+                                        "🌐 Other",
+                                        style={"minWidth": "150px",
+                                               "fontSize": "0.95rem"},
+                                    ),
+                                    dbc.Input(
+                                        id="project_info_other_url",
+                                        placeholder="https://...",
+                                        type="url",
+                                        style={"fontSize": "0.95rem"},
+                                    ),
+                                ], className="mb-2"),
+                                # メモ
+                                dbc.Label("📋 メモ", className="mt-2 fw-bold",
+                                          style={"fontSize": "0.95rem"}),
+                                dbc.Textarea(
+                                    id="project_info_memo",
+                                    placeholder="メモ（任意）",
+                                    style={"height": "100px",
+                                           "fontSize": "0.95rem"},
+                                ),
+                                # 保存ボタン + 状態
+                                html.Div(
+                                    className="mt-3 d-flex align-items-center gap-3",
+                                    children=[
+                                        dbc.Button(
+                                            "💾 保存",
+                                            id="project_info_save_btn",
+                                            color="primary",
+                                            size="sm",
+                                        ),
+                                        html.Span(
+                                            id="project_info_status",
+                                            className="small text-muted",
+                                        ),
+                                    ],
+                                ),
+                            ],
+                        ),
                     ]),
                 ],
             ),
@@ -429,21 +517,29 @@ def _create_share_modal():
 
                 html.Div(id="share_target_info", className="mb-3"),
 
-                # 共有方式の選択 (期間付き = Tier B 認証 / 無期限 = 認証不要)
-                dbc.Label("共有方式", className="fw-bold"),
+                # 共有方式の選択 (ver4.2: 期限のみ。パス要否は下のスイッチで独立指定)
+                dbc.Label("共有方式（有効期限）", className="fw-bold"),
                 dbc.RadioItems(
                     id="share_kind_radio",
                     options=[
                         {
-                            "label": "期間付き共有（共有先は Password B でのログインが必要）",
+                            "label": "期間付き共有（有効期限あり）",
                             "value": "expiring",
                         },
                         {
-                            "label": "無期限共有（URL を知る人全員が認証なしで閲覧可。注意!）",
+                            "label": "無期限共有（期限なし）",
                             "value": "persistent",
                         },
                     ],
                     value="expiring",
+                    className="mb-2",
+                ),
+
+                # ver4.2: パスワード保護 (期限と独立。ON=共有パスでログイン必須)
+                dbc.Switch(
+                    id="share_require_password",
+                    label="🔒 パスワード保護（開くのに共有パスワードが必要）",
+                    value=True,
                     className="mb-3",
                 ),
 
@@ -472,11 +568,16 @@ def _create_share_modal():
                         dbc.Select(
                             id="share_integration_method",
                             options=[
+                                {"label": "all（全手法を共有）", "value": "all"},
                                 {"label": "Harmony", "value": "Harmony"},
                                 {"label": "RPCA", "value": "RPCA"},
                                 {"label": "PCA", "value": "PCA"},
                             ],
-                            value="Harmony",
+                            value="all",
+                        ),
+                        html.Small(
+                            "all＝受け手は全手法を切替可／個別手法＝その手法のみ表示",
+                            className="text-muted",
                         ),
                     ]),
                 ], className="mb-3"),
@@ -487,10 +588,13 @@ def _create_share_modal():
                     style={"display": "none"},
                     children=[
                         dbc.Alert(
-                            "⚠ 無期限共有は URL を知る人すべてが認証なしで閲覧"
-                            "できます。URL は token_urlsafe(16) で生成され推測"
-                            "は困難ですが、メール本文や公開リポジトリへの誤投稿"
-                            "など URL 漏洩に注意してください。",
+                            "⚠ パスワード保護OFF: URL を知る人すべてが認証なしで"
+                            "インタラクティブ解析を操作でき、色変更・クラスタ"
+                            "マージ・ラベル編集などの変更は元プロジェクトに"
+                            "保存されます。URL は token_urlsafe(16) で生成され"
+                            "推測は困難ですが、メール本文や公開リポジトリへの"
+                            "誤投稿など URL 漏洩に十分注意してください。"
+                            "機密データは「パスワード保護ON」を推奨します。",
                             color="warning",
                             className="mb-3 small",
                         ),

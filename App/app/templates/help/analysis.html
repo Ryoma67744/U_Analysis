@@ -35,6 +35,7 @@
     <li><a href="#errors">🛟 よくあるエラー</a></li>
     <li><a href="#faq">❓ FAQ</a></li>
     <li><a href="#changelog">📝 バージョン履歴</a></li>
+    <li><a href="#maintenance">🧰 保守・ツール（RDS軽量化 / 環境設定 / SCiLS）</a></li>
   </ol>
 </div>
 
@@ -456,20 +457,42 @@
 <h2 class="section-heading" id="interactive">🎨 6. インタラクティブ解析</h2>
 
 <p>結果を見て「ここのクラスタをマージしたい」「色を変えたい」と思ったら、
-   <strong>インタラクティブタブ</strong> で対話的に修正できます。</p>
+   <strong>インタラクティブタブ</strong> で対話的に修正できます。UMAP・空間マッピング・Feature Plot・
+   DEG/Volcano などをブラウザ上で操作でき、変更はサーバー側に保存されます。</p>
 
-<h3 class="subsection-heading">主な操作</h3>
+<div class="help-alert tip">
+  <div class="alert-title">🆕 ⑤ 即時読込（ver4.0）</div>
+  <p class="small mb-1">
+    サブプロジェクト一覧の <strong>「インタラクティブ」ボタン</strong> から入ると、
+    <strong>「スキャン」「データを読み込む」を押さずに</strong> その解析の UMAP / 空間マッピングが
+    即座に表示されます（結果フォルダ・統合手法・MSI フォルダを自動補完して自動ロード）。
+  </p>
+  <p class="small mb-0">
+    一方、ランディングページの「インタラクティブ解析」ボタンから入った場合（standalone）は、
+    結果フォルダを自分で指定して「データを読み込む」を押す、従来どおりの手動読込です。
+  </p>
+</div>
+
+<h3 class="subsection-heading">主な機能・操作</h3>
 <table class="help-table">
   <thead>
-    <tr><th>操作</th><th>やり方</th><th>用途</th></tr>
+    <tr><th>機能</th><th>内容</th></tr>
   </thead>
   <tbody>
-    <tr><td>🖱 クラスタ選択</td><td>UMAPプロット上で囲み選択</td><td>特定クラスタを抽出</td></tr>
-    <tr><td>🎨 色変更</td><td>カラーピッカーで色指定</td><td>論文用に色を統一</td></tr>
-    <tr><td>🔗 マージ</td><td>複数クラスタ選択 → マージボタン</td><td>過分割の修正</td></tr>
-    <tr><td>✂️ 分割</td><td>クラスタ選択 → 再UMAP</td><td>過合併の修正</td></tr>
-    <tr><td>🚫 除外</td><td>クラスタ選択 → 除外ボタン</td><td>背景・ノイズ除去</td></tr>
-    <tr><td>💾 保存</td><td>「結果を保存」ボタン</td><td>新しいRDSとして書き出し</td></tr>
+    <tr><td>🎯 <strong>UMAP 表示</strong></td><td>統合 UMAP / サンプル別 UMAP。クラスタ別・サンプル別の色分け、凡例・ラベルの表示切替、マーカーサイズ調整、クラスタのハイライト</td></tr>
+    <tr><td>🗺 <strong>空間マッピング</strong></td><td>組織切片上にクラスタを色塗り表示。サンプルごとの回転（0/90/180/270°）・水平/垂直反転（§6.1）、特定 m/z 強度のオーバーレイ</td></tr>
+    <tr><td>📈 <strong>Feature Plot</strong></td><td>m/z を検索して UMAP / 空間上に強度を表示。よく使う m/z はブックマーク可能</td></tr>
+    <tr><td>🌋 <strong>DEG・Volcano</strong></td><td>クラスタ間の発現差（DEG）を Volcano plot で表示。クラスタごとの Top マーカーも確認</td></tr>
+    <tr><td>🔗 <strong>クラスタ マージ</strong></td><td>複数クラスタを 1 つに統合（過分割の修正）</td></tr>
+    <tr><td>✏ <strong>クラスタ リネーム</strong></td><td>クラスタに分かりやすい名前を付与（編集ロックで同時編集を防止）</td></tr>
+    <tr><td>🚫 <strong>クラスタ 除外</strong></td><td>背景・ノイズのクラスタを表示から除外</td></tr>
+    <tr><td>🎨 <strong>色変更・プリセット</strong></td><td>カラーピッカーで配色を変更。DESI 用などのプリセット配色も適用可</td></tr>
+    <tr><td>🏷 <strong>ラベル位置編集</strong></td><td>クラスタ名ラベルをドラッグして位置調整（RDS 単位で保存）</td></tr>
+    <tr><td>🎚 <strong>m/z キャリブレーション</strong></td><td>既知の m/z ペアで補正（線形 / 多項式）。指定クラスタを再アノテーション</td></tr>
+    <tr><td>📤 <strong>エクスポート</strong></td><td>PPT レポート（クラスタ別 UMAP / 空間 / Volcano）、PNG 一括、クラスタ統計・DEG の CSV 出力</td></tr>
+    <tr><td>📌 <strong>サムネ登録</strong></td><td>UMAP / 空間プロット下の「📌 サムネ登録」で、現在の図をプロジェクト一覧のサムネに設定（§12）</td></tr>
+    <tr><td>🗂 <strong>プロジェクトとして保存</strong></td><td>現在のインタラクティブ結果を新規 / 既存プロジェクトに保存（結果・MSI フォルダのパスは自動補完）</td></tr>
+    <tr><td>💾 <strong>結果を保存</strong></td><td>編集内容を新しい RDS として明示的に書き出し</td></tr>
   </tbody>
 </table>
 
@@ -551,6 +574,19 @@
   2 種類から選択できます。
 </p>
 
+<div class="help-alert tip">
+  <div class="alert-title">🆕 ver4.0: 共有 = インタラクティブ解析の全機能（操作可・保存あり）</div>
+  <p class="small mb-1">
+    従来の「閲覧専用ビューア」から、共有先でも <strong>インタラクティブ解析の全機能</strong>
+    （色変更・クラスタマージ・リネーム・ラベル編集など）を使える方式に変わりました。
+  </p>
+  <ul class="small mb-0">
+    <li>共有先の操作は <strong>元プロジェクトに保存されます</strong>（read-only ではありません）。</li>
+    <li>共有 URL では <strong>「インタラクティブ解析」タブのみ</strong>が表示され、他のタブ
+      （解析設定 / 結果閲覧 / セッション履歴）・サイドバー・戻るボタンは隠れます。</li>
+  </ul>
+</div>
+
 <h3 class="subsection-heading">A. タブ別 URL（deep link）</h3>
 
 <table class="help-table">
@@ -573,47 +609,52 @@
   ブックマークすれば次回起動時も同じタブが開きます。
 </div>
 
-<h3 class="subsection-heading">B. 共有方式の選択</h3>
+<h3 class="subsection-heading">B. 共有方式の選択（ver4.2: 期限とパスワードは独立）</h3>
 
 <p>
-  サブプロジェクト画面の「共有リンク作成」モーダルで、共有方式を選択できます:
+  サブプロジェクト一覧の「共有リンク作成」モーダルで、<strong>「有効期限の有無」</strong>と
+  <strong>「パスワード保護の有無」</strong>を<strong>別々に</strong>選べます
+  （どちらの組合せでもインタラクティブ解析の全機能が開き、操作は元プロジェクトに保存されます）。
 </p>
 
 <div class="row g-3">
   <div class="col-md-6">
     <div class="ui-card">
       <span class="icon">⏰</span>
-      <div class="name">期間付き共有</div>
-      <p class="small mb-1"><strong>URL</strong>: <code>/share/&lt;token&gt;</code></p>
-      <p class="small mb-1"><strong>認証</strong>: 共有先で <strong>Password B</strong> ログインが必要</p>
-      <p class="small mb-1"><strong>期限</strong>: 7 / 14 / 30 / 90 日から選択</p>
-      <p class="small mb-0"><strong>用途</strong>: 学外コラボ・査読・短期共有</p>
+      <div class="name">① 有効期限</div>
+      <p class="small mb-1"><strong>期間付き共有</strong>（<code>/share/&lt;token&gt;</code>）:
+        7 / 14 / 30 / 90 日で自動失効</p>
+      <p class="small mb-0"><strong>無期限共有</strong>（<code>/view/&lt;token&gt;</code>）: 期限なし</p>
     </div>
   </div>
   <div class="col-md-6">
     <div class="ui-card">
-      <span class="icon">♾</span>
-      <div class="name">無期限共有 🆕</div>
-      <p class="small mb-1"><strong>URL</strong>: <code>/view/&lt;token&gt;</code></p>
-      <p class="small mb-1"><strong>認証</strong>: <strong>不要</strong>（URL を知る人全員が閲覧可）</p>
-      <p class="small mb-1"><strong>期限</strong>: なし</p>
-      <p class="small mb-0"><strong>用途</strong>: ラボ内 wiki への永続的なリンク・社内資料</p>
+      <span class="icon">🔒</span>
+      <div class="name">② パスワード保護</div>
+      <p class="small mb-1"><strong>ON</strong>: 共有先は <strong>共有パスワード</strong>（Tier B）でログインが必要</p>
+      <p class="small mb-0"><strong>OFF</strong>: 認証なしで誰でも開ける（URL を知る人全員）</p>
     </div>
   </div>
 </div>
 
-<div class="help-alert warn">
-  <div class="alert-title">⚠️ 無期限共有のセキュリティ</div>
+<p class="small text-muted mt-2">
+  → 計 4 通り（期間付き×パスON/OFF、無期限×パスON/OFF）から選べます。
+  既定は「パスワード保護 ON」です。
+</p>
+
+<div class="help-alert danger">
+  <div class="alert-title">🛑 パスワード保護 OFF のセキュリティ — 重要</div>
   <p class="small mb-1">
-    無期限共有の URL は <code>token_urlsafe(16)</code> で生成され、推測攻撃には
-    実質耐性があります（128 bit のエントロピー）。しかし以下に注意:
+    共有先は <strong>操作可能・かつ変更が元プロジェクトに保存される</strong>ため、
+    パスワード保護 OFF は <strong>URL を知る第三者が元データを書き換えられる</strong>ことを意味します
+    （期限の有無に関係なく）。URL は <code>token_urlsafe(16)</code>（128 bit）で推測は困難ですが:
   </p>
   <ul class="small mb-0">
-    <li>URL を <strong>メール本文・チャット・公開リポジトリ</strong> に貼ると、
-      その経路を通じて閲覧可能になります</li>
-    <li>サーバーログや CDN キャッシュに URL が残る場合があります</li>
-    <li>失効させたい場合は、共有元のメンバーが手動で revoke する必要があります
-      （<code>persistent_shares.json</code> から該当エントリを削除）</li>
+    <li>機密データや書き換えられたくない結果には <strong>パスワード保護 ON</strong> を推奨</li>
+    <li>URL を <strong>メール・チャット・公開リポジトリ</strong> に貼ると、その経路から操作可能になる</li>
+    <li>サーバーログや CDN キャッシュに URL が残る場合がある</li>
+    <li>失効は、サブプロジェクト一覧の <strong>「共有リンク管理」</strong> から削除
+      （期間付き・無期限どちらも一覧・削除可能）</li>
   </ul>
 </div>
 
@@ -621,13 +662,24 @@
 <ol>
   <li>サブプロジェクト一覧から該当プロジェクトを開く</li>
   <li>「🔗 共有リンク作成」ボタンをクリック</li>
-  <li>モーダル上部の <strong>「共有方式」</strong> ラジオで
-    <code>期間付き共有</code> または <code>無期限共有</code> を選ぶ</li>
-  <li>期間付きの場合は「有効期限」を選択。無期限の場合は警告 Alert を確認</li>
-  <li>「統合手法」を選択（Harmony / RPCA / PCA）</li>
+  <li><strong>「共有方式（有効期限）」</strong> で <code>期間付き共有</code> または <code>無期限共有</code> を選ぶ
+    （期間付きの場合は「有効期限」も選択）</li>
+  <li><strong>「🔒 パスワード保護」スイッチ</strong>で ON（共有パス必須）/ OFF（認証なし）を選ぶ。
+    OFF のときは警告 Alert を確認</li>
+  <li>「統合手法」を選択（<code>all</code> / Harmony / RPCA / PCA）</li>
   <li>必要に応じてメモを入力</li>
   <li>「共有リンクを生成」 → 表示された URL をコピーして共有</li>
 </ol>
+
+<div class="help-alert tip">
+  <div class="alert-title">💡 統合手法「all」と個別選択の違い（ver4.1）</div>
+  <ul class="small mb-0">
+    <li><strong>all（全手法を共有・既定）</strong>: 共有先は結果フォルダにある全手法
+      （Harmony / RPCA / PCA）を取得し、画面上部のセレクタで自由に切り替えられます。</li>
+    <li><strong>個別手法（Harmony 等）</strong>: 共有先には<strong>その手法のみ</strong>が表示されます
+      （特定の手法だけ見せたいときに選択）。</li>
+  </ul>
+</div>
 
 <!-- ============================================ -->
 <h2 class="section-heading" id="errors">🛟 9. よくあるエラーと対処法</h2>
@@ -720,6 +772,29 @@
   </thead>
   <tbody>
     <tr>
+      <td><strong>ver4.0</strong><br><span class="text-muted small">2026-05-24</span></td>
+      <td>
+        ① <strong>共有 = インタラクティブ解析の全機能</strong>に変更（閲覧専用ビューアから移行）。
+        共有先の操作（色変更 / クラスタマージ / ラベル編集等）は<strong>元プロジェクトに保存</strong>される<br>
+        ② 無期限共有（<code>/view/</code>）はパスワード不要・閲覧時も認証なし<br>
+        ③ パスワード変更で、ログイン済（Tier A）なら <strong>Master の再入力を省略</strong><br>
+        ④ パスワードを <strong>Master + 共有パスワードの 2 本に統合</strong>（旧 Password A を廃止。Master で
+        日常ログイン + 変更権限）<br>
+        ⑤ サブプロの「インタラクティブ」ボタンで解析を<strong>即時読込</strong>（スキャン / 読込ボタン不要）<br>
+        ⑥ 共有 URL では <strong>interactive タブのみ表示</strong>（他タブ・サイドバー・戻るボタンを非表示）
+      </td>
+    </tr>
+    <tr>
+      <td>ver3.1〜3.17</td>
+      <td>
+        プロジェクト管理の改善（タイトル + 実験日の必須化、関連 URL 3 種、実験日ソート）/
+        <strong>プロジェクトサムネ表示</strong>（一覧カード、インタラクティブから登録）/
+        サブプロ一覧で<strong>プロジェクト関連情報を編集可能化</strong> /
+        <strong>RDS 軽量化</strong>・<strong>環境設定（.env）</strong>・<strong>SCiLS 変換</strong>などの保守ツール追加
+        （詳細は §12）
+      </td>
+    </tr>
+    <tr>
       <td><strong>ver3.0</strong></td>
       <td>
         ① インタラクティブ解析の flip/rotation を軽量ビューアにも反映するよう修正<br>
@@ -757,6 +832,71 @@
     </tr>
   </tbody>
 </table>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="maintenance">🧰 12. 保守・ツール（RDS軽量化 / 環境設定 / SCiLS 変換）</h2>
+
+<p>
+  日常解析以外の保守系ツールです。<strong>RDS軽量化</strong>と<strong>環境設定</strong>は
+  ランディングページ（プロジェクト一覧）右上のボタンから、<strong>SCiLS 変換</strong>は
+  解析設定タブのサイドバーの「🔄 SCiLS 変換」ボタンから開きます。
+</p>
+
+<h3 class="subsection-heading" id="rds-slim">🧹 RDS 軽量化</h3>
+<p>
+  過去に解析した <code>.rds</code> ファイルを一括で軽量化します。<strong>DietSeurat</strong> で
+  <code>scale.data</code> を削除し、<strong>qs</strong> で高圧縮保存に変換します。旧形式の
+  <code>.rds</code> はマジックバイト判定で透過的に読めるため、<strong>読み込み互換性は完全に保たれます</strong>。
+</p>
+<ul>
+  <li><strong>対象フォルダ</strong>: 指定フォルダ以下を再帰スキャン（qs 形式は自動スキップ）</li>
+  <li><strong>Dry-run</strong>（既定 ON）: 書き込まずに削減見込みだけ表示</li>
+  <li><strong>バックアップ</strong>（既定 ON）: <code>&lt;file&gt;.rds.bak</code> を残す</li>
+  <li><strong>対象ファイルパターン</strong>（既定 <code>Step1*.rds,Step2*.rds,Step3*.rds,*_seurat*.rds</code>）</li>
+  <li>詳細設定: <code>--keep-scale</code> / <code>--keep-graphs</code>（通常は OFF。再解析時に再構築される）</li>
+</ul>
+<div class="help-alert tip">
+  <div class="alert-title">💡 まず Dry-run で確認</div>
+  初回は Dry-run（ON）で削減見込みを確認してから、OFF にして実行するのが安全です。
+  書き込みはアトミック置換で行われ、進捗バーとログがモーダル内に表示されます。
+</div>
+
+<h3 class="subsection-heading" id="env-settings">⚙ 環境設定（.env）</h3>
+<p>生データの保存先や R 実行環境などを <code>.env</code> ファイルに GUI から書き込みます。</p>
+<table class="help-table">
+  <thead><tr><th>項目</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td><code>TIMS_DATA_DIR</code></td><td>TIMS 解析の既定データフォルダ / 復元時のルート</td></tr>
+    <tr><td><code>DESI_DATA_DIR</code></td><td>DESI 解析の既定データフォルダ / 復元時のルート</td></tr>
+    <tr><td><code>R_HOME</code></td><td>Rscript が <code>bin/</code> 配下にある R ディレクトリ</td></tr>
+    <tr><td><code>SHARE_BASE_URL</code></td><td>共有リンク生成時のベース URL（空欄で LAN IP 自動）</td></tr>
+    <tr><td><code>APP_PORT</code> / <code>APP_HOST</code></td><td>アプリの待受ポート（既定 3838）/ ホスト（既定 0.0.0.0）</td></tr>
+  </tbody>
+</table>
+<div class="help-alert warn">
+  <div class="alert-title">⚠️ 反映には再起動が必要</div>
+  <code>.env</code> の変更を有効化するには、アプリ（Docker コンテナ）の再起動が必要です。
+</div>
+
+<h3 class="subsection-heading" id="scils">🔄 SCiLS データ変換</h3>
+<p>
+  SCiLS Lab で Export した <strong>Intensity CSV + Spot CSV（+ 任意の Annotation CSV）</strong>が入った
+  フォルダを指定すると、ヘッダ構造とサイズで役割を自動検出し <strong>Parquet</strong> に変換します
+  （TIMS 解析の入力形式）。
+</p>
+<ul>
+  <li><strong>入力フォルダ</strong>: SCiLS 出力フォルダ</li>
+  <li><strong>出力先フォルダ</strong>: 既定は <code>TIMS_DATA_DIR</code>（変換後すぐ解析タブの候補に出る）</li>
+  <li><strong>サンプル名</strong>: 出力ファイル名（拡張子は自動付与）</li>
+  <li>詳細設定: 変換後に元 CSV を <code>&lt;BASE&gt;_Transform/</code> へ移動 / Parquet を float32 で保存（容量半減）/ spot ブロックサイズ（既定 200）</li>
+</ul>
+
+<h3 class="subsection-heading">📌 プロジェクトサムネの登録</h3>
+<p>
+  インタラクティブ解析タブの UMAP / 空間プロット下にある <strong>「📌 サムネ登録」</strong> ボタンで、
+  現在表示中の図を <strong>プロジェクト一覧カードのサムネ画像</strong>（150×150）として登録できます。
+  サムネは更新時刻付きで配信されるため、登録し直すとすぐ最新の画像に切り替わります。
+</p>
 
 <hr class="my-5">
 <p class="text-center text-muted small">

@@ -42,6 +42,22 @@
       opacity: 0.92;
       margin-top: 0.3rem;
     }
+    .help-header .version-badge {
+      display: inline-block;
+      margin-left: 0.6rem;
+      padding: 0.1rem 0.6rem;
+      background-color: rgba(255, 255, 255, 0.2);
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      border-radius: 12px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .help-footer .footer-version {
+      margin-top: 0.5rem;
+      font-size: 0.8rem;
+      opacity: 0.85;
+    }
 
     /* ナビゲーション (登録ガイド ↔ 解析ガイド) */
     .help-nav {
@@ -317,7 +333,12 @@
 <body>
   <header class="help-header">
     <h1>{% block header_title %}🔬 MSI Analysis Application 取扱説明書{% endblock %}</h1>
-    <div class="subtitle">{% block header_subtitle %}{% endblock %}</div>
+    <div class="subtitle">
+      {% block header_subtitle %}{% endblock %}
+      {% if app_version %}
+      <span class="version-badge">📌 対応バージョン: {{ app_version }}</span>
+      {% endif %}
+    </div>
   </header>
 
   <nav class="help-nav">
@@ -335,6 +356,9 @@
   <footer class="help-footer">
     MSI Analysis Application — このページはアプリ内ヘルプ機能で表示しています。
     アプリ本体は <a href="/">こちら</a> から。
+    {% if app_version %}
+    <div class="footer-version">対応バージョン: {{ app_version }}（この説明書は本バージョンの画面・機能に対応しています）</div>
+    {% endif %}
   </footer>
 </body>
 </html>

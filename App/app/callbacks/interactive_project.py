@@ -43,7 +43,7 @@ def auto_fill_interactive_from_analysis(active_tab, app_state, data_folder, entr
     if active_tab != "interactive" or current_page != "analysis":
         return (no_update,) * 5
     # sub_action_interactive から来た場合は既にセット済み → スキップ
-    if entry_mode == "sub_project":
+    if entry_mode in ("sub_project", "shared"):
         return (no_update,) * 5
     # 解析が実行されていない場合はスキップ
     if not app_state or not app_state.get("full_output_dir"):
@@ -72,7 +72,7 @@ def auto_fill_interactive_from_analysis(active_tab, app_state, data_folder, entr
 )
 def toggle_project_dropdown_visibility(entry_mode):
     """entry_mode に応じてプロジェクトドロップダウンの表示/非表示を切り替え"""
-    if entry_mode == "sub_project":
+    if entry_mode in ("sub_project", "shared"):
         return {"display": "none"}
     return {}
 
@@ -108,7 +108,7 @@ def populate_interactive_sub_projects(project_id, entry_mode):
     from app.services.project_manager import list_sub_projects
     subs = list_sub_projects(project_id)
     options = [{"label": s["name"], "value": s["id"]} for s in subs]
-    if entry_mode == "sub_project":
+    if entry_mode in ("sub_project", "shared"):
         return options, no_update
     return options, None
 

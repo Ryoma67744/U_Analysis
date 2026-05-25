@@ -12,6 +12,450 @@
 
 ---
 
+## 2026-05-25_ver4.4
+
+### パフォーマンス改善（共有URLを開いたときの読み込み高速化）
+- **Seurat 抽出キャッシュを永続化**（再デプロイで消えない）
+  - 従来 `/tmp/msi_seurat_cache`（Docker 非永続）→ コンテナ recreate のたびに
+    消え、共有を開く受信者が毎回コールド R 抽出（数十秒級）を踏んでいた
+  - `config.py`: `SEURAT_CACHE_DIR` を環境変数で上書き可能化（既定は従来の tempdir）
+  - `docker-compose.yml`: 専用ボリューム `msi-seurat-cache` を
+    `/app/Data/Other/seurat_cache` にマウントし `SEURAT_CACHE_DIR` を設定。
+    `SEURAT_CACHE_MAX_ENTRIES` を 12→30 に引き上げ
+  - ※専用ディレクトリ必須（LRU 退避 `_evict_seurat_cache_lru` が配下サブ
+    ディレクトリを削除するため、diskcache `/app/Data/Other/cache` とは別ボリューム）
+- **共有リンク生成時にキャッシュをバックグラウンド・プリウォーム**
+  - `project_callbacks.generate_share_link`: 受信者が最初に見る既定手法
+    （Harmony 優先）の RDS を daemon スレッドで先行抽出。受信者は初回から
+    ウォームで開ける。失敗しても共有作成には影響させない（best-effort）
+- **二重抽出の防止**
+  - `seurat_bridge.extract_data`: ベース抽出を FileLock で保護
+    （`ensure_expression_matrix` と同パターン）。プリウォームと受信者の初回
+    オープンが同時でも R 抽出は 1 回のみ。通常の同時初回オープンにも有効
+
+### 注意
+- 反映後、新パスでキャッシュを作り直すため各 RDS で初回のみコールド 1 回。以後永続。
+
+---
+
+## 2026-05-25_ver4.3
+
+### バグ修正
+- **共有リンクが受信側で開けない問題を修正**（生成 URL が Docker 内部アドレスだった）
+  - 症状: 生成された共有 URL が `http://172.18.0.3:3838/...`（コンテナ内部 IP + 内部
+    ポート）になり、外部の受信者は `ERR_CONNECTION_TIMED_OUT` でアクセス不能
+  - 原因: `SHARE_BASE_URL` 未設定時、`build_share_url` / `build_persistent_view_url`
+    が `socket.gethostname()` にフォールバックし、コンテナの Docker bridge IP を採用
+    していた（`.env.docker` の `SHARE_BASE_URL` も空だった）
+  - 修正:
+    - 新 `services/url_utils.external_base_url()`: 未設定時はアクセス元ホスト
+      （`request.host` + `X-Forwarded-Proto`、Caddy 等のプロキシ対応）から
+      公開 URL を組み立てる。内部 IP フォールバックは request 文脈外の最終手段に降格
+    - `.env.docker` の `SHARE_BASE_URL` に本番アドレス `https://133.167.73.188` を設定
+      （明示が最優先）。`.env.example` の説明も更新
+  - 効果: 既存の共有リンク（token は不変）も、再デプロイ後は表示 URL が
+    `https://133.167.73.188/view/<token>` に修正され、作り直し不要で開けるようになる
+
+---
+
+## 2026-05-25_ver4.2
+
+### 新機能
+- **共有のパスワード要否を「期限」と独立化**（無期限/期間付き × パスあり/なし の自由な組合せ）
+  - 従来は「期間付き=常にパス必須／無期限=常に認証なし」と固定だったのを、
+    共有ごとの **`require_password` フラグ**で制御するよう変更
+  - 共有作成モーダルに **「🔒 パスワード保護」スイッチ**を追加（既定 ON）。
+    共有方式ラジオは「有効期限の有無」だけを選ぶ意味に整理
+  - `auth_middleware.py`: `/view/` の無条件バイパスを廃止し、`/share/`・`/view/`
+    ともにトークンからレコードを引いて `require_password` で認証要否を判定
+    (`_share_password_required`)。見つからないトークンは fail-closed で認証要求
+  - `share_manager.create_share`（既定 True）/ `persistent_share_manager.create_persistent_share`
+    （既定 False）に `require_password` を追加
+  - 認証なし警告は「パスワード保護 OFF」のときのみ表示するよう連動
+- **無期限共有の一覧・削除 UI を追加**
+  - サブプロジェクト一覧「共有リンク管理」に無期限共有も併記（期間付き/無期限の
+    バッジ・🔒/🔓 表示・閲覧数）。`list_persistent_shares` を UI に接続
+  - 削除は既存ボタンを流用し、`revoke_persistent_share` も試行して該当を失効
+
+### 後方互換
+- 既存レコード（フラグ無し）は従来どおり: `/share/`=パス必須、`/view/`=認証なし。
+
+### 検証
+- ログイン要否: パス必要 share の `/share//view/` は未ログインで /login へ、
+  パス不要 share は認証なしで開く（Flask test client + 実機 4 通り）
+- 無期限共有が一覧表示され削除できる / パス OFF 時のみ警告表示
+
+---
+
+## 2026-05-25_ver4.1
+
+### 新機能
+- **共有リンク作成: 統合手法に「all（全手法を共有）」を追加**
+  - 共有モーダルの「統合手法」セレクタに `all` を追加し、既定値に設定
+  - `all` を選ぶと、共有先（受け手）は結果フォルダ内の全統合手法
+    (Harmony / RPCA / PCA) を自動取得して**自由に切り替え可能**
+  - `Harmony` など個別手法を選ぶと、共有先には**その手法のみ表示**される
+    （「基本は全手法、特定手法だけ共有したいときは個別選択」というニーズに対応）
+  - `action_page.py`: `share_integration_method` に `all` 選択肢 + 説明文を追加
+  - `share_callbacks.py`: `route_share_url` が共有元の統合手法を
+    `shared_session.integration_method` で受け手に伝達
+  - `interactive_callbacks.py`: `auto_scan_rds_files` を共有対応にし、
+    特定手法指定時は `interactive_rds_map` をその手法のみに限定
+
+### 補足
+- 既存の共有リンク（ver4.0 以前に作成、統合手法が個別値で保存済み）は、
+  本変更後に開くとその手法のみ表示になる。全手法を見せたい場合は `all` で再共有する。
+
+---
+
+## 2026-05-24_ver4.0
+
+共有モデルと認証を大きく見直したメジャーアップデート。
+
+### ① 共有 = インタラクティブ解析の全機能 (操作可・保存あり)
+- 共有リンクを従来の read-only ビューアから「インタラクティブ解析の
+  全機能」に変更。共有先での色変更・クラスタマージ・ラベル編集などの
+  操作は **元プロジェクトに保存される**。
+- `share_callbacks.py`: `route_share_url` を全面改修。`/share/<token>`
+  (期間付き) / `/view/<token>` (無期限) を解決し、`page_analysis` の
+  interactive タブへ遷移 + `shared_session` を設定する 9 出力 callback に。
+
+### ② パスワード無し共有
+- 無期限共有 (`/view/`) は認証不要で開ける (既存の bypass を活用)。
+- 共有作成モーダルの警告文を「操作可・元プロジェクトに保存される」旨に
+  更新 (`action_page.py`)。
+
+### ③ パスワード変更: ログイン済なら Master 再入力を省略
+- bcrypt 保存のため現在値の事前入力は不可。代替として Tier A
+  ログイン済なら Master 再入力なしで変更フォームを使えるよう緩和。
+- `auth_middleware.py:_change_password_view` で master を任意化
+  (入力時のみ照合)。モーダル/JS から該当必須を除去。
+
+### ④ パスワードを Master + 共有用の 2 本に統合
+- Master で日常ログイン (Tier A: プロジェクト一覧) + パスワード変更権限。
+- 共有パスワード (旧 Password B) は共有 URL 閲覧用 (Tier B)。
+- **Password A を廃止**。`_login_view` は Master→Tier A 判定に変更。
+- `auth_service.py`: 初期化必須を共有パスワードのみに緩和
+  (`password_a_hash` は後方互換で残置・参照しない)。
+- `login.html` / 変更モーダル / `auth.js` の表記・項目を 2 本構成に整理。
+
+### ⑤ 「インタラクティブ」ボタンで即時読込
+- サブプロジェクト/共有から開いた際、「スキャン」「データを読み込む」を
+  押さずに UMAP/Spatial が自動表示される。
+- `interactive_callbacks.py`: `auto_load_on_rds_ready` callback を追加。
+  RDS マップ準備完了 + entry_mode が sub_project/shared のとき自動 load。
+
+### ⑥ 共有 URL では interactive タブのみ表示
+- `project_callbacks.py`: `apply_shared_mode` callback を追加。
+  `shared_session` 有効時に他タブのヘッダー (`shared-mode-tabs` で
+  nav-tabs を非表示)・戻るボタン・ヘッダー操作ボタン群を隠す。
+- サイドバー非表示・全幅化は既存 `toggle_sidebar_content`
+  (interactive タブ選択時) が担当。
+- `main_layout.py`: `main_tabs` を `main_tabs_wrapper` div で包み、
+  `shared_session` Store を追加。`styles.css` に
+  `.shared-mode-tabs .nav-tabs { display:none; }` を追加。
+
+### 注意 / 移行
+- **セキュリティ**: 無期限共有は認証なしの第三者が元データを変更可能に
+  なる (ユーザー明示選択の仕様)。共有作成時の警告を確認すること。
+- Password A でのログインは廃止。今後は Master を使用。
+
+### 検証
+- ログイン: Master → Tier A、共有パスワード → Tier B、旧 A → 不可
+- ログイン済で「パスワード変更」が Master 再入力なしで使える
+- サブプロの「インタラクティブ」で即時表示
+- 共有 URL (`/view/`) で全機能表示・操作が元プロジェクトに保存
+- 共有 URL で interactive 以外のタブ/サイドバー/戻るボタンが非表示
+
+---
+
+## 2026-05-24_ver3.17
+
+### 改善
+- **サブプロジェクト一覧の「プロジェクト関連情報」を編集可能化**:
+  - ver3.16 は表示専用 (read-only) だったが、ユーザー要望でその場で編集
+    + 保存できるよう変更
+  - `action_page.py`: 3 つの URL `InputGroup` (Google Keep / MSI Share /
+    Other) + memo `Textarea` + 💾 保存ボタンを配置
+  - `project_callbacks.py`:
+    - 旧 `render_project_info` callback を廃止
+    - 新 `load_project_info`: ページ遷移時に既存値を input にロード
+    - 新 `save_project_info`: 保存ボタンで `update_project()` を呼び、
+      保存ステータスを表示 (例: `✓ 保存しました (14:23:45)`)
+  - 保存後は `project_list_refresh` を発火してプロジェクト一覧側も同期
+- **フォントサイズを拡大** (text-muted small → 0.95-1rem):
+  - 全要素 (Label / Input / Textarea) で `fontSize: 0.95rem` を明示指定
+  - 旧 `className="text-muted small"` (0.875rem) より読みやすく
+  - URL 入力欄の左ラベル枠の min-width を 150px に統一
+
+### 検証
+- サブプロ一覧で URL/memo を編集 → 「💾 保存」 → ステータスに ✓ + 時刻
+- プロジェクト切替時に新プロジェクトの値が input に再ロードされる
+- プロジェクト一覧側にも反映 (project_list_refresh 連動)
+
+---
+
+## 2026-05-24_ver3.16
+
+### 新機能・改善
+- **① 新規プロジェクト作成: タイトル + 実験日を必須化**
+  - 「実験日」ラベルに `*` を追加
+  - `handle_create_project` で `name` または `experiment_date` 空欄時は
+    モーダルを閉じずエラーメッセージを表示 (`new_project_error` Div)
+  - 編集モーダル (`handle_edit_project`) も同様に必須化
+
+- **② 新規/編集モーダルに URL 入力欄 3 つを追加**
+  - 📝 Google Keep / 🔗 MSI Share / 🌐 Other の 3 種類 (`type="url"`)
+  - `project_manager.create_project()` に
+    `google_keep_url / msi_share_url / other_url` 引数を追加
+  - projects.json に保存され、編集モーダルで既存値が復元される
+
+- **③ プロジェクト一覧のデフォルトソートを「実験日 (新しい順)」に変更**
+  - ソート選択肢に `実験日 (新しい順)/(古い順)` を追加
+  - `_sort_items` に `experiment_date_desc / experiment_date_asc` 分岐
+  - デフォルト `value` を `experiment_date_desc` に変更
+  - 編集時の自動先頭移動を防ぐ効果 (last_modified ベースではないため)
+
+- **④ プロジェクトカードから memo 表示を削除**
+  - カードには タイトル / 実験日 | サブプロ数 / 最終更新 / 「開く」のみ
+  - memo データは projects.json に残し、編集モーダルで引き続き編集可
+
+- **⑤ サブプロ一覧ページに「プロジェクト関連情報」セクションを追加**
+  - 共有リンク管理の直下に配置
+  - 3 つの URL を `📝 Google Keep / 🔗 MSI Share / 🌐 Other` の
+    クリッカブルリンク (別タブで開く) として表示
+  - 未設定の項目は「(未設定)」と表示
+  - メモは Pre タグで pre-wrap 整形表示
+
+- **⑥ サブプロ一覧 (action_page) のヘッダー「MSI Analysis Application」
+  クリックでプロジェクト一覧に戻れない不具合を修正**
+  - `action_page.py:16-26` の素の H1 を `dbc.Button(color="link")` で
+    ラップ (id="header_title_home_btn_action" — DOM 重複回避のため別 ID)
+  - `header_title_to_landing` callback の Input に追加
+
+### 影響範囲
+- `projects.json` 既存エントリには `google_keep_url` 等のフィールドが無いが、
+  `dict.get(...)` で安全に空文字 fallback (下位互換 OK)
+- `last_modified` ベースのソート挙動を期待していたユーザーは選択肢から
+  `更新日 (新しい順)` を明示選択可能
+
+---
+
+## 2026-05-24_ver3.15
+
+### 性能改善
+- **サムネ登録のラグを大幅短縮** (3 つのボトルネックを解消):
+
+  **A. kaleido (Plotly→PNG) 解像度を削減 — 5-10× 高速化**
+  - サムネ用 PNG 生成解像度を 1600x1400〜2400x1800 → **600x600 px (scale=1)**
+    に縮小
+  - 最終的に `thumbnail_service` で 300x300 にリサイズされるため、過剰な
+    高解像度は無駄だった
+  - `interactive_batch_save.py` に新規定数 `_THUMB_RENDER_W=600 /
+    _THUMB_RENDER_H=600 / _THUMB_RENDER_SCALE=1` を追加
+  - `cb_set_thumbnail_spatial` / `cb_set_thumbnail_umap` がサムネ専用に
+    この縮小解像度を使用
+  - **バッチ一括保存 (`cb_batch_save_*`) は高解像度維持** で別扱い
+  - 期待効果: クリック → トースト 1-5 秒 → **0.2-0.5 秒**
+
+  **B. ブラウザキャッシュバスター — 即時反映**
+  - 旧: `/api/project_thumb/<id>` URL が固定 → 再登録しても
+    `Cache-Control: max-age=3600` で **最大 1 時間古いサムネが表示** され
+    続けていた (Ctrl+Shift+R で強制リロードが必要)
+  - 修正: `project_callbacks.py:render_project_cards` の `<img src>` に
+    `?t=<last_modified>` クエリパラメータを付与
+  - `update_project()` で `last_modified` が自動更新されるため、サムネ
+    更新ごとに URL が変化 → ブラウザは新画像を即 fetch
+  - 期待効果: 最大 1 時間 (要強制リロード) → **即時反映**
+
+  **C. サーバー側 cache pre-warm**
+  - `_save_figure_as_thumbnail` 内で `update_project()` 成功直後に
+    `get_thumbnail_path()` を呼んで Pillow リサイズを完了させる
+  - 次の Flask route 呼出は cache hit で即時配信
+  - 期待効果: 100-500ms → **<100ms**
+
+### 検証
+- 「📌 サムネ登録」ボタン → トーストが 1 秒以内に表示
+- プロジェクト一覧へ戻る → 新サムネが即時表示 (強制リロード不要)
+- ブラウザ Network タブで `?t=...` 付き URL を確認
+
+---
+
+## 2026-05-24_ver3.14
+
+### 改善・バグ修正
+- **サムネ画像サイズを 100x100 → 150x150 に拡大**:
+  - `project_callbacks.py:render_project_cards` の左サムネ width/height を
+    150px に変更
+  - キャッシュ解像度も 200x200 → 300x300 に引上げ (DPR=2 で sharp)
+- **複数切片の連結画像 (横長 PNG) を自動で 1 枚目だけにクロップ**:
+  - R が出力する `UMAP_per_sample_*_ALLclusters.png` 等は複数サンプルを
+    横一列に連結した wide image。アスペクト比 > 1.4 を「wide」と判定し、
+    `thumbnail_service.get_thumbnail_path` 内で **最左端の正方形領域だけ**
+    をクロップしてからリサイズするように変更
+  - 結果: 自動検出されたサムネも 1 枚目のサンプルのみで square 表示される
+  - 「📌 サムネ登録」ボタンで登録した PNG も同じ処理が適用される
+  - ログに `cropped=True src_size=WxH` が記録される
+
+### 検証
+- 複数切片プロジェクト (例: TDLN_LN_07) → サムネが 1 枚目のサンプルのみ
+- 単一切片プロジェクト → 従来通り (aspect 比 ≤ 1.4 はクロップなし)
+- サムネサイズが 150x150 で sharp に表示
+
+---
+
+## 2026-05-24_ver3.13
+
+### バグ修正
+- **サムネ画像を 100x100 固定サイズに変更** (ver3.12 で全高 stretch にして
+  いたが、特定の wide サムネで縦長に過度に伸びる問題があった):
+  - `project_callbacks.py:render_project_cards` の左サムネ画像から
+    `alignSelf=stretch` を廃止し、`width=100px / height=100px` 固定に
+  - `CardBody` の padding を 0 → 12px に戻し、左サムネと右内容に gap=12px
+  - 右カラム側の padding は 0 にして重複を防止
+  - 角丸 (`borderRadius=6px`) と薄い border を追加 (見やすさ)
+  - カードの高さは右カラムの内容で決まる (左サムネ高に引きずられない)
+
+### 検証
+- 縦長サムネ画像でもカード全体が引き伸ばされない
+- サムネは常に 100x100 で表示
+- 「開く」ボタンは右カラム幅のみ (ver3.12 のレイアウト方針は維持)
+
+---
+
+## 2026-05-23_ver3.12
+
+### UI 変更
+- **プロジェクトカードを「左サムネ + 右内容」の 2 列レイアウトに変更**:
+  - ユーザー要望のスクリーンショットに合わせ、
+    `project_callbacks.py:render_project_cards` のカード構造を変更
+  - `dbc.CardBody` を `padding=0` の flex container 化
+  - **左カラム**: サムネ画像 (`width=130px, minWidth=130px, objectFit=cover,
+    height=stretch`) — カード全高に渡って表示
+  - **右カラム**: `flexGrow + padding=12px`、縦並びで以下を配置:
+    1. タイトル + ✎ x ボタン (タイトル右上)
+    2. 実験日 | サブプロジェクト数
+    3. メモ (任意)
+    4. `<hr>`
+    5. 最終更新
+    6. 「開く」ボタン (`w-100` = 右カラム幅)
+  - `dbc.Card` に `overflow: hidden` を追加し、角丸内にサムネ画像が収まるように
+  - Bootstrap `col=4` (3 列レイアウト) は維持
+  - サムネ無しは透明 PNG (ver3.9 のフォールバック) + `background=#f0f0f0`
+    でグレー領域として表示、レイアウト崩れなし
+
+### 検証
+- プロジェクト一覧で各カードが 2 列レイアウトに
+- サムネが左 130px 全高に表示される (cover)
+- 「開く」ボタンは右カラム幅のみ
+- カード幅 (3 列レイアウト) は変わらない
+
+---
+
+## 2026-05-23_ver3.11
+
+### バグ修正・改善
+- **① サムネ登録時、複数切片は最初の 1 枚のみを使うように変更**:
+  - ver3.10 では per-sample で複数 figure を **横一列結合** していたが、
+    50x50 square 表示で wide image が見切れる問題があった
+  - `_save_figure_as_thumbnail` で `_concat_pngs_horizontal` 呼出を廃止し、
+    `figures_list[0]` (最初の 1 枚) のみを使うよう変更
+  - 複数切片時はトーストに `(複数切片は 1 枚目のみ使用)` を付記
+- **② サムネ表示サイズを 50x50 → 100x100 に拡大** (カードレイアウト維持):
+  - `project_callbacks.py:render_project_cards` で `width/height: 100px`、
+    `borderRadius: 6px`、薄い border を追加
+  - Bootstrap col=4 のカード幅は維持、タイトル側を `flexGrow + wordBreak`
+    で対応 (溢れたら自動折返し)
+- **キャッシュ解像度も 60x60 → 200x200 に引上げ** (sharp 表示):
+  - `thumbnail_service.py:THUMB_SIZE = (200, 200)` に変更
+  - 100x100 表示 + retina (DPR=2) でも sharp に見える
+  - cache 名に解像度 tag を含めて自動再生成 (旧 60x60 cache は次回アクセスで上書き)
+
+### 検証
+- 複数切片の per-sample Spatial で「サムネ登録」 → 1 枚目だけが
+  square なサムネとして表示される (見切れなし)
+- プロジェクト一覧で 100x100 のサムネが sharp に見える
+- カード全体の幅は変わらない (3 列レイアウト維持)
+
+---
+
+## 2026-05-23_ver3.10
+
+### 新機能
+- **インタラクティブ解析のプロットを 1 クリックでプロジェクトサムネに登録**
+  できる「📌 サムネ登録」ボタンを追加。
+  - UMAP セクション右上 / Spatial Mapping セクション右上の「📷 一括保存」
+    ボタン横に配置
+  - ボタンクリックで現在表示中の Plotly figure を PNG 化し、
+    `Data/Other/cache/project_thumbnails_src/<project_id>_<kind>.png` に
+    保存、続けて `projects.json` の `thumbnail_source` を自動更新
+  - 複数 figure (per-sample 等) がある場合は **横一列に結合** して 1 枚化
+  - UMAP は表示モードに応じて切替:
+    - 「統合」モード → `interactive_umap_plot.figure` (2400x1800)
+    - 「サンプル別」モード → `batch_umap_figures_store.data` 横結合
+  - 登録完了は Toast で通知し、プロジェクト一覧を自動 refresh
+  - 既存の `_concat_pngs_horizontal` / `fig_to_png_bytes` を再利用
+
+### 実装内容
+- `interactive_tab.py`: UMAP / Spatial の両アコーディオン右上にボタン追加
+  (`btn_set_thumbnail_umap` / `btn_set_thumbnail_spatial`)
+- `interactive_batch_save.py`:
+  - `_save_figure_as_thumbnail` ヘルパ (PNG 化 + 保存 + project 更新)
+  - `cb_set_thumbnail_spatial` / `cb_set_thumbnail_umap` callback
+- 完成までユーザーが何度でも調整 (色変更、ラベル位置ドラッグ、回転反転、
+  クラスタ除外等) し、最後の状態をサムネとして 1 クリック登録できる
+
+### 検証
+- インタラクティブで Spatial を整える → 「📌 サムネ登録」 →
+  プロジェクト一覧でサムネが更新される
+- UMAP も同様に登録可能 (per-sample / 統合 どちらも対応)
+- 同じプロジェクトで何度でも登録し直せる (上書き)
+- 元の自動検出に戻すには編集モーダルで「サムネ画像」を空欄にして保存
+
+---
+
+## 2026-05-23_ver3.9
+
+### 新機能
+- **ヘッダータイトル「MSI Analysis Application」クリックでプロジェクト一覧へ**:
+  - 解析画面のヘッダー H1 を `dbc.Button(color="link")` でラップし、
+    新規 callback `header_title_to_landing` で `current_page="landing"` へ
+    遷移するように
+  - 見た目はそのまま、ホバー時にカーソルが pointer に変化
+  - 主要ファイル: `main_layout.py`, `project_callbacks.py`
+
+- **プロジェクトカードにサムネ画像 (50x50px) を表示**:
+  - カードのタイトル左に小さな UMAP / Spatial 画像を表示
+  - ユーザーが任意指定可能: プロジェクト編集モーダルに「サムネ画像」
+    入力欄 + ファイルブラウザ `[...]` ボタンを追加 (`thumbnail_source`
+    フィールドとして projects.json に保存)
+  - 省略時は自動検出: 最新サブプロの `Harmony/RPCA/PCA` フォルダから
+    `UMAP_per_sample_*_ALLclusters.png` を順次探索、それも無ければ
+    rglob で `*UMAP*.png` / `*spatial*.png` を試行
+
+### 性能設計 (プロジェクト数 100+ でも遅くならない)
+- **Pillow リサイズ + ディスクキャッシュ**: 新規 service
+  `App/app/services/thumbnail_service.py` で 60x60 JPG を
+  `Data/Other/cache/thumbnails/<project_id>_<mtime>.jpg` に保存。
+  source 画像の mtime が変わると新規 cache 生成 + 旧 cache 自動削除
+- **Flask route 配信**: `/api/project_thumb/<project_id>` で配信。
+  `Cache-Control: max-age=3600` でブラウザキャッシュも活用。
+  base64 インラインを廃止し、ネットワーク負荷を抑制
+- **フォールバック PNG**: サムネが無い場合は透明 1x1 PNG を返す
+  ことで img タグの broken-icon を抑止
+
+### 検証
+- 解析画面で「MSI Analysis Application」クリック → プロジェクト一覧
+- プロジェクト編集モーダルでサムネパス指定 → 一覧に即反映
+- 同じプロジェクトの 2 回目表示で network request 最小化 (cache hit)
+- 解析結果無しの新規プロジェクトでもカード崩れなし
+
+### 下位互換
+- 既存プロジェクト (`thumbnail_source` フィールド無し) は自動検出
+- Pillow 不在環境では cache 生成失敗 → 透明 PNG にフォールバック
+
+---
+
 ## 2026-05-23_ver3.8
 
 ### バグ修正 (R スクリプトデバッグの成果)

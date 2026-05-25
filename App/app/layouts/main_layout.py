@@ -27,7 +27,11 @@ from app.version import version_label
 
 
 def _create_change_password_modal():
-    """パスワード変更モーダル (Tier A のみ。Master Password 必須)。"""
+    """パスワード変更モーダル (ver4.0: Master + 共有用の 2 本立て)。
+
+    ログイン済 (Tier A) なら Master 再入力は不要 (③)。
+    Password A は廃止 (④)。
+    """
     return dbc.Modal(
         id="change_password_modal",
         is_open=False,
@@ -36,18 +40,21 @@ def _create_change_password_modal():
             dbc.ModalHeader(dbc.ModalTitle("パスワード変更")),
             dbc.ModalBody([
                 html.Div(
-                    "現在の Master Password を入力後、変更したいパスワードのみ"
-                    "入力してください。空欄のフィールドは更新されません。",
+                    "ログイン済みのため Master の再入力は不要です。"
+                    "変更したいパスワードのみ入力してください。"
+                    "空欄のフィールドは更新されません。",
                     className="text-muted small mb-3",
                 ),
+                # ver4.0: 現在 Master は任意 (③)。誤操作防止のため確認したい
+                # 場合のみ入力。auth.js が State として参照するため残置。
                 dbc.Label(
-                    "現在の Master Password (権限確認)",
+                    "現在の Master Password (任意・確認用)",
                     className="small fw-bold",
                 ),
                 dbc.Input(
                     id="cp_master",
                     type="text",
-                    placeholder="現在の Master を入力",
+                    placeholder="(任意) 入力すると照合します",
                     size="sm",
                     className="mb-3",
                     autoComplete="off",
@@ -60,25 +67,13 @@ def _create_change_password_modal():
                 dbc.Input(
                     id="cp_new_master",
                     type="text",
-                    placeholder="新しい Master (8 文字以上)",
+                    placeholder="新しい Master (8 文字以上・ログイン用)",
                     size="sm",
                     className="mb-2",
                     autoComplete="off",
                 ),
                 dbc.Label(
-                    "新しい Password A (空欄なら変更なし)",
-                    className="small fw-bold",
-                ),
-                dbc.Input(
-                    id="cp_new_a",
-                    type="text",
-                    placeholder="解析者用 (フル機能)",
-                    size="sm",
-                    className="mb-2",
-                    autoComplete="off",
-                ),
-                dbc.Label(
-                    "新しい Password B (空欄なら変更なし)",
+                    "新しい 共有パスワード (空欄なら変更なし)",
                     className="small fw-bold",
                 ),
                 dbc.Input(
@@ -200,6 +195,8 @@ def create_main_layout():
 
         # ========== ページ状態管理 ==========
         dcc.Store(id="current_page", data="landing"),
+        # ver4.0: 共有セッション (インタラクティブ全機能を共有モードで表示)
+        dcc.Store(id="shared_session", data={}),
         dcc.Store(id="selected_project", data={}),
         dcc.Store(id="delete_target_project_id", data=""),
         dcc.Store(id="delete_target_sub_project_id", data=""),
@@ -241,8 +238,21 @@ def create_main_layout():
                                     },
                                     children=[
                                         html.Div([
-                                            html.H1(
-                                                "MSI Analysis Application"
+                                            # ver3.9: クリックでプロジェクト一覧 (landing) に戻る
+                                            # 元の H1 をボタンでラップし、見た目はそのまま保つ
+                                            dbc.Button(
+                                                html.H1(
+                                                    "MSI Analysis Application",
+                                                    className="m-0 p-0",
+                                                ),
+                                                id="header_title_home_btn",
+                                                color="link",
+                                                className="p-0 border-0 text-decoration-none",
+                                                style={
+                                                    "color": "inherit",
+                                                    "textAlign": "left",
+                                                },
+                                                title="プロジェクト一覧に戻る",
                                             ),
                                             html.P(
                                                 className="subtitle",
@@ -251,6 +261,8 @@ def create_main_layout():
                                             ),
                                         ]),
                                         html.Div(
+                                            # ver4.0: 共有モード時に非表示にするため id 付与
+                                            id="header_analysis_buttons",
                                             style={
                                                 "display": "flex",
                                                 "gap": "8px",
@@ -296,31 +308,36 @@ def create_main_layout():
                         dbc.Row([
                             dbc.Col(id="sidebar_col", width=3, children=[create_sidebar()]),
                             dbc.Col(id="main_content_col", width=9, children=[
-                                dbc.Tabs(
-                                    id="main_tabs",
-                                    active_tab="settings",
+                                html.Div(
+                                    id="main_tabs_wrapper",
                                     children=[
-                                        dbc.Tab(
-                                            label="解析設定",
-                                            tab_id="settings",
-                                            children=[create_settings_tab()],
-                                        ),
-                                        dbc.Tab(
-                                            label="結果閲覧",
-                                            tab_id="results",
-                                            children=[create_results_tab()],
-                                        ),
-                                        dbc.Tab(
-                                            label="インタラクティブ解析",
-                                            tab_id="interactive",
+                                        dbc.Tabs(
+                                            id="main_tabs",
+                                            active_tab="settings",
                                             children=[
-                                                create_interactive_tab()
+                                                dbc.Tab(
+                                                    label="解析設定",
+                                                    tab_id="settings",
+                                                    children=[create_settings_tab()],
+                                                ),
+                                                dbc.Tab(
+                                                    label="結果閲覧",
+                                                    tab_id="results",
+                                                    children=[create_results_tab()],
+                                                ),
+                                                dbc.Tab(
+                                                    label="インタラクティブ解析",
+                                                    tab_id="interactive",
+                                                    children=[
+                                                        create_interactive_tab()
+                                                    ],
+                                                ),
+                                                dbc.Tab(
+                                                    label="セッション履歴",
+                                                    tab_id="history",
+                                                    children=[create_history_tab()],
+                                                ),
                                             ],
-                                        ),
-                                        dbc.Tab(
-                                            label="セッション履歴",
-                                            tab_id="history",
-                                            children=[create_history_tab()],
                                         ),
                                     ],
                                 ),

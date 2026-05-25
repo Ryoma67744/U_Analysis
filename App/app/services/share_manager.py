@@ -79,6 +79,7 @@ def create_share(
     integration_method: str = "",
     expires_days: int | None = None,
     memo: str = "",
+    require_password: bool = True,
 ) -> dict:
     """共有トークンを生成して保存"""
     if expires_days is None:
@@ -98,6 +99,8 @@ def create_share(
         "created_at": now.strftime("%Y-%m-%dT%H:%M:%S"),
         "expires_at": (now + timedelta(days=expires_days)).strftime("%Y-%m-%dT%H:%M:%S"),
         "memo": memo,
+        # ver4.2: パスワード要否を期限と独立させる (True=共有パスでログイン必須)
+        "require_password": bool(require_password),
     }
 
     with _shares_lock:
@@ -164,16 +167,9 @@ def cleanup_expired() -> int:
 def build_share_url(token: str) -> str:
     """共有URLを生成"""
     from app.config import SHARE_BASE_URL, APP_PORT
-    if SHARE_BASE_URL:
-        base = SHARE_BASE_URL.rstrip("/")
-    else:
-        import socket
-        try:
-            hostname = socket.gethostname()
-            local_ip = socket.gethostbyname(hostname)
-        except Exception:
-            local_ip = "127.0.0.1"
-        base = f"http://{local_ip}:{APP_PORT}"
+    from app.services.url_utils import external_base_url
+    base = (SHARE_BASE_URL.rstrip("/") if SHARE_BASE_URL
+            else external_base_url(APP_PORT))
     return f"{base}/share/{token}"
 
 

@@ -637,6 +637,8 @@ _BROWSE_BUTTONS = {
     "browse_reann_annotation": ("file", "reann_annotation_path"),
     # プロジェクト復元スキャンフォルダ
     "browse_restore_scan_folder": ("folder", "restore_scan_folder"),
+    # ver3.9: プロジェクト編集モーダルのサムネ画像パス
+    "browse_edit_thumbnail": ("file", "edit_project_thumbnail"),
     # TIMS 追加データフォルダ
     "btn_add_extra_folder": ("folder", "extra_folder_pending_store"),
     # SCiLS 変換モーダル
@@ -668,6 +670,8 @@ _DEFAULT_START_DIR = {
     "output_dir": OUTPUT_DATA_DIR,
     "default_output_dir": OUTPUT_DATA_DIR,
     "restore_scan_folder": OUTPUT_DATA_DIR,
+    # ver3.9: サムネ用 PNG は output 配下にあることが多い
+    "edit_project_thumbnail": OUTPUT_DATA_DIR,
 }
 
 # dcc.Store は "data" プロパティ、dbc.Input/dcc.Input は "value" プロパティ

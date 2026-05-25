@@ -117,13 +117,18 @@ def _sync_tab_from_url(pathname, current_active):
     Output("url_bar", "pathname", allow_duplicate=True),
     Input("main_tabs", "active_tab"),
     [State("url_bar", "pathname"),
-     State("current_page", "data")],
+     State("current_page", "data"),
+     State("shared_session", "data")],
     prevent_initial_call=True,
 )
-def _sync_url_from_tab(active_tab, current_pathname, current_page):
+def _sync_url_from_tab(active_tab, current_pathname, current_page, shared):
     # 解析画面 (analysis ページ) 以外は URL を書き換えない
     # (landing / shared / lite / persistent_view 等で誤動作させない)
     if current_page != "analysis":
+        return no_update
+    # ver4.0: 共有モードでは /share/<token> /view/<token> の URL を保持する。
+    # /app/interactive に書き換えると Tier B/匿名ユーザーが再読込で弾かれる。
+    if shared and shared.get("active"):
         return no_update
     if not active_tab:
         return no_update

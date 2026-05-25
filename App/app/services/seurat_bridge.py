@@ -121,10 +121,17 @@ class SeuratBridge:
                 "cache_dir": Path,
             }
         """
+        from app.utils.file_locks import get_or_create_lock
         cache_dir = self._get_cache_dir(rds_path)
 
+        # ver4.4: 同一 RDS への同時初回アクセス (受信者オープン + 共有生成時の
+        # プリウォーム等) で R 抽出が二重に走らないよう排他。ロック取得後に
+        # 再チェックし、先行プロセスが既に抽出済みならスキップする。
         if not self._is_cached(cache_dir):
-            self._run_extraction(rds_path, cache_dir, with_expression=with_expression)
+            lock = get_or_create_lock(cache_dir / "extract", timeout=600)
+            with lock:
+                if not self._is_cached(cache_dir):
+                    self._run_extraction(rds_path, cache_dir, with_expression=with_expression)
 
         try:
             result = self._load_extracted_data(cache_dir)
