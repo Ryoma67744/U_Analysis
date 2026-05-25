@@ -12,6 +12,35 @@
 
 ---
 
+## 2026-05-25_ver4.2
+
+### 新機能
+- **共有のパスワード要否を「期限」と独立化**（無期限/期間付き × パスあり/なし の自由な組合せ）
+  - 従来は「期間付き=常にパス必須／無期限=常に認証なし」と固定だったのを、
+    共有ごとの **`require_password` フラグ**で制御するよう変更
+  - 共有作成モーダルに **「🔒 パスワード保護」スイッチ**を追加（既定 ON）。
+    共有方式ラジオは「有効期限の有無」だけを選ぶ意味に整理
+  - `auth_middleware.py`: `/view/` の無条件バイパスを廃止し、`/share/`・`/view/`
+    ともにトークンからレコードを引いて `require_password` で認証要否を判定
+    (`_share_password_required`)。見つからないトークンは fail-closed で認証要求
+  - `share_manager.create_share`（既定 True）/ `persistent_share_manager.create_persistent_share`
+    （既定 False）に `require_password` を追加
+  - 認証なし警告は「パスワード保護 OFF」のときのみ表示するよう連動
+- **無期限共有の一覧・削除 UI を追加**
+  - サブプロジェクト一覧「共有リンク管理」に無期限共有も併記（期間付き/無期限の
+    バッジ・🔒/🔓 表示・閲覧数）。`list_persistent_shares` を UI に接続
+  - 削除は既存ボタンを流用し、`revoke_persistent_share` も試行して該当を失効
+
+### 後方互換
+- 既存レコード（フラグ無し）は従来どおり: `/share/`=パス必須、`/view/`=認証なし。
+
+### 検証
+- ログイン要否: パス必要 share の `/share//view/` は未ログインで /login へ、
+  パス不要 share は認証なしで開く（Flask test client + 実機 4 通り）
+- 無期限共有が一覧表示され削除できる / パス OFF 時のみ警告表示
+
+---
+
 ## 2026-05-25_ver4.1
 
 ### 新機能

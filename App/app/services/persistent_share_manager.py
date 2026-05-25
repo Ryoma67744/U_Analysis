@@ -80,6 +80,7 @@ def create_persistent_share(
     rds_path: str = "",
     integration_method: str = "",
     memo: str = "",
+    require_password: bool = False,
 ) -> dict:
     """無期限共有トークンを生成して保存。既存トークンがあれば置換 (再発行)。
 
@@ -99,6 +100,8 @@ def create_persistent_share(
         "created_at": now,
         "memo": memo,
         "view_count": 0,
+        # ver4.2: パスワード要否を期限と独立させる (False=認証なしで開ける)
+        "require_password": bool(require_password),
     }
 
     key = (project_id, sub_project_id)

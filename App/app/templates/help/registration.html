@@ -382,34 +382,44 @@
 
 <p>解析結果を <strong>ラボ外の協力者</strong> と共有したい場合:</p>
 
+<div class="help-alert tip">
+  <div class="alert-title">🆕 ver4.2: 期限とパスワードを別々に選べます</div>
+  <strong>「有効期限の有無」</strong>と<strong>「パスワード保護の有無」</strong>は独立して設定できます。
+  無期限でもパスワード保護をかけられ、期間付きでもパスワードなしにできます（計 4 通り）。
+</div>
+
 <ol>
   <li>共有したいサブプロジェクトのあるプロジェクトを開く（サブプロジェクト一覧）</li>
   <li><strong>「🔗 共有リンク作成」</strong> ボタンをクリック</li>
-  <li>モーダル上部の <strong>「共有方式」</strong> ラジオで以下を選択:
+  <li><strong>「共有方式（有効期限）」</strong> を選ぶ:
     <ul>
-      <li><strong>期間付き共有</strong>: <code>/share/&lt;token&gt;</code>。
-        共有先で <strong>共有パスワード</strong>（Tier B）のログインが必要。有効期限を 7/14/30/90 日から選択</li>
-      <li><strong>無期限共有</strong>: <code>/view/&lt;token&gt;</code>。
-        <strong>認証なし</strong>で誰でも開ける。期限なし。ラボ内 wiki などに永続的に貼りたい用途向け</li>
+      <li><strong>期間付き共有</strong>（<code>/share/&lt;token&gt;</code>）: 有効期限を 7/14/30/90 日から選択</li>
+      <li><strong>無期限共有</strong>（<code>/view/&lt;token&gt;</code>）: 期限なし</li>
     </ul>
   </li>
-  <li>「統合手法」を選択（Harmony / RPCA / PCA）。必要に応じてメモを入力</li>
+  <li><strong>「🔒 パスワード保護」スイッチ</strong>で認証要否を選ぶ:
+    <ul>
+      <li><strong>ON</strong>: 共有先は <strong>共有パスワード</strong>（Tier B）でログインが必要</li>
+      <li><strong>OFF</strong>: 認証なしで誰でも開ける（下の警告を確認）</li>
+    </ul>
+  </li>
+  <li>「統合手法」を選択（all / Harmony / RPCA / PCA）。必要に応じてメモを入力</li>
   <li><strong>「共有リンクを生成」</strong> → 生成された URL をコピーして協力者に送る</li>
 </ol>
 
 <div class="help-alert danger">
-  <div class="alert-title">🛑 無期限共有（/view/）のセキュリティ — 重要</div>
+  <div class="alert-title">🛑 パスワード保護 OFF のセキュリティ — 重要</div>
   <p class="small mb-1">
-    ver4.0 では共有先が <strong>操作可能・かつ変更が元プロジェクトに保存される</strong>ため、
-    無期限共有（認証なし）は <strong>URL を知る第三者が元データを書き換えられる</strong>ことを意味します。
+    共有先は <strong>操作可能・かつ変更が元プロジェクトに保存される</strong>ため、
+    パスワード保護 OFF は <strong>URL を知る第三者が元データを書き換えられる</strong>ことを意味します
+    （期限の有無に関係なく）。
   </p>
   <ul class="small mb-0">
-    <li>機密性の高い結果や、書き換えられたくないデータには <strong>無期限共有を使わない</strong></li>
-    <li>外部に渡す場合は、ログインが必要な <strong>期間付き共有（共有パスワード）</strong> を優先</li>
+    <li>機密性の高い結果や、書き換えられたくないデータには <strong>パスワード保護 ON</strong> を推奨</li>
     <li>URL は <code>token_urlsafe(16)</code> で生成され推測は困難だが、メール・チャット・公開リポジトリ
       への貼り付けや、サーバーログ／CDN キャッシュ経由での漏洩に注意</li>
-    <li>無効化はサブプロジェクト一覧の「共有リンク管理」から削除するか、管理者が
-      <code>Data/Other/shares/persistent_shares.json</code> の該当エントリを削除</li>
+    <li>無効化はサブプロジェクト一覧の <strong>「共有リンク管理」</strong> から削除できます
+      （期間付き・無期限どちらも一覧・削除可能）</li>
   </ul>
 </div>
 

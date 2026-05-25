@@ -79,6 +79,7 @@ def create_share(
     integration_method: str = "",
     expires_days: int | None = None,
     memo: str = "",
+    require_password: bool = True,
 ) -> dict:
     """共有トークンを生成して保存"""
     if expires_days is None:
@@ -98,6 +99,8 @@ def create_share(
         "created_at": now.strftime("%Y-%m-%dT%H:%M:%S"),
         "expires_at": (now + timedelta(days=expires_days)).strftime("%Y-%m-%dT%H:%M:%S"),
         "memo": memo,
+        # ver4.2: パスワード要否を期限と独立させる (True=共有パスでログイン必須)
+        "require_password": bool(require_password),
     }
 
     with _shares_lock:

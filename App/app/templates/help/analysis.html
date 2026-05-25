@@ -609,51 +609,52 @@
   ブックマークすれば次回起動時も同じタブが開きます。
 </div>
 
-<h3 class="subsection-heading">B. 共有方式の選択</h3>
+<h3 class="subsection-heading">B. 共有方式の選択（ver4.2: 期限とパスワードは独立）</h3>
 
 <p>
-  サブプロジェクト一覧の「共有リンク作成」モーダルで、共有方式を選択できます。
-  <strong>どちらの方式でもインタラクティブ解析の全機能</strong>が開き、操作は元プロジェクトに保存されます。
-  違いは「認証の有無」と「期限」だけです:
+  サブプロジェクト一覧の「共有リンク作成」モーダルで、<strong>「有効期限の有無」</strong>と
+  <strong>「パスワード保護の有無」</strong>を<strong>別々に</strong>選べます
+  （どちらの組合せでもインタラクティブ解析の全機能が開き、操作は元プロジェクトに保存されます）。
 </p>
 
 <div class="row g-3">
   <div class="col-md-6">
     <div class="ui-card">
       <span class="icon">⏰</span>
-      <div class="name">期間付き共有</div>
-      <p class="small mb-1"><strong>URL</strong>: <code>/share/&lt;token&gt;</code></p>
-      <p class="small mb-1"><strong>認証</strong>: 共有先で <strong>共有パスワード</strong> ログインが必要</p>
-      <p class="small mb-1"><strong>期限</strong>: 7 / 14 / 30 / 90 日から選択（期限切れで自動失効）</p>
-      <p class="small mb-0"><strong>用途</strong>: 学外コラボ・査読・短期共有</p>
+      <div class="name">① 有効期限</div>
+      <p class="small mb-1"><strong>期間付き共有</strong>（<code>/share/&lt;token&gt;</code>）:
+        7 / 14 / 30 / 90 日で自動失効</p>
+      <p class="small mb-0"><strong>無期限共有</strong>（<code>/view/&lt;token&gt;</code>）: 期限なし</p>
     </div>
   </div>
   <div class="col-md-6">
     <div class="ui-card">
-      <span class="icon">♾</span>
-      <div class="name">無期限共有</div>
-      <p class="small mb-1"><strong>URL</strong>: <code>/view/&lt;token&gt;</code></p>
-      <p class="small mb-1"><strong>認証</strong>: <strong>不要</strong>（URL を知る人全員が開ける）</p>
-      <p class="small mb-1"><strong>期限</strong>: なし</p>
-      <p class="small mb-0"><strong>用途</strong>: ラボ内 wiki への永続的なリンク・社内資料</p>
+      <span class="icon">🔒</span>
+      <div class="name">② パスワード保護</div>
+      <p class="small mb-1"><strong>ON</strong>: 共有先は <strong>共有パスワード</strong>（Tier B）でログインが必要</p>
+      <p class="small mb-0"><strong>OFF</strong>: 認証なしで誰でも開ける（URL を知る人全員）</p>
     </div>
   </div>
 </div>
 
+<p class="small text-muted mt-2">
+  → 計 4 通り（期間付き×パスON/OFF、無期限×パスON/OFF）から選べます。
+  既定は「パスワード保護 ON」です。
+</p>
+
 <div class="help-alert danger">
-  <div class="alert-title">🛑 無期限共有（/view/）のセキュリティ — 重要</div>
+  <div class="alert-title">🛑 パスワード保護 OFF のセキュリティ — 重要</div>
   <p class="small mb-1">
-    ver4.0 では共有先が <strong>操作可能・かつ変更が元プロジェクトに保存される</strong>ため、
-    認証なしの無期限共有は <strong>URL を知る第三者が元データを書き換えられる</strong>ことを意味します。
-    URL は <code>token_urlsafe(16)</code>（128 bit）で推測は困難ですが、それでも:
+    共有先は <strong>操作可能・かつ変更が元プロジェクトに保存される</strong>ため、
+    パスワード保護 OFF は <strong>URL を知る第三者が元データを書き換えられる</strong>ことを意味します
+    （期限の有無に関係なく）。URL は <code>token_urlsafe(16)</code>（128 bit）で推測は困難ですが:
   </p>
   <ul class="small mb-0">
-    <li>機密データや書き換えられたくない結果には <strong>無期限共有を使わない</strong>。
-      外部には <strong>期間付き共有（共有パスワード）</strong>を優先する</li>
+    <li>機密データや書き換えられたくない結果には <strong>パスワード保護 ON</strong> を推奨</li>
     <li>URL を <strong>メール・チャット・公開リポジトリ</strong> に貼ると、その経路から操作可能になる</li>
     <li>サーバーログや CDN キャッシュに URL が残る場合がある</li>
-    <li>失効させたい場合は、サブプロジェクト一覧の「共有リンク管理」から削除するか、管理者が
-      <code>persistent_shares.json</code> の該当エントリを削除する</li>
+    <li>失効は、サブプロジェクト一覧の <strong>「共有リンク管理」</strong> から削除
+      （期間付き・無期限どちらも一覧・削除可能）</li>
   </ul>
 </div>
 
@@ -661,9 +662,10 @@
 <ol>
   <li>サブプロジェクト一覧から該当プロジェクトを開く</li>
   <li>「🔗 共有リンク作成」ボタンをクリック</li>
-  <li>モーダル上部の <strong>「共有方式」</strong> ラジオで
-    <code>期間付き共有</code> または <code>無期限共有</code> を選ぶ</li>
-  <li>期間付きの場合は「有効期限」を選択。無期限の場合は警告 Alert を確認</li>
+  <li><strong>「共有方式（有効期限）」</strong> で <code>期間付き共有</code> または <code>無期限共有</code> を選ぶ
+    （期間付きの場合は「有効期限」も選択）</li>
+  <li><strong>「🔒 パスワード保護」スイッチ</strong>で ON（共有パス必須）/ OFF（認証なし）を選ぶ。
+    OFF のときは警告 Alert を確認</li>
   <li>「統合手法」を選択（<code>all</code> / Harmony / RPCA / PCA）</li>
   <li>必要に応じてメモを入力</li>
   <li>「共有リンクを生成」 → 表示された URL をコピーして共有</li>

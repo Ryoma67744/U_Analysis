@@ -32,7 +32,8 @@ _BYPASS_PREFIXES = (
     "/_dash-component-suites/",
     "/_favicon.ico",
     "/help/",  # ヘルプページ (取扱説明書) は認証なしで閲覧可
-    "/view/",  # 無期限共有 URL: token を知る人全員が閲覧可 (認証不要)
+    # ver4.2: /view/ は無条件バイパスをやめ、共有レコードの require_password で
+    # 判定する (_share_password_required)。無期限でもパス保護を選べるように。
 )
 
 _BYPASS_EXACT = {
@@ -48,6 +49,7 @@ _BYPASS_EXACT = {
 }
 
 _SHARE_PATH_RE = re.compile(r"^/share/([^/]+)/?")
+_VIEW_PATH_RE = re.compile(r"^/view/([^/]+)/?")
 _ANALYST_NAME_MAX = 50
 
 
@@ -67,7 +69,27 @@ def _is_bypass(path: str) -> bool:
 
 
 def _is_share_path(path: str) -> bool:
-    return bool(_SHARE_PATH_RE.match(path))
+    """/share/ または /view/ の共有リンクパスか。"""
+    return bool(_SHARE_PATH_RE.match(path) or _VIEW_PATH_RE.match(path))
+
+
+def _share_password_required(path: str) -> Optional[bool]:
+    """共有リンクパスならパスワード要否 (True/False) を返す。共有パスでなければ None。
+
+    ver4.2: パスワード要否を期限と独立させ、共有レコードの require_password で判定。
+    トークンが見つからない場合は fail-closed で True (認証を要求)。
+    """
+    m = _SHARE_PATH_RE.match(path)
+    if m:
+        from app.services.share_manager import get_share
+        s = get_share(m.group(1))
+        return bool(s.get("require_password", True)) if s else True
+    m = _VIEW_PATH_RE.match(path)
+    if m:
+        from app.services.persistent_share_manager import get_persistent_share
+        s = get_persistent_share(m.group(1))
+        return bool(s.get("require_password", False)) if s else True
+    return None
 
 
 def _session_valid_for_tier(required_tier: str) -> bool:
@@ -111,7 +133,11 @@ def _require_login():
     if _is_bypass(path):
         return None
 
-    if _is_share_path(path):
+    # 共有/閲覧リンク (/share/, /view/): レコードの require_password で判定 (ver4.2)
+    pw_required = _share_password_required(path)
+    if pw_required is not None:
+        if pw_required is False:
+            return None  # パス不要 → 認証なしで通す
         if _session_valid_for_tier("B"):
             return None
         return redirect(url_for("auth.login", next=path))

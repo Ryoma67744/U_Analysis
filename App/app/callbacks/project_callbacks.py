@@ -32,6 +32,8 @@ from app.services.share_manager import (
 from app.services.persistent_share_manager import (
     create_persistent_share,
     build_persistent_view_url,
+    list_persistent_shares,
+    revoke_persistent_share,
 )
 
 
@@ -1308,11 +1310,12 @@ def open_share_modal(clicks, project):
      State("share_kind_radio", "value"),
      State("share_expiry_days", "value"),
      State("share_integration_method", "value"),
+     State("share_require_password", "value"),
      State("share_memo", "value")],
     prevent_initial_call=True,
 )
 def generate_share_link(n_clicks, sub_id, project, share_kind, expiry_days,
-                        integration_method, memo):
+                        integration_method, require_password, memo):
     """期間付き共有 (share_manager) または無期限共有 (persistent_share_manager) を
     生成する。share_kind_radio で分岐する。"""
     if not n_clicks or not sub_id or not project:
@@ -1337,8 +1340,10 @@ def generate_share_link(n_clicks, sub_id, project, share_kind, expiry_days,
             if rds_map:
                 rds_path = next(iter(rds_map.values()))
 
+    # ver4.2: パス要否は期限と独立。スイッチ値 (既定 True) をそのまま渡す
+    require_pw = bool(require_password)
     if share_kind == "persistent":
-        # 無期限共有 (/view/<token>): 認証不要
+        # 無期限共有 (/view/<token>)
         share = create_persistent_share(
             project_id=project_id,
             sub_project_id=sub_id,
@@ -1348,10 +1353,11 @@ def generate_share_link(n_clicks, sub_id, project, share_kind, expiry_days,
             rds_path=rds_path,
             integration_method=integration_method or "Harmony",
             memo=memo or "",
+            require_password=require_pw,
         )
         url = build_persistent_view_url(share["token"])
     else:
-        # 期間付き共有 (/share/<token>): Tier B 認証必要
+        # 期間付き共有 (/share/<token>)
         share = create_share(
             project_id=project_id,
             sub_project_id=sub_id,
@@ -1362,6 +1368,7 @@ def generate_share_link(n_clicks, sub_id, project, share_kind, expiry_days,
             integration_method=integration_method or "Harmony",
             expires_days=int(expiry_days) if expiry_days else None,
             memo=memo or "",
+            require_password=require_pw,
         )
         url = build_share_url(share["token"])
 
@@ -1373,17 +1380,22 @@ def generate_share_link(n_clicks, sub_id, project, share_kind, expiry_days,
     return {}, url, links_ui
 
 
-# --- share_kind_radio に応じて有効期限欄・警告の表示を切替 ---
+# --- 有効期限欄=期限種別に連動 / 警告=パスワード保護OFF に連動 (ver4.2) ---
 @callback(
     [Output("share_expiry_wrapper", "style"),
      Output("share_persistent_warning", "style")],
-    Input("share_kind_radio", "value"),
+    [Input("share_kind_radio", "value"),
+     Input("share_require_password", "value")],
     prevent_initial_call=False,
 )
-def _toggle_share_kind_inputs(share_kind):
-    if share_kind == "persistent":
-        return {"display": "none"}, {"display": "block"}
-    return {"display": "block"}, {"display": "none"}
+def _toggle_share_kind_inputs(share_kind, require_password):
+    # 有効期限は「期間付き」のときのみ表示
+    expiry_style = ({"display": "none"} if share_kind == "persistent"
+                    else {"display": "block"})
+    # 認証なし警告は「パスワード保護OFF」のときのみ表示 (期限種別とは独立)
+    warning_style = ({"display": "block"} if not require_password
+                     else {"display": "none"})
+    return expiry_style, warning_style
 
 
 # --- モーダルを閉じる ---
@@ -1481,48 +1493,61 @@ def save_project_info(n_clicks, project, google_keep, msi_share, other,
     )
 
 
-def _render_share_links(project_id):
-    """プロジェクトに属する共有リンクをレンダリング"""
-    cleanup_expired()
-    all_shares = list_shares()
-    project_shares = [s for s in all_shares if s.get("project_id") == project_id]
+def _share_link_row(s, kind):
+    """共有リンク 1 件の行を生成 (kind='expiring' or 'persistent')。"""
+    require_pw = s.get("require_password", kind == "expiring")
+    pw_badge = (dbc.Badge("🔒 パス必要", color="secondary", className="ms-1")
+                if require_pw
+                else dbc.Badge("🔓 パス不要", color="warning", className="ms-1"))
+    if kind == "persistent":
+        kind_badge = dbc.Badge("無期限", color="info", className="ms-2")
+        url = build_persistent_view_url(s["token"])
+        info = (f"統合: {s.get('integration_method', '')} | "
+                f"閲覧数: {s.get('view_count', 0)}"
+                + (f" | メモ: {s.get('memo', '')}" if s.get("memo") else ""))
+    else:
+        kind_badge = (dbc.Badge("期限切れ", color="danger", className="ms-2")
+                      if s.get("is_expired")
+                      else dbc.Badge("期間付き", color="success", className="ms-2"))
+        url = build_share_url(s["token"])
+        info = (f"統合: {s.get('integration_method', '')} | "
+                f"期限: {s.get('expires_at', '')}"
+                + (f" | メモ: {s.get('memo', '')}" if s.get("memo") else ""))
+    return html.Div(
+        className="d-flex justify-content-between align-items-center "
+                  "border rounded p-2 mb-2",
+        children=[
+            html.Div([
+                html.Strong(s.get("sub_project_name", ""), className="me-2"),
+                kind_badge,
+                pw_badge,
+                html.Br(),
+                html.Code(url, style={"fontSize": "0.8rem", "wordBreak": "break-all"}),
+                html.Br(),
+                html.Small(info, className="text-muted"),
+            ]),
+            dbc.Button(
+                "削除",
+                id={"type": "delete_share_btn", "token": s["token"]},
+                color="outline-danger",
+                size="sm",
+            ),
+        ],
+    )
 
-    if not project_shares:
+
+def _render_share_links(project_id):
+    """プロジェクトに属する共有リンク (期間付き + 無期限) をレンダリング"""
+    cleanup_expired()
+    expiring = [s for s in list_shares() if s.get("project_id") == project_id]
+    persistent = [s for s in list_persistent_shares()
+                  if s.get("project_id") == project_id]
+
+    if not expiring and not persistent:
         return html.Div("共有リンクはありません", className="text-muted small")
 
-    rows = []
-    for s in project_shares:
-        expired_badge = dbc.Badge("期限切れ", color="danger", className="ms-2") \
-            if s.get("is_expired") else dbc.Badge("有効", color="success", className="ms-2")
-
-        url = build_share_url(s["token"])
-        rows.append(
-            html.Div(
-                className="d-flex justify-content-between align-items-center "
-                          "border rounded p-2 mb-2",
-                children=[
-                    html.Div([
-                        html.Strong(s.get("sub_project_name", ""), className="me-2"),
-                        expired_badge,
-                        html.Br(),
-                        html.Code(url, style={"fontSize": "0.8rem", "wordBreak": "break-all"}),
-                        html.Br(),
-                        html.Small(
-                            f"統合: {s.get('integration_method', '')} | "
-                            f"期限: {s.get('expires_at', '')}"
-                            + (f" | メモ: {s.get('memo', '')}" if s.get("memo") else ""),
-                            className="text-muted",
-                        ),
-                    ]),
-                    dbc.Button(
-                        "削除",
-                        id={"type": "delete_share_btn", "token": s["token"]},
-                        color="outline-danger",
-                        size="sm",
-                    ),
-                ],
-            )
-        )
+    rows = [_share_link_row(s, "expiring") for s in expiring]
+    rows += [_share_link_row(s, "persistent") for s in persistent]
     return html.Div(rows)
 
 
@@ -1552,7 +1577,9 @@ def open_share_delete_modal(clicks):
 def confirm_delete_share_link(n_clicks, token, project):
     if not n_clicks or not token:
         return no_update, no_update
-    delete_share(token)
+    # token は期間付き/無期限で一意。該当する方を削除 (ver4.2)
+    if not delete_share(token):
+        revoke_persistent_share(token)
     project_id = project.get("id", "") if project else ""
     return False, _render_share_links(project_id)
 
