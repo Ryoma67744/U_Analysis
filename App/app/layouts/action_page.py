@@ -560,11 +560,16 @@ def _create_share_modal():
                         dbc.Select(
                             id="share_integration_method",
                             options=[
+                                {"label": "all（全手法を共有）", "value": "all"},
                                 {"label": "Harmony", "value": "Harmony"},
                                 {"label": "RPCA", "value": "RPCA"},
                                 {"label": "PCA", "value": "PCA"},
                             ],
-                            value="Harmony",
+                            value="all",
+                        ),
+                        html.Small(
+                            "all＝受け手は全手法を切替可／個別手法＝その手法のみ表示",
+                            className="text-muted",
                         ),
                     ]),
                 ], className="mb-3"),

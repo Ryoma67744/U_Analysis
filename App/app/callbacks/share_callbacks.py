@@ -120,6 +120,9 @@ def route_share_url(pathname):
         "kind": kind,
         "project_id": project_id,
         "sub_project_id": sub_project_id,
+        # ver4.1: 共有元が指定した統合手法 ("all" なら受け手は全手法を切替可、
+        # 特定手法なら受け手にはその手法のみ表示)
+        "integration_method": share.get("integration_method", "all"),
     }
     logger.info("shared interactive open: kind=%s project=%s sub=%s",
                 kind, project_id, sub_project_id)

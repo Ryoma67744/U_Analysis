@@ -435,16 +435,27 @@ def scan_rds_files(n_clicks, folder_path):
      Output("interactive_integration_method", "value", allow_duplicate=True),
      Output("interactive_rds_map", "data", allow_duplicate=True)],
     Input("interactive_result_folder", "value"),
+    State("shared_session", "data"),
     prevent_initial_call=True,
 )
-def auto_scan_rds_files(folder_path):
-    """結果フォルダのパスが設定された時、自動で統合手法を検出"""
+def auto_scan_rds_files(folder_path, shared):
+    """結果フォルダのパスが設定された時、自動で統合手法を検出。
+
+    ver4.1: 共有モードで共有元が特定手法 (all 以外) を指定した場合は、
+    受け手に見せる手法をその 1 つに限定する。"all" / 未指定なら全手法を表示。
+    """
     if not folder_path or not Path(folder_path).is_dir():
         return no_update, no_update, no_update
 
     rds_map = _detect_integration_methods(folder_path)
     if not rds_map:
         return no_update, no_update, no_update
+
+    # 共有モードで特定手法が指定されていれば、その手法のみに限定する
+    if shared and shared.get("active"):
+        method = shared.get("integration_method")
+        if method and method != "all" and method in rds_map:
+            rds_map = {method: rds_map[method]}
 
     options = [{"label": k, "value": k} for k in rds_map.keys()]
     default = "Harmony" if "Harmony" in rds_map else list(rds_map.keys())[0]
