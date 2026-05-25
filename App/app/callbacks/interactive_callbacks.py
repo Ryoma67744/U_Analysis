@@ -325,6 +325,9 @@ def _detect_integration_methods(folder_path: str) -> dict:
                 rds_map["Harmony"] = str(rds_file)
             elif "step3" in name_lower and "rpca" in name_lower:
                 rds_map["RPCA"] = str(rds_file)
+            elif "step2" in name_lower and "uncorrected" in name_lower:
+                # ver4: 無補正PCA併走出力 (Step2_PCA_uncorrected.rds)
+                rds_map["PCA (uncorrected)"] = str(rds_file)
             elif "single" in name_lower and "PCA" not in rds_map:
                 rds_map["PCA"] = str(rds_file)
 
@@ -348,6 +351,9 @@ def _detect_integration_methods(folder_path: str) -> dict:
                 rds_map["Harmony"] = str(rds_file)
             elif "step3" in name_lower and "rpca" in name_lower:
                 rds_map["RPCA"] = str(rds_file)
+            elif "step2" in name_lower and "uncorrected" in name_lower:
+                # ver4: 無補正PCA併走出力 (Step2_PCA_uncorrected.rds)
+                rds_map["PCA (uncorrected)"] = str(rds_file)
             elif "single" in name_lower and "PCA" not in rds_map:
                 rds_map["PCA"] = str(rds_file)
 

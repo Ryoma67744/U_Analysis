@@ -201,7 +201,7 @@ def load_deg_results(
     result_base : Path
         解析結果のベースフォルダ。
     integration_method : str | None
-        統合手法名 ("Harmony", "RPCA", "PCA")。
+        統合手法名 ("Harmony", "RPCA", "PCA", "PCA (uncorrected)")。
     cache : dict | None
         キャッシュ用 dict。呼び出し元が管理する辞書を渡す。
         ``deg_cache_key`` / ``deg_cache_data`` キーを使用する。
@@ -216,8 +216,16 @@ def load_deg_results(
             return cache["deg_cache_data"]
 
     # 選択した統合手法のフォルダを優先検索
-    if integration_method and integration_method in ("Harmony", "RPCA", "PCA"):
-        method_dir = integration_method
+    # 手法名 -> 出力サブフォルダ名（R: run_downstream_analysis の prefix）。
+    # "PCA (uncorrected)" は R 側 prefix "pca_uncorrected" のフォルダに対応（ver4）。
+    _METHOD_DIR_MAP = {
+        "Harmony": "Harmony",
+        "RPCA": "RPCA",
+        "PCA": "PCA",
+        "PCA (uncorrected)": "pca_uncorrected",
+    }
+    if integration_method and integration_method in _METHOD_DIR_MAP:
+        method_dir = _METHOD_DIR_MAP[integration_method]
     else:
         method_dir = "Harmony"
 
