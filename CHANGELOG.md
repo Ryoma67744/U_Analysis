@@ -12,6 +12,26 @@
 
 ---
 
+## 2026-05-25_ver4.3
+
+### バグ修正
+- **共有リンクが受信側で開けない問題を修正**（生成 URL が Docker 内部アドレスだった）
+  - 症状: 生成された共有 URL が `http://172.18.0.3:3838/...`（コンテナ内部 IP + 内部
+    ポート）になり、外部の受信者は `ERR_CONNECTION_TIMED_OUT` でアクセス不能
+  - 原因: `SHARE_BASE_URL` 未設定時、`build_share_url` / `build_persistent_view_url`
+    が `socket.gethostname()` にフォールバックし、コンテナの Docker bridge IP を採用
+    していた（`.env.docker` の `SHARE_BASE_URL` も空だった）
+  - 修正:
+    - 新 `services/url_utils.external_base_url()`: 未設定時はアクセス元ホスト
+      （`request.host` + `X-Forwarded-Proto`、Caddy 等のプロキシ対応）から
+      公開 URL を組み立てる。内部 IP フォールバックは request 文脈外の最終手段に降格
+    - `.env.docker` の `SHARE_BASE_URL` に本番アドレス `https://133.167.73.188` を設定
+      （明示が最優先）。`.env.example` の説明も更新
+  - 効果: 既存の共有リンク（token は不変）も、再デプロイ後は表示 URL が
+    `https://133.167.73.188/view/<token>` に修正され、作り直し不要で開けるようになる
+
+---
+
 ## 2026-05-25_ver4.2
 
 ### 新機能

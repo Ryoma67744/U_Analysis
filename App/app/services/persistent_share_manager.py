@@ -191,14 +191,7 @@ def revoke_persistent_share(token: str) -> bool:
 def build_persistent_view_url(token: str) -> str:
     """無期限共有用の URL を生成。SHARE_BASE_URL を流用 (本番ドメイン共通)。"""
     from app.config import SHARE_BASE_URL, APP_PORT
-    if SHARE_BASE_URL:
-        base = SHARE_BASE_URL.rstrip("/")
-    else:
-        import socket
-        try:
-            hostname = socket.gethostname()
-            local_ip = socket.gethostbyname(hostname)
-        except Exception:
-            local_ip = "127.0.0.1"
-        base = f"http://{local_ip}:{APP_PORT}"
+    from app.services.url_utils import external_base_url
+    base = (SHARE_BASE_URL.rstrip("/") if SHARE_BASE_URL
+            else external_base_url(APP_PORT))
     return f"{base}/view/{token}"
