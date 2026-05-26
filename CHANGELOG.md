@@ -12,6 +12,28 @@
 
 ---
 
+## 2026-05-26_ver4.6
+
+### インタラクティブ解析: 段階的ローディング進捗 + 失敗原因の表示
+「データを読み込む」実行中、結果が出るまで画面が無反応で「読み込み中か固まったか」が
+判別できなかった問題を改善。読み込み処理 (`load_interactive_data`) を foreground のまま
+**4 リンクの連鎖コールバック**に分割し、処理段階に応じた進捗メッセージを表示する。
+
+- **段階メッセージ**: 「RDSデータを抽出中…（最大2分程度）」→「マーカー(DEG)を読み込み中…」
+  →「設定を復元中…」→「完了」。各メッセージは実際の処理境界に同期（Dash の仕様上、
+  メッセージは次段の重い処理が始まる前に描画される）。既存の未使用だった進捗 UI
+  (`load_progress_container` / `load_progress_bar` / `load_progress_label`) を再利用。
+- **失敗原因の明示**: RDS 未検出 / Rエラー(stderr 末尾) / タイムアウト(10分) / Rscript 不在 /
+  抽出結果が空 などを `interactive_data_info` に赤アラートで表示し連鎖を停止。
+  DEG 未検出と m/z キャリブレーション失敗は非致命（読み込みは継続、警告のみ表示）。
+- 手動ボタン・サブプロ/共有の自動読み込みの両経路で進捗が出る。
+- 背景: background callback は fork worker で `_project_states` を共有できないため
+  foreground を維持。中間データは同一プロセスの `_get_state(rds_path)` で受け渡す。
+- テスト: `App/tests/test_interactive_load_chain.py`（bridge mock による連鎖進行・各エラー
+  分岐・active key 隔離・非致命系の 16 ケース）を追加。
+
+---
+
 ## 2026-05-25_ver4.5
 
 ### TIMS 解析スクリプト ver4（方法論の安全化）+ webアプリ対応

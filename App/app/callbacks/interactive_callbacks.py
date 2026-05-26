@@ -542,6 +542,251 @@ def toggle_integration_method(n, is_open):
 
 # ---------------------------------------------------------------------------
 # データ読み込み（Seuratブリッジ経由）
+# ver4.6: foreground のまま 4 リンク連鎖に分割し、段階的な進捗メッセージと
+# 失敗原因を表示する。Dash ではコールバックのラベル出力は return 時にのみ
+# 反映されるため、「処理 X の最中に出すメッセージ」は X を実行する 1 つ前の
+# リンクが return して描画する。重い中間データは _get_state(rds_path) で
+# 受け渡す（同一プロセスの foreground なので state がそのまま生存する）。
+#   A: 即時に「RDS抽出中」を描画 → B: extract（重い） →
+#   C: DEG/キャリブレーション → D: 設定復元 + 既存 32 出力を生成。
+# ---------------------------------------------------------------------------
+
+_PROGRESS_SHOW = {"display": "block", "marginTop": "10px"}
+_PROGRESS_HIDE = {"display": "none"}
+
+
+def _load_error_alert(message, detail=None):
+    """読み込み失敗の原因を赤アラートで表示する children を生成。"""
+    children = [message]
+    if detail:
+        children.append(html.Pre(
+            detail,
+            style={"whiteSpace": "pre-wrap", "maxHeight": "200px",
+                   "overflow": "auto", "marginTop": "6px", "marginBottom": 0,
+                   "fontSize": "0.8rem"},
+        ))
+    return dbc.Alert(children, color="danger", className="mb-0")
+
+
+# --- Link A: 即時にプログレスを表示し、抽出リンク(B)を起動 ---
+@callback(
+    [Output("load_progress_container", "style"),
+     Output("load_progress_label", "children"),
+     Output("load_progress_bar", "value"),
+     Output("load_progress_bar", "animated"),
+     Output("interactive_viz_container", "style", allow_duplicate=True),
+     Output("interactive_data_info", "children", allow_duplicate=True),
+     Output("load_stage_trigger", "data")],
+    Input("load_interactive_data", "n_clicks"),
+    [State("interactive_integration_method", "value"),
+     State("interactive_rds_map", "data"),
+     State("interactive_result_folder", "value")],
+    prevent_initial_call=True,
+)
+def load_stage_a_show_progress(n_clicks, integration_method, rds_map, result_folder):
+    """ボタン/自動トリガで即座にプログレスUIを描画し、抽出リンクを起動する。"""
+    if not integration_method or not rds_map:
+        return (_PROGRESS_HIDE, no_update, no_update, no_update, _PROGRESS_HIDE,
+                _load_error_alert("統合手法を選択してください（結果フォルダをスキャンしてください）"),
+                no_update)
+    rds_path = rds_map.get(integration_method)
+    if not rds_path or not Path(rds_path).exists():
+        return (_PROGRESS_HIDE, no_update, no_update, no_update, _PROGRESS_HIDE,
+                _load_error_alert(
+                    f"RDSファイルが見つかりません: {integration_method}"
+                    f"（パス: {rds_path or '未設定'}）"),
+                no_update)
+    return (
+        _PROGRESS_SHOW,
+        "RDSデータを抽出中…（最大2分程度かかります）",
+        10, True,
+        _PROGRESS_HIDE,  # 既存の可視化を隠す
+        no_update,       # data_info は最終リンク(D)が確定
+        {"rds_path": rds_path, "method": integration_method,
+         "result_folder": result_folder, "n": n_clicks},
+    )
+
+
+# --- Link B: RDS 抽出（重い）→ state 格納 → DEG リンク(C)を起動 ---
+@callback(
+    [Output("load_progress_label", "children", allow_duplicate=True),
+     Output("load_progress_bar", "value", allow_duplicate=True),
+     Output("load_progress_container", "style", allow_duplicate=True),
+     Output("interactive_data_info", "children", allow_duplicate=True),
+     Output("load_stage_trigger_2", "data")],
+    Input("load_stage_trigger", "data"),
+    prevent_initial_call=True,
+)
+def load_stage_b_extract(trigger):
+    """重い Seurat 抽出を実行し結果を state に格納する。失敗時は原因を表示。"""
+    if not trigger:
+        raise PreventUpdate
+    rds_path = trigger["rds_path"]
+    integration_method = trigger["method"]
+    _set_active_key(rds_path)
+    try:
+        result = _bridge.extract_data(rds_path)
+        if (not result or result.get("plot_data") is None
+                or len(result["plot_data"]) == 0):
+            return (no_update, no_update, _PROGRESS_HIDE,
+                    _load_error_alert(
+                        f"抽出結果が空です（プロットデータを取得できませんでした）: {rds_path}"),
+                    no_update)
+        state = _get_state(rds_path)
+        state["plot_data"] = result["plot_data"]
+        state["cluster_stats"] = result["cluster_stats"]
+        state["features_list"] = result["features_list"]
+        state["meta"] = result["meta"]
+        state["rds_path"] = rds_path
+        state["cache_dir"] = result.get("cache_dir")
+        state["method"] = integration_method
+        state.pop("_deg_data", None)
+        state.pop("_calib_warning", None)
+        _set_active_key(rds_path)
+    except FileNotFoundError:
+        return (no_update, no_update, _PROGRESS_HIDE,
+                _load_error_alert(
+                    "Rscript（R）が見つかりません。Rのインストールとパス設定を確認してください。"),
+                no_update)
+    except RuntimeError as e:
+        msg = str(e)
+        if "timed out" in msg:
+            return (no_update, no_update, _PROGRESS_HIDE,
+                    _load_error_alert(
+                        f"RDS抽出がタイムアウトしました（10分超）。RDSが大きすぎる可能性があります: {rds_path}"),
+                    no_update)
+        return (no_update, no_update, _PROGRESS_HIDE,
+                _load_error_alert("RDS抽出に失敗しました（Rエラー）:", detail=msg),
+                no_update)
+    except Exception as e:
+        return (no_update, no_update, _PROGRESS_HIDE,
+                _load_error_alert(f"抽出データの読み込みに失敗しました: {e}"),
+                no_update)
+    return (
+        "マーカー(DEG)を読み込み中…", 55, no_update, no_update,
+        {"rds_path": rds_path, "method": integration_method,
+         "result_folder": trigger["result_folder"], "n": trigger["n"]},
+    )
+
+
+# --- Link C: DEG 読込 + m/z キャリブレーション → 設定復元リンク(D)を起動 ---
+@callback(
+    [Output("load_progress_label", "children", allow_duplicate=True),
+     Output("load_progress_bar", "value", allow_duplicate=True),
+     Output("load_progress_container", "style", allow_duplicate=True),
+     Output("interactive_data_info", "children", allow_duplicate=True),
+     Output("load_stage_trigger_3", "data")],
+    Input("load_stage_trigger_2", "data"),
+    [State("calibration_enable", "value"),
+     State("calibration_table_data", "data"),
+     State("calibration_search_window", "value"),
+     State("calibration_min_peaks", "value"),
+     State("calibration_regression_mode", "value"),
+     State("ion_mode", "value"),
+     State("annotation_path", "value"),
+     State("tolerance_mz", "value"),
+     State("adduct_filter", "value"),
+     State("default_annotation_csv", "value")],
+    prevent_initial_call=True,
+)
+def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
+                     cal_min_peaks, cal_regression_mode, ion_mode, mrm_path,
+                     tolerance_mz, adduct_filter, annotation_csv):
+    """DEG マーカーを読み込み、必要なら m/z キャリブレーションを適用する。"""
+    if not trigger:
+        raise PreventUpdate
+    from app.callbacks.interactive_calibration import (
+        _calibrate_mz, _calibrate_mz_from_pairs, _reannotate_with_calibration,
+    )
+    rds_path = trigger["rds_path"]
+    integration_method = trigger["method"]
+    result_folder = trigger["result_folder"]
+    _set_active_key(rds_path)
+    try:
+        state = _get_state(rds_path)
+        if state.get("plot_data") is None:
+            return (no_update, no_update, _PROGRESS_HIDE,
+                    _load_error_alert("状態が失われました。もう一度読み込んでください。"),
+                    no_update)
+        # DEG 結果を探す（選択した統合手法のフォルダを優先）
+        if result_folder:
+            result_base = Path(result_folder)
+        else:
+            rds_dir = Path(rds_path).parent
+            result_base = rds_dir.parent if rds_dir.name == "RDS_Files" else rds_dir
+        deg_data = _load_deg_results(result_base, integration_method)
+
+        # --- m/z キャリブレーション（有効時のみ）---
+        if cal_enable and deg_data and mrm_path and cal_table_data:
+            try:
+                matched_pairs = []
+                ref_only_mz = []
+                for row in cal_table_data:
+                    if row.get("use") != "Yes":
+                        continue
+                    ref = row.get("ref_mz")
+                    obs = row.get("obs_mz")
+                    if ref and obs and str(ref).strip() and str(obs).strip():
+                        ref_f = float(ref)
+                        obs_f = float(obs)
+                        ppm = (obs_f - ref_f) / ref_f * 1e6
+                        matched_pairs.append({
+                            "ref_mz": ref_f, "obs_mz": obs_f, "ppm_drift": ppm,
+                        })
+                    elif ref and str(ref).strip():
+                        ref_only_mz.append(float(ref))
+
+                mp = int(cal_min_peaks or 2)
+                reg_mode = cal_regression_mode or "linear"
+                cal_result = None
+
+                if len(matched_pairs) >= mp:
+                    cal_result = _calibrate_mz_from_pairs(
+                        state["features_list"], matched_pairs,
+                        regression_mode=reg_mode,
+                    )
+                elif ref_only_mz:
+                    try:
+                        expr_path = _bridge.ensure_expression_matrix(rds_path)
+                    except Exception:
+                        expr_path = None
+                    if expr_path and expr_path.exists():
+                        expr_df = pd.read_parquet(expr_path)
+                        sw = float(cal_search_window or 0.5)
+                        cal_result = _calibrate_mz(
+                            state["features_list"], expr_df, ref_only_mz,
+                            search_window=sw, min_peaks=mp,
+                            regression_mode=reg_mode,
+                        )
+
+                if cal_result and cal_result.get("calibrated"):
+                    tol = float(tolerance_mz or 0.1)
+                    deg_data = _reannotate_with_calibration(
+                        deg_data, cal_result["corrected_mz_map"],
+                        mrm_path, tolerance=tol,
+                        annotation_csv_path=annotation_csv,
+                        ion_mode=ion_mode,
+                        adduct_patterns=adduct_filter,
+                    )
+                    _interactive_data["_calibration_result"] = cal_result
+            except Exception:
+                state["_calib_warning"] = "（注: m/zキャリブレーションに失敗したため未適用）"
+
+        state["_deg_data"] = deg_data
+        _set_active_key(rds_path)
+    except Exception as e:
+        return (no_update, no_update, _PROGRESS_HIDE,
+                _load_error_alert(f"読み込みエラー: {e}"),
+                no_update)
+    return (
+        "設定を復元中…", 85, no_update, no_update,
+        {"rds_path": rds_path, "method": integration_method,
+         "result_folder": result_folder, "n": trigger["n"]},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Link D: 設定/アノテーション復元 + 既存 32 出力を生成（最終リンク）
 # ---------------------------------------------------------------------------
 
 @callback(
@@ -577,8 +822,10 @@ def toggle_integration_method(n, is_open):
      Output("int_cal_ms_instrument", "data", allow_duplicate=True),
      Output("int_cal_restore_pending", "data"),
      Output("sap_btn_wrapper", "style"),
-     Output("accumulated_label_positions", "data", allow_duplicate=True)],
-    Input("load_interactive_data", "n_clicks"),
+     Output("accumulated_label_positions", "data", allow_duplicate=True),
+     Output("load_progress_container", "style", allow_duplicate=True),
+     Output("load_progress_label", "children", allow_duplicate=True)],
+    Input("load_stage_trigger_3", "data"),
     [State("interactive_integration_method", "value"),
      State("interactive_rds_map", "data"),
      State("interactive_result_folder", "value"),
@@ -602,65 +849,47 @@ def toggle_integration_method(n, is_open):
     # background=True に戻せる。
     prevent_initial_call=True,
 )
-def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
-                          cal_enable, cal_matrix, cal_table_data,
-                          cal_search_window, cal_min_peaks,
-                          cal_regression_mode,
-                          ion_mode, mrm_path, tolerance_mz,
-                          adduct_filter, project_id, sub_project_id,
-                          annotation_csv):
-    from app.callbacks.interactive_calibration import (
-        _build_feature_annotation_map, _calibrate_mz, _calibrate_mz_from_pairs,
-        _reannotate_with_calibration,
-    )
-    # 進捗表示は foreground 化のため削除 (旧: set_progress(...))
-    _n_out = 32
+def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
+                        cal_enable, cal_matrix, cal_table_data,
+                        cal_search_window, cal_min_peaks,
+                        cal_regression_mode,
+                        ion_mode, mrm_path, tolerance_mz,
+                        adduct_filter, project_id, sub_project_id,
+                        annotation_csv):
+    from app.callbacks.interactive_calibration import _build_feature_annotation_map
     _no_cal = (no_update,) * 11  # キャリブレーション設定復元用
     _sap_hide = ({"display": "none"},)  # sap_btn_wrapper 非表示
     _no_label_clear = (no_update,)  # accumulated_label_positions 変更なし
-    if not integration_method or not rds_map:
-        return (
-            "統合手法を選択してください（結果フォルダをスキャンしてください）",
-            {"display": "none"}, [], [], [], None, None, None,
-            {"display": "none"}, [], [], [], [],
-            {"display": "none"}, [],
-            no_update, no_update, no_update, no_update,
-        ) + _no_cal + _sap_hide + _no_label_clear
-
-    rds_path = rds_map.get(integration_method)
-    if not rds_path or not Path(rds_path).exists():
-        return (
-            f"RDSファイルが見つかりません: {integration_method}",
-            {"display": "none"}, [], [], [], None, None, None,
-            {"display": "none"}, [], [], [], [],
-            {"display": "none"}, [],
-            no_update, no_update, no_update, no_update,
-        ) + _no_cal + _sap_hide + _no_label_clear
+    _td = (_PROGRESS_HIDE, no_update)  # 進捗UI teardown (最後に非表示)
+    if not trigger:
+        raise PreventUpdate
+    rds_path = trigger.get("rds_path") or rds_map.get(integration_method)
 
     try:
-        pass  # 旧: set_progress((15, 100, "RDS 抽出中..."))
-        result = _bridge.extract_data(rds_path)
-        pass  # 旧: set_progress((50, 100, "プロットデータ準備中..."))
-
-        # rds_path をプロジェクトキーとして state を切替（複数プロジェクト同時閲覧対応）
-        state = _get_state(rds_path)
-        state["plot_data"] = result["plot_data"]
-        state["cluster_stats"] = result["cluster_stats"]
-        state["features_list"] = result["features_list"]
-        state["meta"] = result["meta"]
-        state["rds_path"] = rds_path
-        state["cache_dir"] = result.get("cache_dir")
-        state["method"] = integration_method
-        # 後続コールバックがアクティブ state を参照できるようにキーを設定
+        # 各リンクは別リクエスト = ContextVar がリセットされるため、ここで再確立
         _set_active_key(rds_path)
+        state = _get_state(rds_path)
+        if state.get("plot_data") is None:
+            return (
+                _load_error_alert("状態が失われました。もう一度読み込んでください。"),
+                {"display": "none"}, [], [], [], None, None, None,
+                {"display": "none"}, [], [], [], [],
+                {"display": "none"}, [],
+                no_update, no_update, no_update, no_update,
+            ) + _no_cal + _sap_hide + _no_label_clear + _td
 
-        meta = result["meta"]
+        # Link B/C が state に格納した結果を読む
+        deg_data = state.get("_deg_data")
+        calib_warning = state.get("_calib_warning", "")
+        meta = state["meta"]
         info_text = (
             f"読み込み完了 [{integration_method}]: "
             f"{meta.get('n_cells', '?')} cells, "
             f"{meta.get('n_clusters', '?')} clusters, "
             f"samples: {', '.join(meta.get('samples', []))}"
         )
+        if calib_warning:
+            info_text = info_text + " " + calib_warning
 
         # クラスタ選択肢
         clusters = sorted(_interactive_data["plot_data"]["Cluster"].unique(), key=_cluster_sort_key)
@@ -674,81 +903,8 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
 
         # Feature選択肢: 初期は上位 500 件のみ（18k 件 eager 送信を回避）
         # 検索すると filter_features callback がサーバサイドで全 features から再フィルタする
-        features = result["features_list"]
+        features = state["features_list"]
         feature_options = [{"label": f, "value": f} for f in features[:500]]
-
-        # DEG 結果を探す（選択した統合手法のフォルダを優先）
-        pass  # 旧: set_progress((65, 100, "DEG マーカー読込中..."))
-        deg_data = None
-        if result_folder:
-            result_base = Path(result_folder)
-            deg_data = _load_deg_results(result_base, integration_method)
-        else:
-            rds_dir = Path(rds_path).parent
-            result_base = rds_dir.parent if rds_dir.name == "RDS_Files" else rds_dir
-            deg_data = _load_deg_results(result_base, integration_method)
-
-        # --- m/z キャリブレーション（有効時のみ） ---
-        if cal_enable and deg_data and mrm_path and cal_table_data:
-            pass  # 旧: set_progress((80, 100, "m/z キャリブレーション処理中..."))
-            try:
-                # テーブルから use="Yes" のペアを抽出
-                matched_pairs = []
-                ref_only_mz = []
-                for row in cal_table_data:
-                    if row.get("use") != "Yes":
-                        continue
-                    ref = row.get("ref_mz")
-                    obs = row.get("obs_mz")
-                    if ref and obs and str(ref).strip() and str(obs).strip():
-                        ref_f = float(ref)
-                        obs_f = float(obs)
-                        ppm = (obs_f - ref_f) / ref_f * 1e6
-                        matched_pairs.append({
-                            "ref_mz": ref_f, "obs_mz": obs_f,
-                            "ppm_drift": ppm,
-                        })
-                    elif ref and str(ref).strip():
-                        ref_only_mz.append(float(ref))
-
-                mp = int(cal_min_peaks or 2)
-                reg_mode = cal_regression_mode or "linear"
-                cal_result = None
-
-                if len(matched_pairs) >= mp:
-                    # 明示的ペアが十分 → 直接回帰
-                    cal_result = _calibrate_mz_from_pairs(
-                        result["features_list"], matched_pairs,
-                        regression_mode=reg_mode,
-                    )
-                elif ref_only_mz:
-                    # obs未入力行あり → 自動検出にフォールバック
-                    # expression_matrix が無ければ on-demand 生成
-                    try:
-                        expr_path = _bridge.ensure_expression_matrix(rds_path)
-                    except Exception:
-                        expr_path = None
-                    if expr_path and expr_path.exists():
-                        expr_df = pd.read_parquet(expr_path)
-                        sw = float(cal_search_window or 0.5)
-                        cal_result = _calibrate_mz(
-                            result["features_list"], expr_df, ref_only_mz,
-                            search_window=sw, min_peaks=mp,
-                            regression_mode=reg_mode,
-                        )
-
-                if cal_result and cal_result.get("calibrated"):
-                    tol = float(tolerance_mz or 0.1)
-                    deg_data = _reannotate_with_calibration(
-                        deg_data, cal_result["corrected_mz_map"],
-                        mrm_path, tolerance=tol,
-                        annotation_csv_path=annotation_csv,
-                        ion_mode=ion_mode,
-                        adduct_patterns=adduct_filter,
-                    )
-                    _interactive_data["_calibration_result"] = cal_result
-            except Exception:
-                pass  # キャリブレーション失敗時はそのまま続行
 
         # DEGセクションは常に表示、データ有無でメッセージ切替
         deg_section_style = {}  # 常に表示
@@ -796,10 +952,9 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
             r_reg = cal_regression_mode or "poly3"
 
         # --- アノテーションマップの構築（Feature検索用） ---
-        pass  # 旧: set_progress((90, 100, "アノテーション構築 / 設定復元中..."))
         try:
             _interactive_data["annotation_map"] = _build_feature_annotation_map(
-                result["features_list"],
+                state["features_list"],
                 annotation_csv_path=annotation_csv or "",
                 ion_mode=ion_mode or "Positive",
                 adduct_patterns=adduct_filter,
@@ -820,7 +975,6 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
             except Exception as e:
                 warn_user(f"サブプロジェクト情報の取得に失敗: {e}")
 
-        pass  # 旧: set_progress((100, 100, "完了"))
         return (
             info_text,
             {},  # 可視化コンテナ表示
@@ -828,7 +982,7 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
             sample_options,
             feature_options,
             rds_path,
-            str(result.get("cache_dir", "")),
+            str(state.get("cache_dir", "") or ""),
             deg_data,
             deg_section_style,
             cluster_options,  # spatial_exclude_cluster用
@@ -846,16 +1000,18 @@ def load_interactive_data(n_clicks, integration_method, rds_map, result_folder,
             r_sw, r_mp, r_reg, r_instrument, True,
             {},  # sap_btn_wrapper 表示
             {},  # accumulated_label_positions クリア（手法切替時にリセット）
+            _PROGRESS_HIDE,  # load_progress_container 非表示
+            "完了",          # load_progress_label
         )
 
     except Exception as e:
         return (
-            f"読み込みエラー: {e}",
+            _load_error_alert(f"読み込みエラー: {e}"),
             {"display": "none"}, [], [], [], None, None, None,
             {"display": "none"}, [], [], [], [],
             {"display": "none"}, [],
             no_update, no_update, no_update, no_update,
-        ) + _no_cal + _sap_hide + _no_label_clear
+        ) + _no_cal + _sap_hide + _no_label_clear + _td
 
 
 def _load_deg_results(
