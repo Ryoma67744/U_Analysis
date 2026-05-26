@@ -12,6 +12,52 @@
 
 ---
 
+## 2026-05-26_ver4.6
+
+### インタラクティブ解析: 段階的ローディング進捗 + 失敗原因の表示
+「データを読み込む」実行中、結果が出るまで画面が無反応で「読み込み中か固まったか」が
+判別できなかった問題を改善。読み込み処理 (`load_interactive_data`) を foreground のまま
+**4 リンクの連鎖コールバック**に分割し、処理段階に応じた進捗メッセージを表示する。
+
+- **段階メッセージ**: 「RDSデータを抽出中…（最大2分程度）」→「マーカー(DEG)を読み込み中…」
+  →「設定を復元中…」→「完了」。各メッセージは実際の処理境界に同期（Dash の仕様上、
+  メッセージは次段の重い処理が始まる前に描画される）。既存の未使用だった進捗 UI
+  (`load_progress_container` / `load_progress_bar` / `load_progress_label`) を再利用。
+- **失敗原因の明示**: RDS 未検出 / Rエラー(stderr 末尾) / タイムアウト(10分) / Rscript 不在 /
+  抽出結果が空 などを `interactive_data_info` に赤アラートで表示し連鎖を停止。
+  DEG 未検出と m/z キャリブレーション失敗は非致命（読み込みは継続、警告のみ表示）。
+- 手動ボタン・サブプロ/共有の自動読み込みの両経路で進捗が出る。
+- 背景: background callback は fork worker で `_project_states` を共有できないため
+  foreground を維持。中間データは同一プロセスの `_get_state(rds_path)` で受け渡す。
+- テスト: `App/tests/test_interactive_load_chain.py`（bridge mock による連鎖進行・各エラー
+  分岐・active key 隔離・非致命系の 16 ケース）を追加。
+
+---
+
+## 2026-05-25_ver4.5
+
+### TIMS 解析スクリプト ver4（方法論の安全化）+ webアプリ対応
+TIMS UMAP 解析 R スクリプトを **ver4** に更新し（旧 ver3 は保持）、過補正・二重正規化など
+の方法論リスクを是正。あわせて webアプリで無補正 PCA 結果を手法として選択可能にした。
+
+- **R: `App/Script/TIMS/260525_DBSCAN_With_cluster_ver4_no-png_slim.R`（新規。ver3 から版を 1 つ進める）**
+  - ① 過補正の防止: バッチ補正は技術的バッチ(`BATCH_VAR='sample'`)に対してのみ実施。
+    単一 sample（切片＝生物学的 ROI/群）では Harmony/RPCA をスキップし無補正 PCA を使用。
+    `condition`/`slice_id` 補正は `ALLOW_CONDITION_CORRECTION=TRUE` のときのみ許可。
+  - ② 二重正規化の回避: `INPUT_NORMALIZED=TRUE`（SCiLS RMS 等で正規化済み入力）なら
+    LogNormalize を行わず `NORM_MODE`("none"/"sqrt"/"log1p") のみ適用。
+  - ③ マーカー表記の是正: `markers_annotated.csv` に `ranking_type`/`inference_note` 列を追加し、
+    Volcano に副題を付与。「ピクセル単位の探索的ランキングであり群間の統計的推論ではない」旨を明記。
+  - ④ 無補正 PCA の併走出力: 補正使用時も `Step2_PCA_uncorrected.rds` を別途出力（prefix `pca_uncorrected`）。
+  - ※ 既定フラグでは複数 sample の補正挙動は従来どおり。単一 sample の挙動が「無補正 PCA」へ変わる点に注意。
+- **webアプリ: 無補正 PCA を手法として選択可能化**
+  - `interactive_callbacks._detect_integration_methods`: `Step2_PCA_uncorrected.rds` を
+    "PCA (uncorrected)" として検出（`deg_`/`plotdata_` の data.frame RDS は誤検出しない）。
+  - `deg_utils.load_deg_results`: 手法名 "PCA (uncorrected)" → 出力フォルダ `pca_uncorrected` を解決。
+- ※ R スクリプトはこの環境では実行検証不可。実機での動作確認を推奨。
+
+---
+
 ## 2026-05-25_ver4.4
 
 ### パフォーマンス改善（共有URLを開いたときの読み込み高速化）

@@ -1234,6 +1234,10 @@ def create_interactive_tab():
         # Seuratブリッジのキャッシュパスを保持
         dcc.Store(id="seurat_cache_dir_store"),
         dcc.Store(id="seurat_rds_path_store"),
+        # ロード段階チェーンの制御信号（A→B→C→D。各段の進捗メッセージ表示用）
+        dcc.Store(id="load_stage_trigger", data=None),
+        dcc.Store(id="load_stage_trigger_2", data=None),
+        dcc.Store(id="load_stage_trigger_3", data=None),
         # 統合手法 → RDSパスのマッピング
         dcc.Store(id="interactive_rds_map", data=None),
         # DEGデータのキャッシュ
