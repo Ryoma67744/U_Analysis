@@ -12,6 +12,28 @@
 
 ---
 
+## 2026-06-04_ver4.9
+
+### バグ修正: DESIプロジェクトの「データ出力」がTIMS経路に入り別ファイルが出力される
+DESIサブプロジェクトで「データ出力 (UMAP cluster)」を押すと、本来の「生データ＋クラスター番号」
+ではなく統合ベンチマーク指標表に空のクラスター列を付けた `UMAP_cluster_TIMS.xlsx` が出力される
+問題を修正（DESI のみ対応。TIMS 入力ファイルの検証強化は別途）。
+
+- **原因**: instrument 判定が `sub.get("ms_instrument", "TIMS")` で、DESIサブプロジェクトに
+  metadata 未設定だと既定の "TIMS" にフォールバック → エクスポートが TIMS 経路
+  (`_export_tims`) に入り、データフォルダ内の parquet/csv（指標ファイル）を無検証で読み込んで
+  いた。
+- **修正**: `interactive_data_export.py` にヘルパー `_resolve_instrument()` を追加し、明示
+  "DESI" を優先しつつ未指定/曖昧時はパス規約 (`Data/DESI/Data` ・ `Data/TIMS/Data`) から
+  instrument を判定。`cb_export_data` の「データフォルダ自動推定」と「DESI/TIMS 分岐」の両方に
+  適用し、DESIプロジェクトを `_export_desi`（元 `.txt` → サンプル別シート＋「UMAP cluster」列）に
+  正しくルーティングする。
+- **テスト**: `App/tests/test_data_export.py` を追加（`_resolve_instrument` の判定、
+  `_export_desi` がサンプル別シートにクラスター番号を付与することを検証）。
+- 注: 「TIMS 経路でも指標ファイル等を拾い得る」入力検証の強化は今回スコープ外（別途対応）。
+
+---
+
 ## 2026-06-04_ver4.8
 
 ### バグ修正: 変更したクラスタ名が「クラスタ名変更」パネルに表示されない
