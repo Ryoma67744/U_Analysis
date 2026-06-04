@@ -29,6 +29,7 @@ from app.callbacks.interactive_callbacks import (
     _interactive_data,
     _load_interactive_settings,
     _save_interactive_settings,
+    _set_active_key,
 )
 
 
@@ -296,10 +297,12 @@ def reflect_cluster_rename_lock(lock_state, comp_id, my_session_id):
     Input("cluster_rename_apply_btn", "n_clicks"),
     Input("cluster_rename_reset_btn", "n_clicks"),
     State({"type": "cluster_rename_input", "index": ALL}, "value"),
+    State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
-def apply_cluster_rename(apply_clicks, reset_clicks, input_values):
+def apply_cluster_rename(apply_clicks, reset_clicks, input_values, rds_path=None):
     """リネーム適用/リセット"""
+    _set_active_key(rds_path)
     trigger = ctx.triggered_id
     if trigger == "cluster_rename_reset_btn":
         _save_interactive_settings("cluster_name_map", {})
@@ -329,6 +332,7 @@ def apply_cluster_rename(apply_clicks, reset_clicks, input_values):
 )
 def load_saved_cluster_name_map(rds_path):
     """データ読込時に保存済みクラスタ名マッピングを復元"""
+    _set_active_key(rds_path)
     settings = _load_interactive_settings()
     return settings.get("cluster_name_map", {})
 

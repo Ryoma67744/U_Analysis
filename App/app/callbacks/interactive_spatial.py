@@ -613,11 +613,13 @@ def update_swatch_disabled_state(custom_colors):
     [Input({"type": "cluster_color_picker", "index": ALL}, "value"),
      Input({"type": "cluster_color_swatch", "index": ALL, "color": ALL}, "n_clicks")],
     State("custom_color_map_store", "data"),
+    State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
-def update_custom_color_map(picker_values, swatch_clicks, current_store):
+def update_custom_color_map(picker_values, swatch_clicks, current_store, rds_path=None):
     """カラーピッカーまたはスウォッチクリックでカスタム色マップStoreを更新する"""
-    from app.callbacks.interactive_callbacks import _save_interactive_settings
+    from app.callbacks.interactive_callbacks import _save_interactive_settings, _set_active_key
+    _set_active_key(rds_path)
     current_store = current_store or {}
 
     # トリガーされたコンポーネントの判定
@@ -667,11 +669,13 @@ def update_custom_color_map(picker_values, swatch_clicks, current_store):
      Input({"type": "per_sample_flip_h", "index": ALL}, "value"),
      Input({"type": "per_sample_flip_v", "index": ALL}, "value")],
     State("spatial_rotation_store", "data"),
+    State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
-def update_rotation_store_from_per_sample(rotations, flip_hs, flip_vs, current_store):
+def update_rotation_store_from_per_sample(rotations, flip_hs, flip_vs, current_store, rds_path=None):
     """各プロットのコントロール変更時に Store を更新"""
-    from app.callbacks.interactive_callbacks import _save_interactive_settings
+    from app.callbacks.interactive_callbacks import _save_interactive_settings, _set_active_key
+    _set_active_key(rds_path)
     if current_store is None:
         current_store = {}
 
@@ -1053,7 +1057,8 @@ def save_spatial_display_settings(marker_size, label_size, show_labels,
     """
     if not rds_path:
         raise PreventUpdate
-    from app.callbacks.interactive_callbacks import _save_interactive_settings
+    from app.callbacks.interactive_callbacks import _save_interactive_settings, _set_active_key
+    _set_active_key(rds_path)
     _save_interactive_settings("spatial_display", {
         "marker_size": marker_size if marker_size is not None else 0,
         "label_size": label_size if label_size is not None else 10,
