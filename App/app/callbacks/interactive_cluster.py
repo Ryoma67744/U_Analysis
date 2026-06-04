@@ -201,11 +201,16 @@ def update_cluster_top_markers(deg_data, cluster_name_map=None, rds_path=None):
 @callback(
     Output("cluster_rename_panel", "children"),
     Input("seurat_rds_path_store", "data"),
-    State("cluster_name_map_store", "data"),
+    Input("cluster_name_map_store", "data"),
     prevent_initial_call=True,
 )
 def populate_cluster_rename_panel(rds_path, current_map):
-    """データ読込後、クラスタごとのリネーム入力フィールドを動的生成"""
+    """データ読込後、クラスタごとのリネーム入力フィールドを動的生成。
+
+    cluster_name_map_store を Input で受けることで、保存名の復元
+    (load_saved_cluster_name_map) 完了後や「適用」「リセット」後にも
+    再生成され、各入力欄に変更名がプリフィル表示される。
+    （State だと rds_path と同時発火し、保存名ロード前に空で描画されていた）"""
     from app.callbacks.interactive_callbacks import _set_active_key
     _set_active_key(rds_path)
     df = _interactive_data.get("plot_data")
