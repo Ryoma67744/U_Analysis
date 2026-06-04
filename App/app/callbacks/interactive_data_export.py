@@ -30,6 +30,26 @@ logger.info("[DataExport] モジュール読み込み完了 (v2)")
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _resolve_instrument(ms_instrument, *paths) -> str:
+    """エクスポート経路を決める ms_instrument を確定する。
+
+    サブプロジェクト metadata の ms_instrument は未設定時に "TIMS" へフォールバック
+    するため、DESIプロジェクトが誤って TIMS 経路に入ることがある。そこで明示 "DESI" を
+    優先しつつ、未指定/曖昧な場合はパス規約 (Data/DESI/Data・Data/TIMS/Data) から判定する。
+
+    Returns: "DESI" または "TIMS"
+    """
+    mi = (ms_instrument or "").strip().upper()
+    if mi == "DESI":
+        return "DESI"
+    joined = "/".join(str(p) for p in paths if p).replace("\\", "/")
+    if "/DESI/" in joined and "/TIMS/" not in joined:
+        return "DESI"
+    if "/TIMS/" in joined:
+        return "TIMS"
+    return mi or "TIMS"
+
+
 def _build_cluster_lookup(plot_data: pd.DataFrame) -> dict:
     """plot_data 全体から {(sample, round(x,4), round(y,4)): cluster} dict を構築。"""
     if plot_data is None or plot_data.empty:
@@ -428,6 +448,11 @@ def cb_export_data(
     logger.info("[DataExport] cb_export_data 発火: data_folder=%s", data_folder)
 
     try:
+        # ms_instrument を確定（DESIプロジェクトが既定の "TIMS" に落ち、誤って TIMS 経路に
+        # 入る事象への対策）。metadata が "DESI" でなくてもパス規約から DESI を判定する。
+        ms_instrument = _resolve_instrument(ms_instrument, data_folder, result_folder)
+        logger.info("[DataExport] instrument 確定: %s", ms_instrument)
+
         # MSI データフォルダの自動推定
         if not data_folder:
             data_folder = _infer_data_folder(
