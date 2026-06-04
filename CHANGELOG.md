@@ -12,6 +12,28 @@
 
 ---
 
+## 2026-06-04_ver4.7
+
+### バグ修正: クラスタ名・色・Spatial 設定の変更が再オープンで消える
+インタラクティブ解析で「クラスタ名の変更 → 適用」後、ページ再読み込みやプロジェクト
+再オープンで変更が失われる問題を修正。
+
+- **原因**: 永続化を行う一部コールバックが、プロジェクト別 state を切り替える
+  `_set_active_key(rds_path)` を呼んでおらず、保存先 `rds_path` が `__default__`(None) に
+  解決されて `interactive_settings.json` に書き込まれていなかった（適用直後はメモリ上の
+  Store にのみ反映されるため、閉じると消えていた）。
+- **修正**: 対象コールバックに `seurat_rds_path_store` を渡し、冒頭で
+  `_set_active_key(rds_path)` を呼ぶよう統一（正常動作していた `update_sample_name_map`
+  と同じ作法に揃えた）。
+  - `apply_cluster_rename` / `load_saved_cluster_name_map`（クラスタ名・報告事象）
+  - `update_custom_color_map`（クラスタ色）
+  - `update_rotation_store_from_per_sample`（Spatial 回転/反転）
+  - `save_spatial_display_settings`（Spatial 表示設定）
+- **テスト**: `App/tests/test_cluster_rename_persistence.py` を追加（プロジェクト別の保存先
+  隔離、リネームの永続化と復元を検証）。
+
+---
+
 ## 2026-05-26_ver4.6
 
 ### インタラクティブ解析: 段階的ローディング進捗 + 失敗原因の表示
