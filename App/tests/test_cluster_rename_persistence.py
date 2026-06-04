@@ -119,3 +119,52 @@ def test_reset_clears_only_current_project(tmp_path, monkeypatch):
     name_map, _status = cl.apply_cluster_rename(None, 1, None, rds_path=str(rds_a))
     assert name_map == {}
     assert json.loads(_settings_path(rds_a).read_text(encoding="utf-8"))["cluster_name_map"] == {}
+
+
+# ---------------------------------------------------------------------------
+# ver4.8: リネームパネルへの変更名プリフィル表示
+# ---------------------------------------------------------------------------
+
+def _collect_rename_inputs(node, acc=None):
+    """生成ツリーから cluster_rename_input の {index: value} を再帰収集する。"""
+    if acc is None:
+        acc = {}
+    if isinstance(node, (list, tuple)):
+        for c in node:
+            _collect_rename_inputs(c, acc)
+        return acc
+    comp_id = getattr(node, "id", None)
+    if isinstance(comp_id, dict) and comp_id.get("type") == "cluster_rename_input":
+        acc[comp_id.get("index")] = getattr(node, "value", None)
+    children = getattr(node, "children", None)
+    if children is not None and not isinstance(children, str):
+        _collect_rename_inputs(children, acc)
+    return acc
+
+
+def test_rename_panel_prefills_saved_names(tmp_path):
+    """クラスタ名変更パネルの入力欄に保存済みの変更名がプリフィルされる。
+
+    populate_cluster_rename_panel が cluster_name_map を受け取った際、各入力欄に
+    value=変更名 で描画されること（= 変更名が表示される）を担保する。
+    """
+    import pandas as pd
+    rds = str(tmp_path / "res.rds")
+    ic._get_state(rds)["plot_data"] = pd.DataFrame({"Cluster": [0, 0, 1, 2, 2]})
+
+    rows = cl.populate_cluster_rename_panel(rds, {"1": "Epithelial"})
+    inputs = _collect_rename_inputs(rows)
+
+    assert inputs == {"0": "", "1": "Epithelial", "2": ""}
+
+
+def test_rename_panel_empty_when_no_saved_names(tmp_path):
+    """保存名が無い場合は入力欄が空（プレースホルダにIDが出るのみ）。"""
+    import pandas as pd
+    rds = str(tmp_path / "res.rds")
+    ic._get_state(rds)["plot_data"] = pd.DataFrame({"Cluster": [0, 1]})
+
+    rows = cl.populate_cluster_rename_panel(rds, {})
+    inputs = _collect_rename_inputs(rows)
+
+    assert inputs == {"0": "", "1": ""}

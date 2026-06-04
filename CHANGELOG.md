@@ -12,6 +12,25 @@
 
 ---
 
+## 2026-06-04_ver4.8
+
+### バグ修正: 変更したクラスタ名が「クラスタ名変更」パネルに表示されない
+ver4.7 でクラスタ名の保存・復元は直ったが、「クラスタ情報 > クラスタ名変更」パネルの
+入力欄とラベルが、変更後の名前ではなく元のID（1,2,3…）のまま表示されていた問題を修正。
+（クラスタ統計表・円グラフ・Top5 には変更名が出ていた。）
+
+- **原因**: `populate_cluster_rename_panel` が保存名マップを `State("cluster_name_map_store")`
+  で読み、これを復元する `load_saved_cluster_name_map` と同じ `seurat_rds_path_store` で
+  同時発火するため、パネル生成時には store がまだ空(`{}`) で、入力欄が空・ラベルがIDのまま
+  描画されていた（順序依存）。統計表/円グラフ/Top5 は同 store を `Input` で受けるため
+  正しく反映されていた。
+- **修正**: `populate_cluster_rename_panel` の `cluster_name_map_store` 依存を
+  `State` → `Input` に変更。保存名ロード直後や「適用」「リセット」後にもパネルが再生成され、
+  既存の `value=current_name` / `display_label` ロジックで変更名がプリフィル表示される。
+- **テスト**: `App/tests/test_cluster_rename_persistence.py` にパネル生成の値反映テストを追加。
+
+---
+
 ## 2026-06-04_ver4.7
 
 ### バグ修正: クラスタ名・色・Spatial 設定の変更が再オープンで消える
