@@ -952,7 +952,8 @@ def handle_delete_project(n_clicks, project_id, refresh):
     if not n_clicks or not project_id:
         return no_update, no_update, no_update, no_update, no_update
     try:
-        delete_project(project_id)
+        # ログイン中のユーザーなら作成者に関わらず削除可（所有権ガードは無効化）
+        delete_project(project_id, enforce_owner=False)
     except ProjectAccessDenied as e:
         # 所有権が無いユーザーの削除試行を拒否
         return "", no_update, True, str(e), "danger"
@@ -1180,7 +1181,8 @@ def handle_delete_sub_project(n_clicks, sub_id, project, refresh):
         return no_update, no_update, no_update, no_update, no_update
     project_id = project.get("id", "")
     try:
-        delete_sub_project(project_id, sub_id)
+        # ログイン中のユーザーなら作成者に関わらず削除可（所有権ガードは無効化）
+        delete_sub_project(project_id, sub_id, enforce_owner=False)
     except ProjectAccessDenied as e:
         return "", no_update, True, str(e), "danger"
     except Exception:

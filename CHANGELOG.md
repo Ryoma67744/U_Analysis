@@ -12,6 +12,25 @@
 
 ---
 
+## 2026-06-04_ver4.15
+
+### バグ修正: サブプロジェクト/プロジェクトが削除できない（ver4.14後の本丸）
+ver4.14（削除コールバックの出力数是正）後も削除が無反応だった問題を修正。真因は所有権ガードと
+エラーの非表示だった。
+- **所有権ガードを無効化**: `delete_sub_project` / `delete_project` は `created_by`（ログイン時の解析者名）
+  一致を要求し、不一致だと `ProjectAccessDenied` で削除を拒否していた（`can_modify_project`）。削除は
+  ログイン中のユーザーであれば作成者に関わらず可能とするため、両削除ハンドラ
+  （`project_callbacks.py`）の呼び出しを `enforce_owner=False` にした。`project_manager` の関数定義・
+  既定値は不変。
+- **通知トーストをグローバル化**: 失敗/成功トースト先 `notification_toast` が `page_analysis`（一覧表示中は
+  `display:none`）の中にあり見えなかった。`main_layout.py` の最上位へ移動し、全ページで成否・理由が
+  見えるようにした。
+- 補足: 削除は projects.json のメタデータのみ削除で、ディスク上の解析データ（生データ/結果/RDS）は
+  消えない（従来通り）。
+- **テスト**: `delete_sub_project(enforce_owner=False)` が created_by 不一致でも削除できることを検証。
+
+---
+
 ## 2026-06-04_ver4.14
 
 ### A) バグ修正: サブプロジェクトが削除できない
