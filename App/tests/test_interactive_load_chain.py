@@ -60,7 +60,7 @@ def _fake_extract_result(sample_df):
 
 def test_link_a_no_method_shows_error_and_no_trigger():
     out = ic.load_stage_a_show_progress(1, None, None, "")
-    container_style, label, bar, animated, viz, data_info, trigger = out
+    container_style, label, bar, animated, viz, data_info, trigger, token = out
     assert container_style == ic._PROGRESS_HIDE
     assert trigger is no_update  # 連鎖を起こさない
     assert "統合手法を選択" in _alert_text(data_info)
@@ -69,7 +69,7 @@ def test_link_a_no_method_shows_error_and_no_trigger():
 def test_link_a_missing_rds_path_shows_error(tmp_path):
     rds_map = {"Harmony": str(tmp_path / "does_not_exist.rds")}
     out = ic.load_stage_a_show_progress(1, "Harmony", rds_map, str(tmp_path))
-    *_, data_info, trigger = out
+    *_, data_info, trigger, token = out
     assert trigger is no_update
     assert "RDSファイルが見つかりません" in _alert_text(data_info)
 
@@ -78,7 +78,7 @@ def test_link_a_valid_shows_progress_and_triggers(tmp_path):
     rds = tmp_path / "Step2_HarmonyPCA_Result.rds"
     rds.write_bytes(b"dummy")
     out = ic.load_stage_a_show_progress(3, "Harmony", {"Harmony": str(rds)}, str(tmp_path))
-    container_style, label, bar, animated, viz, data_info, trigger = out
+    container_style, label, bar, animated, viz, data_info, trigger, token = out
     assert container_style == ic._PROGRESS_SHOW
     assert "RDSデータを抽出中" in label
     assert animated is True
@@ -86,6 +86,9 @@ def test_link_a_valid_shows_progress_and_triggers(tmp_path):
     assert trigger["rds_path"] == str(rds)
     assert trigger["method"] == "Harmony"
     assert trigger["n"] == 3
+    # ver4.19: キャンセル用 token が発行され、trigger にも載る
+    assert token
+    assert trigger["token"] == token
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +103,7 @@ def _trigger(rds_path, method="Harmony", result_folder="", n=1):
 def test_link_b_success_stores_state_and_advances(monkeypatch, sample_df):
     rds_path = "/proj/A.rds"
     monkeypatch.setattr(ic._bridge, "extract_data",
-                        lambda p: _fake_extract_result(sample_df))
+                        lambda p, cancel_event=None: _fake_extract_result(sample_df))
     out = ic.load_stage_b_extract(_trigger(rds_path))
     label, bar, container, data_info, trigger2 = out
     assert "マーカー(DEG)" in label
@@ -112,7 +115,7 @@ def test_link_b_success_stores_state_and_advances(monkeypatch, sample_df):
 
 
 def test_link_b_runtime_error_surfaces_stderr(monkeypatch):
-    def boom(p):
+    def boom(p, cancel_event=None):
         raise RuntimeError("Seurat extraction failed:\nERROR: object 'x' not found")
     monkeypatch.setattr(ic._bridge, "extract_data", boom)
     out = ic.load_stage_b_extract(_trigger("/proj/A.rds"))
@@ -124,7 +127,7 @@ def test_link_b_runtime_error_surfaces_stderr(monkeypatch):
 
 
 def test_link_b_timeout(monkeypatch):
-    def boom(p):
+    def boom(p, cancel_event=None):
         raise RuntimeError("Seurat extraction timed out (10min): rds=/proj/A.rds")
     monkeypatch.setattr(ic._bridge, "extract_data", boom)
     out = ic.load_stage_b_extract(_trigger("/proj/A.rds"))
@@ -133,7 +136,7 @@ def test_link_b_timeout(monkeypatch):
 
 
 def test_link_b_rscript_not_found(monkeypatch):
-    def boom(p):
+    def boom(p, cancel_event=None):
         raise FileNotFoundError("Rscript")
     monkeypatch.setattr(ic._bridge, "extract_data", boom)
     out = ic.load_stage_b_extract(_trigger("/proj/A.rds"))
@@ -142,7 +145,7 @@ def test_link_b_rscript_not_found(monkeypatch):
 
 
 def test_link_b_empty_extraction(monkeypatch):
-    monkeypatch.setattr(ic._bridge, "extract_data", lambda p: {"plot_data": None})
+    monkeypatch.setattr(ic._bridge, "extract_data", lambda p, cancel_event=None: {"plot_data": None})
     out = ic.load_stage_b_extract(_trigger("/proj/A.rds"))
     assert out[4] is no_update
     assert "抽出結果が空" in _alert_text(out[3])
@@ -276,7 +279,7 @@ def test_active_key_isolation_between_projects(monkeypatch, sample_df):
     ic._get_state("/proj/A.rds")["plot_data"] = df_a
     # プロジェクト B を Link B で駆動
     monkeypatch.setattr(ic._bridge, "extract_data",
-                        lambda p: _fake_extract_result(df_b))
+                        lambda p, cancel_event=None: _fake_extract_result(df_b))
     ic.load_stage_b_extract(_trigger("/proj/B.rds", method="RPCA"))
 
     # A は不変、B は B のデータ

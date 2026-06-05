@@ -1256,6 +1256,8 @@ def create_interactive_tab():
         dcc.Store(id="load_stage_trigger", data=None),
         dcc.Store(id="load_stage_trigger_2", data=None),
         dcc.Store(id="load_stage_trigger_3", data=None),
+        # キャンセル用トークン（Stage A で発行。キャンセルボタンが参照） ver4.19
+        dcc.Store(id="load_token_store", data=None),
         # 統合手法 → RDSパスのマッピング
         dcc.Store(id="interactive_rds_map", data=None),
         # DEGデータのキャッシュ

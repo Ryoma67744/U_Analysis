@@ -12,6 +12,25 @@
 
 ---
 
+## 2026-06-05_ver4.19
+
+### 機能: インタラクティブ解析のデータ読込「キャンセル」を再実装
+- ver3.8 で読込を background 長時間コールバックから foreground 化した際、キャンセルボタン
+  (`btn_cancel_load`) の表示(`running=`)と中断(`cancel=`)配線が消え、ボタンだけが取り残されて
+  機能しなくなっていた退行を修正。**Rサブプロセスを実際に kill する協調的キャンセル**として復活。
+- 仕組み: 単一プロセス・マルチスレッド構成を活かし、ロード token ごとの `threading.Event` を
+  モジュール内 registry で共有。Stage A で token を発行しキャンセルボタンを表示、Stage B の R 抽出を
+  `subprocess.Popen`＋0.3秒ポーリングで実行し、キャンセル時はサブプロセスを kill→部分キャッシュ掃除
+  →`ExtractionCancelled` で中断（後続ステージは起動しない）。キャンセルボタンの表示は進捗コンテナの
+  可視状態に追従させ、各ステージの戻り値を増やさず実装。
+- 非キャンセル経路（通常読込・Feature/expression 抽出など他の呼び出し）は従来どおり `subprocess.run`
+  のままで挙動不変。`seurat_bridge._popen_with_cancel` を分離し単体テストを追加。
+- 変更: `seurat_bridge.py`（`_popen_with_cancel`/`ExtractionCancelled`/cancellable 抽出）、
+  `interactive_callbacks.py`（token registry・表示追従・キャンセル callback・Stage A/B 配線）、
+  `interactive_tab.py`（`load_token_store`）。解析結果には影響なし。
+
+---
+
 ## 2026-06-05_ver4.18
 
 ### 改善: DESI 空間平滑化の高速化（結果不変）＋ Otsu スポット除去 QC 画像の保存・表示

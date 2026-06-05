@@ -19,6 +19,43 @@ from app.config import R_HELPERS_DIR, RSCRIPT_PATH, SEURAT_CACHE_DIR
 
 logger = logging.getLogger("msi.seurat_bridge")
 
+
+class ExtractionCancelled(Exception):
+    """ユーザーが RDS 抽出をキャンセルしたときに送出される。"""
+
+
+def _popen_with_cancel(cmd, cancel_event, timeout=600, creationflags=0):
+    """cmd を Popen で起動し、0.3 秒ごとに cancel_event を監視する。
+
+    cancel_event がセットされたらサブプロセスを kill し ExtractionCancelled を
+    送出する。timeout 超過時は RuntimeError("__TIMEOUT__") を送出。
+    Returns: (returncode, stderr_bytes)
+    """
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        creationflags=creationflags,
+    )
+    start = time.monotonic()
+    while True:
+        try:
+            _out, stderr_bytes = proc.communicate(timeout=0.3)
+            return proc.returncode, stderr_bytes
+        except subprocess.TimeoutExpired:
+            if cancel_event is not None and cancel_event.is_set():
+                proc.kill()
+                try:
+                    proc.communicate(timeout=5)
+                except Exception:
+                    pass
+                raise ExtractionCancelled()
+            if time.monotonic() - start > timeout:
+                proc.kill()
+                try:
+                    proc.communicate(timeout=5)
+                except Exception:
+                    pass
+                raise RuntimeError("__TIMEOUT__")
+
 # Seurat キャッシュの LRU 上限。新規エントリ追加時に超過分は古い順に削除。
 # /tmp/msi_seurat_cache が無制限に膨らむのを防ぐ。
 SEURAT_CACHE_MAX_ENTRIES = int(os.environ.get("SEURAT_CACHE_MAX_ENTRIES", 12))
@@ -103,7 +140,8 @@ class SeuratBridge:
         has_plot = (cache_dir / "plot_data.parquet").exists() or (cache_dir / "plot_data.csv").exists()
         return has_plot and all((cache_dir / f).exists() for f in required)
 
-    def extract_data(self, rds_path: str, with_expression: bool = False) -> dict:
+    def extract_data(self, rds_path: str, with_expression: bool = False,
+                     cancel_event=None) -> dict:
         """Seurat RDS からデータを抽出。キャッシュがあればそれを使用。
 
         Args:
@@ -131,7 +169,8 @@ class SeuratBridge:
             lock = get_or_create_lock(cache_dir / "extract", timeout=600)
             with lock:
                 if not self._is_cached(cache_dir):
-                    self._run_extraction(rds_path, cache_dir, with_expression=with_expression)
+                    self._run_extraction(rds_path, cache_dir, with_expression=with_expression,
+                                         cancel_event=cancel_event)
 
         try:
             result = self._load_extracted_data(cache_dir)
@@ -139,7 +178,8 @@ class SeuratBridge:
             # キャッシュ破損の可能性 → 削除して再抽出
             shutil.rmtree(cache_dir, ignore_errors=True)
             cache_dir.mkdir(parents=True, exist_ok=True)
-            self._run_extraction(rds_path, cache_dir, with_expression=with_expression)
+            self._run_extraction(rds_path, cache_dir, with_expression=with_expression,
+                                 cancel_event=cancel_event)
             result = self._load_extracted_data(cache_dir)
 
         result["cache_dir"] = cache_dir
@@ -207,7 +247,7 @@ class SeuratBridge:
             return None
 
     def _run_extraction(self, rds_path: str, output_dir: Path,
-                        with_expression: bool = False):
+                        with_expression: bool = False, cancel_event=None):
         """R ヘルパースクリプトで Seurat データを抽出
 
         with_expression=True で expression_matrix.parquet も生成（重い処理）。
@@ -225,22 +265,44 @@ class SeuratBridge:
             cmd.append("--with-expression")
         # ver3.7: subprocess.run は timeout 時に内部で kill するため zombie の
         # 心配は無いが、TimeoutExpired を捕まえてユーザー向けエラーに整形
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, timeout=600,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-        except subprocess.TimeoutExpired as e:
-            if output_dir.exists():
-                shutil.rmtree(output_dir, ignore_errors=True)
-            raise RuntimeError(
-                f"Seurat extraction timed out (10min): rds={rds_path}"
-            ) from e
-        if result.returncode != 0:
+        if cancel_event is None:
+            # 通常パス（キャンセル不要）: 既存どおり subprocess.run
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, timeout=600,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except subprocess.TimeoutExpired as e:
+                if output_dir.exists():
+                    shutil.rmtree(output_dir, ignore_errors=True)
+                raise RuntimeError(
+                    f"Seurat extraction timed out (10min): rds={rds_path}"
+                ) from e
+            returncode, stderr_bytes = result.returncode, result.stderr
+        else:
+            # キャンセル可能パス: Popen + cancel_event 監視。kill 時は部分キャッシュを掃除。
+            try:
+                returncode, stderr_bytes = _popen_with_cancel(
+                    cmd, cancel_event, timeout=600,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except ExtractionCancelled:
+                if output_dir.exists():
+                    shutil.rmtree(output_dir, ignore_errors=True)
+                raise
+            except RuntimeError as e:
+                if str(e) == "__TIMEOUT__":
+                    if output_dir.exists():
+                        shutil.rmtree(output_dir, ignore_errors=True)
+                    raise RuntimeError(
+                        f"Seurat extraction timed out (10min): rds={rds_path}"
+                    ) from e
+                raise
+        if returncode != 0:
             # 不完全なキャッシュファイルを削除
             if output_dir.exists():
                 shutil.rmtree(output_dir, ignore_errors=True)
-            stderr_text = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
+            stderr_text = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
             raise RuntimeError(
                 f"Seurat extraction failed:\n{stderr_text[:2000]}"
             )
