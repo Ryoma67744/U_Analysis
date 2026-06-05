@@ -2352,8 +2352,10 @@ if (length(seu_list) == 1) {
   } else {
     # ver3.8: Reduce(function(x,y) merge(x,y,...), seu_list) は左結合で
     # 逐次マージするため、中間結果が毎回拡大し O(n^2) のメモリ・時間を
-    # 要する。ROI モードで 10+ サンプル時に致命的。Seurat::merge は y= に
-    # list を渡せるため、1 回呼出しで O(n) に短縮できる。
+    # 要する。merge (merge.Seurat) は y= に list を渡せるため、1 回呼出しで
+    # O(n) に短縮できる。merge は Seurat の S3 メソッドで名前空間にエクスポート
+    # されない(pkg::merge 形式は失敗する)ため、素の merge() を使う。基本ジェネリック
+    # が merge.Seurat へ S3 ディスパッチする。
     add_ids <- sapply(seu_list, function(s) {
       v <- tryCatch(s$sample[1], error = function(e) "")
       if (is.null(v) || is.na(v)) "" else as.character(v)
@@ -2361,7 +2363,7 @@ if (length(seu_list) == 1) {
     if (length(seu_list) == 1) {
       seu_harmony <- seu_list[[1]]
     } else {
-      seu_harmony <- Seurat::merge(
+      seu_harmony <- merge(
         x = seu_list[[1]],
         y = seu_list[-1],
         add.cell.ids = add_ids
