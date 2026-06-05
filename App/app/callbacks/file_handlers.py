@@ -415,29 +415,6 @@ def reset_reanalysis_defaults(desi_val, tims_val):
 
 
 # ---------------------------------------------------------------------------
-# RDSフォルダ → RDSファイル一覧
-# ---------------------------------------------------------------------------
-
-@callback(
-    Output("rds_file_selector", "children"),
-    Input("rds_folder", "value"),
-)
-def update_rds_file_selector(rds_folder):
-    if not rds_folder or not Path(rds_folder).is_dir():
-        return html.Div("RDSフォルダを指定してください", className="text-muted")
-
-    rds_files = sorted(Path(rds_folder).glob("*.rds"))
-    if not rds_files:
-        return html.Div("RDSファイルが見つかりません", className="text-warning")
-
-    return dbc.Checklist(
-        id="selected_rds_files",
-        options=[{"label": f.name, "value": str(f)} for f in rds_files],
-        value=[str(rds_files[0])],
-    )
-
-
-# ---------------------------------------------------------------------------
 # データフォルダ自動切替（DESI/TIMS）
 # ---------------------------------------------------------------------------
 

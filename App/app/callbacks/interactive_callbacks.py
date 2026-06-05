@@ -385,27 +385,6 @@ def _detect_integration_methods(folder_path: str) -> dict:
     return rds_map
 
 
-def _build_msi_samples_ui(folder_path: str):
-    """MSIフォルダ内のサンプル一覧UIを生成"""
-    if not folder_path or not Path(folder_path).is_dir():
-        return html.Div("MSIフォルダが見つかりません", className="text-muted")
-
-    from app.services.data_manager import list_msi_files, list_tims_files
-    samples = list_msi_files(folder_path)
-    # .txtが見つからない場合はTIMS形式(.parquet等)を試行
-    if not samples:
-        samples = list_tims_files(folder_path)
-    if not samples:
-        return html.Div("MSIファイルが見つかりません", className="text-warning")
-
-    import dash_bootstrap_components as dbc
-    return dbc.Checklist(
-        id="interactive_msi_sample_checks",
-        options=[{"label": s, "value": s} for s in samples],
-        value=samples,
-    )
-
-
 # ---------------------------------------------------------------------------
 # 結果フォルダスキャン → 統合手法検出
 # ---------------------------------------------------------------------------
@@ -491,36 +470,6 @@ def auto_load_on_rds_ready(rds_map, method, entry_mode, cur_clicks):
     if rds_map and method and entry_mode in ("sub_project", "shared"):
         return (cur_clicks or 0) + 1
     return no_update
-
-
-# ---------------------------------------------------------------------------
-# MSIフォルダスキャン（ボタンクリック）
-# ---------------------------------------------------------------------------
-
-@callback(
-    Output("interactive_msi_samples", "children"),
-    Input("scan_msi_folder", "n_clicks"),
-    State("interactive_msi_folder", "value"),
-    prevent_initial_call=True,
-)
-def scan_msi_files(n_clicks, folder_path):
-    return _build_msi_samples_ui(folder_path)
-
-
-# ---------------------------------------------------------------------------
-# MSIフォルダ変更時 → 自動スキャン
-# ---------------------------------------------------------------------------
-
-@callback(
-    Output("interactive_msi_samples", "children", allow_duplicate=True),
-    Input("interactive_msi_folder", "value"),
-    prevent_initial_call=True,
-)
-def auto_scan_msi_files(folder_path):
-    """MSIフォルダのパスが設定された時、自動でサンプル一覧を表示"""
-    if not folder_path or not Path(folder_path).is_dir():
-        return no_update
-    return _build_msi_samples_ui(folder_path)
 
 
 # ---------------------------------------------------------------------------

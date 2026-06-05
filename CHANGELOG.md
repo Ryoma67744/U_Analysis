@@ -12,6 +12,27 @@
 
 ---
 
+## 2026-06-05_ver4.20
+
+### 整理: 動作していなかった残骸UI/Storeを3点削除（結果不変）
+ver4.19 の調査で判明した「効かない/重複した」部品を、正規の代替が存在することを確認のうえ削除。
+解析結果・既存機能には影響なし。
+
+- **サンプル選択Checklist（`interactive_msi_sample_checks`）削除**：インタラクティブ解析タブの
+  非表示ブロック内にあり、選択値を誰も読まない孤児だった。正規のサンプル選択は設定タブの
+  `selected_samples`→`selected_samples_store`→解析実行(`run_analysis`)が担っており重複のため、
+  チェックリストと自動/手動スキャン callback（`scan_msi_files`/`auto_scan_msi_files`/
+  `_build_msi_samples_ui`）およびスキャンボタンを除去。MSIフォルダパス欄
+  （`interactive_msi_folder`：プロジェクト復元/データ書き出しが参照）は残置。
+- **RDS選択Checklist（`selected_rds_files`）削除**：設定タブで表示されるが選択値を誰も読まない。
+  解析が使うRDS指定は `rds_folder`/`rds_path`/`resume_rds`/`rds_folder_reanalysis` で成立済み。
+  `rds_file_selector` コンテナと `update_rds_file_selector` callback を除去（`rds_folder` 欄は残置）。
+- **死蔵Store（`cal_preset_loading_flag`）削除**：読み書きする callback が皆無の完全な未使用 Store。
+  プリセット機能本体は別IDで正常動作。
+- 退行防止: 削除した全IDの参照ゼロを確認、`208 passed`、全タブのレイアウト構築も確認。
+
+---
+
 ## 2026-06-05_ver4.19
 
 ### 機能: インタラクティブ解析のデータ読込「キャンセル」を再実装
