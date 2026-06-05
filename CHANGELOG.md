@@ -12,6 +12,24 @@
 
 ---
 
+## 2026-06-05_ver4.17
+
+### バグ修正: DESI マルチサンプル解析が `Seurat::merge` で停止する
+複数サンプル（または ROI モードで複数 ROI）の DESI-UMAP を実行すると、`Multi-sample mode: Harmony...`
+の直後に `Error: 'merge' is not an exported object from 'namespace:Seurat'` で停止し、Harmony / RPCA が
+一切出力されない問題を修正。
+- **原因**: `Script/DESI/260422_DESI-UMAP_Template_v14.R` の Harmony 統合で `Seurat::merge(...)` を
+  呼んでいた。Seurat オブジェクトの `merge` は S3 メソッド `merge.Seurat`（基本ジェネリック `merge` に
+  登録）で、Seurat 名前空間に `merge` という名のエクスポート済みオブジェクトは無いため、`::` 呼び出しが
+  必ず失敗する。2026-05-23 の [ver3.8]（左結合 O(n²) → 一括 O(n) への性能改善）で `Seurat::` を付けて
+  しまったリグレッション。
+- **修正**: `Seurat::merge(` を素の `merge(` に変更（`y = list` の一括マージ書式・性能改善は維持）。
+  基本ジェネリックが `merge.Seurat` へ S3 ディスパッチする。旧 DESI テンプレ・全 TIMS スクリプトと
+  同一の正しい書式。R テンプレートのファイル名（v14）は据え置き。
+- ※R は本リポジトリ環境でテスト不可・デプロイ後に 4 サンプル DESI で実機確認（Harmony/RPCA 出力）。
+
+---
+
 ## 2026-06-04_ver4.16
 
 ### バグ修正: DESI の ROI 選択に測定ピクセル連番が大量に並ぶ
