@@ -265,38 +265,73 @@ def read_parquet_annotations(file_path: str) -> list[str]:
         return []
 
 
-def read_desi_roi_list(file_path: str) -> list[str]:
-    """DESI .txt の最終列が ROI 文字列ならユニークな ROI 一覧を返す。
+def _looks_numeric(s: str) -> bool:
+    try:
+        float(s)
+        return True
+    except (ValueError, TypeError):
+        return False
 
-    ヘッダー 3 行目 (pre_masses) のトークン数で metabolite 数を推定し、
-    データ行の列数が「3 (spot_index/x/y) + n_metabolite」を超えていれば
-    最終列を ROI 列として扱う (R 側の `read_desi_data` と同じ判定ロジック)。
 
-    ROI 列がない / 検出失敗時は空リストを返す。
+def read_desi_roi_list(file_path: str, *, max_roi: int = 200) -> list[str]:
+    """DESI .txt の「ROI 列（領域ラベル）」のユニーク値一覧を返す。
+
+    末尾の line/pixel などのピクセル連番（数値）列を ROI と誤認しないよう、列の中身で
+    判定する。データ列 (index>=3) を右から走査し、
+      「非空値の過半が非数値の文字列ラベルで、ユニーク数が小さく (<= max_roi) 行数未満」
+    を満たす列を ROI 列として採用し、そのユニーク値を返す。
+    該当列が無い / 検出失敗時は空リストを返す（= ROI 無し）。
+    （列番号(n_metabolite)推定に依存しないため、ヘッダのズレにも強い。）
     """
     try:
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-            header_lines = []
-            for _ in range(4):
-                line = f.readline()
-                if not line:
+            for _ in range(4):  # ヘッダ 4 行スキップ (R fread skip=4 と整合)
+                if not f.readline():
                     return []
-                header_lines.append(line)
-            # ヘッダー 3 行目 (index 2) = pre_masses 行、空文字を除いたトークン数 = n_metabolite
-            pre_tokens = [
-                t for t in header_lines[2].rstrip("\n").split("\t") if t.strip()
-            ]
-            n_meta = len(pre_tokens)
-            expected_cols = 3 + n_meta
 
-            roi_set: set[str] = set()
+            n_rows = 0
+            max_cols = 0
+            # 列ごとに {uniq(set, max_roi 超で None=多すぎ), total, nonnum} を集計（メモリ上限つき）
+            cols: dict[int, dict] = {}
             for raw_line in f:
-                row = raw_line.rstrip("\n").split("\t")
-                if len(row) > expected_cols:
-                    roi = row[-1].strip()
-                    if roi:
-                        roi_set.add(roi)
-            return sorted(roi_set)
+                row = [c.strip() for c in raw_line.rstrip("\n").split("\t")]
+                while row and not row[-1]:  # 末尾の空セルを除去
+                    row.pop()
+                if len(row) <= 3:
+                    continue
+                n_rows += 1
+                if len(row) > max_cols:
+                    max_cols = len(row)
+                for ci in range(3, len(row)):
+                    v = row[ci]
+                    if not v:
+                        continue
+                    info = cols.get(ci)
+                    if info is None:
+                        info = {"uniq": set(), "total": 0, "nonnum": 0}
+                        cols[ci] = info
+                    info["total"] += 1
+                    if not _looks_numeric(v):
+                        info["nonnum"] += 1
+                    u = info["uniq"]
+                    if u is not None:
+                        u.add(v)
+                        if len(u) > max_roi:
+                            info["uniq"] = None  # ユニーク多すぎ → ラベル列でない
+
+            if n_rows == 0:
+                return []
+
+            # 末尾側の列を右から走査し、最初に見つかったラベル列を ROI とする
+            for ci in range(max_cols - 1, 2, -1):
+                info = cols.get(ci)
+                if not info or info["total"] == 0 or info["uniq"] is None:
+                    continue
+                u = info["uniq"]
+                if (info["nonnum"] > info["total"] * 0.5
+                        and 0 < len(u) < n_rows):
+                    return sorted(u)
+            return []
     except Exception:
         return []
 

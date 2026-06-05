@@ -1691,20 +1691,32 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
     row.names = spot_names
   )
 
-  # [ROI 検出] データ列数が「3 (spot_index/x/y) + length(metabolite_names)」を
-  # 超えていれば最終列を ROI として扱う (TIMS の annotation 列と同等)。
-  # ROI 列は文字列なので、freadで全体を numeric 読みした data_df では NA になる。
-  # → 該当列だけを character として別途読み直す。
-  expected_cols <- 3 + length(metabolite_names)
-  has_roi <- ncol(data_df) > expected_cols
+  # [ROI 検出] 末尾の line/pixel などの数値連番列を ROI と誤認しないよう、列の中身で判定する。
+  # データ列を右から走査し、「非空値の過半が非数値の文字列ラベルで、ユニーク数が小さく
+  # (<= ROI_MAX_UNIQUE) かつ行数未満」の列を ROI 列として採用する
+  # (Python read_desi_roi_list と同基準)。該当列が無ければ ROI 無し。
+  ROI_MAX_UNIQUE <- 200L
+  n_total_rows <- nrow(data_df)
+  roi_col_idx <- NA_integer_
+  if (ncol(data_df) > 3L) {
+    for (ci in seq.int(ncol(data_df), 4L)) {
+      col_chr <- trimws(as.character(data_df[[ci]]))
+      col_chr <- col_chr[!is.na(col_chr) & nzchar(col_chr)]
+      if (length(col_chr) == 0L) next
+      n_nonnum <- sum(is.na(suppressWarnings(as.numeric(col_chr))))
+      n_uniq <- length(unique(col_chr))
+      if (n_nonnum > length(col_chr) * 0.5 &&
+          n_uniq <= ROI_MAX_UNIQUE && n_uniq < n_total_rows) {
+        roi_col_idx <- ci
+        break
+      }
+    }
+  }
+  has_roi <- !is.na(roi_col_idx)
   if (has_roi) {
-    roi_col_idx <- ncol(data_df)
-    roi_data <- data.table::fread(file_path, sep = "\t", skip = 4,
-                                   header = FALSE, select = roi_col_idx,
-                                   colClasses = "character", fill = TRUE,
-                                   data.table = FALSE)
-    roi_vec <- as.character(roi_data[[1]])
-    # data_df を空列除去している (line 1661) ため、行数がズレることはないが念のため揃える
+    # ROI 列 (文字列) は data_df では character のまま保持されている (metabolite 列のみ
+    # numeric 化しているため)。そのまま使う (空列除去後の列番号で再読込しないので安全)。
+    roi_vec <- as.character(data_df[[roi_col_idx]])
     if (length(roi_vec) == nrow(coordinates)) {
       coordinates$ROI <- roi_vec
     } else {
