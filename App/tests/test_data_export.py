@@ -9,6 +9,8 @@ ver4.9 修正:
 import io
 from collections import OrderedDict
 
+from pathlib import Path
+
 import pandas as pd
 
 import app.callbacks.interactive_data_export as de
@@ -83,3 +85,70 @@ def test_export_desi_appends_cluster_column(tmp_path):
     }
     # 座標一致した px1->3, px2->5 が付与され、未一致 px3 は空
     assert got == {"3", "5"}
+
+
+# ---------------------------------------------------------------------------
+# プロジェクトスコープ（別プロジェクト混入の防止）
+# ---------------------------------------------------------------------------
+
+def _setup_data_root(tmp_path, monkeypatch):
+    """tmp に DESI データルートを作り、config の候補をそこへ向ける。"""
+    data_root = tmp_path / "DESI" / "Data"
+    data_root.mkdir(parents=True)
+    monkeypatch.setattr("app.config.DESI_DATA_CANDIDATES", [data_root])
+    monkeypatch.setattr("app.config.TIMS_DATA_CANDIDATES", [])
+    monkeypatch.setattr("app.config.OUTPUT_DATA_CANDIDATES", [])
+    return data_root
+
+
+def test_is_within():
+    base = Path("/a/b")
+    assert de._is_within(Path("/a/b"), base)
+    assert de._is_within(Path("/a/b/c"), base)
+    assert not de._is_within(Path("/a/x"), base)
+
+
+def test_project_root_for(tmp_path, monkeypatch):
+    data_root = _setup_data_root(tmp_path, monkeypatch)
+    proj = data_root / "ProjA"
+    run = proj / "umap_run"
+    run.mkdir(parents=True)
+    got = de._project_root_for(run)
+    assert got is not None and got.resolve() == proj.resolve()
+    # 既知のデータ/出力ルート配下でないパス → None
+    assert de._project_root_for(tmp_path / "elsewhere") is None
+
+
+def test_infer_data_folder_does_not_cross_into_other_project(tmp_path, monkeypatch):
+    data_root = _setup_data_root(tmp_path, monkeypatch)
+    # ProjA: 結果フォルダのみ（自前の .txt データは無い）
+    projA = data_root / "ProjA_Embryo"
+    run = projA / "umap_run"
+    run.mkdir(parents=True)
+    # 別プロジェクト ProjB: データルート直下に .txt を持つ
+    # （旧実装は parent.parent=データルートを走査しこれを誤って返していた）
+    projB = data_root / "AAA_OtherProj"
+    projB.mkdir()
+    (projB / "sample.txt").write_text("x", encoding="utf-8")
+
+    got = de._infer_data_folder(str(run), None, None, "DESI")
+    # 別プロジェクト(ProjB)を返さない（プロジェクト外は走査しないため None）
+    assert got is None
+
+
+def test_infer_data_folder_finds_own_project_data(tmp_path, monkeypatch):
+    data_root = _setup_data_root(tmp_path, monkeypatch)
+    projA = data_root / "ProjA_Embryo"
+    run = projA / "umap_run"
+    run.mkdir(parents=True)
+    raw = projA / "raw"
+    raw.mkdir()
+    (raw / "S1.txt").write_text("x", encoding="utf-8")
+    # 別プロジェクトの混入候補（返してはいけない）
+    projB = data_root / "AAA_OtherProj"
+    projB.mkdir()
+    (projB / "sample.txt").write_text("x", encoding="utf-8")
+
+    got = de._infer_data_folder(str(run), None, None, "DESI")
+    assert got is not None
+    assert Path(got).resolve() == raw.resolve()  # 自プロジェクトの raw を返す

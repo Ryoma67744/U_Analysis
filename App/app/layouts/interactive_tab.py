@@ -580,6 +580,24 @@ def create_interactive_tab():
                                 className="mt-1 text-muted",
                                 style={"fontSize": "0.85rem"},
                             ),
+                            # データ出力の進捗表示（出力中のみ表示）
+                            html.Div(
+                                id="data_export_progress_container",
+                                style={"display": "none", "marginTop": "8px"},
+                                children=[
+                                    dbc.Progress(
+                                        id="data_export_progress_bar",
+                                        value=0, max=100,
+                                        striped=True, animated=True,
+                                        style={"height": "18px"},
+                                    ),
+                                    html.Div(
+                                        id="data_export_progress_label",
+                                        className="text-center small text-muted mt-1",
+                                        children="",
+                                    ),
+                                ],
+                            ),
 
                             # --- 軽量ビューア ---
                             html.Hr(className="my-2"),
@@ -1289,6 +1307,7 @@ def create_interactive_tab():
         dcc.Download(id="dl_batch_zip"),
         # データ出力 (UMAP cluster) 用
         dcc.Download(id="dl_data_export"),
+        dcc.Store(id="data_export_trigger", data=None),
         # インタラクティブキャリブレーション用
         dcc.Store(id="int_cal_table_data", data=[]),
         dcc.Store(id="int_cal_save_trigger", data=None),

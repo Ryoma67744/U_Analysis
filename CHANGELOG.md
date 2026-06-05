@@ -12,6 +12,30 @@
 
 ---
 
+## 2026-06-04_ver4.10
+
+### データ出力: ①進捗表示の追加 ＆ ②別プロジェクト混入の防止
+「データ出力 (UMAP cluster)」に進捗表示を追加し、別プロジェクトのデータが出力される
+重大バグを修正。
+
+- **② 別プロジェクト混入の修正（最優先）**: 開いているプロジェクト（Embryo）を出力したのに
+  別プロジェクト（TDLN/LN）の結果（`LN`/`TDLN`/`ROI` annotation）が出力される問題。
+  - 原因1: `_infer_data_folder` が結果フォルダの**親の親（=全プロジェクト共通の Data ルート）**
+    まで走査し、最初に見つかった**別プロジェクトのデータフォルダ**を返していた。
+  - 原因2: `_set_active_key` が条件付きで、`plot_data` が別/既定プロジェクトになり得た。
+  - 修正: データフォルダ推定を**プロジェクトルート配下に限定**（`_project_root_for` /
+    `_is_within` を追加、Data ルートは走査しない）。出力本体 `_do_export` で
+    `seurat_rds_path_store`（=実際に読み込んだ RDS）から**無条件にアクティブキーを固定**し、
+    常に開いているプロジェクトの `plot_data`/クラスタを使う。
+- **① 進捗表示の追加**: `cb_export_data` を前景 2 段チェーン（Stage A: 進捗バー表示＋ボタン無効化
+  ＋トリガ / Stage B: 出力実行→ダウンロード→「完了」表示）に分割。`data_export_progress_*` を
+  `interactive_tab.py` に追加。読込チェーンと同じ前景方式（background は `_interactive_data` の
+  インプロセス状態を fork worker が共有できないため不可）。
+- **テスト**: `App/tests/test_data_export.py` に `_project_root_for`/`_is_within` と、
+  `_infer_data_folder` が別プロジェクトのフォルダを返さないことの検証を追加。
+
+---
+
 ## 2026-06-04_ver4.9
 
 ### バグ修正: DESIプロジェクトの「データ出力」がTIMS経路に入り別ファイルが出力される
