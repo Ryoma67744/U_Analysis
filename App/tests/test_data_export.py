@@ -152,3 +152,29 @@ def test_infer_data_folder_finds_own_project_data(tmp_path, monkeypatch):
     got = de._infer_data_folder(str(run), None, None, "DESI")
     assert got is not None
     assert Path(got).resolve() == raw.resolve()  # 自プロジェクトの raw を返す
+
+
+def test_infer_data_folder_finds_data_directly_in_dataset_dir(tmp_path, monkeypatch):
+    """生データが『データセットフォルダ直下』(=結果フォルダの親) に置かれているケース。
+
+    ver4.11 リグレッション修正: ver4.10 はサブフォルダのみ走査していたため、
+    .txt がデータセット直下にあると「見つかりません」になっていた。
+    """
+    data_root = _setup_data_root(tmp_path, monkeypatch)
+    dataset = data_root / "251213_Embryo"
+    run = dataset / "260403_UMAP_E16E18"   # 結果フォルダ
+    run.mkdir(parents=True)
+    # 生データ .txt はデータセット直下（run の中ではない）
+    (dataset / "E16_PN.txt").write_text("x", encoding="utf-8")
+    (dataset / "E18_PN.txt").write_text("x", encoding="utf-8")
+    # 結果系サブフォルダ（.txt は持たない）
+    (dataset / "Harmony").mkdir()
+    (dataset / "RDS_Files").mkdir()
+    # 別プロジェクト（返してはいけない）
+    other = data_root / "AAA_Other"
+    other.mkdir()
+    (other / "x.txt").write_text("x", encoding="utf-8")
+
+    got = de._infer_data_folder(str(run), None, None, "DESI")
+    assert got is not None
+    assert Path(got).resolve() == dataset.resolve()  # データセット直下を返す（別プロジェクトでない）
