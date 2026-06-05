@@ -1755,32 +1755,37 @@ spatial_smooth_seurat <- function(seurat_obj, radius, assay = "Spatial", layer =
   smoothed_data <- matrix(0, nrow = n_features, ncol = n_spots,
                           dimnames = list(rownames(count_data), colnames(count_data)))
 
-  # 距離行列を1回だけ計算（15,000スポット以下: 高速、超過: メモリ節約のためスポットごと）
-  # 25K spots では as.matrix(dist) が ~5 GB を要求し Docker メモリ上限で OOM Killer に
-  # 殺される事例があったため、閾値を 50000 -> 15000 に引き下げて防御的にループ法へ
-  # フォールバックする (~1.4 GB に抑えられる)。
-  use_dist_mat <- (n_spots <= 15000)
-  if (use_dist_mat) {
-    dist_mat <- as.matrix(dist(coords))
-  }
+  # 近傍探索: k-d 木の固定半径探索 (dbscan::frNN) で O(n log n)・低メモリ化。OOM 防御で
+  # 入れていた距離行列一括計算 (旧 15000 スポット閾値) を不要化する。取りこぼし防止に eps を
+  # 僅かに広げて候補を取り、後段で現行と同一の `<= radius` で確定するため、近傍集合・順序・重みは
+  # 現行 (>15000 スポットの総当たり経路) とビット一致する。
+  nn <- tryCatch(
+    dbscan::frNN(as.matrix(coords), eps = radius * (1 + 1e-6)),
+    error = function(e) NULL   # 失敗時は現行どおりの総当たりにフォールバック
+  )
 
   for (i in 1:n_spots) {
-    if (use_dist_mat) {
-      distances <- dist_mat[i, ]
+    if (!is.null(nn)) {
+      cand <- sort(c(i, nn$id[[i]]))   # 自分を足し昇順化 (= which(<=radius) と同集合・同順)
+      d_cand <- sqrt((coords$x[cand] - coords$x[i])^2 + (coords$y[cand] - coords$y[i])^2)
+      keep <- d_cand <= radius         # 現行と同一の <= 判定で確定
+      within_radius <- cand[keep]
+      distances_sel <- d_cand[keep]
     } else {
       distances <- sqrt((coords$x - coords$x[i])^2 + (coords$y - coords$y[i])^2)
+      within_radius <- which(distances <= radius)
+      distances_sel <- distances[within_radius]
     }
-    within_radius <- which(distances <= radius)
     if (length(within_radius) == 0) next
 
     if (method == "mean") {
       weights <- rep(1, length(within_radius))
     } else {
       if (weight_function == "gaussian") {
-        weights <- exp(-(distances[within_radius]^2) / (2 * sigma^2))
+        weights <- exp(-(distances_sel^2) / (2 * sigma^2))
       } else if (weight_function == "inverse_distance") {
-        weights <- 1 / (distances[within_radius] + 1e-10)
-        weights[distances[within_radius] == 0] <- max(weights) * 10
+        weights <- 1 / (distances_sel + 1e-10)
+        weights[distances_sel == 0] <- max(weights) * 10
       } else {
         weights <- rep(1, length(within_radius))
       }
@@ -1950,8 +1955,16 @@ filter_low_count_spots <- function(seurat_obj, method = "otsu", manual_threshold
     title_txt <- paste0("Spot Filtering (", sample_name, ")\n", tryCatch(seurat_obj@misc$measurement_label, error=function(e) sample_name))
     combined_plot <- combined_plot + plot_annotation(title = title_txt) & theme(plot.title = element_text(hjust = 0.5, face = "bold"))
     
-    # ggsave(file.path(outdir, paste0("spot_filtering_", sample_name, "_", ifelse(method == "otsu", "otsu", paste0("manual_", threshold_original)), ".png")),
-    #        combined_plot, width = 16, height = 12, dpi = 300)
+    # QC 画像 (ヒストグラム+空間分布+Filtered+Otsu分散 の結合 PNG) を保存。
+    # 解析結果には無関係。失敗しても解析を止めない。
+    tryCatch(
+      safe_ggsave(
+        file.path(outdir, paste0("spot_filtering_", sample_name, "_",
+                  ifelse(method == "otsu", "otsu", paste0("manual_", threshold_original)), ".png")),
+        combined_plot, width = 16, height = 12, dpi = 300
+      ),
+      error = function(e) message("!! spot filtering QC 画像の保存に失敗: ", conditionMessage(e))
+    )
   }
   
   return(list(
@@ -2108,11 +2121,6 @@ if(SPATIAL_SMOOTH){
         seu_list[[ii]], radius = smooth_radius, sigma = sigma,
         layer = "counts", method = "weighted_mean", weight_function = "gaussian"
       )
-      p_smoothing <- visualize_spatial_smoothing(seu_list[[ii]], smoothed_seurat, layer = "counts")
-      title_txt <- paste0("Spatial smoothing: ", seu_list[[ii]]$sample[1])
-      p_smoothing <- p_smoothing + plot_annotation(title = title_txt) & theme(plot.title = element_text(hjust = 0.5, face = "bold"))
-      # ggsave(file.path(od, paste0("spatial_smoothing_", seu_list[[ii]]$sample[1], "_r", smooth_radius, "_sigma", sigma, ".png")),
-      #        p_smoothing, width = 10, height = 8, dpi = 300)
       seu_list[[ii]] <- smoothed_seurat
     }
     # RDS保存 (slim: DietSeurat + qs 圧縮)

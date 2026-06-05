@@ -66,6 +66,7 @@ def create_results_tab():
                             {"label": "MSI", "value": "MSI"},
                             {"label": "Spatial", "value": "Spatial"},
                             {"label": "Heatmap", "value": "Heatmap"},
+                            {"label": "Filtering", "value": "Filtering"},
                         ],
                         value="all",
                     ),

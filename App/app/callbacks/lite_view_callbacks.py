@@ -17,6 +17,7 @@
 #       pattern-matching で各クラスタの UMAP/Spatial/Volcano グリッドを遅延描画
 # =============================================================================
 
+import base64
 import logging
 import re
 from pathlib import Path
@@ -474,6 +475,61 @@ def update_umap_labels(show_labels_list, label_size, panel_size,
 # レポート構築ヘルパー（Phase 2 で /share/ に流用できる純関数として分離）
 # =============================================================================
 
+def _build_spot_filtering_section(result_dir):
+    """Otsu スポット除去の QC 画像 (spot_filtering_*.png) を埋め込み表示する節を返す。
+
+    R 解析が結果フォルダ直下に保存した PNG をそのまま base64 で埋め込む（簡易ビューアーは
+    データ駆動で画像を生成しないため、ここではファイルを読み込んで表示する）。
+    画像が無い／フォルダが無い場合は None を返し、節自体を出さない。
+    """
+    if not result_dir:
+        return None
+    try:
+        root = Path(result_dir)
+    except Exception:
+        return None
+    if not root.is_dir():
+        return None
+
+    pngs = sorted(root.glob("spot_filtering_*.png"))
+    if not pngs:
+        # フォールバック: 配下を再帰探索し、ファイル名に "filter" を含む PNG
+        pngs = sorted(p for p in root.rglob("*.png") if "filter" in p.name.lower())
+    if not pngs:
+        return None
+
+    cards = []
+    for p in pngs:
+        try:
+            with open(p, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode()
+        except Exception:
+            continue
+        cards.append(
+            html.Div(
+                [
+                    html.Div(p.name, className="text-muted small mb-1"),
+                    html.Img(
+                        src=f"data:image/png;base64,{b64}",
+                        style={"width": "100%", "maxWidth": "1000px",
+                               "border": "1px solid #dee2e6", "borderRadius": "4px"},
+                    ),
+                ],
+                className="mb-4",
+            )
+        )
+    if not cards:
+        return None
+
+    return dbc.Card(
+        [
+            dbc.CardHeader(html.H5("スポット除去 QC (Otsu)", className="mb-0")),
+            dbc.CardBody(cards),
+        ],
+        className="mb-4 shadow-sm",
+    )
+
+
 def _build_report_body(project, sub, integration_method, available_methods,
                        df_plot, df_stats, deg_records,
                        cluster_name_map=None, sample_name_map=None,
@@ -482,7 +538,7 @@ def _build_report_body(project, sub, integration_method, available_methods,
                        spatial_display=None):
     """全体レポートを html.Div の children リストとして返す。"""
     color_map = _get_cluster_color_map(df_plot["Cluster"], custom_color_map)
-    return [
+    sections = [
         _build_header(project, sub, integration_method, available_methods,
                       df_plot, df_stats, sample_name_map),
         _build_overview_section(
@@ -500,6 +556,12 @@ def _build_report_body(project, sub, integration_method, available_methods,
         ),
         _build_heatmap_section(deg_records, cluster_name_map=cluster_name_map),
     ]
+    # スポット除去 (Otsu) の QC 画像があれば末尾に追加（R 解析が生成した PNG を埋め込み）
+    result_dir = (sub or {}).get("last_result_dir") or (sub or {}).get("output_dir", "")
+    spot_sec = _build_spot_filtering_section(result_dir)
+    if spot_sec is not None:
+        sections.append(spot_sec)
+    return sections
 
 
 def _resolve_sample_label(sample, sample_name_map):
