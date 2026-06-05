@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 from dash import Input, Output, State, callback, dcc, no_update
+from dash.exceptions import PreventUpdate
 
 from app.callbacks.interactive_callbacks import _bridge, _interactive_data
 from app.services.data_manager import (
@@ -106,6 +107,46 @@ def _has_msi_files(folder: Path, ms_instrument: str | None) -> bool:
     )
 
 
+def _is_within(path: Path, root: Path) -> bool:
+    """path が root と等しい、または root の配下にあるか。"""
+    try:
+        p = path.resolve()
+        r = root.resolve()
+    except Exception:
+        p, r = path, root
+    return p == r or r in p.parents
+
+
+def _project_root_for(result_path: Path):
+    """result_path が属する『プロジェクトルート』(データ/出力ルート直下のディレクトリ)を返す。
+
+    別プロジェクト混入を防ぐため、データフォルダ推定の走査をこのルート配下に限定する用途。
+    既知のデータ/出力ルート配下でない場合は None。
+    """
+    try:
+        from app.config import (
+            DESI_DATA_CANDIDATES, TIMS_DATA_CANDIDATES, OUTPUT_DATA_CANDIDATES,
+        )
+        roots = (list(DESI_DATA_CANDIDATES) + list(TIMS_DATA_CANDIDATES)
+                 + list(OUTPUT_DATA_CANDIDATES))
+    except Exception:
+        roots = []
+    try:
+        rp = result_path.resolve()
+    except Exception:
+        rp = result_path
+    for root in roots:
+        try:
+            root_r = Path(root).resolve()
+        except Exception:
+            continue
+        if root_r in rp.parents:
+            rel = rp.relative_to(root_r)
+            if rel.parts:
+                return root_r / rel.parts[0]
+    return None
+
+
 def _infer_data_folder(
     result_folder: str | None,
     project_id: str | None,
@@ -129,7 +170,9 @@ def _infer_data_folder(
         except Exception:
             pass
 
-    # (b) 結果フォルダの兄弟ディレクトリをスキャン
+    # (b) 結果フォルダ配下のスキャン（当該プロジェクト内に限定）。
+    # 別プロジェクト混入を防ぐため、全プロジェクト共通のデータルート
+    # (例: Data/DESI/Data) は走査せず、プロジェクトルート配下のみを探索する。
     if not result_folder:
         return None
 
@@ -138,17 +181,23 @@ def _infer_data_folder(
         return None
 
     _skip = {"RDS_Files", "log", "__pycache__", ".git"}
+    project_root = _project_root_for(result_path)
 
     search_roots = [result_path.parent]
-    # 結果フォルダの親が output_dir 的な階層の場合、もう一段上も探索
-    if result_path.parent.parent.is_dir():
-        search_roots.append(result_path.parent.parent)
+    if project_root and project_root.is_dir() and project_root != result_path.parent:
+        search_roots.append(project_root)
 
     for root in search_roots:
+        # プロジェクトルートが判明している場合、その配下以外は走査しない
+        if project_root is not None and not _is_within(root, project_root):
+            continue
         for child in sorted(root.iterdir()):
             if not child.is_dir():
                 continue
             if child == result_path or child.name in _skip:
+                continue
+            # 別プロジェクトのディレクトリは除外
+            if project_root is not None and not _is_within(child, project_root):
                 continue
             if _has_msi_files(child, ms_instrument):
                 return str(child)
@@ -413,39 +462,27 @@ def _export_tims(
 # Callbacks
 # ---------------------------------------------------------------------------
 
-@callback(
-    [Output("dl_data_export", "data"),
-     Output("div_data_export_status", "children")],
-    Input("btn_export_data", "n_clicks"),
-    [State("interactive_msi_folder", "value"),
-     State("int_cal_ms_instrument", "data"),
-     State("data_export_format", "value"),
-     State("interactive_rds_map", "data"),
-     State("interactive_integration_method", "value"),
-     State("interactive_result_folder", "value"),
-     State("interactive_project_select", "value"),
-     State("interactive_sub_project_select", "value")],
-    prevent_initial_call=True,
-)
-def cb_export_data(
-    n_clicks, data_folder, ms_instrument, export_format,
+def _do_export(
+    data_folder, ms_instrument, export_format,
     rds_map, current_method, result_folder, project_id, sub_project_id,
+    loaded_rds,
 ):
-    """データ出力ボタンのコールバック。
+    """データ出力の本体。開いている(読み込み済みの)プロジェクトにスコープを固定して、
+    元データに UMAP cluster 列を付与したファイルを生成する。
 
-    ``interactive_rds_map`` に複数手法が登録されている場合は、
-    全手法のクラスター情報を1つのファイルにまとめて出力する。
-    ``data_folder`` が未設定の場合はサブプロジェクトメタデータや
-    結果フォルダ構造から自動推定を試みる。
+    Returns: (dcc.send_bytes(...) または no_update, status_message)
     """
-    if not n_clicks:
-        return no_update, no_update
-    # 現在の閲覧プロジェクトを ContextVar にスコープ（他ユーザーと干渉しないように）
-    if rds_map and current_method and current_method in rds_map:
-        from app.callbacks.interactive_callbacks import _set_active_key
+    from app.callbacks.interactive_callbacks import _set_active_key
+    # 開いているプロジェクト(= 実際に読み込んだ RDS)にアクティブキーを固定する。
+    # 別プロジェクトの plot_data / クラスタを読まないよう loaded_rds を最優先・無条件に設定。
+    if loaded_rds:
+        _set_active_key(loaded_rds)
+    elif rds_map and current_method and current_method in rds_map:
         _set_active_key(rds_map[current_method])
 
-    logger.info("[DataExport] cb_export_data 発火: data_folder=%s", data_folder)
+    logger.info(
+        "[DataExport] _do_export: loaded_rds=%s data_folder=%s", loaded_rds, data_folder
+    )
 
     try:
         # ms_instrument を確定（DESIプロジェクトが既定の "TIMS" に落ち、誤って TIMS 経路に
@@ -453,7 +490,7 @@ def cb_export_data(
         ms_instrument = _resolve_instrument(ms_instrument, data_folder, result_folder)
         logger.info("[DataExport] instrument 確定: %s", ms_instrument)
 
-        # MSI データフォルダの自動推定
+        # MSI データフォルダの自動推定（当該プロジェクト内に限定して推定する）
         if not data_folder:
             data_folder = _infer_data_folder(
                 result_folder, project_id, sub_project_id, ms_instrument
@@ -497,6 +534,68 @@ def cb_export_data(
     except Exception as e:
         logger.exception("データ出力エラー")
         return no_update, f"❌ エラー: {e}"
+
+
+# ---------------------------------------------------------------------------
+# 進捗表示付き 2 段チェーン（前景）。
+#  Stage A: 進捗UI表示 + ボタン無効化 + Stage B をトリガ（ここで一度描画される）
+#  Stage B: 出力本体を実行 → ダウンロード返却 + 進捗「完了」→ 非表示
+# background=True は使わない（_do_export が _interactive_data のインプロセス状態を
+# 参照するため、DiskcacheManager の fork worker では共有されない）。
+# ---------------------------------------------------------------------------
+
+_PROG_SHOW = {"display": "block", "marginTop": "8px"}
+_PROG_HIDE = {"display": "none"}
+
+
+@callback(
+    [Output("data_export_progress_container", "style"),
+     Output("data_export_progress_label", "children"),
+     Output("data_export_progress_bar", "value"),
+     Output("data_export_progress_bar", "animated"),
+     Output("btn_export_data", "disabled"),
+     Output("data_export_trigger", "data")],
+    Input("btn_export_data", "n_clicks"),
+    prevent_initial_call=True,
+)
+def data_export_stage_a(n_clicks):
+    """出力開始: 進捗UIを表示しボタンを無効化、Stage B をトリガする。"""
+    if not n_clicks:
+        raise PreventUpdate
+    return (_PROG_SHOW, "出力中… ファイルを生成しています", 100, True, True, {"n": n_clicks})
+
+
+@callback(
+    [Output("dl_data_export", "data"),
+     Output("div_data_export_status", "children"),
+     Output("data_export_progress_container", "style", allow_duplicate=True),
+     Output("data_export_progress_label", "children", allow_duplicate=True),
+     Output("data_export_progress_bar", "value", allow_duplicate=True),
+     Output("data_export_progress_bar", "animated", allow_duplicate=True),
+     Output("btn_export_data", "disabled", allow_duplicate=True)],
+    Input("data_export_trigger", "data"),
+    [State("interactive_msi_folder", "value"),
+     State("int_cal_ms_instrument", "data"),
+     State("data_export_format", "value"),
+     State("interactive_rds_map", "data"),
+     State("interactive_integration_method", "value"),
+     State("interactive_result_folder", "value"),
+     State("interactive_project_select", "value"),
+     State("interactive_sub_project_select", "value"),
+     State("seurat_rds_path_store", "data")],
+    prevent_initial_call=True,
+)
+def data_export_stage_b(trigger, data_folder, ms_instrument, export_format,
+                        rds_map, current_method, result_folder,
+                        project_id, sub_project_id, loaded_rds):
+    """出力本体を実行し、ダウンロードと完了表示を返す。"""
+    if not trigger:
+        raise PreventUpdate
+    download, msg = _do_export(
+        data_folder, ms_instrument, export_format, rds_map, current_method,
+        result_folder, project_id, sub_project_id, loaded_rds,
+    )
+    return (download, msg, _PROG_HIDE, "完了", 100, False, False)
 
 
 @callback(
