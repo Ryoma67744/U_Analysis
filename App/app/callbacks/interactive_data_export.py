@@ -191,6 +191,10 @@ def _infer_data_folder(
         # プロジェクトルートが判明している場合、その配下以外は走査しない
         if project_root is not None and not _is_within(root, project_root):
             continue
+        # 生データが「データセットフォルダ直下」にあるケース（結果フォルダの親に .txt 等を
+        # 直接置く運用）。サブフォルダだけでなくルート自身も MSI データの有無を確認する。
+        if root != result_path and _has_msi_files(root, ms_instrument):
+            return str(root)
         for child in sorted(root.iterdir()):
             if not child.is_dir():
                 continue
