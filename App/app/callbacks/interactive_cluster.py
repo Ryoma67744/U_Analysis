@@ -31,6 +31,10 @@ from app.callbacks.interactive_callbacks import (
     _save_interactive_settings,
     _set_active_key,
 )
+from app.utils.label_persistence import (
+    load_cluster_name_map as _load_cluster_name_map,
+    save_cluster_name_map as _save_cluster_name_map,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -303,14 +307,15 @@ def reflect_cluster_rename_lock(lock_state, comp_id, my_session_id):
     Input("cluster_rename_reset_btn", "n_clicks"),
     State({"type": "cluster_rename_input", "index": ALL}, "value"),
     State("seurat_rds_path_store", "data"),
+    State("interactive_integration_method", "value"),
     prevent_initial_call=True,
 )
-def apply_cluster_rename(apply_clicks, reset_clicks, input_values, rds_path=None):
-    """リネーム適用/リセット"""
+def apply_cluster_rename(apply_clicks, reset_clicks, input_values, rds_path=None, method=None):
+    """リネーム適用/リセット（手法 Harmony/RPCA ごとに独立して保存）"""
     _set_active_key(rds_path)
     trigger = ctx.triggered_id
     if trigger == "cluster_rename_reset_btn":
-        _save_interactive_settings("cluster_name_map", {})
+        _save_cluster_name_map(rds_path, method, {})
         return {}, "🔄 リセットしました"
 
     if trigger == "cluster_rename_apply_btn":
@@ -323,7 +328,7 @@ def apply_cluster_rename(apply_clicks, reset_clicks, input_values, rds_path=None
             if val and isinstance(val, str) and val.strip():
                 name_map[cl_id] = val.strip()
 
-        _save_interactive_settings("cluster_name_map", name_map)
+        _save_cluster_name_map(rds_path, method, name_map)
         count = len(name_map)
         return name_map, f"✅ {count}件のクラスタ名を適用しました"
 
@@ -333,13 +338,13 @@ def apply_cluster_rename(apply_clicks, reset_clicks, input_values, rds_path=None
 @callback(
     Output("cluster_name_map_store", "data", allow_duplicate=True),
     Input("seurat_rds_path_store", "data"),
+    State("interactive_integration_method", "value"),
     prevent_initial_call=True,
 )
-def load_saved_cluster_name_map(rds_path):
-    """データ読込時に保存済みクラスタ名マッピングを復元"""
+def load_saved_cluster_name_map(rds_path, method=None):
+    """データ読込時に保存済みクラスタ名マッピングを復元（手法別）"""
     _set_active_key(rds_path)
-    settings = _load_interactive_settings()
-    return settings.get("cluster_name_map", {})
+    return _load_cluster_name_map(rds_path, method)
 
 
 # ---------------------------------------------------------------------------
