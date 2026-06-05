@@ -19,6 +19,7 @@ from dash.exceptions import PreventUpdate
 
 from app.callbacks.interactive_callbacks import _bridge, _interactive_data
 from app.utils.color_utils import cluster_display_name
+from app.utils.label_persistence import load_cluster_name_map
 from app.services.data_manager import (
     build_tims_input_paths,
     list_msi_files,
@@ -281,8 +282,11 @@ def _build_all_method_lookups(
             if rds_path and Path(rds_path).exists():
                 try:
                     result = _bridge.extract_data(rds_path)
+                    # 手法ごとにクラスタ名変更マップは独立。現在の手法は引数の
+                    # cluster_name_map（store）、他手法はその手法の保存分を読み込む。
+                    other_map = load_cluster_name_map(rds_path, method_name)
                     method_lookups[method_name] = _build_cluster_lookup(
-                        result["plot_data"], cluster_name_map
+                        result["plot_data"], other_map
                     )
                 except Exception as e:
                     logger.warning(

@@ -12,6 +12,25 @@
 
 ---
 
+## 2026-06-04_ver4.13
+
+### バグ修正: クラスタ名変更を手法(Harmony/RPCA)ごとに独立化
+クラスタ名変更マップが単一キー `cluster_name_map` で保存され、Harmony と RPCA で**共有**されて
+いた。両者はクラスタの中身が異なるため、**手法ごとに独立**して保存・表示・出力するよう修正。
+
+- **永続化**: `label_persistence.py` に `cluster_name_map_key(method)` /
+  `load_cluster_name_map(rds_path, method)` / `save_cluster_name_map(rds_path, method, value)` を
+  追加。キーを `cluster_name_map::<手法>` にし、手法別キーが無ければ旧 `cluster_name_map` に
+  フォールバック（既存リネームを失わない移行）。
+- **適用/復元**: `apply_cluster_rename` / `load_saved_cluster_name_map`
+  （`interactive_cluster.py`）に `interactive_integration_method` を渡し、手法別に保存・復元。
+  手法切替（再読込）時に該当手法の名前が表示される。
+- **データ出力**: 多手法出力で、各手法のクラスタ列にその手法の変更名を適用
+  （`_build_all_method_lookups` が他手法分を `load_cluster_name_map` で読み込む）。
+- **テスト**: 手法別の独立保存・復元と旧形式フォールバックの検証を追加。
+
+---
+
 ## 2026-06-04_ver4.12
 
 ### ① 生データフォルダの自動保存（出力時の推定フォールバックを解消）＆ ② 出力にクラスタ変更名

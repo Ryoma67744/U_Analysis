@@ -139,6 +139,34 @@ def save_interactive_settings(key: str, value, rds_path: str | None) -> None:
         logger.warning("インタラクティブ設定の保存に失敗: %s", e)
 
 
+def cluster_name_map_key(method) -> str:
+    """クラスタ名変更マップの保存キー。手法(Harmony/RPCA 等)ごとに独立させる。
+
+    手法が未指定/不明のときは旧来の共有キー 'cluster_name_map' を使う。
+    """
+    m = str(method).strip() if method else ""
+    return f"cluster_name_map::{m}" if m else "cluster_name_map"
+
+
+def load_cluster_name_map(rds_path: str | None, method=None) -> dict:
+    """手法別クラスタ名変更マップを読み込む。
+
+    手法別キーが無ければ旧来の共有キー 'cluster_name_map' にフォールバックする
+    （既存のリネームを失わないため）。
+    """
+    settings = load_interactive_settings(rds_path) or {}
+    key = cluster_name_map_key(method)
+    nm = settings.get(key)
+    if nm is None and key != "cluster_name_map":
+        nm = settings.get("cluster_name_map")  # 旧形式（手法共有）フォールバック
+    return nm or {}
+
+
+def save_cluster_name_map(rds_path: str | None, method, value) -> None:
+    """手法別クラスタ名変更マップを保存する。"""
+    save_interactive_settings(cluster_name_map_key(method), value, rds_path)
+
+
 def save_label_positions(
     positions: dict,
     rds_path: str | None,

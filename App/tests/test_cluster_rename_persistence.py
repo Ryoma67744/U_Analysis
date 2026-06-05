@@ -168,3 +168,40 @@ def test_rename_panel_empty_when_no_saved_names(tmp_path):
     inputs = _collect_rename_inputs(rows)
 
     assert inputs == {"0": "", "1": ""}
+
+
+# ---------------------------------------------------------------------------
+# 手法(Harmony/RPCA)ごとの独立保存（ver4.13）
+# ---------------------------------------------------------------------------
+
+def test_cluster_name_map_key():
+    from app.utils import label_persistence as lp
+    assert lp.cluster_name_map_key("Harmony") == "cluster_name_map::Harmony"
+    assert lp.cluster_name_map_key("RPCA") == "cluster_name_map::RPCA"
+    assert lp.cluster_name_map_key("") == "cluster_name_map"
+    assert lp.cluster_name_map_key(None) == "cluster_name_map"
+
+
+def test_cluster_name_map_per_method_independent(tmp_path):
+    from app.utils import label_persistence as lp
+    (tmp_path / "RDS_Files").mkdir()
+    rds = str(tmp_path / "RDS_Files" / "x.rds")
+    lp.save_cluster_name_map(rds, "Harmony", {"0": "Epi"})
+    lp.save_cluster_name_map(rds, "RPCA", {"0": "Stroma"})
+    # 同じ設定ファイルでも手法別に独立
+    assert lp.load_cluster_name_map(rds, "Harmony") == {"0": "Epi"}
+    assert lp.load_cluster_name_map(rds, "RPCA") == {"0": "Stroma"}
+
+
+def test_cluster_name_map_legacy_fallback(tmp_path):
+    from app.utils import label_persistence as lp
+    (tmp_path / "RDS_Files").mkdir()
+    rds = str(tmp_path / "RDS_Files" / "x.rds")
+    # 旧形式（手法共有キー）のみ保存
+    lp.save_interactive_settings("cluster_name_map", {"0": "Legacy"}, rds)
+    # 手法別キーが無い → 旧形式にフォールバック（既存リネームを失わない）
+    assert lp.load_cluster_name_map(rds, "Harmony") == {"0": "Legacy"}
+    # 手法別を保存すると以後はそちらが優先、未設定の手法は旧形式のまま
+    lp.save_cluster_name_map(rds, "Harmony", {"0": "New"})
+    assert lp.load_cluster_name_map(rds, "Harmony") == {"0": "New"}
+    assert lp.load_cluster_name_map(rds, "RPCA") == {"0": "Legacy"}
