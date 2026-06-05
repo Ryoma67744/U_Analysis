@@ -178,3 +178,62 @@ def test_infer_data_folder_finds_data_directly_in_dataset_dir(tmp_path, monkeypa
     got = de._infer_data_folder(str(run), None, None, "DESI")
     assert got is not None
     assert Path(got).resolve() == dataset.resolve()  # データセット直下を返す（別プロジェクトでない）
+
+
+# ---------------------------------------------------------------------------
+# ② 出力にクラスタ変更名を反映
+# ---------------------------------------------------------------------------
+
+def test_build_cluster_lookup_uses_renamed_names():
+    plot = pd.DataFrame({
+        "SpatialX": [10.0, 11.0, 12.0],
+        "SpatialY": [20.0, 21.0, 22.0],
+        "Sample": ["S1", "S1", "S1"],
+        "Cluster": [1, 2, 1],
+    })
+    lookup = de._build_cluster_lookup(plot, {"1": "Epithelial"})
+    assert lookup[("S1", 10.0, 20.0)] == "Epithelial"  # cluster 1 -> 変更名
+    assert lookup[("S1", 11.0, 21.0)] == "2"            # cluster 2 -> 番号のまま
+    assert lookup[("S1", 12.0, 22.0)] == "Epithelial"
+    # name_map なし → 番号
+    lookup2 = de._build_cluster_lookup(plot, None)
+    assert lookup2[("S1", 10.0, 20.0)] == "1"
+
+
+# ---------------------------------------------------------------------------
+# ① data_folder 自動保存（バックフィル）
+# ---------------------------------------------------------------------------
+
+def test_ensure_sub_project_data_folder_backfills(tmp_path, monkeypatch):
+    data_root = _setup_data_root(tmp_path, monkeypatch)
+    dataset = data_root / "251213_Embryo"
+    run = dataset / "260403_UMAP_E16E18"
+    run.mkdir(parents=True)
+    (dataset / "E16_PN.txt").write_text("x", encoding="utf-8")
+
+    saved = {}
+    fake_sub = {"id": "s1", "data_folder": ""}  # 空 → バックフィル対象
+    monkeypatch.setattr("app.services.project_manager.get_sub_project",
+                        lambda p, s: fake_sub)
+
+    def fake_update(p, s, updates):
+        saved.update(updates)
+        return {**fake_sub, **updates}
+    monkeypatch.setattr("app.services.project_manager.update_sub_project", fake_update)
+
+    # ms_instrument 空でも、パス /DESI/ から DESI と解決して .txt を見つける
+    got = de.ensure_sub_project_data_folder("p1", "s1", str(run), "")
+    assert got is not None
+    assert Path(got).resolve() == dataset.resolve()
+    assert saved.get("data_folder") == got  # サブプロジェクトに保存された
+
+
+def test_ensure_sub_project_data_folder_keeps_existing(monkeypatch):
+    monkeypatch.setattr("app.services.project_manager.get_sub_project",
+                        lambda p, s: {"data_folder": "/already/set"})
+    called = {"n": 0}
+    monkeypatch.setattr("app.services.project_manager.update_sub_project",
+                        lambda *a, **k: called.__setitem__("n", called["n"] + 1))
+    got = de.ensure_sub_project_data_folder("p", "s", "/some/result", "DESI")
+    assert got == "/already/set"
+    assert called["n"] == 0  # 既存値があれば更新しない

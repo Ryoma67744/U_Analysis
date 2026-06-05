@@ -975,6 +975,13 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
             except Exception as e:
                 warn_user(f"サブプロジェクト情報の取得に失敗: {e}")
 
+        # data_folder が未設定のサブプロジェクトを自己修復（出力時の推定フォールバックを不要に）
+        try:
+            from app.callbacks.interactive_data_export import ensure_sub_project_data_folder
+            ensure_sub_project_data_folder(project_id, sub_project_id, result_folder, r_instrument)
+        except Exception:
+            pass
+
         return (
             info_text,
             {},  # 可視化コンテナ表示

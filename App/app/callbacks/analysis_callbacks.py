@@ -27,7 +27,7 @@ from app.services.analysis_runner import (
     compute_calibration_coefficients,
 )
 from app.services.session_manager import save_last_settings
-from app.services.project_manager import save_sub_project_settings, save_sub_project_result_dir
+from app.services.project_manager import save_sub_project_settings, save_sub_project_result_dir, update_sub_project
 from app.services.notify import warn_user
 
 
@@ -737,6 +737,10 @@ def update_progress(n_intervals, app_state, log_search, log_level, log_lines_cou
                 sub_id = app_state.get("sub_project_id")
                 if proj_id and sub_id and output_dir:
                     save_sub_project_result_dir(proj_id, sub_id, output_dir)
+                # 解析に使った生データフォルダもサブプロジェクトに保存しておく
+                # （出力時の「MSIデータフォルダ」自動推定フォールバックを不要にする）
+                if proj_id and sub_id and data_folder:
+                    update_sub_project(proj_id, sub_id, {"data_folder": data_folder})
             except Exception as e:
                 warn_user(f"結果ディレクトリの保存に失敗: {e}")
         else:

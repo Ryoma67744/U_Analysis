@@ -12,6 +12,26 @@
 
 ---
 
+## 2026-06-04_ver4.12
+
+### ① 生データフォルダの自動保存（出力時の推定フォールバックを解消）＆ ② 出力にクラスタ変更名
+- **① data_folder 自動保存**: サブプロジェクトの `data_folder`（MSIデータフォルダ）が空だと、
+  データ出力が推定フォールバックに落ちていた。これを常に埋まるようにした。
+  - **解析完了時**: `run_analysis` 完了処理で、解析に使った生データフォルダを
+    `update_sub_project(..., {"data_folder": data_folder})` で保存（新規解析は常に埋まる）。
+  - **既存プロジェクトの自己修復**: ヘルパー `ensure_sub_project_data_folder()` を新設し、
+    `load_stage_d_finish`（データ読込完了）から呼ぶ。`data_folder` が空なら、instrument を
+    パスから解決(`_resolve_instrument`)→プロジェクト内限定推定(`_infer_data_folder`)で解決し
+    保存する。既存サブプロジェクトを開くたびに空欄が埋まる。
+- **② 出力にクラスタ変更名**: データ出力(Excel/CSV/Parquet)のクラスタ列を、画面で変更した
+  クラスタ名で表示。`_build_cluster_lookup` の値を `str(cluster)` →
+  `cluster_display_name(cluster, cluster_name_map)`（変更名があれば名前、無ければ番号）に変更し、
+  `data_export_stage_b` に `cluster_name_map_store` を渡すようにした。
+- **テスト**: `ensure_sub_project_data_folder`（空→推定保存／既存は不変）と、
+  `_build_cluster_lookup` の変更名反映を追加。
+
+---
+
 ## 2026-06-04_ver4.11
 
 ### バグ修正(ver4.10のリグレッション): データセット直下の生データを「見つかりません」と誤判定
