@@ -18,6 +18,7 @@ from dash import Input, Output, State, callback, dcc, no_update
 from dash.exceptions import PreventUpdate
 
 from app.callbacks.interactive_callbacks import _bridge, _interactive_data
+from app.utils.color_utils import cluster_display_name
 from app.services.data_manager import (
     build_tims_input_paths,
     list_msi_files,
@@ -51,8 +52,11 @@ def _resolve_instrument(ms_instrument, *paths) -> str:
     return mi or "TIMS"
 
 
-def _build_cluster_lookup(plot_data: pd.DataFrame) -> dict:
-    """plot_data 全体から {(sample, round(x,4), round(y,4)): cluster} dict を構築。"""
+def _build_cluster_lookup(plot_data: pd.DataFrame, cluster_name_map: dict | None = None) -> dict:
+    """plot_data 全体から {(sample, round(x,4), round(y,4)): クラスタ表示名} dict を構築。
+
+    cluster_name_map（クラスタ名変更）があれば、番号ではなく変更名を値にする。
+    """
     if plot_data is None or plot_data.empty:
         return {}
     lookup = {}
@@ -63,7 +67,7 @@ def _build_cluster_lookup(plot_data: pd.DataFrame) -> dict:
         cluster = row.get("Cluster", "")
         if pd.notna(sx) and pd.notna(sy):
             key = (sample, round(float(sx), 4), round(float(sy), 4))
-            lookup[key] = str(cluster)
+            lookup[key] = cluster_display_name(cluster, cluster_name_map)
     return lookup
 
 
@@ -209,9 +213,37 @@ def _infer_data_folder(
     return None
 
 
+def ensure_sub_project_data_folder(project_id, sub_id, result_folder, ms_instrument):
+    """サブプロジェクトの data_folder が空なら、プロジェクト内限定推定で解決して保存する。
+
+    生データ登録パスが空欄のサブプロジェクト（推定フォールバックに落ちる）を自己修復し、
+    以後の出力が推定に頼らず確実にそのフォルダを使えるようにする。
+    Returns: 解決/既存の data_folder (str) または None。
+    """
+    if not project_id or not sub_id:
+        return None
+    try:
+        from app.services.project_manager import get_sub_project, update_sub_project
+        sub = get_sub_project(project_id, sub_id)
+        if not sub:
+            return None
+        existing = sub.get("data_folder")
+        if existing:
+            return existing  # 既に設定済みなら触らない
+        inst = _resolve_instrument(ms_instrument, result_folder)
+        resolved = _infer_data_folder(result_folder, project_id, sub_id, inst)
+        if resolved:
+            update_sub_project(project_id, sub_id, {"data_folder": resolved})
+        return resolved
+    except Exception:
+        logger.exception("[DataExport] data_folder バックフィルに失敗")
+        return None
+
+
 def _build_all_method_lookups(
     rds_map: dict | None,
     current_method: str | None,
+    cluster_name_map: dict | None = None,
 ) -> OrderedDict:
     """全手法のクラスタールックアップを構築。
 
@@ -227,7 +259,7 @@ def _build_all_method_lookups(
         plot_data = _interactive_data.get("plot_data")
         if plot_data is not None:
             method_name = _interactive_data.get("method") or "Unknown"
-            method_lookups[method_name] = _build_cluster_lookup(plot_data)
+            method_lookups[method_name] = _build_cluster_lookup(plot_data, cluster_name_map)
         return method_lookups
 
     # 複数手法: 現在の手法を先頭に配置
@@ -243,14 +275,14 @@ def _build_all_method_lookups(
             # 現在の手法は再読込不要
             plot_data = _interactive_data.get("plot_data")
             if plot_data is not None:
-                method_lookups[method_name] = _build_cluster_lookup(plot_data)
+                method_lookups[method_name] = _build_cluster_lookup(plot_data, cluster_name_map)
         else:
             rds_path = rds_map[method_name]
             if rds_path and Path(rds_path).exists():
                 try:
                     result = _bridge.extract_data(rds_path)
                     method_lookups[method_name] = _build_cluster_lookup(
-                        result["plot_data"]
+                        result["plot_data"], cluster_name_map
                     )
                 except Exception as e:
                     logger.warning(
@@ -469,7 +501,7 @@ def _export_tims(
 def _do_export(
     data_folder, ms_instrument, export_format,
     rds_map, current_method, result_folder, project_id, sub_project_id,
-    loaded_rds,
+    loaded_rds, cluster_name_map=None,
 ):
     """データ出力の本体。開いている(読み込み済みの)プロジェクトにスコープを固定して、
     元データに UMAP cluster 列を付与したファイルを生成する。
@@ -514,7 +546,7 @@ def _do_export(
         if "SpatialX" not in plot_data.columns or "SpatialY" not in plot_data.columns:
             return no_update, "空間座標データ (SpatialX/SpatialY) がありません。"
         # 全手法のクラスタールックアップを構築
-        method_lookups = _build_all_method_lookups(rds_map, current_method)
+        method_lookups = _build_all_method_lookups(rds_map, current_method, cluster_name_map)
         if not method_lookups:
             return no_update, "クラスターデータを構築できませんでした。"
 
@@ -586,18 +618,19 @@ def data_export_stage_a(n_clicks):
      State("interactive_result_folder", "value"),
      State("interactive_project_select", "value"),
      State("interactive_sub_project_select", "value"),
-     State("seurat_rds_path_store", "data")],
+     State("seurat_rds_path_store", "data"),
+     State("cluster_name_map_store", "data")],
     prevent_initial_call=True,
 )
 def data_export_stage_b(trigger, data_folder, ms_instrument, export_format,
                         rds_map, current_method, result_folder,
-                        project_id, sub_project_id, loaded_rds):
+                        project_id, sub_project_id, loaded_rds, cluster_name_map):
     """出力本体を実行し、ダウンロードと完了表示を返す。"""
     if not trigger:
         raise PreventUpdate
     download, msg = _do_export(
         data_folder, ms_instrument, export_format, rds_map, current_method,
-        result_folder, project_id, sub_project_id, loaded_rds,
+        result_folder, project_id, sub_project_id, loaded_rds, cluster_name_map,
     )
     return (download, msg, _PROG_HIDE, "完了", 100, False, False)
 
