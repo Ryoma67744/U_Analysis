@@ -2,6 +2,7 @@
 """MSI Analysis Application - Python Launcher"""
 
 import logging
+import os
 import signal
 import sys
 import threading
@@ -14,6 +15,9 @@ sys.path.insert(0, str(app_root))
 from app.services.log_config import setup_logging
 
 setup_logging()
+# 生成ファイル/ディレクトリをグループ書込可(664/775)にし、SFTPユーザー(共有グループ)と
+# アプリ(コンテナ)でデータを共有できるようにする。R サブプロセスも親の umask を継承する。
+os.umask(0o002)
 logger = logging.getLogger("msi.startup")
 
 from app.main import app

@@ -1165,7 +1165,10 @@ def toggle_delete_sub_modal(
 
 @callback(
     [Output("delete_target_sub_project_id", "data", allow_duplicate=True),
-     Output("sub_project_list_refresh", "data", allow_duplicate=True)],
+     Output("sub_project_list_refresh", "data", allow_duplicate=True),
+     Output("notification_toast", "is_open", allow_duplicate=True),
+     Output("notification_toast", "children", allow_duplicate=True),
+     Output("notification_toast", "icon", allow_duplicate=True)],
     Input("confirm_delete_sub_project", "n_clicks"),
     [State("delete_target_sub_project_id", "data"),
      State("selected_project", "data"),

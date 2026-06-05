@@ -7,6 +7,11 @@ services:
   msi-app:
     build: .
     container_name: msi-analysis-app
+    # SFTPユーザー(共有グループ msi-lab)とデータを共有するため、アプリを共有グループに
+    # 参加させる。/srv/msi を group=msi-lab + setgid(2775) にしておくと、アプリ生成物も
+    # グループ書込可になり、SFTPユーザーとアプリの双方が読み書きできる。
+    group_add:
+      - "${MSI_SHARED_GID:-1001}"
     ports:
       - "${APP_PORT:-3838}:3838"
     environment:
