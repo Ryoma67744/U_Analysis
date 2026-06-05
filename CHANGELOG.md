@@ -12,6 +12,29 @@
 
 ---
 
+## 2026-06-04_ver4.14
+
+### A) バグ修正: サブプロジェクトが削除できない
+`handle_delete_sub_project`（`project_callbacks.py`）が、デコレータの Output 宣言が2個だけなのに
+全 `return` が5個の値を返していた（`handle_delete_project` の5出力版からのコピペで
+`notification_toast` の3出力が欠落）。Dash が出力数不一致でコールバックを失敗させ、削除が
+無反応になっていた。**修正**: デコレータに `notification_toast`(is_open/children/icon) の3出力を
+追加し、5出力＝5戻り値に揃えた（エラー時はトースト通知も出る＝プロジェクト削除と同等）。
+
+### B) コンテナとSFTPユーザーの権限共有（Permission denied 再発防止）
+アプリ(コンテナ uid 1002)が `/srv/msi` 配下に作るフォルダが SFTP ユーザー(グループ msi-lab)から
+書けない問題の恒久対応。
+- `App/run_app.py`: 起動時に `os.umask(0o002)` を設定。生成ファイル/ディレクトリがグループ書込可
+  (664/775)になり、R サブプロセスも親 umask を継承する。
+- `docker-compose.yml`: `msi-app` に `group_add: ["${MSI_SHARED_GID:-1001}"]` を追加し、アプリを
+  共有グループ(msi-lab)へ参加させる（primary group は不変）。
+- `.env.docker`: `MSI_SHARED_GID` を追記（既定 1001）。
+- サーバ側で `chown -R root:msi-lab /srv/msi && chmod -R 2775 /srv/msi`、SFTPユーザーを msi-lab に
+  追加することで、setgid 継承によりアプリ生成フォルダもグループ msi-lab・グループ書込可になる。
+  ※デプロイは「app を group_add 付きで再ビルド → その後 chown/chmod」の順で行う。
+
+---
+
 ## 2026-06-04_ver4.13
 
 ### バグ修正: クラスタ名変更を手法(Harmony/RPCA)ごとに独立化
