@@ -211,6 +211,24 @@ def create_main_layout():
         # 環境設定 (.env) は landing からも analysis からも開けるよう最上位に配置
         create_env_settings_modal(),
 
+        # 通知用 Toast（削除等の成否を全ページで表示するため最上位に配置）
+        dbc.Toast(
+            "",
+            id="notification_toast",
+            header="通知",
+            is_open=False,
+            dismissable=True,
+            duration=4000,
+            icon="info",
+            style={
+                "position": "fixed",
+                "top": 10,
+                "right": 10,
+                "width": 350,
+                "zIndex": 9999,
+            },
+        ),
+
         # ========== Page 1: Landing (プロジェクト一覧) ==========
         create_landing_page(),
 
@@ -379,24 +397,6 @@ def create_main_layout():
                             id="progress_interval",
                             interval=2000,
                             disabled=True,
-                        ),
-
-                        # 通知用 Toast
-                        dbc.Toast(
-                            "",
-                            id="notification_toast",
-                            header="通知",
-                            is_open=False,
-                            dismissable=True,
-                            duration=4000,
-                            icon="info",
-                            style={
-                                "position": "fixed",
-                                "top": 10,
-                                "right": 10,
-                                "width": 350,
-                                "zIndex": 9999,
-                            },
                         ),
 
                         # バックアップ一覧モーダル
