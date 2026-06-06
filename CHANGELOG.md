@@ -12,6 +12,28 @@
 
 ---
 
+## 2026-06-06_ver4.22
+
+### 改善: SCiLS 変換の「無反応」解消（進捗バー）＋ 変換の高速化
+「変換実行」を押すと（大きいデータで）反応がないように見える問題を解消し、変換中の進捗を表示、
+さらに変換そのものを高速化した。**出力 parquet の内容は不変**。
+
+- **無反応の解消＋進捗バー**: 変換コールバック `run_scils_conversion` を**バックグラウンド化**
+  （`background=True`／既存 PPTX 出力と同じ DiskcacheManager）。`running=` で変換中は「変換実行」
+  ボタンを無効化、`progress=` で進捗バーを更新。`convert_scils_to_parquet` に `progress_cb` を追加し、
+  Phase B のチャンクループで「書き込み中… N/M spot」を逐次表示。ポーリング方式のため、リバース
+  プロキシ（Caddy）の 600s タイムアウトによる長時間変換の打ち切りも回避。モーダルに進捗バー＋
+  結果欄のスピナー（`dcc.Loading`）を追加。
+- **高速化（結果不変）**:
+  - 使い捨ての一時 Parquet を `zstd` → **`snappy`** に（削除される中間ファイルなので保存コスト無し、
+    Phase A 書込＋Phase B 読込の CPU を削減）。
+  - Phase B の転置書き込みで `float64→float32` を**列ごと（m/z 本数ぶん）**に行っていたのを
+    **ブロック 1 回**へ集約し、`pa.array` をゼロコピー化。
+  - peak-list 結合 `build_feature_annotation_table` を最近傍 `O(F×P)` → **`np.searchsorted` の
+    `O(F log P)`** に（大規模 peak-list の変換を高速化、割当結果は同一）。
+
+---
+
 ## 2026-06-06_ver4.21
 
 ### 機能: SCiLS 化合物アノテーションの埋め込み＋化合物名表示

@@ -192,14 +192,27 @@ def build_feature_annotation_table(
     pk_mz = np.asarray(peaklist_mz, dtype=float)
     pk_names = list(peaklist_names)
 
-    rows = []
+    # 最近傍探索を O(F log P) にするため peak-list を m/z でソートしておく
     have_peaklist = pk_mz.size > 0
+    if have_peaklist:
+        order = np.argsort(pk_mz, kind="mergesort")
+        pk_sorted = pk_mz[order]
+
+    rows = []
     for mz in mz_values:
         name = ""
         if have_peaklist:
-            j = int(np.argmin(np.abs(pk_mz - mz)))
-            if abs(pk_mz[j] - mz) <= tol_da:
-                name = pk_names[j] if pk_names[j] is not None else ""
+            pos = int(np.searchsorted(pk_sorted, mz))
+            best = -1
+            best_d = None
+            for cand in (pos - 1, pos):
+                if 0 <= cand < pk_sorted.size:
+                    d = abs(pk_sorted[cand] - mz)
+                    if best_d is None or d < best_d:
+                        best_d, best = d, cand
+            if best >= 0 and best_d <= tol_da:
+                nm = pk_names[order[best]]
+                name = nm if nm is not None else ""
         rec = parse_scils_name(name)
         rows.append({
             "mz": float(mz),
