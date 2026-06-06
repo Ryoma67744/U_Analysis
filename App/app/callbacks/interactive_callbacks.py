@@ -28,7 +28,7 @@ from app.config import (
     CLUSTER_PRESET_COLORS, DESI_COLORS_50, HIGHLIGHT_GRAY,
     DEFAULT_ADDUCT_POSITIVE,
 )
-from app.services.seurat_bridge import SeuratBridge
+from app.services.seurat_bridge import SeuratBridge, ExtractionCancelled
 from app.services.notify import warn_user
 from app.utils.color_utils import (
     cluster_sort_key as _cluster_sort_key,
@@ -90,6 +90,7 @@ import contextvars
 import os
 import threading
 import time
+import uuid
 from collections import OrderedDict
 
 # LRU 設定 (環境変数で調整可、デフォルトは 8 件 / 30 分)
@@ -384,27 +385,6 @@ def _detect_integration_methods(folder_path: str) -> dict:
     return rds_map
 
 
-def _build_msi_samples_ui(folder_path: str):
-    """MSIフォルダ内のサンプル一覧UIを生成"""
-    if not folder_path or not Path(folder_path).is_dir():
-        return html.Div("MSIフォルダが見つかりません", className="text-muted")
-
-    from app.services.data_manager import list_msi_files, list_tims_files
-    samples = list_msi_files(folder_path)
-    # .txtが見つからない場合はTIMS形式(.parquet等)を試行
-    if not samples:
-        samples = list_tims_files(folder_path)
-    if not samples:
-        return html.Div("MSIファイルが見つかりません", className="text-warning")
-
-    import dash_bootstrap_components as dbc
-    return dbc.Checklist(
-        id="interactive_msi_sample_checks",
-        options=[{"label": s, "value": s} for s in samples],
-        value=samples,
-    )
-
-
 # ---------------------------------------------------------------------------
 # 結果フォルダスキャン → 統合手法検出
 # ---------------------------------------------------------------------------
@@ -493,36 +473,6 @@ def auto_load_on_rds_ready(rds_map, method, entry_mode, cur_clicks):
 
 
 # ---------------------------------------------------------------------------
-# MSIフォルダスキャン（ボタンクリック）
-# ---------------------------------------------------------------------------
-
-@callback(
-    Output("interactive_msi_samples", "children"),
-    Input("scan_msi_folder", "n_clicks"),
-    State("interactive_msi_folder", "value"),
-    prevent_initial_call=True,
-)
-def scan_msi_files(n_clicks, folder_path):
-    return _build_msi_samples_ui(folder_path)
-
-
-# ---------------------------------------------------------------------------
-# MSIフォルダ変更時 → 自動スキャン
-# ---------------------------------------------------------------------------
-
-@callback(
-    Output("interactive_msi_samples", "children", allow_duplicate=True),
-    Input("interactive_msi_folder", "value"),
-    prevent_initial_call=True,
-)
-def auto_scan_msi_files(folder_path):
-    """MSIフォルダのパスが設定された時、自動でサンプル一覧を表示"""
-    if not folder_path or not Path(folder_path).is_dir():
-        return no_update
-    return _build_msi_samples_ui(folder_path)
-
-
-# ---------------------------------------------------------------------------
 # 解析手法セクション 展開/折りたたみ
 # ---------------------------------------------------------------------------
 
@@ -568,6 +518,65 @@ def _load_error_alert(message, detail=None):
     return dbc.Alert(children, color="danger", className="mb-0")
 
 
+# =============================================================================
+# データロードのキャンセル管理 (ver4.19)
+# =============================================================================
+# 単一プロセス・マルチスレッド構成のため、ロード実行スレッドとキャンセルボタン
+# 押下を処理するスレッドで以下の registry を共有できる。token (Stage A で発行)
+# ごとに threading.Event を保持し、Stage B の R 抽出サブプロセス監視ループが
+# これを検知してプロセスを kill する。
+_LOAD_CANCELS = {}
+_LOAD_CANCELS_LOCK = threading.Lock()
+
+
+def _get_or_create_cancel_event(token):
+    """token に対応する cancel イベントを取得（無ければ作成）。token が偽値なら None。"""
+    if not token:
+        return None
+    with _LOAD_CANCELS_LOCK:
+        ev = _LOAD_CANCELS.get(token)
+        if ev is None:
+            ev = threading.Event()
+            _LOAD_CANCELS[token] = ev
+        return ev
+
+
+def _clear_cancel_event(token):
+    """token の cancel イベントを破棄（ロード完了/中断後の後片付け）。"""
+    if not token:
+        return
+    with _LOAD_CANCELS_LOCK:
+        _LOAD_CANCELS.pop(token, None)
+
+
+@callback(
+    Output("btn_cancel_load", "style"),
+    Input("load_progress_container", "style"),
+    prevent_initial_call=True,
+)
+def _toggle_cancel_button(progress_style):
+    """ロード進捗が表示されている間だけキャンセルボタンを表示する。"""
+    visible = bool(progress_style) and progress_style.get("display") != "none"
+    return {"display": "inline-block"} if visible else {"display": "none"}
+
+
+@callback(
+    Output("load_progress_label", "children", allow_duplicate=True),
+    Input("btn_cancel_load", "n_clicks"),
+    State("load_token_store", "data"),
+    prevent_initial_call=True,
+)
+def cancel_data_load(n_clicks, token):
+    """キャンセルボタン: 進行中ロード(token)の cancel イベントをセットする。
+    Stage B の R 抽出監視ループがこれを検知してサブプロセスを kill する。"""
+    if not n_clicks or not token:
+        raise PreventUpdate
+    ev = _get_or_create_cancel_event(token)
+    if ev is not None:
+        ev.set()
+    return "キャンセルしています…"
+
+
 # --- Link A: 即時にプログレスを表示し、抽出リンク(B)を起動 ---
 @callback(
     [Output("load_progress_container", "style"),
@@ -576,7 +585,8 @@ def _load_error_alert(message, detail=None):
      Output("load_progress_bar", "animated"),
      Output("interactive_viz_container", "style", allow_duplicate=True),
      Output("interactive_data_info", "children", allow_duplicate=True),
-     Output("load_stage_trigger", "data")],
+     Output("load_stage_trigger", "data"),
+     Output("load_token_store", "data")],
     Input("load_interactive_data", "n_clicks"),
     [State("interactive_integration_method", "value"),
      State("interactive_rds_map", "data"),
@@ -588,14 +598,15 @@ def load_stage_a_show_progress(n_clicks, integration_method, rds_map, result_fol
     if not integration_method or not rds_map:
         return (_PROGRESS_HIDE, no_update, no_update, no_update, _PROGRESS_HIDE,
                 _load_error_alert("統合手法を選択してください（結果フォルダをスキャンしてください）"),
-                no_update)
+                no_update, no_update)
     rds_path = rds_map.get(integration_method)
     if not rds_path or not Path(rds_path).exists():
         return (_PROGRESS_HIDE, no_update, no_update, no_update, _PROGRESS_HIDE,
                 _load_error_alert(
                     f"RDSファイルが見つかりません: {integration_method}"
                     f"（パス: {rds_path or '未設定'}）"),
-                no_update)
+                no_update, no_update)
+    token = uuid.uuid4().hex
     return (
         _PROGRESS_SHOW,
         "RDSデータを抽出中…（最大2分程度かかります）",
@@ -603,7 +614,8 @@ def load_stage_a_show_progress(n_clicks, integration_method, rds_map, result_fol
         _PROGRESS_HIDE,  # 既存の可視化を隠す
         no_update,       # data_info は最終リンク(D)が確定
         {"rds_path": rds_path, "method": integration_method,
-         "result_folder": result_folder, "n": n_clicks},
+         "result_folder": result_folder, "n": n_clicks, "token": token},
+        token,
     )
 
 
@@ -623,9 +635,11 @@ def load_stage_b_extract(trigger):
         raise PreventUpdate
     rds_path = trigger["rds_path"]
     integration_method = trigger["method"]
+    token = trigger.get("token")
+    cancel_event = _get_or_create_cancel_event(token)
     _set_active_key(rds_path)
     try:
-        result = _bridge.extract_data(rds_path)
+        result = _bridge.extract_data(rds_path, cancel_event=cancel_event)
         if (not result or result.get("plot_data") is None
                 or len(result["plot_data"]) == 0):
             return (no_update, no_update, _PROGRESS_HIDE,
@@ -636,6 +650,7 @@ def load_stage_b_extract(trigger):
         state["plot_data"] = result["plot_data"]
         state["cluster_stats"] = result["cluster_stats"]
         state["features_list"] = result["features_list"]
+        state["feature_annotations"] = result.get("feature_annotations") or {}
         state["meta"] = result["meta"]
         state["rds_path"] = rds_path
         state["cache_dir"] = result.get("cache_dir")
@@ -658,10 +673,16 @@ def load_stage_b_extract(trigger):
         return (no_update, no_update, _PROGRESS_HIDE,
                 _load_error_alert("RDS抽出に失敗しました（Rエラー）:", detail=msg),
                 no_update)
+    except ExtractionCancelled:
+        return (no_update, no_update, _PROGRESS_HIDE,
+                dbc.Alert("読み込みをキャンセルしました。", color="warning", className="mb-0"),
+                no_update)
     except Exception as e:
         return (no_update, no_update, _PROGRESS_HIDE,
                 _load_error_alert(f"抽出データの読み込みに失敗しました: {e}"),
                 no_update)
+    finally:
+        _clear_cancel_event(token)
     return (
         "マーカー(DEG)を読み込み中…", 55, no_update, no_update,
         {"rds_path": rds_path, "method": integration_method,
@@ -717,7 +738,9 @@ def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
         deg_data = _load_deg_results(result_base, integration_method)
 
         # --- m/z キャリブレーション（有効時のみ）---
-        if cal_enable and deg_data and mrm_path and cal_table_data:
+        # 外部アノテーション（SCiLS peak Name 由来＝上流で ppm 補正済み）がある場合は
+        # アプリ内 m/z キャリブレーションをスキップする。
+        if cal_enable and deg_data and mrm_path and cal_table_data and not state.get("feature_annotations"):
             try:
                 matched_pairs = []
                 ref_only_mz = []
@@ -952,17 +975,27 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
             r_reg = cal_regression_mode or "poly3"
 
         # --- アノテーションマップの構築（Feature検索用） ---
-        try:
-            _interactive_data["annotation_map"] = _build_feature_annotation_map(
-                state["features_list"],
-                annotation_csv_path=annotation_csv or "",
-                ion_mode=ion_mode or "Positive",
-                adduct_patterns=adduct_filter,
-                tolerance=float(tolerance_mz or 0.01),
-                deg_data=deg_data,
-            )
-        except Exception:
-            _interactive_data["annotation_map"] = {}
+        # 外部アノテーション（SCiLS peak Name 由来）があれば CSV 照合をスキップし、
+        # それを直接使う（feature文字列 → 化合物名）。
+        ext_ann = state.get("feature_annotations") or {}
+        if ext_ann:
+            _interactive_data["annotation_map"] = {
+                feat: rec.get("compound")
+                for feat, rec in ext_ann.items()
+                if rec.get("compound")
+            }
+        else:
+            try:
+                _interactive_data["annotation_map"] = _build_feature_annotation_map(
+                    state["features_list"],
+                    annotation_csv_path=annotation_csv or "",
+                    ion_mode=ion_mode or "Positive",
+                    adduct_patterns=adduct_filter,
+                    tolerance=float(tolerance_mz or 0.01),
+                    deg_data=deg_data,
+                )
+            except Exception:
+                _interactive_data["annotation_map"] = {}
 
         # ms_instrument をサブプロジェクトから取得
         r_instrument = "TIMS"

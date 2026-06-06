@@ -3,7 +3,7 @@
 # SCiLS Lab 出力フォルダ (Intensity + Spot + Annotation CSV) を Parquet に変換する UI
 # =============================================================================
 
-from dash import html
+from dash import html, dcc
 import dash_bootstrap_components as dbc
 
 from app.config import TIMS_DATA_DIR
@@ -123,7 +123,15 @@ def create_scils_converter_modal():
                 ),
 
                 html.Hr(),
-                html.Div(id="scils_conversion_result", className="small"),
+                # 進捗バー（変換中のみ表示）
+                html.Div(id="scils_progress_container", style={"display": "none"}, children=[
+                    dbc.Progress(id="scils_progress_bar", value=0, max=100,
+                                 striped=True, animated=True,
+                                 className="mb-1", style={"height": "20px"}),
+                    html.Div(id="scils_progress_label",
+                             className="text-center small text-muted"),
+                ]),
+                dcc.Loading(html.Div(id="scils_conversion_result", className="small")),
             ]),
             dbc.ModalFooter([
                 dbc.Button("キャンセル", id="scils_cancel_btn", color="secondary", size="sm"),

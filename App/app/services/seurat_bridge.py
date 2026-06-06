@@ -13,11 +13,62 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 from app.config import R_HELPERS_DIR, RSCRIPT_PATH, SEURAT_CACHE_DIR
 
 logger = logging.getLogger("msi.seurat_bridge")
+
+
+class ExtractionCancelled(Exception):
+    """ユーザーが RDS 抽出をキャンセルしたときに送出される。"""
+
+
+def _none_str(v):
+    """NaN / None / 空 / "None" を None に正規化、それ以外は str を返す。"""
+    if v is None:
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    s = str(v).strip()
+    return None if (s == "" or s.lower() == "none") else s
+
+
+def _popen_with_cancel(cmd, cancel_event, timeout=600, creationflags=0):
+    """cmd を Popen で起動し、0.3 秒ごとに cancel_event を監視する。
+
+    cancel_event がセットされたらサブプロセスを kill し ExtractionCancelled を
+    送出する。timeout 超過時は RuntimeError("__TIMEOUT__") を送出。
+    Returns: (returncode, stderr_bytes)
+    """
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        creationflags=creationflags,
+    )
+    start = time.monotonic()
+    while True:
+        try:
+            _out, stderr_bytes = proc.communicate(timeout=0.3)
+            return proc.returncode, stderr_bytes
+        except subprocess.TimeoutExpired:
+            if cancel_event is not None and cancel_event.is_set():
+                proc.kill()
+                try:
+                    proc.communicate(timeout=5)
+                except Exception:
+                    pass
+                raise ExtractionCancelled()
+            if time.monotonic() - start > timeout:
+                proc.kill()
+                try:
+                    proc.communicate(timeout=5)
+                except Exception:
+                    pass
+                raise RuntimeError("__TIMEOUT__")
 
 # Seurat キャッシュの LRU 上限。新規エントリ追加時に超過分は古い順に削除。
 # /tmp/msi_seurat_cache が無制限に膨らむのを防ぐ。
@@ -103,7 +154,8 @@ class SeuratBridge:
         has_plot = (cache_dir / "plot_data.parquet").exists() or (cache_dir / "plot_data.csv").exists()
         return has_plot and all((cache_dir / f).exists() for f in required)
 
-    def extract_data(self, rds_path: str, with_expression: bool = False) -> dict:
+    def extract_data(self, rds_path: str, with_expression: bool = False,
+                     cancel_event=None) -> dict:
         """Seurat RDS からデータを抽出。キャッシュがあればそれを使用。
 
         Args:
@@ -131,7 +183,8 @@ class SeuratBridge:
             lock = get_or_create_lock(cache_dir / "extract", timeout=600)
             with lock:
                 if not self._is_cached(cache_dir):
-                    self._run_extraction(rds_path, cache_dir, with_expression=with_expression)
+                    self._run_extraction(rds_path, cache_dir, with_expression=with_expression,
+                                         cancel_event=cancel_event)
 
         try:
             result = self._load_extracted_data(cache_dir)
@@ -139,10 +192,14 @@ class SeuratBridge:
             # キャッシュ破損の可能性 → 削除して再抽出
             shutil.rmtree(cache_dir, ignore_errors=True)
             cache_dir.mkdir(parents=True, exist_ok=True)
-            self._run_extraction(rds_path, cache_dir, with_expression=with_expression)
+            self._run_extraction(rds_path, cache_dir, with_expression=with_expression,
+                                 cancel_event=cancel_event)
             result = self._load_extracted_data(cache_dir)
 
         result["cache_dir"] = cache_dir
+        result["feature_annotations"] = self._load_feature_annotations(
+            cache_dir, rds_path, result.get("features_list") or []
+        )
         return result
 
     def ensure_expression_matrix(self, rds_path: str) -> Path:
@@ -207,7 +264,7 @@ class SeuratBridge:
             return None
 
     def _run_extraction(self, rds_path: str, output_dir: Path,
-                        with_expression: bool = False):
+                        with_expression: bool = False, cancel_event=None):
         """R ヘルパースクリプトで Seurat データを抽出
 
         with_expression=True で expression_matrix.parquet も生成（重い処理）。
@@ -225,22 +282,44 @@ class SeuratBridge:
             cmd.append("--with-expression")
         # ver3.7: subprocess.run は timeout 時に内部で kill するため zombie の
         # 心配は無いが、TimeoutExpired を捕まえてユーザー向けエラーに整形
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, timeout=600,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-        except subprocess.TimeoutExpired as e:
-            if output_dir.exists():
-                shutil.rmtree(output_dir, ignore_errors=True)
-            raise RuntimeError(
-                f"Seurat extraction timed out (10min): rds={rds_path}"
-            ) from e
-        if result.returncode != 0:
+        if cancel_event is None:
+            # 通常パス（キャンセル不要）: 既存どおり subprocess.run
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, timeout=600,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except subprocess.TimeoutExpired as e:
+                if output_dir.exists():
+                    shutil.rmtree(output_dir, ignore_errors=True)
+                raise RuntimeError(
+                    f"Seurat extraction timed out (10min): rds={rds_path}"
+                ) from e
+            returncode, stderr_bytes = result.returncode, result.stderr
+        else:
+            # キャンセル可能パス: Popen + cancel_event 監視。kill 時は部分キャッシュを掃除。
+            try:
+                returncode, stderr_bytes = _popen_with_cancel(
+                    cmd, cancel_event, timeout=600,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except ExtractionCancelled:
+                if output_dir.exists():
+                    shutil.rmtree(output_dir, ignore_errors=True)
+                raise
+            except RuntimeError as e:
+                if str(e) == "__TIMEOUT__":
+                    if output_dir.exists():
+                        shutil.rmtree(output_dir, ignore_errors=True)
+                    raise RuntimeError(
+                        f"Seurat extraction timed out (10min): rds={rds_path}"
+                    ) from e
+                raise
+        if returncode != 0:
             # 不完全なキャッシュファイルを削除
             if output_dir.exists():
                 shutil.rmtree(output_dir, ignore_errors=True)
-            stderr_text = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
+            stderr_text = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
             raise RuntimeError(
                 f"Seurat extraction failed:\n{stderr_text[:2000]}"
             )
@@ -312,3 +391,80 @@ class SeuratBridge:
             "features_list": features_list,
             "meta": meta,
         }
+
+    # --- 外部アノテーション（SCiLS peak Name 由来）のサイドカー結合 (Q2) ---
+    def _find_feature_annotation_sidecar(self, rds_path) -> Optional[Path]:
+        """rds_path 近傍から `*_feature_annotations.parquet` を探す。"""
+        p = Path(rds_path).resolve()
+        bases = [p.parent, p.parent.parent, p.parent.parent.parent]
+        seen = set()
+        for base in bases:
+            if base is None or str(base) in seen or not base.is_dir():
+                continue
+            seen.add(str(base))
+            hits = sorted(base.glob("*_feature_annotations.parquet"))
+            if hits:
+                return hits[0]
+            sub_hits = sorted(base.glob("*/*_feature_annotations.parquet"))
+            if sub_hits:
+                return sub_hits[0]
+        return None
+
+    def _load_feature_annotations(self, cache_dir: Path, rds_path,
+                                  features_list: list) -> dict:
+        """サイドカーを features_list に数値 m/z で join し {feature_str: record} を返す。
+
+        キャッシュ済み（cache_dir/feature_annotations.json）があれば再利用。
+        サイドカー無し / 候補なし feature はキーに含めない（= m/z 表示のまま）。
+        """
+        cache_file = cache_dir / "feature_annotations.json"
+        if cache_file.exists():
+            try:
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        if not features_list:
+            return {}
+        sidecar = self._find_feature_annotation_sidecar(rds_path)
+        if sidecar is None:
+            return {}
+        try:
+            from app.utils.deg_utils import _extract_mz_numeric
+            side = pd.read_parquet(sidecar)
+            side_mz = side["mz"].to_numpy(dtype=float)
+            out: dict = {}
+            tol = 0.005
+            for feat in features_list:
+                mz = _extract_mz_numeric(feat)
+                if mz is None or mz == float("inf"):
+                    continue
+                j = int(np.argmin(np.abs(side_mz - mz)))
+                if abs(side_mz[j] - mz) > tol:
+                    continue
+                row = side.iloc[j]
+                comp = _none_str(row.get("compound"))
+                if not comp:
+                    continue  # No DB hit 等は m/z 表示のまま
+                out[feat] = {
+                    "display_name": _none_str(row.get("display_name")) or comp,
+                    "compound": comp,
+                    "lipid_class": _none_str(row.get("lipid_class")),
+                    "database": _none_str(row.get("database")),
+                    "adduct": _none_str(row.get("adduct")),
+                    "ppm": (float(row["ppm"]) if pd.notna(row.get("ppm")) else None),
+                    "formula": _none_str(row.get("formula")),
+                    "smiles": _none_str(row.get("smiles")),
+                    "adduct_image": _none_str(row.get("adduct_image")),
+                    "adduct_family": _none_str(row.get("adduct_family")),
+                    "mz": float(row["mz"]),
+                }
+            try:
+                with open(cache_file, "w", encoding="utf-8") as f:
+                    json.dump(out, f, ensure_ascii=False)
+            except Exception:
+                pass
+            return out
+        except Exception as e:
+            logger.warning("feature annotation の join に失敗: %s", e)
+            return {}

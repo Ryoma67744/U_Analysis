@@ -12,6 +12,96 @@
 
 ---
 
+## 2026-06-06_ver4.22
+
+### 改善: SCiLS 変換の「無反応」解消（進捗バー）＋ 変換の高速化
+「変換実行」を押すと（大きいデータで）反応がないように見える問題を解消し、変換中の進捗を表示、
+さらに変換そのものを高速化した。**出力 parquet の内容は不変**。
+
+- **無反応の解消＋進捗バー**: 変換コールバック `run_scils_conversion` を**バックグラウンド化**
+  （`background=True`／既存 PPTX 出力と同じ DiskcacheManager）。`running=` で変換中は「変換実行」
+  ボタンを無効化、`progress=` で進捗バーを更新。`convert_scils_to_parquet` に `progress_cb` を追加し、
+  Phase B のチャンクループで「書き込み中… N/M spot」を逐次表示。ポーリング方式のため、リバース
+  プロキシ（Caddy）の 600s タイムアウトによる長時間変換の打ち切りも回避。モーダルに進捗バー＋
+  結果欄のスピナー（`dcc.Loading`）を追加。
+- **高速化（結果不変）**:
+  - 使い捨ての一時 Parquet を `zstd` → **`snappy`** に（削除される中間ファイルなので保存コスト無し、
+    Phase A 書込＋Phase B 読込の CPU を削減）。
+  - Phase B の転置書き込みで `float64→float32` を**列ごと（m/z 本数ぶん）**に行っていたのを
+    **ブロック 1 回**へ集約し、`pa.array` をゼロコピー化。
+  - peak-list 結合 `build_feature_annotation_table` を最近傍 `O(F×P)` → **`np.searchsorted` の
+    `O(F log P)`** に（大規模 peak-list の変換を高速化、割当結果は同一）。
+
+---
+
+## 2026-06-06_ver4.21
+
+### 機能: SCiLS 化合物アノテーションの埋め込み＋化合物名表示
+SCiLS peak-list の `Name`（パイプ区切り：化合物名＋分類/DB/adduct/ppm/分子式/SMILES 等）を取り込み、
+m/z ではなく化合物名で feature を扱えるようにした。**注釈の無いデータは完全に現状維持**（加算的）。
+
+- **新規 `peak_annotation.py`（パーサ）**: `Name` を構造化（adduct `[M…]` を起点に化合物名と adduct の
+  間のフィールド数で分類/DB を確定、`key=value` はキー名で格納、`No DB hit` は m/z 表示、raw 全文保持）。
+- **SCiLS 変換（`scils_converter.py`）**: フォルダ内 peak-list CSV を**自動検出**（新 role）。強度 parquet の
+  m/z 列名を `化合物名_<m/z 4桁> | …(全文)` に**埋め込み置換**しつつ、フル桁 m/z は schema メタデータ
+  `mz_sorted` に保持（列名がパイプ全文でも m/z を確実に復元）。per-feature 注釈の**サイドカー
+  `*_feature_annotations.parquet`** も出力。
+- **m/z 検出の改修**: 列名から m/z を読む処理を「`mz_sorted` メタ＋列除外」方式へ（Python `data_manager.py`、
+  R `260422_DBSCAN_With_cluster_ver3_no-png_slim.R` の parquet 読込）。Seurat の feature 名は従来どおり
+  `m/z %.5f`（安全キー）を維持し、特殊文字での名前破壊を回避。
+- **運搬（サイドカー → キャッシュ）**: 解析実行時にサイドカーを結果フォルダへコピー（`analysis_runner.py`）、
+  抽出時に `seurat_bridge.py` が features_list へ m/z で join し `extraction_meta` 隣の
+  `feature_annotations.json` としてキャッシュ→インタラクティブへ供給。
+- **優先（スキップ）**: 外部注釈ありデータは、in-app の m/z キャリブレーションと CSV 照合をスキップし、
+  `annotation_map` を外部表から直接構築（`interactive_callbacks.py`）。
+- **表示**: Feature Plot に「化合物名で表示（m/z ⇄ 化合物名）」トグル（既定 ON）を追加。既存の Feature
+  選択・DEG（Volcano/Heatmap）は `annotation_map` 経由で自動的に化合物名を表示。
+  ※ Spatial Mapping はクラスタ表示で feature 名を持たないため対象外。
+- 退行防止: 新規 `tests/test_peak_annotation.py`（パーサ／変換器埋め込み＋サイドカー＋メタ／data_manager
+  の埋め込み列検出）。`222 passed`。R 変更は実 R 必須のためデプロイ後 E2E で確認。
+
+---
+
+## 2026-06-05_ver4.20
+
+### 整理: 動作していなかった残骸UI/Storeを3点削除（結果不変）
+ver4.19 の調査で判明した「効かない/重複した」部品を、正規の代替が存在することを確認のうえ削除。
+解析結果・既存機能には影響なし。
+
+- **サンプル選択Checklist（`interactive_msi_sample_checks`）削除**：インタラクティブ解析タブの
+  非表示ブロック内にあり、選択値を誰も読まない孤児だった。正規のサンプル選択は設定タブの
+  `selected_samples`→`selected_samples_store`→解析実行(`run_analysis`)が担っており重複のため、
+  チェックリストと自動/手動スキャン callback（`scan_msi_files`/`auto_scan_msi_files`/
+  `_build_msi_samples_ui`）およびスキャンボタンを除去。MSIフォルダパス欄
+  （`interactive_msi_folder`：プロジェクト復元/データ書き出しが参照）は残置。
+- **RDS選択Checklist（`selected_rds_files`）削除**：設定タブで表示されるが選択値を誰も読まない。
+  解析が使うRDS指定は `rds_folder`/`rds_path`/`resume_rds`/`rds_folder_reanalysis` で成立済み。
+  `rds_file_selector` コンテナと `update_rds_file_selector` callback を除去（`rds_folder` 欄は残置）。
+- **死蔵Store（`cal_preset_loading_flag`）削除**：読み書きする callback が皆無の完全な未使用 Store。
+  プリセット機能本体は別IDで正常動作。
+- 退行防止: 削除した全IDの参照ゼロを確認、`208 passed`、全タブのレイアウト構築も確認。
+
+---
+
+## 2026-06-05_ver4.19
+
+### 機能: インタラクティブ解析のデータ読込「キャンセル」を再実装
+- ver3.8 で読込を background 長時間コールバックから foreground 化した際、キャンセルボタン
+  (`btn_cancel_load`) の表示(`running=`)と中断(`cancel=`)配線が消え、ボタンだけが取り残されて
+  機能しなくなっていた退行を修正。**Rサブプロセスを実際に kill する協調的キャンセル**として復活。
+- 仕組み: 単一プロセス・マルチスレッド構成を活かし、ロード token ごとの `threading.Event` を
+  モジュール内 registry で共有。Stage A で token を発行しキャンセルボタンを表示、Stage B の R 抽出を
+  `subprocess.Popen`＋0.3秒ポーリングで実行し、キャンセル時はサブプロセスを kill→部分キャッシュ掃除
+  →`ExtractionCancelled` で中断（後続ステージは起動しない）。キャンセルボタンの表示は進捗コンテナの
+  可視状態に追従させ、各ステージの戻り値を増やさず実装。
+- 非キャンセル経路（通常読込・Feature/expression 抽出など他の呼び出し）は従来どおり `subprocess.run`
+  のままで挙動不変。`seurat_bridge._popen_with_cancel` を分離し単体テストを追加。
+- 変更: `seurat_bridge.py`（`_popen_with_cancel`/`ExtractionCancelled`/cancellable 抽出）、
+  `interactive_callbacks.py`（token registry・表示追従・キャンセル callback・Stage A/B 配線）、
+  `interactive_tab.py`（`load_token_store`）。解析結果には影響なし。
+
+---
+
 ## 2026-06-05_ver4.18
 
 ### 改善: DESI 空間平滑化の高速化（結果不変）＋ Otsu スポット除去 QC 画像の保存・表示

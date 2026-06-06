@@ -7,6 +7,7 @@
 import logging
 import os
 import re
+import shutil
 import subprocess
 import threading
 from datetime import datetime
@@ -245,6 +246,35 @@ def compute_calibration_coefficients(
 # 設定生成
 # ---------------------------------------------------------------------------
 
+def _copy_feature_annotation_sidecars(data_folders, output_dir) -> None:
+    """入力データフォルダの `*_feature_annotations.parquet` を output_dir 直下へコピー。
+
+    SCiLS 変換で生成した per-feature 注釈サイドカーを、インタラクティブ閲覧が
+    結果フォルダ起点で見つけられるよう解析出力側へ運ぶ（Q2）。失敗は無害。
+    """
+    try:
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        seen = set()
+        for folder in data_folders:
+            if not folder:
+                continue
+            d = Path(folder)
+            if not d.is_dir() or str(d) in seen:
+                continue
+            seen.add(str(d))
+            for sc in sorted(d.glob("*_feature_annotations.parquet")):
+                dst = out / sc.name
+                try:
+                    if not dst.exists():
+                        shutil.copy2(str(sc), str(dst))
+                        logger.info("注釈サイドカーをコピー: %s → %s", sc.name, out)
+                except Exception as e:
+                    logger.warning("サイドカーのコピーに失敗: %s", e)
+    except Exception as e:
+        logger.warning("サイドカーのコピー処理でエラー: %s", e)
+
+
 def generate_v8_config(params: dict, output_dir: str) -> str:
     """v8 Templateスクリプト用の設定生成（DESI/TIMS共通）
     R版: generate_v8_config() in analysis_runner.R
@@ -266,6 +296,13 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
     # パラメータを置換
     lines = _replace_assign(lines, "data_folder", _r_str(resolved_data_folder))
     lines = _replace_assign(lines, "output_dir", _r_str(output_dir))
+
+    # SCiLS 注釈サイドカーを結果フォルダへ運ぶ（Q2: インタラクティブ閲覧用）
+    _copy_feature_annotation_sidecars(
+        [resolved_data_folder]
+        + [str(Path(p).parent) for p in (params.get("input_paths") or [])],
+        output_dir,
+    )
     lines = _replace_assign(
         lines, "RESUME_FROM_RDS",
         "TRUE" if params.get("resume_from_rds") else "FALSE",

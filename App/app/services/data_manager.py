@@ -135,6 +135,35 @@ def _is_numeric(s: str) -> bool:
         return False
 
 
+def _read_mz_sorted_metadata(pf) -> Optional[list]:
+    """Parquet schema メタデータ `mz_sorted`（カンマ区切りのフル桁 m/z）を返す。
+
+    SCiLS 変換で feature 列名にパイプ全文（化合物名）が埋め込まれても、
+    m/z 値はこのメタデータ（列順）から確実に復元できる。
+    """
+    try:
+        md = pf.schema_arrow.metadata or {}
+        raw = md.get(b"mz_sorted")
+        if raw is None:
+            return None
+        return [float(x) for x in raw.decode("utf-8").split(",") if x.strip()]
+    except Exception:
+        return None
+
+
+def _mz_from_embedded_name(colname: str) -> Optional[float]:
+    """埋め込み列名（`化合物名_<m/z> | …`）の先頭から m/z 数値を抽出（メタ無し時の保険）。"""
+    import re as _re
+    head = str(colname).split("|", 1)[0]
+    m = _re.search(r"_(\d+(?:\.\d+)?)\s*$", head.strip())
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            return None
+    return None
+
+
 def _read_tims_raw(folder: Path, sample_name: str = None) -> Optional[pd.DataFrame]:
     """TIMS 生データ（parquet/csv/tsv/txt）から mz_ 列の平均を取得。"""
     import re as _re
@@ -156,14 +185,29 @@ def _read_tims_raw(folder: Path, sample_name: str = None) -> Optional[pd.DataFra
 
         pf = pq.ParquetFile(fp)
         all_names = pf.schema.names
+        non_meta = {"id", "x", "y", "annotation"}
+        # 旧形式: mz_ 接頭辞 / 裸の数値列名
         mz_cols = [n for n in all_names if n.startswith("mz_")]
         if not mz_cols:
-            non_meta = {"id", "x", "y", "annotation"}
             mz_cols = [n for n in all_names
                        if n not in non_meta and _is_numeric(n)]
-        if not mz_cols:
-            return None
-        df = pd.read_parquet(fp, columns=mz_cols)
+        if mz_cols:
+            df = pd.read_parquet(fp, columns=mz_cols)
+        else:
+            # 埋め込み列名（パイプ全文）: feature 列を除外法で特定し、m/z 値は
+            # mz_sorted メタデータ（列順）から取得して mz_ 列名に正規化する。
+            feature_cols = [n for n in all_names if n not in non_meta]
+            if not feature_cols:
+                return None
+            df = pd.read_parquet(fp, columns=feature_cols)
+            mz_vals = _read_mz_sorted_metadata(pf)
+            if mz_vals is not None and len(mz_vals) == len(feature_cols):
+                df.columns = [f"mz_{m:.4f}" for m in mz_vals]
+            else:
+                df.columns = [
+                    (f"mz_{m:.4f}" if (m := _mz_from_embedded_name(c)) is not None else c)
+                    for c in feature_cols
+                ]
     else:
         # CSV / TSV / TXT — ヘッダーあり前提
         sep = "\t" if ext in (".tsv", ".txt") else ","
