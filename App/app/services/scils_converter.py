@@ -390,8 +390,17 @@ def build_annotation_map(
 
         overlap = [s for s in set_ann if s in mapping]
         if overlap:
+            prev_labels = sorted({mapping[s] for s in overlap})
+            n, n_this = len(overlap), len(set_ann)
+            dup_hint = (
+                f"（'{label}' の全 {n_this} spot が重複＝重複/複製された領域の可能性が高い）"
+                if n == n_this else ""
+            )
             raise ValueError(
-                f"同一 spot が複数 annotation に: {sorted(overlap)[:10]}"
+                f"領域アノテーションが重複しています: '{label}' ({fp.name}) の {n} spot が "
+                f"既存領域 {prev_labels} と同一です{dup_hint}。"
+                f"例: spot {sorted(overlap)[:5]}。"
+                "同じ領域を二重にエクスポートしていないか、SCiLS の ROI 定義をご確認ください。"
             )
 
         for s in set_ann:
