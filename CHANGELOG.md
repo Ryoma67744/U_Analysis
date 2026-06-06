@@ -12,6 +12,36 @@
 
 ---
 
+## 2026-06-06_ver4.24
+
+### 修正（真因）: SCiLS 変換の途中終了は polars の CPU 非互換クラッシュが原因
+ver4.23 で同期化・メモリチェックを入れた後もサーバ実機ログで真因が判明:
+**polars がサーバ CPU の必須命令（`lzcnt`）を欠くため Phase A の実行中に
+ネイティブクラッシュ（SIGILL）し、アプリプロセスごと落ちて Docker が再起動**していた
+（→ 変換が途中終了し 0byte の `*_temp.parquet` が残る）。メモリは潤沢（空き ~14GB / CSV ~2.9GB）で
+無関係だった。ネイティブクラッシュのため Python の try/except では捕捉できない。
+
+ログ証跡:
+```
+polars/_cpu_check.py: Missing required CPU features: lzcnt
+Continuing to use this version of Polars on this processor will likely result in a crash.
+Phase A エンジン: polars (streaming sink)   ← この直後にプロセスが落ち再起動
+```
+
+対応:
+- 依存を **`polars` → `polars-lts-cpu`** に変更（`requirements.txt` / `pyproject.toml`）。
+  古い CPU 向けにビルドされた版で、`lzcnt`/AVX2 等を要求せずクラッシュしない。**`import polars`
+  のままで API 互換**のためコード変更不要。
+- 保険として環境変数 **`SCILS_NO_POLARS=1`** を追加。指定時は polars を使わず pyarrow 経路で
+  Phase A を実行する（万一 polars が問題でも変換可能）。
+- ver4.23 の同期実行・メモリ事前チェック・Phase A の temp 後始末（try/finally）はそのまま維持
+  （堅牢性向上として有効）。
+
+デプロイ: `polars-lts-cpu` を入れるため**イメージ再ビルドが必須**
+（`docker compose ... up -d --build`）。
+
+---
+
 ## 2026-06-06_ver4.23
 
 ### 修正: SCiLS 変換が大規模データで「途中終了」する問題（ver4.22 のバックグラウンド化を撤回）

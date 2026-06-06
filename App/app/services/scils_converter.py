@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import os
 import re
 import shutil
 import time
@@ -458,12 +459,16 @@ def _csv_to_temp_parquet(
     temp_parquet: Path,
 ) -> None:
     """Phase A: Intensity CSV を一時 Parquet にストリーミング変換"""
-    try:
-        import polars as pl
-        _use_polars = True
-    except ImportError:
-        _use_polars = False
-        logger.info("polars 未インストール → pyarrow batched にフォールバック")
+    # SCILS_NO_POLARS=1 で polars を使わず pyarrow 経路を強制（CPU 非互換などの保険）。
+    _use_polars = False
+    if os.environ.get("SCILS_NO_POLARS"):
+        logger.info("SCILS_NO_POLARS 指定 → pyarrow batched を使用")
+    else:
+        try:
+            import polars as pl
+            _use_polars = True
+        except ImportError:
+            logger.info("polars 未インストール → pyarrow batched にフォールバック")
 
     if _use_polars:
         logger.info("Phase A エンジン: polars (streaming sink)")
