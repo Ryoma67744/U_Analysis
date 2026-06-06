@@ -974,6 +974,15 @@ def create_interactive_tab():
                                     ]),
                                 ]),
                             ]),
+                            dbc.Row(className="mt-1", children=[
+                                dbc.Col(width="auto", children=[
+                                    dbc.Switch(
+                                        id="feature_show_compound_names",
+                                        label="化合物名で表示（m/z ⇄ 化合物名）",
+                                        value=True,
+                                    ),
+                                ]),
+                            ]),
                             dbc.Row(className="mt-1 align-items-center", children=[
                                 dbc.Col(width=4, children=[
                                     html.Div(style={"display": "flex", "alignItems": "center", "gap": "4px"}, children=[

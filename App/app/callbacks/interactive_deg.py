@@ -254,7 +254,8 @@ def update_feature_options_on_mz_filter(mz_filtered, rds_path=None):
      Input("feature_intensity_max", "value"),
      Input("sample_name_map_store", "data"),
      Input("fullscreen_closed_trigger", "data"),
-     Input("feature_columns_per_row", "value")],
+     Input("feature_columns_per_row", "value"),
+     Input("feature_show_compound_names", "value")],
     [State("seurat_rds_path_store", "data"),
      State("seurat_cache_dir_store", "data"),
      State("spatial_rotation_store", "data"),
@@ -264,6 +265,7 @@ def update_feature_options_on_mz_filter(mz_filtered, rds_path=None):
 def update_feature_plot(feature_name, sample, marker_size,
                         intensity_min, intensity_max,
                         name_map, _fs_trigger, columns_per_row,
+                        show_compound_names,
                         rds_path, cache_dir_str, rotation_store,
                         deg_data):
     from app.callbacks.interactive_callbacks import _interactive_data, _bridge, _set_active_key
@@ -461,7 +463,9 @@ def update_feature_plot(feature_name, sample, marker_size,
             children=graphs,
         )
 
-        # --- アノテーション見出し ---
+        # --- 見出し（表示トグルで 化合物名 ⇄ m/z を切替）---
+        ext_ann = _interactive_data.get("feature_annotations") or {}
+        rec = ext_ann.get(feature_name)
         annotation = ""
         if deg_data:
             for r in deg_data:
@@ -470,7 +474,12 @@ def update_feature_plot(feature_name, sample, marker_size,
                     if _is_meaningful_annotation(ann, feature_name):
                         annotation = ann
                     break
-        title_text = f"{feature_name}  ({annotation})" if annotation else feature_name
+        if show_compound_names and rec and rec.get("display_name"):
+            title_text = rec["display_name"]
+        elif annotation:
+            title_text = f"{feature_name}  ({annotation})"
+        else:
+            title_text = feature_name
         heading = html.H6(
             title_text,
             className="text-center mt-2 mb-1",

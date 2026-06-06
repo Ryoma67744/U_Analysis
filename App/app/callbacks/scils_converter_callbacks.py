@@ -118,6 +118,14 @@ def _render_success(result) -> html.Div:
                 if result.annotation_files else "(なし)"
             ),
         ),
+        (
+            html.Dt("Peak-list (化合物名)"),
+            html.Dd(
+                f"{Path(result.peak_list_file).name}"
+                f"（{result.n_annotated:,} / {result.n_mz_features:,} feature に付与）"
+                if result.has_peak_list else "(なし)"
+            ),
+        ),
         (html.Dt("spot 数"), html.Dd(f"{result.n_spots:,}")),
         (html.Dt("m/z 列数"), html.Dd(f"{result.n_mz_features:,}")),
         (html.Dt("annotation ラベル"), html.Dd(ann_labels)),

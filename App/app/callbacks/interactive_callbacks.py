@@ -650,6 +650,7 @@ def load_stage_b_extract(trigger):
         state["plot_data"] = result["plot_data"]
         state["cluster_stats"] = result["cluster_stats"]
         state["features_list"] = result["features_list"]
+        state["feature_annotations"] = result.get("feature_annotations") or {}
         state["meta"] = result["meta"]
         state["rds_path"] = rds_path
         state["cache_dir"] = result.get("cache_dir")
@@ -737,7 +738,9 @@ def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
         deg_data = _load_deg_results(result_base, integration_method)
 
         # --- m/z キャリブレーション（有効時のみ）---
-        if cal_enable and deg_data and mrm_path and cal_table_data:
+        # 外部アノテーション（SCiLS peak Name 由来＝上流で ppm 補正済み）がある場合は
+        # アプリ内 m/z キャリブレーションをスキップする。
+        if cal_enable and deg_data and mrm_path and cal_table_data and not state.get("feature_annotations"):
             try:
                 matched_pairs = []
                 ref_only_mz = []
@@ -972,17 +975,27 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
             r_reg = cal_regression_mode or "poly3"
 
         # --- アノテーションマップの構築（Feature検索用） ---
-        try:
-            _interactive_data["annotation_map"] = _build_feature_annotation_map(
-                state["features_list"],
-                annotation_csv_path=annotation_csv or "",
-                ion_mode=ion_mode or "Positive",
-                adduct_patterns=adduct_filter,
-                tolerance=float(tolerance_mz or 0.01),
-                deg_data=deg_data,
-            )
-        except Exception:
-            _interactive_data["annotation_map"] = {}
+        # 外部アノテーション（SCiLS peak Name 由来）があれば CSV 照合をスキップし、
+        # それを直接使う（feature文字列 → 化合物名）。
+        ext_ann = state.get("feature_annotations") or {}
+        if ext_ann:
+            _interactive_data["annotation_map"] = {
+                feat: rec.get("compound")
+                for feat, rec in ext_ann.items()
+                if rec.get("compound")
+            }
+        else:
+            try:
+                _interactive_data["annotation_map"] = _build_feature_annotation_map(
+                    state["features_list"],
+                    annotation_csv_path=annotation_csv or "",
+                    ion_mode=ion_mode or "Positive",
+                    adduct_patterns=adduct_filter,
+                    tolerance=float(tolerance_mz or 0.01),
+                    deg_data=deg_data,
+                )
+            except Exception:
+                _interactive_data["annotation_map"] = {}
 
         # ms_instrument をサブプロジェクトから取得
         r_instrument = "TIMS"

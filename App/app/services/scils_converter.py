@@ -47,6 +47,10 @@ class ConversionResult:
     n_mz_features: int = 0
     has_annotation: bool = False
     annotation_labels: list[str] = field(default_factory=list)
+    has_peak_list: bool = False
+    peak_list_file: str = ""
+    sidecar_path: str = ""
+    n_annotated: int = 0
     organized: bool = False
     moved_files: list[str] = field(default_factory=list)
     duration_sec: float = 0.0
@@ -129,6 +133,12 @@ def classify_csv_role(path: Path) -> str:
     if has_index and has_x and has_y:
         return "spot_like"
 
+    # peak-list (Feature list): m/z 列 + Name 列を持つ（Spot 行列でも座標でもない）
+    has_name = "name" in norm
+    has_mz = any(c in ("m/z", "mz", "m_z") for c in norm)
+    if has_name and has_mz:
+        return "peak_list"
+
     return "unknown"
 
 
@@ -148,6 +158,7 @@ def auto_detect_file_roles(data_dir: Path) -> dict:
 
     intensities: list[Path] = []
     spot_likes: list[Path] = []
+    peaklists: list[Path] = []
     unknowns: list[Path] = []
     for p in csv_files:
         role = classify_csv_role(p)
@@ -155,6 +166,8 @@ def auto_detect_file_roles(data_dir: Path) -> dict:
             intensities.append(p)
         elif role == "spot_like":
             spot_likes.append(p)
+        elif role == "peak_list":
+            peaklists.append(p)
         else:
             unknowns.append(p)
 
@@ -179,6 +192,7 @@ def auto_detect_file_roles(data_dir: Path) -> dict:
         "intensity": intensities[0],
         "spot": spot_likes[0],
         "annotations": spot_likes[1:],
+        "peak_list": peaklists[0] if peaklists else None,
         "unknown": unknowns,
     }
 
@@ -485,6 +499,42 @@ def _csv_to_temp_parquet(
                     break
 
 
+# peak-list の m/z と Intensity の m/z を突き合わせる許容（Da）
+_PEAKLIST_MZ_TOL_DA = 0.01
+
+
+def _read_peaklist(path: Path):
+    """peak-list (Feature list) CSV から (m/z 配列, Name 配列) を返す。"""
+    import pandas as pd
+    headers, delim, skip = first_header_and_skipcount(path)
+    df = pd.read_csv(
+        path, sep=delim, skiprows=skip, header=0,
+        engine="c", encoding="utf-8", dtype=str, keep_default_na=False,
+    )
+    norm = [str(h).strip().lower().replace(" ", "") for h in df.columns]
+    mz_idx = next((i for i, c in enumerate(norm) if c in ("m/z", "mz", "m_z")), 0)
+    name_idx = next((i for i, c in enumerate(norm) if c == "name"), None)
+    if name_idx is None:
+        raise ValueError(f"peak-list に Name 列がありません: {path.name}")
+    mz_vals = pd.to_numeric(df.iloc[:, mz_idx], errors="coerce")
+    mask = mz_vals.notna()
+    return mz_vals[mask].to_numpy(dtype=float), df.iloc[:, name_idx][mask].astype(str).tolist()
+
+
+def _ensure_unique_colnames(names: list[str]) -> list[str]:
+    """列名の重複を避ける（万一 4 桁 m/z＋化合物名が衝突した場合の保険）。"""
+    seen: dict[str, int] = {}
+    out: list[str] = []
+    for n in names:
+        if n in seen:
+            seen[n] += 1
+            out.append(f"{n} #{seen[n]}")
+        else:
+            seen[n] = 0
+            out.append(n)
+    return out
+
+
 def convert_scils_to_parquet(
     input_folder: str,
     output_path: str,
@@ -527,10 +577,13 @@ def convert_scils_to_parquet(
     intensity_path: Path = detected["intensity"]
     spots_path: Path = detected["spot"]
     annotation_files: list[Path] = detected["annotations"]
+    peaklist_path: Optional[Path] = detected.get("peak_list")
 
     result.source_intensity = str(intensity_path)
     result.source_spot = str(spots_path)
     result.annotation_files = [str(p) for p in annotation_files]
+    result.has_peak_list = peaklist_path is not None
+    result.peak_list_file = str(peaklist_path) if peaklist_path else ""
 
     # 2) 出力先確定 (organize の場合はサブフォルダに変更)
     base = derive_base_name(intensity_path, spots_path)
@@ -547,6 +600,8 @@ def convert_scils_to_parquet(
     logger.info("Spot     : %s", spots_path)
     if annotation_files:
         logger.info("Annotation: %s", [p.name for p in annotation_files])
+    if peaklist_path is not None:
+        logger.info("Peak-list : %s", peaklist_path.name)
     logger.info("出力      : %s", out_path)
 
     # 3) Phase A: Intensity CSV → 一時 Parquet
@@ -568,6 +623,22 @@ def convert_scils_to_parquet(
         order_mz = np.argsort(mz_num, kind="mergesort")
         mz_sorted = mz_num[order_mz]
         n_mz = len(mz_sorted)
+
+        # 4.5) peak-list（化合物アノテーション）→ per-feature 注釈テーブル
+        feat_ann_df = None
+        if peaklist_path is not None:
+            try:
+                from app.services import peak_annotation as _pann
+                pk_mz, pk_names = _read_peaklist(peaklist_path)
+                feat_ann_df = _pann.build_feature_annotation_table(
+                    mz_sorted, pk_mz, pk_names, tol_da=_PEAKLIST_MZ_TOL_DA
+                )
+                result.n_annotated = int((feat_ann_df["compound"].astype(str) != "").sum())
+                logger.info("Peak-list 注釈: %d / %d feature にマッチ", result.n_annotated, n_mz)
+            except Exception as e:
+                logger.warning("peak-list 解析に失敗（注釈なしで継続）: %s", e)
+                result.warnings.append(f"peak-list の解析に失敗（注釈なしで継続）: {e}")
+                feat_ann_df = None
 
         # 5) Spot テーブル読込 + マッピング
         spot_index, x_arr, y_arr = read_spot_table(spots_path)
@@ -603,11 +674,28 @@ def convert_scils_to_parquet(
         logger.info("Phase B 開始: chunk 読込 + 最終 Parquet 書き込み")
         phase_b_start = time.perf_counter()
 
-        mz_colnames = [f"{v:.6f}" for v in mz_sorted]
+        if feat_ann_df is not None:
+            from app.services import peak_annotation as _pann
+            mz_colnames = _ensure_unique_colnames([
+                _pann.make_column_name(feat_ann_df["raw"].iloc[i], float(mz_sorted[i]))
+                for i in range(n_mz)
+            ])
+        else:
+            mz_colnames = [f"{v:.6f}" for v in mz_sorted]
+        # スキーマにメタデータを直接付与（ParquetWriter のスキーマに含めることで
+        # 全バッチ＝ファイルへ確実に永続化される）。mz_sorted はフル桁の m/z 一覧で、
+        # 列名がパイプ全文になっても m/z を確実に復元できる正となる。
+        schema_md = {
+            b"mz_sorted": ",".join(f"{v:.10g}" for v in mz_sorted).encode("utf-8"),
+            b"annotation_files": ";".join(p.name for p in annotation_files).encode("utf-8"),
+        }
+        if peaklist_path is not None:
+            schema_md[b"peak_list"] = peaklist_path.name.encode("utf-8")
         schema = pa.schema(
             [("id", pa.int64()), ("x", pa.float64()), ("y", pa.float64())]
             + [(name, pa.float32() if store_float32 else pa.float64()) for name in mz_colnames]
-            + [("annotation", pa.string())]
+            + [("annotation", pa.string())],
+            metadata=schema_md,
         )
         intensity_dtype = np.float32 if store_float32 else np.float64
 
@@ -633,16 +721,20 @@ def convert_scils_to_parquet(
                     arrays.append(pa.array(vals_T[:, j].astype(intensity_dtype, copy=False)))
                 arrays.append(pa.array(annotation_sorted[start:end], type=pa.string()))
                 table = pa.Table.from_arrays(arrays, schema=schema)
-
-                if start == 0:
-                    md = dict(table.schema.metadata or {})
-                    md[b"mz_sorted"] = ",".join(f"{v:.10g}" for v in mz_sorted).encode("utf-8")
-                    md[b"annotation_files"] = ";".join(p.name for p in annotation_files).encode("utf-8")
-                    table = table.replace_schema_metadata(md)
-
                 pq_writer.write_table(table)
 
         logger.info("Phase B 完了: %.1f 秒", time.perf_counter() - phase_b_start)
+
+        # 8.5) サイドカー（per-feature 注釈テーブル）を出力
+        if feat_ann_df is not None:
+            sidecar = out_path.parent / f"{base}_feature_annotations.parquet"
+            try:
+                feat_ann_df.to_parquet(str(sidecar), index=False)
+                result.sidecar_path = str(sidecar)
+                logger.info("サイドカー出力: %s", sidecar.name)
+            except Exception as e:
+                logger.warning("サイドカー出力に失敗: %s", e)
+                result.warnings.append(f"サイドカー出力に失敗: {e}")
 
         result.output_path = str(out_path)
         result.n_spots = n_spots
@@ -662,7 +754,10 @@ def convert_scils_to_parquet(
     if organize:
         moved: list[str] = []
         try:
-            for src in [intensity_path, spots_path, *annotation_files]:
+            move_srcs = [intensity_path, spots_path, *annotation_files]
+            if peaklist_path is not None:
+                move_srcs.append(peaklist_path)
+            for src in move_srcs:
                 dst = _move_into_folder(src, out_path.parent)
                 moved.append(str(dst))
             result.moved_files = moved

@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 from app.config import R_HELPERS_DIR, RSCRIPT_PATH, SEURAT_CACHE_DIR
@@ -22,6 +23,19 @@ logger = logging.getLogger("msi.seurat_bridge")
 
 class ExtractionCancelled(Exception):
     """ユーザーが RDS 抽出をキャンセルしたときに送出される。"""
+
+
+def _none_str(v):
+    """NaN / None / 空 / "None" を None に正規化、それ以外は str を返す。"""
+    if v is None:
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    s = str(v).strip()
+    return None if (s == "" or s.lower() == "none") else s
 
 
 def _popen_with_cancel(cmd, cancel_event, timeout=600, creationflags=0):
@@ -183,6 +197,9 @@ class SeuratBridge:
             result = self._load_extracted_data(cache_dir)
 
         result["cache_dir"] = cache_dir
+        result["feature_annotations"] = self._load_feature_annotations(
+            cache_dir, rds_path, result.get("features_list") or []
+        )
         return result
 
     def ensure_expression_matrix(self, rds_path: str) -> Path:
@@ -374,3 +391,80 @@ class SeuratBridge:
             "features_list": features_list,
             "meta": meta,
         }
+
+    # --- 外部アノテーション（SCiLS peak Name 由来）のサイドカー結合 (Q2) ---
+    def _find_feature_annotation_sidecar(self, rds_path) -> Optional[Path]:
+        """rds_path 近傍から `*_feature_annotations.parquet` を探す。"""
+        p = Path(rds_path).resolve()
+        bases = [p.parent, p.parent.parent, p.parent.parent.parent]
+        seen = set()
+        for base in bases:
+            if base is None or str(base) in seen or not base.is_dir():
+                continue
+            seen.add(str(base))
+            hits = sorted(base.glob("*_feature_annotations.parquet"))
+            if hits:
+                return hits[0]
+            sub_hits = sorted(base.glob("*/*_feature_annotations.parquet"))
+            if sub_hits:
+                return sub_hits[0]
+        return None
+
+    def _load_feature_annotations(self, cache_dir: Path, rds_path,
+                                  features_list: list) -> dict:
+        """サイドカーを features_list に数値 m/z で join し {feature_str: record} を返す。
+
+        キャッシュ済み（cache_dir/feature_annotations.json）があれば再利用。
+        サイドカー無し / 候補なし feature はキーに含めない（= m/z 表示のまま）。
+        """
+        cache_file = cache_dir / "feature_annotations.json"
+        if cache_file.exists():
+            try:
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        if not features_list:
+            return {}
+        sidecar = self._find_feature_annotation_sidecar(rds_path)
+        if sidecar is None:
+            return {}
+        try:
+            from app.utils.deg_utils import _extract_mz_numeric
+            side = pd.read_parquet(sidecar)
+            side_mz = side["mz"].to_numpy(dtype=float)
+            out: dict = {}
+            tol = 0.005
+            for feat in features_list:
+                mz = _extract_mz_numeric(feat)
+                if mz is None or mz == float("inf"):
+                    continue
+                j = int(np.argmin(np.abs(side_mz - mz)))
+                if abs(side_mz[j] - mz) > tol:
+                    continue
+                row = side.iloc[j]
+                comp = _none_str(row.get("compound"))
+                if not comp:
+                    continue  # No DB hit 等は m/z 表示のまま
+                out[feat] = {
+                    "display_name": _none_str(row.get("display_name")) or comp,
+                    "compound": comp,
+                    "lipid_class": _none_str(row.get("lipid_class")),
+                    "database": _none_str(row.get("database")),
+                    "adduct": _none_str(row.get("adduct")),
+                    "ppm": (float(row["ppm"]) if pd.notna(row.get("ppm")) else None),
+                    "formula": _none_str(row.get("formula")),
+                    "smiles": _none_str(row.get("smiles")),
+                    "adduct_image": _none_str(row.get("adduct_image")),
+                    "adduct_family": _none_str(row.get("adduct_family")),
+                    "mz": float(row["mz"]),
+                }
+            try:
+                with open(cache_file, "w", encoding="utf-8") as f:
+                    json.dump(out, f, ensure_ascii=False)
+            except Exception:
+                pass
+            return out
+        except Exception as e:
+            logger.warning("feature annotation の join に失敗: %s", e)
+            return {}

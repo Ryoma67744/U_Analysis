@@ -615,6 +615,20 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
         cat("  [Info] Bare numeric column names detected, treating as m/z values\n")
       }
     }
+    # SCiLS 埋め込み列名（化合物名パイプ全文）対応: 列名が mz_/数値でない場合は
+    # reserved 以外の全列を feature とし、m/z 値はメタデータ mz_sorted から取得する。
+    embedded_mz <- NULL
+    if (length(mz_cols) == 0) {
+      non_meta <- setdiff(all_names, c("id", "x", "y", "annotation"))
+      if (length(non_meta) > 0) {
+        mz_cols <- non_meta
+        meta <- pf$GetSchema()$metadata
+        if (!is.null(meta) && ("mz_sorted" %in% names(meta))) {
+          embedded_mz <- suppressWarnings(as.numeric(strsplit(meta[["mz_sorted"]], ",")[[1]]))
+        }
+        cat("  [Info] Embedded annotation column names detected; m/z from mz_sorted metadata\n")
+      }
+    }
     need_cols <- c("id", "x", "y", mz_cols)
     if ("annotation" %in% all_names) need_cols <- c(need_cols, "annotation")
     df <- arrow::read_parquet(file_path, col_select = dplyr::all_of(need_cols), as_data_frame = TRUE)
@@ -626,11 +640,14 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
     # Build metabolite names to MATCH CSV pipeline naming exactly: "m/z %.5f"
     if (is_bare_numeric) {
       mz_num <- as.numeric(mz_cols)
+    } else if (!is.null(embedded_mz) && length(embedded_mz) == length(mz_cols)) {
+      mz_num <- embedded_mz
     } else {
       mz_num <- suppressWarnings(as.numeric(sub("^mz_", "", mz_cols)))
       if (anyNA(mz_num)) {
-        # fallback: strip non-numeric
-        mz_num <- suppressWarnings(as.numeric(gsub("[^0-9.]", "", sub("^mz_", "", mz_cols))))
+        # fallback: 埋め込み列名の先頭フィールド `化合物名_<m/z>` から m/z を抽出
+        first_field <- sub("\\s*\\|.*$", "", mz_cols)
+        mz_num <- suppressWarnings(as.numeric(sub(".*_([0-9.]+)\\s*$", "\\1", first_field)))
       }
     }
     if (anyNA(mz_num)) stop("Failed to parse m/z from Parquet column names.")

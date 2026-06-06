@@ -12,6 +12,34 @@
 
 ---
 
+## 2026-06-06_ver4.21
+
+### 機能: SCiLS 化合物アノテーションの埋め込み＋化合物名表示
+SCiLS peak-list の `Name`（パイプ区切り：化合物名＋分類/DB/adduct/ppm/分子式/SMILES 等）を取り込み、
+m/z ではなく化合物名で feature を扱えるようにした。**注釈の無いデータは完全に現状維持**（加算的）。
+
+- **新規 `peak_annotation.py`（パーサ）**: `Name` を構造化（adduct `[M…]` を起点に化合物名と adduct の
+  間のフィールド数で分類/DB を確定、`key=value` はキー名で格納、`No DB hit` は m/z 表示、raw 全文保持）。
+- **SCiLS 変換（`scils_converter.py`）**: フォルダ内 peak-list CSV を**自動検出**（新 role）。強度 parquet の
+  m/z 列名を `化合物名_<m/z 4桁> | …(全文)` に**埋め込み置換**しつつ、フル桁 m/z は schema メタデータ
+  `mz_sorted` に保持（列名がパイプ全文でも m/z を確実に復元）。per-feature 注釈の**サイドカー
+  `*_feature_annotations.parquet`** も出力。
+- **m/z 検出の改修**: 列名から m/z を読む処理を「`mz_sorted` メタ＋列除外」方式へ（Python `data_manager.py`、
+  R `260422_DBSCAN_With_cluster_ver3_no-png_slim.R` の parquet 読込）。Seurat の feature 名は従来どおり
+  `m/z %.5f`（安全キー）を維持し、特殊文字での名前破壊を回避。
+- **運搬（サイドカー → キャッシュ）**: 解析実行時にサイドカーを結果フォルダへコピー（`analysis_runner.py`）、
+  抽出時に `seurat_bridge.py` が features_list へ m/z で join し `extraction_meta` 隣の
+  `feature_annotations.json` としてキャッシュ→インタラクティブへ供給。
+- **優先（スキップ）**: 外部注釈ありデータは、in-app の m/z キャリブレーションと CSV 照合をスキップし、
+  `annotation_map` を外部表から直接構築（`interactive_callbacks.py`）。
+- **表示**: Feature Plot に「化合物名で表示（m/z ⇄ 化合物名）」トグル（既定 ON）を追加。既存の Feature
+  選択・DEG（Volcano/Heatmap）は `annotation_map` 経由で自動的に化合物名を表示。
+  ※ Spatial Mapping はクラスタ表示で feature 名を持たないため対象外。
+- 退行防止: 新規 `tests/test_peak_annotation.py`（パーサ／変換器埋め込み＋サイドカー＋メタ／data_manager
+  の埋め込み列検出）。`222 passed`。R 変更は実 R 必須のためデプロイ後 E2E で確認。
+
+---
+
 ## 2026-06-05_ver4.20
 
 ### 整理: 動作していなかった残骸UI/Storeを3点削除（結果不変）
