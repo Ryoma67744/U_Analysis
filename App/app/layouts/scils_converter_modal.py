@@ -123,14 +123,6 @@ def create_scils_converter_modal():
                 ),
 
                 html.Hr(),
-                # 進捗バー（変換中のみ表示）
-                html.Div(id="scils_progress_container", style={"display": "none"}, children=[
-                    dbc.Progress(id="scils_progress_bar", value=0, max=100,
-                                 striped=True, animated=True,
-                                 className="mb-1", style={"height": "20px"}),
-                    html.Div(id="scils_progress_label",
-                             className="text-center small text-muted"),
-                ]),
                 dcc.Loading(html.Div(id="scils_conversion_result", className="small")),
             ]),
             dbc.ModalFooter([

@@ -218,7 +218,7 @@ class TestBuildAnnotationMap:
         y_arr = np.array([1.0, 2.0])
         ann1 = _write_spot_csv(tmp_path, "A_Annotation.csv", [1, 2], [1, 2], [1, 2])
         ann2 = _write_spot_csv(tmp_path, "B_Annotation.csv", [1], [1], [1])
-        with pytest.raises(ValueError, match="同一 spot"):
+        with pytest.raises(ValueError, match="領域アノテーションが重複"):
             sc.build_annotation_map([ann1, ann2], spot_index, x_arr, y_arr)
 
     def test_coord_mismatch_raises(self, tmp_path):

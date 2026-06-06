@@ -12,6 +12,77 @@
 
 ---
 
+## 2026-06-06_ver4.25
+
+### 改善: 領域アノテーション重複エラーのメッセージを具体化
+SCiLS 変換で領域アノテーション（複数の Region CSV）に**同一 spot の重複**があるとき、
+従来は `同一 spot が複数 annotation に: [27722, …]` という spot 番号の羅列のみで原因が分かり
+にくかった。**どのファイルがどの既存領域と重複しているか・件数・全 spot が重複＝複製領域の
+可能性**を明示するメッセージに改善（`build_annotation_map`）。
+
+例（E16 と E18 が同一スポット集合だった実ケース）:
+> 領域アノテーションが重複しています: 'E18' (E18.csv) の 51946 spot が既存領域 ['E16'] と
+> 同一です（'E18' の全 51946 spot が重複＝重複/複製された領域の可能性が高い）。…
+> 同じ領域を二重にエクスポートしていないか、SCiLS の ROI 定義をご確認ください。
+
+※ これは検証強化のみで、重複領域は引き続きエラー（データ側で要修正）。
+
+---
+
+## 2026-06-06_ver4.24
+
+### 修正（真因）: SCiLS 変換の途中終了は polars の CPU 非互換クラッシュが原因
+ver4.23 で同期化・メモリチェックを入れた後もサーバ実機ログで真因が判明:
+**polars がサーバ CPU の必須命令（`lzcnt`）を欠くため Phase A の実行中に
+ネイティブクラッシュ（SIGILL）し、アプリプロセスごと落ちて Docker が再起動**していた
+（→ 変換が途中終了し 0byte の `*_temp.parquet` が残る）。メモリは潤沢（空き ~14GB / CSV ~2.9GB）で
+無関係だった。ネイティブクラッシュのため Python の try/except では捕捉できない。
+
+ログ証跡:
+```
+polars/_cpu_check.py: Missing required CPU features: lzcnt
+Continuing to use this version of Polars on this processor will likely result in a crash.
+Phase A エンジン: polars (streaming sink)   ← この直後にプロセスが落ち再起動
+```
+
+対応:
+- 依存を **`polars` → `polars-lts-cpu`** に変更（`requirements.txt` / `pyproject.toml`）。
+  古い CPU 向けにビルドされた版で、`lzcnt`/AVX2 等を要求せずクラッシュしない。**`import polars`
+  のままで API 互換**のためコード変更不要。
+- 保険として環境変数 **`SCILS_NO_POLARS=1`** を追加。指定時は polars を使わず pyarrow 経路で
+  Phase A を実行する（万一 polars が問題でも変換可能）。
+- ver4.23 の同期実行・メモリ事前チェック・Phase A の temp 後始末（try/finally）はそのまま維持
+  （堅牢性向上として有効）。
+
+デプロイ: `polars-lts-cpu` を入れるため**イメージ再ビルドが必須**
+（`docker compose ... up -d --build`）。
+
+---
+
+## 2026-06-06_ver4.23
+
+### 修正: SCiLS 変換が大規模データで「途中終了」する問題（ver4.22 のバックグラウンド化を撤回）
+ver4.22 で導入した変換のバックグラウンド実行（DiskcacheManager）が、大きいデータ（例: 3GB の
+Intensity CSV）で**途中終了したように見える**原因になっていたため撤回し、確実に動く同期実行へ戻した。
+
+- **原因**: DiskcacheManager は `expire=300`（5分）のため、5分を超える変換ではジョブ追跡キャッシュが
+  失効し UI が結果を取りこぼす。さらにワーカープロセスの異常終了（OOM 等）が UI に伝わらず無言で
+  終わる。本コードベースは元々この理由で `background=True` を避けていた（interactive_callbacks.py /
+  interactive_data_export.py のコメント参照）。
+- **対応**:
+  - `run_scils_conversion` を**同期実行に戻す**（`background`/`running`/`progress` を撤去）。結果欄の
+    スピナー（`dcc.Loading`）は残置。進捗バーは撤去（堅牢な進捗表示は別途、検出済みの
+    サブプロセス＋ポーリング方式で再導入予定）。
+  - 変換前に**簡易メモリチェック**を追加（`_check_conversion_memory`）。Intensity CSV サイズに対し
+    空きメモリが不足する場合は**明示的なエラー**を返し、無言の OOM（途中終了＋0byte 一時ファイル
+    残留）を防ぐ。
+  - **Phase A を try/finally の内側へ移動**し、Phase A が失敗しても一時 Parquet を確実に削除する
+    （0byte の `*_temp.parquet` 残留を解消）。
+- ver4.22 の高速化（一時 Parquet を snappy 化／Phase B のキャスト一括化／peak-list 結合の
+  searchsorted 化）は**そのまま維持**。
+
+---
+
 ## 2026-06-06_ver4.22
 
 ### 改善: SCiLS 変換の「無反応」解消（進捗バー）＋ 変換の高速化

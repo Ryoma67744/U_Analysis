@@ -55,21 +55,9 @@ def _auto_sample_name(input_folder: str) -> str:
     State("scils_organize_check", "value"),
     State("scils_float32_check", "value"),
     State("scils_spot_block", "value"),
-    background=True,
-    running=[
-        (Output("scils_run_btn", "disabled"), True, False),
-        (Output("scils_progress_container", "style"),
-         {"display": "block"}, {"display": "none"}),
-    ],
-    progress=[
-        Output("scils_progress_bar", "value"),
-        Output("scils_progress_bar", "max"),
-        Output("scils_progress_label", "children"),
-    ],
     prevent_initial_call=True,
 )
 def run_scils_conversion(
-    set_progress,
     n_clicks, input_folder, output_folder, sample_name,
     organize_value, float32_value, spot_block_value,
 ):
@@ -94,20 +82,12 @@ def run_scils_conversion(
     except (TypeError, ValueError):
         spot_block = 200
 
-    def _progress(value, maximum, label):
-        """変換器の進捗を Dash の進捗バー出力へ橋渡し（失敗は無視）。"""
-        try:
-            set_progress((str(value), str(maximum), label))
-        except Exception:
-            pass
-
     try:
         result = convert_scils_to_parquet(
             input_folder, out_path,
             spot_block=spot_block,
             store_float32=store_float32,
             organize=organize,
-            progress_cb=_progress,
         )
     except FileNotFoundError as exc:
         logger.warning("SCiLS 変換失敗 (入力不備): %s", exc)

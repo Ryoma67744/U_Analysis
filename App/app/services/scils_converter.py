@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import os
 import re
 import shutil
 import time
@@ -389,8 +390,17 @@ def build_annotation_map(
 
         overlap = [s for s in set_ann if s in mapping]
         if overlap:
+            prev_labels = sorted({mapping[s] for s in overlap})
+            n, n_this = len(overlap), len(set_ann)
+            dup_hint = (
+                f"（'{label}' の全 {n_this} spot が重複＝重複/複製された領域の可能性が高い）"
+                if n == n_this else ""
+            )
             raise ValueError(
-                f"同一 spot が複数 annotation に: {sorted(overlap)[:10]}"
+                f"領域アノテーションが重複しています: '{label}' ({fp.name}) の {n} spot が "
+                f"既存領域 {prev_labels} と同一です{dup_hint}。"
+                f"例: spot {sorted(overlap)[:5]}。"
+                "同じ領域を二重にエクスポートしていないか、SCiLS の ROI 定義をご確認ください。"
             )
 
         for s in set_ann:
@@ -458,12 +468,16 @@ def _csv_to_temp_parquet(
     temp_parquet: Path,
 ) -> None:
     """Phase A: Intensity CSV を一時 Parquet にストリーミング変換"""
-    try:
-        import polars as pl
-        _use_polars = True
-    except ImportError:
-        _use_polars = False
-        logger.info("polars 未インストール → pyarrow batched にフォールバック")
+    # SCILS_NO_POLARS=1 で polars を使わず pyarrow 経路を強制（CPU 非互換などの保険）。
+    _use_polars = False
+    if os.environ.get("SCILS_NO_POLARS"):
+        logger.info("SCILS_NO_POLARS 指定 → pyarrow batched を使用")
+    else:
+        try:
+            import polars as pl
+            _use_polars = True
+        except ImportError:
+            logger.info("polars 未インストール → pyarrow batched にフォールバック")
 
     if _use_polars:
         logger.info("Phase A エンジン: polars (streaming sink)")
@@ -538,6 +552,37 @@ def _ensure_unique_colnames(names: list[str]) -> list[str]:
             seen[n] = 0
             out.append(n)
     return out
+
+
+def _check_conversion_memory(intensity_path: Path) -> None:
+    """変換前の簡易メモリチェック。空きメモリが Intensity CSV に対して著しく不足する
+    場合は明示的に RuntimeError を送出し、無言の OOM（途中終了＋0byte 一時ファイル
+    残留）を避ける。psutil 不在環境ではスキップ。"""
+    try:
+        import psutil
+    except Exception:
+        return
+    try:
+        csv_gb = intensity_path.stat().st_size / (1024 ** 3)
+    except Exception:
+        return
+    if csv_gb < 0.5:
+        return  # 小さいデータはメモリチェック不要
+    try:
+        avail_gb = psutil.virtual_memory().available / (1024 ** 3)
+    except Exception:
+        return
+    need_gb = csv_gb * 1.5 + 1.0
+    logger.info(
+        "変換メモリ確認: Intensity CSV %.2f GB / 空き %.2f GB（目安 %.1f GB 以上）",
+        csv_gb, avail_gb, need_gb,
+    )
+    if avail_gb < need_gb:
+        raise RuntimeError(
+            f"空きメモリが不足しています（Intensity CSV {csv_gb:.1f} GB に対し空き "
+            f"{avail_gb:.1f} GB）。約 {need_gb:.1f} GB 以上の空きが必要です。"
+            "他の解析・変換の完了を待つか、サーバのメモリを増やしてください。"
+        )
 
 
 def convert_scils_to_parquet(
@@ -625,14 +670,20 @@ def convert_scils_to_parquet(
     # 3) Phase A: Intensity CSV → 一時 Parquet
     temp_parquet = intensity_path.parent / f"{base}_temp.parquet"
     int_headers, delim, skip = first_header_and_skipcount(intensity_path)
+    # 大規模データのメモリ事前チェック（巨大／超ワイドな Intensity CSV による OOM で
+    # 「途中終了＋0byte 一時ファイル残留」になるのを避け、不足時は明示エラーにする）。
+    _check_conversion_memory(intensity_path)
+
     logger.info("Phase A 開始: CSV→一時 Parquet (%s)", temp_parquet.name)
     phase_a_start = time.perf_counter()
     _report(2, "CSV を読み込み中…（Phase A）")
-    _csv_to_temp_parquet(intensity_path, int_headers, delim, skip, temp_parquet)
-    logger.info("Phase A 完了: %.1f 秒", time.perf_counter() - phase_a_start)
 
     pf = None
     try:
+        # Phase A も try 内で実行し、失敗時も finally で一時ファイルを確実に削除する
+        _csv_to_temp_parquet(intensity_path, int_headers, delim, skip, temp_parquet)
+        logger.info("Phase A 完了: %.1f 秒", time.perf_counter() - phase_a_start)
+
         # 4) m/z 列読込 + ソート
         pf = pq.ParquetFile(str(temp_parquet))
         mz_col_name = int_headers[0]
