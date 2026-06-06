@@ -12,6 +12,30 @@
 
 ---
 
+## 2026-06-06_ver4.23
+
+### 修正: SCiLS 変換が大規模データで「途中終了」する問題（ver4.22 のバックグラウンド化を撤回）
+ver4.22 で導入した変換のバックグラウンド実行（DiskcacheManager）が、大きいデータ（例: 3GB の
+Intensity CSV）で**途中終了したように見える**原因になっていたため撤回し、確実に動く同期実行へ戻した。
+
+- **原因**: DiskcacheManager は `expire=300`（5分）のため、5分を超える変換ではジョブ追跡キャッシュが
+  失効し UI が結果を取りこぼす。さらにワーカープロセスの異常終了（OOM 等）が UI に伝わらず無言で
+  終わる。本コードベースは元々この理由で `background=True` を避けていた（interactive_callbacks.py /
+  interactive_data_export.py のコメント参照）。
+- **対応**:
+  - `run_scils_conversion` を**同期実行に戻す**（`background`/`running`/`progress` を撤去）。結果欄の
+    スピナー（`dcc.Loading`）は残置。進捗バーは撤去（堅牢な進捗表示は別途、検出済みの
+    サブプロセス＋ポーリング方式で再導入予定）。
+  - 変換前に**簡易メモリチェック**を追加（`_check_conversion_memory`）。Intensity CSV サイズに対し
+    空きメモリが不足する場合は**明示的なエラー**を返し、無言の OOM（途中終了＋0byte 一時ファイル
+    残留）を防ぐ。
+  - **Phase A を try/finally の内側へ移動**し、Phase A が失敗しても一時 Parquet を確実に削除する
+    （0byte の `*_temp.parquet` 残留を解消）。
+- ver4.22 の高速化（一時 Parquet を snappy 化／Phase B のキャスト一括化／peak-list 結合の
+  searchsorted 化）は**そのまま維持**。
+
+---
+
 ## 2026-06-06_ver4.22
 
 ### 改善: SCiLS 変換の「無反応」解消（進捗バー）＋ 変換の高速化

@@ -540,6 +540,37 @@ def _ensure_unique_colnames(names: list[str]) -> list[str]:
     return out
 
 
+def _check_conversion_memory(intensity_path: Path) -> None:
+    """変換前の簡易メモリチェック。空きメモリが Intensity CSV に対して著しく不足する
+    場合は明示的に RuntimeError を送出し、無言の OOM（途中終了＋0byte 一時ファイル
+    残留）を避ける。psutil 不在環境ではスキップ。"""
+    try:
+        import psutil
+    except Exception:
+        return
+    try:
+        csv_gb = intensity_path.stat().st_size / (1024 ** 3)
+    except Exception:
+        return
+    if csv_gb < 0.5:
+        return  # 小さいデータはメモリチェック不要
+    try:
+        avail_gb = psutil.virtual_memory().available / (1024 ** 3)
+    except Exception:
+        return
+    need_gb = csv_gb * 1.5 + 1.0
+    logger.info(
+        "変換メモリ確認: Intensity CSV %.2f GB / 空き %.2f GB（目安 %.1f GB 以上）",
+        csv_gb, avail_gb, need_gb,
+    )
+    if avail_gb < need_gb:
+        raise RuntimeError(
+            f"空きメモリが不足しています（Intensity CSV {csv_gb:.1f} GB に対し空き "
+            f"{avail_gb:.1f} GB）。約 {need_gb:.1f} GB 以上の空きが必要です。"
+            "他の解析・変換の完了を待つか、サーバのメモリを増やしてください。"
+        )
+
+
 def convert_scils_to_parquet(
     input_folder: str,
     output_path: str,
@@ -625,14 +656,20 @@ def convert_scils_to_parquet(
     # 3) Phase A: Intensity CSV → 一時 Parquet
     temp_parquet = intensity_path.parent / f"{base}_temp.parquet"
     int_headers, delim, skip = first_header_and_skipcount(intensity_path)
+    # 大規模データのメモリ事前チェック（巨大／超ワイドな Intensity CSV による OOM で
+    # 「途中終了＋0byte 一時ファイル残留」になるのを避け、不足時は明示エラーにする）。
+    _check_conversion_memory(intensity_path)
+
     logger.info("Phase A 開始: CSV→一時 Parquet (%s)", temp_parquet.name)
     phase_a_start = time.perf_counter()
     _report(2, "CSV を読み込み中…（Phase A）")
-    _csv_to_temp_parquet(intensity_path, int_headers, delim, skip, temp_parquet)
-    logger.info("Phase A 完了: %.1f 秒", time.perf_counter() - phase_a_start)
 
     pf = None
     try:
+        # Phase A も try 内で実行し、失敗時も finally で一時ファイルを確実に削除する
+        _csv_to_temp_parquet(intensity_path, int_headers, delim, skip, temp_parquet)
+        logger.info("Phase A 完了: %.1f 秒", time.perf_counter() - phase_a_start)
+
         # 4) m/z 列読込 + ソート
         pf = pq.ParquetFile(str(temp_parquet))
         mz_col_name = int_headers[0]
