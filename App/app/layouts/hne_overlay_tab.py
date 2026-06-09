@@ -58,6 +58,22 @@ def create_hne_overlay_tab():
                 ]),
 
                 html.Hr(className="my-2"),
+                dbc.Label("MSI 回転（粗い向き合わせ）", className="small fw-bold"),
+                html.Div("TIC の向きを H&E に大まかに合わせる。細かい位置は対応点が吸収。",
+                         className="small text-muted"),
+                dcc.Slider(id="hne_rotation_angle", min=0, max=360, step=1, value=0,
+                           marks={0: "0°", 90: "90", 180: "180", 270: "270", 360: "360°"},
+                           tooltip={"placement": "bottom", "always_visible": False}),
+                dbc.Checklist(
+                    id="hne_rotation_flip",
+                    options=[{"label": " 左右反転", "value": "flip_h"},
+                             {"label": " 上下反転", "value": "flip_v"}],
+                    value=[], inline=True, className="small mt-1",
+                ),
+                html.Div("※回転・反転を変えると対応点はクリアされます。",
+                         className="small text-muted"),
+
+                html.Hr(className="my-2"),
                 dbc.Label("① 位置合わせ（対応点）", className="small fw-bold"),
                 html.Div("「対応点」モードで、TIC と H&E に対応する点を同じ順番で交互にクリック"
                          "（3点以上）。", className="small text-muted"),
@@ -111,6 +127,8 @@ def create_hne_overlay_tab():
         # ===== Store =====
         dcc.Store(id="hne_image_store"),                         # {src, width, height, name}
         dcc.Store(id="hne_landmarks_store", data={"tic": [], "hne": []}),
+        dcc.Store(id="hne_rotation_store",                       # {"angle":0,"flip_h":False,"flip_v":False}
+                  data={"angle": 0, "flip_h": False, "flip_v": False}),
         dcc.Store(id="hne_affine_store"),                        # {"M": [[...],[...]], "rms": float}
         dcc.Store(id="hne_polygons_store", data=[]),             # [{name, vertices(px)}]
         dcc.Download(id="hne_export_download"),

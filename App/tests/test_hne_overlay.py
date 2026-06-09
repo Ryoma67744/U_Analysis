@@ -135,6 +135,48 @@ def test_build_region_cluster_export_empty_when_no_region():
     assert hn.build_region_cluster_export(df, expr).empty
 
 
+# --- MSI 回転に対する割当の不変性（H&E タブ回転機能） ---
+def test_assign_regions_invariant_under_shared_rotation():
+    """spot とポリゴンに同じ回転+反転を適用すると領域割当は不変であることを確認。
+
+    H&E タブの MSI 回転は spot にもポリゴン（アフィン経由）にも同量かかるため、
+    `assign_regions` の結果は回転に依らない（設計の中核を純ロジックで担保）。
+    """
+    from app.callbacks.interactive_spatial import _transform_coords
+
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame({
+        "SpatialX": rng.uniform(0, 20, 200),
+        "SpatialY": rng.uniform(0, 20, 200),
+    })
+    polygons = [
+        {"name": "脳", "vertices": [(2, 2), (8, 2), (8, 8), (2, 8)]},
+        {"name": "心臓", "vertices": [(10, 10), (18, 10), (18, 18), (10, 18)]},
+    ]
+    region0 = hn.assign_regions(df, polygons)
+
+    # spot とポリゴン頂点を同一フレームに積み、同じ回転+反転を一括適用（共通中心）
+    poly_lens = [len(p["vertices"]) for p in polygons]
+    allx = np.concatenate(
+        [df["SpatialX"].to_numpy(float)]
+        + [np.array([v[0] for v in p["vertices"]], float) for p in polygons])
+    ally = np.concatenate(
+        [df["SpatialY"].to_numpy(float)]
+        + [np.array([v[1] for v in p["vertices"]], float) for p in polygons])
+    rx, ry = _transform_coords(allx, ally, 37.0, flip_h=True, flip_v=False)
+
+    n = len(df)
+    df_rot = pd.DataFrame({"SpatialX": rx[:n], "SpatialY": ry[:n]})
+    polys_rot, off = [], n
+    for p, L in zip(polygons, poly_lens):
+        polys_rot.append({"name": p["name"],
+                          "vertices": list(zip(rx[off:off + L], ry[off:off + L]))})
+        off += L
+    region1 = hn.assign_regions(df_rot, polys_rot)
+
+    pd.testing.assert_series_equal(region0, region1, check_names=False)
+
+
 def test_parse_plotly_path():
     pts = hn.parse_plotly_path("M100,200L150,250L120,300Z")
     assert pts == [(100.0, 200.0), (150.0, 250.0), (120.0, 300.0)]
