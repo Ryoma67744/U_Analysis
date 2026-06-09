@@ -35,6 +35,12 @@ services:
       # (LRU 退避が配下サブディレクトリを削除するため diskcache と同居させない)。
       - SEURAT_CACHE_DIR=/app/Data/Other/seurat_cache
       - SEURAT_CACHE_MAX_ENTRIES=30
+      # 解析(R)の行列計算スレッド数。analysis_runner.py は未設定時 4 を既定にするため
+      # ここで明示すると上書きできる。cpus:'6' に対し 5 = UI 応答に 1 コア残す折衷。
+      # 最速にしたいなら 6、UI 応答を優先するなら 4 に。
+      - OPENBLAS_NUM_THREADS=5
+      - OMP_NUM_THREADS=5
+      - MKL_NUM_THREADS=5
     volumes:
       # 永続化データ (Data/Other/ 配下のアプリ内部データ)
       - msi-sessions:/app/Data/Other/sessions
