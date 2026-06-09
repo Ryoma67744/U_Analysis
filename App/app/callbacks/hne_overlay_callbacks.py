@@ -63,6 +63,24 @@ def _sample_df(state, sample):
     return d if not d.empty else None
 
 
+def _apply_rotation(x, y, rotation):
+    """MSI 回転設定（hne_rotation_store）で (x, y) を中心基準で反転+回転する。
+
+    `interactive_spatial._transform_coords` を再利用（重心基準の反転＋任意角回転）。
+    表示・割当の双方に同じ個体の全 (SpatialX, SpatialY) を渡すこと（重心一致＝一貫）。
+    """
+    rotation = rotation or {}
+    angle = float(rotation.get("angle", 0) or 0)
+    flip_h = bool(rotation.get("flip_h", False))
+    flip_v = bool(rotation.get("flip_v", False))
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if angle == 0 and not flip_h and not flip_v:
+        return x, y
+    from app.callbacks.interactive_spatial import _transform_coords  # 遅延 import で循環回避
+    return _transform_coords(x, y, angle, flip_h, flip_v)
+
+
 # ---------------------------------------------------------------------------
 # 個体ドロップダウン populate
 # ---------------------------------------------------------------------------
@@ -107,12 +125,41 @@ def hne_store_image(contents, filename):
         _, b64 = contents.split(",", 1)
         from PIL import Image
         img = Image.open(io.BytesIO(base64.b64decode(b64)))
+        ow, oh = img.size  # 元サイズ
+        # 大きい画像は最大辺 ~2000px に縮小（表示を軽く。座標系は対応点アフィンが吸収）。
+        img.thumbnail((2000, 2000), Image.LANCZOS)
+        # 宣言 MIME に依存せず、PIL がデコードした画素から 8bit RGB PNG に作り直す。
+        # （TIFF・拡張子偽装・16bit/CMYK/パレット PNG いずれもブラウザ描画可能になる）
+        img = img.convert("RGB")
         w, h = img.size
-        return ({"src": contents, "width": int(w), "height": int(h), "name": filename or "H&E"},
-                f"{filename}（{w}×{h}px）")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        src = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+        note = f"{filename}（{w}×{h}px）" + (
+            f"  ※元 {ow}×{oh}px を縮小" if (w, h) != (ow, oh) else "")
+        return ({"src": src, "width": int(w), "height": int(h), "name": filename or "H&E"},
+                note)
     except Exception as e:  # noqa: BLE001
         logger.warning("H&E 画像の読込に失敗: %s", e)
         return no_update, f"画像の読込に失敗: {e}"
+
+
+# ---------------------------------------------------------------------------
+# MSI 回転（粗い向き合わせ）：スライダ/反転 → Store 更新 ＋ 対応点クリア
+# ---------------------------------------------------------------------------
+@callback(
+    Output("hne_rotation_store", "data"),
+    Output("hne_landmarks_store", "data", allow_duplicate=True),
+    Input("hne_rotation_angle", "value"),
+    Input("hne_rotation_flip", "value"),
+    prevent_initial_call=True,
+)
+def hne_update_rotation(angle, flips):
+    flips = flips or []
+    rot = {"angle": float(angle or 0),
+           "flip_h": "flip_h" in flips, "flip_v": "flip_v" in flips}
+    # 旧回転でクリックした対応点は無効 → クリア（→ アフィンも自動的に未設定に戻る）。
+    return rot, {"tic": [], "hne": []}
 
 
 # ---------------------------------------------------------------------------
@@ -223,18 +270,19 @@ def hne_sync_polygon_table(polys, table):
     Input("hne_affine_store", "data"),
     Input("hne_polygons_store", "data"),
     Input("hne_mode", "value"),
+    Input("hne_rotation_store", "data"),
     State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
-def hne_tic_figure(sample, lm, affine, polys, mode, rds_path):
+def hne_tic_figure(sample, lm, affine, polys, mode, rotation, rds_path):
     state = _get_state(rds_path)
     d = _sample_df(state, sample)
     if d is None:
         return _empty_fig("解析と個体を選択してください（空間座標が必要）")
-    # 本タブは SpatialX/SpatialY をそのまま使う（assign_regions と座標系を一致させる。
-    # H&E との向きの違いは対応点アフィンが吸収する）。
-    x = d["SpatialX"].to_numpy(dtype=float)
-    y = d["SpatialY"].to_numpy(dtype=float)
+    # SpatialX/SpatialY に MSI 回転（粗い向き合わせ）を適用。対応点クリック・割当も
+    # この回転後フレームで一致する（H&E との残りの向き差は対応点アフィンが吸収）。
+    x, y = _apply_rotation(d["SpatialX"].to_numpy(dtype=float),
+                           d["SpatialY"].to_numpy(dtype=float), rotation)
     if "TotalCount" in d.columns:
         marker = dict(size=3, symbol="square", color=d["TotalCount"].to_numpy(float),
                       colorscale="Greys", showscale=False)
@@ -330,10 +378,11 @@ def _named_polygons(polys, table):
     State("hne_polygons_store", "data"),
     State("hne_polygon_table", "data"),
     State("hne_affine_store", "data"),
+    State("hne_rotation_store", "data"),
     State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
-def hne_assign_and_summarize(n, sample, polys, table, affine, rds_path):
+def hne_assign_and_summarize(n, sample, polys, table, affine, rotation, rds_path):
     if not n:
         return no_update
     if not affine or not affine.get("M"):
@@ -346,8 +395,11 @@ def hne_assign_and_summarize(n, sample, polys, table, affine, rds_path):
         return _alert("空間座標つきの個体を選択してください。", "warning")
     M = np.array(affine["M"], dtype=float)
     polys_msi = hn.transform_polygons(_named_polygons(polys, table), M)
-    region = hn.assign_regions(d, polys_msi)
+    # ポリゴン（アフィン後）は回転後フレーム → spot 座標も同じ回転をかけてから割当。
     dd = d.copy()
+    dd["SpatialX"], dd["SpatialY"] = _apply_rotation(
+        dd["SpatialX"].to_numpy(float), dd["SpatialY"].to_numpy(float), rotation)
+    region = hn.assign_regions(dd, polys_msi)
     dd["region"] = region.values
     g = hn.region_cluster_counts(dd)
     n_assigned = int(region.notna().sum())
@@ -380,11 +432,12 @@ def hne_assign_and_summarize(n, sample, polys, table, affine, rds_path):
     State("hne_polygons_store", "data"),
     State("hne_polygon_table", "data"),
     State("hne_affine_store", "data"),
+    State("hne_rotation_store", "data"),
     State("seurat_rds_path_store", "data"),
     State("seurat_cache_dir_store", "data"),
     prevent_initial_call=True,
 )
-def hne_export_csv(n, sample, polys, table, affine, rds_path, cache_dir_str):
+def hne_export_csv(n, sample, polys, table, affine, rotation, rds_path, cache_dir_str):
     if not n:
         return no_update, no_update
     if not (affine and affine.get("M") and polys):
@@ -397,6 +450,8 @@ def hne_export_csv(n, sample, polys, table, affine, rds_path, cache_dir_str):
         M = np.array(affine["M"], dtype=float)
         polys_msi = hn.transform_polygons(_named_polygons(polys, table), M)
         dd = d.copy()
+        dd["SpatialX"], dd["SpatialY"] = _apply_rotation(
+            dd["SpatialX"].to_numpy(float), dd["SpatialY"].to_numpy(float), rotation)
         dd["region"] = hn.assign_regions(dd, polys_msi).values
 
         # 強度行列（元 Spatial 強度を推奨。RPCA の integrated は補正値の点に注意）
