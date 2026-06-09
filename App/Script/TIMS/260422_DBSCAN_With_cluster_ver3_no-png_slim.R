@@ -1598,10 +1598,20 @@ if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
     heat_labels <- ifelse(.is_missing_annot_h | !.is_hit_format_h, mz_only_heat[top_genes], as.character(ann_for_top))
     heat_label_map <- setNames(heat_labels, top_genes)
 
-    hm <- DoHeatmap(subset(obj, cells=cells_sub), features=top_genes, group.by="ident", size=3) + 
-      scale_fill_gradientn(colors=c("blue", "white", "red")) +
-      scale_y_discrete(labels = heat_label_map) +
-      ggtitle(paste0("Top 5 Markers (", prefix, ")"))
+    # DoHeatmap は scale.data 層を使うが、slim RDS / メモリ削減(diet)で空のことがある。
+    # サブセットに対しヒートマップ対象遺伝子だけ ScaleData し直してから描画（軽量・結果不変）。
+    # ヒートマップは出力必須でないため、失敗しても tryCatch でスキップし解析は継続する。
+    hm <- tryCatch({
+      obj_hm <- subset(obj, cells=cells_sub)
+      obj_hm <- ScaleData(obj_hm, features=top_genes, assay="Spatial", verbose=FALSE)
+      DoHeatmap(obj_hm, features=top_genes, group.by="ident", size=3) +
+        scale_fill_gradientn(colors=c("blue", "white", "red")) +
+        scale_y_discrete(labels = heat_label_map) +
+        ggtitle(paste0("Top 5 Markers (", prefix, ")"))
+    }, error=function(e) {
+      message("  [warn] Heatmap 生成をスキップ: ", conditionMessage(e))
+      NULL
+    })
     # ggsave(file.path(sub_od, "heatmap_top5.png"), hm, width=12, height=10)
 
     # 要望②: Average Heatmap（クラスタ平均）

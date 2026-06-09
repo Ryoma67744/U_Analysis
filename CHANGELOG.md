@@ -12,6 +12,26 @@
 
 ---
 
+## 2026-06-09_ver4.35
+
+### 修正: ヒートマップ生成（DoHeatmap）で scale.data が無く解析が halt する不具合
+ver4.34 でマーカー OOM を解消し、解析はマーカー（全クラスタ）まで到達するようになったが、その後の
+**`DoHeatmap`（ヒートマップ生成）で停止**していた（`No requested features found in the scale.data
+layer for the Spatial assay` → Execution halted）。
+
+- **原因**：`DoHeatmap` は `scale.data` 層を使うが、その層が空だった。slim RDS は容量削減のため
+  `scale.data` を捨てて保存する（→ RESUME 時に空）。さらに ver4.32 のメモリ対策 `diet_seurat_safe`
+  （PCA 後に scale.data 解放）により**新規実行でも空**になる。tryCatch 無しのため失敗で解析全体が halt。
+- **修正（TIMS `260422_..._slim.R`）**：DoHeatmap 直前で、サブセット（最大1000細胞）に対し
+  **対象遺伝子（上位マーカーのみ）を `ScaleData` し直して** scale.data を復元（軽量・結果不変）。さらに
+  ヒートマップは出力必須でないため **tryCatch で握りつぶし**、失敗してもスキップして解析を継続。
+  `run_downstream_analysis` は Harmony/RPCA 両方で共有のため 1 箇所で両方に効く。
+- **修正（DESI `260422_..._v14.R`、3箇所）**：各 DoHeatmap 直前に同様の `ScaleData(features=…)` を追加し、
+  RESUME 等で scale.data が空でも描画できるように補完。
+- ver4.32 の diet（メモリ削減）は維持し、scale.data はヒートマップ用に**必要分だけ復元**する方針。
+
+---
+
 ## 2026-06-09_ver4.34
 
 ### 修正: 大規模解析が FindAllMarkers（マーカー検出）で OOM 強制終了する不具合
