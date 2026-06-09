@@ -15,8 +15,20 @@
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pandas as pd
+
+
+def parse_plotly_path(path_str):
+    """Plotly drawclosedpath の SVG パス文字列（例 "M10,20L30,40L15,60Z"）から
+    頂点列 [(x,y), ...] を抽出する。"""
+    if not path_str:
+        return []
+    nums = re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", str(path_str))
+    vals = [float(n) for n in nums]
+    return [(vals[i], vals[i + 1]) for i in range(0, len(vals) - 1, 2)]
 
 
 # ---------------------------------------------------------------------------

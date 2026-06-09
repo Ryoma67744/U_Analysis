@@ -133,3 +133,12 @@ def test_build_region_cluster_export_empty_when_no_region():
     df = pd.DataFrame({"CellID": ["c1"], "region": [None], "Cluster": ["1"]})
     expr = pd.DataFrame({"CellID": ["c1"], "m/z 1": [1.0]})
     assert hn.build_region_cluster_export(df, expr).empty
+
+
+def test_parse_plotly_path():
+    pts = hn.parse_plotly_path("M100,200L150,250L120,300Z")
+    assert pts == [(100.0, 200.0), (150.0, 250.0), (120.0, 300.0)]
+    assert hn.parse_plotly_path("") == []
+    # 実描画に近い（小数・スペース混在）
+    pts2 = hn.parse_plotly_path("M 10.5,20.0 L30,40.25 L5,6 Z")
+    assert pts2 == [(10.5, 20.0), (30.0, 40.25), (5.0, 6.0)]
