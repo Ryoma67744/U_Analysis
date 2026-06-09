@@ -12,6 +12,25 @@
 
 ---
 
+## 2026-06-06_ver4.26
+
+### 新機能（フェーズ1）: 解剖×クラスタ（H&E オーバーレイ）タブ
+UMAP クラスタの**解剖学的局在**を判断し、将来 **MetaboAnalyst** へ「領域×クラスタ」単位で
+データを渡すための新タブを追加。インタラクティブ解析で読込済みの `plot_data`（spot ごとに
+空間座標・クラスタ・UMAP が同居。実データで 1:1 対応を検証済み）を再利用する。
+
+- **新規 `services/hne_overlay.py`（純ロジック・テスト済み）**：ランドマーク→アフィン位置合わせ
+  （`estimate_affine`/`apply_affine`/`invert_affine`）、ベクトル化点-内包判定（`points_in_polygon`、
+  matplotlib/shapely 非依存）、領域割当（`assign_regions`、NA 空間は除外）、領域×クラスタ集計
+  （`region_cluster_counts`）、MetaboAnalyst 用エクスポート（`build_region_cluster_export`、
+  region×cluster 群平均・化合物名優先）。`tests/test_hne_overlay.py`。
+- **フェーズ1 UI**：新タブ「解剖×クラスタ (H&E)」（`layouts/hne_overlay_tab.py` /
+  `callbacks/hne_overlay_callbacks.py`、`main_layout.py`・`main.py` に登録）。個体(Sample)選択／
+  TIC 空間表示（TotalCount 濃淡）／H&E 画像アップロード(`dcc.Upload`)・表示／不透明度。
+- 続くフェーズで、対応点による位置合わせ・ポリゴン領域描画・領域×クラスタ集計表・エクスポートを追加予定。
+
+---
+
 ## 2026-06-06_ver4.25
 
 ### 改善: 領域アノテーション重複エラーのメッセージを具体化
