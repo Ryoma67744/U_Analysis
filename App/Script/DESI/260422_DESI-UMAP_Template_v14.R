@@ -2250,6 +2250,7 @@ if (length(seu_list) == 1) {
       sampled_cells <- c(sampled_cells, cc)
     }
     if (length(sampled_cells) > 1) {
+      seu_single <- ScaleData(seu_single, features = top_genes, assay = "Spatial", verbose = FALSE)  # slim RDS/diet で空の scale.data を補完（DoHeatmap 用）
       heatmap1 <- DoHeatmap(subset(seu_single, cells = sampled_cells), features = top_genes, group.by = "ident", assay = "Spatial") +
         scale_fill_gradientn(colors = c("blue", "white", "red")) + ggtitle("Top 5 Markers")
       
@@ -2525,6 +2526,7 @@ if (length(seu_list) == 1) {
         sampled_cells <- c(sampled_cells, cc)
       }
       if (length(sampled_cells) > 0) {
+        seu_harmony <- ScaleData(seu_harmony, features = top_genes_harmony, assay = assay_hm_harmony, verbose = FALSE)  # slim RDS/diet で空の scale.data を補完（DoHeatmap 用）
         heatmap_harmony <- DoHeatmap(subset(seu_harmony, cells = sampled_cells), features = top_genes_harmony, group.by = "ident", assay = assay_hm_harmony) +
           scale_fill_gradientn(colors = c("blue", "white", "red")) + ggtitle("Top 5 Markers (Harmony)")
         
@@ -2731,6 +2733,7 @@ dims_use_rpca <- get_safe_dims_for_rpca(seu_list_pca, max_dims = 30, reduction =
         sampled_cells <- c(sampled_cells, cc)
       }
       if (length(sampled_cells) > 0) {
+        seu_rpca <- ScaleData(seu_rpca, features = top_genes, assay = "integrated", verbose = FALSE)  # slim RDS/diet で空の scale.data を補完（DoHeatmap 用）
         heatmap1 <- DoHeatmap(subset(seu_rpca, cells = sampled_cells), features = top_genes, group.by = "ident", assay = "integrated") +
           scale_fill_gradientn(colors = c("blue", "white", "red")) + ggtitle("Top 5 Markers")
 
