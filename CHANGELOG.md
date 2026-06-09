@@ -12,6 +12,24 @@
 
 ---
 
+## 2026-06-09_ver4.32
+
+### 修正: 大規模解析(203k spot)が PCA で OOM 強制終了する不具合（メモリ対策）
+TIMS UMAP 解析が「Centering and scaling data matrix」直後（RunPCA）で**メモリ不足により強制終了
+（OOM kill）**していた（ログが無言で途切れ status=error）。16GBホスト・12GBコンテナで、密な MSI
+データ（203,078 spot × 約2,700 m/z）の counts/data/scale.data が同時常駐し ~12GB を超えるのが原因。
+
+- **メモリ退避（docker-compose.yml）**：`memswap_limit: 40g` を追加。`mem_limit` 12g を超えた分を
+  **ホストスワップ（32GB）へ退避**できるようにし、PCA/UMAP の一時スパイクで kill されないようにした。
+- **R ピークメモリ削減（`260422_..._slim.R`）**：Harmony/RPCA 各パスで **RunPCA 直後に
+  `diet_seurat_safe()` で `scale.data` を解放**（PCA 後は不要）。counts/data/reductions は保持し、
+  失敗時は原本を返す既存ヘルパーを再利用するため**結果は不変・安全**。後続の重い UMAP/クラスタリング
+  （203k cell）のメモリを下げる。
+- 補足：`ScaleData` は既定で可変 feature のみを対象にするため、「ScaleData を可変 feature に限定」は
+  本データでは no-op（適用せず）。実効のある上記2点を採用。
+
+---
+
 ## 2026-06-09_ver4.31
 
 ### 修正: SCiLS peak-list の Name 内 `;` で化合物注釈が丸ごと欠落する不具合
