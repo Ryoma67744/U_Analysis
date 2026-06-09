@@ -1536,11 +1536,11 @@ if (exists("RESUME_FROM_RDS", envir = .GlobalEnv) && isTRUE(get("RESUME_FROM_RDS
 }
 
 if (is.null(deg)) {
-  # ---- 並列化開始: FindAllMarkers用 ----
-  plan(multisession, workers = min(4, max(1, parallel::detectCores(logical = FALSE) - 1)))
-  deg <- FindAllMarkers(obj, only.pos=FALSE, min.pct=DEG_MIN_PCT_VAL, logfc.threshold=DEG_LOGFC_TH_VAL, test.use="wilcox")
-  # ---- 並列化終了: メモリ解放 ----
+  # FindAllMarkers は逐次実行（presto 導入済みで Wilcoxon は高速）。
+  # 旧実装の multisession 4 ワーカーは各々 203k spot のオブジェクトを丸ごとコピーし、
+  # メモリ爆発で OOM の原因になっていたため廃止（マーカーの結果はワーカー数に依らず不変）。
   plan(sequential)
+  deg <- FindAllMarkers(obj, only.pos=FALSE, min.pct=DEG_MIN_PCT_VAL, logfc.threshold=DEG_LOGFC_TH_VAL, test.use="wilcox")
   }
   # BH/FDR補正に置換（Seuratデフォルトの Bonferroni は探索的解析に保守的すぎるため）
   deg$p_val_adj <- p.adjust(deg$p_val, method = "BH")
@@ -2100,11 +2100,13 @@ if (!step2_done) {
   for (cfg in HARMONY_RETRY_GRID) {
     ok <- tryCatch({ seu_harmony <- run_pipeline(TRUE, cfg); TRUE }, error=function(e) FALSE)
     if(ok) { REDUCTION_USED <- "harmony"; break }
+    gc()  # 失敗試行の中間オブジェクトを解放してから次の nfeatures へ（常駐メモリ削減）
   }
   if(is.null(seu_harmony)) {
     for (cfg in PCA_RETRY_GRID) {
       ok <- tryCatch({ seu_harmony <- run_pipeline(FALSE, cfg); TRUE }, error=function(e) FALSE)
       if(ok) { REDUCTION_USED <- "pca"; break }
+      gc()  # 失敗試行の中間オブジェクトを解放（常駐メモリ削減）
     }
   }
   if(is.null(seu_harmony)) stop("All pipelines failed.")
@@ -2175,6 +2177,7 @@ if (!step3_done) {
           TRUE
         }, error=function(e) FALSE)
         if(ok) break
+        gc()  # 失敗試行の中間オブジェクトを解放してから次の nfeatures へ（常駐メモリ削減）
       }
     }
   }

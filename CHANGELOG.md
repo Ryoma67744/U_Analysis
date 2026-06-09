@@ -12,6 +12,24 @@
 
 ---
 
+## 2026-06-09_ver4.34
+
+### 修正: 大規模解析が FindAllMarkers（マーカー検出）で OOM 強制終了する不具合
+ver4.32 で PCA 段の OOM を解消した結果、解析は PCA/Harmony/UMAP/クラスタリングまで通過するように
+なったが、その後の **FindAllMarkers（マーカー検出）で OOM kill** されていた（ログが「Calculating
+cluster 3」で無言で途切れ、R の `max used` が 23GB）。
+
+- **原因**：FindAllMarkers を `plan(multisession, workers=4)` で実行しており、**4 ワーカーが各々
+  203k spot の Seurat オブジェクトを丸ごとコピー**してメモリが爆発、swap 込み上限(40GB)を超えて
+  kill されていた。
+- **修正**：FindAllMarkers を**逐次実行（`plan(sequential)`）**に変更。presto 導入済みのため逐次でも
+  高速で、**マーカーの結果はワーカー数に依らず不変**。TIMS（`260422_..._slim.R`）と DESI
+  （`260422_..._v14.R`、3 箇所）の両方を修正。
+- **追加**：Harmony / PCA / RPCA のリトライループに `gc()` を入れ、失敗試行の中間オブジェクトを解放
+  して常駐メモリを下げる（リトライ時のメモリ累積を抑制）。
+
+---
+
 ## 2026-06-09_ver4.33
 
 ### 改善: 解析・エクスポートの高速化（結果不変）

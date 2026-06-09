@@ -2222,7 +2222,7 @@ if (length(seu_list) == 1) {
   # DEG & Heatmap
   cat("DEG計算中...\n")
   # ---- 並列化開始: FindAllMarkers用 ----
-  plan(multisession, workers = min(4, max(1, parallel::detectCores(logical = FALSE) - 1)))
+  plan(sequential)  # presto 導入済みのため逐次（multisession の 4 ワーカーが各々データを丸ごとコピーし OOM するため廃止）
   deg_markers <- FindAllMarkers(seu_single, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "wilcox")
   # ---- 並列化終了: メモリ解放 ----
   plan(sequential)
@@ -2496,7 +2496,7 @@ if (length(seu_list) == 1) {
   })
   
   # ---- 並列化開始: FindAllMarkers用 ----
-  plan(multisession, workers = min(4, max(1, parallel::detectCores(logical = FALSE) - 1)))
+  plan(sequential)  # presto 導入済みのため逐次（multisession の 4 ワーカーが各々データを丸ごとコピーし OOM するため廃止）
   deg_markers_harmony <- tryCatch({
     FindAllMarkers(seu_harmony, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "wilcox")
   }, error = function(e) {
@@ -2696,7 +2696,7 @@ dims_use_rpca <- get_safe_dims_for_rpca(seu_list_pca, max_dims = 30, reduction =
   # ver3.8: Harmony と同じ tryCatch + NULL チェックパターンを採用。
   # FindAllMarkers が失敗しても解析全体が abort しないようにする。
   # ---- 並列化開始: FindAllMarkers用 ----
-  plan(multisession, workers = min(4, max(1, parallel::detectCores(logical = FALSE) - 1)))
+  plan(sequential)  # presto 導入済みのため逐次（multisession の 4 ワーカーが各々データを丸ごとコピーし OOM するため廃止）
   deg_markers <- tryCatch({
     FindAllMarkers(seu_rpca, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "wilcox")
   }, error = function(e) {
