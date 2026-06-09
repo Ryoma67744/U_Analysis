@@ -288,7 +288,10 @@ def hne_tic_figure(sample, lm, affine, polys, mode, rotation, rds_path):
                       colorscale="Greys", showscale=False)
     else:
         marker = dict(size=3, symbol="square", color="#555")
-    fig = go.Figure(go.Scattergl(x=x, y=y, mode="markers", marker=marker, hoverinfo="skip",
+    # 主トレース（TIC）。hoverinfo="skip" は Plotly でクリック/ホバーイベントを
+    # 抑止してしまう（対応点クリックが拾えなくなる）ため "none" にする
+    # （ラベルは出さずイベントだけ発火。インタラクティブ解析の clickable トレースと同方針）。
+    fig = go.Figure(go.Scattergl(x=x, y=y, mode="markers", marker=marker, hoverinfo="none",
                                  name="TIC"))
     # 対応点（TIC 側）
     tic_pts = (lm or {}).get("tic", [])
