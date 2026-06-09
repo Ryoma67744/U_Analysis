@@ -90,6 +90,22 @@ def test_transform_polygons():
     assert np.allclose(out[0]["vertices"], [[1, -1], [3, -1], [3, 1]])
 
 
+def test_committed_polygon_store_format_flows_through_assignment():
+    """確定ポリゴンの store 形 [{"name","vertices"}] が transform→assign を通り、名前が割当に出る。
+
+    クリックで頂点配置 → 確定すると hne_polygons_store に {"name","vertices"} で積まれる。
+    その形のまま transform_polygons / assign_regions に渡せることを担保する。
+    """
+    M = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])  # 恒等（H&E画素=MSI座標とみなす）
+    polys = [{"name": "脳", "vertices": [[0, 0], [10, 0], [10, 10], [0, 10]]}]
+    polys_msi = hn.transform_polygons(polys, M)
+    assert polys_msi[0]["name"] == "脳"  # 変換後も名前が保持される
+    df = pd.DataFrame({"SpatialX": [5.0, 100.0], "SpatialY": [5.0, 100.0]})
+    reg = hn.assign_regions(df, polys_msi)
+    assert reg.iloc[0] == "脳"     # (5,5) は領域内
+    assert reg.iloc[1] is None     # (100,100) は領域外
+
+
 # --- 領域×クラスタ集計 ---
 def test_region_cluster_counts():
     df = pd.DataFrame({

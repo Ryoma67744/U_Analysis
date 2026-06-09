@@ -60,6 +60,10 @@ services:
       retries: 3
       start_period: 60s
     mem_limit: 12g
+    # mem_limit(物理RAM)を超えた分はホストスワップへ退避し OOM kill を回避する。
+    # 16GBホスト＋32GBスワップ運用で、PCA/UMAP の一時的なメモリスパイクを吸収する。
+    # （swap=40-12=28GB まで利用可。ホストに 32GB swap がある前提）
+    memswap_limit: 40g
     cpus: '6'
 
 volumes:

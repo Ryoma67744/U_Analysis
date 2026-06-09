@@ -2082,6 +2082,9 @@ if (!step2_done) {
     s <- FindVariableFeatures(s, nfeatures = cfg$n_var_features)
     s <- ScaleData(s)
     s <- RunPCA(s, npcs = cfg$max_pcs)
+    # scale.data は PCA 後の Harmony/UMAP/クラスタリングでは不要 → 解放してピークメモリ削減。
+    # diet_seurat_safe は counts/data/reductions を保持し、失敗時は原本を返す（結果不変・安全）。
+    s <- diet_seurat_safe(s); gc()
     if(use_harmony) {
       s <- RunHarmony(s, group.by.vars=group_var)
       s <- RunUMAP(s, reduction="harmony", dims=1:cfg$umap_dims)
@@ -2165,6 +2168,7 @@ if (!step3_done) {
           DefaultAssay(seu_rpca) <- "integrated"
           seu_rpca <- ScaleData(seu_rpca)
           seu_rpca <- RunPCA(seu_rpca)
+          seu_rpca <- diet_seurat_safe(seu_rpca); gc()  # scale.data 解放（PCA後は不要・結果不変）
           seu_rpca <- RunUMAP(seu_rpca, reduction = "pca", dims = 1:30)
           seu_rpca <- FindNeighbors(seu_rpca, reduction = "pca", dims = 1:30)
           seu_rpca <- FindClusters(seu_rpca, resolution = CLUSTER_RESOLUTION, algorithm = 4)

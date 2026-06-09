@@ -83,8 +83,18 @@ def create_hne_overlay_tab():
 
                 html.Hr(className="my-2"),
                 dbc.Label("② 領域（ポリゴン）", className="small fw-bold"),
-                html.Div("「領域を描く」モードで H&E 上を多角形で囲み、下表で名前を付ける。",
+                html.Div("「領域を描く（ポリゴン）」モードで H&E 上をクリックして頂点を順に置き、"
+                         "「領域を確定」で閉じます。下表で名前変更・行削除ができます。",
                          className="small text-muted"),
+                html.Div(id="hne_polygon_draft_info", className="small mt-1"),
+                dbc.ButtonGroup([
+                    dbc.Button("頂点を取り消し", id="hne_polygon_undo", size="sm",
+                               color="outline-secondary"),
+                    dbc.Button("下書きクリア", id="hne_polygon_clear_draft", size="sm",
+                               color="outline-secondary"),
+                    dbc.Button("領域を確定", id="hne_polygon_commit", size="sm",
+                               color="outline-primary"),
+                ], className="mt-1 w-100"),
                 dash_table.DataTable(
                     id="hne_polygon_table",
                     columns=[{"name": "#", "id": "idx", "editable": False},
@@ -92,7 +102,7 @@ def create_hne_overlay_tab():
                              {"name": "頂点数", "id": "nv", "editable": False}],
                     data=[], editable=True, row_deletable=True,
                     style_cell={"fontSize": "0.8rem", "padding": "2px"},
-                    style_table={"maxHeight": "160px", "overflowY": "auto"},
+                    style_table={"maxHeight": "160px", "overflowY": "auto", "marginTop": "6px"},
                 ),
                 dbc.Button("③ 領域を spot に割当 → 集計", id="hne_assign_btn",
                            size="sm", color="primary", className="mt-2 w-100"),
@@ -116,8 +126,7 @@ def create_hne_overlay_tab():
                         html.Div("H&E", className="small fw-bold text-center"),
                         dcc.Loading(dcc.Graph(
                             id="hne_image_graph", style={"height": "60vh"},
-                            config={"scrollZoom": True, "displaylogo": False,
-                                    "modeBarButtonsToAdd": ["drawclosedpath", "eraseshape"]})),
+                            config={"scrollZoom": True, "displaylogo": False})),
                     ]),
                 ]),
                 dcc.Loading(html.Div(id="hne_result_area", className="mt-2")),
@@ -131,5 +140,6 @@ def create_hne_overlay_tab():
                   data={"angle": 0, "flip_h": False, "flip_v": False}),
         dcc.Store(id="hne_affine_store"),                        # {"M": [[...],[...]], "rms": float}
         dcc.Store(id="hne_polygons_store", data=[]),             # [{name, vertices(px)}]
+        dcc.Store(id="hne_polygon_draft_store", data=[]),        # 下書き頂点 [[x,y],...]
         dcc.Download(id="hne_export_download"),
     ])

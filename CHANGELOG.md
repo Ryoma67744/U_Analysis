@@ -12,6 +12,75 @@
 
 ---
 
+## 2026-06-09_ver4.32
+
+### 修正: 大規模解析(203k spot)が PCA で OOM 強制終了する不具合（メモリ対策）
+TIMS UMAP 解析が「Centering and scaling data matrix」直後（RunPCA）で**メモリ不足により強制終了
+（OOM kill）**していた（ログが無言で途切れ status=error）。16GBホスト・12GBコンテナで、密な MSI
+データ（203,078 spot × 約2,700 m/z）の counts/data/scale.data が同時常駐し ~12GB を超えるのが原因。
+
+- **メモリ退避（docker-compose.yml）**：`memswap_limit: 40g` を追加。`mem_limit` 12g を超えた分を
+  **ホストスワップ（32GB）へ退避**できるようにし、PCA/UMAP の一時スパイクで kill されないようにした。
+- **R ピークメモリ削減（`260422_..._slim.R`）**：Harmony/RPCA 各パスで **RunPCA 直後に
+  `diet_seurat_safe()` で `scale.data` を解放**（PCA 後は不要）。counts/data/reductions は保持し、
+  失敗時は原本を返す既存ヘルパーを再利用するため**結果は不変・安全**。後続の重い UMAP/クラスタリング
+  （203k cell）のメモリを下げる。
+- 補足：`ScaleData` は既定で可変 feature のみを対象にするため、「ScaleData を可変 feature に限定」は
+  本データでは no-op（適用せず）。実効のある上記2点を採用。
+
+---
+
+## 2026-06-09_ver4.31
+
+### 修正: SCiLS peak-list の Name 内 `;` で化合物注釈が丸ごと欠落する不具合
+SCiLS の Feature list（peak-list）を Intensity/Spot と同梱して変換しても、化合物名・分子式などの
+注釈が一切付かないことがあった。
+
+- 原因：peak-list の `Name` 欄は `adduct_family=mass_only;n=2;adducts=[M-H]-,[M]-;peaks=12,47` の
+  ように**区切り文字 `;` をフィールド内部に含む**（未クオート）。`_read_peaklist`
+  （`scils_converter.py`）の `pd.read_csv(sep=";")` が当該行で列数不一致 → ParserError。これが
+  呼び出し側の `try/except` で握りつぶされ、**変換は完走するが注釈なし**（数値列名のみ・sidecar
+  未出力）になっていた。実ファイルでは 1536 feature 中 269 行が該当し、全注釈が落ちていた。
+- 修正：`_read_peaklist` を**ヘッダ列数ベースの手動パース**に変更。「Name より後ろの列数は固定」
+  という構造を使い、超過した区切りトークンを Name に再結合して原文を復元（区切りを内部に含み得る
+  のは Name 列のみのため安全）。`;`/`,` どちらの区切りでも動作し、既存のカンマ peak-list は不変。
+- テスト：`_read_peaklist` の単体（`;`＋adduct_family 行の復元）と、`;` 区切り peak-list での
+  変換 E2E（`n_annotated`・sidecar 生成）を追加。
+
+---
+
+## 2026-06-09_ver4.30
+
+### 変更: H&E のポリゴン描画を「クリックで頂点配置」方式に
+ポリゴンモードで H&E をクリックしても反応しなかった。原因は Plotly の `drawclosedpath`（ドラッグ
+でなぞるフリーハンド）を使っており、クリックでは頂点を置けない仕様だったため（コードのバグでは
+ない）。解剖領域を正確に囲めるよう、対応点モードと同じクリック操作に変更した。
+
+- **操作**：ポリゴンモードで H&E をクリック → 頂点を順に配置（下書きを線＋マーカーで表示）→
+  「領域を確定」で閉じて登録 → 続けて次の領域を描ける。「頂点を取り消し」「下書きクリア」も追加。
+  dragmode を `pan` にし、クリック=頂点・ドラッグ=パン・ホイール=ズームで共存。
+- **再利用**：対応点 `hne_capture_landmark` と同じ `clickData` 累積パターン。確定後の判定・集計・
+  出力（`transform_polygons`/`assign_regions`/`build_region_cluster_export`）は変更なし。
+- **領域の管理**：領域名を `hne_polygons_store`（`{"name","vertices"}`）に保持するよう変更し、表での
+  **改名・行削除がインデックスずれなく**反映されるように。旧フリーハンド取り込み（relayout shapes）と
+  `_named_polygons` は廃止。
+- テスト：確定ポリゴンの store 形が変換→割当を通り名前が保持されることを単体追加。
+
+---
+
+## 2026-06-09_ver4.29
+
+### 修正: H&E タブで TIC をクリックしても対応点が登録されない不具合
+TIC 側に対応点を打っても反応せず（TIC 0 のまま、× も出ない）位置合わせができなかった。
+
+- 原因：TIC 主トレースに `hoverinfo="skip"` を指定していたため。Plotly では `skip` は
+  **クリック/ホバーイベントを発火させない**（`none` はラベルを出さずイベントは発火する）。
+  H&E 側は `go.Image` でこの指定が無いため反応していた（＝非対称な挙動だった）。
+- 修正：TIC 主トレースを `hoverinfo="none"` に変更（インタラクティブ解析の clickable
+  トレースと同方針）。これで TIC クリックが拾え、対応点が登録され、TIC 上にも × が表示される。
+
+---
+
 ## 2026-06-09_ver4.28
 
 ### 修正: H&E 画像が表示されない不具合 ＋ 機能: MSI(TIC) 画像の回転
