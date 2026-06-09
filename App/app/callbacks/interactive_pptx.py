@@ -480,14 +480,14 @@ def _build_heatmap_for_pptx(heatmap_fig, deg_data, df, cache_dir, top_n,
         if not genes:
             return heatmap_fig
 
-        # 利用可能な遺伝子のみ読み込み
-        available = []
-        for g in genes:
-            try:
-                pd.read_parquet(expr_path, columns=[g])
-                available.append(g)
-            except Exception:
-                continue
+        # 利用可能な遺伝子を Parquet schema から一括判定（I/O 1 回で完結）。
+        # 旧実装は存在確認のため feature 数ぶん parquet を開いて捨てていた（無駄読み）。
+        import pyarrow.parquet as pq
+        try:
+            schema_names = set(pq.read_schema(expr_path).names)
+        except Exception:
+            schema_names = set()
+        available = [g for g in genes if g in schema_names]
         if not available:
             return heatmap_fig
 

@@ -12,6 +12,24 @@
 
 ---
 
+## 2026-06-09_ver4.33
+
+### 改善: 解析・エクスポートの高速化（結果不変）
+律速調査（解析パイプライン全体）の結果から、結果を変えずに効く安全な高速化を実施。
+
+- **行列計算のスレッド数（P2）**：`docker-compose.yml` の `environment` に `OPENBLAS_NUM_THREADS=5` /
+  `OMP_NUM_THREADS=5` / `MKL_NUM_THREADS=5` を追加。`analysis_runner.py` は未設定時 4 を既定にしていた
+  ため、PCA/Harmony/RPCA が `cpus:'6'` に対し 4 コアしか使えていなかった。5 に引き上げ（UI 応答に 1 コア
+  残す折衷。最速にしたいなら 6、UI 優先なら 4）。
+- **PPTX heatmap の無駄な parquet 読み解消（P3）**：`interactive_pptx.py` の片方の heatmap 関数が、
+  feature の存在確認のために feature 数ぶん `pd.read_parquet(columns=[g])` を実行して結果を捨てていた。
+  もう一方と同様 `pq.read_schema().names` の **1 回の列名チェック**に置換（結果同一、エクスポート短縮）。
+- **補足**：`presto`（FindAllMarkers の高速 Wilcoxon backend）は既に `install_r_packages.R`＋`Dockerfile`
+  で導入設定済み（要サーバ確認）。`expression_matrix` の全読み箇所はスペクトル平均/全 feature 出力に
+  全列が必要なため、列サブセット化は見送り（誤りを避けるため）。
+
+---
+
 ## 2026-06-09_ver4.32
 
 ### 修正: 大規模解析(203k spot)が PCA で OOM 強制終了する不具合（メモリ対策）
