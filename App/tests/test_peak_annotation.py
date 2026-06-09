@@ -218,6 +218,44 @@ def test_convert_without_peaklist_keeps_numeric_columns(tmp_path):
     assert "419.257200" in names and "885.549400" in names
 
 
+def test_convert_semicolon_peaklist_with_adduct_family(tmp_path):
+    """';' 区切り peak-list で Name 内に adduct_family の ';' を含んでも注釈が付く（回帰防止）。
+
+    修正前は _read_peaklist が ParserError → try/except で注釈なし
+    （n_annotated=0・sidecar 未出力）になっていた。
+    """
+    import pandas as pd
+    from pathlib import Path
+    from app.services.scils_converter import convert_scils_to_parquet
+
+    folder = tmp_path / "data"
+    folder.mkdir()
+    _write(folder / "s_Intensity.csv",
+           "m/z,Spot 1,Spot 2,Spot 3,Spot 4,Spot 5\n"
+           "419.2572,10,20,30,40,50\n"
+           "885.5494,12,22,32,42,52\n")
+    _write(folder / "s_Spot.csv",
+           "SpotIndex,X,Y\n1,0,0\n2,1,0\n3,2,0\n4,0,1\n5,1,1\n")
+    # ';' 区切り Feature list。885 行は adduct_family に ';' を含む。
+    _write(folder / "s_peaklist.csv",
+           "m/z;Interval Width;Color;Name;Int1\n"
+           "419.2572;0.01;#fff;ADP | inhouse_or_list | [M-H]- | 0.30ppm | formula=C10H15N5O10P2 | SMILES=NA;5\n"
+           "885.5494;0.01;#fff;PI 38:4 | PI | [M-H]- | 2.13ppm | formula=C47H83O13P | "
+           "adduct_family=mass_only;n=2;adducts=[M-H]-,[M]-;peaks=1,2 | image_distribution=no;9\n")
+
+    out = tmp_path / "out.parquet"
+    res = convert_scils_to_parquet(str(folder), str(out), organize=False)
+
+    assert res.has_peak_list is True
+    assert res.n_annotated == 2
+    assert res.sidecar_path and Path(res.sidecar_path).exists()
+
+    side = pd.read_parquet(res.sidecar_path)
+    assert side.loc[side["mz"] == 885.5494, "compound"].iloc[0] == "PI 38:4"
+    assert (side.loc[side["mz"] == 885.5494, "adduct_family"].iloc[0]
+            == "mass_only;n=2;adducts=[M-H]-,[M]-;peaks=1,2")
+
+
 def test_read_raw_mz_spectrum_handles_embedded_columns(tmp_path):
     """埋め込み列名 + mz_sorted メタの parquet から m/z 平均スペクトルを復元できる。"""
     import pyarrow as pa

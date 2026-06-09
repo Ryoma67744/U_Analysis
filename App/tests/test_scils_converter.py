@@ -386,3 +386,72 @@ class TestAnnotationLabel:
         p = tmp_path / fname
         p.write_text("dummy")
         assert sc.annotation_label_from_filename(p) == expected
+
+
+# ---------------------------------------------------------------------------
+# _read_peaklist: Name 内に区切り文字 (';') を含む SCiLS Feature list の堅牢読み込み
+# ---------------------------------------------------------------------------
+
+class TestReadPeaklist:
+    def _write_feature_list(self, folder: Path, name: str) -> Path:
+        """`#` コメント + ';' 区切り + adduct_family(';' 内包) 行を持つ SCiLS Feature list。"""
+        folder.mkdir(parents=True, exist_ok=True)
+        text = (
+            "# Exported with SCiLS Lab\n"
+            "# Object type: Static feature list\n"
+            "m/z;Interval Width (+/- Da);Color;Name;Int1;Int2\n"
+            # 通常行（Name 内に ';' 無し）
+            "346.0547;0.004;#a6cee3;AMP | purine_nucleotide | [M-H]- | 1.88ppm | "
+            "formula=C10H14N5O7P | SMILES=NA;100;200\n"
+            # Name 内に adduct_family の ';' を含む行（超過トークン）
+            "887.5629;0.010;#ff83fa;PI 38:3 | PI | [M-H]- | 1.61ppm | formula=C47H85O13P | "
+            "SMILES=NA | adduct_family=mass_only_same_molecule;n=2;adducts=[M-H]-,[M]-;peaks=12,47 | "
+            "image_distribution=no;300;400\n"
+            # m/z が数値でない行（除外される）
+            "not_a_number;0.0;#000;junk;0;0\n"
+        )
+        path = folder / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_semicolon_in_name_is_recovered(self, tmp_path):
+        from app.services import peak_annotation as pann
+        p = self._write_feature_list(tmp_path, "feature_list.csv")
+        mz, names = sc._read_peaklist(p)
+
+        # 数値でない m/z 行は除外され、2 feature が読める
+        assert np.allclose(mz, [346.0547, 887.5629])
+        assert len(names) == 2
+
+        # 通常行の Name は欠けない
+        assert names[0].startswith("AMP | purine_nucleotide")
+        assert names[0].endswith("SMILES=NA")
+
+        # ';' を含む adduct_family が Name 内に原文復元され、後続の通常フィールドも保持
+        assert "adduct_family=mass_only_same_molecule;n=2;adducts=[M-H]-,[M]-;peaks=12,47" in names[1]
+        assert names[1].endswith("image_distribution=no")
+
+        # parse_scils_name に通すと adduct_family が ';' 込みで取得できる
+        rec = pann.parse_scils_name(names[1])
+        assert rec["compound"] == "PI 38:3"
+        assert rec["adduct"] == "[M-H]-"
+        assert rec["adduct_family"] == "mass_only_same_molecule;n=2;adducts=[M-H]-,[M]-;peaks=12,47"
+        assert rec["formula"] == "C47H85O13P"
+
+    def test_missing_name_column_raises(self, tmp_path):
+        p = tmp_path / "no_name.csv"
+        p.write_text("m/z;Color;Int1\n100.0;#fff;5\n", encoding="utf-8")
+        with pytest.raises(ValueError):
+            sc._read_peaklist(p)
+
+    def test_comma_delimited_name_last_column(self, tmp_path):
+        # カンマ区切りで Name が最終列。Name 内の ',' も吸収される（回帰防止）。
+        p = tmp_path / "comma.csv"
+        p.write_text(
+            "m/z,Color,Name\n"
+            "419.2572,#fff,ADP | [M-H]- | adducts=[M-H]-,[M]-\n",
+            encoding="utf-8",
+        )
+        mz, names = sc._read_peaklist(p)
+        assert np.allclose(mz, [419.2572])
+        assert names[0] == "ADP | [M-H]- | adducts=[M-H]-,[M]-"

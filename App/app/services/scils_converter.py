@@ -523,21 +523,44 @@ _PEAKLIST_MZ_TOL_DA = 0.01
 
 
 def _read_peaklist(path: Path):
-    """peak-list (Feature list) CSV から (m/z 配列, Name 配列) を返す。"""
-    import pandas as pd
+    """peak-list (Feature list) CSV から (m/z 配列, Name 配列) を返す。
+
+    SCiLS の `Name` 欄は `adduct_family=mass_only;n=2;adducts=[M-H]-,[M]-;peaks=12,47` のように
+    区切り文字 (`;`) をフィールド内部に含むことがある（未クオート）。素朴な `pd.read_csv` では
+    列数が合わず壊れるため、ヘッダ列数を基準に「Name より後ろの列数」を固定し、超過トークンを
+    Name へ再結合して原文を復元する。区切りを内部に含み得るのは Name 列のみ（m/z・Interval・
+    Color は数値/16進、Name 以降は強度数値）という構造に依拠するため、超過分は必ず Name に属する。
+    """
     headers, delim, skip = first_header_and_skipcount(path)
-    df = pd.read_csv(
-        path, sep=delim, skiprows=skip, header=0,
-        engine="c", encoding="utf-8", dtype=str, keep_default_na=False,
-    )
-    norm = [str(h).strip().lower().replace(" ", "") for h in df.columns]
+    norm = [str(h).strip().lower().replace(" ", "") for h in headers]
+    ncol = len(headers)
     mz_idx = next((i for i, c in enumerate(norm) if c in ("m/z", "mz", "m_z")), 0)
     name_idx = next((i for i, c in enumerate(norm) if c == "name"), None)
     if name_idx is None:
         raise ValueError(f"peak-list に Name 列がありません: {path.name}")
-    mz_vals = pd.to_numeric(df.iloc[:, mz_idx], errors="coerce")
-    mask = mz_vals.notna()
-    return mz_vals[mask].to_numpy(dtype=float), df.iloc[:, name_idx][mask].astype(str).tolist()
+    n_after_name = ncol - name_idx - 1   # Name より後ろの列数（各1トークン・区切り無し）
+
+    mz_list: list[float] = []
+    name_list: list[str] = []
+    with path.open("r", newline="", encoding="utf-8", errors="replace") as f:
+        for _ in range(skip + 1):        # `#` 行 + ヘッダ行を読み飛ばす
+            next(f, None)
+        for line in f:
+            line = line.rstrip("\r\n")
+            if not line:
+                continue
+            tok = line.split(delim)
+            if len(tok) < ncol:          # 列不足の壊れ行はスキップ
+                continue
+            try:
+                mz = float(tok[mz_idx])
+            except ValueError:
+                continue                 # m/z が数値でない行は除外（従来の NaN マスク相当）
+            # Name は name_idx から「後ろの固定列数」を残して再結合（内部の区切りを原文復元）
+            name = delim.join(tok[name_idx:len(tok) - n_after_name])
+            mz_list.append(mz)
+            name_list.append(name)
+    return np.asarray(mz_list, dtype=float), name_list
 
 
 def _ensure_unique_colnames(names: list[str]) -> list[str]:

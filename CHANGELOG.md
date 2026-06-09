@@ -12,6 +12,25 @@
 
 ---
 
+## 2026-06-09_ver4.31
+
+### 修正: SCiLS peak-list の Name 内 `;` で化合物注釈が丸ごと欠落する不具合
+SCiLS の Feature list（peak-list）を Intensity/Spot と同梱して変換しても、化合物名・分子式などの
+注釈が一切付かないことがあった。
+
+- 原因：peak-list の `Name` 欄は `adduct_family=mass_only;n=2;adducts=[M-H]-,[M]-;peaks=12,47` の
+  ように**区切り文字 `;` をフィールド内部に含む**（未クオート）。`_read_peaklist`
+  （`scils_converter.py`）の `pd.read_csv(sep=";")` が当該行で列数不一致 → ParserError。これが
+  呼び出し側の `try/except` で握りつぶされ、**変換は完走するが注釈なし**（数値列名のみ・sidecar
+  未出力）になっていた。実ファイルでは 1536 feature 中 269 行が該当し、全注釈が落ちていた。
+- 修正：`_read_peaklist` を**ヘッダ列数ベースの手動パース**に変更。「Name より後ろの列数は固定」
+  という構造を使い、超過した区切りトークンを Name に再結合して原文を復元（区切りを内部に含み得る
+  のは Name 列のみのため安全）。`;`/`,` どちらの区切りでも動作し、既存のカンマ peak-list は不変。
+- テスト：`_read_peaklist` の単体（`;`＋adduct_family 行の復元）と、`;` 区切り peak-list での
+  変換 E2E（`n_annotated`・sidecar 生成）を追加。
+
+---
+
 ## 2026-06-09_ver4.30
 
 ### 変更: H&E のポリゴン描画を「クリックで頂点配置」方式に
