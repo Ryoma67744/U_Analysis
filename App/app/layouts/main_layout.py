@@ -11,6 +11,7 @@ from app.layouts.settings_tab import create_settings_tab
 from app.layouts.results_tab import create_results_tab
 from app.layouts.history_tab import create_history_tab
 from app.layouts.interactive_tab import create_interactive_tab
+from app.layouts.hne_overlay_tab import create_hne_overlay_tab
 from app.layouts.file_browser_modal import create_file_browser_modal
 from app.layouts.scils_converter_modal import create_scils_converter_modal
 from app.layouts.env_settings_modal import create_env_settings_modal
@@ -349,6 +350,11 @@ def create_main_layout():
                                                     children=[
                                                         create_interactive_tab()
                                                     ],
+                                                ),
+                                                dbc.Tab(
+                                                    label="解剖×クラスタ (H&E)",
+                                                    tab_id="hne",
+                                                    children=[create_hne_overlay_tab()],
                                                 ),
                                                 dbc.Tab(
                                                     label="セッション履歴",
