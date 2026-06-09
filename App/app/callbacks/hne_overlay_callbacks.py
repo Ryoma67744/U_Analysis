@@ -7,8 +7,8 @@
 #
 # 位置合わせ: H&E を go.Image トレースとして描画 → clickData で画素座標を取得。
 #   TIC（散布）の clickData で MSI 座標を取得 → 対応点からアフィン推定（hne_overlay）。
-# ポリゴン: H&E 上で drawclosedpath → relayoutData['shapes'] を取り込み → アフィンで
-#   MSI 座標へ変換 → 点-内包判定で spot に領域割当。
+# ポリゴン: H&E 上をクリックして頂点を順に配置（下書き）→「領域を確定」で閉じて登録 →
+#   アフィンで MSI 座標へ変換 → 点-内包判定で spot に領域割当。
 # =============================================================================
 
 import base64
@@ -52,7 +52,8 @@ def _get_state(rds_path):
 
 
 def _dragmode(mode):
-    return {"landmark": "pan", "polygon": "drawclosedpath", "pan": "pan"}.get(mode, "pan")
+    # polygon もクリックで頂点を置くため pan（クリック=頂点 / ドラッグ=パン / ホイール=ズーム）
+    return {"landmark": "pan", "polygon": "pan", "pan": "pan"}.get(mode, "pan")
 
 
 def _sample_df(state, sample):
@@ -221,43 +222,107 @@ def hne_estimate_affine(lm):
 
 
 # ---------------------------------------------------------------------------
-# ポリゴン取り込み（H&E 上の drawclosedpath → relayoutData['shapes']）
+# ポリゴン下書き：H&E クリックで頂点を追加 / 取り消し（最後の1点）/ 下書きクリア
 # ---------------------------------------------------------------------------
 @callback(
-    Output("hne_polygons_store", "data"),
-    Input("hne_image_graph", "relayoutData"),
+    Output("hne_polygon_draft_store", "data"),
+    Input("hne_image_graph", "clickData"),
+    Input("hne_polygon_undo", "n_clicks"),
+    Input("hne_polygon_clear_draft", "n_clicks"),
+    State("hne_mode", "value"),
+    State("hne_polygon_draft_store", "data"),
+    prevent_initial_call=True,
+)
+def hne_polygon_draft(click, undo_n, clear_n, mode, draft):
+    trig = ctx.triggered_id
+    draft = list(draft or [])
+    if trig == "hne_polygon_clear_draft":
+        return []
+    if trig == "hne_polygon_undo":
+        return draft[:-1]
+    if trig == "hne_image_graph":
+        # ポリゴンモードの H&E クリックのみ頂点として採用
+        if mode != "polygon" or not (click and click.get("points")):
+            return no_update
+        p = click["points"][0]
+        return draft + [[p["x"], p["y"]]]
+    return no_update
+
+
+# ---------------------------------------------------------------------------
+# ポリゴン確定：下書き(>=3頂点) → 確定ポリゴンに追加（既定名）＋ 下書きを空に
+# ---------------------------------------------------------------------------
+@callback(
+    Output("hne_polygons_store", "data", allow_duplicate=True),
+    Output("hne_polygon_draft_store", "data", allow_duplicate=True),
+    Input("hne_polygon_commit", "n_clicks"),
+    State("hne_polygon_draft_store", "data"),
     State("hne_polygons_store", "data"),
     prevent_initial_call=True,
 )
-def hne_capture_polygons(relayout, store):
-    if not relayout or "shapes" not in relayout:
-        return no_update
-    polys = []
-    for sh in relayout["shapes"] or []:
-        if sh.get("type") == "path" and sh.get("path"):
-            verts = hn.parse_plotly_path(sh["path"])
-            if len(verts) >= 3:
-                polys.append({"vertices": verts})
-    return polys
+def hne_polygon_commit(n, draft, polys):
+    draft = list(draft or [])
+    if not n or len(draft) < 3:
+        return no_update, no_update
+    polys = list(polys or [])
+    polys.append({"name": f"領域{len(polys) + 1}",
+                  "vertices": [[float(v[0]), float(v[1])] for v in draft]})
+    return polys, []
 
 
 # ---------------------------------------------------------------------------
-# ポリゴン名テーブル同期（store → table、既存の編集名は idx で保持）
+# 下書き状態の表示
+# ---------------------------------------------------------------------------
+@callback(
+    Output("hne_polygon_draft_info", "children"),
+    Input("hne_polygon_draft_store", "data"),
+    prevent_initial_call=True,
+)
+def hne_polygon_draft_info(draft):
+    n = len(draft or [])
+    if n == 0:
+        return "下書き: 0 頂点（H&E をクリックして頂点を追加）"
+    if n < 3:
+        return f"下書き: {n} 頂点（あと {3 - n} 点で確定可）"
+    return f"下書き: {n} 頂点（「領域を確定」で閉じられます）"
+
+
+# ---------------------------------------------------------------------------
+# ポリゴン名テーブル同期（store → table。名前は store に保持）
 # ---------------------------------------------------------------------------
 @callback(
     Output("hne_polygon_table", "data"),
     Input("hne_polygons_store", "data"),
-    State("hne_polygon_table", "data"),
     prevent_initial_call=True,
 )
-def hne_sync_polygon_table(polys, table):
+def hne_sync_polygon_table(polys):
     polys = polys or []
-    prev = {int(r.get("idx", i)): r.get("name") for i, r in enumerate(table or [])}
-    rows = []
-    for i, p in enumerate(polys):
-        name = prev.get(i) or f"領域{i + 1}"
-        rows.append({"idx": i, "name": name, "nv": len(p.get("vertices", []))})
-    return rows
+    return [{"idx": i, "name": p.get("name") or f"領域{i + 1}",
+             "nv": len(p.get("vertices") or [])} for i, p in enumerate(polys)]
+
+
+# ---------------------------------------------------------------------------
+# 表編集（改名・行削除）→ store へ反映（store→table と循環するためループ防止に等価比較）
+# ---------------------------------------------------------------------------
+@callback(
+    Output("hne_polygons_store", "data"),
+    Input("hne_polygon_table", "data"),
+    State("hne_polygons_store", "data"),
+    prevent_initial_call=True,
+)
+def hne_polygon_table_to_store(rows, polys):
+    polys = polys or []
+    new = []
+    for r in rows or []:
+        i = int(r.get("idx", -1))
+        if 0 <= i < len(polys):          # 行の idx は現在の store 位置を指す
+            p = dict(polys[i])           # 頂点はそのまま、名前のみ表の値で更新
+            nm = (r.get("name") or "").strip()
+            p["name"] = nm or p.get("name") or f"領域{len(new) + 1}"
+            new.append(p)
+    if new == polys:                     # 変化なし（store→table 由来の再発火）→ 何もしない
+        return no_update
+    return new
 
 
 # ---------------------------------------------------------------------------
@@ -327,11 +392,12 @@ def hne_tic_figure(sample, lm, affine, polys, mode, rotation, rds_path):
     Input("hne_image_store", "data"),
     Input("hne_landmarks_store", "data"),
     Input("hne_polygons_store", "data"),
+    Input("hne_polygon_draft_store", "data"),
     Input("hne_opacity", "value"),
     Input("hne_mode", "value"),
     prevent_initial_call=True,
 )
-def hne_image_figure(img, lm, polys, opacity, mode):
+def hne_image_figure(img, lm, polys, draft, opacity, mode):
     if not img:
         return _empty_fig("H&E をアップロードしてください")
     w, h = img["width"], img["height"]
@@ -345,7 +411,15 @@ def hne_image_figure(img, lm, polys, opacity, mode):
                                  marker=dict(size=10, color="red", symbol="x"),
                                  text=[str(i + 1) for i in range(len(hx))],
                                  textposition="top center", hoverinfo="skip"))
-    # ポリゴンを shape として再注入（rebuild 後も保持）
+    # 下書きポリゴン（クリック中の頂点列）を線＋マーカーで表示
+    draft = draft or []
+    if draft:
+        dx = [v[0] for v in draft]; dy = [v[1] for v in draft]
+        fig.add_trace(go.Scatter(x=dx, y=dy, mode="lines+markers",
+                                 line=dict(color="orange", width=2),
+                                 marker=dict(size=7, color="orange"),
+                                 hoverinfo="skip", name="下書き"))
+    # 確定ポリゴンを shape として再注入（rebuild 後も保持）
     shapes = []
     for p in polys or []:
         v = p.get("vertices") or []
@@ -354,8 +428,7 @@ def hne_image_figure(img, lm, polys, opacity, mode):
             shapes.append(dict(type="path", path=path, line=dict(color="royalblue"),
                                fillcolor="rgba(65,105,225,0.2)"))
     fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), template="plotly_white",
-                      dragmode=_dragmode(mode), shapes=shapes, showlegend=False,
-                      newshape=dict(line=dict(color="royalblue")))
+                      dragmode=_dragmode(mode), shapes=shapes, showlegend=False)
     fig.update_xaxes(visible=False, range=[0, w])
     fig.update_yaxes(visible=False, range=[h, 0], scaleanchor="x", scaleratio=1)
     return fig
@@ -364,28 +437,17 @@ def hne_image_figure(img, lm, polys, opacity, mode):
 # ---------------------------------------------------------------------------
 # 領域割当 → 領域×クラスタ集計表
 # ---------------------------------------------------------------------------
-def _named_polygons(polys, table):
-    """geometry(store) と name(table) を idx で結合した polygon リスト（MSI 変換前）。"""
-    names = {int(r.get("idx", i)): (r.get("name") or f"領域{i+1}")
-             for i, r in enumerate(table or [])}
-    out = []
-    for i, p in enumerate(polys or []):
-        out.append({"name": names.get(i, f"領域{i+1}"), "vertices": p.get("vertices") or []})
-    return out
-
-
 @callback(
     Output("hne_result_area", "children"),
     Input("hne_assign_btn", "n_clicks"),
     State("hne_sample_select", "value"),
     State("hne_polygons_store", "data"),
-    State("hne_polygon_table", "data"),
     State("hne_affine_store", "data"),
     State("hne_rotation_store", "data"),
     State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
-def hne_assign_and_summarize(n, sample, polys, table, affine, rotation, rds_path):
+def hne_assign_and_summarize(n, sample, polys, affine, rotation, rds_path):
     if not n:
         return no_update
     if not affine or not affine.get("M"):
@@ -397,7 +459,7 @@ def hne_assign_and_summarize(n, sample, polys, table, affine, rotation, rds_path
     if d is None:
         return _alert("空間座標つきの個体を選択してください。", "warning")
     M = np.array(affine["M"], dtype=float)
-    polys_msi = hn.transform_polygons(_named_polygons(polys, table), M)
+    polys_msi = hn.transform_polygons(polys, M)
     # ポリゴン（アフィン後）は回転後フレーム → spot 座標も同じ回転をかけてから割当。
     dd = d.copy()
     dd["SpatialX"], dd["SpatialY"] = _apply_rotation(
@@ -433,14 +495,13 @@ def hne_assign_and_summarize(n, sample, polys, table, affine, rotation, rds_path
     Input("hne_export_btn", "n_clicks"),
     State("hne_sample_select", "value"),
     State("hne_polygons_store", "data"),
-    State("hne_polygon_table", "data"),
     State("hne_affine_store", "data"),
     State("hne_rotation_store", "data"),
     State("seurat_rds_path_store", "data"),
     State("seurat_cache_dir_store", "data"),
     prevent_initial_call=True,
 )
-def hne_export_csv(n, sample, polys, table, affine, rotation, rds_path, cache_dir_str):
+def hne_export_csv(n, sample, polys, affine, rotation, rds_path, cache_dir_str):
     if not n:
         return no_update, no_update
     if not (affine and affine.get("M") and polys):
@@ -451,7 +512,7 @@ def hne_export_csv(n, sample, polys, table, affine, rotation, rds_path, cache_di
         return no_update, "個体を選択してください。"
     try:
         M = np.array(affine["M"], dtype=float)
-        polys_msi = hn.transform_polygons(_named_polygons(polys, table), M)
+        polys_msi = hn.transform_polygons(polys, M)
         dd = d.copy()
         dd["SpatialX"], dd["SpatialY"] = _apply_rotation(
             dd["SpatialX"].to_numpy(float), dd["SpatialY"].to_numpy(float), rotation)
