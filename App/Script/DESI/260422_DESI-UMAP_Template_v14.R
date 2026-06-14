@@ -1657,7 +1657,14 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
   pre_masses <- pre_masses[nzchar(pre_masses)]
   post_masses <- post_masses[nzchar(post_masses)]
 
-  metabolite_names <- paste(pre_masses, post_masses, sep = "-")
+  # 特徴量名の構築:
+  #  - 従来形式 (4行ヘッダ): pre=Q1, post=Q3 → "Q1-Q3" (例 "146.1-102.0")
+  #  - 新形式 (1行ヘッダ・列名=化合物名): post(Q3)が空のため pre(化合物名)をそのまま使う
+  if (length(post_masses) == 0) {
+    metabolite_names <- pre_masses
+  } else {
+    metabolite_names <- paste(pre_masses, post_masses, sep = "-")
+  }
 
   # [P5] データ部分はfreadで一括高速読込
   data_df <- data.table::fread(file_path, sep = "\t", skip = 4,
