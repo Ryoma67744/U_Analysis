@@ -250,9 +250,8 @@ def update_desi_roi_selector(selected_samples, data_folder, desi_method):
     all_rois = []
 
     for sample in selected_samples:
+        # `.txt` が無くても read_desi_roi_list 側で Excel/CSV から自動変換して読む。
         file_path = Path(data_folder) / f"{sample}.txt"
-        if not file_path.is_file():
-            continue
         rois = read_desi_roi_list(str(file_path))
         if not rois:
             continue
