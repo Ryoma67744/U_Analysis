@@ -320,3 +320,82 @@ def test_old_format_not_reshaped(tmp_path):
     assert lines[0] == ""             # 先頭空行のまま
     assert "146.1216" in lines[3]     # 従来4行目(m/z)が化合物名化されず保持
     assert lines[4].split("\t")[0] == "1"   # データ先頭はそのまま
+
+
+# --- ver6.1: 新形式の .txt も組み替える (normalize_desi_txt) ----------------
+
+def _write_named_txt(folder, name, columns, data_rows, sep="\t"):
+    """新形式の .txt を書く（sep=タブ or カンマ）。"""
+    p = Path(folder) / name
+    with open(p, "w", encoding="utf-8", newline="") as f:
+        f.write(sep.join(str(c) for c in columns) + "\n")
+        for r in data_rows:
+            f.write(sep.join(str(c) for c in r) + "\n")
+    return p
+
+
+def test_normalize_named_tab_txt(tmp_path):
+    p = _write_named_txt(tmp_path, "s.txt", _NAMED_COLS, _named_data(), sep="\t")
+    assert dc.normalize_desi_txt(p) is True
+    lines = p.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == ""           # 先頭空行
+    assert lines[3] == ""           # 4行目空
+    names = [c for c in lines[2].split("\t") if c]
+    assert names == ["Acetylcholine", "Adenosine-POS", "GSH-POS"]
+    first = lines[4].split("\t")
+    assert first[0] == "1"          # 自動採番ID
+    assert first[1] == "14.5"       # x
+    assert dm.validate_msi_file(str(p))["valid"] is True
+
+
+def test_normalize_named_comma_txt(tmp_path):
+    # 実運用に近い: .csv 由来のカンマ区切り .txt（区切り自動判定で組み替える）
+    p = _write_named_txt(tmp_path, "s.txt", _NAMED_COLS, _named_data(), sep=",")
+    assert dc.normalize_desi_txt(p) is True
+    lines = p.read_text(encoding="utf-8").splitlines()
+    names = [c for c in lines[2].split("\t") if c]
+    assert names == ["Acetylcholine", "Adenosine-POS", "GSH-POS"]
+    assert lines[4].split("\t")[0] == "1"
+
+
+def test_normalize_named_txt_roi_label_and_empty(tmp_path):
+    # 実データ模擬: ROI列が "Heart1" と 空 の混在
+    cols = ["x", "y", "Creatine_13_10", "Glutamine_12_18", "ROI"]
+    data = [[float(i), 0.0, 1000 + i, 2000 + i, ("Heart1" if i % 3 == 0 else "")]
+            for i in range(12)]
+    p = _write_named_txt(tmp_path, "s.txt", cols, data, sep="\t")
+    assert dc.normalize_desi_txt(p) is True
+    lines = p.read_text(encoding="utf-8").splitlines()
+    names = [c for c in lines[2].split("\t") if c]
+    assert names == ["Creatine", "Glutamine"]
+    # ROI が末尾データ列として保持され、read_desi_roi_list が "Heart1" を返す
+    assert dm.read_desi_roi_list(str(p)) == ["Heart1"]
+
+
+def test_normalize_idempotent(tmp_path):
+    p = _write_named_txt(tmp_path, "s.txt", _NAMED_COLS, _named_data(), sep="\t")
+    assert dc.normalize_desi_txt(p) is True
+    content1 = p.read_text(encoding="utf-8")
+    assert dc.normalize_desi_txt(p) is False   # 2回目は先頭空行で no-op
+    assert p.read_text(encoding="utf-8") == content1
+
+
+def test_normalize_old_format_txt_untouched(tmp_path):
+    # 従来形式 .txt (先頭空行) は normalize で変更されない
+    p = tmp_path / "s.txt"
+    p.write_text("\nh2\nh3\nh4\n1\t2\t3\t4\n", encoding="utf-8")
+    before = p.read_text(encoding="utf-8")
+    assert dc.normalize_desi_txt(p) is False
+    assert p.read_text(encoding="utf-8") == before
+
+
+def test_prepare_normalizes_named_txt_only_folder(tmp_path):
+    # 新形式 .txt だけ置いたフォルダ → prepare で canonical 化される（.csv/.xlsx 無し）
+    _write_named_txt(tmp_path, "E15_Heart1.txt", _NAMED_COLS, _named_data(), sep="\t")
+    out = dc.prepare_desi_data_folder(str(tmp_path), ["E15_Heart1"])
+    assert Path(out) == tmp_path
+    lines = (tmp_path / "E15_Heart1.txt").read_text(encoding="utf-8").splitlines()
+    assert lines[0] == ""                       # canonical 先頭空行
+    names = [c for c in lines[2].split("\t") if c]
+    assert names == ["Acetylcholine", "Adenosine-POS", "GSH-POS"]
+    assert lines[4].split("\t")[0] == "1"       # 自動採番ID
