@@ -178,6 +178,102 @@ def _read_xls_rows(path: Path) -> list:
     return rows
 
 
+# ---------------------------------------------------------------------------
+# 新形式 (1行ヘッダ・列名=化合物名) の検出と「正規4行ヘッダ」への組み替え
+# ---------------------------------------------------------------------------
+
+def _cell_is_numeric(s) -> bool:
+    """セル文字列が数値か（空は数値扱い=欠損として ROI 判定に含めない）。"""
+    s = (s or "").strip()
+    if s == "":
+        return True
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_named_format(rows) -> bool:
+    """新形式か判定。先頭行の1・2セル目が x, y (大小無視) なら新形式。
+
+    従来形式は先頭行が空 (1セル目が x でない) のため、先頭行だけで排他的に分岐できる。
+    """
+    if not rows or not rows[0]:
+        return False
+    header = rows[0]
+    if len(header) < 3:
+        return False
+    c0 = (header[0] or "").strip().lower()
+    c1 = (header[1] or "").strip().lower()
+    return c0 == "x" and c1 == "y"
+
+
+def _reshape_named_format(rows) -> list:
+    """新形式 [x, y, 化合物名_情報.., (末尾ROIラベル)] を従来の正規4行ヘッダに組み替える。
+
+    出力行:
+      行1: 空
+      行2: '','','' + '1'..'N'    (代謝物番号; R では未使用だが整合のため)
+      行3: '','','' + 化合物名1..N (= 特徴量名。各列名の最初の '_' より前)
+      行4: 空                       (Q3 が無い → R 側で pre(化合物名) をそのまま名前に採用)
+      行5+: 連番ID, x, y, 強度1..N, [ROIラベル]
+    """
+    header = list(rows[0])
+    while header and (header[-1] or "").strip() == "":
+        header.pop()  # 末尾の空ヘッダ列を除去
+    n_cols = len(header)
+    data_rows = rows[1:]
+
+    # 末尾列が「非数値主体」なら ROI ラベル列とみなす（領域別解析用・任意）
+    roi_ci = None
+    last_ci = n_cols - 1
+    if last_ci >= 2:
+        vals = [r[last_ci] for r in data_rows
+                if last_ci < len(r) and (r[last_ci] or "").strip() != ""]
+        if vals and sum(1 for v in vals if not _cell_is_numeric(v)) > len(vals) * 0.5:
+            roi_ci = last_ci
+
+    feature_cols = list(range(2, last_ci if roi_ci is not None else n_cols))
+
+    # 化合物名 = 列名の最初の '_' より前 (例 Acetylcholine_15_10 -> Acetylcholine)
+    feature_names = []
+    for ci in feature_cols:
+        h = (header[ci] or "").strip()
+        feature_names.append(h.split("_", 1)[0] if h else h)
+
+    n = len(feature_names)
+    out = [
+        [],
+        ["", "", ""] + [str(i + 1) for i in range(n)],
+        ["", "", ""] + feature_names,
+        [],
+    ]
+    spot_id = 0
+    for r in data_rows:
+        if all((c or "").strip() == "" for c in r):
+            continue  # 完全な空行はスキップ
+        spot_id += 1
+        x = r[0] if len(r) > 0 else ""
+        y = r[1] if len(r) > 1 else ""
+        intensities = [r[ci] if ci < len(r) else "" for ci in feature_cols]
+        row_out = [str(spot_id), x, y] + intensities
+        if roi_ci is not None:
+            row_out.append(r[roi_ci] if roi_ci < len(r) else "")
+        out.append(row_out)
+    return out
+
+
+def _maybe_reshape_named_format(rows) -> list:
+    """新形式なら組み替え、そうでなければ（従来形式）そのまま返す。"""
+    if _is_named_format(rows):
+        logger.info(
+            "DESI 新形式(1行ヘッダ・列名=化合物名)を検出 → 正規レイアウトに組み替え"
+        )
+        return _reshape_named_format(rows)
+    return rows
+
+
 def convert_desi_to_txt(src_path, dst_txt) -> Path:
     """単一の .csv/.xlsx/.xls を正規 .txt（タブ区切り・同一レイアウト）に変換する。
 
@@ -194,6 +290,10 @@ def convert_desi_to_txt(src_path, dst_txt) -> Path:
         rows = _read_xls_rows(src_path)
     else:  # .csv / .tsv / その他テキスト
         rows = _read_csv_rows(src_path)
+
+    # 新形式 (1行ヘッダ・列名=化合物名) なら従来の正規レイアウトへ組み替える。
+    # 従来形式はそのまま (レイアウト保持の passthrough)。
+    rows = _maybe_reshape_named_format(rows)
 
     dst_txt.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst_txt.parent / f"{dst_txt.name}.{os.getpid()}.tmp"

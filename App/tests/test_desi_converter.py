@@ -220,3 +220,103 @@ def test_prepare_data_folder_writable(tmp_path):
     assert Path(out) == tmp_path           # 書込可能 → 同フォルダ
     assert (tmp_path / "a.txt").is_file()   # csv が変換された
     assert (tmp_path / "b.txt").read_text(encoding="utf-8").startswith("h1")
+
+
+# --- 新形式 (1行ヘッダ・列名=化合物名) ------------------------------------
+
+_NAMED_COLS = ["x", "y", "Acetylcholine_15_10", "Adenosine-POS_32_18", "GSH-POS_20_15"]
+
+
+def _named_data(n=6):
+    return [[14.5 + i, -2.5, 78206 + i, 19895 + i, 100 + i] for i in range(n)]
+
+
+def _write_named_csv(folder, name, columns, data_rows):
+    p = Path(folder) / name
+    with open(p, "w", newline="", encoding="utf-8") as f:
+        w = _csv.writer(f)
+        w.writerow(columns)
+        for r in data_rows:
+            w.writerow(r)
+    return p
+
+
+def _write_named_xlsx(folder, name, columns, data_rows):
+    wb = Workbook()
+    ws = wb.active
+    ws.append(list(columns))
+    for r in data_rows:
+        ws.append(list(r))
+    p = Path(folder) / name
+    wb.save(p)
+    return p
+
+
+def test_named_csv_reshape_basic(tmp_path):
+    _write_named_csv(tmp_path, "s.csv", _NAMED_COLS, _named_data())
+    txt = dc.convert_desi_to_txt(tmp_path / "s.csv", tmp_path / "s.txt")
+    lines = txt.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == ""           # 1行目空
+    assert lines[3] == ""           # 4行目空（Q3なし）
+    names = [c for c in lines[2].split("\t") if c]   # 3行目=化合物名
+    assert names == ["Acetylcholine", "Adenosine-POS", "GSH-POS"]
+    first = lines[4].split("\t")    # 5行目=最初のデータ行
+    assert first[0] == "1"          # 自動採番ID
+    assert first[1] == "14.5"       # x
+    assert first[2] == "-2.5"       # y
+    assert len(first) == 1 + 2 + 3  # id + x,y + 3強度
+
+
+def test_named_xlsx_reshape_and_validate(tmp_path):
+    _write_named_xlsx(tmp_path, "s.xlsx", _NAMED_COLS, _named_data())
+    txt = dc.convert_desi_to_txt(tmp_path / "s.xlsx", tmp_path / "s.txt")
+    lines = txt.read_text(encoding="utf-8").splitlines()
+    names = [c for c in lines[2].split("\t") if c]
+    assert names == ["Acetylcholine", "Adenosine-POS", "GSH-POS"]
+    assert dm.validate_msi_file(str(txt))["valid"] is True
+
+
+def test_compound_name_before_first_underscore(tmp_path):
+    cols = ["x", "y", "Adenosine-POS_32_18", "GSH-POS_20_15", "Acetylcholine_15_10"]
+    _write_named_csv(tmp_path, "s.csv", cols, [[1.0, 2.0, 10, 20, 30]])
+    txt = dc.convert_desi_to_txt(tmp_path / "s.csv", tmp_path / "s.txt")
+    names = [c for c in txt.read_text(encoding="utf-8").splitlines()[2].split("\t") if c]
+    assert names == ["Adenosine-POS", "GSH-POS", "Acetylcholine"]
+
+
+def test_named_with_roi_column(tmp_path):
+    cols = ["x", "y", "Creatine_13_10", "Glutamine_12_18", "ROI"]
+    labels = ["Tumor", "Normal"]
+    data = [[float(i), 0.0, 1000 + i, 2000 + i, labels[i % 2]] for i in range(8)]
+    _write_named_csv(tmp_path, "s.csv", cols, data)
+    txt = dc.convert_desi_to_txt(tmp_path / "s.csv", tmp_path / "s.txt")
+    lines = txt.read_text(encoding="utf-8").splitlines()
+    names = [c for c in lines[2].split("\t") if c]   # ROI は特徴量に含めない
+    assert names == ["Creatine", "Glutamine"]
+    first = lines[4].split("\t")
+    assert len(first) == 1 + 2 + 2 + 1   # id + x,y + 2強度 + ROI
+    assert first[-1] in labels
+    # 末尾ROIラベルが保持され、read_desi_roi_list が領域名を返す
+    assert dm.read_desi_roi_list(str(txt)) == ["Normal", "Tumor"]
+
+
+def test_named_roi_auto_via_read_roi(tmp_path):
+    cols = ["x", "y", "Creatine_13_10", "region"]
+    labels = ["A", "B", "C"]
+    data = [[float(i), 0.0, 100 + i, labels[i % 3]] for i in range(9)]
+    _write_named_xlsx(tmp_path, "s.xlsx", cols, data)
+    # .txt は無いが read_desi_roi_list が自動変換(=新形式組み替え)して読む
+    assert dm.read_desi_roi_list(str(tmp_path / "s.txt")) == ["A", "B", "C"]
+
+
+# --- 回帰: 従来形式は組み替えない (passthrough) ----------------------------
+
+def test_old_format_not_reshaped(tmp_path):
+    # 従来形式 (先頭空行+4行ヘッダ) は新形式と誤検出されず、レイアウト保持
+    data = [[i, i * 1.0, i * 2.0, 100 + i, 200 + i] for i in range(1, 5)]
+    _write_csv(tmp_path, "s.csv", data)   # _HEADER（先頭空行）
+    txt = dc.convert_desi_to_txt(tmp_path / "s.csv", tmp_path / "s.txt")
+    lines = txt.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == ""             # 先頭空行のまま
+    assert "146.1216" in lines[3]     # 従来4行目(m/z)が化合物名化されず保持
+    assert lines[4].split("\t")[0] == "1"   # データ先頭はそのまま
