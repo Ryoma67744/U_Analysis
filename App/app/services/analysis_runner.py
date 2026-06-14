@@ -293,6 +293,18 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
     # data_folder が存在しない場合 (別マシン由来の古いパス) は自動補正を試行
     resolved_data_folder = _resolve_or_raise(params["data_folder"])
 
+    # DESI: Excel/CSV で登録されたサンプルを正規 .txt に変換してから R に渡す。
+    # （R は data_folder/<sample>.txt を決め打ちで読むため。TIMS は input_paths を
+    #   持つので除外。読取専用フォルダ時は staging に集約したパスへ差し替わる。）
+    if not params.get("input_paths"):
+        try:
+            from app.services import desi_converter
+            resolved_data_folder = desi_converter.prepare_desi_data_folder(
+                resolved_data_folder, params.get("sample_names") or []
+            )
+        except Exception as e:
+            logger.warning("DESI 入力の正規化(.txt変換)に失敗: %s", e)
+
     # パラメータを置換
     lines = _replace_assign(lines, "data_folder", _r_str(resolved_data_folder))
     lines = _replace_assign(lines, "output_dir", _r_str(output_dir))
@@ -430,9 +442,21 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
         lines = [line.rstrip("\n") for line in f.readlines()]
 
     lines = _replace_assign(lines, "RDS_PATH", _r_str(params["rds_path"]))
+
+    # DESI 再解析: 元データが Excel/CSV 登録なら正規 .txt に変換してから R に渡す。
+    # （TIMS は original_input_paths を持つため除外。）
+    original_data_folder = params["original_data_folder"]
+    if not params.get("original_input_paths"):
+        try:
+            from app.services import desi_converter
+            original_data_folder = desi_converter.prepare_desi_data_folder(
+                original_data_folder, params.get("sample_names") or []
+            )
+        except Exception as e:
+            logger.warning("DESI 再解析入力の正規化(.txt変換)に失敗: %s", e)
     lines = _replace_assign(
         lines, "ORIGINAL_DATA_FOLDER",
-        _r_str(params["original_data_folder"]),
+        _r_str(original_data_folder),
     )
     lines = _replace_assign(
         lines, "FILTER_MODE", _r_str(params["filter_mode"])

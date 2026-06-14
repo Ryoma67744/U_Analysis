@@ -13,11 +13,23 @@ logger = logging.getLogger("msi.data_manager")
 
 
 def list_msi_files(data_folder: str) -> list[str]:
-    """データフォルダ内のMSIファイル一覧を取得（拡張子なし）"""
+    """データフォルダ内のMSIファイル一覧を取得（拡張子なし）。
+
+    DESI 生データは従来 `.txt` のみだが、同一レイアウトの Excel(.xlsx/.xls) /
+    CSV(.csv) も登録できるよう、対応する `.txt` が無い stem については
+    変換元 (.csv/.xlsx/.xls) の stem も一覧に含める（解析時に自動で .txt 化）。
+    同一 stem に `.txt` がある場合は `.txt` を優先（重複させない）。
+    """
     folder = Path(data_folder)
     if not folder.is_dir():
         return []
-    return sorted([f.stem for f in folder.glob("*.txt")])
+    txt_stems = {f.stem for f in folder.glob("*.txt")}
+    from app.services.desi_converter import DESI_SRC_EXTS
+    extra_stems = {
+        f.stem for f in folder.iterdir()
+        if f.is_file() and f.suffix.lower() in DESI_SRC_EXTS
+    } - txt_stems
+    return sorted(txt_stems | extra_stems)
 
 
 _PARQUET_EXTS = {".parquet", ".pq"}
@@ -327,6 +339,14 @@ def read_desi_roi_list(file_path: str, *, max_roi: int = 200) -> list[str]:
     該当列が無い / 検出失敗時は空リストを返す（= ROI 無し）。
     （列番号(n_metabolite)推定に依存しないため、ヘッダのズレにも強い。）
     """
+    # `.txt` が無ければ、同 stem の Excel/CSV から正規 .txt へ自動変換して読む。
+    if not Path(file_path).is_file():
+        from app.services import desi_converter
+        _p = Path(file_path)
+        _converted = desi_converter.ensure_desi_txt(_p.stem, _p.parent)
+        if _converted is None:
+            return []
+        file_path = str(_converted)
     try:
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
             for _ in range(4):  # ヘッダ 4 行スキップ (R fread skip=4 と整合)
