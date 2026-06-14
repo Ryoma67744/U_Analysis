@@ -306,6 +306,39 @@ def convert_desi_to_txt(src_path, dst_txt) -> Path:
     return dst_txt
 
 
+def normalize_desi_txt(txt_path) -> bool:
+    """既存の `.txt` が新形式(1行ヘッダ・列名=化合物名)なら正規レイアウトに組み替えて
+    その場で上書きする。従来形式(先頭空行)やファイル無しは何もしない。
+
+    登録/アップロードの過程で `.csv` が `.txt` 化されてフォルダに入った場合など、
+    変換器(.csv/.xlsx)経路を通らずに新形式 .txt が置かれるケースを救済する。
+    冪等: 組み替え後は先頭行が空になり、再読込で `_is_named_format=False` となるため
+    二重組み替えされない。
+
+    Returns: 組み替えを行ったら True。
+    """
+    txt_path = Path(txt_path)
+    if not txt_path.is_file():
+        return False
+    try:
+        rows = _read_csv_rows(txt_path)  # 区切り自動判定 (tab/カンマ両対応)
+    except Exception as e:
+        logger.warning("DESI .txt 読み込みに失敗 (%s): %s", txt_path.name, e)
+        return False
+    if not _is_named_format(rows):
+        return False  # 従来形式 → 触らない
+
+    out = _reshape_named_format(rows)
+    tmp = txt_path.parent / f"{txt_path.name}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
+        for row in out:
+            f.write("\t".join(row))
+            f.write("\n")
+    os.replace(tmp, txt_path)
+    logger.info("DESI 新形式の .txt を正規レイアウトに組み替え: %s", txt_path.name)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # 冪等変換 / 書込先判定（read-only マウント対策）
 # ---------------------------------------------------------------------------
@@ -403,6 +436,8 @@ def prepare_desi_data_folder(data_folder, sample_names) -> str:
         for stem in (sample_names or []):
             try:
                 ensure_desi_txt(stem, folder, dest_dir=folder)
+                # .csv/.xlsx 経由でなく、新形式 .txt が直接置かれた場合も組み替える
+                normalize_desi_txt(folder / f"{stem}.txt")
             except Exception as e:
                 logger.warning("DESI 変換に失敗 (sample=%s): %s", stem, e)
         return str(folder)
@@ -425,6 +460,8 @@ def prepare_desi_data_folder(data_folder, sample_names) -> str:
             elif real_txt.is_file():
                 if not dst_txt.is_file():
                     shutil.copy2(real_txt, dst_txt)
+            # staging 上の .txt が新形式ならここで組み替える
+            normalize_desi_txt(dst_txt)
         except Exception as e:
             logger.warning("DESI staging 準備に失敗 (sample=%s): %s", stem, e)
     logger.info("DESI 入力を staging に集約 (read-only 元フォルダ): %s", staging)
