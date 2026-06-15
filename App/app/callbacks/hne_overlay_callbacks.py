@@ -19,7 +19,8 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
-from dash import callback, Input, Output, State, no_update, ctx, html, dcc, dash_table
+from dash import (callback, Input, Output, State, no_update, ctx, html, dcc,
+                  dash_table, clientside_callback)
 
 from app.services import hne_overlay as hn
 
@@ -54,6 +55,12 @@ def _get_state(rds_path):
 def _dragmode(mode):
     # polygon もクリックで頂点を置くため pan（クリック=頂点 / ドラッグ=パン / ホイール=ズーム）
     return {"landmark": "pan", "polygon": "pan", "pan": "pan"}.get(mode, "pan")
+
+
+# 位置合わせの十字ガイド（カーソル追従スパイク）。TIC/H&E 両図の軸に適用する。
+# spikesnap="cursor" でデータ点でなくカーソル実位置に追従＝クリック位置の予測線になる。
+_SPIKE_AXIS = dict(showspikes=True, spikemode="across", spikesnap="cursor",
+                   spikethickness=1, spikedash="solid", spikecolor="#00b3b3")
 
 
 def _sample_df(state, sample):
@@ -362,10 +369,12 @@ def hne_tic_figure(sample, lm, affine, polys, mode, rotation, rds_path):
     tic_pts = (lm or {}).get("tic", [])
     if tic_pts:
         tx = [p[0] for p in tic_pts]; ty = [p[1] for p in tic_pts]
-        fig.add_trace(go.Scatter(x=tx, y=ty, mode="markers+text",
-                                 marker=dict(size=10, color="red", symbol="x"),
-                                 text=[str(i + 1) for i in range(len(tx))],
-                                 textposition="top center", name="対応点", hoverinfo="skip"))
+        # WebGL ベース(Scattergl)の spot 層と同じ canvas に載せて前面に描く
+        # （go.Scatter(SVG) だと WebGL 層の下に隠れて TIC 側で見えなくなる）。
+        fig.add_trace(go.Scattergl(x=tx, y=ty, mode="markers+text",
+                                   marker=dict(size=10, color="red", symbol="x"),
+                                   text=[str(i + 1) for i in range(len(tx))],
+                                   textposition="top center", name="対応点", hoverinfo="skip"))
     # 変換済みポリゴン（アフィンがあれば）
     if affine and affine.get("M") and polys:
         M = np.array(affine["M"], dtype=float)
@@ -375,12 +384,15 @@ def hne_tic_figure(sample, lm, affine, polys, mode, rotation, rds_path):
                 msi = hn.apply_affine(v, M)
                 xs = list(msi[:, 0]) + [msi[0, 0]]
                 ys = list(msi[:, 1]) + [msi[0, 1]]
-                fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", fill="toself",
-                                         line=dict(color="royalblue"), opacity=0.35,
-                                         name=f"領域{i + 1}", hoverinfo="skip"))
+                # 対応点と同じく Scattergl で WebGL canvas 前面に描く
+                fig.add_trace(go.Scattergl(x=xs, y=ys, mode="lines", fill="toself",
+                                           line=dict(color="royalblue"), opacity=0.35,
+                                           name=f"領域{i + 1}", hoverinfo="skip"))
     fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), template="plotly_white",
-                      dragmode=_dragmode(mode), showlegend=False)
-    fig.update_yaxes(scaleanchor="x", scaleratio=1)
+                      dragmode=_dragmode(mode), showlegend=False, hovermode="closest",
+                      hoverlabel=dict(font_size=13, bgcolor="white"))
+    fig.update_xaxes(**_SPIKE_AXIS)
+    fig.update_yaxes(scaleanchor="x", scaleratio=1, **_SPIKE_AXIS)
     return fig
 
 
@@ -401,8 +413,11 @@ def hne_image_figure(img, lm, polys, draft, opacity, mode):
     if not img:
         return _empty_fig("H&E をアップロードしてください")
     w, h = img["width"], img["height"]
+    # hoverinfo="none": 既定の「画素 x/y ＋ RGB配列」ラベルを消す。ただしホバー
+    # イベント自体は生かす（"skip" だとイベントごと止まり、スパイクと座標表示も死ぬ）。
     fig = go.Figure(go.Image(source=img["src"],
-                             opacity=float(opacity) if opacity is not None else 1.0))
+                             opacity=float(opacity) if opacity is not None else 1.0,
+                             hoverinfo="none"))
     # 対応点（H&E 側）
     hne_pts = (lm or {}).get("hne", [])
     if hne_pts:
@@ -428,9 +443,10 @@ def hne_image_figure(img, lm, polys, draft, opacity, mode):
             shapes.append(dict(type="path", path=path, line=dict(color="royalblue"),
                                fillcolor="rgba(65,105,225,0.2)"))
     fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), template="plotly_white",
-                      dragmode=_dragmode(mode), shapes=shapes, showlegend=False)
-    fig.update_xaxes(visible=False, range=[0, w])
-    fig.update_yaxes(visible=False, range=[h, 0], scaleanchor="x", scaleratio=1)
+                      dragmode=_dragmode(mode), shapes=shapes, showlegend=False,
+                      hovermode="closest", hoverlabel=dict(font_size=13, bgcolor="white"))
+    fig.update_xaxes(visible=False, range=[0, w], **_SPIKE_AXIS)
+    fig.update_yaxes(visible=False, range=[h, 0], scaleanchor="x", scaleratio=1, **_SPIKE_AXIS)
     return fig
 
 
@@ -548,3 +564,48 @@ def hne_export_csv(n, sample, polys, affine, rotation, rds_path, cache_dir_str):
     except Exception as e:  # noqa: BLE001
         logger.exception("H&E エクスポート失敗")
         return no_update, f"エクスポート失敗: {e}"
+
+
+# ---------------------------------------------------------------------------
+# 位置合わせ補助（clientside）: モード連動の十字カーソル ＋ カーソル座標リードアウト
+# ---------------------------------------------------------------------------
+# 対応点/ポリゴンモードのときだけ、グラフのラッパ Div に .hne-crosshair を付け、
+# ドラッグ面のカーソルを十字にする（CSS は assets/styles.css）。pan では外す。
+clientside_callback(
+    """
+    function(mode) {
+        var c = (mode === 'landmark' || mode === 'polygon') ? 'hne-crosshair' : '';
+        return [c, c];
+    }
+    """,
+    Output("hne_tic_graph_wrap", "className"),
+    Output("hne_image_graph_wrap", "className"),
+    Input("hne_mode", "value"),
+)
+
+# H&E 上のカーソル座標（画素）を大きく見やすく表示。go.Image は hoverinfo="none"
+# でラベルを消しつつイベントは生きているので hoverData が届く。
+clientside_callback(
+    """
+    function(hData) {
+        if (!hData || !hData.points || !hData.points.length) { return ''; }
+        var p = hData.points[0];
+        return 'X: ' + Math.round(p.x) + '  /  Y: ' + Math.round(p.y);
+    }
+    """,
+    Output("hne_coord_readout", "children"),
+    Input("hne_image_graph", "hoverData"),
+)
+
+# TIC（MSI 空間）側のカーソル近傍点の座標。クリックで採用される点と一致する。
+clientside_callback(
+    """
+    function(hData) {
+        if (!hData || !hData.points || !hData.points.length) { return ''; }
+        var p = hData.points[0];
+        return 'X: ' + Number(p.x).toFixed(1) + '  /  Y: ' + Number(p.y).toFixed(1);
+    }
+    """,
+    Output("hne_tic_coord_readout", "children"),
+    Input("hne_tic_graph", "hoverData"),
+)
