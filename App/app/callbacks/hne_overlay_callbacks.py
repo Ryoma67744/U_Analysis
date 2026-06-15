@@ -358,14 +358,20 @@ def hne_sync_polygon_table(polys):
 )
 def hne_polygon_table_to_store(rows, polys):
     polys = polys or []
+    rows = rows or []
+    idxs = [int(r.get("idx", -1)) for r in rows]
+    # 前個体の古い行で発火した過渡状態（範囲外idx・重複idx・store超過）は取りこぼし防止に
+    # 何もしない。改名・1行削除・全削除（rows=[]）は通す。
+    if (any(not (0 <= i < len(polys)) for i in idxs)
+            or len(set(idxs)) != len(idxs) or len(rows) > len(polys)):
+        return no_update
     new = []
-    for r in rows or []:
-        i = int(r.get("idx", -1))
-        if 0 <= i < len(polys):          # 行の idx は現在の store 位置を指す
-            p = dict(polys[i])           # 頂点はそのまま、名前のみ表の値で更新
-            nm = (r.get("name") or "").strip()
-            p["name"] = nm or p.get("name") or f"領域{len(new) + 1}"
-            new.append(p)
+    for r in rows:
+        i = int(r["idx"])                # 行の idx は現在の store 位置を指す
+        p = dict(polys[i])               # 頂点はそのまま、名前のみ表の値で更新
+        nm = (r.get("name") or "").strip()
+        p["name"] = nm or p.get("name") or f"領域{len(new) + 1}"
+        new.append(p)
     if new == polys:                     # 変化なし（store→table 由来の再発火）→ 何もしない
         return no_update
     return new
@@ -518,13 +524,14 @@ def hne_image_figure(img, lm, polys, opacity, mode, draft, sample):
     Output("hne_polygons_store", "data", allow_duplicate=True),
     Output("hne_rotation_store", "data", allow_duplicate=True),
     Output("hne_polygon_draft_store", "data", allow_duplicate=True),
+    Output("hne_polygon_table", "data", allow_duplicate=True),
     Input("hne_sample_select", "value"),
     Input("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
 def hne_restore_sample(sample, rds_path):
     if not sample or not rds_path:
-        return (no_update,) * 5
+        return (no_update,) * 6
     entry = hp.load_hne_sample(rds_path, sample)
     lm = entry.get("landmarks") or {"tic": [], "hne": []}
     rot = entry.get("rotation") or {"angle": 0, "flip_h": False, "flip_v": False}
@@ -537,7 +544,11 @@ def hne_restore_sample(sample, rds_path):
             image_store = {"src": src, "width": img_meta.get("width"),
                            "height": img_meta.get("height"),
                            "name": img_meta.get("name") or "H&E"}
-    return image_store, lm, polys, rot, []
+    # 表データも同時に復元（store と表を同一ラウンドで整合させ、前個体の古い行で
+    # hne_polygon_table_to_store が復元ポリゴンを上書きするのを防ぐ）。
+    rows = [{"idx": i, "name": p.get("name") or f"領域{i + 1}",
+             "nv": len(p.get("vertices") or [])} for i, p in enumerate(polys)]
+    return image_store, lm, polys, rot, [], rows
 
 
 # ---------------------------------------------------------------------------
