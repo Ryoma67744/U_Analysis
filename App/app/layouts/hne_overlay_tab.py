@@ -118,15 +118,24 @@ def create_hne_overlay_tab():
                 dbc.Row([
                     dbc.Col(width=6, children=[
                         html.Div("TIC（MSI 空間）", className="small fw-bold text-center"),
-                        dcc.Loading(dcc.Graph(
+                        # 静的ラッパ Div（dcc.Loading の外）に十字カーソル用クラスを付与する。
+                        html.Div(id="hne_tic_graph_wrap", children=dcc.Loading(dcc.Graph(
                             id="hne_tic_graph", style={"height": "60vh"},
-                            config={"scrollZoom": True, "displaylogo": False})),
+                            config={"scrollZoom": True, "displaylogo": False}))),
+                        html.Div(id="hne_tic_coord_readout",
+                                 className="small text-center fw-bold text-info",
+                                 style={"minHeight": "1.2rem",
+                                        "fontVariantNumeric": "tabular-nums"}),
                     ]),
                     dbc.Col(width=6, children=[
                         html.Div("H&E", className="small fw-bold text-center"),
-                        dcc.Loading(dcc.Graph(
+                        html.Div(id="hne_image_graph_wrap", children=dcc.Loading(dcc.Graph(
                             id="hne_image_graph", style={"height": "60vh"},
-                            config={"scrollZoom": True, "displaylogo": False})),
+                            config={"scrollZoom": True, "displaylogo": False}))),
+                        html.Div(id="hne_coord_readout",
+                                 className="small text-center fw-bold text-info",
+                                 style={"minHeight": "1.2rem",
+                                        "fontVariantNumeric": "tabular-nums"}),
                     ]),
                 ]),
                 dcc.Loading(html.Div(id="hne_result_area", className="mt-2")),
