@@ -437,7 +437,8 @@ def hne_tic_figure(sample, lm, affine, polys, mode, rotation, rds_path):
                                        bgcolor="rgba(255,255,255,0.6)")
     fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), template="plotly_white",
                       dragmode=_dragmode(mode), showlegend=False, hovermode="closest",
-                      hoverlabel=dict(font_size=13, bgcolor="white"))
+                      hoverlabel=dict(font_size=13, bgcolor="white"),
+                      uirevision=sample or "tic")
     fig.update_xaxes(**_SPIKE_AXIS)
     fig.update_yaxes(scaleanchor="x", scaleratio=1, **_SPIKE_AXIS)
     return fig
@@ -454,9 +455,10 @@ def hne_tic_figure(sample, lm, affine, polys, mode, rotation, rds_path):
     Input("hne_opacity", "value"),
     Input("hne_mode", "value"),
     State("hne_polygon_draft_store", "data"),
+    State("hne_sample_select", "value"),
     prevent_initial_call=True,
 )
-def hne_image_figure(img, lm, polys, opacity, mode, draft):
+def hne_image_figure(img, lm, polys, opacity, mode, draft, sample):
     if not img:
         return _empty_fig("H&E をアップロードしてください")
     w, h = img["width"], img["height"]
@@ -497,7 +499,8 @@ def hne_image_figure(img, lm, polys, opacity, mode, draft):
                                    bgcolor="rgba(255,255,255,0.6)")
     fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), template="plotly_white",
                       dragmode=_dragmode(mode), shapes=shapes, showlegend=False,
-                      hovermode="closest", hoverlabel=dict(font_size=13, bgcolor="white"))
+                      hovermode="closest", hoverlabel=dict(font_size=13, bgcolor="white"),
+                      uirevision=sample or "hne")
     fig.update_xaxes(visible=False, range=[0, w], **_SPIKE_AXIS)
     fig.update_yaxes(visible=False, range=[h, 0], scaleanchor="x", scaleratio=1, **_SPIKE_AXIS)
     return fig
