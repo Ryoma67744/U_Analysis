@@ -23,6 +23,8 @@ from dash import (callback, Input, Output, State, no_update, ctx, html, dcc,
                   dash_table, clientside_callback)
 
 from app.services import hne_overlay as hn
+from app.services import hne_persistence as hp
+from app.config import CLUSTER_PRESET_COLORS
 
 logger = logging.getLogger("msi.hne_overlay")
 
@@ -61,6 +63,27 @@ def _dragmode(mode):
 # spikesnap="cursor" でデータ点でなくカーソル実位置に追従＝クリック位置の予測線になる。
 _SPIKE_AXIS = dict(showspikes=True, spikemode="across", spikesnap="cursor",
                    spikethickness=1, spikedash="solid", spikecolor="#00b3b3")
+
+
+def _roi_color(i):
+    """ROI（領域）ごとの色。クラスタ色パレットを流用して個体内で区別できるようにする。"""
+    return CLUSTER_PRESET_COLORS[int(i) % len(CLUSTER_PRESET_COLORS)]
+
+
+def _hex_to_rgba(hex_color, alpha):
+    """'#RRGGBB' → 'rgba(r,g,b,alpha)'（塗りの半透明用）。"""
+    h = str(hex_color).lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
+
+def _centroid(verts):
+    """頂点列の重心 (x, y)。空なら (None, None)。領域名ラベルの配置に使う。"""
+    pts = list(verts) if verts is not None else []
+    if len(pts) == 0:
+        return None, None
+    xs = [float(v[0]) for v in pts]; ys = [float(v[1]) for v in pts]
+    return sum(xs) / len(xs), sum(ys) / len(ys)
 
 
 def _sample_df(state, sample):
@@ -124,9 +147,11 @@ def hne_populate_samples(active_tab, rds_path, current):
     Output("hne_upload_info", "children"),
     Input("hne_image_upload", "contents"),
     State("hne_image_upload", "filename"),
+    State("hne_sample_select", "value"),
+    State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
-def hne_store_image(contents, filename):
+def hne_store_image(contents, filename, sample, rds_path):
     if not contents:
         return no_update, no_update
     try:
@@ -145,8 +170,15 @@ def hne_store_image(contents, filename):
         src = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
         note = f"{filename}（{w}×{h}px）" + (
             f"  ※元 {ow}×{oh}px を縮小" if (w, h) != (ow, oh) else "")
-        return ({"src": src, "width": int(w), "height": int(h), "name": filename or "H&E"},
-                note)
+        store = {"src": src, "width": int(w), "height": int(h), "name": filename or "H&E"}
+        # 個体別に PNG を永続保存（State の個体・RDSパスへ）。JSON には画像メタを記録。
+        if sample and rds_path:
+            fn = hp.save_hne_image(rds_path, sample, src)
+            if fn:
+                hp.save_hne_overlay_sample(rds_path, sample, {"image": {
+                    "file": fn, "width": int(w), "height": int(h),
+                    "name": filename or "H&E"}})
+        return (store, note)
     except Exception as e:  # noqa: BLE001
         logger.warning("H&E 画像の読込に失敗: %s", e)
         return no_update, f"画像の読込に失敗: {e}"
@@ -160,12 +192,19 @@ def hne_store_image(contents, filename):
     Output("hne_landmarks_store", "data", allow_duplicate=True),
     Input("hne_rotation_angle", "value"),
     Input("hne_rotation_flip", "value"),
+    State("hne_rotation_store", "data"),
     prevent_initial_call=True,
 )
-def hne_update_rotation(angle, flips):
+def hne_update_rotation(angle, flips, prev):
     flips = flips or []
     rot = {"angle": float(angle or 0),
            "flip_h": "flip_h" in flips, "flip_v": "flip_v" in flips}
+    prev = prev or {}
+    # 実質変化なし（個体復元で rotation_store を直接戻した等）なら対応点を消さない。
+    if (float(prev.get("angle", 0) or 0) == rot["angle"]
+            and bool(prev.get("flip_h", False)) == rot["flip_h"]
+            and bool(prev.get("flip_v", False)) == rot["flip_v"]):
+        return no_update, no_update
     # 旧回転でクリックした対応点は無効 → クリア（→ アフィンも自動的に未設定に戻る）。
     return rot, {"tic": [], "hne": []}
 
@@ -375,19 +414,27 @@ def hne_tic_figure(sample, lm, affine, polys, mode, rotation, rds_path):
                                    marker=dict(size=10, color="red", symbol="x"),
                                    text=[str(i + 1) for i in range(len(tx))],
                                    textposition="top center", name="対応点", hoverinfo="skip"))
-    # 変換済みポリゴン（アフィンがあれば）
+    # 変換済みポリゴン（アフィンがあれば）。ROIごとに色分け＋重心に領域名ラベル。
     if affine and affine.get("M") and polys:
         M = np.array(affine["M"], dtype=float)
         for i, p in enumerate(polys):
             v = p.get("vertices") or []
             if len(v) >= 3:
+                col = _roi_color(i)
+                nm = p.get("name") or f"領域{i + 1}"
                 msi = hn.apply_affine(v, M)
                 xs = list(msi[:, 0]) + [msi[0, 0]]
                 ys = list(msi[:, 1]) + [msi[0, 1]]
                 # 対応点と同じく Scattergl で WebGL canvas 前面に描く
                 fig.add_trace(go.Scattergl(x=xs, y=ys, mode="lines", fill="toself",
-                                           line=dict(color="royalblue"), opacity=0.35,
-                                           name=f"領域{i + 1}", hoverinfo="skip"))
+                                           line=dict(color=col),
+                                           fillcolor=_hex_to_rgba(col, 0.25),
+                                           name=nm, hoverinfo="skip"))
+                cx, cy = _centroid(msi)
+                if cx is not None:
+                    fig.add_annotation(x=cx, y=cy, text=nm, showarrow=False,
+                                       font=dict(size=11, color=col),
+                                       bgcolor="rgba(255,255,255,0.6)")
     fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), template="plotly_white",
                       dragmode=_dragmode(mode), showlegend=False, hovermode="closest",
                       hoverlabel=dict(font_size=13, bgcolor="white"))
@@ -404,12 +451,12 @@ def hne_tic_figure(sample, lm, affine, polys, mode, rotation, rds_path):
     Input("hne_image_store", "data"),
     Input("hne_landmarks_store", "data"),
     Input("hne_polygons_store", "data"),
-    Input("hne_polygon_draft_store", "data"),
     Input("hne_opacity", "value"),
     Input("hne_mode", "value"),
+    State("hne_polygon_draft_store", "data"),
     prevent_initial_call=True,
 )
-def hne_image_figure(img, lm, polys, draft, opacity, mode):
+def hne_image_figure(img, lm, polys, opacity, mode, draft):
     if not img:
         return _empty_fig("H&E をアップロードしてください")
     w, h = img["width"], img["height"]
@@ -426,28 +473,91 @@ def hne_image_figure(img, lm, polys, draft, opacity, mode):
                                  marker=dict(size=10, color="red", symbol="x"),
                                  text=[str(i + 1) for i in range(len(hx))],
                                  textposition="top center", hoverinfo="skip"))
-    # 下書きポリゴン（クリック中の頂点列）を線＋マーカーで表示
+    # 下書きポリゴン（クリック中の頂点列）。clientside で部分更新するため常にトレースを
+    # 置く（頂点追加で図全体を作り直さない＝go.Image 再描画・Loading スピナーを避ける）。
     draft = draft or []
-    if draft:
-        dx = [v[0] for v in draft]; dy = [v[1] for v in draft]
-        fig.add_trace(go.Scatter(x=dx, y=dy, mode="lines+markers",
-                                 line=dict(color="orange", width=2),
-                                 marker=dict(size=7, color="orange"),
-                                 hoverinfo="skip", name="下書き"))
-    # 確定ポリゴンを shape として再注入（rebuild 後も保持）
+    dx = [v[0] for v in draft]; dy = [v[1] for v in draft]
+    fig.add_trace(go.Scatter(x=dx, y=dy, mode="lines+markers",
+                             line=dict(color="orange", width=2),
+                             marker=dict(size=7, color="orange"),
+                             hoverinfo="skip", name="下書き"))
+    # 確定ポリゴンを shape として再注入（ROIごとに色分け＋重心に領域名ラベル）。
     shapes = []
-    for p in polys or []:
+    for i, p in enumerate(polys or []):
         v = p.get("vertices") or []
         if len(v) >= 3:
+            col = _roi_color(i)
             path = "M" + "L".join(f"{vx},{vy}" for vx, vy in v) + "Z"
-            shapes.append(dict(type="path", path=path, line=dict(color="royalblue"),
-                               fillcolor="rgba(65,105,225,0.2)"))
+            shapes.append(dict(type="path", path=path, line=dict(color=col),
+                               fillcolor=_hex_to_rgba(col, 0.2)))
+            cx, cy = _centroid(v)
+            if cx is not None:
+                fig.add_annotation(x=cx, y=cy, text=(p.get("name") or f"領域{i + 1}"),
+                                   showarrow=False, font=dict(size=11, color=col),
+                                   bgcolor="rgba(255,255,255,0.6)")
     fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), template="plotly_white",
                       dragmode=_dragmode(mode), shapes=shapes, showlegend=False,
                       hovermode="closest", hoverlabel=dict(font_size=13, bgcolor="white"))
     fig.update_xaxes(visible=False, range=[0, w], **_SPIKE_AXIS)
     fig.update_yaxes(visible=False, range=[h, 0], scaleanchor="x", scaleratio=1, **_SPIKE_AXIS)
     return fig
+
+
+# ---------------------------------------------------------------------------
+# 個体別 永続復元: 個体切替・解析ロードで、保存済み状態を各 store へ流し込む
+# ---------------------------------------------------------------------------
+# 回転スライダ(value)は出力しない（出力すると hne_update_rotation が発火し復元直後の
+# 対応点を消す恐れがあるため）。rotation_store を直接復元すれば図・割当は正しい
+# （スライダ表示のみ前の値が残る軽微な制限）。affine は landmarks 復元で自動再計算。
+@callback(
+    Output("hne_image_store", "data", allow_duplicate=True),
+    Output("hne_landmarks_store", "data", allow_duplicate=True),
+    Output("hne_polygons_store", "data", allow_duplicate=True),
+    Output("hne_rotation_store", "data", allow_duplicate=True),
+    Output("hne_polygon_draft_store", "data", allow_duplicate=True),
+    Input("hne_sample_select", "value"),
+    Input("seurat_rds_path_store", "data"),
+    prevent_initial_call=True,
+)
+def hne_restore_sample(sample, rds_path):
+    if not sample or not rds_path:
+        return (no_update,) * 5
+    entry = hp.load_hne_sample(rds_path, sample)
+    lm = entry.get("landmarks") or {"tic": [], "hne": []}
+    rot = entry.get("rotation") or {"angle": 0, "flip_h": False, "flip_v": False}
+    polys = entry.get("polygons") or []
+    image_store = None
+    img_meta = entry.get("image") or None
+    if img_meta and img_meta.get("file"):
+        src = hp.load_hne_image_b64(rds_path, img_meta.get("file"))
+        if src:
+            image_store = {"src": src, "width": img_meta.get("width"),
+                           "height": img_meta.get("height"),
+                           "name": img_meta.get("name") or "H&E"}
+    return image_store, lm, polys, rot, []
+
+
+# ---------------------------------------------------------------------------
+# 個体別 永続保存: 編集のたびに現個体の軽量状態（対応点/ポリゴン/回転）を保存
+# ---------------------------------------------------------------------------
+# 画像は hne_store_image（アップロード時）で別途 PNG 保存済み。ここでは軽量メタのみ。
+@callback(
+    Output("hne_save_dummy", "data"),
+    Input("hne_landmarks_store", "data"),
+    Input("hne_polygons_store", "data"),
+    Input("hne_rotation_store", "data"),
+    State("hne_sample_select", "value"),
+    State("seurat_rds_path_store", "data"),
+    prevent_initial_call=True,
+)
+def hne_autosave(lm, polys, rotation, sample, rds_path):
+    if sample and rds_path:
+        hp.save_hne_overlay_sample(rds_path, sample, {
+            "landmarks": lm or {"tic": [], "hne": []},
+            "polygons": polys or [],
+            "rotation": rotation or {"angle": 0, "flip_h": False, "flip_v": False},
+        })
+    return no_update
 
 
 # ---------------------------------------------------------------------------
@@ -608,4 +718,30 @@ clientside_callback(
     """,
     Output("hne_tic_coord_readout", "children"),
     Input("hne_tic_graph", "hoverData"),
+)
+
+# 下書きポリゴンの部分更新（clientside）: 頂点クリックで figure 全体を作り直さず
+# 「下書き」トレースだけ Plotly.restyle で更新 → go.Image 再描画・Loading を回避。
+clientside_callback(
+    """
+    function(draft) {
+        try {
+            var root = document.getElementById('hne_image_graph');
+            if (!root || !window.Plotly) { return window.dash_clientside.no_update; }
+            var gd = root.querySelector('.js-plotly-plot') || root;
+            if (!gd || !gd.data) { return window.dash_clientside.no_update; }
+            var idx = -1;
+            for (var i = 0; i < gd.data.length; i++) {
+                if (gd.data[i].name === '下書き') { idx = i; break; }
+            }
+            if (idx < 0) { return window.dash_clientside.no_update; }
+            var xs = [], ys = [];
+            (draft || []).forEach(function(v) { xs.push(v[0]); ys.push(v[1]); });
+            window.Plotly.restyle(gd, {x: [xs], y: [ys]}, [idx]);
+        } catch (e) { /* no-op */ }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("hne_draft_dummy", "data"),
+    Input("hne_polygon_draft_store", "data"),
 )

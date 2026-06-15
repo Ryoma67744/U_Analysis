@@ -150,5 +150,7 @@ def create_hne_overlay_tab():
         dcc.Store(id="hne_affine_store"),                        # {"M": [[...],[...]], "rms": float}
         dcc.Store(id="hne_polygons_store", data=[]),             # [{name, vertices(px)}]
         dcc.Store(id="hne_polygon_draft_store", data=[]),        # 下書き頂点 [[x,y],...]
+        dcc.Store(id="hne_save_dummy"),                          # 自動保存 callback のダミー出力
+        dcc.Store(id="hne_draft_dummy"),                         # 下書き clientside のダミー出力
         dcc.Download(id="hne_export_download"),
     ])
