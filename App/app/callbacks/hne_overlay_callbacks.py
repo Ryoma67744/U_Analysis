@@ -25,6 +25,7 @@ from dash import (callback, Input, Output, State, no_update, ctx, html, dcc,
 from app.services import hne_overlay as hn
 from app.services import hne_persistence as hp
 from app.config import CLUSTER_PRESET_COLORS
+from app.utils.color_utils import get_cluster_color_map
 
 logger = logging.getLogger("msi.hne_overlay")
 
@@ -65,9 +66,10 @@ _SPIKE_AXIS = dict(showspikes=True, spikemode="across", spikesnap="cursor",
                    spikethickness=1, spikedash="solid", spikecolor="#00b3b3")
 
 
-def _roi_color(i):
-    """ROI（領域）ごとの色。クラスタ色パレットを流用して個体内で区別できるようにする。"""
-    return CLUSTER_PRESET_COLORS[int(i) % len(CLUSTER_PRESET_COLORS)]
+def _roi_color_map(polys):
+    """ポリゴン群の表示名 → 色 のマップ（同名ROIは同色）。クラスタ配色を流用。"""
+    names = [(p.get("name") or f"領域{i + 1}") for i, p in enumerate(polys or [])]
+    return get_cluster_color_map(names)
 
 
 def _hex_to_rgba(hex_color, alpha):
@@ -423,11 +425,12 @@ def hne_tic_figure(sample, lm, affine, polys, mode, rotation, rds_path):
     # 変換済みポリゴン（アフィンがあれば）。ROIごとに色分け＋重心に領域名ラベル。
     if affine and affine.get("M") and polys:
         M = np.array(affine["M"], dtype=float)
+        cmap = _roi_color_map(polys)
         for i, p in enumerate(polys):
             v = p.get("vertices") or []
             if len(v) >= 3:
-                col = _roi_color(i)
                 nm = p.get("name") or f"領域{i + 1}"
+                col = cmap.get(str(nm), CLUSTER_PRESET_COLORS[0])
                 msi = hn.apply_affine(v, M)
                 xs = list(msi[:, 0]) + [msi[0, 0]]
                 ys = list(msi[:, 1]) + [msi[0, 1]]
@@ -491,16 +494,18 @@ def hne_image_figure(img, lm, polys, opacity, mode, draft, sample):
                              hoverinfo="skip", name="下書き"))
     # 確定ポリゴンを shape として再注入（ROIごとに色分け＋重心に領域名ラベル）。
     shapes = []
+    cmap = _roi_color_map(polys)
     for i, p in enumerate(polys or []):
         v = p.get("vertices") or []
         if len(v) >= 3:
-            col = _roi_color(i)
+            nm = p.get("name") or f"領域{i + 1}"
+            col = cmap.get(str(nm), CLUSTER_PRESET_COLORS[0])
             path = "M" + "L".join(f"{vx},{vy}" for vx, vy in v) + "Z"
             shapes.append(dict(type="path", path=path, line=dict(color=col),
                                fillcolor=_hex_to_rgba(col, 0.2)))
             cx, cy = _centroid(v)
             if cx is not None:
-                fig.add_annotation(x=cx, y=cy, text=(p.get("name") or f"領域{i + 1}"),
+                fig.add_annotation(x=cx, y=cy, text=nm,
                                    showarrow=False, font=dict(size=11, color=col),
                                    bgcolor="rgba(255,255,255,0.6)")
     fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), template="plotly_white",
