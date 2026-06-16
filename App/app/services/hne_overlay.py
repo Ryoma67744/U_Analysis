@@ -87,6 +87,35 @@ def affine_residual(src, dst, M):
     return float(np.sqrt(np.mean(np.sum(d * d, axis=1))))
 
 
+def apply_rotation(x, y, rotation):
+    """MSI 回転設定 {angle, flip_h, flip_v} で (x, y) を重心基準で反転+回転する。
+
+    `interactive_spatial._transform_coords` と同一結果の純関数（Dash 非依存）。
+    spot 表示・領域割当の双方に同じ個体の全 (x, y) を渡すこと（重心一致＝一貫）。
+    """
+    rotation = rotation or {}
+    angle = float(rotation.get("angle", 0) or 0)
+    flip_h = bool(rotation.get("flip_h", False))
+    flip_v = bool(rotation.get("flip_v", False))
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if angle == 0 and not flip_h and not flip_v:
+        return x, y
+    cx, cy = np.nanmean(x), np.nanmean(y)
+    if flip_h:
+        x = 2 * cx - x
+    if flip_v:
+        y = 2 * cy - y
+    if angle == 0:
+        return x, y
+    cx, cy = np.nanmean(x), np.nanmean(y)  # 反転後の中心で回転
+    rad = np.radians(angle)
+    cos_a, sin_a = np.cos(rad), np.sin(rad)
+    x_rot = cos_a * (x - cx) - sin_a * (y - cy) + cx
+    y_rot = sin_a * (x - cx) + cos_a * (y - cy) + cy
+    return x_rot, y_rot
+
+
 # ---------------------------------------------------------------------------
 # 点-内包判定（ベクトル化レイキャスト）
 # ---------------------------------------------------------------------------
@@ -155,6 +184,81 @@ def transform_polygons(polygons_px, M):
     return out
 
 
+def apply_region_groups(polygons):
+    """同じ `group` のポリゴンを1つの ROI に束ねるため、各ポリゴンの実効 `name` を
+    その group の代表名に置換した新リストを返す（vertices 等は保持）。
+
+    - 代表名: その group 内で最初に現れた非空 `name`。無ければ `f"領域{group}"`。
+    - `group` が未設定（None/空文字）のポリゴンは従来どおり自分の `name` のまま
+      （＝同名 ROI は引き続き name 単位で統合される）。
+    これを `assign_regions` の直前に適用すると、集計・色分け・エクスポートは既存ロジックの
+    まま「同 group → 同 ROI」に集約される。
+    """
+    polys = polygons or []
+
+    def _norm_group(p):
+        g = p.get("group")
+        if g is None:
+            return None
+        s = str(g).strip()
+        return s or None
+
+    rep: dict = {}
+    for p in polys:
+        g = _norm_group(p)
+        if g is None:
+            continue
+        nm = (p.get("name") or "").strip()
+        if nm and not rep.get(g):
+            rep[g] = nm
+
+    out = []
+    for i, p in enumerate(polys):
+        g = _norm_group(p)
+        if g is not None:
+            eff = rep.get(g) or f"領域{g}"
+        else:
+            eff = p.get("name") or f"領域{i + 1}"
+        out.append({**p, "name": eff})
+    return out
+
+
+def regions_from_overlay(sub_df, entry, x_col="SpatialX", y_col="SpatialY"):
+    """1切片の H&E オーバーレイ保存状態 `entry` から、sub_df 各 spot の領域名 Series を返す。
+
+    Args:
+        sub_df: 当該切片の plot_data 部分（SpatialX/SpatialY を持つ）
+        entry: {"polygons": [...], "landmarks": {"tic":[...], "hne":[...]},
+                "rotation": {...}}（hne_overlay_state.json の個体 entry）
+    Returns:
+        pd.Series（sub_df.index に揃う。割当不可は None）
+
+    affine は保存されないため対応点(landmarks)から再推定する。group 統合
+    (`apply_region_groups`) と MSI 回転(`apply_rotation`) を内部で適用。対応点が3対未満／
+    polygon が無ければ全 None を返す。
+    """
+    none_series = pd.Series([None] * len(sub_df), index=sub_df.index, dtype=object)
+    entry = entry or {}
+    polys = entry.get("polygons") or []
+    lm = entry.get("landmarks") or {}
+    tic = lm.get("tic") or []
+    hne = lm.get("hne") or []
+    npair = min(len(tic), len(hne))
+    if not polys or npair < 3:
+        return none_series
+    try:
+        M = estimate_affine(hne[:npair], tic[:npair])
+    except Exception:
+        return none_series
+    polys_msi = transform_polygons(apply_region_groups(polys), M)
+    rx, ry = apply_rotation(
+        pd.to_numeric(sub_df[x_col], errors="coerce").to_numpy(dtype=float),
+        pd.to_numeric(sub_df[y_col], errors="coerce").to_numpy(dtype=float),
+        entry.get("rotation"))
+    tmp = pd.DataFrame({x_col: rx, y_col: ry}, index=sub_df.index)
+    return assign_regions(tmp, polys_msi, x_col=x_col, y_col=y_col)
+
+
 # ---------------------------------------------------------------------------
 # 領域 × クラスタ 集計
 # ---------------------------------------------------------------------------
@@ -186,25 +290,32 @@ def region_cluster_label(region, cluster):
 # ---------------------------------------------------------------------------
 def build_region_cluster_export(df, expr_df, region_col="region",
                                 cluster_col="Cluster", cellid_col="CellID",
-                                feature_name_map=None, min_spots=1):
+                                sample_col=None, feature_name_map=None, min_spots=1):
     """region×cluster 群ごとの平均強度（行=群, 列=feature）を返す。
 
     Args:
         df: region 列 + Cluster + CellID を持つ DataFrame（領域割当済み）
         expr_df: CellID + feature(m/z) 列の強度行列（元 Spatial 強度を推奨）
+        sample_col: 指定すると群ラベルを `{sample}_{region}_{cluster}`（例 `E15_Brain_23`）
+            にして全切片を1ファイルに統合する。None なら `{region}_cluster{cluster}`（後方互換）。
         feature_name_map: {feature列名 -> 化合物名} があれば列名を化合物名へ。
         min_spots: この spot 数未満の群は出力しない。
     Returns:
-        DataFrame（先頭列 "Group" = region_cluster ラベル、以降 feature 平均）
+        DataFrame（先頭列 "Group" = 群ラベル、以降 feature 平均）。ROI 未割当（region=NA）は除外。
     """
     if region_col not in df.columns:
         return pd.DataFrame()
     sub = df[df[region_col].notna()].copy()
     if sub.empty or expr_df is None or expr_df.empty:
         return pd.DataFrame()
-    sub["__rc__"] = [region_cluster_label(r, c)
-                     for r, c in zip(sub[region_col].astype(str),
-                                     sub[cluster_col].astype(str))]
+    if sample_col and sample_col in sub.columns:
+        sub["__rc__"] = [f"{s}_{r}_{c}" for s, r, c in zip(
+            sub[sample_col].astype(str), sub[region_col].astype(str),
+            sub[cluster_col].astype(str))]
+    else:
+        sub["__rc__"] = [region_cluster_label(r, c)
+                         for r, c in zip(sub[region_col].astype(str),
+                                         sub[cluster_col].astype(str))]
     expr = expr_df.set_index(cellid_col)
     feat_cols = list(expr.columns)
 

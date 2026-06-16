@@ -67,9 +67,20 @@ _SPIKE_AXIS = dict(showspikes=True, spikemode="across", spikesnap="cursor",
 
 
 def _roi_color_map(polys):
-    """ポリゴン群の表示名 → 色 のマップ（同名ROIは同色）。クラスタ配色を流用。"""
+    """ポリゴン群の表示名 → 色 のマップ（同名ROIは同色）。クラスタ配色を流用。
+
+    同じ「グループ」のポリゴンは `hn.apply_region_groups` で同一の表示名へ揃えてから
+    呼ぶこと（→ 同グループ＝同色）。
+    """
     names = [(p.get("name") or f"領域{i + 1}") for i, p in enumerate(polys or [])]
     return get_cluster_color_map(names)
+
+
+def _group_str(g):
+    """グループ値を表セル用の文字列へ（None/空は ""）。"""
+    if g is None:
+        return ""
+    return str(g).strip()
 
 
 def _hex_to_rgba(hex_color, alpha):
@@ -99,19 +110,10 @@ def _sample_df(state, sample):
 def _apply_rotation(x, y, rotation):
     """MSI 回転設定（hne_rotation_store）で (x, y) を中心基準で反転+回転する。
 
-    `interactive_spatial._transform_coords` を再利用（重心基準の反転＋任意角回転）。
+    純ロジック `hne_overlay.apply_rotation` へ委譲（表示・割当・エクスポートで実装を統一）。
     表示・割当の双方に同じ個体の全 (SpatialX, SpatialY) を渡すこと（重心一致＝一貫）。
     """
-    rotation = rotation or {}
-    angle = float(rotation.get("angle", 0) or 0)
-    flip_h = bool(rotation.get("flip_h", False))
-    flip_v = bool(rotation.get("flip_v", False))
-    x = np.asarray(x, dtype=float)
-    y = np.asarray(y, dtype=float)
-    if angle == 0 and not flip_h and not flip_v:
-        return x, y
-    from app.callbacks.interactive_spatial import _transform_coords  # 遅延 import で循環回避
-    return _transform_coords(x, y, angle, flip_h, flip_v)
+    return hn.apply_rotation(x, y, rotation)
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +315,7 @@ def hne_polygon_commit(n, draft, polys):
     if not n or len(draft) < 3:
         return no_update, no_update
     polys = list(polys or [])
-    polys.append({"name": f"領域{len(polys) + 1}",
+    polys.append({"name": f"領域{len(polys) + 1}", "group": None,
                   "vertices": [[float(v[0]), float(v[1])] for v in draft]})
     return polys, []
 
@@ -345,7 +347,8 @@ def hne_polygon_draft_info(draft):
 )
 def hne_sync_polygon_table(polys):
     polys = polys or []
-    return [{"idx": i, "name": p.get("name") or f"領域{i + 1}",
+    return [{"idx": i, "group": _group_str(p.get("group")),
+             "name": p.get("name") or f"領域{i + 1}",
              "nv": len(p.get("vertices") or [])} for i, p in enumerate(polys)]
 
 
@@ -370,9 +373,11 @@ def hne_polygon_table_to_store(rows, polys):
     new = []
     for r in rows:
         i = int(r["idx"])                # 行の idx は現在の store 位置を指す
-        p = dict(polys[i])               # 頂点はそのまま、名前のみ表の値で更新
+        p = dict(polys[i])               # 頂点はそのまま、名前・グループのみ表の値で更新
         nm = (r.get("name") or "").strip()
         p["name"] = nm or p.get("name") or f"領域{len(new) + 1}"
+        gid = (str(r.get("group")).strip() if r.get("group") is not None else "")
+        p["group"] = gid or None         # 空欄は未グループ（＝従来どおり name 単位）
         new.append(p)
     if new == polys:                     # 変化なし（store→table 由来の再発火）→ 何もしない
         return no_update
@@ -423,8 +428,10 @@ def hne_tic_figure(sample, lm, affine, polys, mode, rotation, rds_path):
                                    text=[str(i + 1) for i in range(len(tx))],
                                    textposition="top center", name="対応点", hoverinfo="skip"))
     # 変換済みポリゴン（アフィンがあれば）。ROIごとに色分け＋重心に領域名ラベル。
+    # 同じ「グループ」のポリゴンは代表名へ揃えてから配色（＝同グループ＝同色・同ラベル）。
     if affine and affine.get("M") and polys:
         M = np.array(affine["M"], dtype=float)
+        polys = hn.apply_region_groups(polys)
         cmap = _roi_color_map(polys)
         for i, p in enumerate(polys):
             v = p.get("vertices") or []
@@ -493,7 +500,9 @@ def hne_image_figure(img, lm, polys, opacity, mode, draft, sample):
                              marker=dict(size=7, color="orange"),
                              hoverinfo="skip", name="下書き"))
     # 確定ポリゴンを shape として再注入（ROIごとに色分け＋重心に領域名ラベル）。
+    # 同じ「グループ」のポリゴンは代表名へ揃えてから配色（＝同グループ＝同色・同ラベル）。
     shapes = []
+    polys = hn.apply_region_groups(polys or [])
     cmap = _roi_color_map(polys)
     for i, p in enumerate(polys or []):
         v = p.get("vertices") or []
@@ -551,7 +560,8 @@ def hne_restore_sample(sample, rds_path):
                            "name": img_meta.get("name") or "H&E"}
     # 表データも同時に復元（store と表を同一ラウンドで整合させ、前個体の古い行で
     # hne_polygon_table_to_store が復元ポリゴンを上書きするのを防ぐ）。
-    rows = [{"idx": i, "name": p.get("name") or f"領域{i + 1}",
+    rows = [{"idx": i, "group": _group_str(p.get("group")),
+             "name": p.get("name") or f"領域{i + 1}",
              "nv": len(p.get("vertices") or [])} for i, p in enumerate(polys)]
     return image_store, lm, polys, rot, [], rows
 
@@ -604,7 +614,8 @@ def hne_assign_and_summarize(n, sample, polys, affine, rotation, rds_path):
     if d is None:
         return _alert("空間座標つきの個体を選択してください。", "warning")
     M = np.array(affine["M"], dtype=float)
-    polys_msi = hn.transform_polygons(polys, M)
+    # 同じ「グループ」のポリゴンは代表名へ揃えてから割当（＝同グループ＝1 ROI に合算）。
+    polys_msi = hn.transform_polygons(hn.apply_region_groups(polys), M)
     # ポリゴン（アフィン後）は回転後フレーム → spot 座標も同じ回転をかけてから割当。
     dd = d.copy()
     dd["SpatialX"], dd["SpatialY"] = _apply_rotation(
@@ -632,37 +643,30 @@ def hne_assign_and_summarize(n, sample, polys, affine, rotation, rds_path):
 
 
 # ---------------------------------------------------------------------------
-# MetaboAnalyst 用 CSV エクスポート（region×cluster 群平均・化合物名優先）
+# MetaboAnalyst 用 CSV エクスポート（全切片を1ファイルに統合・化合物名優先）
 # ---------------------------------------------------------------------------
+# 群ラベルは `{切片}_{ROI名}_{クラスタ}`（例 E15_Brain_23）。各切片の H&E オーバーレイ
+# 保存状態（hne_overlay_state.json）から ROI を割当てるため、複数切片を1つにまとめて出せる。
+# ROI 名が付いていない spot は除外。生成 CSV はサーバにも保存し保存先パスを表示する
+# （ブラウザのダウンロードが届かない環境でも結果を取得できるようにする保険）。
 @callback(
     Output("hne_export_download", "data"),
     Output("hne_export_info", "children"),
     Input("hne_export_btn", "n_clicks"),
-    State("hne_sample_select", "value"),
-    State("hne_polygons_store", "data"),
-    State("hne_affine_store", "data"),
-    State("hne_rotation_store", "data"),
     State("seurat_rds_path_store", "data"),
     State("seurat_cache_dir_store", "data"),
     prevent_initial_call=True,
 )
-def hne_export_csv(n, sample, polys, affine, rotation, rds_path, cache_dir_str):
+def hne_export_csv(n, rds_path, cache_dir_str):
     if not n:
         return no_update, no_update
-    if not (affine and affine.get("M") and polys):
-        return no_update, "位置合わせとポリゴンを先に行ってください。"
     state = _get_state(rds_path)
-    d = _sample_df(state, sample)
-    if d is None:
-        return no_update, "個体を選択してください。"
+    plot_data = state.get("plot_data")
+    if plot_data is None or "SpatialX" not in plot_data.columns:
+        return no_update, "インタラクティブ解析で空間座標つきの解析を読み込んでください。"
+    if "Sample" not in plot_data.columns:
+        return no_update, "plot_data に Sample 列がありません。"
     try:
-        M = np.array(affine["M"], dtype=float)
-        polys_msi = hn.transform_polygons(polys, M)
-        dd = d.copy()
-        dd["SpatialX"], dd["SpatialY"] = _apply_rotation(
-            dd["SpatialX"].to_numpy(float), dd["SpatialY"].to_numpy(float), rotation)
-        dd["region"] = hn.assign_regions(dd, polys_msi).values
-
         # 強度行列（元 Spatial 強度を推奨。RPCA の integrated は補正値の点に注意）
         from app.callbacks.interactive_callbacks import _bridge
         try:
@@ -679,17 +683,41 @@ def hne_export_csv(n, sample, polys, affine, rotation, rds_path, cache_dir_str):
             return no_update, "強度行列が見つかりません（Feature plot を一度開くと生成されます）。"
         expr_df = pd.read_parquet(expr_path)
 
+        # 全切片で、各切片の保存済みオーバーレイから region を割当てて統合
+        frames = []
+        for sample in sorted(str(s) for s in plot_data["Sample"].dropna().unique()):
+            d = plot_data[plot_data["Sample"].astype(str) == sample]
+            if d.empty:
+                continue
+            entry = hp.load_hne_sample(rds_path, sample)
+            dd = d.copy()
+            dd["region"] = hn.regions_from_overlay(d, entry).values
+            frames.append(dd)
+        if not frames:
+            return no_update, "対象個体がありません。"
+        alldf = pd.concat(frames, ignore_index=True)
+        if int(alldf["region"].notna().sum()) == 0:
+            return no_update, ("どの切片でも領域内 spot がありませんでした"
+                               "（各切片で対応点3点以上＋ROIを設定してください）。")
+
         # 化合物名マップ（ver4.21 アノテーション）
         fa = state.get("feature_annotations") or {}
         name_map = {k: (v.get("compound") or v.get("display_name"))
                     for k, v in fa.items() if (v.get("compound") or v.get("display_name"))}
 
-        out = hn.build_region_cluster_export(dd, expr_df, feature_name_map=name_map)
+        out = hn.build_region_cluster_export(
+            alldf, expr_df, sample_col="Sample", feature_name_map=name_map)
         if out.empty:
             return no_update, "出力対象（領域内 spot）がありませんでした。"
-        fname = f"metaboanalyst_{sample}_region_cluster.csv".replace(" ", "_")
-        return (dcc.send_data_frame(out.to_csv, fname, index=False),
-                f"{len(out)} 群 × {out.shape[1]-1} feature を出力しました。")
+
+        fname = "metaboanalyst_all_sections.csv"
+        n_sections = int(alldf.loc[alldf["region"].notna(), "Sample"].nunique())
+        saved = hp.save_metaboanalyst_csv(rds_path, fname, out)
+        msg = (f"{len(out)} 群 × {out.shape[1] - 1} feature を出力しました"
+               f"（{n_sections} 切片を統合）。")
+        if saved:
+            msg += f"  保存先: {saved}"
+        return dcc.send_data_frame(out.to_csv, fname, index=False), msg
     except Exception as e:  # noqa: BLE001
         logger.exception("H&E エクスポート失敗")
         return no_update, f"エクスポート失敗: {e}"

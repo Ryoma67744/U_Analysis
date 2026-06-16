@@ -98,12 +98,16 @@ def create_hne_overlay_tab():
                 dash_table.DataTable(
                     id="hne_polygon_table",
                     columns=[{"name": "#", "id": "idx", "editable": False},
+                             {"name": "グループ", "id": "group", "editable": True},
                              {"name": "領域名", "id": "name", "editable": True},
                              {"name": "頂点数", "id": "nv", "editable": False}],
                     data=[], editable=True, row_deletable=True,
                     style_cell={"fontSize": "0.8rem", "padding": "2px"},
                     style_table={"maxHeight": "160px", "overflowY": "auto", "marginTop": "6px"},
                 ),
+                html.Div("「グループ」に同じ番号を入れた複数ポリゴンは1つの領域として"
+                         "まとめて集計・出力されます（空欄なら領域名が同じものを統合）。",
+                         className="text-muted", style={"fontSize": "0.72rem"}),
                 dbc.Button("③ 領域を spot に割当 → 集計", id="hne_assign_btn",
                            size="sm", color="primary", className="mt-2 w-100"),
 

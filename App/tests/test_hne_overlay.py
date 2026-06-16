@@ -151,6 +151,103 @@ def test_build_region_cluster_export_empty_when_no_region():
     assert hn.build_region_cluster_export(df, expr).empty
 
 
+def test_build_region_cluster_export_sample_label_combines_sections():
+    """sample_col 指定で群ラベルが `{切片}_{ROI}_{クラスタ}`（例 E15_Brain_23）になり、
+    全切片が1つに統合される。ROI 無し（region=None）は除外。"""
+    df = pd.DataFrame({
+        "CellID": ["c1", "c2", "c3", "c4"],
+        "Sample": ["E15", "E15", "E16", "E15"],
+        "region": ["Brain", "Brain", "Brain", None],
+        "Cluster": ["23", "23", "23", "1"],
+    })
+    expr = pd.DataFrame({
+        "CellID": ["c1", "c2", "c3", "c4"],
+        "m/z 1": [10.0, 20.0, 100.0, 999.0],
+    })
+    out = hn.build_region_cluster_export(df, expr, sample_col="Sample")
+    assert set(out["Group"]) == {"E15_Brain_23", "E16_Brain_23"}
+    assert out[out["Group"] == "E15_Brain_23"].iloc[0]["m/z 1"] == 15.0  # mean(10,20)
+    assert out[out["Group"] == "E16_Brain_23"].iloc[0]["m/z 1"] == 100.0
+
+
+# --- グループ統合（同じ # で複数ポリゴンを1 ROI に） ---
+def test_apply_region_groups_merges_by_group_and_keeps_ungrouped():
+    polys = [
+        {"name": "lung-L", "group": "1", "vertices": [[0, 0]]},
+        {"name": "lung-R", "group": "1", "vertices": [[1, 1]]},
+        {"name": "heart", "group": "2", "vertices": [[2, 2]]},
+        {"name": "brain", "vertices": [[3, 3]]},            # group 未設定
+        {"name": "", "group": "9", "vertices": [[4, 4]]},   # group 内に非空名なし
+    ]
+    out = hn.apply_region_groups(polys)
+    assert out[0]["name"] == "lung-L"   # group1 代表 = 最初の非空名
+    assert out[1]["name"] == "lung-L"   # 同 group → 同名（=1 ROI に統合）
+    assert out[2]["name"] == "heart"
+    assert out[3]["name"] == "brain"    # group 未設定は自分の名前
+    assert out[4]["name"] == "領域9"    # 非空名が無ければ 領域{group}
+    assert out[1]["vertices"] == [[1, 1]]  # vertices は保持
+
+
+def test_apply_region_groups_merges_in_assignment():
+    """同 group の2ポリゴンに別名を付けても、割当後の領域名が1つに揃う。"""
+    polys = [
+        {"name": "A-left", "group": "7", "vertices": [(0, 0), (2, 0), (2, 2), (0, 2)]},
+        {"name": "A-right", "group": "7", "vertices": [(10, 10), (12, 10), (12, 12), (10, 12)]},
+    ]
+    df = pd.DataFrame({"SpatialX": [1.0, 11.0], "SpatialY": [1.0, 11.0]})
+    reg = hn.assign_regions(df, hn.apply_region_groups(polys))
+    assert reg.iloc[0] == "A-left" and reg.iloc[1] == "A-left"  # 両 spot が同一 ROI
+
+
+# --- 回転（純関数）---
+def test_apply_rotation_identity_and_flip():
+    x = np.array([0.0, 10.0]); y = np.array([0.0, 0.0])
+    ix, iy = hn.apply_rotation(x, y, None)
+    assert np.allclose(ix, x) and np.allclose(iy, y)
+    # flip_h: 中心(5,0)で左右反転 → x: 0->10, 10->0
+    fx, fy = hn.apply_rotation(x, y, {"flip_h": True})
+    assert np.allclose(fx, [10.0, 0.0]) and np.allclose(fy, y)
+
+
+def test_apply_rotation_matches_transform_coords():
+    """本番の `_transform_coords` と一致（dash 未導入環境ではスキップ）。"""
+    try:
+        from app.callbacks.interactive_spatial import _transform_coords
+    except Exception:
+        import pytest
+        pytest.skip("plotly/dash 未導入のためスキップ")
+    x = np.array([1.0, 5.0, 9.0, 3.0]); y = np.array([2.0, 8.0, 4.0, 6.0])
+    ax, ay = hn.apply_rotation(x, y, {"angle": 37.0, "flip_h": True, "flip_v": False})
+    bx, by = _transform_coords(x, y, 37.0, flip_h=True, flip_v=False)
+    assert np.allclose(ax, bx) and np.allclose(ay, by)
+
+
+# --- overlay 保存状態 → 領域割当（A・C 共通基盤）---
+def test_regions_from_overlay_assigns_with_identity_landmarks():
+    entry = {
+        "landmarks": {"hne": [[0, 0], [10, 0], [0, 10]],
+                      "tic": [[0, 0], [10, 0], [0, 10]]},  # 恒等アフィン
+        "polygons": [{"name": "脳", "vertices": [[0, 0], [10, 0], [10, 10], [0, 10]]}],
+        "rotation": {"angle": 0, "flip_h": False, "flip_v": False},
+    }
+    sub = pd.DataFrame({"SpatialX": [5.0, 100.0], "SpatialY": [5.0, 100.0]})
+    reg = hn.regions_from_overlay(sub, entry)
+    assert reg.iloc[0] == "脳"      # 領域内
+    assert reg.iloc[1] is None      # 領域外
+
+
+def test_regions_from_overlay_none_without_polygons_or_landmarks():
+    sub = pd.DataFrame({"SpatialX": [5.0], "SpatialY": [5.0]})
+    # polygon 無し
+    assert hn.regions_from_overlay(
+        sub, {"landmarks": {"hne": [[0, 0], [1, 0], [0, 1]],
+                            "tic": [[0, 0], [1, 0], [0, 1]]}, "polygons": []}).isna().all()
+    # 対応点が3対未満
+    assert hn.regions_from_overlay(
+        sub, {"landmarks": {"hne": [[0, 0]], "tic": [[0, 0]]},
+              "polygons": [{"name": "x", "vertices": [[0, 0], [9, 0], [9, 9], [0, 9]]}]}).isna().all()
+
+
 # --- MSI 回転に対する割当の不変性（H&E タブ回転機能） ---
 def test_assign_regions_invariant_under_shared_rotation():
     """spot とポリゴンに同じ回転+反転を適用すると領域割当は不変であることを確認。

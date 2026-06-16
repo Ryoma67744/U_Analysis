@@ -127,3 +127,34 @@ def load_hne_image_b64(rds_path, filename):
     except Exception as e:  # noqa: BLE001
         logger.warning("H&E 画像の読込に失敗: %s", e)
         return None
+
+
+def save_metaboanalyst_csv(rds_path, filename, df):
+    """MetaboAnalyst 用 CSV を `<RDS隣>/metaboanalyst_exports/<filename>` に atomic 保存し、
+    保存先パス（str）を返す。失敗時 None。
+
+    ブラウザのダウンロードが届かない/陳腐化した環境でも、サーバ上の確定パスから
+    結果を取得できるようにするための保険（dcc.Download と二重化）。
+    """
+    if not rds_path or not filename:
+        return None
+    try:
+        out_dir = Path(rds_path).parent / "metaboanalyst_exports"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / filename
+        fd, tmp_path = tempfile.mkstemp(dir=str(out_dir), suffix=".tmp",
+                                        prefix=path.stem + "_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+                df.to_csv(f, index=False)
+            os.replace(tmp_path, str(path))
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        return str(path)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("MetaboAnalyst CSV のサーバ保存に失敗: %s", e)
+        return None
