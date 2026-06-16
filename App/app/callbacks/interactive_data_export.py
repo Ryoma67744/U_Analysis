@@ -20,6 +20,8 @@ from dash.exceptions import PreventUpdate
 from app.callbacks.interactive_callbacks import _bridge, _interactive_data
 from app.utils.color_utils import cluster_display_name
 from app.utils.label_persistence import load_cluster_name_map
+from app.services import hne_overlay as hn
+from app.services import hne_persistence as hp
 from app.services.data_manager import (
     build_tims_input_paths,
     list_msi_files,
@@ -69,6 +71,39 @@ def _build_cluster_lookup(plot_data: pd.DataFrame, cluster_name_map: dict | None
         if pd.notna(sx) and pd.notna(sy):
             key = (sample, round(float(sx), 4), round(float(sy), 4))
             lookup[key] = cluster_display_name(cluster, cluster_name_map)
+    return lookup
+
+
+def _build_region_lookup(plot_data: pd.DataFrame, rds_path) -> dict:
+    """plot_data 全体から {(sample, round(x,4), round(y,4)): 領域名(ROI)} を構築。
+
+    各切片(sample)の H&E オーバーレイ保存状態（hne_overlay_state.json）から ROI を
+    割当てる（`hn.regions_from_overlay`）。overlay 未設定／ROI 未割当の spot は
+    キーを作らない（出力では空欄になる）。キーは `_build_cluster_lookup` と同方式
+    （元 SpatialX/Y を 4 桁丸め）で、クラスタ列と同じ行に突合される。
+    """
+    lookup: dict = {}
+    if (plot_data is None or not rds_path
+            or "SpatialX" not in plot_data.columns
+            or "SpatialY" not in plot_data.columns
+            or "Sample" not in plot_data.columns):
+        return lookup
+    for sample in plot_data["Sample"].dropna().astype(str).unique():
+        sub = plot_data[plot_data["Sample"].astype(str) == sample]
+        if sub.empty:
+            continue
+        try:
+            entry = hp.load_hne_sample(rds_path, sample)
+            region = hn.regions_from_overlay(sub, entry)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[DataExport] %s: 領域割当に失敗: %s", sample, e)
+            continue
+        sx = pd.to_numeric(sub["SpatialX"], errors="coerce").to_numpy(float)
+        sy = pd.to_numeric(sub["SpatialY"], errors="coerce").to_numpy(float)
+        for x, y, r in zip(sx, sy, region.to_numpy()):
+            if r is None or pd.isna(x) or pd.isna(y):
+                continue
+            lookup[(sample, round(float(x), 4), round(float(y), 4))] = str(r)
     return lookup
 
 
@@ -301,15 +336,17 @@ def _build_all_method_lookups(
 # ---------------------------------------------------------------------------
 
 def _export_desi(
-    data_folder: str, method_lookups: OrderedDict
+    data_folder: str, method_lookups: OrderedDict, region_lookup: dict | None = None
 ) -> tuple[bytes, str]:
     """DESI .txt → Excel バイト列（サンプル別シート + 手法別クラスター列）。
 
     複数手法の場合は手法名を列ヘッダーにして横並びで配置する。
     単一手法の場合は従来通り「UMAP cluster」列1つ。
+    region_lookup を渡すと最終列に「領域名」(ROI) を付与する（未割当は空欄）。
 
     Returns (excel_bytes, filename)
     """
+    add_region = region_lookup is not None
     file_stems = list_msi_files(data_folder)
     if not file_stems:
         raise ValueError("DESI .txt ファイルが見つかりません")
@@ -352,9 +389,13 @@ def _export_desi(
                         padded.extend(method_names)
                     else:
                         padded.append("UMAP cluster")
+                    if add_region:
+                        padded.append("領域名")  # 最終列に ROI
                 else:
                     # 行2〜5: ヘッダー行 → 空セル
                     padded.extend([""] * len(method_names) if is_multi else [""])
+                    if add_region:
+                        padded.append("")
                 output_rows.append(padded)
 
             # データ行（行5以降）— 各行に全手法のクラスター値を横並びで追加
@@ -379,6 +420,13 @@ def _export_desi(
                         key = (matched_sample, x_val, y_val)
                         cluster_val = method_lookups[method_name].get(key, "")
                     padded.append(cluster_val)
+
+                # 最終列に領域名(ROI)
+                if add_region:
+                    region_val = ""
+                    if x_val is not None and y_val is not None:
+                        region_val = region_lookup.get((matched_sample, x_val, y_val), "")
+                    padded.append(region_val)
 
                 output_rows.append(padded)
 
@@ -411,12 +459,14 @@ def _read_tims_file(file_path: str) -> pd.DataFrame:
 
 
 def _export_tims(
-    data_folder: str, method_lookups: OrderedDict, fmt: str
+    data_folder: str, method_lookups: OrderedDict, fmt: str,
+    region_lookup: dict | None = None
 ) -> tuple[bytes, str]:
     """TIMS 入力ファイルに手法別クラスター列を追加してエクスポート。
 
     複数手法の場合は手法名を列名にして横並びで配置する。
     単一手法の場合は従来通り「UMAP cluster」列1つ。
+    region_lookup を渡すと最終列に「領域名」(ROI) を付与する（未割当は空欄）。
 
     Returns (file_bytes, filename)
     """
@@ -469,6 +519,13 @@ def _export_tims(
             col_name = method_name if is_multi else "UMAP cluster"
             df[col_name] = [
                 cluster_lookup.get((m, x, y), "") if m else ""
+                for m, x, y in row_keys
+            ]
+
+        # 最終列に領域名(ROI)
+        if region_lookup is not None:
+            df["領域名"] = [
+                region_lookup.get((m, x, y), "") if m else ""
                 for m, x, y in row_keys
             ]
 
@@ -554,13 +611,18 @@ def _do_export(
         if not method_lookups:
             return no_update, "クラスターデータを構築できませんでした。"
 
+        # 領域名(ROI) ルックアップ（読込中 RDS の H&E オーバーレイ保存状態から）。
+        # 設定が無ければ空 dict（最終列は空欄）。
+        region_lookup = _build_region_lookup(plot_data, loaded_rds)
+
         is_desi = (ms_instrument or "").upper() == "DESI"
 
         if is_desi:
-            file_bytes, filename = _export_desi(data_folder, method_lookups)
+            file_bytes, filename = _export_desi(data_folder, method_lookups, region_lookup)
         else:
             fmt = export_format or "xlsx"
-            file_bytes, filename = _export_tims(data_folder, method_lookups, fmt)
+            file_bytes, filename = _export_tims(
+                data_folder, method_lookups, fmt, region_lookup)
 
         # ステータスメッセージ
         n_methods = len(method_lookups)
