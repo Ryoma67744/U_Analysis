@@ -171,6 +171,36 @@ def _create_analysis_settings_subtab():
                                        "marginTop": "2px", "display": "block"},
                             ),
                         ]),
+                        # 正規化設定（DESI/TIMS共通・UMAP解析時のみ表示）
+                        html.Div(className="param-group", style={"marginTop": "15px"}, children=[
+                            html.H5("正規化 (LogNormalize)"),
+                            dbc.RadioItems(
+                                id="normalize_input",
+                                options=[
+                                    {"label": "ON（LogNormalize を実行）", "value": "ON"},
+                                    {"label": "OFF（正規化済み入力: SCiLS RMS 等）", "value": "OFF"},
+                                ],
+                                value="ON",
+                            ),
+                            html.Div(style={"marginTop": "8px"}, children=[
+                                html.Small("OFF時の変換 (NORM_MODE)", className="fw-bold"),
+                                dbc.Select(
+                                    id="norm_mode",
+                                    options=[
+                                        {"label": "log1p（log変換・推奨）", "value": "log1p"},
+                                        {"label": "sqrt（平方根）", "value": "sqrt"},
+                                        {"label": "none（変換なし・生RMS）", "value": "none"},
+                                    ],
+                                    value="log1p",
+                                    style={"width": "70%"},
+                                ),
+                            ]),
+                            dbc.FormText(
+                                "TIMS(SCiLS RMS等で正規化済み)は既定OFF＝二重正規化を回避。"
+                                "DESI(生データ)は既定ON。解析法に応じて自動切替（手動変更可）。",
+                                className="text-muted small",
+                            ),
+                        ]),
                         # TIMS イオンモード設定（TIMS選択時のみ表示）
                         html.Div(
                             id="tims_ion_settings",

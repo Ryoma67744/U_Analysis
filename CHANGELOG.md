@@ -12,6 +12,32 @@
 
 ---
 
+## 2026-06-17_ver7.9
+
+### 機能追加: 正規化(LogNormalize)の on/off をアプリの解析実行時に指定 ＋ TIMS を ver4 に切替
+
+**背景**: TIMS は SCiLS で RMS 正規化済みで取り込むが、従来アプリの TIMS テンプレ(ver3)は常に
+LogNormalize を適用しており、RMS と合わせて**二重正規化**になっていた（出力CSVの値域 max≈7.42 で確認）。
+DESI は生データのため LogNormalize 1回で適正。
+
+**変更**:
+- **TIMS テンプレを ver4(260525)** に切替（`App/app/config.py`）。ver4 は二重正規化回避スイッチ
+  `INPUT_NORMALIZED`/`NORM_MODE`（`apply_input_norm`）に加え、過補正の防止（バッチ補正を技術的
+  バッチ=sample のみに限定し、生物学的な切片差は温存）、無補正PCAの併走出力 (`PCA (uncorrected)`)、
+  マーカーCSVが探索的なピクセル順位である旨の注記、を内蔵する。
+- **正規化トグルをアプリUIに追加**（解析設定→「正規化 (LogNormalize)」）。ON=LogNormalize 実行 /
+  OFF=正規化済み入力（OFF時の変換 `NORM_MODE` を none/sqrt/log1p から選択・既定 log1p）。
+  既定は **TIMS=OFF / DESI=ON**（解析法で自動切替・手動上書き可）。
+- `generate_v8_config` が UI の選択を R の `INPUT_NORMALIZED`/`NORM_MODE` に注入
+  （既存の `_replace_assign` 機構を流用）。
+- **DESI v14** にも同じ `apply_input_norm` を移植（既定 ON＝従来どおり LogNormalize。toggle で OFF 可）。
+
+**影響（挙動変更）**: 今後の TIMS 解析は「正規化1回」かつ「生物学的な切片差を補正で消さない」
+（ver4 の過補正防止）ため、過去(ver3)のクラスタリング結果とは変わる（方法論的により適正）。
+既存の二重正規化 RDS を単一化するには、正規化 OFF で再解析が必要。
+
+---
+
 ## 2026-06-17_ver7.8
 
 ### 変更: MetaboAnalyst 出力の群ラベルに `cluster` を明記

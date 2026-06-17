@@ -404,6 +404,17 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
     if params.get("mz_align_ppm"):
         lines = _replace_assign(lines, "MZ_ALIGN_PPM", str(params["mz_align_ppm"]))
 
+    # --- 入力正規化ポリシー (二重正規化の回避: INPUT_NORMALIZED / NORM_MODE) ---
+    # UIの「正規化 ON/OFF」を反映。OFF(=正規化済み入力)なら INPUT_NORMALIZED=TRUE で
+    # LogNormalize をスキップし、NORM_MODE("none"/"sqrt"/"log1p")のみ適用する。
+    if "input_normalized" in params:
+        lines = _replace_assign(
+            lines, "INPUT_NORMALIZED",
+            "TRUE" if params["input_normalized"] else "FALSE",
+        )
+    if params.get("norm_mode"):
+        lines = _replace_assign(lines, "NORM_MODE", _r_str(params["norm_mode"]))
+
     # --- DESI ROI 設定の注入 (USE_ROI_AS_SAMPLE / ROI_FILTER) ---
     # ROI 列があれば各 ROI を別サンプルとして Multi-sample mode (Harmony/RPCA) で
     # 統合解析する設定。analysis_callbacks.py で DESI 通常解析時のみセットされる。

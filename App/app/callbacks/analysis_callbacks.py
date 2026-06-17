@@ -117,7 +117,9 @@ def toggle_sidebar_content(active_tab):
      State("cal_per_sample_store", "data"),
      State("cal_sample_selector_prev", "data"),
      State("desi_use_roi_as_sample", "value"),
-     State("desi_roi_filter_store", "data")],
+     State("desi_roi_filter_store", "data"),
+     State("normalize_input", "value"),
+     State("norm_mode", "value")],
     prevent_initial_call=True,
 )
 def run_analysis(
@@ -148,6 +150,7 @@ def run_analysis(
     cal_sample_selector_prev,
     desi_use_roi_as_sample,
     desi_roi_filter_list,
+    normalize_input, norm_mode,
 ):
     if not n_clicks:
         return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
@@ -244,6 +247,9 @@ def run_analysis(
                 "logfc_thresh": float(logfc_thresh) if logfc_thresh else 0.25,
                 "resume_from_rds": bool(resume_rds),
                 "resume_rds_paths": [],
+                # 入力正規化ポリシー（UIトグル）: OFF=正規化済み入力 → INPUT_NORMALIZED=TRUE
+                "input_normalized": (normalize_input == "OFF"),
+                "norm_mode": norm_mode or "log1p",
             }
 
             if resume_rds and rds_folder:
