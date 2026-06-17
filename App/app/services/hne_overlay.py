@@ -334,3 +334,35 @@ def build_region_cluster_export(df, expr_df, region_col="region",
         out = out.rename(columns={c: feature_name_map.get(c, c) for c in out.columns})
     out.insert(0, "Group", labels)
     return out
+
+
+def build_groups_table(df, sample_col="Sample", region_col="region",
+                       cluster_col="Cluster", cellid_col="CellID"):
+    """region 付き行から `{CellID, Group}` の小さな表を返す（B経路で R に渡す入力）。
+
+    Group ラベルは `build_region_cluster_export`（sample_col 指定時）と**同一規約**
+    `{sample}_{region}_{cluster}`（例 `E15_Brain_23`）。ROI 未割当（region=NA）は除外。
+    巨大な強度行列を作らず、R 側で対象 cell の群平均だけ計算させるための入力になる。
+    """
+    cols = [cellid_col, "Group"]
+    if region_col not in df.columns or cellid_col not in df.columns:
+        return pd.DataFrame(columns=cols)
+    sub = df[df[region_col].notna()]
+    if sub.empty:
+        return pd.DataFrame(columns=cols)
+    groups = [f"{s}_{r}_{c}" for s, r, c in zip(
+        sub[sample_col].astype(str), sub[region_col].astype(str),
+        sub[cluster_col].astype(str))]
+    return pd.DataFrame({cellid_col: sub[cellid_col].astype(str).to_numpy(),
+                        "Group": groups})
+
+
+def rename_export_columns(df, feature_name_map):
+    """先頭 `Group` 列を保ったまま feature 列名（m/z）を化合物名へ置換して返す。
+
+    `build_region_cluster_export` と同一の置換ルール（map に無い列はそのまま）。
+    R 集計（B経路）が返す m/z 列名 CSV に Python 側で適用する。
+    """
+    if df is None or getattr(df, "empty", True) or not feature_name_map:
+        return df
+    return df.rename(columns={c: feature_name_map.get(c, c) for c in df.columns})

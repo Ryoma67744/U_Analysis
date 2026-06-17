@@ -354,6 +354,61 @@ class SeuratBridge:
                 f"Feature extraction failed:\n{stderr_text[:2000]}"
             )
 
+    def export_region_cluster_means(self, rds_path, groups_df, out_csv_path=None,
+                                    assay=None, layer="data", timeout=600):
+        """ROI×クラスタ群ごとの平均強度を R 側で直接計算し DataFrame を返す（B経路）。
+
+        巨大な expression_matrix.parquet を作らず、RDS の同一 data layer
+        （extract_seurat_data.R と同じ JoinLayers→LayerData(layer="data")）から
+        対象 cell のみ sparse 集計する。
+        groups_df: 列 [CellID, Group]（ROI 割当済みのみ）。
+        Returns: pd.DataFrame（先頭列 Group, 以降 feature(m/z) 平均）。
+        """
+        from app.utils.file_locks import get_or_create_lock
+        cache_dir = self._get_cache_dir(rds_path)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        out_csv_path = Path(out_csv_path) if out_csv_path else (
+            cache_dir / "metaboanalyst_region_cluster_means.csv")
+        groups_csv = cache_dir / "_hne_groups_tmp.csv"
+
+        script = R_HELPERS_DIR / "export_region_cluster_means.R"
+        if not Path(script).exists():
+            raise RuntimeError(f"R script not found: {script}")
+        rscript = str(RSCRIPT_PATH)
+        if not Path(rscript).exists():
+            rscript = "Rscript"
+
+        lock = get_or_create_lock(out_csv_path, timeout=timeout)
+        with lock:
+            groups_df.to_csv(groups_csv, index=False, encoding="utf-8")
+            cmd = [rscript, "--vanilla", str(script), str(rds_path),
+                   str(groups_csv), str(out_csv_path)]
+            if assay:
+                cmd += ["--assay", str(assay)]
+            if layer:
+                cmd += ["--layer", str(layer)]
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, timeout=timeout,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(
+                    f"Region×cluster export timed out: rds={rds_path}") from e
+            finally:
+                try:
+                    groups_csv.unlink()
+                except OSError:
+                    pass
+            if result.returncode != 0:
+                stderr_text = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
+                raise RuntimeError(
+                    f"Region×cluster export failed:\n{stderr_text[:2000]}")
+            if not out_csv_path.exists():
+                raise RuntimeError(
+                    f"Region×cluster export produced no output: {out_csv_path}")
+            return pd.read_csv(out_csv_path)
+
     def _load_extracted_data(self, cache_dir: Path) -> dict:
         """キャッシュディレクトリからデータを読み込み"""
         # plot_data: Parquet優先、CSV fallback

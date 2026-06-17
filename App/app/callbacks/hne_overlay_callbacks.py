@@ -14,6 +14,7 @@
 import base64
 import io
 import logging
+import os
 
 import numpy as np
 import pandas as pd
@@ -646,47 +647,99 @@ def hne_assign_and_summarize(n, sample, polys, affine, rotation, rds_path):
 
 
 # ---------------------------------------------------------------------------
-# MetaboAnalyst 用 CSV エクスポート（全切片を1ファイルに統合・化合物名優先）
+# MetaboAnalyst 用 CSV エクスポート（全切片統合・B:R側で直接群平均・C:キャッシュ・2段プログレス）
 # ---------------------------------------------------------------------------
-# 群ラベルは `{切片}_{ROI名}_{クラスタ}`（例 E15_Brain_23）。各切片の H&E オーバーレイ
-# 保存状態（hne_overlay_state.json）から ROI を割当てるため、複数切片を1つにまとめて出せる。
-# ROI 名が付いていない spot は除外。生成 CSV はサーバにも保存し保存先パスを表示する
-# （ブラウザのダウンロードが届かない環境でも結果を取得できるようにする保険）。
+# 群ラベルは `{切片}_{ROI名}_{クラスタ}`（例 E15_Brain_23）。巨大 expression_matrix を作らず
+# R 側で対象 cell の群平均だけを sparse 計算する（B）。同条件なら前回CSVを即返す（C）。押下で
+# 即「作成中…」を表示し、完了/失敗を必ず返す（無反応の解消）。R が無い/失敗なら parquet 経路へ
+# 自動フォールバック。ROI 未割当 spot は除外。生成 CSV はサーバにも保存し保存先パスを表示。
+
+_HNE_EXPORT_FNAME = "metaboanalyst_all_sections.csv"
+_HNE_PROG_SHOW = {"display": "block", "marginTop": "6px"}
+_HNE_PROG_HIDE = {"display": "none"}
+
+
+def _export_cache_key(rds_path, state):
+    """エクスポート結果を一意に決めるキャッシュキー（RDS/ROI状態/化合物名に依存）。"""
+    import hashlib
+    import json as _json
+
+    def _mt(p):
+        try:
+            return str(os.path.getmtime(p))
+        except Exception:
+            return "0"
+    fa = (state.get("feature_annotations") or {}) if state else {}
+    fa_key = _json.dumps(
+        {k: (v.get("compound") or v.get("display_name") or "")
+         for k, v in sorted(fa.items())}, ensure_ascii=False, sort_keys=True)
+    sp = hp.hne_state_path(rds_path)
+    raw = "|".join([str(rds_path), _mt(rds_path),
+                    _mt(sp) if sp else "0", fa_key, "data"])
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
+
+
+# Stage A: 押下で即「作成中…」表示＋ボタン無効化＋Stage B をトリガ（btn→A→trigger→B の一方向）
+@callback(
+    Output("hne_export_progress_container", "style"),
+    Output("hne_export_progress_label", "children"),
+    Output("hne_export_progress_bar", "value"),
+    Output("hne_export_progress_bar", "animated"),
+    Output("hne_export_btn", "disabled"),
+    Output("hne_export_trigger", "data"),
+    Input("hne_export_btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def hne_export_stage_a(n):
+    if not n:
+        return (no_update,) * 6
+    return (_HNE_PROG_SHOW, "CSV作成中… 強度を集計しています", 100, True, True, {"n": n})
+
+
+# Stage B: 本体（全体 try で失敗時も必ずメッセージ＋ボタン復帰＝無反応を根絶）
 @callback(
     Output("hne_export_download", "data"),
     Output("hne_export_info", "children"),
-    Input("hne_export_btn", "n_clicks"),
+    Output("hne_export_progress_container", "style", allow_duplicate=True),
+    Output("hne_export_progress_label", "children", allow_duplicate=True),
+    Output("hne_export_progress_bar", "animated", allow_duplicate=True),
+    Output("hne_export_btn", "disabled", allow_duplicate=True),
+    Input("hne_export_trigger", "data"),
     State("seurat_rds_path_store", "data"),
     State("seurat_cache_dir_store", "data"),
     prevent_initial_call=True,
 )
-def hne_export_csv(n, rds_path, cache_dir_str):
-    if not n:
-        return no_update, no_update
-    state = _get_state(rds_path)
-    plot_data = state.get("plot_data")
-    if plot_data is None or "SpatialX" not in plot_data.columns:
-        return no_update, "インタラクティブ解析で空間座標つきの解析を読み込んでください。"
-    if "Sample" not in plot_data.columns:
-        return no_update, "plot_data に Sample 列がありません。"
-    try:
-        # 強度行列（元 Spatial 強度を推奨。RPCA の integrated は補正値の点に注意）
-        from app.callbacks.interactive_callbacks import _bridge
-        try:
-            _bridge.ensure_expression_matrix(rds_path)
-        except Exception:
-            pass
-        from pathlib import Path
-        expr_path = None
-        if cache_dir_str:
-            cand = Path(cache_dir_str) / "expression_matrix.parquet"
-            if cand.exists():
-                expr_path = cand
-        if expr_path is None:
-            return no_update, "強度行列が見つかりません（Feature plot を一度開くと生成されます）。"
-        expr_df = pd.read_parquet(expr_path)
+def hne_export_stage_b(trigger, rds_path, cache_dir_str):
+    if not trigger:
+        return (no_update,) * 6
 
-        # 全切片で、各切片の保存済みオーバーレイから region を割当てて統合
+    def fail(msg):
+        return no_update, msg, _HNE_PROG_HIDE, "失敗", False, False
+
+    def ok(download, msg):
+        return download, msg, _HNE_PROG_HIDE, "完了", False, False
+
+    from pathlib import Path
+    try:
+        state = _get_state(rds_path)
+        plot_data = state.get("plot_data")
+        if plot_data is None or "SpatialX" not in plot_data.columns:
+            return fail("インタラクティブ解析で空間座標つきの解析を読み込んでください。")
+        if "Sample" not in plot_data.columns:
+            return fail("plot_data に Sample 列がありません。")
+
+        # --- C: キャッシュヒット（ROI/RDS/化合物名 不変なら即返す） ---
+        key = _export_cache_key(rds_path, state)
+        if hp.load_export_cache_key(rds_path, _HNE_EXPORT_FNAME) == key:
+            cached = hp.metaboanalyst_csv_path(rds_path, _HNE_EXPORT_FNAME)
+            if cached and Path(cached).exists():
+                out = pd.read_csv(cached)
+                return ok(
+                    dcc.send_data_frame(out.to_csv, _HNE_EXPORT_FNAME, index=False),
+                    f"{len(out)} 群 × {out.shape[1] - 1} feature を出力しました"
+                    f"（キャッシュ）。  保存先: {cached}")
+
+        # --- 全切片で region 割当 → CellID,Group の小さな表（B経路の R 入力） ---
         frames = []
         for sample in sorted(str(s) for s in plot_data["Sample"].dropna().unique()):
             d = plot_data[plot_data["Sample"].astype(str) == sample]
@@ -697,33 +750,53 @@ def hne_export_csv(n, rds_path, cache_dir_str):
             dd["region"] = hn.regions_from_overlay(d, entry).values
             frames.append(dd)
         if not frames:
-            return no_update, "対象個体がありません。"
+            return fail("対象個体がありません。")
         alldf = pd.concat(frames, ignore_index=True)
         if int(alldf["region"].notna().sum()) == 0:
-            return no_update, ("どの切片でも領域内 spot がありませんでした"
-                               "（各切片で対応点3点以上＋ROIを設定してください）。")
+            return fail("どの切片でも領域内 spot がありませんでした"
+                        "（各切片で対応点3点以上＋ROIを設定してください）。")
+        groups_df = hn.build_groups_table(alldf, sample_col="Sample")
+        if groups_df.empty:
+            return fail("出力対象（領域内 spot）がありませんでした。")
 
-        # 化合物名マップ（ver4.21 アノテーション）
+        # --- B: R 側で群平均を直接計算（巨大行列を作らない）。失敗時は parquet 経路へ ---
+        from app.callbacks.interactive_callbacks import _bridge
+        try:
+            out_raw = _bridge.export_region_cluster_means(rds_path, groups_df)
+        except Exception as e_r:
+            logger.warning("R 集計に失敗、parquet 経路へフォールバック: %s", e_r)
+            try:
+                _bridge.ensure_expression_matrix(rds_path)
+            except Exception:
+                pass
+            expr_path = None
+            if cache_dir_str:
+                cand = Path(cache_dir_str) / "expression_matrix.parquet"
+                if cand.exists():
+                    expr_path = cand
+            if expr_path is None:
+                return fail("強度行列を用意できませんでした（R / Feature plot を確認してください）。")
+            expr_df = pd.read_parquet(expr_path)
+            out_raw = hn.build_region_cluster_export(alldf, expr_df, sample_col="Sample")
+        if out_raw is None or getattr(out_raw, "empty", True):
+            return fail("出力対象（領域内 spot）がありませんでした。")
+
+        # --- 化合物名へ列名置換（ver4.21 アノテーション）→ 保存 ＋ キャッシュキー保存 ---
         fa = state.get("feature_annotations") or {}
         name_map = {k: (v.get("compound") or v.get("display_name"))
                     for k, v in fa.items() if (v.get("compound") or v.get("display_name"))}
-
-        out = hn.build_region_cluster_export(
-            alldf, expr_df, sample_col="Sample", feature_name_map=name_map)
-        if out.empty:
-            return no_update, "出力対象（領域内 spot）がありませんでした。"
-
-        fname = "metaboanalyst_all_sections.csv"
+        out = hn.rename_export_columns(out_raw, name_map)
+        saved = hp.save_metaboanalyst_csv(rds_path, _HNE_EXPORT_FNAME, out)
+        hp.save_export_cache_key(rds_path, _HNE_EXPORT_FNAME, key)
         n_sections = int(alldf.loc[alldf["region"].notna(), "Sample"].nunique())
-        saved = hp.save_metaboanalyst_csv(rds_path, fname, out)
         msg = (f"{len(out)} 群 × {out.shape[1] - 1} feature を出力しました"
                f"（{n_sections} 切片を統合）。")
         if saved:
             msg += f"  保存先: {saved}"
-        return dcc.send_data_frame(out.to_csv, fname, index=False), msg
+        return ok(dcc.send_data_frame(out.to_csv, _HNE_EXPORT_FNAME, index=False), msg)
     except Exception as e:  # noqa: BLE001
         logger.exception("H&E エクスポート失敗")
-        return no_update, f"エクスポート失敗: {e}"
+        return fail(f"エクスポート失敗: {e}")
 
 
 # ---------------------------------------------------------------------------
