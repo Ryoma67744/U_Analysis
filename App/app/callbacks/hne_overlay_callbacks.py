@@ -83,6 +83,13 @@ def _group_str(g):
     return str(g).strip()
 
 
+def _polygon_rows(polys):
+    """ポリゴン群 → 領域テーブルの行リスト（# は並び順で振り直す）。"""
+    return [{"idx": i, "group": _group_str(p.get("group")),
+             "name": p.get("name") or f"領域{i + 1}",
+             "nv": len(p.get("vertices") or [])} for i, p in enumerate(polys or [])]
+
+
 def _hex_to_rgba(hex_color, alpha):
     """'#RRGGBB' → 'rgba(r,g,b,alpha)'（塗りの半透明用）。"""
     h = str(hex_color).lstrip("#")
@@ -305,6 +312,7 @@ def hne_polygon_draft(click, undo_n, clear_n, mode, draft):
 @callback(
     Output("hne_polygons_store", "data", allow_duplicate=True),
     Output("hne_polygon_draft_store", "data", allow_duplicate=True),
+    Output("hne_polygon_table", "data", allow_duplicate=True),
     Input("hne_polygon_commit", "n_clicks"),
     State("hne_polygon_draft_store", "data"),
     State("hne_polygons_store", "data"),
@@ -313,11 +321,11 @@ def hne_polygon_draft(click, undo_n, clear_n, mode, draft):
 def hne_polygon_commit(n, draft, polys):
     draft = list(draft or [])
     if not n or len(draft) < 3:
-        return no_update, no_update
+        return no_update, no_update, no_update
     polys = list(polys or [])
     polys.append({"name": f"領域{len(polys) + 1}", "group": None,
                   "vertices": [[float(v[0]), float(v[1])] for v in draft]})
-    return polys, []
+    return polys, [], _polygon_rows(polys)
 
 
 # ---------------------------------------------------------------------------
@@ -338,25 +346,19 @@ def hne_polygon_draft_info(draft):
 
 
 # ---------------------------------------------------------------------------
-# ポリゴン名テーブル同期（store → table。名前は store に保持）
+# 表編集（改名・グループ・行削除）→ store ＋ 表（# 振り直し）を同一コールバックで更新。
 # ---------------------------------------------------------------------------
+# store→table（同期）と table→store（編集反映）を別々の2コールバックにすると、
+# `hne_polygon_table.data ↔ hne_polygons_store.data` の循環依存になり、Dash の
+# クライアント描画器（dash_renderer）が "Dependency Cycle Found" でクラッシュする
+# （＝ローディングスピナーが出ない・全体が重くなる）。そこで1コールバックに統合する。
+# table.data は本コールバックの Input かつ Output（自己参照）だが、renderer は自己参照を
+# 内部で分割して扱う（`prop__output` ノード化）ため循環にはならない。store 更新後の表の
+# 再生成（commit/restore 由来）は、store を書く各コールバック（commit/restore）が自ら
+# 表も返すことで賄う。
 @callback(
-    Output("hne_polygon_table", "data"),
-    Input("hne_polygons_store", "data"),
-    prevent_initial_call=True,
-)
-def hne_sync_polygon_table(polys):
-    polys = polys or []
-    return [{"idx": i, "group": _group_str(p.get("group")),
-             "name": p.get("name") or f"領域{i + 1}",
-             "nv": len(p.get("vertices") or [])} for i, p in enumerate(polys)]
-
-
-# ---------------------------------------------------------------------------
-# 表編集（改名・行削除）→ store へ反映（store→table と循環するためループ防止に等価比較）
-# ---------------------------------------------------------------------------
-@callback(
-    Output("hne_polygons_store", "data"),
+    Output("hne_polygons_store", "data", allow_duplicate=True),
+    Output("hne_polygon_table", "data", allow_duplicate=True),
     Input("hne_polygon_table", "data"),
     State("hne_polygons_store", "data"),
     prevent_initial_call=True,
@@ -369,7 +371,7 @@ def hne_polygon_table_to_store(rows, polys):
     # 何もしない。改名・1行削除・全削除（rows=[]）は通す。
     if (any(not (0 <= i < len(polys)) for i in idxs)
             or len(set(idxs)) != len(idxs) or len(rows) > len(polys)):
-        return no_update
+        return no_update, no_update
     new = []
     for r in rows:
         i = int(r["idx"])                # 行の idx は現在の store 位置を指す
@@ -379,9 +381,12 @@ def hne_polygon_table_to_store(rows, polys):
         gid = (str(r.get("group")).strip() if r.get("group") is not None else "")
         p["group"] = gid or None         # 空欄は未グループ（＝従来どおり name 単位）
         new.append(p)
-    if new == polys:                     # 変化なし（store→table 由来の再発火）→ 何もしない
-        return no_update
-    return new
+    desired_rows = _polygon_rows(new)
+    # 中身が変わった時だけ store 更新。削除等で # がズレた時だけ表を振り直し（自己エコーは
+    # rows==desired_rows で停止）。両方 no_update なら何もしない。
+    store_out = new if new != polys else no_update
+    table_out = desired_rows if rows != desired_rows else no_update
+    return store_out, table_out
 
 
 # ---------------------------------------------------------------------------
@@ -560,9 +565,7 @@ def hne_restore_sample(sample, rds_path):
                            "name": img_meta.get("name") or "H&E"}
     # 表データも同時に復元（store と表を同一ラウンドで整合させ、前個体の古い行で
     # hne_polygon_table_to_store が復元ポリゴンを上書きするのを防ぐ）。
-    rows = [{"idx": i, "group": _group_str(p.get("group")),
-             "name": p.get("name") or f"領域{i + 1}",
-             "nv": len(p.get("vertices") or [])} for i, p in enumerate(polys)]
+    rows = _polygon_rows(polys)
     return image_store, lm, polys, rot, [], rows
 
 
