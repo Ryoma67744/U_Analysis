@@ -296,8 +296,9 @@ def build_region_cluster_export(df, expr_df, region_col="region",
     Args:
         df: region 列 + Cluster + CellID を持つ DataFrame（領域割当済み）
         expr_df: CellID + feature(m/z) 列の強度行列（元 Spatial 強度を推奨）
-        sample_col: 指定すると群ラベルを `{sample}_{region}_{cluster}`（例 `E15_Brain_23`）
-            にして全切片を1ファイルに統合する。None なら `{region}_cluster{cluster}`（後方互換）。
+        sample_col: 指定すると群ラベルを `{sample}_{region}_cluster{cluster}`（例
+            `E15_Brain_cluster23`）にして全切片を1ファイルに統合する。None なら
+            `{region}_cluster{cluster}`（後方互換）。
         feature_name_map: {feature列名 -> 化合物名} があれば列名を化合物名へ。
         min_spots: この spot 数未満の群は出力しない。
     Returns:
@@ -309,7 +310,7 @@ def build_region_cluster_export(df, expr_df, region_col="region",
     if sub.empty or expr_df is None or expr_df.empty:
         return pd.DataFrame()
     if sample_col and sample_col in sub.columns:
-        sub["__rc__"] = [f"{s}_{r}_{c}" for s, r, c in zip(
+        sub["__rc__"] = [f"{s}_{r}_cluster{c}" for s, r, c in zip(
             sub[sample_col].astype(str), sub[region_col].astype(str),
             sub[cluster_col].astype(str))]
     else:
@@ -341,8 +342,8 @@ def build_groups_table(df, sample_col="Sample", region_col="region",
     """region 付き行から `{CellID, Group}` の小さな表を返す（B経路で R に渡す入力）。
 
     Group ラベルは `build_region_cluster_export`（sample_col 指定時）と**同一規約**
-    `{sample}_{region}_{cluster}`（例 `E15_Brain_23`）。ROI 未割当（region=NA）は除外。
-    巨大な強度行列を作らず、R 側で対象 cell の群平均だけ計算させるための入力になる。
+    `{sample}_{region}_cluster{cluster}`（例 `E15_Brain_cluster23`）。ROI 未割当
+    （region=NA）は除外。巨大な強度行列を作らず、R 側で対象 cell の群平均だけ計算させる入力。
     """
     cols = [cellid_col, "Group"]
     if region_col not in df.columns or cellid_col not in df.columns:
@@ -350,7 +351,7 @@ def build_groups_table(df, sample_col="Sample", region_col="region",
     sub = df[df[region_col].notna()]
     if sub.empty:
         return pd.DataFrame(columns=cols)
-    groups = [f"{s}_{r}_{c}" for s, r, c in zip(
+    groups = [f"{s}_{r}_cluster{c}" for s, r, c in zip(
         sub[sample_col].astype(str), sub[region_col].astype(str),
         sub[cluster_col].astype(str))]
     return pd.DataFrame({cellid_col: sub[cellid_col].astype(str).to_numpy(),
