@@ -158,3 +158,42 @@ def save_metaboanalyst_csv(rds_path, filename, df):
     except Exception as e:  # noqa: BLE001
         logger.warning("MetaboAnalyst CSV のサーバ保存に失敗: %s", e)
         return None
+
+
+def metaboanalyst_csv_path(rds_path, filename):
+    """`save_metaboanalyst_csv` が書く CSV のパス（Path）。無効時 None。"""
+    if not rds_path or not filename:
+        return None
+    return Path(rds_path).parent / "metaboanalyst_exports" / filename
+
+
+def _export_cache_key_path(rds_path, filename):
+    if not rds_path or not filename:
+        return None
+    return (Path(rds_path).parent / "metaboanalyst_exports"
+            / (str(filename) + ".cachekey.json"))
+
+
+def save_export_cache_key(rds_path, filename, key):
+    """エクスポート結果CSVのキャッシュキーを保存（2回目以降の即時化用）。"""
+    p = _export_cache_key_path(rds_path, filename)
+    if not p:
+        return
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(p, {"key": str(key),
+                               "saved_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")})
+    except Exception as e:  # noqa: BLE001
+        logger.warning("エクスポートキャッシュキーの保存に失敗: %s", e)
+
+
+def load_export_cache_key(rds_path, filename):
+    """保存済みキャッシュキー（str）を返す。無ければ None。"""
+    p = _export_cache_key_path(rds_path, filename)
+    if not p or not p.exists():
+        return None
+    try:
+        return (json.loads(p.read_text(encoding="utf-8")) or {}).get("key")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("エクスポートキャッシュキーの読込に失敗: %s", e)
+        return None

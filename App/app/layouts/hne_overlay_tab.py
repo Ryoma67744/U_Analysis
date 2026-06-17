@@ -114,6 +114,17 @@ def create_hne_overlay_tab():
                 html.Hr(className="my-2"),
                 dbc.Button("④ MetaboAnalyst 用 CSV 出力", id="hne_export_btn",
                            size="sm", color="success", className="w-100"),
+                # 出力の進捗表示（出力中のみ表示・無反応感の解消）
+                html.Div(id="hne_export_progress_container",
+                         style={"display": "none", "marginTop": "6px"},
+                         children=[
+                             dbc.Progress(id="hne_export_progress_bar",
+                                          value=0, max=100, striped=True, animated=True,
+                                          style={"height": "14px"}),
+                             html.Div(id="hne_export_progress_label",
+                                      className="text-center small text-muted mt-1",
+                                      children=""),
+                         ]),
                 html.Div(id="hne_export_info", className="small text-muted mt-1"),
             ]),
 
@@ -157,4 +168,5 @@ def create_hne_overlay_tab():
         dcc.Store(id="hne_save_dummy"),                          # 自動保存 callback のダミー出力
         dcc.Store(id="hne_draft_dummy"),                         # 下書き clientside のダミー出力
         dcc.Download(id="hne_export_download"),
+        dcc.Store(id="hne_export_trigger"),                      # 2段プログレス: A→B トリガ
     ])

@@ -170,6 +170,65 @@ def test_build_region_cluster_export_sample_label_combines_sections():
     assert out[out["Group"] == "E16_Brain_23"].iloc[0]["m/z 1"] == 100.0
 
 
+# --- B経路: groups table / 列名置換 / 同値性 ---
+def test_build_groups_table_label_and_na_exclusion():
+    df = pd.DataFrame({
+        "CellID": ["c1", "c2", "c3", "c4"],
+        "Sample": ["E15", "E15", "E16", "E15"],
+        "region": ["Brain", "Brain", "Brain", None],
+        "Cluster": ["23", "23", "23", "1"],
+    })
+    g = hn.build_groups_table(df)
+    assert list(g.columns) == ["CellID", "Group"]
+    assert set(g["CellID"]) == {"c1", "c2", "c3"}      # region=None の c4 は除外
+    assert dict(zip(g["CellID"], g["Group"])) == {
+        "c1": "E15_Brain_23", "c2": "E15_Brain_23", "c3": "E16_Brain_23"}
+
+
+def test_build_groups_table_empty_when_no_region():
+    df = pd.DataFrame({"CellID": ["c1"], "Sample": ["E15"],
+                       "region": [None], "Cluster": ["1"]})
+    g = hn.build_groups_table(df)
+    assert g.empty and list(g.columns) == ["CellID", "Group"]
+
+
+def test_rename_export_columns():
+    df = pd.DataFrame({"Group": ["E15_Brain_23"], "m/z 419.25720": [15.0],
+                       "m/z 885.54940": [2.0]})
+    out = hn.rename_export_columns(df, {"m/z 419.25720": "ADP",
+                                        "m/z 885.54940": "PI 38:4"})
+    assert list(out.columns) == ["Group", "ADP", "PI 38:4"]
+    assert out.iloc[0]["ADP"] == 15.0
+    assert hn.rename_export_columns(df, None) is df      # map 無しはそのまま
+
+
+def test_groups_table_aggregation_matches_build_region_cluster_export():
+    """B経路（groups_table→群平均）と現行 build_region_cluster_export が同一数値。"""
+    df = pd.DataFrame({
+        "CellID": ["c1", "c2", "c3", "c4"],
+        "Sample": ["E15", "E15", "E16", "E15"],
+        "region": ["Brain", "Brain", "Heart", None],
+        "Cluster": ["1", "1", "2", "3"],
+    })
+    expr = pd.DataFrame({
+        "CellID": ["c1", "c2", "c3", "c4"],
+        "m/z 1": [10.0, 20.0, 100.0, 999.0],
+        "m/z 2": [1.0, 3.0, 50.0, 999.0],
+    })
+    ref = hn.build_region_cluster_export(df, expr, sample_col="Sample")
+    # B相当（R が返す値を Python で模擬）: groups_table を expr に結合し群平均
+    g = hn.build_groups_table(df)
+    merged = g.merge(expr, on="CellID")
+    feat = [c for c in expr.columns if c != "CellID"]
+    sim = merged.groupby("Group")[feat].mean().reset_index()
+    assert set(ref["Group"]) == set(sim["Group"])
+    for grp in ref["Group"]:
+        r = ref[ref["Group"] == grp].iloc[0]
+        s = sim[sim["Group"] == grp].iloc[0]
+        for f in feat:
+            assert abs(float(r[f]) - float(s[f])) < 1e-9
+
+
 # --- グループ統合（同じ # で複数ポリゴンを1 ROI に） ---
 def test_apply_region_groups_merges_by_group_and_keeps_ungrouped():
     polys = [

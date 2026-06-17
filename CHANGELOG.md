@@ -12,6 +12,27 @@
 
 ---
 
+## 2026-06-16_ver7.7
+
+### 修正/高速化: 解剖×クラスタの MetaboAnalyst CSV出力（無反応の解消・高速化・進捗表示）
+
+「④ MetaboAnalyst用CSV出力」が押しても無反応だった（callback は発火するが、巨大
+`expression_matrix.parquet` の丸読み＋全体集計が重く応答が返らない／進捗UIも無く、さらに
+`_get_state` 等が try 外で例外時に500無反応）。以下で解消した。
+
+- **B（高速化）**: 新R `Script/helpers/export_region_cluster_means.R` を追加し、巨大行列を
+  作らず RDS の**同一 data layer**（`JoinLayers→LayerData(layer="data")`＝既存と科学的に同一）
+  から対象 cell のみ sparse のまま ROI×クラスタ平均を直接計算。`seurat_bridge.export_region_cluster_means()`
+  で呼び出す。R 無し/失敗時は従来の parquet 経路へ自動フォールバック（必ず動く）。
+- **C（キャッシュ）**: RDS/ROI状態(`hne_overlay_state.json`)/化合物名 が不変なら前回CSVを即返す。
+- **UI（進捗）**: 2段プログレス化（押下で即「CSV作成中…」表示＋ボタン無効化→完了/失敗を必ず
+  表示）。本体を全体 try で囲み、失敗時も必ずメッセージ＋ボタン復帰（無反応を根絶）。
+- 出力内容（群ラベル `{切片}_{ROI}_{クラスタ}`・化合物名列）は従来と同一。`build_groups_table`
+  /`rename_export_columns` を `hne_overlay.py` に追加（純ロジック・テスト追加）。`build_region_cluster_export`
+  はフォールバック用に温存。Dash 依存グラフは一方向（btn→A→trigger→B）で循環なし。
+
+---
+
 ## 2026-06-16_ver7.6
 
 ### 修正: リロードのたびに空の「インタラクティブ解析」が開く不具合
