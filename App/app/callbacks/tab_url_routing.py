@@ -56,17 +56,26 @@ def _detect_app_path(pathname):
 
 @callback(
     Output("current_page", "data", allow_duplicate=True),
+    Output("url_bar", "pathname", allow_duplicate=True),
     Input("app_path_target_store", "data"),
     State("current_page", "data"),
     prevent_initial_call=True,
 )
 def _route_app_url_to_analysis(target, current_page):
-    """中間 Store が更新されたら current_page を analysis に遷移。"""
+    """/app/* deep link の扱い。
+
+    in-session（既に analysis）でタブ→URL同期により /app/* が来た場合は何もしない
+    （タブ→URL のブックマークを維持）。一方、リロードやランディングからの /app/* deep
+    link（current_page が "analysis" でない）は、ブラウザにプロジェクト選択が残っておらず
+    空のインタラクティブ解析が開いてしまうため、analysis へ遷移させず URL を "/" に
+    正規化してプロジェクト一覧に留める。
+    """
     if not target:
-        return no_update
-    if current_page != "analysis":
-        return "analysis"
-    return no_update
+        return no_update, no_update
+    if current_page == "analysis":
+        return no_update, no_update
+    # 初回ロード/ランディングからの /app/* → 一覧に留め、URL をクリーンにする
+    return no_update, "/"
 
 # tab_id ↔ URL path セグメントのマッピング
 _TAB_TO_PATH = {
@@ -91,9 +100,10 @@ _PATH_TO_TAB = {v: k for k, v in _TAB_TO_PATH.items()}
     Output("main_tabs", "active_tab", allow_duplicate=True),
     Input("url_bar", "pathname"),
     State("main_tabs", "active_tab"),
-    # duplicate output で初回ロード時にも URL → タブ同期したいので
-    # "initial_duplicate" を指定 (False は duplicate output と非互換)。
-    prevent_initial_call="initial_duplicate",
+    # 初回ロード（リロード）では URL からタブを復元しない（=空のインタラクティブ解析を
+    # 開かせない）。in-session の URL 変化（タブ→URL 同期や back/forward）には追従する。
+    # allow_duplicate 出力には prevent_initial_call の指定が必須（True は可、False は不可）。
+    prevent_initial_call=True,
 )
 def _sync_tab_from_url(pathname, current_active):
     if not pathname:
