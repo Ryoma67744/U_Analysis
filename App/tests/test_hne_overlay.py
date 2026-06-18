@@ -165,9 +165,9 @@ def test_build_region_cluster_export_sample_label_combines_sections():
         "m/z 1": [10.0, 20.0, 100.0, 999.0],
     })
     out = hn.build_region_cluster_export(df, expr, sample_col="Sample")
-    assert set(out["Group"]) == {"E15_Brain_23", "E16_Brain_23"}
-    assert out[out["Group"] == "E15_Brain_23"].iloc[0]["m/z 1"] == 15.0  # mean(10,20)
-    assert out[out["Group"] == "E16_Brain_23"].iloc[0]["m/z 1"] == 100.0
+    assert set(out["Group"]) == {"E15_Brain_cluster23", "E16_Brain_cluster23"}
+    assert out[out["Group"] == "E15_Brain_cluster23"].iloc[0]["m/z 1"] == 15.0  # mean(10,20)
+    assert out[out["Group"] == "E16_Brain_cluster23"].iloc[0]["m/z 1"] == 100.0
 
 
 # --- B経路: groups table / 列名置換 / 同値性 ---
@@ -182,7 +182,8 @@ def test_build_groups_table_label_and_na_exclusion():
     assert list(g.columns) == ["CellID", "Group"]
     assert set(g["CellID"]) == {"c1", "c2", "c3"}      # region=None の c4 は除外
     assert dict(zip(g["CellID"], g["Group"])) == {
-        "c1": "E15_Brain_23", "c2": "E15_Brain_23", "c3": "E16_Brain_23"}
+        "c1": "E15_Brain_cluster23", "c2": "E15_Brain_cluster23",
+        "c3": "E16_Brain_cluster23"}
 
 
 def test_build_groups_table_empty_when_no_region():

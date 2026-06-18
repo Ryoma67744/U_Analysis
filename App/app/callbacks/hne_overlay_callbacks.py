@@ -649,7 +649,7 @@ def hne_assign_and_summarize(n, sample, polys, affine, rotation, rds_path):
 # ---------------------------------------------------------------------------
 # MetaboAnalyst 用 CSV エクスポート（全切片統合・B:R側で直接群平均・C:キャッシュ・2段プログレス）
 # ---------------------------------------------------------------------------
-# 群ラベルは `{切片}_{ROI名}_{クラスタ}`（例 E15_Brain_23）。巨大 expression_matrix を作らず
+# 群ラベルは `{切片}_{ROI名}_cluster{クラスタ}`（例 E15_Brain_cluster23）。巨大 expression_matrix を作らず
 # R 側で対象 cell の群平均だけを sparse 計算する（B）。同条件なら前回CSVを即返す（C）。押下で
 # 即「作成中…」を表示し、完了/失敗を必ず返す（無反応の解消）。R が無い/失敗なら parquet 経路へ
 # 自動フォールバック。ROI 未割当 spot は除外。生成 CSV はサーバにも保存し保存先パスを表示。
@@ -675,7 +675,7 @@ def _export_cache_key(rds_path, state):
          for k, v in sorted(fa.items())}, ensure_ascii=False, sort_keys=True)
     sp = hp.hne_state_path(rds_path)
     raw = "|".join([str(rds_path), _mt(rds_path),
-                    _mt(sp) if sp else "0", fa_key, "data"])
+                    _mt(sp) if sp else "0", fa_key, "data", "lblfmt=cluster"])
     return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
 
 

@@ -117,7 +117,11 @@ def toggle_sidebar_content(active_tab):
      State("cal_per_sample_store", "data"),
      State("cal_sample_selector_prev", "data"),
      State("desi_use_roi_as_sample", "value"),
-     State("desi_roi_filter_store", "data")],
+     State("desi_roi_filter_store", "data"),
+     State("normalize_input", "value"),
+     State("norm_mode", "value"),
+     State("normalize_input_reanalysis", "value"),
+     State("norm_mode_reanalysis", "value")],
     prevent_initial_call=True,
 )
 def run_analysis(
@@ -148,6 +152,8 @@ def run_analysis(
     cal_sample_selector_prev,
     desi_use_roi_as_sample,
     desi_roi_filter_list,
+    normalize_input, norm_mode,
+    normalize_input_reanalysis, norm_mode_reanalysis,
 ):
     if not n_clicks:
         return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
@@ -179,6 +185,10 @@ def run_analysis(
             "tims_v8_script_path": tims_v8_script,
             "tims_cluster_filter_script_path": tims_cluster_script,
             "desi_use_roi_as_sample": bool(desi_use_roi_as_sample),
+            "normalize_input": normalize_input,
+            "norm_mode": norm_mode,
+            "normalize_input_reanalysis": normalize_input_reanalysis,
+            "norm_mode_reanalysis": norm_mode_reanalysis,
         })
     except Exception as e:
         warn_user(f"解析設定の保存に失敗: {e}")
@@ -244,6 +254,9 @@ def run_analysis(
                 "logfc_thresh": float(logfc_thresh) if logfc_thresh else 0.25,
                 "resume_from_rds": bool(resume_rds),
                 "resume_rds_paths": [],
+                # 入力正規化ポリシー（UIトグル）: OFF=正規化済み入力 → INPUT_NORMALIZED=TRUE
+                "input_normalized": (normalize_input == "OFF"),
+                "norm_mode": norm_mode or "log1p",
             }
 
             if resume_rds and rds_folder:
@@ -410,6 +423,9 @@ def run_analysis(
                 src_folder = reanalysis_data_folder or data_folder
                 params["original_input_paths"] = build_tims_input_paths(src_folder)
                 params["export_data_dir"] = full_output_dir
+                # 入力正規化ポリシー（再解析UIのトグル → V13_INPUT_NORMALIZED/NORM_MODE 注入）
+                params["input_normalized"] = (normalize_input_reanalysis == "OFF")
+                params["norm_mode"] = norm_mode_reanalysis or "log1p"
                 # RDSフォルダ+クラスタソース → R側で解決
                 if rds_folder_reanalysis:
                     params["rds_run_dir"] = rds_folder_reanalysis

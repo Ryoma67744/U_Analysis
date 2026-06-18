@@ -12,6 +12,66 @@
 
 ---
 
+## 2026-06-18_ver7.10
+
+### 機能拡張: 正規化トグルを TIMS 再解析にも適用 ＋ DESI正規化の一本化・設定永続化
+
+ver7.9 の正規化トグル（主解析）に続き、コード監査で判明した残課題に対応。
+
+- **TIMS 再解析(cluster filter)の二重正規化を解消**: 従来 `ReUMAP.R` は ver4 の `run_pipeline` を
+  `NormalizeData`(LogNormalize) ハードコードで置換しており、RMS入力で二重正規化になっていた。
+  `patch_v13_step2_pipeline` を `apply_input_norm` 使用に変更し、`make_v13_copy_with_settings` が
+  `V13_INPUT_NORMALIZED`/`V13_NORM_MODE` を ver4 コピーへ注入するよう拡張。
+  `generate_cluster_filter_config` がアプリのトグル値を注入。再解析設定UI(`tims_reanalysis_ion_settings`)に
+  正規化トグルを追加（TIMSはRMS正規化済みのため既定OFF）。
+- **DESI 正規化の一本化**: `DESI v14` の冗長な log1p ループ（下流 `apply_input_norm` で上書きされる
+  ため二重ではないが紛らわしい）を `apply_input_norm` に統一。挙動不変。
+- **設定の永続化**: `normalize_input`/`norm_mode`（主・再解析）を `save_last_settings` に保存し、
+  再起動後も選択を保持。`set_default_normalize` は解析法変更時のみ既定を再適用（`prevent_initial_call`）。
+
+注: R スクリプト変更（ReUMAP.R / DESI v14）は実機での動作確認を推奨。
+
+---
+
+## 2026-06-17_ver7.9
+
+### 機能追加: 正規化(LogNormalize)の on/off をアプリの解析実行時に指定 ＋ TIMS を ver4 に切替
+
+**背景**: TIMS は SCiLS で RMS 正規化済みで取り込むが、従来アプリの TIMS テンプレ(ver3)は常に
+LogNormalize を適用しており、RMS と合わせて**二重正規化**になっていた（出力CSVの値域 max≈7.42 で確認）。
+DESI は生データのため LogNormalize 1回で適正。
+
+**変更**:
+- **TIMS テンプレを ver4(260525)** に切替（`App/app/config.py`）。ver4 は二重正規化回避スイッチ
+  `INPUT_NORMALIZED`/`NORM_MODE`（`apply_input_norm`）に加え、過補正の防止（バッチ補正を技術的
+  バッチ=sample のみに限定し、生物学的な切片差は温存）、無補正PCAの併走出力 (`PCA (uncorrected)`)、
+  マーカーCSVが探索的なピクセル順位である旨の注記、を内蔵する。
+- **正規化トグルをアプリUIに追加**（解析設定→「正規化 (LogNormalize)」）。ON=LogNormalize 実行 /
+  OFF=正規化済み入力（OFF時の変換 `NORM_MODE` を none/sqrt/log1p から選択・既定 log1p）。
+  既定は **TIMS=OFF / DESI=ON**（解析法で自動切替・手動上書き可）。
+- `generate_v8_config` が UI の選択を R の `INPUT_NORMALIZED`/`NORM_MODE` に注入
+  （既存の `_replace_assign` 機構を流用）。
+- **DESI v14** にも同じ `apply_input_norm` を移植（既定 ON＝従来どおり LogNormalize。toggle で OFF 可）。
+
+**影響（挙動変更）**: 今後の TIMS 解析は「正規化1回」かつ「生物学的な切片差を補正で消さない」
+（ver4 の過補正防止）ため、過去(ver3)のクラスタリング結果とは変わる（方法論的により適正）。
+既存の二重正規化 RDS を単一化するには、正規化 OFF で再解析が必要。
+
+---
+
+## 2026-06-17_ver7.8
+
+### 変更: MetaboAnalyst 出力の群ラベルに `cluster` を明記
+
+全切片統合エクスポートの群ラベルを `{切片}_{ROI}_{クラスタ}`（例 `E14_Brain_14`）から
+**`{切片}_{ROI}_cluster{クラスタ}`（例 `E14_Brain_cluster14`）** に変更（後方互換の単一切片
+ラベル `{ROI}_cluster{クラスタ}` と表記を統一）。`build_groups_table`（B経路）と
+`build_region_cluster_export`（フォールバック）の両方を更新。ラベル様式が変わるため、出力
+キャッシュキーに様式タグを付与し旧キャッシュを自動無効化（次回出力で新ラベルに再計算）。
+出力の数値・列は不変。
+
+---
+
 ## 2026-06-16_ver7.7
 
 ### 修正/高速化: 解剖×クラスタの MetaboAnalyst CSV出力（無反応の解消・高速化・進捗表示）

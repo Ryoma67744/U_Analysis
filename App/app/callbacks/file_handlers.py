@@ -85,6 +85,44 @@ def toggle_settings_panels(desi_val, tims_val):
 
 
 # ---------------------------------------------------------------------------
+# 正規化トグルの既定切替・NORM_MODE有効化
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("normalize_input", "value"),
+    Input("analysis_method", "value"),
+    Input("analysis_method_tims", "value"),
+    prevent_initial_call=True,
+)
+def set_default_normalize(desi_val, tims_val):
+    """解析法に応じて正規化の既定を切替。
+    TIMS(SCiLS RMS等で正規化済み入力)は既定 OFF＝二重正規化を回避。
+    DESI(生データ)は既定 ON。ユーザーは手動で上書き可能。
+    （active 判定は toggle_settings_panels と同じ desi 優先ロジック）
+    """
+    active = desi_val or tims_val or "desi_v8"
+    return "OFF" if active == "tims_v8" else "ON"
+
+
+@callback(
+    Output("norm_mode", "disabled"),
+    Input("normalize_input", "value"),
+)
+def toggle_norm_mode_enabled(normalize_input):
+    """NORM_MODE は正規化 OFF のときのみ有効。"""
+    return normalize_input != "OFF"
+
+
+@callback(
+    Output("norm_mode_reanalysis", "disabled"),
+    Input("normalize_input_reanalysis", "value"),
+)
+def toggle_norm_mode_reanalysis_enabled(normalize_input_reanalysis):
+    """再解析の NORM_MODE は正規化 OFF のときのみ有効。"""
+    return normalize_input_reanalysis != "OFF"
+
+
+# ---------------------------------------------------------------------------
 # RDS途中再開パネル表示
 # ---------------------------------------------------------------------------
 

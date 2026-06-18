@@ -59,6 +59,38 @@ library(future)
 plan(sequential)  # workerはFindAllMarkers直前にのみ起動（メモリ節約）
 options(future.globals.maxSize = 4 * 1024^3)  # 4GB制限
 
+# ---- 入力正規化ポリシー（二重正規化の回避 / アプリのトグルで上書きされる）----
+# INPUT_NORMALIZED: 入力が既に正規化済み(例: SCiLS RMS)なら TRUE。
+#   DESI は生データのため既定 FALSE（＝従来どおり LogNormalize を実行）。
+#   TRUE のとき LogNormalize を行わず、counts を NORM_MODE で変換して 'data' layer に格納する。
+INPUT_NORMALIZED <- FALSE
+# NORM_MODE: INPUT_NORMALIZED=TRUE のときに適用する変換。"none" / "sqrt" / "log1p"
+NORM_MODE <- "log1p"
+
+# ---- 入力正規化ヘルパ（二重正規化の回避）----
+# INPUT_NORMALIZED=TRUE のとき、既に正規化済みの counts を NORM_MODE で変換して
+# 'data' layer に格納し、NormalizeData(LogNormalize) は行わない。FALSE のときは従来通り。
+apply_input_norm <- function(s) {
+  if (isTRUE(INPUT_NORMALIZED)) {
+    asy <- DefaultAssay(s)
+    # v5: 複数sampleの merge で counts が複数レイヤーに分かれている場合があるため統合
+    s   <- tryCatch(JoinLayers(s), error = function(e) s)
+    cm  <- LayerData(s[[asy]], layer = "counts")
+    dat <- switch(NORM_MODE,
+                  "none"  = cm,
+                  "sqrt"  = sqrt(cm),
+                  "log1p" = log1p(cm),
+                  stop("NORM_MODE は 'none' / 'sqrt' / 'log1p' のいずれかにしてください"))
+    s[[asy]] <- SetAssayData(s[[asy]], layer = "data", new.data = dat)
+    s@misc$preprocessing_method <- paste0("RMS_input+", NORM_MODE)
+    s
+  } else {
+    s <- NormalizeData(s)
+    s@misc$preprocessing_method <- "LogNormalize"
+    s
+  }
+}
+
 # ---- 共通 RDS I/O ヘルパーの読み込み ----
 # scale.data を落とした DietSeurat + qs 圧縮で Step1/2/3 RDS を軽量化する。
 # 旧形式 (.rds = saveRDS 出力) もマジックバイト判定で透過的に読める。
@@ -2140,10 +2172,8 @@ if(SPATIAL_SMOOTH){
 # (平滑化済みデータを対象に実施)
 for(ii in seq_along(seu_list)){
   seurat_filtered <- seu_list[[ii]]
-  counts_mat <- LayerData(seurat_filtered[["Spatial"]], layer = "counts")
-  log1p_data <- log1p(counts_mat)
-  seurat_filtered[["Spatial"]] <- SetAssayData(seurat_filtered[["Spatial"]], layer = "data", new.data = log1p_data)
-  seurat_filtered@misc$preprocessing_method <- "log1p"
+  # 正規化は apply_input_norm に一本化（INPUT_NORMALIZED/NORM_MODE を尊重。下流でも counts 基準で再適用＝冪等）
+  seurat_filtered <- apply_input_norm(seurat_filtered)
   VariableFeatures(seurat_filtered) <- rownames(seurat_filtered)
   seurat_filtered <- ScaleData(seurat_filtered, features = rownames(seurat_filtered))
   seu_list[[ii]] <- seurat_filtered
@@ -2173,7 +2203,7 @@ if (length(seu_list) == 1) {
   } else {
     seu_single <- seu_list[[1]]
     DefaultAssay(seu_single) <- "Spatial"
-    seu_single <- NormalizeData(seu_single)
+    seu_single <- apply_input_norm(seu_single)
     seu_single <- FindVariableFeatures(seu_single)
     seu_single <- ScaleData(seu_single, features = VariableFeatures(seu_single))
     # ---- PATCH: dims auto-fix (available PCs) ----
@@ -2385,7 +2415,7 @@ if (length(seu_list) == 1) {
         add.cell.ids = add_ids
       )
     }
-    seu_harmony <- NormalizeData(seu_harmony)
+    seu_harmony <- apply_input_norm(seu_harmony)
     seu_harmony <- FindVariableFeatures(seu_harmony)
     seu_harmony <- ScaleData(seu_harmony)
     # ---- PATCH: dims auto-fix (available Harmony PCs) ----
@@ -2575,7 +2605,7 @@ if (length(seu_list) == 1) {
     # 修正①: Resume時に既存RDSを出力先にもコピー
     file.copy(rds_path_rpca_in, rds_path_rpca_out, overwrite = TRUE)
   } else {
-    seu_list_norm <- lapply(seu_list, function(x) { x <- NormalizeData(x); x <- FindVariableFeatures(x); x })
+    seu_list_norm <- lapply(seu_list, function(x) { x <- apply_input_norm(x); x <- FindVariableFeatures(x); x })
     features <- SelectIntegrationFeatures(object.list = seu_list_norm, nfeatures = 3000)
     seu_list_pca <- lapply(seu_list_norm, function(x) { x <- ScaleData(x, features = features); RunPCA(x, features = features, npcs = 30) })
 

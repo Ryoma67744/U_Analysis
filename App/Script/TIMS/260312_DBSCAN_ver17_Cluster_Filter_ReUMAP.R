@@ -133,6 +133,12 @@ V13_ANNOTATION_ENABLE <- TRUE  # NA にすると上書きしない
 V13_CALIBRATION_ENABLE <- FALSE
 V13_CALIBRATION_COEFFICIENTS <- c(0)
 
+# (M3) 入力正規化ポリシー（二重正規化の回避・アプリのトグルから注入）
+#   V13_INPUT_NORMALIZED=TRUE で LogNormalize を行わず NORM_MODE のみ適用。
+#   TIMS は SCiLS の RMS で正規化済みのため既定 TRUE(=正規化OFF)。NA で ver4 側既定を使用。
+V13_INPUT_NORMALIZED <- TRUE
+V13_NORM_MODE <- "log1p"
+
 # (N) slice_id / condition を 1回目RDSから保存しておきたい場合（通常は不要）
 #     ver13 は入力Parquetの annotation から slice_id/condition を再現できるため、
 #     基本は FALSE 推奨です（Re-UMAP側でDBSCAN復元などはしない）。
@@ -621,8 +627,8 @@ patch_v13_step2_pipeline <- function(code_vec) {
     if (!is.na(e)) {
       new_run <- c(
         '  run_pipeline <- function(use_harmony, cfg) {',
-        '    # 1) Normalize -> HVF -> Scale(VarFeatures only) -> PCA(VarFeatures only)',
-        '    s <- NormalizeData(seu_merged)',
+        '    # 1) Normalize(=apply_input_norm: INPUT_NORMALIZED で二重正規化を回避) -> HVF -> Scale -> PCA',
+        '    s <- apply_input_norm(seu_merged)',
         '    s <- FindVariableFeatures(s, nfeatures = cfg$n_var_features)',
         '    hvf <- VariableFeatures(s)',
         '    hvf <- unique(hvf[!is.na(hvf)])',
@@ -762,6 +768,14 @@ make_v13_copy_with_settings <- function(v13_path, out_path,
     code <- replace_assign_line(code, "CALIBRATION_ENABLE", "TRUE", multiple = TRUE)
     coef_str <- paste0("c(", paste(V13_CALIBRATION_COEFFICIENTS, collapse = ", "), ")")
     code <- replace_assign_line(code, "CALIBRATION_COEFFICIENTS", coef_str, multiple = TRUE)
+  }
+
+  # 入力正規化ポリシー（二重正規化の回避: アプリのトグルから注入。ver4 の apply_input_norm が参照）
+  if (exists("V13_INPUT_NORMALIZED") && !is.na(V13_INPUT_NORMALIZED)) {
+    code <- replace_assign_line(code, "INPUT_NORMALIZED", if (isTRUE(V13_INPUT_NORMALIZED)) "TRUE" else "FALSE", multiple = TRUE)
+  }
+  if (exists("V13_NORM_MODE") && nzchar(V13_NORM_MODE)) {
+    code <- replace_assign_line(code, "NORM_MODE", r_str(V13_NORM_MODE), multiple = TRUE)
   }
 
   code <- replace_assign_line(code, "RESUME_FROM_RDS", if (isTRUE(resume_from_rds)) "TRUE" else "FALSE")
