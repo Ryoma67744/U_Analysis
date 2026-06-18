@@ -2102,7 +2102,9 @@ apply_input_norm <- function(s) {
     s@misc$preprocessing_method <- paste0("RMS_input+", NORM_MODE)
     s
   } else {
-    NormalizeData(s)
+    s <- NormalizeData(s)
+    s@misc$preprocessing_method <- "LogNormalize"
+    s
   }
 }
 

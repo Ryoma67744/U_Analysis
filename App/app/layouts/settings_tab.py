@@ -180,7 +180,7 @@ def _create_analysis_settings_subtab():
                                     {"label": "ON（LogNormalize を実行）", "value": "ON"},
                                     {"label": "OFF（正規化済み入力: SCiLS RMS 等）", "value": "OFF"},
                                 ],
-                                value="ON",
+                                value=ls.get("normalize_input", "OFF" if ls.get("analysis_method_tims") == "tims_v8" else "ON"),
                             ),
                             html.Div(style={"marginTop": "8px"}, children=[
                                 html.Small("OFF時の変換 (NORM_MODE)", className="fw-bold"),
@@ -191,7 +191,7 @@ def _create_analysis_settings_subtab():
                                         {"label": "sqrt（平方根）", "value": "sqrt"},
                                         {"label": "none（変換なし・生RMS）", "value": "none"},
                                     ],
-                                    value="log1p",
+                                    value=ls.get("norm_mode", "log1p"),
                                     style={"width": "70%"},
                                 ),
                             ]),
@@ -604,6 +604,35 @@ def _create_analysis_settings_subtab():
                                         ],
                                         value=["+H", "+Na", "+NH4", "+K"],
                                         inline=True,
+                                    ),
+                                ]),
+                                # --- 正規化（再解析・TIMSはRMS正規化済みのため既定OFF=二重回避） ---
+                                html.Div(className="param-group", style={"marginTop": "15px"}, children=[
+                                    html.H5("正規化 (LogNormalize)"),
+                                    dbc.RadioItems(
+                                        id="normalize_input_reanalysis",
+                                        options=[
+                                            {"label": "ON（LogNormalize を実行）", "value": "ON"},
+                                            {"label": "OFF（正規化済み入力: SCiLS RMS 等）", "value": "OFF"},
+                                        ],
+                                        value=ls.get("normalize_input_reanalysis", "OFF"),
+                                    ),
+                                    html.Div(style={"marginTop": "8px"}, children=[
+                                        html.Small("OFF時の変換 (NORM_MODE)", className="fw-bold"),
+                                        dbc.Select(
+                                            id="norm_mode_reanalysis",
+                                            options=[
+                                                {"label": "log1p（log変換・推奨）", "value": "log1p"},
+                                                {"label": "sqrt（平方根）", "value": "sqrt"},
+                                                {"label": "none（変換なし・生RMS）", "value": "none"},
+                                            ],
+                                            value=ls.get("norm_mode_reanalysis", "log1p"),
+                                            style={"width": "70%"},
+                                        ),
+                                    ]),
+                                    dbc.FormText(
+                                        "TIMS再解析は元データがRMS正規化済みのため既定OFF（二重正規化を回避）。",
+                                        className="text-muted small",
                                     ),
                                 ]),
                                 # --- m/z キャリブレーション（再解析） ---

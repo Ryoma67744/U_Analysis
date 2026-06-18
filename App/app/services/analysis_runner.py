@@ -552,6 +552,15 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
             "c(" + ", ".join(str(c) for c in coefs) + ")",
         )
 
+    # --- 入力正規化ポリシー（TIMS再解析: 二重正規化の回避。V13_* を ReUMAP.R が参照） ---
+    if "input_normalized" in params:
+        lines = _replace_assign(
+            lines, "V13_INPUT_NORMALIZED",
+            "TRUE" if params["input_normalized"] else "FALSE",
+        )
+    if params.get("norm_mode"):
+        lines = _replace_assign(lines, "V13_NORM_MODE", _r_str(params["norm_mode"]))
+
     # 一時ファイルをlog/サブフォルダに保存
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     config_filename = f"cluster_filter_runtime_{timestamp}.R"

@@ -92,6 +92,7 @@ def toggle_settings_panels(desi_val, tims_val):
     Output("normalize_input", "value"),
     Input("analysis_method", "value"),
     Input("analysis_method_tims", "value"),
+    prevent_initial_call=True,
 )
 def set_default_normalize(desi_val, tims_val):
     """解析法に応じて正規化の既定を切替。
@@ -110,6 +111,15 @@ def set_default_normalize(desi_val, tims_val):
 def toggle_norm_mode_enabled(normalize_input):
     """NORM_MODE は正規化 OFF のときのみ有効。"""
     return normalize_input != "OFF"
+
+
+@callback(
+    Output("norm_mode_reanalysis", "disabled"),
+    Input("normalize_input_reanalysis", "value"),
+)
+def toggle_norm_mode_reanalysis_enabled(normalize_input_reanalysis):
+    """再解析の NORM_MODE は正規化 OFF のときのみ有効。"""
+    return normalize_input_reanalysis != "OFF"
 
 
 # ---------------------------------------------------------------------------

@@ -85,7 +85,9 @@ apply_input_norm <- function(s) {
     s@misc$preprocessing_method <- paste0("RMS_input+", NORM_MODE)
     s
   } else {
-    NormalizeData(s)
+    s <- NormalizeData(s)
+    s@misc$preprocessing_method <- "LogNormalize"
+    s
   }
 }
 
@@ -2170,10 +2172,8 @@ if(SPATIAL_SMOOTH){
 # (平滑化済みデータを対象に実施)
 for(ii in seq_along(seu_list)){
   seurat_filtered <- seu_list[[ii]]
-  counts_mat <- LayerData(seurat_filtered[["Spatial"]], layer = "counts")
-  log1p_data <- log1p(counts_mat)
-  seurat_filtered[["Spatial"]] <- SetAssayData(seurat_filtered[["Spatial"]], layer = "data", new.data = log1p_data)
-  seurat_filtered@misc$preprocessing_method <- "log1p"
+  # 正規化は apply_input_norm に一本化（INPUT_NORMALIZED/NORM_MODE を尊重。下流でも counts 基準で再適用＝冪等）
+  seurat_filtered <- apply_input_norm(seurat_filtered)
   VariableFeatures(seurat_filtered) <- rownames(seurat_filtered)
   seurat_filtered <- ScaleData(seurat_filtered, features = rownames(seurat_filtered))
   seu_list[[ii]] <- seurat_filtered

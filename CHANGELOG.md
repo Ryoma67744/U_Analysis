@@ -12,6 +12,27 @@
 
 ---
 
+## 2026-06-18_ver7.10
+
+### 機能拡張: 正規化トグルを TIMS 再解析にも適用 ＋ DESI正規化の一本化・設定永続化
+
+ver7.9 の正規化トグル（主解析）に続き、コード監査で判明した残課題に対応。
+
+- **TIMS 再解析(cluster filter)の二重正規化を解消**: 従来 `ReUMAP.R` は ver4 の `run_pipeline` を
+  `NormalizeData`(LogNormalize) ハードコードで置換しており、RMS入力で二重正規化になっていた。
+  `patch_v13_step2_pipeline` を `apply_input_norm` 使用に変更し、`make_v13_copy_with_settings` が
+  `V13_INPUT_NORMALIZED`/`V13_NORM_MODE` を ver4 コピーへ注入するよう拡張。
+  `generate_cluster_filter_config` がアプリのトグル値を注入。再解析設定UI(`tims_reanalysis_ion_settings`)に
+  正規化トグルを追加（TIMSはRMS正規化済みのため既定OFF）。
+- **DESI 正規化の一本化**: `DESI v14` の冗長な log1p ループ（下流 `apply_input_norm` で上書きされる
+  ため二重ではないが紛らわしい）を `apply_input_norm` に統一。挙動不変。
+- **設定の永続化**: `normalize_input`/`norm_mode`（主・再解析）を `save_last_settings` に保存し、
+  再起動後も選択を保持。`set_default_normalize` は解析法変更時のみ既定を再適用（`prevent_initial_call`）。
+
+注: R スクリプト変更（ReUMAP.R / DESI v14）は実機での動作確認を推奨。
+
+---
+
 ## 2026-06-17_ver7.9
 
 ### 機能追加: 正規化(LogNormalize)の on/off をアプリの解析実行時に指定 ＋ TIMS を ver4 に切替
