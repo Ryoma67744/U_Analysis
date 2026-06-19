@@ -80,11 +80,14 @@ BROWSER_SHORTCUTS = [
 ]
 
 # DESI用スクリプトのパス
-DESI_V8_TEMPLATE_PATH = DESI_SCRIPT_DIR / "260422_DESI-UMAP_Template_v14.R"
+# v15: UMAP/クラスタリングのハイパーパラメータを明示定数化（UI注入・記録の土台。挙動は v14 と同一）。
+#      旧 v14 はロールバック用に温存。
+DESI_V8_TEMPLATE_PATH = DESI_SCRIPT_DIR / "260619_DESI-UMAP_Template_v15.R"
 DESI_CLUSTER_FILTER_PATH = DESI_SCRIPT_DIR / "DESI_RDS_ClusterFilter_ver2.R"
 
 # TIMS用スクリプトのパス
-TIMS_V8_TEMPLATE_PATH = TIMS_SCRIPT_DIR / "260525_DBSCAN_With_cluster_ver4_no-png_slim.R"
+# ver5: 同上（UMAPハイパラ明示化。挙動は ver4 と同一）。旧 ver4 は温存。
+TIMS_V8_TEMPLATE_PATH = TIMS_SCRIPT_DIR / "260619_DBSCAN_With_cluster_ver5_no-png_slim.R"
 TIMS_CLUSTER_FILTER_PATH = TIMS_SCRIPT_DIR / "260312_DBSCAN_ver17_Cluster_Filter_ReUMAP.R"
 
 # R ヘルパースクリプトのパス (App/Script/helpers/)
