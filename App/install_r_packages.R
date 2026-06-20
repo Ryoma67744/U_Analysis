@@ -37,9 +37,12 @@ packages <- c(
 
   # 解析
   "dbscan",
+  "RANN",        # 近傍探索（UMAP診断モジュール embedding_diagnostics.R で使用）
   "future",
   "leiden",
   "leidenbase",  # Seurat v5 の FindClusters(algorithm = 4) で必須
+  "aricode",     # ARI/NMI（バッチ補正の生物保存評価, Phase 2）
+  "cluster",     # silhouette (ASW)（バッチ補正診断）
 
   # ユーティリティ
   "tools",

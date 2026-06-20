@@ -309,6 +309,35 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
     lines = _replace_assign(lines, "data_folder", _r_str(resolved_data_folder))
     lines = _replace_assign(lines, "output_dir", _r_str(output_dir))
 
+    # ---- UMAP / クラスタリング ハイパーパラメータの注入（任意。提供時のみ上書き=未提供なら no-op）----
+    # v15/ver5 テンプレで定数化済み。UI から渡された場合のみ上書きする。
+    # _replace_assign はテンプレに無い変数名なら何もしない（DESI/TIMS 差異も安全）。
+    _hp_int = {
+        "umap_dims_n": "UMAP_DIMS_N", "umap_n_neighbors": "UMAP_N_NEIGHBORS",
+        "cluster_dims_n": "CLUSTER_DIMS_N", "cluster_k_param": "CLUSTER_K_PARAM",
+        "cluster_algorithm": "CLUSTER_ALGORITHM",
+    }
+    _hp_num = {
+        "umap_min_dist": "UMAP_MIN_DIST",
+        "cluster_resolution_single": "CLUSTER_RESOLUTION_SINGLE",
+        "cluster_resolution_harmony": "CLUSTER_RESOLUTION_HARMONY",
+        "cluster_resolution_rpca": "CLUSTER_RESOLUTION_RPCA",
+        "cluster_resolution": "CLUSTER_RESOLUTION",
+    }
+    _hp_str = {
+        "umap_metric": "UMAP_METRIC", "cluster_metric": "CLUSTER_METRIC",
+        "pipeline_stage": "PIPELINE_STAGE",
+    }
+    for _k, _var in _hp_int.items():
+        if params.get(_k) is not None:
+            lines = _replace_assign(lines, _var, f"{int(params[_k])}L")
+    for _k, _var in _hp_num.items():
+        if params.get(_k) is not None:
+            lines = _replace_assign(lines, _var, repr(float(params[_k])))
+    for _k, _var in _hp_str.items():
+        if params.get(_k) is not None:
+            lines = _replace_assign(lines, _var, _r_str(str(params[_k])))
+
     # SCiLS 注釈サイドカーを結果フォルダへ運ぶ（Q2: インタラクティブ閲覧用）
     _copy_feature_annotation_sidecars(
         [resolved_data_folder]
