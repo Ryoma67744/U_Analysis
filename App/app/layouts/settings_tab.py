@@ -745,9 +745,80 @@ def _create_analysis_settings_subtab():
         # プリフライトバリデーション結果
         html.Div(id="validation_summary", children="", style={"display": "none"}),
 
+        # PreFlight 診断 ＋ UMAP ハイパーパラメータ
+        _create_preflight_section(),
+
         # 実行ボタンエリア
         _create_run_button(),
     ])
+
+
+def _create_preflight_section():
+    """PreFlight 診断ボタン＋結果表示＋UMAP ハイパーパラメータ入力。
+
+    - 診断: 完了済み解析の reduction RDS に run_diagnostics.R を実行し、
+      推奨 dims / n.neighbors・許容域・推奨度・警告・交絡判定を表示（提案のみ）。
+    - UMAP ハイパラ入力: 次回の「解析実行」へ注入される（analysis_runner 既存機構）。
+    """
+    metric_opts = [
+        {"label": "cosine", "value": "cosine"},
+        {"label": "euclidean", "value": "euclidean"},
+    ]
+    return html.Details([
+        html.Summary(
+            "🩺 PreFlight 診断 / UMAP ハイパーパラメータ",
+            style={"cursor": "pointer", "fontWeight": "600",
+                   "fontSize": "0.95rem", "marginBottom": "8px"},
+        ),
+        html.Div(className="param-group", children=[
+            # UMAP ハイパーパラメータ入力（次回解析へ注入）
+            dbc.Row([
+                dbc.Col(width=3, children=[
+                    dbc.Label("n.neighbors", html_for="umap_n_neighbors_input"),
+                    dbc.Input(id="umap_n_neighbors_input", type="number",
+                              value=30, min=2, max=100, step=1, size="sm"),
+                ]),
+                dbc.Col(width=3, children=[
+                    dbc.Label("min.dist", html_for="umap_min_dist_input"),
+                    dbc.Input(id="umap_min_dist_input", type="number",
+                              value=0.3, min=0, max=1, step=0.05, size="sm"),
+                ]),
+                dbc.Col(width=3, children=[
+                    dbc.Label("metric", html_for="umap_metric_input"),
+                    dcc.Dropdown(id="umap_metric_input", options=metric_opts,
+                                 value="cosine", clearable=False,
+                                 style={"fontSize": "0.85rem"}),
+                ]),
+                dbc.Col(width=3, children=[
+                    dbc.Label("dims", html_for="umap_dims_input"),
+                    dbc.Input(id="umap_dims_input", type="number",
+                              value=30, min=2, max=50, step=1, size="sm"),
+                ]),
+            ]),
+            dbc.FormText(
+                "PreFlight 推奨値を参考に設定。これらは次回の「解析実行」に反映されます"
+                "（dims の自動反映は DESI のみ。TIMS は別途）。"
+            ),
+            html.Div(
+                style={"marginTop": "10px", "display": "flex", "gap": "10px",
+                       "alignItems": "center"},
+                children=[
+                    dbc.Button("🩺 PreFlight 診断を実行", id="btn_preflight_run",
+                               size="sm", color="info"),
+                    dbc.Button("推奨値を入力欄へ反映", id="btn_preflight_apply",
+                               size="sm", color="secondary", outline=True),
+                ],
+            ),
+            dbc.FormText(
+                "診断は「完了済み解析」の reduction RDS（Harmony/RPCA 等）に対して実行します。"
+                "解析中は実行できません。"
+            ),
+            dcc.Loading(html.Div(id="preflight_results_container",
+                                 style={"marginTop": "10px"})),
+            dcc.Store(id="preflight_store"),
+            dcc.Interval(id="preflight_poll", interval=1500, disabled=True),
+        ]),
+    ], style={"marginTop": "15px", "marginBottom": "10px"})
 
 
 def _create_run_button():

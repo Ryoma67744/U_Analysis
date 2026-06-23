@@ -121,7 +121,11 @@ def toggle_sidebar_content(active_tab):
      State("normalize_input", "value"),
      State("norm_mode", "value"),
      State("normalize_input_reanalysis", "value"),
-     State("norm_mode_reanalysis", "value")],
+     State("norm_mode_reanalysis", "value"),
+     State("umap_n_neighbors_input", "value"),
+     State("umap_min_dist_input", "value"),
+     State("umap_metric_input", "value"),
+     State("umap_dims_input", "value")],
     prevent_initial_call=True,
 )
 def run_analysis(
@@ -154,6 +158,8 @@ def run_analysis(
     desi_roi_filter_list,
     normalize_input, norm_mode,
     normalize_input_reanalysis, norm_mode_reanalysis,
+    umap_n_neighbors_input, umap_min_dist_input,
+    umap_metric_input, umap_dims_input,
 ):
     if not n_clicks:
         return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
@@ -258,6 +264,17 @@ def run_analysis(
                 "input_normalized": (normalize_input == "OFF"),
                 "norm_mode": norm_mode or "log1p",
             }
+
+            # --- UMAP ハイパーパラメータ（PreFlight 推奨値を手動反映可能。
+            #     analysis_runner の _hp_* 機構でテンプレ定数へ注入される）---
+            if umap_n_neighbors_input is not None:
+                params["umap_n_neighbors"] = int(umap_n_neighbors_input)
+            if umap_min_dist_input is not None:
+                params["umap_min_dist"] = float(umap_min_dist_input)
+            if umap_metric_input:
+                params["umap_metric"] = str(umap_metric_input)
+            if umap_dims_input is not None:
+                params["umap_dims_n"] = int(umap_dims_input)
 
             if resume_rds and rds_folder:
                 rds_files = sorted(Path(rds_folder).glob("*.rds"))
@@ -470,6 +487,10 @@ def run_analysis(
                 "target_clusters": target_clusters or "",
                 "resume_rds": bool(resume_rds),
                 "timestamp": datetime.now().isoformat(),
+                "umap_n_neighbors": params.get("umap_n_neighbors"),
+                "umap_min_dist": params.get("umap_min_dist"),
+                "umap_metric": params.get("umap_metric"),
+                "umap_dims_n": params.get("umap_dims_n"),
             }
             # キャリブレーション情報の保存
             cal_r = params.get("calibration_result", {})

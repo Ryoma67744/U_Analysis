@@ -12,6 +12,18 @@
 
 ---
 
+## 2026-06-23_ver9.0
+
+### 機能追加: PreFlight 診断の UI 化（アプリ内で「見る」＋推奨値を「使う」）
+
+これまで CLI 専用（`App/Script/helpers/run_diagnostics.R`）だった UMAP PreFlight / バッチ補正診断を**アプリ設定タブに配線**し、`analyze → diagnose → 調整 → re-analyze` のループをアプリ内で完結できるようにした。R 側の診断ロジックは変更していない。
+
+- **診断を「見る」**: 設定タブに「🩺 PreFlight 診断」セクションを追加（`settings_tab.py`）。選択中サブプロジェクトの完了済み結果フォルダから reduction RDS（Harmony/RPCA/PCA 等）を `_detect_integration_methods` で検出し、`run_diagnostics.R` を `start_analysis_process` で実行（`<result_dir>/preflight/` へ出力）。完了後 `diagnostics.json` を読み、**reduction 別の表**（手法 / 推奨dims / 推奨n.neighbors / 許容n.neighbors / 推奨度 / 設計(交絡) / iLISI / 警告）を表示。
+- **推奨値を「使う」**: UMAP ハイパーパラメータ入力欄（n.neighbors / min.dist / metric / dims）を新設。「推奨値を入力欄へ反映」で最有力（confidence 高優先）の推奨を入力欄へ転記（提案のみ・自動適用なし）。入力値は次回「解析実行」時にテンプレ定数へ注入（既存 `analysis_runner` の `_hp_*` 機構）され、`analysis_params.json` にも記録（再現性）。
+- 新規 `App/app/callbacks/preflight_callbacks.py`（起動・ポーリング・表示・推奨反映）。`config.py` に `RUN_DIAGNOSTICS_PATH` を追加、`main.py` でコールバック登録。解析中（他 Rscript 実行中）は診断を起動できない（同時実行ガード＝想定どおり）。
+- **既知の非対称（注意）**: `n.neighbors / min.dist / metric` の注入は DESI v15・TIMS ver5 双方で有効。**dims の自動反映は DESI のみ**（TIMS ver5 は `UMAP_DIMS_MAX`＋リトライグリッドで dims を決めるため別タスク）。表示上は両方の推奨 dims を出す。
+- 注: R 実行検証は解析環境で実施（本リポジトリ環境に R 無し）。本番取り込み後に動作確認のこと。
+
 ## 2026-06-23_ver8.0
 
 ### 機能追加: TIMS Parquet の「注釈付き列名（化合物名_m/z | DB | …）」対応 ＋ メタ情報保持
