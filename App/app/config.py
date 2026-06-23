@@ -93,6 +93,9 @@ TIMS_CLUSTER_FILTER_PATH = TIMS_SCRIPT_DIR / "260312_DBSCAN_ver17_Cluster_Filter
 # R ヘルパースクリプトのパス (App/Script/helpers/)
 R_HELPERS_DIR = APP_DIR / "Script" / "helpers"
 
+# PreFlight 診断 CLI (run_diagnostics.R) のパス
+RUN_DIAGNOSTICS_PATH = R_HELPERS_DIR / "run_diagnostics.R"
+
 # DESI用デフォルト設定
 DEFAULT_DESI_DATA_FOLDER = str(DESI_DATA_DIR)
 DEFAULT_ANNOTATION_FILE_PATH = str(DESI_DB_DIR / "263010-MRM.xlsx")
