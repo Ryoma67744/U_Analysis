@@ -1514,6 +1514,13 @@ assign_xy_grid <- function(seu, nx=NULL, ny=NULL){
 }
 
 run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_only = TRUE) {
+  # PIPELINE_STAGE: "reduction_only" の場合は UMAP/クラスタリング/DEG/作図など
+  # 下流処理を一切行わずに即終了する（PreFlight 診断用に reduction RDS だけ確定させる）。
+  # reduction（Step2 Harmony/PCA・Step3 RPCA）は本関数の呼び出し前に既に保存済み。
+  if (identical(PIPELINE_STAGE, "reduction_only")) {
+    cat(paste0("\n>>> PIPELINE_STAGE=reduction_only: skip downstream for: ", prefix, " <<<\n"))
+    return(invisible(NULL))
+  }
   cat(paste0("\n>>> Starting Downstream Analysis for: ", prefix, " <<<\n"))
   
   # サブフォルダに出力 (上書き防止)
@@ -2264,18 +2271,18 @@ if (!step2_done) {
     s <- RunPCA(s, npcs = cfg$max_pcs)
     if(use_harmony) {
       s <- RunHarmony(s, group.by.vars=group_var)
-      s <- RunUMAP(s, reduction="harmony", dims=1:cfg$umap_dims,
-                   n.neighbors=UMAP_N_NEIGHBORS, min.dist=UMAP_MIN_DIST,
-                   metric=UMAP_METRIC, seed.use=GLOBAL_RANDOM_SEED)
-      s <- FindNeighbors(s, reduction="harmony", dims=1:cfg$umap_dims,
-                         k.param=CLUSTER_K_PARAM, annoy.metric=CLUSTER_METRIC)
-    } else {
-      s <- RunUMAP(s, reduction="pca", dims=1:cfg$umap_dims,
-                   n.neighbors=UMAP_N_NEIGHBORS, min.dist=UMAP_MIN_DIST,
-                   metric=UMAP_METRIC, seed.use=GLOBAL_RANDOM_SEED)
-      s <- FindNeighbors(s, reduction="pca", dims=1:cfg$umap_dims,
-                         k.param=CLUSTER_K_PARAM, annoy.metric=CLUSTER_METRIC)
     }
+    # PIPELINE_STAGE=reduction_only: reduction(PCA/Harmony)計算後に即返す
+    #   （UMAP/FindNeighbors/FindClusters をスキップ＝PreFlight 診断用の軽量実行）
+    if (identical(PIPELINE_STAGE, "reduction_only")) {
+      return(s)
+    }
+    red_use <- if (use_harmony) "harmony" else "pca"
+    s <- RunUMAP(s, reduction=red_use, dims=1:cfg$umap_dims,
+                 n.neighbors=UMAP_N_NEIGHBORS, min.dist=UMAP_MIN_DIST,
+                 metric=UMAP_METRIC, seed.use=GLOBAL_RANDOM_SEED)
+    s <- FindNeighbors(s, reduction=red_use, dims=1:cfg$umap_dims,
+                       k.param=CLUSTER_K_PARAM, annoy.metric=CLUSTER_METRIC)
     FindClusters(s, resolution=CLUSTER_RESOLUTION, algorithm=CLUSTER_ALGORITHM)
   }
   
@@ -2389,12 +2396,15 @@ if (!step3_done) {
           DefaultAssay(seu_rpca) <- "integrated"
           seu_rpca <- ScaleData(seu_rpca)
           seu_rpca <- RunPCA(seu_rpca)
+          # PIPELINE_STAGE=reduction_only: UMAP/クラスタリングをスキップ（診断用の軽量実行）
+          if (!identical(PIPELINE_STAGE, "reduction_only")) {
           seu_rpca <- RunUMAP(seu_rpca, reduction = "pca", dims = 1:UMAP_DIMS_MAX,
                               n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
                               metric = UMAP_METRIC, seed.use = GLOBAL_RANDOM_SEED)
           seu_rpca <- FindNeighbors(seu_rpca, reduction = "pca", dims = 1:UMAP_DIMS_MAX,
                                     k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
           seu_rpca <- FindClusters(seu_rpca, resolution = CLUSTER_RESOLUTION, algorithm = CLUSTER_ALGORITHM)
+          }
           TRUE
         }, error=function(e) FALSE)
         if(ok) break

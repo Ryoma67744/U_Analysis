@@ -2246,6 +2246,7 @@ if (length(seu_list) == 1) {
     pc_avail <- ncol(Embeddings(seu_single, "pca"))
     dims_use      <- seq_len(min(UMAP_DIMS_N, pc_avail))
     dims_use_clst <- seq_len(min(CLUSTER_DIMS_N, pc_avail))
+    if (PIPELINE_STAGE != "reduction_only") {
     seu_single <- RunUMAP(seu_single, reduction = "pca", dims = dims_use,
                           n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
                           metric = UMAP_METRIC, seed.use = UMAP_SEED)
@@ -2253,11 +2254,14 @@ if (length(seu_list) == 1) {
                                 k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
     seu_single <- FindClusters(seu_single, resolution = CLUSTER_RESOLUTION_SINGLE, algorithm = CLUSTER_ALGORITHM)
     Idents(seu_single) <- seu_single$seurat_clusters
+    }  # reduction_only: UMAP/クラスタリングをスキップ（reduction だけ保存）
     
     save_rds_compact(seu_single, rds_path_single_out)
     gc()
   }
-  
+
+  # PIPELINE_STAGE: reduction_only なら以降（UMAP/作図/DEG）をスキップ（診断用に reduction だけ確定）
+  if (PIPELINE_STAGE != "reduction_only") {
   # Color
   current_clusters <- levels(Idents(seu_single))
   my_colors <- .assign_cluster_colors(seu_single, seed = 42)
@@ -2411,6 +2415,7 @@ if (length(seu_list) == 1) {
                           sample_names = unique(seu_single$sample), od = od, mrm_df = mrm_df, method_outdir = od_pca)
     }
   }
+  }  # end if (PIPELINE_STAGE != "reduction_only")  [single-sample downstream]
 } else {
   # =========================
   # Multi-sample mode
@@ -2466,6 +2471,7 @@ if (length(seu_list) == 1) {
     dims_use      <- seq_len(min(UMAP_DIMS_N, h_avail))
     dims_use_clst <- seq_len(min(CLUSTER_DIMS_N, h_avail))
 
+    if (PIPELINE_STAGE != "reduction_only") {
     seu_harmony <- RunUMAP(seu_harmony, reduction = "harmony", dims = dims_use,
                            n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
                            metric = UMAP_METRIC, seed.use = UMAP_SEED)
@@ -2473,11 +2479,14 @@ if (length(seu_list) == 1) {
                                  k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
     seu_harmony <- FindClusters(seu_harmony, resolution = CLUSTER_RESOLUTION_HARMONY, algorithm = CLUSTER_ALGORITHM)
     Idents(seu_harmony) <- seu_harmony$seurat_clusters
+    }  # reduction_only: UMAP/クラスタリングをスキップ（reduction だけ保存）
     
     save_rds_compact(seu_harmony, rds_path_harmony_out)
     gc()
   }
-  
+
+  # PIPELINE_STAGE: reduction_only なら以降（UMAP/作図/DEG）をスキップ（診断用に reduction だけ確定）
+  if (PIPELINE_STAGE != "reduction_only") {
   # Color
   current_clusters <- levels(Idents(seu_harmony))
   my_colors <- .assign_cluster_colors(seu_harmony, seed = 42)
@@ -2627,7 +2636,8 @@ if (length(seu_list) == 1) {
     run_volcano_and_msi(seu_harmony, deg_markers_harmony, method_tag = "harmony",
                         sample_names = sample_names, od = od, mrm_df = mrm_df, method_outdir = od_harmony)
   }
-  
+  }  # end if (PIPELINE_STAGE != "reduction_only")  [harmony downstream]
+
   # ---- RPCA ----
   message("Multi-sample mode: RPCA...")
   od_rpca <- file.path(od, "RPCA"); dir.create(od_rpca, showWarnings = FALSE)
@@ -2687,6 +2697,7 @@ dims_use_rpca <- get_safe_dims_for_rpca(seu_list_pca, max_dims = 30, reduction =
     pc_avail <- ncol(Embeddings(seu_rpca, "pca"))
     dims_use      <- seq_len(min(UMAP_DIMS_N, pc_avail))
     dims_use_clst <- seq_len(min(CLUSTER_DIMS_N, pc_avail))
+    if (PIPELINE_STAGE != "reduction_only") {
     seu_rpca <- RunUMAP(seu_rpca, reduction = "pca", dims = dims_use,
                         n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
                         metric = UMAP_METRIC, seed.use = UMAP_SEED)
@@ -2694,11 +2705,14 @@ dims_use_rpca <- get_safe_dims_for_rpca(seu_list_pca, max_dims = 30, reduction =
                               k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
     seu_rpca <- FindClusters(seu_rpca, resolution = CLUSTER_RESOLUTION_RPCA, algorithm = CLUSTER_ALGORITHM)
     Idents(seu_rpca) <- seu_rpca$seurat_clusters
+    }  # reduction_only: UMAP/クラスタリングをスキップ（reduction だけ保存）
     
     save_rds_compact(seu_rpca, rds_path_rpca_out)
     gc()
   }
-  
+
+  # PIPELINE_STAGE: reduction_only なら以降（UMAP/作図/DEG）をスキップ（診断用に reduction だけ確定）
+  if (PIPELINE_STAGE != "reduction_only") {
   current_clusters <- levels(Idents(seu_rpca))
   my_colors <- .assign_cluster_colors(seu_rpca, seed = 42)
   
@@ -2845,6 +2859,7 @@ dims_use_rpca <- get_safe_dims_for_rpca(seu_list_pca, max_dims = 30, reduction =
       # 既存コードは残すが実行されないようにFALSE条件にしてある
     }
   }
+  }  # end if (PIPELINE_STAGE != "reduction_only")  [rpca downstream]
 }
 
 # ---- Cleanup: 中間RDS（解析完了後は不要） ----

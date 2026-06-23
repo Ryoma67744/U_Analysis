@@ -70,6 +70,7 @@ def toggle_sidebar_content(active_tab):
      Output("notification_toast", "children", allow_duplicate=True),
      Output("notification_toast", "is_open", allow_duplicate=True)],
     Input("run_analysis", "n_clicks"),
+    Input("btn_make_reduction", "n_clicks"),
     [State("analysis_method", "value"),
      State("analysis_method_tims", "value"),
      State("data_folder", "value"),
@@ -130,6 +131,7 @@ def toggle_sidebar_content(active_tab):
 )
 def run_analysis(
     n_clicks,
+    reduction_clicks,
     desi_method, tims_method,
     data_folder, annotation_path, p_thresh, logfc_thresh,
     resume_rds, rds_folder,
@@ -161,7 +163,13 @@ def run_analysis(
     umap_n_neighbors_input, umap_min_dist_input,
     umap_metric_input, umap_dims_input,
 ):
-    if not n_clicks:
+    # トリガー判定: 通常の「解析実行」(run_analysis) か、
+    # PreFlight 用の「reduction のみ作成」(btn_make_reduction) か。
+    # reduction_only モードでは PIPELINE_STAGE=reduction_only を注入し、
+    # UMAP/クラスタリング/DEG/作図をスキップして reduction RDS だけ生成する。
+    trig = ctx.triggered_id
+    reduction_only_mode = (trig == "btn_make_reduction")
+    if not n_clicks and not reduction_clicks:
         return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
     # 現在の設定を自動保存（次回起動時に復元される）
@@ -275,6 +283,12 @@ def run_analysis(
                 params["umap_metric"] = str(umap_metric_input)
             if umap_dims_input is not None:
                 params["umap_dims_n"] = int(umap_dims_input)
+
+            # PIPELINE_STAGE: reduction_only（PreFlight 診断用に reduction だけ作る
+            #   軽量モード。テンプレ定数 PIPELINE_STAGE へ注入され、UMAP 以降を
+            #   スキップ。未指定時はテンプレ既定の "full"）
+            if reduction_only_mode:
+                params["pipeline_stage"] = "reduction_only"
 
             if resume_rds and rds_folder:
                 rds_files = sorted(Path(rds_folder).glob("*.rds"))
@@ -491,6 +505,7 @@ def run_analysis(
                 "umap_min_dist": params.get("umap_min_dist"),
                 "umap_metric": params.get("umap_metric"),
                 "umap_dims_n": params.get("umap_dims_n"),
+                "pipeline_stage": params.get("pipeline_stage", "full"),
             }
             # キャリブレーション情報の保存
             cal_r = params.get("calibration_result", {})

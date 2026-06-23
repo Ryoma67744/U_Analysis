@@ -12,6 +12,22 @@
 
 ---
 
+## 2026-06-23_ver10.0
+
+### 機能追加: PreFlight 診断に「reduction のみ作成（診断用）」を追加（フル解析を先に回す必要を解消）
+
+ver9.0 では PreFlight 診断が**完了済みのフル解析**を前提としており、「離陸前点検」なのに一度フル解析が必要という本末転倒があった。診断が必要とするのは reduction（PCA/Harmony/RPCA）の埋め込みだけ（UMAP/クラスタリング/DEG/作図は不要）であることを利用し、**reduction まで作って即停止する軽量モード `PIPELINE_STAGE=reduction_only`** を実装した。
+
+- **新フロー**: ① reduction のみ作成（診断用）→ ② PreFlight 診断 → ③ 推奨値を反映 → ④ 解析実行（フル）。既に完了済み解析があれば ① は省略可。
+- **設定 UI**（`settings_tab.py`）: PreFlight セクションに「① reduction のみ作成（診断用）」ボタン（`btn_make_reduction`）を追加し、4 ステップのフローを明示。
+- **配線**（`analysis_callbacks.py`）: `btn_make_reduction` を `run_analysis` のトリガーに追加。`ctx.triggered_id` で判定し、reduction モード時に `params["pipeline_stage"]="reduction_only"` を注入（テンプレ定数 `PIPELINE_STAGE` へは既存の `_hp_str` 機構で反映）。`analysis_params.json` にも記録。通常実行は従来どおり `full`。
+- **R テンプレ実装（予約済み定数を有効化）**:
+  - **DESI v15**: single/Harmony/RPCA の各分岐で、reduction 計算後に **UMAP/FindNeighbors/FindClusters と 作図/DEG をスキップ**し、reduction RDS（`DESI_SeuratCombined_harmony.rds` / `_RPCA.rds` / `DESI_Seurat_SingleSample.rds`）だけ保存して終了。
+  - **TIMS ver5**: `run_pipeline`（Step2 Harmony/PCA）と RPCA（Step3）で reduction 計算後に UMAP/クラスタリングをスキップ。`run_downstream_analysis()` 先頭で reduction_only なら即 return（DEG/作図を全スキップ）。Step2/Step3 RDS は保存。
+  - reduction_only で生成した RDS は `RDS_Files/` に従来名で保存され、PreFlight 診断（`_detect_integration_methods`）がそのまま検出可能。デフォルト param の「捨て UMAP」は作らない。
+- **効率**: reduction_only ＋ フル解析（推奨 param）の 2 回で済む（従来は「フル解析（無駄）→ 診断 → フル解析」の 2 フル解析が必要だった）。reduction 自体は各回で再計算（reduction の再利用＝`downstream_from_reduction` は別タスクとして保持）。
+- 注: R 実行検証は解析環境で実施（本リポジトリ環境に R 無し）。括弧バランスは静的検査で確認済み。本番取り込み後に動作確認のこと。
+
 ## 2026-06-23_ver9.0
 
 ### 機能追加: PreFlight 診断の UI 化（アプリ内で「見る」＋推奨値を「使う」）
