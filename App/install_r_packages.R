@@ -15,6 +15,9 @@ packages <- c(
   "Seurat",
   "Matrix",
   "harmony",
+  "httpuv",   # Seurat -> shiny の間接依存。r2u 再ビルドで取りこぼされ Seurat ロード不可になる事故対策で明示
+  "shiny",
+  "miniUI",
 
   # データ操作・IO
   "tidyverse",

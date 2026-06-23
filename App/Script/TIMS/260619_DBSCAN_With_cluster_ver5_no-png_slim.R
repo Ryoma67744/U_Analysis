@@ -618,7 +618,7 @@ annotate_mz_with_format <- function(mz_vec, db_long, tol_mz,
   if (nrow(db_use) == 0) return(mz_vec)
 
   out <- sapply(mz_vec, function(target_mz_str) {
-    val <- suppressWarnings(as.numeric(gsub("[^0-9.]", "", target_mz_str)))
+    val <- .feature_mz(target_mz_str)
     # キャリブレーション補正を annotation マッチング前に適用
     if (isTRUE(CALIBRATION_ENABLE) && !is.na(val)) {
       val <- calibrate_mz(val, CALIBRATION_COEFFICIENTS)
@@ -651,6 +651,45 @@ sanitize_dimnames <- function(mat, prefix_row = "mz-", prefix_col = "Spot-") {
   rownames(mat) <- rn; colnames(mat) <- cn; mat
 }
 
+# ---- 特徴量名から m/z を頑健に取得（"m/z 123.45" / "化合物名_123.45 | ..." 両対応）----
+.feature_mz <- function(x) {
+  x <- as.character(x)
+  out <- rep(NA_real_, length(x))
+  is_leg <- grepl("^m/z ", x)
+  out[is_leg] <- suppressWarnings(as.numeric(sub("^m/z\\s+", "", x[is_leg])))
+  rest <- which(is.na(out))
+  if (length(rest) > 0) {
+    head_tok <- trimws(sub("\\s*\\|.*$", "", x[rest]))   # " | " 以降を除去
+    out[rest] <- suppressWarnings(as.numeric(sub("^.*_([0-9]+\\.?[0-9]*)$", "\\1", head_tok)))
+  }
+  out
+}
+
+# ---- 注釈付き列名 "<化合物名>_<mz> | DB | adduct | k=v ..." を per-feature テーブルに分解 ----
+#  raw 全文は必ず保持し、将来機能から参照可能にする（パース不能フィールドは NA）。
+.parse_feature_annotations <- function(raw, feature, mz, compound = NA_character_) {
+  raw <- as.character(raw)
+  ex <- function(pat) vapply(raw, function(s) {
+    m <- regmatches(s, regexpr(pat, s, perl = TRUE)); if (length(m) > 0) m[1] else NA_character_
+  }, character(1), USE.NAMES = FALSE)
+  exkv <- function(key) vapply(raw, function(s) {
+    m <- regmatches(s, regexpr(paste0(key, "=[^|]*"), s, perl = TRUE))
+    if (length(m) > 0) trimws(sub(paste0("^", key, "="), "", m[1])) else NA_character_
+  }, character(1), USE.NAMES = FALSE)
+  data.frame(
+    feature       = feature,
+    compound      = compound,
+    mz            = mz,
+    adduct        = ex("\\[[^]]*\\][+-]?"),
+    ppm           = ex("[0-9.]+\\s*ppm"),
+    formula       = exkv("formula"),
+    smiles        = exkv("SMILES"),
+    adduct_family = exkv("adduct_family"),
+    raw           = raw,
+    stringsAsFactors = FALSE
+  )
+}
+
 read_desi_data <- function(file_path, sample_prefix = NULL) {
   ext <- tolower(tools::file_ext(file_path))
 
@@ -669,6 +708,7 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
     all_names <- pf$GetSchema()$names
     mz_cols <- grep("^mz_", all_names, value = TRUE)
     is_bare_numeric <- FALSE
+    is_annotated <- FALSE
     if (length(mz_cols) == 0) {
       non_meta <- setdiff(all_names, c("id", "x", "y", "annotation"))
       bare_num <- non_meta[!is.na(suppressWarnings(as.numeric(non_meta)))]
@@ -676,6 +716,17 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
         mz_cols <- bare_num
         is_bare_numeric <- TRUE
         cat("  [Info] Bare numeric column names detected, treating as m/z values\n")
+      } else if (length(non_meta) > 0) {
+        # 注釈付き列名 "<化合物名>_<mz> | DB | adduct | ..." 形式。
+        # "| より前" の末尾 _<数値> が m/z として取れる列のみ特徴量として採用。
+        .head <- trimws(sub("\\s*\\|.*$", "", non_meta))
+        .mz   <- suppressWarnings(as.numeric(sub("^.*_([0-9]+\\.?[0-9]*)$", "\\1", .head)))
+        if (any(!is.na(.mz))) {
+          mz_cols <- non_meta[!is.na(.mz)]
+          is_annotated <- TRUE
+          cat(sprintf("  [Info] Annotated column names detected (compound_m/z | ...): %d features\n",
+                      length(mz_cols)))
+        }
       }
     }
     need_cols <- c("id", "x", "y", mz_cols)
@@ -686,19 +737,32 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
     if (length(miss) > 0) stop("Parquet is missing required columns: ", paste(miss, collapse = ", "))
     if (length(mz_cols) == 0) stop("No mz_ columns found in Parquet: ", file_path)
 
-    # Build metabolite names to MATCH CSV pipeline naming exactly: "m/z %.5f"
-    if (is_bare_numeric) {
-      mz_num <- as.numeric(mz_cols)
+    # Build feature names + m/z（注釈付きは「化合物名_m/z」を表示名に採用し、|以降のメタは保持）
+    feature_annotations <- NULL
+    if (is_annotated) {
+      raw_names <- mz_cols
+      head_tok  <- trimws(sub("\\s*\\|.*$", "", raw_names))                       # 化合物名_m/z
+      mz_num    <- suppressWarnings(as.numeric(sub("^.*_([0-9]+\\.?[0-9]*)$", "\\1", head_tok)))
+      compound  <- sub("_[0-9]+\\.?[0-9]*$", "", head_tok)                         # 化合物名のみ（末尾 _m/z を除去）
+      metabolite_names <- make.unique(head_tok)
+      feature_annotations <- .parse_feature_annotations(raw_names, metabolite_names, mz_num, compound)
+      cat(sprintf("  [Info] Using compound_m/z feature names; metadata preserved (%d features)\n",
+                  length(metabolite_names)))
     } else {
-      mz_num <- suppressWarnings(as.numeric(sub("^mz_", "", mz_cols)))
-      if (anyNA(mz_num)) {
-        # fallback: strip non-numeric
-        mz_num <- suppressWarnings(as.numeric(gsub("[^0-9.]", "", sub("^mz_", "", mz_cols))))
+      # Build metabolite names to MATCH CSV pipeline naming exactly: "m/z %.5f"
+      if (is_bare_numeric) {
+        mz_num <- as.numeric(mz_cols)
+      } else {
+        mz_num <- suppressWarnings(as.numeric(sub("^mz_", "", mz_cols)))
+        if (anyNA(mz_num)) {
+          # fallback: strip non-numeric
+          mz_num <- suppressWarnings(as.numeric(gsub("[^0-9.]", "", sub("^mz_", "", mz_cols))))
+        }
       }
-    }
-    if (anyNA(mz_num)) stop("Failed to parse m/z from Parquet column names.")
+      if (anyNA(mz_num)) stop("Failed to parse m/z from Parquet column names.")
 
-    metabolite_names <- make.unique(sprintf("m/z %.5f", mz_num))
+      metabolite_names <- make.unique(sprintf("m/z %.5f", mz_num))
+    }
 
     # Spot IDs consistent with CSV reader:
     base_prefix <- gsub("[^A-Za-z0-9_-]", "_", sample_prefix %||% "Sample")
@@ -749,7 +813,10 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
     rownames(count_matrix) <- metabolite_names
     colnames(count_matrix) <- spot_id
 
-    return(list(count_matrix = as(count_matrix, "dgCMatrix"), coordinates = coordinates))
+    return(list(count_matrix = as(count_matrix, "dgCMatrix"), coordinates = coordinates,
+                feature_annotations = if (!is.null(feature_annotations))
+                  feature_annotations[match(rownames(count_matrix), feature_annotations$feature), , drop = FALSE]
+                  else NULL))
   }
 
   # -------------------------------
@@ -872,7 +939,7 @@ calibrate_feature_names <- function(seu_list) {
     }
 
     old_names <- rownames(seu_list[[i]])
-    old_mz <- as.numeric(sub("^m/z ", "", old_names))
+    old_mz <- .feature_mz(old_names)
     new_mz <- calibrate_mz(old_mz, coefs, TRUE)
     new_names <- sprintf("m/z %.5f", new_mz)
     if (any(duplicated(new_names))) {
@@ -891,7 +958,7 @@ align_mz_features <- function(seu_list, ppm_tol) {
   all_mz <- c()
   for (s in seu_list) {
     feat <- rownames(s)
-    mz_num <- as.numeric(sub("^m/z ", "", feat))
+    mz_num <- .feature_mz(feat)
     all_mz <- c(all_mz, mz_num[!is.na(mz_num)])
   }
   all_mz <- sort(unique(all_mz))
@@ -913,7 +980,7 @@ align_mz_features <- function(seu_list, ppm_tol) {
 
   for (i in seq_along(seu_list)) {
     old_names <- rownames(seu_list[[i]])
-    old_mz <- as.numeric(sub("^m/z ", "", old_names))
+    old_mz <- .feature_mz(old_names)
     new_names <- old_names
     for (g in groups) {
       for (member in g$members) {
@@ -2059,9 +2126,14 @@ if (RESUME_FROM_RDS && file.exists(rds_step1_in)) {
 
 if (!step1_done) {
   seu_list <- list(); input_paths <- unique(INPUT_PATHS[file.exists(INPUT_PATHS)])
+  fa_all <- list()  # 注釈付き列名データの per-feature メタ（化合物名/m/z/|以降）を保持
   for (fp in input_paths) {
     sn <- tools::file_path_sans_ext(basename(fp))
     dat <- read_desi_data_cached(fp, sn)
+    if (!is.null(dat$feature_annotations)) {
+      .fa <- dat$feature_annotations; .fa$sample <- sn
+      fa_all[[length(fa_all) + 1]] <- .fa
+    }
     seu <- CreateSeuratObject(counts=dat$count_matrix, project="DESI", assay="Spatial")
     seu$sample <- sn; seu$x_coord <- dat$coordinates$x; seu$y_coord <- dat$coordinates$y; seu$spot_index <- dat$coordinates$spot_index
     if ("annotation" %in% colnames(dat$coordinates)) seu$annotation <- dat$coordinates$annotation
@@ -2069,6 +2141,24 @@ if (!step1_done) {
     # condition は slice_id（= annotation名）をそのまま使用
 seu$condition <- seu$slice_id
     if(ncol(seu)>0) seu_list[[length(seu_list)+1]] <- seu
+  }
+
+  # ---- feature_annotations を出力に保存（要件: |以降のメタ情報を保持し将来参照可能に）----
+  if (length(fa_all) > 0) {
+    .fa_out <- tryCatch(do.call(rbind, fa_all), error = function(e) NULL)
+    if (!is.null(.fa_out)) {
+      tryCatch({
+        if (requireNamespace("arrow", quietly = TRUE)) {
+          arrow::write_parquet(.fa_out, file.path(RDS_SAVE_DIR, "feature_annotations.parquet"))
+          cat(sprintf("  [feature_annotations] saved %d rows -> %s/feature_annotations.parquet\n",
+                      nrow(.fa_out), RDS_SAVE_DIR))
+        } else {
+          saveRDS(.fa_out, file.path(RDS_SAVE_DIR, "feature_annotations.rds"))
+          cat(sprintf("  [feature_annotations] saved %d rows -> %s/feature_annotations.rds\n",
+                      nrow(.fa_out), RDS_SAVE_DIR))
+        }
+      }, error = function(e) message("[feature_annotations] save failed: ", conditionMessage(e)))
+    }
   }
 
   # ---- (1) キャリブレーション補正 ----
