@@ -83,12 +83,16 @@ BROWSER_SHORTCUTS = [
 # v15: UMAP/クラスタリングのハイパーパラメータを明示定数化（UI注入・記録の土台。挙動は v14 と同一）。
 #      旧 v14 はロールバック用に温存。
 DESI_V8_TEMPLATE_PATH = DESI_SCRIPT_DIR / "260619_DESI-UMAP_Template_v15.R"
-DESI_CLUSTER_FILTER_PATH = DESI_SCRIPT_DIR / "DESI_RDS_ClusterFilter_ver2.R"
+# ver3: 再解析にも PreFlight ループ（reduction_only 再解析）を通すための版。
+#       旧 ver2 はロールバック用に温存。
+DESI_CLUSTER_FILTER_PATH = DESI_SCRIPT_DIR / "DESI_RDS_ClusterFilter_ver3.R"
 
 # TIMS用スクリプトのパス
 # ver5: 同上（UMAPハイパラ明示化。挙動は ver4 と同一）。旧 ver4 は温存。
 TIMS_V8_TEMPLATE_PATH = TIMS_SCRIPT_DIR / "260619_DBSCAN_With_cluster_ver5_no-png_slim.R"
-TIMS_CLUSTER_FILTER_PATH = TIMS_SCRIPT_DIR / "260312_DBSCAN_ver17_Cluster_Filter_ReUMAP.R"
+# ver18: 再解析にも PreFlight ループ（reduction_only 再解析）を通すための版。
+#        旧 ver17 はロールバック用に温存。
+TIMS_CLUSTER_FILTER_PATH = TIMS_SCRIPT_DIR / "260623_DBSCAN_ver18_Cluster_Filter_ReUMAP.R"
 
 # R ヘルパースクリプトのパス (App/Script/helpers/)
 R_HELPERS_DIR = APP_DIR / "Script" / "helpers"

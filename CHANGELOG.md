@@ -12,6 +12,24 @@
 
 ---
 
+## 2026-06-23_ver12.0
+
+### 機能追加: 再解析（exclusion/inclusion）にも PreFlight ループを通す（reduction_only 再解析）
+
+ver11 までで PreFlight ループ（① reduction のみ → ② 診断 → ③ 反映 → ④ 続き）はメイン解析専用だった。本バージョンは**クラスタフィルタ再解析（exclusion=除外 / inclusion=keep）にも同ループを適用**。絞り込んだ部分集合に対し reduction だけを作って診断・チューニングし、tuned param で UMAP 以降を実行できる。
+
+設計の核：**②診断・③反映・④続き は `last_result_dir` の reduction RDS に対して動く汎用機能**なので無改修で再利用。唯一の追加は「**① reduction_only を再解析でも作れること**」。
+
+- **アプリ**（`analysis_callbacks.py`）: ① を再解析（`*_cluster_filter`）でも `reduction_only` に（`pipeline_stage` を cluster_filter params にも設定）。④（btn_run_downstream）は `*_cluster_filter → *_v8` に**リマップ**し、メイン経路の downstream_from_reduction で部分集合 reduction（`last_result_dir`）をロードして UMAP 以降を実行。②③は無改修。
+- **アプリ**（`analysis_runner.py`）: `generate_cluster_filter_config` に `pipeline_stage`→`RERUN_PIPELINE_STAGE` 注入を追加（UMAP ハイパラは①では不要・④はメイン経路で注入済み）。
+- **R（版を進めて新規作成・旧版温存）**:
+  - **DESI `DESI_RDS_ClusterFilter_ver3.R`**（旧 ver2 温存）: `RERUN_PIPELINE_STAGE` 追加、`make_v8_copy_with_settings` が reduction_only 時のみ v15 copy の `PIPELINE_STAGE` を伝播（私の v15 ガードがそのまま機能）、後段 merge を reduction_only でスキップ。
+  - **TIMS `260623_DBSCAN_ver18_Cluster_Filter_ReUMAP.R`**（旧 ver17 温存）: 同様の伝播＋`patch_v13_step2_pipeline` の置換 `run_pipeline` を reduction_only 対応（reduction 計算後に即 return）、後段 ReUMAP-replace / merge を reduction_only でスキップ。`run_downstream_analysis`（ver5 の reduction_only ガード）は patch 非対象で生存し DEG/作図をスキップ。
+  - `config.py` を ver3 / ver18 へ更新。メインテンプレ v15/ver5 は本バージョン無改修。
+- **ワークフロー**: 再解析モードで include/exclude 設定 → ① → ②（部分集合 reduction を診断）→ ③ → ④（部分集合 reduction を再利用し UMAP 以降）。
+- **後方互換**: 通常の再解析（`RERUN_PIPELINE_STAGE`="full"／未注入）は全ガードが従来分岐に倒れ**挙動不変**（merge/ReUMAP 含む）。メイン①②③④も不変。
+- 注: R 実行検証は解析環境で実施（本リポジトリに R 無し）。括弧バランスは静的検査で確認済み。
+
 ## 2026-06-23_ver11.0
 
 ### 機能追加: PreFlight「④ 続きを実行（reduction再利用）」＝ `PIPELINE_STAGE="downstream_from_reduction"`

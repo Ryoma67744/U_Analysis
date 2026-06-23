@@ -240,6 +240,11 @@ def run_analysis(
         warn_user(f"サブプロジェクト設定の保存に失敗: {e}")
 
     analysis_type = desi_method or tims_method or "desi_v8"
+    # ④ downstream_from_reduction は「reduction を再利用して UMAP 以降のみ」をメイン解析
+    # 経路で行う。再解析モードで④を押した場合も cluster_filter ではなく main(v8) 経路へ
+    # リマップする（last_result_dir の部分集合 reduction を④がロードして再UMAP）。
+    if downstream_mode and analysis_type in ("desi_cluster_filter", "tims_cluster_filter"):
+        analysis_type = "tims_v8" if analysis_type == "tims_cluster_filter" else "desi_v8"
     full_output_dir = str(Path(output_dir) / output_subfolder)
     Path(full_output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -469,6 +474,12 @@ def run_analysis(
                     desi_v8_script or str(DESI_V8_TEMPLATE_PATH)
                 ),
             }
+
+            # ① PreFlight: 再解析でも reduction_only（絞り込んだ部分集合の reduction だけ
+            #    作り UMAP 前で停止）。RERUN_PIPELINE_STAGE 経由でメインテンプレ copy の
+            #    PIPELINE_STAGE へ伝播し、後段 merge/ReUMAP もスキップされる。
+            if reduction_only_mode:
+                params["pipeline_stage"] = "reduction_only"
 
             # 再解析用アノテーションファイル
             if reanalysis_annotation_path:
