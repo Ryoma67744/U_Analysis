@@ -20,6 +20,7 @@ SCiLS/peak-list アノテーションを列名に埋め込んだ Parquet（特�
 
 - `read_desi_data`（`260619_DBSCAN_With_cluster_ver5_no-png_slim.R` の Parquet 分岐）に**注釈付き列名分岐**を追加。特徴量名に「化合物名_m/z」（最初の ` | ` より前）を採用し、m/z は末尾 `_<数値>` から抽出。
 - `|` 以降のメタ情報（adduct/ppm/formula/SMILES/adduct_family ＋ **raw 全文**）を per-feature テーブル化し、出力に **`feature_annotations.parquet`** として保存（今後の機能から参照可能）。
+- 同テーブルに **`compound`（化合物名のみ）** と **`mz`（数値）** を**分離して**保持。特徴量名は連結の「化合物名_m/z」のまま（同一化合物が複数 m/z を持つためユニーク性確保）だが、`compound` 単独でのソート/検索/グルーピング、`mz` 単独での数値ソートが可能。
 - 下流の m/z 抽出（`calibrate_feature_names` / `align_mz_features` / `annotate_mz_with_format`）を新ヘルパ **`.feature_mz()`** に統一し、化合物名に数字を含む場合（例 `CL 74:8_1475.9870`）の誤抽出を防止。
 - 既存の `mz_*`／純数値列形式は**後方互換**で従来どおり。
 - 注: R 実行検証は解析環境で実施（本リポジトリ環境に R 無し）。本番（別リポ `umap-webapp-claudecode`）へ取り込み後に動作確認のこと。

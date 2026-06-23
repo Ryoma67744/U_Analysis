@@ -667,7 +667,7 @@ sanitize_dimnames <- function(mat, prefix_row = "mz-", prefix_col = "Spot-") {
 
 # ---- 注釈付き列名 "<化合物名>_<mz> | DB | adduct | k=v ..." を per-feature テーブルに分解 ----
 #  raw 全文は必ず保持し、将来機能から参照可能にする（パース不能フィールドは NA）。
-.parse_feature_annotations <- function(raw, feature, mz) {
+.parse_feature_annotations <- function(raw, feature, mz, compound = NA_character_) {
   raw <- as.character(raw)
   ex <- function(pat) vapply(raw, function(s) {
     m <- regmatches(s, regexpr(pat, s, perl = TRUE)); if (length(m) > 0) m[1] else NA_character_
@@ -678,6 +678,7 @@ sanitize_dimnames <- function(mat, prefix_row = "mz-", prefix_col = "Spot-") {
   }, character(1), USE.NAMES = FALSE)
   data.frame(
     feature       = feature,
+    compound      = compound,
     mz            = mz,
     adduct        = ex("\\[[^]]*\\][+-]?"),
     ppm           = ex("[0-9.]+\\s*ppm"),
@@ -742,8 +743,9 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
       raw_names <- mz_cols
       head_tok  <- trimws(sub("\\s*\\|.*$", "", raw_names))                       # 化合物名_m/z
       mz_num    <- suppressWarnings(as.numeric(sub("^.*_([0-9]+\\.?[0-9]*)$", "\\1", head_tok)))
+      compound  <- sub("_[0-9]+\\.?[0-9]*$", "", head_tok)                         # 化合物名のみ（末尾 _m/z を除去）
       metabolite_names <- make.unique(head_tok)
-      feature_annotations <- .parse_feature_annotations(raw_names, metabolite_names, mz_num)
+      feature_annotations <- .parse_feature_annotations(raw_names, metabolite_names, mz_num, compound)
       cat(sprintf("  [Info] Using compound_m/z feature names; metadata preserved (%d features)\n",
                   length(metabolite_names)))
     } else {
