@@ -12,6 +12,21 @@
 
 ---
 
+## 2026-06-23_ver11.0
+
+### 機能追加: PreFlight「④ 続きを実行（reduction再利用）」＝ `PIPELINE_STAGE="downstream_from_reduction"`
+
+ver10.0 までは PreFlight 後の「④ 解析実行」が**素のフル解析＝reduction(ScaleData/PCA/Harmony/RPCA)を最初から再計算**していた。診断が見るのは reduction の埋め込みだけで、PreFlight が変えるのは UMAP 系 param のみ。本バージョンは予約済み定数 `downstream_from_reduction` を有効化し、**④が①の reduction RDS を読み込んで再計算をスキップ → 決めた param で UMAP→クラスタリング→DEG→作図 だけ実行**するようにした（reduction 通算1回＝最も無駄がない）。**自動連結はしない**（④は手動）。
+
+- **UI**（`settings_tab.py`）: PreFlight セクションに「④ 続きを実行（reduction再利用）」ボタン（`btn_run_downstream`）を追加。フロー文言を更新。
+- **配線**（`analysis_callbacks.py`）: `btn_run_downstream` を `run_analysis` の3つ目のトリガーに追加。`downstream_mode` 時に `pipeline_stage="downstream_from_reduction"`＋`resume_from_rds=True`＋`resume_rds_paths`=①の `last_result_dir/RDS_Files` の reduction RDS（`get_sub_project`＋`_detect_integration_methods` で解決）をセット。既存 RESUME 機構が `RESUME_DIR_PATH` を自動解決（runner 変更なし）。①未実行時はエラートースト。
+- **R 実装（追加のみ・既存挙動は保持）**:
+  - **DESI v15**: ④は raw 読込/seu_list 構築/平滑化/正規化を全スキップ（存在する reduction RDS で分岐 override）。single/Harmony/RPCA の各 branch で RESUME ロード後、reduction-only RDS（UMAP/クラスタ無し）なら **UMAP→FindNeighbors→FindClusters を後付けして再保存**し、既存下流（作図/DEG）へ。下流は当該 reduction が NULL ならスキップ。下流が使う `sample_names` をロード済みオブジェクトに同期。
+  - **TIMS ver5**: ④は Step1 再計算/Step2・Step3 の raw 再計算をスキップ（RESUME ロードのみ）。`run_downstream_analysis()` 先頭で `seurat_clusters` 不在を検出したら **FindNeighbors+FindClusters を後付け**（full/classic-resume では no-op）し、④では完成 RDS を新フォルダへ再保存。Step2 のみ/Step3 のみのロードにも NULL ガードで対応。
+- **効率**: ①(reduction) ＋ ④(UMAP以降) で実質フル解析1回分。重い reduction の二重計算が無くなる。
+- **後方互換**: `full`／`reduction_only`／従来の RESUME-full は不変（新ブロックは「umap/クラスタ既存」検出で no-op）。
+- 注: R 実行検証は解析環境で実施（本リポジトリに R 無し）。括弧バランスは静的検査で確認済み。本番取り込み後に ①→②→③→④ の通し動作（④ログに RunHarmony/IntegrateData が無く RunUMAP/FindClusters のみ＝reduction 再利用）を確認のこと。
+
 ## 2026-06-23_ver10.0
 
 ### 機能追加: PreFlight 診断に「reduction のみ作成（診断用）」を追加（フル解析を先に回す必要を解消）

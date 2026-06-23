@@ -71,6 +71,7 @@ def toggle_sidebar_content(active_tab):
      Output("notification_toast", "is_open", allow_duplicate=True)],
     Input("run_analysis", "n_clicks"),
     Input("btn_make_reduction", "n_clicks"),
+    Input("btn_run_downstream", "n_clicks"),
     [State("analysis_method", "value"),
      State("analysis_method_tims", "value"),
      State("data_folder", "value"),
@@ -132,6 +133,7 @@ def toggle_sidebar_content(active_tab):
 def run_analysis(
     n_clicks,
     reduction_clicks,
+    downstream_clicks,
     desi_method, tims_method,
     data_folder, annotation_path, p_thresh, logfc_thresh,
     resume_rds, rds_folder,
@@ -169,7 +171,8 @@ def run_analysis(
     # UMAP/クラスタリング/DEG/作図をスキップして reduction RDS だけ生成する。
     trig = ctx.triggered_id
     reduction_only_mode = (trig == "btn_make_reduction")
-    if not n_clicks and not reduction_clicks:
+    downstream_mode = (trig == "btn_run_downstream")
+    if not n_clicks and not reduction_clicks and not downstream_clicks:
         return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
     # 現在の設定を自動保存（次回起動時に復元される）
@@ -290,7 +293,34 @@ def run_analysis(
             if reduction_only_mode:
                 params["pipeline_stage"] = "reduction_only"
 
-            if resume_rds and rds_folder:
+            # ④ downstream_from_reduction: ①の reduction RDS を読み込み UMAP 以降のみ
+            #   実行。重い reduction(ScaleData/PCA/Harmony/RPCA)は再計算せず再利用する。
+            #   既存 RESUME 機構を流用: resume_from_rds=True + resume_rds_paths を①の
+            #   RDS_Files に向ける → analysis_runner が RESUME_DIR_PATH を自動解決。
+            if downstream_mode:
+                params["pipeline_stage"] = "downstream_from_reduction"
+                params["resume_from_rds"] = True
+                from app.services.project_manager import get_sub_project
+                from app.callbacks.interactive_callbacks import (
+                    _detect_integration_methods,
+                )
+                _pid = (selected_project or {}).get("id", "")
+                _sub = (get_sub_project(_pid, current_sub_project_id)
+                        if (_pid and current_sub_project_id) else None)
+                _src = ((_sub.get("last_result_dir") or _sub.get("output_dir", ""))
+                        if _sub else "")
+                _rds_map = _detect_integration_methods(_src) if _src else {}
+                if not _rds_map:
+                    return (
+                        no_update, no_update, no_update, no_update, no_update,
+                        no_update,
+                        "④を実行できません: ①の reduction RDS が見つかりません。"
+                        "先に①「reduction のみ作成」を実行してください。",
+                        True,
+                    )
+                params["resume_rds_paths"] = [str(p) for p in _rds_map.values()]
+
+            if resume_rds and rds_folder and not downstream_mode:
                 rds_files = sorted(Path(rds_folder).glob("*.rds"))
                 params["resume_rds_paths"] = [str(f) for f in rds_files]
 

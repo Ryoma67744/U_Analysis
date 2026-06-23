@@ -2060,6 +2060,15 @@ if (file.exists(MRM_FILE_PATH)) {
   mrm_df <- NULL
 }
 
+# ④ downstream_from_reduction: ①の reduction RDS を再利用し UMAP 以降のみ実行する。
+# raw データ/seu_list を一切作らず、各 branch の RESUME-load 経路に委ねる。
+.stage_downstream <- identical(PIPELINE_STAGE, "downstream_from_reduction")
+.has_single  <- .stage_downstream && file.exists(file.path(RESUME_DIR_PATH, "DESI_Seurat_SingleSample.rds"))
+.has_harmony <- .stage_downstream && file.exists(file.path(RESUME_DIR_PATH, "DESI_SeuratCombined_harmony.rds"))
+.has_rpca    <- .stage_downstream && file.exists(file.path(RESUME_DIR_PATH, "DESI_SeuratCombined_RPCA.rds"))
+rds_path1_out <- NULL; rds_path2_out <- NULL  # ④で未定義回避（末尾 cleanup を null-safe に）
+
+if (!.stage_downstream) {
 # データの読み込み (RESUME_FROM_RDS=TRUE の場合は保存済みデータをロード)
 rds_filename1 <- "DESI_SeuratList1_bgremoved.rds"
 rds_path1_out <- file.path(rds_od, rds_filename1) # 出力先
@@ -2207,11 +2216,17 @@ for(ii in seq_along(seu_list)){
   seurat_filtered <- ScaleData(seurat_filtered, features = rownames(seurat_filtered))
   seu_list[[ii]] <- seurat_filtered
 }
+} else {
+  # ④: 前処理(raw読込/平滑化/正規化)をスキップ。reduction RDS は各 branch の
+  #     RESUME-load 経路で読み込む。seu_list は空のまま（dispatch は下の override 参照）。
+  seu_list <- list()
+}
 
 # =========================
 # 解析実行 (PCA / Harmony / RPCA)
 # =========================
-if (length(seu_list) == 1) {
+# dispatch: ④は存在する reduction で分岐（seu_list が空のため length では判定不可）
+if ((.stage_downstream && .has_single) || (!.stage_downstream && length(seu_list) == 1)) {
   # ---- Single Sample Mode (PCA) ----
   message("Single-sample mode: PCAを用いた解析を実行します")
   od_pca <- file.path(od, "PCA"); dir.create(od_pca, showWarnings = FALSE)
@@ -2229,6 +2244,8 @@ if (length(seu_list) == 1) {
     seu_single <- load_rds_compact(rds_path_single_in)
     # 修正①: Resume時に既存RDSを出力先にもコピー
     file.copy(rds_path_single_in, rds_path_single_out, overwrite = TRUE)
+  } else if (.stage_downstream) {
+    seu_single <- NULL  # ④だが single reduction RDS が無い → スキップ
   } else {
     seu_single <- seu_list[[1]]
     DefaultAssay(seu_single) <- "Spatial"
@@ -2260,8 +2277,24 @@ if (length(seu_list) == 1) {
     gc()
   }
 
+  # ④: reduction だけの RDS を読み込んだ場合、UMAP/クラスタを後付けしてから下流へ。
+  if (.stage_downstream && !is.null(seu_single) && !("umap" %in% names(seu_single@reductions))) {
+    pc_avail      <- ncol(Embeddings(seu_single, "pca"))
+    dims_use      <- seq_len(min(UMAP_DIMS_N, pc_avail))
+    dims_use_clst <- seq_len(min(CLUSTER_DIMS_N, pc_avail))
+    seu_single <- RunUMAP(seu_single, reduction = "pca", dims = dims_use,
+                          n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
+                          metric = UMAP_METRIC, seed.use = UMAP_SEED)
+    seu_single <- FindNeighbors(seu_single, reduction = "pca", dims = dims_use_clst,
+                                k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
+    seu_single <- FindClusters(seu_single, resolution = CLUSTER_RESOLUTION_SINGLE, algorithm = CLUSTER_ALGORITHM)
+    Idents(seu_single) <- seu_single$seurat_clusters
+    save_rds_compact(seu_single, rds_path_single_out)
+    gc()
+  }
+
   # PIPELINE_STAGE: reduction_only なら以降（UMAP/作図/DEG）をスキップ（診断用に reduction だけ確定）
-  if (PIPELINE_STAGE != "reduction_only") {
+  if (PIPELINE_STAGE != "reduction_only" && !is.null(seu_single)) {
   # Color
   current_clusters <- levels(Idents(seu_single))
   my_colors <- .assign_cluster_colors(seu_single, seed = 42)
@@ -2433,6 +2466,8 @@ if (length(seu_list) == 1) {
     seu_harmony <- load_rds_compact(rds_path_harmony_in)
     # 修正①: Resume時に既存RDSを出力先にもコピー
     file.copy(rds_path_harmony_in, rds_path_harmony_out, overwrite = TRUE)
+  } else if (.stage_downstream) {
+    seu_harmony <- NULL  # ④だが harmony reduction RDS が無い → スキップ
   } else {
     # ver3.8: Reduce(function(x,y) merge(x,y,...), seu_list) は左結合で
     # 逐次マージするため、中間結果が毎回拡大し O(n^2) のメモリ・時間を
@@ -2485,8 +2520,26 @@ if (length(seu_list) == 1) {
     gc()
   }
 
+  # ④: reduction だけの RDS を読み込んだ場合、UMAP/クラスタを後付けしてから下流へ。
+  if (.stage_downstream && !is.null(seu_harmony) && !("umap" %in% names(seu_harmony@reductions))) {
+    sample_names <- unique(as.character(seu_harmony$sample))  # ④: 下流が使う sample 名を実データに同期
+    h_avail <- tryCatch(ncol(Embeddings(seu_harmony, "harmony")), error = function(e) NA_integer_)
+    if (!is.finite(h_avail) || h_avail < 1) h_avail <- ncol(Embeddings(seu_harmony, "pca"))
+    dims_use      <- seq_len(min(UMAP_DIMS_N, h_avail))
+    dims_use_clst <- seq_len(min(CLUSTER_DIMS_N, h_avail))
+    seu_harmony <- RunUMAP(seu_harmony, reduction = "harmony", dims = dims_use,
+                           n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
+                           metric = UMAP_METRIC, seed.use = UMAP_SEED)
+    seu_harmony <- FindNeighbors(seu_harmony, reduction = "harmony", dims = dims_use_clst,
+                                 k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
+    seu_harmony <- FindClusters(seu_harmony, resolution = CLUSTER_RESOLUTION_HARMONY, algorithm = CLUSTER_ALGORITHM)
+    Idents(seu_harmony) <- seu_harmony$seurat_clusters
+    save_rds_compact(seu_harmony, rds_path_harmony_out)
+    gc()
+  }
+
   # PIPELINE_STAGE: reduction_only なら以降（UMAP/作図/DEG）をスキップ（診断用に reduction だけ確定）
-  if (PIPELINE_STAGE != "reduction_only") {
+  if (PIPELINE_STAGE != "reduction_only" && !is.null(seu_harmony)) {
   # Color
   current_clusters <- levels(Idents(seu_harmony))
   my_colors <- .assign_cluster_colors(seu_harmony, seed = 42)
@@ -2651,6 +2704,8 @@ if (length(seu_list) == 1) {
     seu_rpca <- load_rds_compact(rds_path_rpca_in)
     # 修正①: Resume時に既存RDSを出力先にもコピー
     file.copy(rds_path_rpca_in, rds_path_rpca_out, overwrite = TRUE)
+  } else if (.stage_downstream) {
+    seu_rpca <- NULL  # ④だが RPCA reduction RDS が無い → スキップ
   } else {
     seu_list_norm <- lapply(seu_list, function(x) { x <- apply_input_norm(x); x <- FindVariableFeatures(x); x })
     features <- SelectIntegrationFeatures(object.list = seu_list_norm, nfeatures = 3000)
@@ -2711,8 +2766,25 @@ dims_use_rpca <- get_safe_dims_for_rpca(seu_list_pca, max_dims = 30, reduction =
     gc()
   }
 
+  # ④: reduction だけの RDS を読み込んだ場合、UMAP/クラスタを後付けしてから下流へ。
+  if (.stage_downstream && !is.null(seu_rpca) && !("umap" %in% names(seu_rpca@reductions))) {
+    sample_names <- unique(as.character(seu_rpca$sample))  # ④: 下流が使う sample 名を実データに同期
+    pc_avail      <- ncol(Embeddings(seu_rpca, "pca"))
+    dims_use      <- seq_len(min(UMAP_DIMS_N, pc_avail))
+    dims_use_clst <- seq_len(min(CLUSTER_DIMS_N, pc_avail))
+    seu_rpca <- RunUMAP(seu_rpca, reduction = "pca", dims = dims_use,
+                        n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
+                        metric = UMAP_METRIC, seed.use = UMAP_SEED)
+    seu_rpca <- FindNeighbors(seu_rpca, reduction = "pca", dims = dims_use_clst,
+                              k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
+    seu_rpca <- FindClusters(seu_rpca, resolution = CLUSTER_RESOLUTION_RPCA, algorithm = CLUSTER_ALGORITHM)
+    Idents(seu_rpca) <- seu_rpca$seurat_clusters
+    save_rds_compact(seu_rpca, rds_path_rpca_out)
+    gc()
+  }
+
   # PIPELINE_STAGE: reduction_only なら以降（UMAP/作図/DEG）をスキップ（診断用に reduction だけ確定）
-  if (PIPELINE_STAGE != "reduction_only") {
+  if (PIPELINE_STAGE != "reduction_only" && !is.null(seu_rpca)) {
   current_clusters <- levels(Idents(seu_rpca))
   my_colors <- .assign_cluster_colors(seu_rpca, seed = 42)
   

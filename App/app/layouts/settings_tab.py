@@ -809,6 +809,8 @@ def _create_preflight_section():
                                size="sm", color="info"),
                     dbc.Button("③ 推奨値を入力欄へ反映", id="btn_preflight_apply",
                                size="sm", color="secondary", outline=True),
+                    dbc.Button("④ 続きを実行（reduction再利用）", id="btn_run_downstream",
+                               size="sm", color="primary"),
                 ],
             ),
             dbc.FormText([
@@ -820,9 +822,10 @@ def _create_preflight_section():
                 "（生成された reduction RDS を診断）→ ",
                 html.B("③ 推奨値を反映"),
                 " → ",
-                html.B("④ 解析実行"),
-                "（フル）。既に完了済み解析がある場合は ① を省略して ② から実行できます。"
-                "解析中は ①・② とも実行できません。",
+                html.B("④ 続きを実行"),
+                "（①の reduction を再利用し UMAP 以降のみ実行。重い再計算なし）。"
+                "既に完了済み解析がある場合は ① を省略して ② から実行できます。"
+                "解析中は ①・④ とも実行できません。",
             ]),
             dcc.Loading(html.Div(id="preflight_results_container",
                                  style={"marginTop": "10px"})),

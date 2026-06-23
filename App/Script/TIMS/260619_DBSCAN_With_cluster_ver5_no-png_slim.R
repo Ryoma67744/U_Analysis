@@ -1557,6 +1557,29 @@ run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_onl
     .save_umap_embedding(obj, prefix)
   }
 
+  # ④/フル: クラスタが無ければ後付け。reduction-only RDS には seurat_clusters 列が
+  #   無いので検出して FindNeighbors+FindClusters を実行（full/classic-resume では
+  #   既に列があるため no-op）。④では完成(umap+cluster付き)RDSを新フォルダに再保存。
+  if (!("seurat_clusters" %in% colnames(obj@meta.data))) {
+    .red_for_clust <- if (prefix %in% names(obj@reductions)) prefix
+                      else if ("harmony" %in% names(obj@reductions)) "harmony"
+                      else if ("rpca" %in% names(obj@reductions)) "rpca"
+                      else "pca"
+    .dims_clust <- 1:min(UMAP_DIMS_MAX, MAX_PCS, ncol(Embeddings(obj, .red_for_clust)))
+    obj <- FindNeighbors(obj, reduction = .red_for_clust, dims = .dims_clust,
+                         k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
+    obj <- FindClusters(obj, resolution = CLUSTER_RESOLUTION, algorithm = CLUSTER_ALGORITHM)
+    Idents(obj) <- obj$seurat_clusters
+    if (identical(PIPELINE_STAGE, "downstream_from_reduction")) {
+      if (identical(prefix, "rpca")) {
+        save_rds_compact(list(obj = obj), file.path(RDS_SAVE_DIR, "Step3_RPCA_Result.rds"))
+      } else if (prefix %in% c("harmony", "pca")) {
+        save_rds_compact(list(obj = obj, reduction = REDUCTION_USED),
+                         file.path(RDS_SAVE_DIR, "Step2_HarmonyPCA_Result.rds"))
+      }
+    }
+  }
+
   # ---- Save PixelTable early (x/y/cluster/TIC, etc.) ----
   .save_plotdata_and_pixel_table(obj, deg = NULL, prefix = prefix, outdir = sub_od)
 
@@ -2109,6 +2132,10 @@ if (ANNOTATION_ENABLE && file.exists(ANNOTATION_CSV_PATH)) {
 # ============================================================
 # Step 1: データ読込 & 前処理
 # ============================================================
+# ④ downstream_from_reduction: ①の reduction RDS(Step2/Step3)を再利用し UMAP 以降のみ
+# 実行。raw 再読込/seu_list 構築/reduction 再計算をスキップする。
+.stage_downstream <- identical(PIPELINE_STAGE, "downstream_from_reduction")
+
 rds_fname1 <- "Step1_SeuratList_Preprocessed.rds"
 rds_step1_out <- file.path(RDS_SAVE_DIR, rds_fname1)
 rds_step1_in  <- if(RESUME_FROM_RDS) file.path(RESUME_DIR_PATH, rds_fname1) else ""
@@ -2131,7 +2158,7 @@ if (RESUME_FROM_RDS && file.exists(rds_step1_in)) {
   })
 }
 
-if (!step1_done) {
+if (!step1_done && !.stage_downstream) {
   seu_list <- list(); input_paths <- unique(INPUT_PATHS[file.exists(INPUT_PATHS)])
   fa_all <- list()  # 注釈付き列名データの per-feature メタ（化合物名/m/z/|以降）を保持
   for (fp in input_paths) {
@@ -2191,6 +2218,11 @@ seu$condition <- seu$slice_id
   save_rds_compact(seu_list, rds_step1_out)
   gc()
 }
+if (.stage_downstream && !step1_done) {
+  # ④: Step1 RDS は①の末尾cleanupで削除済み。raw 再読込を避け seu_list を空にする
+  #     （Step3 の length(seu_list) 判定に作用 → reduction は Step2/Step3 RDS から復元）。
+  seu_list <- list()
+}
 
 # ============================================================
 # Step 2: Harmony / PCA
@@ -2244,7 +2276,7 @@ if (RESUME_FROM_RDS && file.exists(rds_step2_in)) {
   })
 }
 
-if (!step2_done) {
+if (!step2_done && !.stage_downstream) {
   # [P9] 一括merge（Reduceの逐次mergeより効率的）
   cell_ids <- sapply(seu_list, function(s) s$sample[1])
   seu_merged <- merge(seu_list[[1]], y = seu_list[-1], add.cell.ids = cell_ids)
@@ -2328,7 +2360,10 @@ if (!step2_done) {
 
 # ★解析実行 (Harmony or PCA)
 # ★要望②, ⑥: 関数化により、後続のRPCAの結果に上書きされることなく確実に出力される
-run_downstream_analysis(seu_harmony, REDUCTION_USED, od, ann_db)
+# ④: Step3 のみ読み込んだ場合 seu_harmony は NULL → スキップ
+if (!is.null(seu_harmony)) {
+  run_downstream_analysis(seu_harmony, REDUCTION_USED, od, ann_db)
+}
 
 # ★ver4: 無補正PCA結果の下流解析（Step2_PCA_uncorrected が存在すれば実行）
 .unc_rds_path <- file.path(RDS_SAVE_DIR, "Step2_PCA_uncorrected.rds")
@@ -2367,7 +2402,7 @@ if (RESUME_FROM_RDS && file.exists(rds_step3_in)) {
   })
 }
 
-if (!step3_done) {
+if (!step3_done && !.stage_downstream) {
   # ver4: RPCAは「技術的バッチ」に対してのみ実行する。
   #   - 複数sample（別測定）→ sampleごとに統合（正当なバッチ補正）
   #   - 単一sample + ANNOTATION_ROLE=="section_id"（連続切片=技術反復）→ slice_idで統合
