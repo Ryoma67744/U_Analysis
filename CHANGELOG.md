@@ -23,6 +23,7 @@ SCiLS/peak-list アノテーションを列名に埋め込んだ Parquet（特�
 - 同テーブルに **`compound`（化合物名のみ）** と **`mz`（数値）** を**分離して**保持。特徴量名は連結の「化合物名_m/z」のまま（同一化合物が複数 m/z を持つためユニーク性確保）だが、`compound` 単独でのソート/検索/グルーピング、`mz` 単独での数値ソートが可能。
 - 下流の m/z 抽出（`calibrate_feature_names` / `align_mz_features` / `annotate_mz_with_format`）を新ヘルパ **`.feature_mz()`** に統一し、化合物名に数字を含む場合（例 `CL 74:8_1475.9870`）の誤抽出を防止。
 - 既存の `mz_*`／純数値列形式は**後方互換**で従来どおり。
+- **ビルド堅牢化**: `install_r_packages.R` に `httpuv`（＋`shiny`/`miniUI`）を明示追加。r2u 再ビルド時に Seurat の間接依存 `httpuv` が取りこぼされ `there is no package called 'httpuv'` で起動不能になる事故を防止。
 - 注: R 実行検証は解析環境で実施（本リポジトリ環境に R 無し）。本番（別リポ `umap-webapp-claudecode`）へ取り込み後に動作確認のこと。
 
 ## 2026-06-18_ver7.10
