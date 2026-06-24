@@ -776,25 +776,10 @@ run_volcano_and_msi <- function(seu_obj, deg_markers, method_tag, sample_names, 
           if (!is.finite(vmin) || vmin < 0) vmin <- 0
           if (vmin >= vmax) vmin <- 0
 
-          # ---- 各サンプルのMSI（同一vmin/vmaxで描画、凡例は最後の1枚だけ表示）----
-          nS <- length(sample_names)
-          plots_row <- lapply(seq_along(sample_names), function(j) {
-            sn <- sample_names[[j]]
-            cells_sn <- cells_by_sample[[sn]]
-            if (is.null(cells_sn) || length(cells_sn) == 0) return(.msi_blank())
-
-            plot_msi_tile(
-              seu_obj, feature = gene,
-              title = "",                    # 個別タイルのm/zタイトルを消す
-              cells = cells_sn,
-              show_legend = (j == nS),       # 横並びで凡例(カラーバー)は1つだけ
-              legend_position = "right",
-              title_size = 6,
-              panel_margin_mm = 0.5,
-              vmin_override = vmin,
-              vmax_override = vmax
-            )
-          })
+          # [v16] 重複していた1つ目の plots_row 計算を削除。
+          #   以前はここで MSI タイルを一度作っていたが、未使用のまま下（タイトル/凡例の後）の
+          #   2つ目の plots_row で同一タイルを再構築・上書きしていた（無駄な二重計算）。
+          #   vmin/vmax（上で算出）は下の 2つ目が vmin_override/vmax_override で使用する。
 
           # ---- タイトル（切片の直上）＋ P値色凡例（右上・横並び）----
           # 仕様:

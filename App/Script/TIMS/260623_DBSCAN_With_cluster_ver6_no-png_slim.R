@@ -335,8 +335,9 @@ SPATIAL_SMOOTH_RADIUS <- 0.1
 SPATIAL_SMOOTH_SIGMA  <- 0.05 
 
 GLOBAL_RANDOM_SEED <- 42      
-MAX_PCS            <- 30      
-UMAP_DIMS_MAX      <- 30      
+MAX_PCS            <- 30
+UMAP_DIMS_MAX      <- 30
+UMAP_DIMS_N        <- 30L     # PreFlight: UI から dims を注入(_hp_int umap_dims_n→UMAP_DIMS_N)。既定30は現状と同一挙動(下の override は !=30 のときだけ発火)
 CLUSTER_RESOLUTION <- 0.5
 MIN_CELLS_RPCA     <- 50
 N_VAR_FEATURES     <- 3000
@@ -365,7 +366,26 @@ PCA_RETRY_GRID <- list(
 )
 
 RPCA_NFEATURES_TRY <- c(500, 300, 200)
-FAILSAFE_ENABLE <- TRUE 
+
+# PreFlight: UI から dims が指定された場合のみ TIMS の UMAP 次元をその値に合わせる。
+# 既定(30)は override せず従来のグリッド(30→20→15)のまま＝挙動不変（後方互換）。
+# アプリは umap_dims_n→UMAP_DIMS_N を常に注入する設計のため、!=30 のときだけ反映する。
+if (is.numeric(UMAP_DIMS_N) && UMAP_DIMS_N > 0L && UMAP_DIMS_N != 30L) {
+  .ud <- as.integer(UMAP_DIMS_N)
+  UMAP_DIMS_MAX <- .ud                         # RPCA(Step3)・run_downstream_analysis が参照
+  MAX_PCS       <- max(MAX_PCS, .ud)           # PCA が .ud 次元を確保できるように
+  .apply_ud <- function(g) {
+    g[[1]]$max_pcs   <- max(g[[1]]$max_pcs, .ud)   # 先頭(優先)エントリを .ud 次元に
+    g[[1]]$umap_dims <- .ud
+    if (length(g) > 1L) for (i in 2:length(g)) g[[i]]$umap_dims <- min(g[[i]]$umap_dims, .ud)  # 小データ用フォールバックは .ud 上限
+    g
+  }
+  HARMONY_RETRY_GRID <- .apply_ud(HARMONY_RETRY_GRID)
+  PCA_RETRY_GRID     <- .apply_ud(PCA_RETRY_GRID)
+  message(sprintf(">> PreFlight: UMAP_DIMS_N=%d を TIMS の dims に適用（UMAP_DIMS_MAX/リトライグリッドを上書き）", .ud))
+}
+
+FAILSAFE_ENABLE <- TRUE
 
 HEATMAP_TOPN_PER_CLUSTER      <- 5
 SPATIAL_BASE_HEIGHT  <- 7

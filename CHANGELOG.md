@@ -12,6 +12,70 @@
 
 ---
 
+## 2026-06-23_ver13.0
+
+### 修正: 監査で見つかった2件（TIMS の dims 入力を有効化 ＋ DESI の重複作図を除去）
+
+「記載はあるのに機能しない/無駄なコード」監査で確定した2件を修正。規約に従い**修正対象の R は版を進め、旧版は温存**。アプリ callbacks は無改修（dims 注入機構は既存）。
+
+- **TIMS の dims 入力が効くように**（新規 `260623_DBSCAN_With_cluster_ver6_no-png_slim.R`、旧 ver5 温存）：
+  - TIMS は UMAP 次元をリトライグリッド（`umap_dims` 30→20→15）＋`UMAP_DIMS_MAX`(30) で決め、単一の `UMAP_DIMS_N` が無かったため、アプリが注入する `umap_dims_n` が黙って消えていた（dims 入力欄が TIMS で無効）。
+  - ver6 で `UMAP_DIMS_N` 定数を追加し、UIで指定された場合のみリトライグリッドの `umap_dims`／`UMAP_DIMS_MAX`／`MAX_PCS` をその値に上書き（先頭=優先エントリにユーザー値、フォールバックは上限キャップで小データ対応を維持）。**既定30では override せず ver5 と完全に同一挙動**（後方互換）。
+  - 効果：PreFlight 推奨 dims を TIMS でも適用可能に。TIMS 再解析④（メイン経路の downstream_from_reduction）でも dims が効く。
+- **DESI の重複作図を除去**（新規 `260623_DESI-UMAP_Template_v16.R`、旧 v15 温存）：
+  - `create_combined_row_plot` 内で MSI タイル群（`plots_row`）を一度作った直後、未使用のまま作り直して上書きしていた（無駄な二重計算）。1つ目を削除。**出力は完全に不変・高速化のみ**。
+- `config.py` を v16 / ver6 へ更新（cluster filter ver3/ver18 への `V8/V13_SCRIPT_PATH` 注入も自動で新版に切替）。
+- 注: R 実行検証は解析環境で実施（本リポジトリに R 無し）。新旧 diff で「ver6＝ver5＋override のみ」「v16＝v15－重複ブロックのみ」、括弧バランスを静的確認済み。
+
+## 2026-06-23_ver12.0
+
+### 機能追加: 再解析（exclusion/inclusion）にも PreFlight ループを通す（reduction_only 再解析）
+
+ver11 までで PreFlight ループ（① reduction のみ → ② 診断 → ③ 反映 → ④ 続き）はメイン解析専用だった。本バージョンは**クラスタフィルタ再解析（exclusion=除外 / inclusion=keep）にも同ループを適用**。絞り込んだ部分集合に対し reduction だけを作って診断・チューニングし、tuned param で UMAP 以降を実行できる。
+
+設計の核：**②診断・③反映・④続き は `last_result_dir` の reduction RDS に対して動く汎用機能**なので無改修で再利用。唯一の追加は「**① reduction_only を再解析でも作れること**」。
+
+- **アプリ**（`analysis_callbacks.py`）: ① を再解析（`*_cluster_filter`）でも `reduction_only` に（`pipeline_stage` を cluster_filter params にも設定）。④（btn_run_downstream）は `*_cluster_filter → *_v8` に**リマップ**し、メイン経路の downstream_from_reduction で部分集合 reduction（`last_result_dir`）をロードして UMAP 以降を実行。②③は無改修。
+- **アプリ**（`analysis_runner.py`）: `generate_cluster_filter_config` に `pipeline_stage`→`RERUN_PIPELINE_STAGE` 注入を追加（UMAP ハイパラは①では不要・④はメイン経路で注入済み）。
+- **R（版を進めて新規作成・旧版温存）**:
+  - **DESI `DESI_RDS_ClusterFilter_ver3.R`**（旧 ver2 温存）: `RERUN_PIPELINE_STAGE` 追加、`make_v8_copy_with_settings` が reduction_only 時のみ v15 copy の `PIPELINE_STAGE` を伝播（私の v15 ガードがそのまま機能）、後段 merge を reduction_only でスキップ。
+  - **TIMS `260623_DBSCAN_ver18_Cluster_Filter_ReUMAP.R`**（旧 ver17 温存）: 同様の伝播＋`patch_v13_step2_pipeline` の置換 `run_pipeline` を reduction_only 対応（reduction 計算後に即 return）、後段 ReUMAP-replace / merge を reduction_only でスキップ。`run_downstream_analysis`（ver5 の reduction_only ガード）は patch 非対象で生存し DEG/作図をスキップ。
+  - `config.py` を ver3 / ver18 へ更新。メインテンプレ v15/ver5 は本バージョン無改修。
+- **ワークフロー**: 再解析モードで include/exclude 設定 → ① → ②（部分集合 reduction を診断）→ ③ → ④（部分集合 reduction を再利用し UMAP 以降）。
+- **後方互換**: 通常の再解析（`RERUN_PIPELINE_STAGE`="full"／未注入）は全ガードが従来分岐に倒れ**挙動不変**（merge/ReUMAP 含む）。メイン①②③④も不変。
+- 注: R 実行検証は解析環境で実施（本リポジトリに R 無し）。括弧バランスは静的検査で確認済み。
+
+## 2026-06-23_ver11.0
+
+### 機能追加: PreFlight「④ 続きを実行（reduction再利用）」＝ `PIPELINE_STAGE="downstream_from_reduction"`
+
+ver10.0 までは PreFlight 後の「④ 解析実行」が**素のフル解析＝reduction(ScaleData/PCA/Harmony/RPCA)を最初から再計算**していた。診断が見るのは reduction の埋め込みだけで、PreFlight が変えるのは UMAP 系 param のみ。本バージョンは予約済み定数 `downstream_from_reduction` を有効化し、**④が①の reduction RDS を読み込んで再計算をスキップ → 決めた param で UMAP→クラスタリング→DEG→作図 だけ実行**するようにした（reduction 通算1回＝最も無駄がない）。**自動連結はしない**（④は手動）。
+
+- **UI**（`settings_tab.py`）: PreFlight セクションに「④ 続きを実行（reduction再利用）」ボタン（`btn_run_downstream`）を追加。フロー文言を更新。
+- **配線**（`analysis_callbacks.py`）: `btn_run_downstream` を `run_analysis` の3つ目のトリガーに追加。`downstream_mode` 時に `pipeline_stage="downstream_from_reduction"`＋`resume_from_rds=True`＋`resume_rds_paths`=①の `last_result_dir/RDS_Files` の reduction RDS（`get_sub_project`＋`_detect_integration_methods` で解決）をセット。既存 RESUME 機構が `RESUME_DIR_PATH` を自動解決（runner 変更なし）。①未実行時はエラートースト。
+- **R 実装（追加のみ・既存挙動は保持）**:
+  - **DESI v15**: ④は raw 読込/seu_list 構築/平滑化/正規化を全スキップ（存在する reduction RDS で分岐 override）。single/Harmony/RPCA の各 branch で RESUME ロード後、reduction-only RDS（UMAP/クラスタ無し）なら **UMAP→FindNeighbors→FindClusters を後付けして再保存**し、既存下流（作図/DEG）へ。下流は当該 reduction が NULL ならスキップ。下流が使う `sample_names` をロード済みオブジェクトに同期。
+  - **TIMS ver5**: ④は Step1 再計算/Step2・Step3 の raw 再計算をスキップ（RESUME ロードのみ）。`run_downstream_analysis()` 先頭で `seurat_clusters` 不在を検出したら **FindNeighbors+FindClusters を後付け**（full/classic-resume では no-op）し、④では完成 RDS を新フォルダへ再保存。Step2 のみ/Step3 のみのロードにも NULL ガードで対応。
+- **効率**: ①(reduction) ＋ ④(UMAP以降) で実質フル解析1回分。重い reduction の二重計算が無くなる。
+- **後方互換**: `full`／`reduction_only`／従来の RESUME-full は不変（新ブロックは「umap/クラスタ既存」検出で no-op）。
+- 注: R 実行検証は解析環境で実施（本リポジトリに R 無し）。括弧バランスは静的検査で確認済み。本番取り込み後に ①→②→③→④ の通し動作（④ログに RunHarmony/IntegrateData が無く RunUMAP/FindClusters のみ＝reduction 再利用）を確認のこと。
+
+## 2026-06-23_ver10.0
+
+### 機能追加: PreFlight 診断に「reduction のみ作成（診断用）」を追加（フル解析を先に回す必要を解消）
+
+ver9.0 では PreFlight 診断が**完了済みのフル解析**を前提としており、「離陸前点検」なのに一度フル解析が必要という本末転倒があった。診断が必要とするのは reduction（PCA/Harmony/RPCA）の埋め込みだけ（UMAP/クラスタリング/DEG/作図は不要）であることを利用し、**reduction まで作って即停止する軽量モード `PIPELINE_STAGE=reduction_only`** を実装した。
+
+- **新フロー**: ① reduction のみ作成（診断用）→ ② PreFlight 診断 → ③ 推奨値を反映 → ④ 解析実行（フル）。既に完了済み解析があれば ① は省略可。
+- **設定 UI**（`settings_tab.py`）: PreFlight セクションに「① reduction のみ作成（診断用）」ボタン（`btn_make_reduction`）を追加し、4 ステップのフローを明示。
+- **配線**（`analysis_callbacks.py`）: `btn_make_reduction` を `run_analysis` のトリガーに追加。`ctx.triggered_id` で判定し、reduction モード時に `params["pipeline_stage"]="reduction_only"` を注入（テンプレ定数 `PIPELINE_STAGE` へは既存の `_hp_str` 機構で反映）。`analysis_params.json` にも記録。通常実行は従来どおり `full`。
+- **R テンプレ実装（予約済み定数を有効化）**:
+  - **DESI v15**: single/Harmony/RPCA の各分岐で、reduction 計算後に **UMAP/FindNeighbors/FindClusters と 作図/DEG をスキップ**し、reduction RDS（`DESI_SeuratCombined_harmony.rds` / `_RPCA.rds` / `DESI_Seurat_SingleSample.rds`）だけ保存して終了。
+  - **TIMS ver5**: `run_pipeline`（Step2 Harmony/PCA）と RPCA（Step3）で reduction 計算後に UMAP/クラスタリングをスキップ。`run_downstream_analysis()` 先頭で reduction_only なら即 return（DEG/作図を全スキップ）。Step2/Step3 RDS は保存。
+  - reduction_only で生成した RDS は `RDS_Files/` に従来名で保存され、PreFlight 診断（`_detect_integration_methods`）がそのまま検出可能。デフォルト param の「捨て UMAP」は作らない。
+- **効率**: reduction_only ＋ フル解析（推奨 param）の 2 回で済む（従来は「フル解析（無駄）→ 診断 → フル解析」の 2 フル解析が必要だった）。reduction 自体は各回で再計算（reduction の再利用＝`downstream_from_reduction` は別タスクとして保持）。
+- 注: R 実行検証は解析環境で実施（本リポジトリ環境に R 無し）。括弧バランスは静的検査で確認済み。本番取り込み後に動作確認のこと。
+
 ## 2026-06-23_ver9.0
 
 ### 機能追加: PreFlight 診断の UI 化（アプリ内で「見る」＋推奨値を「使う」）

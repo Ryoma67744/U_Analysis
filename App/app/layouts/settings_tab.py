@@ -801,18 +801,32 @@ def _create_preflight_section():
             ),
             html.Div(
                 style={"marginTop": "10px", "display": "flex", "gap": "10px",
-                       "alignItems": "center"},
+                       "alignItems": "center", "flexWrap": "wrap"},
                 children=[
-                    dbc.Button("🩺 PreFlight 診断を実行", id="btn_preflight_run",
+                    dbc.Button("① reduction のみ作成（診断用）", id="btn_make_reduction",
+                               size="sm", color="primary", outline=True),
+                    dbc.Button("② 🩺 PreFlight 診断を実行", id="btn_preflight_run",
                                size="sm", color="info"),
-                    dbc.Button("推奨値を入力欄へ反映", id="btn_preflight_apply",
+                    dbc.Button("③ 推奨値を入力欄へ反映", id="btn_preflight_apply",
                                size="sm", color="secondary", outline=True),
+                    dbc.Button("④ 続きを実行（reduction再利用）", id="btn_run_downstream",
+                               size="sm", color="primary"),
                 ],
             ),
-            dbc.FormText(
-                "診断は「完了済み解析」の reduction RDS（Harmony/RPCA 等）に対して実行します。"
-                "解析中は実行できません。"
-            ),
+            dbc.FormText([
+                "推奨フロー: ",
+                html.B("① reduction のみ作成"),
+                "（UMAP 前で停止する軽量実行。フル解析は不要。進捗は下の"
+                "「解析実行」と同じ進捗バーに表示）→ ",
+                html.B("② PreFlight 診断"),
+                "（生成された reduction RDS を診断）→ ",
+                html.B("③ 推奨値を反映"),
+                " → ",
+                html.B("④ 続きを実行"),
+                "（①の reduction を再利用し UMAP 以降のみ実行。重い再計算なし）。"
+                "既に完了済み解析がある場合は ① を省略して ② から実行できます。"
+                "解析中は ①・④ とも実行できません。",
+            ]),
             dcc.Loading(html.Div(id="preflight_results_container",
                                  style={"marginTop": "10px"})),
             dcc.Store(id="preflight_store"),

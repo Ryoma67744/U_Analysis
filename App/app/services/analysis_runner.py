@@ -590,6 +590,14 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
     if params.get("norm_mode"):
         lines = _replace_assign(lines, "V13_NORM_MODE", _r_str(params["norm_mode"]))
 
+    # --- PreFlight: reduction_only 再解析（① 用）。クラスタフィルタ側の新定数
+    #     RERUN_PIPELINE_STAGE を経由してメインテンプレ copy の PIPELINE_STAGE へ伝播。
+    #     未指定なら "full"（従来の通常再解析）。DESI ver3 / TIMS ver18 が参照。 ---
+    if params.get("pipeline_stage"):
+        lines = _replace_assign(
+            lines, "RERUN_PIPELINE_STAGE", _r_str(params["pipeline_stage"]),
+        )
+
     # 一時ファイルをlog/サブフォルダに保存
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     config_filename = f"cluster_filter_runtime_{timestamp}.R"

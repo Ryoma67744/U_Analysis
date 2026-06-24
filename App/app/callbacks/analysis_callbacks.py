@@ -70,6 +70,8 @@ def toggle_sidebar_content(active_tab):
      Output("notification_toast", "children", allow_duplicate=True),
      Output("notification_toast", "is_open", allow_duplicate=True)],
     Input("run_analysis", "n_clicks"),
+    Input("btn_make_reduction", "n_clicks"),
+    Input("btn_run_downstream", "n_clicks"),
     [State("analysis_method", "value"),
      State("analysis_method_tims", "value"),
      State("data_folder", "value"),
@@ -130,6 +132,8 @@ def toggle_sidebar_content(active_tab):
 )
 def run_analysis(
     n_clicks,
+    reduction_clicks,
+    downstream_clicks,
     desi_method, tims_method,
     data_folder, annotation_path, p_thresh, logfc_thresh,
     resume_rds, rds_folder,
@@ -161,7 +165,14 @@ def run_analysis(
     umap_n_neighbors_input, umap_min_dist_input,
     umap_metric_input, umap_dims_input,
 ):
-    if not n_clicks:
+    # トリガー判定: 通常の「解析実行」(run_analysis) か、
+    # PreFlight 用の「reduction のみ作成」(btn_make_reduction) か。
+    # reduction_only モードでは PIPELINE_STAGE=reduction_only を注入し、
+    # UMAP/クラスタリング/DEG/作図をスキップして reduction RDS だけ生成する。
+    trig = ctx.triggered_id
+    reduction_only_mode = (trig == "btn_make_reduction")
+    downstream_mode = (trig == "btn_run_downstream")
+    if not n_clicks and not reduction_clicks and not downstream_clicks:
         return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
     # 現在の設定を自動保存（次回起動時に復元される）
@@ -229,6 +240,11 @@ def run_analysis(
         warn_user(f"サブプロジェクト設定の保存に失敗: {e}")
 
     analysis_type = desi_method or tims_method or "desi_v8"
+    # ④ downstream_from_reduction は「reduction を再利用して UMAP 以降のみ」をメイン解析
+    # 経路で行う。再解析モードで④を押した場合も cluster_filter ではなく main(v8) 経路へ
+    # リマップする（last_result_dir の部分集合 reduction を④がロードして再UMAP）。
+    if downstream_mode and analysis_type in ("desi_cluster_filter", "tims_cluster_filter"):
+        analysis_type = "tims_v8" if analysis_type == "tims_cluster_filter" else "desi_v8"
     full_output_dir = str(Path(output_dir) / output_subfolder)
     Path(full_output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -276,7 +292,40 @@ def run_analysis(
             if umap_dims_input is not None:
                 params["umap_dims_n"] = int(umap_dims_input)
 
-            if resume_rds and rds_folder:
+            # PIPELINE_STAGE: reduction_only（PreFlight 診断用に reduction だけ作る
+            #   軽量モード。テンプレ定数 PIPELINE_STAGE へ注入され、UMAP 以降を
+            #   スキップ。未指定時はテンプレ既定の "full"）
+            if reduction_only_mode:
+                params["pipeline_stage"] = "reduction_only"
+
+            # ④ downstream_from_reduction: ①の reduction RDS を読み込み UMAP 以降のみ
+            #   実行。重い reduction(ScaleData/PCA/Harmony/RPCA)は再計算せず再利用する。
+            #   既存 RESUME 機構を流用: resume_from_rds=True + resume_rds_paths を①の
+            #   RDS_Files に向ける → analysis_runner が RESUME_DIR_PATH を自動解決。
+            if downstream_mode:
+                params["pipeline_stage"] = "downstream_from_reduction"
+                params["resume_from_rds"] = True
+                from app.services.project_manager import get_sub_project
+                from app.callbacks.interactive_callbacks import (
+                    _detect_integration_methods,
+                )
+                _pid = (selected_project or {}).get("id", "")
+                _sub = (get_sub_project(_pid, current_sub_project_id)
+                        if (_pid and current_sub_project_id) else None)
+                _src = ((_sub.get("last_result_dir") or _sub.get("output_dir", ""))
+                        if _sub else "")
+                _rds_map = _detect_integration_methods(_src) if _src else {}
+                if not _rds_map:
+                    return (
+                        no_update, no_update, no_update, no_update, no_update,
+                        no_update,
+                        "④を実行できません: ①の reduction RDS が見つかりません。"
+                        "先に①「reduction のみ作成」を実行してください。",
+                        True,
+                    )
+                params["resume_rds_paths"] = [str(p) for p in _rds_map.values()]
+
+            if resume_rds and rds_folder and not downstream_mode:
                 rds_files = sorted(Path(rds_folder).glob("*.rds"))
                 params["resume_rds_paths"] = [str(f) for f in rds_files]
 
@@ -426,6 +475,12 @@ def run_analysis(
                 ),
             }
 
+            # ① PreFlight: 再解析でも reduction_only（絞り込んだ部分集合の reduction だけ
+            #    作り UMAP 前で停止）。RERUN_PIPELINE_STAGE 経由でメインテンプレ copy の
+            #    PIPELINE_STAGE へ伝播し、後段 merge/ReUMAP もスキップされる。
+            if reduction_only_mode:
+                params["pipeline_stage"] = "reduction_only"
+
             # 再解析用アノテーションファイル
             if reanalysis_annotation_path:
                 params["reanalysis_annotation_path"] = reanalysis_annotation_path
@@ -491,6 +546,7 @@ def run_analysis(
                 "umap_min_dist": params.get("umap_min_dist"),
                 "umap_metric": params.get("umap_metric"),
                 "umap_dims_n": params.get("umap_dims_n"),
+                "pipeline_stage": params.get("pipeline_stage", "full"),
             }
             # キャリブレーション情報の保存
             cal_r = params.get("calibration_result", {})
