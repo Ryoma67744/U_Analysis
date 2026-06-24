@@ -12,6 +12,21 @@
 
 ---
 
+## 2026-06-23_ver13.0
+
+### 修正: 監査で見つかった2件（TIMS の dims 入力を有効化 ＋ DESI の重複作図を除去）
+
+「記載はあるのに機能しない/無駄なコード」監査で確定した2件を修正。規約に従い**修正対象の R は版を進め、旧版は温存**。アプリ callbacks は無改修（dims 注入機構は既存）。
+
+- **TIMS の dims 入力が効くように**（新規 `260623_DBSCAN_With_cluster_ver6_no-png_slim.R`、旧 ver5 温存）：
+  - TIMS は UMAP 次元をリトライグリッド（`umap_dims` 30→20→15）＋`UMAP_DIMS_MAX`(30) で決め、単一の `UMAP_DIMS_N` が無かったため、アプリが注入する `umap_dims_n` が黙って消えていた（dims 入力欄が TIMS で無効）。
+  - ver6 で `UMAP_DIMS_N` 定数を追加し、UIで指定された場合のみリトライグリッドの `umap_dims`／`UMAP_DIMS_MAX`／`MAX_PCS` をその値に上書き（先頭=優先エントリにユーザー値、フォールバックは上限キャップで小データ対応を維持）。**既定30では override せず ver5 と完全に同一挙動**（後方互換）。
+  - 効果：PreFlight 推奨 dims を TIMS でも適用可能に。TIMS 再解析④（メイン経路の downstream_from_reduction）でも dims が効く。
+- **DESI の重複作図を除去**（新規 `260623_DESI-UMAP_Template_v16.R`、旧 v15 温存）：
+  - `create_combined_row_plot` 内で MSI タイル群（`plots_row`）を一度作った直後、未使用のまま作り直して上書きしていた（無駄な二重計算）。1つ目を削除。**出力は完全に不変・高速化のみ**。
+- `config.py` を v16 / ver6 へ更新（cluster filter ver3/ver18 への `V8/V13_SCRIPT_PATH` 注入も自動で新版に切替）。
+- 注: R 実行検証は解析環境で実施（本リポジトリに R 無し）。新旧 diff で「ver6＝ver5＋override のみ」「v16＝v15－重複ブロックのみ」、括弧バランスを静的確認済み。
+
 ## 2026-06-23_ver12.0
 
 ### 機能追加: 再解析（exclusion/inclusion）にも PreFlight ループを通す（reduction_only 再解析）

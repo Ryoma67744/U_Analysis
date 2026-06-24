@@ -80,16 +80,17 @@ BROWSER_SHORTCUTS = [
 ]
 
 # DESI用スクリプトのパス
-# v15: UMAP/クラスタリングのハイパーパラメータを明示定数化（UI注入・記録の土台。挙動は v14 と同一）。
-#      旧 v14 はロールバック用に温存。
-DESI_V8_TEMPLATE_PATH = DESI_SCRIPT_DIR / "260619_DESI-UMAP_Template_v15.R"
+# v16: MSIタイルの重複作図（未使用の1つ目 plots_row）を除去（出力不変・高速化）。挙動は v15 と同一。
+#      旧 v15/v14 はロールバック用に温存。
+DESI_V8_TEMPLATE_PATH = DESI_SCRIPT_DIR / "260623_DESI-UMAP_Template_v16.R"
 # ver3: 再解析にも PreFlight ループ（reduction_only 再解析）を通すための版。
 #       旧 ver2 はロールバック用に温存。
 DESI_CLUSTER_FILTER_PATH = DESI_SCRIPT_DIR / "DESI_RDS_ClusterFilter_ver3.R"
 
 # TIMS用スクリプトのパス
-# ver5: 同上（UMAPハイパラ明示化。挙動は ver4 と同一）。旧 ver4 は温存。
-TIMS_V8_TEMPLATE_PATH = TIMS_SCRIPT_DIR / "260619_DBSCAN_With_cluster_ver5_no-png_slim.R"
+# ver6: UMAP_DIMS_N を有効化（UIの dims 入力が TIMS でも効くように。既定30は ver5 と同一挙動）。
+#       旧 ver5/ver4 はロールバック用に温存。
+TIMS_V8_TEMPLATE_PATH = TIMS_SCRIPT_DIR / "260623_DBSCAN_With_cluster_ver6_no-png_slim.R"
 # ver18: 再解析にも PreFlight ループ（reduction_only 再解析）を通すための版。
 #        旧 ver17 はロールバック用に温存。
 TIMS_CLUSTER_FILTER_PATH = TIMS_SCRIPT_DIR / "260623_DBSCAN_ver18_Cluster_Filter_ReUMAP.R"
