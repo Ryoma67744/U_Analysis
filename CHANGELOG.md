@@ -12,6 +12,22 @@
 
 ---
 
+## 2026-06-25_ver19.0
+
+### 変更: TIMS の RPCA を Seurat v5 `IntegrateLayers(RPCAIntegration)` に移行（大規模OOM解消）
+
+- **背景**：~20万 spots の PreFlight① で、RPCA の v4 `IntegrateData()` が**補正済み発現行列（features×全cell）＋統合ベクトル**を
+  実体化して **OOM kill**（ログは `Finding integration vectors` で唐突終了＝R例外なしのSIGKILL）。Harmony は完走するので RPCA だけが原因。
+- **変更**：ver6（`260623_..._ver6_no-png_slim.R`）の RPCA 分岐（Step3 :2433-2483）を、
+  `split()`＋**`IntegrateLayers(method=RPCAIntegration, new.reduction="rpca")`**＋`JoinLayers` に置換。
+  **低次元PCA空間で統合し reduction だけ生成**するため、補正行列を作らず**桁違いに省メモリ**（ピークは Harmony 水準）。
+- **整合**：新 reduction 名 `"rpca"` により、下流 `run_downstream_analysis`（reduction 選択 :1562-1566,1584-1587）・
+  `run_diagnostics.R`（`names(obj@reductions)`）・PreFlight 表示が**そのまま採用**＝**Python 改修なし**。
+  Step2 由来の reduction（harmony 等）を除去し、harmony が誤って優先採用されないようにした。
+- **堅牢性**：小バッチ除外＋`k.weight` 自動調整、`nfeatures` フォールバック（2000→1000→500）、失敗時 `seu_rpca=NULL`（空RDS非生成＝ver18.3 ガードと整合）。
+- **不変**：gating（`.rpca_section_ok`/`length(seu_list)>=2`）・reduction_only・RESUME・Harmony/無補正PCA(Step2)。**ver6（TIMS UMAP）のみ**（ver5/DESI は別タスク）。**要 Seurat v5**。
+- 注意：v4 RPCA と数値完全一致はしない（手法実装差）。R 実行検証は**デプロイ環境（実データ203k）で実施**。version 18.5→19.0。
+
 ## 2026-06-25_ver18.5
 
 ### 整理: 解析シナリオの統合（同一切片＋群比較）と「行われる処理」の明記
