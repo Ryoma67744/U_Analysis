@@ -53,12 +53,14 @@ def get_settings_tooltips():
         dbc.Tooltip(
             "切片アノテーションが何を表すかでシナリオを選択。"
             "同一切片のクラスタ/Ctrl vs KO比較=無補正、"
-            "連続切片(技術反復)=RPCA統合、測定バッチ補正=Harmony(過補正注意・非推奨)。",
+            "連続切片(技術反復)=RPCA統合、測定バッチ補正=Harmony(過補正注意・非推奨)。"
+            "条件比較＋技術差補正=Harmony と RPCA を両方適用し測定差を補正(交絡下では条件差も縮小。"
+            "条件をまたぐ共有埋め込み/クラスタを得たいとき。条件間DEGは独立算出で不変)。",
             target="tims_scenario_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
             "再解析(exclusion/inclusion)の解析シナリオ。既定は初回解析の選択を引き継ぎます。"
-            "意味は初回と同じ（無補正/RPCA統合/Harmony補正）。",
+            "意味は初回と同じ（無補正/RPCA統合/Harmony補正/Harmony＋RPCA両方）。",
             target="reanalysis_tims_scenario_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(

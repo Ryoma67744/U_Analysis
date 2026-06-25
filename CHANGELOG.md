@@ -12,6 +12,43 @@
 
 ---
 
+## 2026-06-25_ver18.5
+
+### 整理: 解析シナリオの統合（同一切片＋群比較）と「行われる処理」の明記
+
+`within_slice`（同一切片）と `condition_compare`（群比較）は補正方針が**完全に同一**（無補正PCA）で、生の値も
+`_SCENARIO_MAP` 参照以外で分岐しないことを確認。ドロップダウンで**1項目に統合**（5→4）し、各シナリオで「何が
+行われるか（補正手法＋出力reduction）」をヘルプ表に明記、新シナリオ `integrate_correct` も掲載した。**挙動は不変**。
+
+- `settings_tab.py`：初回(`tims_scenario`)・再解析(`reanalysis_tims_scenario`)の両ドロップダウンを
+  「同一切片のクラスタ／群比較（Ctrl vs KO 等）：補正なし＝無補正PCA」の1項目に統合（value=`within_slice`）。
+  `_norm_scenario()` を追加し、旧セッションに保存された `condition_compare` も復元時に統合項目として選択表示
+  （`value=_norm_scenario(ls.get(...))`）。FormText も統合表現に更新。
+- `analysis_callbacks.py`：`_SCENARIO_MAP` の `condition_compare` は**後方互換のため残置**（コメント追記）。写像値は不変。
+- `analysis.html`：シナリオ表を「シナリオ｜例｜行われる補正と出力」に作り直し、同一切片と群比較を1行に統合、各行に
+  出力（RPCA/Harmony は無補正PCA併走）を明記、`integrate_correct` 行を追加。
+- 挙動回帰なし（R 改修なし・補正方針の写像も不変）。ツールチップは既に統合表現のため変更なし。version 18.4→18.5。
+
+## 2026-06-25_ver18.4
+
+### 追加: 解析シナリオ「条件比較＋技術差補正（Harmony＋RPCA を適用）」
+
+各条件が1切片ずつ＝生物差と技術差が交絡する設計で、「**測定間の技術差を補正した統合像（条件をまたぐ共有埋め込み/
+クラスタ）を得たい**」ニーズに対応。従来のシナリオは過補正防止のため **群比較＝無補正** に固定され、Harmony と RPCA を
+1回で両方出す選択肢が無かった（連続切片=RPCAのみ／バッチ補正=Harmonyのみ）。新シナリオ `integrate_correct` を追加し、
+単一サンプル・複数アノテーションでも **Harmony＋RPCA＋無補正PCA** をすべて出力できるようにした（前回「RPCA未実行」の真因＝
+適切な選択肢が無かった点を解消）。
+
+- `analysis_callbacks.py`：`_SCENARIO_MAP` に `"integrate_correct": ("section_id","slice_id",True)` を追加。
+  これにより R 側で Harmony（`group_var=slice_id`; ver6:2307-2310）と RPCA（`.rpca_section_ok=TRUE`; ver6:2430-2432）が
+  両方走る。**R 本体は無改修**（既存のゲート条件をシナリオで満たすだけ）。
+- `settings_tab.py`：初回(`tims_scenario`)・再解析(`reanalysis_tims_scenario`)の両ドロップダウンに選択肢追加＋FormText 更新。
+- `tooltips.py`：`tims_scenario` / `reanalysis_tims_scenario` のツールチップを更新。
+- **副作用なし**：`ANNOTATION_ROLE`/`BATCH_VAR` は RPCA/Harmony のゲート専用。DEG・作図は常に `condition` でグループ化
+  （ver6:1328,1365、`condition<-slice_id` は :2196 で常時）するため、**条件間DEGは従来どおり**。既存シナリオの挙動も不変。
+- **注意（過補正）**：交絡下では技術差と生物差は一括で縮むため、埋め込み上の条件分離は意図的に縮小する。条件差の検出は
+  DEG（reduction 非依存）で行う前提。version 18.3→18.4。
+
 ## 2026-06-25_ver18.3
 
 ### 修正: PreFlight で RPCA が「reduction が検出されませんでした」と誤表示される問題
