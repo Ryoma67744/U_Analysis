@@ -12,6 +12,39 @@
 
 ---
 
+## 2026-06-25_ver16.0
+
+### 機能: インタラクティブ解析に「PCA（未補正）」を追加（既存結果でも・UMAP形式）
+
+インタラクティブ解析の手法セレクタが Harmony/RPCA のみだったところに、**未補正PCA**（補正の基準）を
+**Harmony/RPCA と同じ UMAP 形式**で並べて比較できるよう追加。**既存の解析結果でも再解析不要**。
+
+- **派生RDSの遅延生成方式**：未補正の `pca` 次元は Harmony RDS に必ず存在するが保存済みUMAPは harmony 由来。
+  そこで「PCA」選択時に **Harmony RDS から未補正pca由来のUMAPを計算した派生RDSを生成**し、独立ファイルとして
+  通常手法と同様に扱う（キャッシュ/state が rds_path キーのため、別パス＝衝突回避。既存の抽出/特徴量機構を再利用）。
+  - 新R helper `App/Script/helpers/derive_uncorrected_pca.R`（`RunUMAP(reduction="pca")`、クラスタは既存維持）。
+  - `seurat_bridge.derive_uncorrected_pca()`（冪等・subprocess）。書込先は `SEURAT_CACHE_DIR` 配下＝結果フォルダ非汚染。
+  - `_detect_integration_methods(include_derived=True)` で Harmony があり未補正RDSが無いとき「PCA」を選択肢に追加
+    （`interactive_callbacks.py`）。選択時に Link A→B で未生成なら生成→抽出。初回のみUMAP計算、以降キャッシュ。
+- 後方互換：Harmony/RPCA・既定動作は不変。新規解析の `Step2_PCA_uncorrected.rds` は従来通り「PCA (uncorrected)」として検出。
+- スコープ外：軽量ビューア（既定 `include_derived=False` で挙動不変）、派生PCAの事前DEG（随時DEGは可）。
+- ツールチップ補足。version 15.0→16.0。
+
+## 2026-06-25_ver15.0
+
+### 機能: TIMS「解析シナリオ」をGUIで選択（切片アノテーションの扱い）＋ 再解析へ引き継ぎ
+
+切片アノテーション（`annotation`→`slice_id`→`condition`）が何を表すかを、技術用語ではなく**実験シナリオ**でGUI選択できるようにし、選択に応じて補正方法を自動切替する。**ver6本体テンプレは無改修**（既存スイッチ `ANNOTATION_ROLE`/`BATCH_VAR`/`ALLOW_CONDITION_CORRECTION` を注入するのみ）。
+
+- **設定画面に「解析シナリオ」プルダウン**（`settings_tab.py`, TIMS UMAP時）。4択 → 補正ポリシーへ変換（`analysis_callbacks.py` の `_SCENARIO_MAP`）→ `analysis_runner.py` で R へ注入:
+  - 同一切片の中のクラスタ / 群比較(Ctrl vs KO 等が別アノテーション) → 無補正PCA
+  - 連続切片を技術反復としてまとめる → `section_id`（単一sampleでも RPCA を slice_id 統合）
+  - 切片間の測定差(バッチ)を補正【非推奨】 → `slice_id` を Harmony 補正（`ALLOW_CONDITION_CORRECTION=TRUE`）
+  - 既定 `within_slice` ＝ 従来挙動（後方互換）。
+- **再解析(exclusion/inclusion)へ引き継ぎ**: 再解析タブにも同プルダウン（既定=初回値）。`generate_cluster_filter_config` が `V13_ANNOTATION_ROLE/V13_BATCH_VAR/V13_ALLOW_CONDITION_CORRECTION` を注入し、ver18 の `make_v13_copy_with_settings` が ver6 コピーへ伝播（`V13_INPUT_NORMALIZED` と同方式・小改修）。通常/PreFlight 再解析の双方で部分集合の reduction にシナリオが効く。
+- **計算の再利用（調査結論・実装なし）**: 部分集合の reduction 再計算は既存 PreFlight ループ（`①reduction_only→④downstream_from_reduction`, ver12）で1回に抑えられる。初回(全体)の reduction を部分集合へ流用するのは科学的に不可のため行わない。説明書(§3「解析シナリオの選び方」)に明記。
+- 永続化（`session_manager.py`）・ツールチップ（`tooltips.py`）・推奨バナー③の文言・説明書（表＋再解析/再利用の注記）を追加。
+
 ## 2026-06-25_ver14.0
 
 ### 機能: 一般的な使用法（標準フロー）を「手法別の推奨バナー」としてアプリ内表示

@@ -300,8 +300,14 @@ def _save_interactive_settings(key, value):
 # 統合手法検出ヘルパー
 # ---------------------------------------------------------------------------
 
-def _detect_integration_methods(folder_path: str) -> dict:
+def _detect_integration_methods(folder_path: str, include_derived: bool = False) -> dict:
     """結果フォルダ内のRDSファイルを検出し、統合手法→パスのマッピングを返す。
+
+    Args:
+        folder_path: 結果フォルダ。
+        include_derived: True のとき、専用の未補正PCA RDS が無く Harmony がある場合に
+            「PCA」(未補正) を Harmony RDS から遅延生成する想定で選択肢に加える。
+            実体は選択時に生成（load_stage_b_extract）。インタラクティブ解析でのみ True。
 
     Returns:
         {"Harmony": "path/to/seu_harmony.rds", "RPCA": "path/to/seu_rpca.rds", ...}
@@ -382,6 +388,18 @@ def _detect_integration_methods(folder_path: str) -> dict:
     #             rds_map["RPCA"] = merged_path
     #         break  # 最初の1つのみ使用
 
+    # --- 派生PCA（未補正）: 既存結果でも未補正PCAのUMAPを比較表示できるよう、
+    #     専用の未補正RDSが無く Harmony がある場合のみ「PCA」を選択肢に追加する。
+    #     実体（派生RDS）は PCA 選択時に Harmony RDS から遅延生成する（load_stage_b_extract）。
+    #     パスは Harmony パスから決定的に算出（SEURAT_CACHE_DIR 配下＝常に書込可能）。
+    if (include_derived and "Harmony" in rds_map
+            and "PCA" not in rds_map and "PCA (uncorrected)" not in rds_map):
+        import hashlib
+        from app.config import SEURAT_CACHE_DIR
+        h = hashlib.md5(rds_map["Harmony"].encode()).hexdigest()[:16]
+        derived = Path(SEURAT_CACHE_DIR) / "derived_pca" / f"{h}_pca_uncorrected.rds"
+        rds_map["PCA"] = str(derived)
+
     return rds_map
 
 
@@ -401,7 +419,7 @@ def scan_rds_files(n_clicks, folder_path):
     if not folder_path or not Path(folder_path).is_dir():
         return [], None, None
 
-    rds_map = _detect_integration_methods(folder_path)
+    rds_map = _detect_integration_methods(folder_path, include_derived=True)
     if not rds_map:
         return [], None, None
 
@@ -433,7 +451,7 @@ def auto_scan_rds_files(folder_path, shared):
     if not folder_path or not Path(folder_path).is_dir():
         return no_update, no_update, no_update
 
-    rds_map = _detect_integration_methods(folder_path)
+    rds_map = _detect_integration_methods(folder_path, include_derived=True)
     if not rds_map:
         return no_update, no_update, no_update
 
@@ -600,7 +618,13 @@ def load_stage_a_show_progress(n_clicks, integration_method, rds_map, result_fol
                 _load_error_alert("統合手法を選択してください（結果フォルダをスキャンしてください）"),
                 no_update, no_update)
     rds_path = rds_map.get(integration_method)
-    if not rds_path or not Path(rds_path).exists():
+    # 派生PCA（未補正）: ファイル未生成でも Harmony から遅延生成する。
+    derive_from = None
+    if rds_path and not Path(rds_path).exists():
+        if (integration_method == "PCA" and rds_map.get("Harmony")
+                and Path(rds_map["Harmony"]).exists()):
+            derive_from = rds_map["Harmony"]
+    if not rds_path or (not Path(rds_path).exists() and not derive_from):
         return (_PROGRESS_HIDE, no_update, no_update, no_update, _PROGRESS_HIDE,
                 _load_error_alert(
                     f"RDSファイルが見つかりません: {integration_method}"
@@ -609,12 +633,14 @@ def load_stage_a_show_progress(n_clicks, integration_method, rds_map, result_fol
     token = uuid.uuid4().hex
     return (
         _PROGRESS_SHOW,
-        "RDSデータを抽出中…（最大2分程度かかります）",
+        ("未補正PCAを生成中…（初回のみ少し時間がかかります）" if derive_from
+         else "RDSデータを抽出中…（最大2分程度かかります）"),
         10, True,
         _PROGRESS_HIDE,  # 既存の可視化を隠す
         no_update,       # data_info は最終リンク(D)が確定
         {"rds_path": rds_path, "method": integration_method,
-         "result_folder": result_folder, "n": n_clicks, "token": token},
+         "result_folder": result_folder, "n": n_clicks, "token": token,
+         "derive_from": derive_from},
         token,
     )
 
@@ -636,9 +662,13 @@ def load_stage_b_extract(trigger):
     rds_path = trigger["rds_path"]
     integration_method = trigger["method"]
     token = trigger.get("token")
+    derive_from = trigger.get("derive_from")
     cancel_event = _get_or_create_cancel_event(token)
     _set_active_key(rds_path)
     try:
+        # 派生PCA（未補正）: 未生成なら Harmony RDS から UMAP を計算して生成（初回のみ）。
+        if derive_from and not Path(rds_path).exists():
+            _bridge.derive_uncorrected_pca(derive_from, rds_path, cancel_event=cancel_event)
         result = _bridge.extract_data(rds_path, cancel_event=cancel_event)
         if (not result or result.get("plot_data") is None
                 or len(result["plot_data"]) == 0):

@@ -404,6 +404,16 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
     if params.get("adduct_patterns"):
         r_vec = "c(" + ", ".join(f'"{p}"' for p in params["adduct_patterns"]) + ")"
         lines = _replace_block_assign(lines, "ANNOT_ADDUCT_PATTERNS", r_vec)
+    # --- 解析シナリオ → 補正ポリシー（ver6 の既存スイッチを注入。R本体は無改修） ---
+    if params.get("annotation_role"):
+        lines = _replace_assign(lines, "ANNOTATION_ROLE", _r_str(params["annotation_role"]))
+    if params.get("batch_var"):
+        lines = _replace_assign(lines, "BATCH_VAR", _r_str(params["batch_var"]))
+    if "allow_condition_correction" in params:
+        lines = _replace_assign(
+            lines, "ALLOW_CONDITION_CORRECTION",
+            "TRUE" if params["allow_condition_correction"] else "FALSE",
+        )
 
     # --- Annotation Filter ---
     if params.get("annotation_filter"):
@@ -589,6 +599,16 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
         )
     if params.get("norm_mode"):
         lines = _replace_assign(lines, "V13_NORM_MODE", _r_str(params["norm_mode"]))
+    # --- 解析シナリオ → V13_ 経由で ver6 コピーへ伝播（make_v13_copy_with_settings） ---
+    if params.get("v13_annotation_role"):
+        lines = _replace_assign(lines, "V13_ANNOTATION_ROLE", _r_str(params["v13_annotation_role"]))
+    if params.get("v13_batch_var"):
+        lines = _replace_assign(lines, "V13_BATCH_VAR", _r_str(params["v13_batch_var"]))
+    if "v13_allow_condition_correction" in params:
+        lines = _replace_assign(
+            lines, "V13_ALLOW_CONDITION_CORRECTION",
+            "TRUE" if params["v13_allow_condition_correction"] else "FALSE",
+        )
 
     # --- PreFlight: reduction_only 再解析（① 用）。クラスタフィルタ側の新定数
     #     RERUN_PIPELINE_STAGE を経由してメインテンプレ copy の PIPELINE_STAGE へ伝播。
