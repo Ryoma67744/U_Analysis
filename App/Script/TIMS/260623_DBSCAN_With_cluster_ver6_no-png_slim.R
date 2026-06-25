@@ -2468,7 +2468,12 @@ if (!step3_done && !.stage_downstream) {
   }
   
   # ★要望①: Step3 完了時のRDS保存 (slim: DietSeurat + qs 圧縮)
-  save_rds_compact(list(obj=seu_rpca), rds_step3_out)
+  # RPCA がスキップ/失敗で NULL のときは空ファイル list(obj=NULL) を作らない。
+  # （空RDSがあると PreFlight 診断が「reduction が検出されませんでした」と誤表示する。
+  #   下流は直後の if(!is.null(seu_rpca)) で既にガード済み。RESUME は file.exists で安全。）
+  if (!is.null(seu_rpca)) {
+    save_rds_compact(list(obj=seu_rpca), rds_step3_out)
+  }
   gc()
 }
 

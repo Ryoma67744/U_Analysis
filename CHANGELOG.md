@@ -12,6 +12,40 @@
 
 ---
 
+## 2026-06-25_ver18.3
+
+### 修正: PreFlight で RPCA が「reduction が検出されませんでした」と誤表示される問題
+
+単一サンプル・群比較（`condition_compare`）など **RPCA が正しくスキップされる**ケースで、PreFlight 診断の
+RPCA 行に「reduction が検出されませんでした」と出て、解析失敗のように見えていた。原因は TIMS ver6/ver5 で
+RPCA スキップ時にも**空の `Step3_RPCA_Result.rds`（`list(obj=NULL)`）を無条件保存**しており、それを診断が
+「reduction 無し」として拾っていたこと。**解析自体（単一サンプル群比較＝無補正PCA）は正常**で、表示のみが誤解を招いていた。
+（「Harmony 行が pca」表示も正常：batch=sample が1水準のため Harmony は無補正PCAにフォールバックし、ファイル名
+`Step2_HarmonyPCA_Result.rds` のため検出器が便宜上「Harmony」と命名するだけ。reduction 列は正しく pca。）
+
+- **R 根本修正（空RDSをそもそも作らない）**：`260623_..._ver6_no-png_slim.R` / `260619_..._ver5_no-png_slim.R` の
+  Step3 保存を `if (!is.null(seu_rpca))` でガード。RPCA スキップ回は `Step3_RPCA_Result.rds` を生成しない
+  → PreFlight に余計な RPCA 行・警告が出ない。下流は既存の `if(!is.null(seu_rpca))`、RESUME は `file.exists` で安全。
+- **Python 防御（過去実行で既に残っている空RDS対策）**：`preflight_callbacks.py` の reduction 空の行を、警告では
+  なく中立表示に変更（reduction=`(スキップ)`／「<手法> は未実行（単一サンプル/生物群では補正不要のためスキップ。問題ありません）」）。
+- 解析結果（PCA/Harmony/RPCA 実体）は不変。DESI v16/v15（元々空RPCA非生成）・TIMS ver18（Step3構造なし）に影響なし。
+- version 18.2→18.3。
+
+## 2026-06-25_ver18.2
+
+### 改善: ④（reduction再利用）の出力フォルダをUMAPハイパラ値で自動命名
+
+「結果を見てからUMAPハイパラだけ変えて掛け直す」は ④続きを実行（reduction再利用）で対応済みだが、
+出力が固定サブフォルダだと試行が上書きされ、複数設定の比較に手動フォルダ管理が必要だった。
+④のときだけ出力サブフォルダ名にハイパラ由来サフィックス（例 `_nn15_md0p3_dim20`）を自動付与し、
+上書きせず横並び比較できるようにした。
+
+- `analysis_callbacks.py`：`_umap_hp_suffix()`（FS安全な短いサフィックス生成。`.`→`p`、metricはcosine以外のみ）
+  と `_strip_hp_suffix()`（多重付与防止）を追加。`downstream_mode` のときだけ `full_output_dir` を
+  `output_dir/(base+suffix)` に差し替え（base空は `umap`）。成功メッセージに出力フォルダ名を表示。
+- reduction は従来どおり `last_result_dir` から再利用（出力名変更の影響なし）。full解析・①・再解析の命名は不変。
+- `settings_tab.py`：④ヘルプに自動命名の一文を追記。version 18.1→18.2。
+
 ## 2026-06-25_ver18.1
 
 ### 修正: 再解析（クラスターフィルタ）で無視されていた5入力を反映

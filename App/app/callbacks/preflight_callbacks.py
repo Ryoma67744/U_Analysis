@@ -104,11 +104,16 @@ def _render_diagnostics_table(data: dict, rds_methods: dict):
             })
             continue
         if not reductions:
+            # reduction が空＝その補正がスキップ/未実行。単一サンプルや生物群（群比較）では
+            # RPCA/Harmony は「補正不要」のためスキップされ、空の RDS（list(obj=NULL)）が
+            # 残ることがある（R 側 ver6/ver5 で今後は空RDS自体を作らないよう修正済み）。
+            # これは正常な状態なので、警告ではなく中立表示にする（過去実行の空RDS対策）。
             rows.append({
-                "method": method, "reduction": "(なし)", "rec_dims": "-",
+                "method": method, "reduction": "(スキップ)", "rec_dims": "-",
                 "rec_nn": "-", "allowed_nn": "-", "confidence": "-",
                 "design": design_status, "ilisi": "-",
-                "warnings": "reduction が検出されませんでした",
+                "warnings": (f"{method} は未実行（単一サンプル/生物群では補正不要の"
+                             "ためスキップ。問題ありません）"),
             })
             continue
 

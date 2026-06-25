@@ -73,6 +73,42 @@ def toggle_sidebar_content(active_tab):
 # 解析実行
 # ---------------------------------------------------------------------------
 
+_HP_SUFFIX_RE = re.compile(r"(?:_nn\d+_md[0-9p]+_dim\d+(?:_[A-Za-z]+)?)+$")
+
+
+def _umap_hp_suffix(nn, md, dims, metric) -> str:
+    """UMAPハイパラから FS 安全な短いサフィックスを生成（例: _nn15_md0p3_dim20）。
+
+    ④（reduction再利用）の出力フォルダを試行ごとに自動命名し、上書きせず
+    比較できるようにするためのもの。None のトークンは省略、metric は cosine
+    以外のときのみ付与する。
+    """
+    parts = []
+    if nn is not None:
+        try:
+            parts.append(f"nn{int(nn)}")
+        except (TypeError, ValueError):
+            pass
+    if md is not None:
+        try:
+            parts.append("md" + str(float(md)).replace(".", "p"))
+        except (TypeError, ValueError):
+            pass
+    if dims is not None:
+        try:
+            parts.append(f"dim{int(dims)}")
+        except (TypeError, ValueError):
+            pass
+    if metric and str(metric).lower() != "cosine":
+        parts.append(re.sub(r"[^A-Za-z]", "", str(metric)) or "metric")
+    return ("_" + "_".join(parts)) if parts else ""
+
+
+def _strip_hp_suffix(name: str) -> str:
+    """末尾の自動命名サフィックスを除去（④を繰り返しても多重付与しないため）。"""
+    return _HP_SUFFIX_RE.sub("", name or "")
+
+
 def _output_has_existing_results(full_output_dir: str) -> bool:
     """出力先フォルダに既存の解析結果があるか判定（上書き警告ゲート用）。
 
@@ -358,6 +394,13 @@ def run_analysis(
     if downstream_mode and analysis_type in ("desi_cluster_filter", "tims_cluster_filter"):
         analysis_type = "tims_v8" if analysis_type == "tims_cluster_filter" else "desi_v8"
     full_output_dir = str(Path(output_dir) / output_subfolder)
+    if downstream_mode:
+        # ④: ハイパラ反復を上書きせず比較できるよう、UMAPハイパラ値で出力サブフォルダを自動命名
+        _suf = _umap_hp_suffix(umap_n_neighbors_input, umap_min_dist_input,
+                               umap_dims_input, umap_metric_input)
+        if _suf:
+            _base = _strip_hp_suffix(output_subfolder or "umap")
+            full_output_dir = str(Path(output_dir) / f"{_base}{_suf}")
     Path(full_output_dir).mkdir(parents=True, exist_ok=True)
 
     try:
@@ -728,7 +771,8 @@ def run_analysis(
             {"flex": "1"},         # 進捗バー表示
             {"marginTop": "20px"}, # ログ表示
             "⏳ 解析中...",        # ログヘッダーリセット
-            "解析を開始しました", True,
+            ("解析を開始しました（出力: " + Path(full_output_dir).name + "）"
+             if downstream_mode else "解析を開始しました"), True,
         )
 
     except Exception as e:
