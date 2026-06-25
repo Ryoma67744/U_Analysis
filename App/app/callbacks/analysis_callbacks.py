@@ -36,11 +36,17 @@ from app.services.notify import warn_user
 #   within_slice/condition_compare : 無補正（補正しない）
 #   serial_section                 : section_id → 単一sampleでも RPCA(slice_id統合)
 #   batch_correct                  : slice_id を技術バッチとして Harmony 補正（非推奨）
+#   integrate_correct              : section_id+slice_id+許可 → 単一sampleでも Harmony と
+#                                    RPCA を両方 slice_id に適用（測定間の技術差を補正。
+#                                    交絡下では条件差も縮小するが、技術差まみれで比較不能に
+#                                    なるより補正して共有埋め込み/クラスタを得たい場合に使う。
+#                                    DEG は reduction と独立に condition で算出されるため不変）。
 _SCENARIO_MAP = {
     "within_slice":      ("biological", "sample",   False),
     "condition_compare": ("biological", "sample",   False),
     "serial_section":    ("section_id", "sample",   False),
     "batch_correct":     ("biological", "slice_id", True),
+    "integrate_correct": ("section_id", "slice_id", True),
 }
 
 

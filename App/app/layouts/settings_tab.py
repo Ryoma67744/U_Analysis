@@ -304,12 +304,17 @@ def _create_analysis_settings_subtab():
                                              "value": "serial_section"},
                                             {"label": "切片間の測定差(バッチ)を補正【非推奨・過補正注意】",
                                              "value": "batch_correct"},
+                                            {"label": "条件比較＋技術差補正：Harmony＋RPCA を適用（測定差を補正・条件差も縮小）",
+                                             "value": "integrate_correct"},
                                         ],
                                         value=ls.get("tims_scenario", "within_slice"),
                                     ),
                                     dbc.FormText(
                                         "選んだシナリオに応じて補正方法を自動設定（既定=無補正PCA）。"
-                                        "連続切片→RPCA統合／バッチ補正→Harmony。R既定値は変更しません。",
+                                        "連続切片→RPCA統合／バッチ補正→Harmony／"
+                                        "条件比較＋技術差補正→Harmony＋RPCA両方（測定間の技術差を補正。"
+                                        "交絡下では条件差も縮小するが、DEGは reduction と独立に条件で算出されるため不変）。"
+                                        "R既定値は変更しません。",
                                         className="text-muted small",
                                     ),
                                 ]),
@@ -730,6 +735,8 @@ def _create_analysis_settings_subtab():
                                              "value": "serial_section"},
                                             {"label": "切片間の測定差(バッチ)を補正【非推奨・過補正注意】",
                                              "value": "batch_correct"},
+                                            {"label": "条件比較＋技術差補正：Harmony＋RPCA を適用（測定差を補正・条件差も縮小）",
+                                             "value": "integrate_correct"},
                                         ],
                                         value=ls.get("reanalysis_tims_scenario",
                                                      ls.get("tims_scenario", "within_slice")),
