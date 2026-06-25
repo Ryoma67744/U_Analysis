@@ -148,6 +148,13 @@ V13_CALIBRATION_COEFFICIENTS <- c(0)
 V13_INPUT_NORMALIZED <- TRUE
 V13_NORM_MODE <- "log1p"
 
+# (M3ب) 解析シナリオ → 補正ポリシー（アプリの再解析シナリオから注入。ver6 のスイッチへ伝播）
+#   初回解析のシナリオを引き継ぎ、subset の reduction にも同じ補正方針を効かせる。
+#   未注入なら既定（biological / sample / FALSE）＝従来挙動。
+V13_ANNOTATION_ROLE <- "biological"
+V13_BATCH_VAR <- "sample"
+V13_ALLOW_CONDITION_CORRECTION <- FALSE
+
 # (N) slice_id / condition を 1回目RDSから保存しておきたい場合（通常は不要）
 #     ver13 は入力Parquetの annotation から slice_id/condition を再現できるため、
 #     基本は FALSE 推奨です（Re-UMAP側でDBSCAN復元などはしない）。
@@ -789,6 +796,18 @@ make_v13_copy_with_settings <- function(v13_path, out_path,
   }
   if (exists("V13_NORM_MODE") && nzchar(V13_NORM_MODE)) {
     code <- replace_assign_line(code, "NORM_MODE", r_str(V13_NORM_MODE), multiple = TRUE)
+  }
+
+  # 解析シナリオ → ver6 の補正ポリシースイッチへ伝播（初回シナリオの引き継ぎ）
+  if (exists("V13_ANNOTATION_ROLE") && nzchar(V13_ANNOTATION_ROLE)) {
+    code <- replace_assign_line(code, "ANNOTATION_ROLE", r_str(V13_ANNOTATION_ROLE), multiple = TRUE)
+  }
+  if (exists("V13_BATCH_VAR") && nzchar(V13_BATCH_VAR)) {
+    code <- replace_assign_line(code, "BATCH_VAR", r_str(V13_BATCH_VAR), multiple = TRUE)
+  }
+  if (exists("V13_ALLOW_CONDITION_CORRECTION") && !is.na(V13_ALLOW_CONDITION_CORRECTION)) {
+    code <- replace_assign_line(code, "ALLOW_CONDITION_CORRECTION",
+      if (isTRUE(V13_ALLOW_CONDITION_CORRECTION)) "TRUE" else "FALSE", multiple = TRUE)
   }
 
   code <- replace_assign_line(code, "RESUME_FROM_RDS", if (isTRUE(resume_from_rds)) "TRUE" else "FALSE")

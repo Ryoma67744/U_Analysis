@@ -51,6 +51,17 @@ def get_settings_tooltips():
             target="cluster_source_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
+            "切片アノテーションが何を表すかでシナリオを選択。"
+            "同一切片のクラスタ/Ctrl vs KO比較=無補正、"
+            "連続切片(技術反復)=RPCA統合、測定バッチ補正=Harmony(過補正注意・非推奨)。",
+            target="tims_scenario_help_badge", **_TOOLTIP_PROPS,
+        ),
+        dbc.Tooltip(
+            "再解析(exclusion/inclusion)の解析シナリオ。既定は初回解析の選択を引き継ぎます。"
+            "意味は初回と同じ（無補正/RPCA統合/Harmony補正）。",
+            target="reanalysis_tims_scenario_help_badge", **_TOOLTIP_PROPS,
+        ),
+        dbc.Tooltip(
             "m/zの一致判定に使う許容誤差（Da単位）。"
             "デフォルト0.01は高分解能MSに適した値です。",
             target="tolerance_mz_help_badge", **_TOOLTIP_PROPS,

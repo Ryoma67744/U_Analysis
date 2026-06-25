@@ -39,6 +39,8 @@ _AUTO_SAVE_KEYS = [
     "ion_mode", "tolerance_mz",
     "reanalysis_ion_mode", "reanalysis_tolerance_mz",
     "reanalysis_p_thresh", "reanalysis_logfc_thresh",
+    # 解析シナリオ（切片アノテーションの意味 → 補正ポリシー）
+    "tims_scenario", "reanalysis_tims_scenario",
     # サイドバー設定
     "desi_v8_script_path", "desi_cluster_filter_script_path",
     "tims_v8_script_path", "tims_cluster_filter_script_path",

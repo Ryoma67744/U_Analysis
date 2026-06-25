@@ -20,6 +20,7 @@
     <li><a href="#settings">⚙️ 解析設定タブ</a>
       <ul>
         <li><a href="#standard-flow">🚀 標準フロー（手法別 早見）</a></li>
+        <li><a href="#tims-scenario">🧭 解析シナリオの選び方（TIMS）</a></li>
         <li><a href="#roi-mode">🆕 DESI ROI モード（複数 ROI を別サンプル扱い）</a></li>
       </ul>
     </li>
@@ -255,6 +256,27 @@
     <li><strong>UMAP・クラスタリング</strong></li>
   </ol>
   段階比較が目的なら<strong>未補正(PCA)も併用</strong>。各条件1切片は交絡に注意（→7章）。
+</div>
+
+<h3 class="subsection-heading" id="tims-scenario">🧭 解析シナリオの選び方（TIMS）</h3>
+<p>TIMS の UMAP 解析設定にある「<strong>解析シナリオ（切片アノテーションの意味）</strong>」で、切片アノテーションが何を表すかを選ぶと、補正方法が自動で切り替わります（既定＝無補正PCA＝従来挙動。R 既定値は変更しません）。</p>
+<table class="help-table">
+  <thead><tr><th>シナリオ</th><th>例</th><th>自動で行う解析</th></tr></thead>
+  <tbody>
+    <tr><td>同一切片の中のクラスタを見る</td><td>1枚の切片の部分構造</td><td>無補正PCA</td></tr>
+    <tr><td>群比較：条件ごとに別アノテーション</td><td>Ctrl vs KO が別アノテーション</td><td>無補正PCA＋condition比較（各条件1切片は交絡注意）</td></tr>
+    <tr><td>連続切片を技術反復としてまとめる</td><td>同一個体の連続切片</td><td>RPCA で slice_id 統合</td></tr>
+    <tr><td>切片間の測定差(バッチ)を補正【非推奨】</td><td>測定ロット差を除きたい</td><td>Harmony で slice_id 補正（過補正の恐れ）</td></tr>
+  </tbody>
+</table>
+<div class="help-alert tip">
+  <div class="alert-title">💡 再解析（exclusion/inclusion）と計算の再利用</div>
+  <ul>
+    <li>再解析タブにも同じシナリオ欄があり、<strong>既定で初回解析の選択を引き継ぎます</strong>（変更可）。</li>
+    <li>exclusion/inclusion は指定クラスタの pixel を取捨選択して<strong>部分集合で解析をやり直す</strong>（reduction も再計算）。条件は初回と揃えるのが推奨です。</li>
+    <li>部分集合でパラメータを詰めるときは <strong>「① reduction のみ作成 →（②診断・③反映）→ ④続きを実行」</strong>を使うと、部分集合の reduction を1回だけ計算して再利用し、UMAP/クラスタリングのみ再実行します。</li>
+    <li>初回(全体)の reduction を部分集合へ流用することはしません（HVG/PCA/Harmony は細胞集団に依存＝科学的に別物のため）。</li>
+  </ul>
 </div>
 
 <div class="figure-frame">

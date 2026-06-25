@@ -76,8 +76,8 @@ def _create_analysis_settings_subtab():
                             html.Li("TIMS データを SCiLS RMS で出力"),
                             html.Li(["正規化 ", html.B("「OFF」"), " ＋ 変換 ", html.B("「log1p」"),
                                      "（RMS×TIC の二重正規化を回避。TIMS では既定でこの設定）"]),
-                            html.Li("サンプル数で自動分岐：1サンプル→PCAのみ／複数→Harmony・RPCA"
-                                    "（両方算出。下の『クラスタソース』で使用手法を選択）"),
+                            html.Li("サンプル数と『解析シナリオ』で自動分岐：既定=無補正PCA／"
+                                    "連続切片→RPCA統合／複数サンプル→Harmony・RPCA"),
                             html.Li("UMAP・クラスタリング"),
                         ]),
                         html.Small("※ 段階比較が目的なら未補正(PCA)も併用／各条件1切片は交絡に注意。",
@@ -287,6 +287,32 @@ def _create_analysis_settings_subtab():
                             id="tims_ion_settings",
                             style={"display": "none", "marginTop": "15px"},
                             children=[
+                                # 解析シナリオ（切片アノテーションの意味）→ 補正方法を自動設定。
+                                # 値は analysis_callbacks で ANNOTATION_ROLE/BATCH_VAR/
+                                # ALLOW_CONDITION_CORRECTION に変換し analysis_runner で注入。
+                                html.Div(className="param-group", children=[
+                                    html.H5(["解析シナリオ（切片アノテーションの意味）",
+                                             help_badge("tims_scenario")]),
+                                    dbc.Select(
+                                        id="tims_scenario",
+                                        options=[
+                                            {"label": "同一切片の中のクラスタを見る（1切片・部分構造）",
+                                             "value": "within_slice"},
+                                            {"label": "群比較：条件ごとに別アノテーション（例 Ctrl vs KO）",
+                                             "value": "condition_compare"},
+                                            {"label": "連続切片を技術反復としてまとめる（同一個体の連続切片）",
+                                             "value": "serial_section"},
+                                            {"label": "切片間の測定差(バッチ)を補正【非推奨・過補正注意】",
+                                             "value": "batch_correct"},
+                                        ],
+                                        value=ls.get("tims_scenario", "within_slice"),
+                                    ),
+                                    dbc.FormText(
+                                        "選んだシナリオに応じて補正方法を自動設定（既定=無補正PCA）。"
+                                        "連続切片→RPCA統合／バッチ補正→Harmony。R既定値は変更しません。",
+                                        className="text-muted small",
+                                    ),
+                                ]),
                                 html.Div(className="param-group", children=[
                                     html.H5(["イオンモード", help_badge("ion_mode")]),
                                     dbc.RadioItems(
@@ -689,6 +715,30 @@ def _create_analysis_settings_subtab():
                             id="tims_reanalysis_ion_settings",
                             style={"display": "none", "marginTop": "15px"},
                             children=[
+                                # 再解析の解析シナリオ。既定は初回(tims_scenario)を引き継ぐ。
+                                html.Div(className="param-group", children=[
+                                    html.H5(["解析シナリオ（切片アノテーションの意味）",
+                                             help_badge("reanalysis_tims_scenario")]),
+                                    dbc.Select(
+                                        id="reanalysis_tims_scenario",
+                                        options=[
+                                            {"label": "同一切片の中のクラスタを見る（1切片・部分構造）",
+                                             "value": "within_slice"},
+                                            {"label": "群比較：条件ごとに別アノテーション（例 Ctrl vs KO）",
+                                             "value": "condition_compare"},
+                                            {"label": "連続切片を技術反復としてまとめる（同一個体の連続切片）",
+                                             "value": "serial_section"},
+                                            {"label": "切片間の測定差(バッチ)を補正【非推奨・過補正注意】",
+                                             "value": "batch_correct"},
+                                        ],
+                                        value=ls.get("reanalysis_tims_scenario",
+                                                     ls.get("tims_scenario", "within_slice")),
+                                    ),
+                                    dbc.FormText(
+                                        "既定は初回解析のシナリオを引き継ぎます（変更可）。",
+                                        className="text-muted small",
+                                    ),
+                                ]),
                                 html.Div(className="param-group", children=[
                                     html.H5("イオンモード"),
                                     dbc.RadioItems(

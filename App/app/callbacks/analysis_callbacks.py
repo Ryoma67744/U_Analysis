@@ -31,6 +31,19 @@ from app.services.project_manager import save_sub_project_settings, save_sub_pro
 from app.services.notify import warn_user
 
 
+# 解析シナリオ → 補正ポリシー (ANNOTATION_ROLE, BATCH_VAR, ALLOW_CONDITION_CORRECTION)。
+# 既定 within_slice = 現状（無補正PCA）。settings_tab.py の tims_scenario と対応。
+#   within_slice/condition_compare : 無補正（補正しない）
+#   serial_section                 : section_id → 単一sampleでも RPCA(slice_id統合)
+#   batch_correct                  : slice_id を技術バッチとして Harmony 補正（非推奨）
+_SCENARIO_MAP = {
+    "within_slice":      ("biological", "sample",   False),
+    "condition_compare": ("biological", "sample",   False),
+    "serial_section":    ("section_id", "sample",   False),
+    "batch_correct":     ("biological", "slice_id", True),
+}
+
+
 # アプリケーションレベルの状態（サブプロセス参照など）
 # Dash の dcc.Store はシリアライズ可能な値しか保持できないため、
 # process オブジェクトはモジュールレベルで保持する
@@ -127,7 +140,9 @@ def toggle_sidebar_content(active_tab):
      State("umap_n_neighbors_input", "value"),
      State("umap_min_dist_input", "value"),
      State("umap_metric_input", "value"),
-     State("umap_dims_input", "value")],
+     State("umap_dims_input", "value"),
+     State("tims_scenario", "value"),
+     State("reanalysis_tims_scenario", "value")],
     prevent_initial_call=True,
 )
 def run_analysis(
@@ -164,6 +179,7 @@ def run_analysis(
     normalize_input_reanalysis, norm_mode_reanalysis,
     umap_n_neighbors_input, umap_min_dist_input,
     umap_metric_input, umap_dims_input,
+    tims_scenario, reanalysis_tims_scenario,
 ):
     # トリガー判定: 通常の「解析実行」(run_analysis) か、
     # PreFlight 用の「reduction のみ作成」(btn_make_reduction) か。
@@ -206,6 +222,8 @@ def run_analysis(
             "norm_mode": norm_mode,
             "normalize_input_reanalysis": normalize_input_reanalysis,
             "norm_mode_reanalysis": norm_mode_reanalysis,
+            "tims_scenario": tims_scenario,
+            "reanalysis_tims_scenario": reanalysis_tims_scenario,
         })
     except Exception as e:
         warn_user(f"解析設定の保存に失敗: {e}")
@@ -335,6 +353,12 @@ def run_analysis(
                 params["tolerance_mz"] = float(tolerance_mz) if tolerance_mz else 0.01
                 if adduct_filter:
                     params["adduct_patterns"] = adduct_filter
+                # 解析シナリオ → 補正ポリシーを注入（ver6 の ANNOTATION_ROLE 等）
+                _role, _bv, _allow = _SCENARIO_MAP.get(
+                    tims_scenario or "within_slice", _SCENARIO_MAP["within_slice"])
+                params["annotation_role"] = _role
+                params["batch_var"] = _bv
+                params["allow_condition_correction"] = _allow
                 # INPUT_PATHS: 選択サンプルに対応するファイルのフルパスリスト
                 from app.services.data_manager import build_tims_input_paths_multi
                 all_folders = [data_folder] + (extra_data_folders or [])
@@ -498,6 +522,12 @@ def run_analysis(
                 # 入力正規化ポリシー（再解析UIのトグル → V13_INPUT_NORMALIZED/NORM_MODE 注入）
                 params["input_normalized"] = (normalize_input_reanalysis == "OFF")
                 params["norm_mode"] = norm_mode_reanalysis or "log1p"
+                # 解析シナリオ → V13_ 経由で ver6 コピーへ伝播（subset の reduction に効かせる）
+                _r_role, _r_bv, _r_allow = _SCENARIO_MAP.get(
+                    reanalysis_tims_scenario or "within_slice", _SCENARIO_MAP["within_slice"])
+                params["v13_annotation_role"] = _r_role
+                params["v13_batch_var"] = _r_bv
+                params["v13_allow_condition_correction"] = _r_allow
                 # RDSフォルダ+クラスタソース → R側で解決
                 if rds_folder_reanalysis:
                     params["rds_run_dir"] = rds_folder_reanalysis
