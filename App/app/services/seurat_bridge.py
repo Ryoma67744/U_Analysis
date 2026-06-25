@@ -324,6 +324,60 @@ class SeuratBridge:
                 f"Seurat extraction failed:\n{stderr_text[:2000]}"
             )
 
+    def derive_uncorrected_pca(self, src_rds_path: str, out_rds_path: str,
+                               cancel_event=None) -> str:
+        """Harmony RDS 内の未補正 pca 次元から UMAP を計算した派生RDSを生成して返す。
+
+        既存結果でも「PCA（未補正）」を Harmony/RPCA と同じ UMAP 形式で比較表示するため。
+        冪等: 出力が既にあれば再生成しない。書込先は SEURAT_CACHE_DIR 配下を想定し、
+        結果フォルダを汚さない（読み取り専用/共有結果でも安全）。
+        """
+        out_path = Path(out_rds_path)
+        if out_path.exists():
+            return str(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        script = R_HELPERS_DIR / "derive_uncorrected_pca.R"
+        rscript = str(RSCRIPT_PATH)
+        if not Path(rscript).exists():
+            rscript = "Rscript"
+        cmd = [rscript, "--vanilla", str(script), str(src_rds_path), str(out_path)]
+
+        if cancel_event is None:
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, timeout=600,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(
+                    f"PCA derivation timed out (10min): rds={src_rds_path}"
+                ) from e
+            returncode, stderr_bytes = result.returncode, result.stderr
+        else:
+            try:
+                returncode, stderr_bytes = _popen_with_cancel(
+                    cmd, cancel_event, timeout=600,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except ExtractionCancelled:
+                raise
+            except RuntimeError as e:
+                if str(e) == "__TIMEOUT__":
+                    raise RuntimeError(
+                        f"PCA derivation timed out (10min): rds={src_rds_path}"
+                    ) from e
+                raise
+        if returncode != 0:
+            if out_path.exists():
+                try:
+                    out_path.unlink()
+                except OSError:
+                    pass
+            stderr_text = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+            raise RuntimeError(f"PCA derivation failed:\n{stderr_text[:2000]}")
+        return str(out_path)
+
     def _run_feature_extraction(
         self, rds_path: str, feature_name: str, output_path: Path
     ):

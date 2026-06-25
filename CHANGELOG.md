@@ -12,6 +12,24 @@
 
 ---
 
+## 2026-06-25_ver16.0
+
+### 機能: インタラクティブ解析に「PCA（未補正）」を追加（既存結果でも・UMAP形式）
+
+インタラクティブ解析の手法セレクタが Harmony/RPCA のみだったところに、**未補正PCA**（補正の基準）を
+**Harmony/RPCA と同じ UMAP 形式**で並べて比較できるよう追加。**既存の解析結果でも再解析不要**。
+
+- **派生RDSの遅延生成方式**：未補正の `pca` 次元は Harmony RDS に必ず存在するが保存済みUMAPは harmony 由来。
+  そこで「PCA」選択時に **Harmony RDS から未補正pca由来のUMAPを計算した派生RDSを生成**し、独立ファイルとして
+  通常手法と同様に扱う（キャッシュ/state が rds_path キーのため、別パス＝衝突回避。既存の抽出/特徴量機構を再利用）。
+  - 新R helper `App/Script/helpers/derive_uncorrected_pca.R`（`RunUMAP(reduction="pca")`、クラスタは既存維持）。
+  - `seurat_bridge.derive_uncorrected_pca()`（冪等・subprocess）。書込先は `SEURAT_CACHE_DIR` 配下＝結果フォルダ非汚染。
+  - `_detect_integration_methods(include_derived=True)` で Harmony があり未補正RDSが無いとき「PCA」を選択肢に追加
+    （`interactive_callbacks.py`）。選択時に Link A→B で未生成なら生成→抽出。初回のみUMAP計算、以降キャッシュ。
+- 後方互換：Harmony/RPCA・既定動作は不変。新規解析の `Step2_PCA_uncorrected.rds` は従来通り「PCA (uncorrected)」として検出。
+- スコープ外：軽量ビューア（既定 `include_derived=False` で挙動不変）、派生PCAの事前DEG（随時DEGは可）。
+- ツールチップ補足。version 15.0→16.0。
+
 ## 2026-06-25_ver15.0
 
 ### 機能: TIMS「解析シナリオ」をGUIで選択（切片アノテーションの扱い）＋ 再解析へ引き継ぎ
