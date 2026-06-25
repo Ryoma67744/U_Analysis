@@ -73,6 +73,80 @@ def toggle_sidebar_content(active_tab):
 # 解析実行
 # ---------------------------------------------------------------------------
 
+def _output_has_existing_results(full_output_dir: str) -> bool:
+    """出力先フォルダに既存の解析結果があるか判定（上書き警告ゲート用）。
+
+    reduction RDS（_detect_integration_methods が非空）/ analysis_params.json /
+    RDS_Files/*.rds のいずれかがあれば True。フォルダ非存在は False。
+    """
+    try:
+        p = Path(full_output_dir)
+    except (TypeError, ValueError):
+        return False
+    if not p.is_dir():
+        return False
+    try:
+        # 循環 import 回避のためローカル import（既存コードの踏襲）
+        from app.callbacks.interactive_callbacks import _detect_integration_methods
+        if _detect_integration_methods(str(p)):
+            return True
+    except Exception:
+        pass
+    if (p / "analysis_params.json").exists():
+        return True
+    rds_dir = p / "RDS_Files"
+    if rds_dir.is_dir() and any(rds_dir.glob("*.rds")):
+        return True
+    return False
+
+
+@callback(
+    [Output("overwrite_results_modal", "is_open", allow_duplicate=True),
+     Output("overwrite_results_detail", "children"),
+     Output("overwrite_pending_mode", "data")],
+    Input("run_analysis", "n_clicks"),
+    Input("btn_make_reduction", "n_clicks"),
+    [State("output_dir", "value"),
+     State("output_subfolder", "value")],
+    prevent_initial_call=True,
+)
+def open_overwrite_modal(run_clicks, reduction_clicks, output_dir, output_subfolder):
+    """フル/reductionのみ実行時、出力先に既存結果があれば上書き確認モーダルを開く。
+
+    既存結果が無ければモーダルは開かない（従来どおり即実行）。pending mode に
+    どちらのボタンだったか("run"/"reduction")を記録し、確認後の本実行で復元する。
+    """
+    trig = ctx.triggered_id
+    mode = "reduction" if trig == "btn_make_reduction" else "run"
+    if not output_dir:
+        return False, no_update, mode
+    target = str(Path(output_dir) / (output_subfolder or ""))
+    if not _output_has_existing_results(target):
+        return False, no_update, mode
+    try:
+        from app.callbacks.interactive_callbacks import _detect_integration_methods
+        methods = list(_detect_integration_methods(target).keys())
+    except Exception:
+        methods = []
+    detail = [html.Div(f"出力先: {target}", className="small text-muted")]
+    if methods:
+        detail.append(html.Div("既存の手法: " + ", ".join(methods)))
+    else:
+        detail.append(html.Div("このフォルダには既存の解析結果ファイルがあります。"))
+    return True, detail, mode
+
+
+@callback(
+    Output("overwrite_results_modal", "is_open", allow_duplicate=True),
+    Input("cancel_overwrite_results", "n_clicks"),
+    Input("confirm_overwrite_results", "n_clicks"),
+    prevent_initial_call=True,
+)
+def close_overwrite_modal(cancel_clicks, confirm_clicks):
+    """「キャンセル」「実行する」どちらでも上書き確認モーダルを閉じる。"""
+    return False
+
+
 @callback(
     [Output("app_state", "data", allow_duplicate=True),
      Output("progress_interval", "disabled", allow_duplicate=True),
@@ -85,6 +159,7 @@ def toggle_sidebar_content(active_tab):
     Input("run_analysis", "n_clicks"),
     Input("btn_make_reduction", "n_clicks"),
     Input("btn_run_downstream", "n_clicks"),
+    Input("confirm_overwrite_results", "n_clicks"),
     [State("analysis_method", "value"),
      State("analysis_method_tims", "value"),
      State("data_folder", "value"),
@@ -142,13 +217,15 @@ def toggle_sidebar_content(active_tab):
      State("umap_metric_input", "value"),
      State("umap_dims_input", "value"),
      State("tims_scenario", "value"),
-     State("reanalysis_tims_scenario", "value")],
+     State("reanalysis_tims_scenario", "value"),
+     State("overwrite_pending_mode", "data")],
     prevent_initial_call=True,
 )
 def run_analysis(
     n_clicks,
     reduction_clicks,
     downstream_clicks,
+    confirm_overwrite_clicks,
     desi_method, tims_method,
     data_folder, annotation_path, p_thresh, logfc_thresh,
     resume_rds, rds_folder,
@@ -180,6 +257,7 @@ def run_analysis(
     umap_n_neighbors_input, umap_min_dist_input,
     umap_metric_input, umap_dims_input,
     tims_scenario, reanalysis_tims_scenario,
+    overwrite_pending_mode,
 ):
     # トリガー判定: 通常の「解析実行」(run_analysis) か、
     # PreFlight 用の「reduction のみ作成」(btn_make_reduction) か。
@@ -188,8 +266,24 @@ def run_analysis(
     trig = ctx.triggered_id
     reduction_only_mode = (trig == "btn_make_reduction")
     downstream_mode = (trig == "btn_run_downstream")
-    if not n_clicks and not reduction_clicks and not downstream_clicks:
+    if (not n_clicks and not reduction_clicks and not downstream_clicks
+            and not confirm_overwrite_clicks):
         return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+
+    # ── 上書き警告ゲート ──
+    # 出力先に既存結果がある状態で「解析実行」/「reductionのみ」を押した場合は、
+    # 確認モーダル（open_overwrite_modal が表示）で「実行する」が押されるまで本実行しない。
+    if trig == "confirm_overwrite_results":
+        # 確認後の本実行: 元のモードを pending から復元（downstream は警告対象外）
+        reduction_only_mode = (overwrite_pending_mode == "reduction")
+        downstream_mode = False
+        if not confirm_overwrite_clicks:
+            return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+    elif trig in ("run_analysis", "btn_make_reduction") and output_dir:
+        _target = str(Path(output_dir) / (output_subfolder or ""))
+        if _output_has_existing_results(_target):
+            # 実行は止める（モーダル表示は open_overwrite_modal が担当）
+            return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
     # 現在の設定を自動保存（次回起動時に復元される）
     try:
