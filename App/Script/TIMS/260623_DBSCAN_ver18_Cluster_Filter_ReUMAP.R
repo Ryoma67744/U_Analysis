@@ -155,6 +155,10 @@ V13_ANNOTATION_ROLE <- "biological"
 V13_BATCH_VAR <- "sample"
 V13_ALLOW_CONDITION_CORRECTION <- FALSE
 
+# DEG 閾値（アプリの再解析設定から V13_ 経由で注入。未注入なら ver6 既定）。
+V13_DEG_P_THRESH_VAL <- 0.05
+V13_DEG_LOGFC_TH_VAL <- 0.25
+
 # (N) slice_id / condition を 1回目RDSから保存しておきたい場合（通常は不要）
 #     ver13 は入力Parquetの annotation から slice_id/condition を再現できるため、
 #     基本は FALSE 推奨です（Re-UMAP側でDBSCAN復元などはしない）。
@@ -808,6 +812,14 @@ make_v13_copy_with_settings <- function(v13_path, out_path,
   if (exists("V13_ALLOW_CONDITION_CORRECTION") && !is.na(V13_ALLOW_CONDITION_CORRECTION)) {
     code <- replace_assign_line(code, "ALLOW_CONDITION_CORRECTION",
       if (isTRUE(V13_ALLOW_CONDITION_CORRECTION)) "TRUE" else "FALSE", multiple = TRUE)
+  }
+
+  # DEG 閾値 → ver6 copy へ伝播（再解析の p/logFC を反映）
+  if (exists("V13_DEG_P_THRESH_VAL") && !is.na(V13_DEG_P_THRESH_VAL)) {
+    code <- replace_assign_line(code, "DEG_P_THRESH_VAL", as.character(V13_DEG_P_THRESH_VAL), multiple = TRUE)
+  }
+  if (exists("V13_DEG_LOGFC_TH_VAL") && !is.na(V13_DEG_LOGFC_TH_VAL)) {
+    code <- replace_assign_line(code, "DEG_LOGFC_TH_VAL", as.character(V13_DEG_LOGFC_TH_VAL), multiple = TRUE)
   }
 
   code <- replace_assign_line(code, "RESUME_FROM_RDS", if (isTRUE(resume_from_rds)) "TRUE" else "FALSE")
