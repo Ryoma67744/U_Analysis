@@ -2430,40 +2430,56 @@ if (!step3_done && !.stage_downstream) {
   .n_slice         <- length(unique(na.omit(seu_harmony$slice_id)))
   .rpca_section_ok <- (ANNOTATION_ROLE == "section_id") && .n_slice >= 2
   if (length(seu_list) >= 2 || .rpca_section_ok) {
-    cat("Running RPCA...\n")
-    
-    # Split
-    if (length(seu_list) < 2) {
-      # 同一試料の連続切片を技術反復として slice_id で分割
-      obj_list <- SplitObject(subset(seu_harmony, subset = slice_id %in% unique(na.omit(seu_harmony$slice_id))), split.by="slice_id")
-    } else {
-      obj_list <- seu_list
-    }
-    obj_list <- Filter(function(o) ncol(o) >= MIN_CELLS_RPCA, obj_list)
-    
-    if(length(obj_list) >= 2) {
-      for(nf in RPCA_NFEATURES_TRY) {
+    cat("Running RPCA (Seurat v5 IntegrateLayers)...\n")
+
+    # ---- v5 ネイティブ統合（IntegrateLayers + RPCAIntegration; 省メモリ）----
+    # v4 の FindIntegrationAnchors+IntegrateData は補正済み発現行列を実体化するため
+    # 大規模(>~10万px)で OOM する。低次元PCA空間で統合し reduction だけ作る
+    # IntegrateLayers に置換。新 reduction 名 "rpca"（下流/診断がそのまま採用）。
+    .rpca_batch <- if (length(seu_list) >= 2) "sample" else "slice_id"
+    seu_rpca <- tryCatch(
+      subset(seu_harmony, subset = slice_id %in% unique(na.omit(seu_harmony$slice_id))),
+      error = function(e) seu_harmony)
+    DefaultAssay(seu_rpca) <- "Spatial"
+    # Step2 由来の reduction(harmony 等)を除去（run_downstream の harmony 優先採用を回避）。
+    for (.rn in names(seu_rpca@reductions)) seu_rpca[[.rn]] <- NULL
+
+    .bt   <- as.character(seu_rpca@meta.data[[.rpca_batch]])
+    .keep <- names(which(table(.bt) >= MIN_CELLS_RPCA))
+    if (length(.keep) >= 2) {
+      seu_rpca <- subset(seu_rpca, cells = colnames(seu_rpca)[.bt %in% .keep])
+      .kw <- max(5L, min(100L, as.integer(min(table(as.character(seu_rpca@meta.data[[.rpca_batch]])))) - 1L))
+      seu_rpca <- apply_input_norm(seu_rpca)
+      seu_rpca[["Spatial"]] <- split(seu_rpca[["Spatial"]], f = seu_rpca@meta.data[[.rpca_batch]])
+
+      ok <- FALSE
+      for (nf in c(2000L, 1000L, 500L)) {
         ok <- tryCatch({
-          feats <- SelectIntegrationFeatures(obj_list, nfeatures=nf)
-          obj_list <- lapply(obj_list, function(x) { x <- apply_input_norm(x); x <- ScaleData(x, features=feats); RunPCA(x, features=feats) })
-          anchors <- FindIntegrationAnchors(obj_list, anchor.features=feats, reduction="rpca")
-          seu_rpca <- IntegrateData(anchors)
-          DefaultAssay(seu_rpca) <- "integrated"
-          seu_rpca <- ScaleData(seu_rpca)
-          seu_rpca <- RunPCA(seu_rpca)
-          # PIPELINE_STAGE=reduction_only: UMAP/クラスタリングをスキップ（診断用の軽量実行）
+          seu_rpca <- FindVariableFeatures(seu_rpca, nfeatures = nf, verbose = FALSE)
+          seu_rpca <- ScaleData(seu_rpca, verbose = FALSE)
+          seu_rpca <- RunPCA(seu_rpca, npcs = MAX_PCS, verbose = FALSE)
+          seu_rpca <- IntegrateLayers(seu_rpca, method = RPCAIntegration,
+                                      orig.reduction = "pca", new.reduction = "rpca",
+                                      assay = "Spatial", dims = 1:MAX_PCS,
+                                      k.weight = .kw, verbose = FALSE)
+          seu_rpca <- JoinLayers(seu_rpca)
           if (!identical(PIPELINE_STAGE, "reduction_only")) {
-          seu_rpca <- RunUMAP(seu_rpca, reduction = "pca", dims = 1:UMAP_DIMS_MAX,
-                              n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
-                              metric = UMAP_METRIC, seed.use = GLOBAL_RANDOM_SEED)
-          seu_rpca <- FindNeighbors(seu_rpca, reduction = "pca", dims = 1:UMAP_DIMS_MAX,
-                                    k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
-          seu_rpca <- FindClusters(seu_rpca, resolution = CLUSTER_RESOLUTION, algorithm = CLUSTER_ALGORITHM)
+            .rd <- 1:min(UMAP_DIMS_MAX, ncol(Embeddings(seu_rpca, "rpca")))
+            seu_rpca <- RunUMAP(seu_rpca, reduction = "rpca", dims = .rd,
+                                n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
+                                metric = UMAP_METRIC, seed.use = GLOBAL_RANDOM_SEED)
+            seu_rpca <- FindNeighbors(seu_rpca, reduction = "rpca", dims = .rd,
+                                      k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
+            seu_rpca <- FindClusters(seu_rpca, resolution = CLUSTER_RESOLUTION, algorithm = CLUSTER_ALGORITHM)
           }
           TRUE
-        }, error=function(e) FALSE)
-        if(ok) break
+        }, error = function(e) { message("!! RPCA(IntegrateLayers) failed: ", e$message); FALSE })
+        if (ok) break
       }
+      if (!ok) seu_rpca <- NULL
+    } else {
+      cat(sprintf("RPCA skip: 有効バッチ<2 (batch='%s', >=%d cells)\n", .rpca_batch, MIN_CELLS_RPCA))
+      seu_rpca <- NULL
     }
   }
   
