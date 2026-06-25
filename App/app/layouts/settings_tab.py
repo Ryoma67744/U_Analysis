@@ -1081,6 +1081,30 @@ def _create_run_button():
             ],
         ),
 
+        # 上書き確認モーダル（出力先に既存結果があるときだけ表示）＋ 保留モード保持
+        dbc.Modal(
+            id="overwrite_results_modal",
+            centered=True,
+            children=[
+                dbc.ModalHeader(dbc.ModalTitle("⚠️ 既存の解析結果があります")),
+                dbc.ModalBody([
+                    html.Div(id="overwrite_results_detail", className="mb-2"),
+                    html.P(
+                        "続行すると同名ファイルは上書きされ、新旧の結果が混在する可能性があります。"
+                        "本当に実行しますか？",
+                        className="text-danger fw-bold mb-0",
+                    ),
+                ]),
+                dbc.ModalFooter([
+                    dbc.Button("キャンセル", id="cancel_overwrite_results",
+                               color="secondary", outline=True),
+                    dbc.Button("実行する", id="confirm_overwrite_results",
+                               color="danger"),
+                ]),
+            ],
+        ),
+        dcc.Store(id="overwrite_pending_mode", data="run"),
+
         # 進捗ログ表示
         html.Div(
             id="log_container",

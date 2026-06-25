@@ -12,6 +12,23 @@
 
 ---
 
+## 2026-06-25_ver17.0
+
+### 機能: 解析実行前に「既存結果あり（上書き注意）」を警告
+
+同じ出力フォルダに新しい解析を出すと、同名ファイルは上書きされ、新解析が作らない別名の旧ファイルは
+残る（新旧混在）。事故防止のため、**出力先に既存の解析結果があるときだけ**、解析開始前に確認モーダルを
+表示し「実行する／キャンセル」を選べるようにした（既存結果が無ければ従来どおり即実行・警告なし）。
+
+- **外科的なゲート**: `run_analysis` は同期コールバックで、冒頭の no-op return（8×`no_update`）を流用し、
+  既存結果検出時は同じ8タプルを返して**実行を差し止める**（他の return／Output は不変）。確認ボタンを
+  追加トリガにして「確認後に本実行」。モーダル開閉は `open_overwrite_modal` / `close_overwrite_modal` の
+  2コールバックで担当（`analysis_callbacks.py`）。
+- **既存結果の検出**は `_detect_integration_methods()` を再利用（reduction RDS / analysis_params.json /
+  RDS_Files/*.rds のいずれか）。確認モーダルは `delete_project_modal` と同型。
+- **対象**: 「解析実行」(フル) と「reductionのみ」。「reduction再利用(downstream)」は既存前提のため対象外。
+- `settings_tab.py` に確認モーダル＋`overwrite_pending_mode` Store を追加。version 16.0→17.0。
+
 ## 2026-06-25_ver16.0
 
 ### 機能: インタラクティブ解析に「PCA（未補正）」を追加（既存結果でも・UMAP形式）
