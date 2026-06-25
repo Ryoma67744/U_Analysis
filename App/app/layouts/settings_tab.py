@@ -938,27 +938,50 @@ def _create_preflight_section():
                     dbc.Label("n.neighbors", html_for="umap_n_neighbors_input"),
                     dbc.Input(id="umap_n_neighbors_input", type="number",
                               value=30, min=2, max=100, step=1, size="sm"),
+                    html.Small(
+                        "近傍数。小=局所（細かいクラスタ）/大=大域（全体配置）を重視。"
+                        "構造に効くため PreFlight が推奨を算出。",
+                        className="text-muted d-block mt-1",
+                    ),
                 ]),
                 dbc.Col(width=3, children=[
                     dbc.Label("min.dist", html_for="umap_min_dist_input"),
                     dbc.Input(id="umap_min_dist_input", type="number",
                               value=0.3, min=0, max=1, step=0.05, size="sm"),
+                    html.Small(
+                        "2D配置の密集度（見た目）のみ調整。近傍グラフ・クラスタは不変。"
+                        "最適値はデータから決まらず既定0.3固定（好みで調整）。",
+                        className="text-muted d-block mt-1",
+                    ),
                 ]),
                 dbc.Col(width=3, children=[
                     dbc.Label("metric", html_for="umap_metric_input"),
                     dcc.Dropdown(id="umap_metric_input", options=metric_opts,
                                  value="cosine", clearable=False,
                                  style={"fontSize": "0.85rem"}),
+                    html.Small(
+                        "点間距離の測り方（cosine=方向/角度, euclidean=直線距離）。"
+                        "高次元の PCA/Harmony 埋め込みは既定 cosine が無難。",
+                        className="text-muted d-block mt-1",
+                    ),
                 ]),
                 dbc.Col(width=3, children=[
                     dbc.Label("dims", html_for="umap_dims_input"),
                     dbc.Input(id="umap_dims_input", type="number",
                               value=30, min=2, max=50, step=1, size="sm"),
+                    html.Small(
+                        "UMAP に渡す reduction(PCA/Harmony) の次元数。多い=情報↑/ノイズ↑。"
+                        "近傍の安定性に効くため PreFlight が推奨を算出。",
+                        className="text-muted d-block mt-1",
+                    ),
                 ]),
             ]),
             dbc.FormText(
                 "PreFlight 推奨値を参考に設定。これらは次回の「解析実行」に反映されます"
                 "（dims の自動反映は DESI のみ。TIMS は別途）。"
+                "自動推奨は dims・n.neighbors のみ。③反映は手法間の最大値を採用"
+                "（全手法が安定する共通値）。min.dist と metric は自動推奨せず既定"
+                "（0.3 / cosine）を使用します（手動変更可）。"
             ),
             html.Div(
                 style={"marginTop": "10px", "display": "flex", "gap": "10px",

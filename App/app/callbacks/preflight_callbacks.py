@@ -68,8 +68,9 @@ def _fmt_num(x, nd: int = 3):
 def _render_diagnostics_table(data: dict, rds_methods: dict):
     """diagnostics.json を DataTable に整形し、(node, recommended) を返す。
 
-    recommended は「推奨値を入力欄へ反映」用に最有力（confidence 高優先）の
-    1 件を {n_neighbors, dims, min_dist, metric, source} で返す。
+    recommended は「推奨値を入力欄へ反映」用に、各手法の推奨の最大値（max 集約;
+    n.neighbors は全手法の許容上限内にクランプ）を {n_neighbors, dims, min_dist,
+    metric, source} で返す。min_dist/metric は既定固定（0.3 / cosine）。
     実スキーマ: inputs[].reductions[<red>].preflight.{dims.recommended,
     n_neighbors.recommended, n_neighbors.allowed_range, confidence, warnings}
     と inputs[].design.status / reductions[<red>].space.batch_mixing.ilisi。
@@ -78,8 +79,11 @@ def _render_diagnostics_table(data: dict, rds_methods: dict):
     path_to_method = {str(v): k for k, v in (rds_methods or {}).items()}
 
     rows = []
-    recommended = None      # apply 用
-    best_rank = -1          # high=2, medium=1, その他=0
+    recommended = None          # apply 用（max 集約; ループ後に算出）
+    rec_dims_all = []           # 各手法の推奨 dims
+    rec_nn_all = []             # 各手法の推奨 n.neighbors
+    allowed_upper_all = []      # 各手法の許容 n.neighbors 上限
+    rec_src = []                # 反映元ラベル "method/reduction"
 
     for entry in (data.get("inputs") or []):
         rds_path = entry.get("rds", "")
@@ -150,17 +154,16 @@ def _render_diagnostics_table(data: dict, rds_methods: dict):
                 "warnings": "; ".join(str(w) for w in warns) if warns else "なし",
             })
 
-            # apply 用推奨値（confidence の高いものを優先採用）
-            rank = {"high": 2, "medium": 1}.get(conf, 0)
-            if rec_nn is not None and rank > best_rank:
-                best_rank = rank
-                recommended = {
-                    "n_neighbors": rec_nn,
-                    "dims": rec_dims,
-                    "min_dist": pf.get("min_dist", 0.3),
-                    "metric": metric,
-                    "source": f"{method}/{red_name}",
-                }
+            # apply 用: 各手法の推奨を集約（後で手法間の max を採用）
+            if rec_dims is not None:
+                rec_dims_all.append(rec_dims)
+            if rec_nn is not None:
+                rec_nn_all.append(rec_nn)
+            if (isinstance(allowed, (list, tuple)) and len(allowed) == 2
+                    and allowed[1] is not None):
+                allowed_upper_all.append(allowed[1])
+            if rec_dims is not None or rec_nn is not None:
+                rec_src.append(f"{method}/{red_name}")
 
     if not rows:
         return (
@@ -168,6 +171,24 @@ def _render_diagnostics_table(data: dict, rds_methods: dict):
                       color="warning"),
             None,
         )
+
+    # 手法間 max 集約: 推奨は「安定/連結に必要な最小値」なので、全手法が満たす
+    # 最小の共通値＝各手法の推奨の最大値を採用（n.neighbors は全手法の許容上限内に
+    # クランプ）。単一手法のみ推奨ありなら max=その値（従来同等）。
+    if rec_dims_all or rec_nn_all:
+        agg_dims = max(rec_dims_all) if rec_dims_all else None
+        agg_nn = None
+        if rec_nn_all:
+            agg_nn = max(rec_nn_all)
+            if allowed_upper_all:
+                agg_nn = min(agg_nn, min(allowed_upper_all))
+        recommended = {
+            "n_neighbors": agg_nn,
+            "dims": agg_dims,
+            "min_dist": 0.3,
+            "metric": "cosine",
+            "source": ("max: " + ", ".join(rec_src)) if rec_src else "max",
+        }
 
     columns = [
         {"name": "手法", "id": "method"},
@@ -217,7 +238,10 @@ def _render_diagnostics_table(data: dict, rds_methods: dict):
         "推奨度 high は dims・n.neighbors とも安定。iLISI は高いほどバッチ混合が"
         "良好（同一スポット数なら 1 付近＝完全混合）。設計(交絡)が "
         "not_identifiable の場合、技術差と生物差を分離できません。"
-        + (f"　最有力の推奨: {recommended['source']}" if recommended else "")
+        "③反映は各手法の推奨の最大値を採用（全手法が安定・連結する最小の共通値、"
+        "許容範囲内にクランプ）。min.dist・metric は自動推奨の対象外で既定値"
+        "（0.3 / cosine）を使用します。"
+        + (f"　反映値の元: {recommended['source']}" if recommended else "")
     )
     return html.Div([header, table, footer]), recommended
 

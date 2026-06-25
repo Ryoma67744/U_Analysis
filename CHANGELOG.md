@@ -12,6 +12,21 @@
 
 ---
 
+## 2026-06-25_ver17.1
+
+### 改善: PreFlight「③推奨値を反映」を手法間の最大値に＋UMAPパラメータ説明/注記
+
+手法ごと（Harmony/RPCA/PCA）に推奨 dims/n.neighbors は異なるが、解析は1組の共有UMAP設定で全手法を実行する。
+従来は③反映が最確信1手法のみを採用していたため、要求の大きい手法が下限割れし得た。推奨値は「安定/連結に
+必要な最小値」なので、**全手法が満たす最小の共通値＝各手法の推奨の最大値（max）**を採用するよう変更。
+
+- `preflight_callbacks.py` `_render_diagnostics_table`: 集約を「最確信1件」→「**手法間 max**」へ。
+  dims=各手法推奨の最大、n.neighbors=最大かつ**全手法の許容上限内にクランプ**。単一手法のみ推奨ありなら
+  従来同等（その値）。`source` は "max: …"。脚注・docstring を更新。min.dist/metric は既定固定（0.3/cosine）。
+- `settings_tab.py`: 各UMAPパラメータ（n.neighbors/min.dist/metric/dims）の入力下に「何に効く値か」の説明を表示。
+  ヘルプ文に「自動推奨は dims・n.neighbors のみ／③は手法間 max／min.dist・metric は既定固定」を追記。
+- R診断ロジック・解析の共有設計は不変。version 17.0→17.1。
+
 ## 2026-06-25_ver17.0
 
 ### 機能: 解析実行前に「既存結果あり（上書き注意）」を警告
