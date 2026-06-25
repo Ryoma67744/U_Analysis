@@ -43,6 +43,8 @@ from app.services.notify import warn_user
 #                                    DEG は reduction と独立に condition で算出されるため不変）。
 _SCENARIO_MAP = {
     "within_slice":      ("biological", "sample",   False),
+    # condition_compare は within_slice と同一方針。UI ドロップダウンでは within_slice に
+    # 統合済み（settings_tab._norm_scenario）。旧セッション値の後方互換のため写像は残す。
     "condition_compare": ("biological", "sample",   False),
     "serial_section":    ("section_id", "sample",   False),
     "batch_correct":     ("biological", "slice_id", True),

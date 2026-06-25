@@ -32,6 +32,19 @@ def _cal_preset_options():
     ]
 
 
+def _norm_scenario(v):
+    """解析シナリオ値を正規化する。
+
+    `within_slice`（同一切片）と `condition_compare`（群比較）は補正方針が同一
+    （無補正PCA）のため UI のドロップダウンでは `within_slice` に統合した。
+    旧セッションに `condition_compare` が保存されていても統合項目が選択表示される
+    ように、復元時にここで吸収する（_SCENARIO_MAP は後方互換で両値を保持）。
+    """
+    if v == "condition_compare":
+        return "within_slice"
+    return v or "within_slice"
+
+
 
 def create_settings_tab():
     """設定タブ本体: 「解析設定」「データ管理」のサブタブで構成"""
@@ -296,10 +309,8 @@ def _create_analysis_settings_subtab():
                                     dbc.Select(
                                         id="tims_scenario",
                                         options=[
-                                            {"label": "同一切片の中のクラスタを見る（1切片・部分構造）",
+                                            {"label": "同一切片のクラスタ／群比較（Ctrl vs KO 等）：補正なし＝無補正PCA",
                                              "value": "within_slice"},
-                                            {"label": "群比較：条件ごとに別アノテーション（例 Ctrl vs KO）",
-                                             "value": "condition_compare"},
                                             {"label": "連続切片を技術反復としてまとめる（同一個体の連続切片）",
                                              "value": "serial_section"},
                                             {"label": "切片間の測定差(バッチ)を補正【非推奨・過補正注意】",
@@ -307,11 +318,11 @@ def _create_analysis_settings_subtab():
                                             {"label": "条件比較＋技術差補正：Harmony＋RPCA を適用（測定差を補正・条件差も縮小）",
                                              "value": "integrate_correct"},
                                         ],
-                                        value=ls.get("tims_scenario", "within_slice"),
+                                        value=_norm_scenario(ls.get("tims_scenario")),
                                     ),
                                     dbc.FormText(
-                                        "選んだシナリオに応じて補正方法を自動設定（既定=無補正PCA）。"
-                                        "連続切片→RPCA統合／バッチ補正→Harmony／"
+                                        "選んだシナリオに応じて補正方法を自動設定。"
+                                        "同一切片/群比較→無補正PCA／連続切片→RPCA統合／バッチ補正→Harmony／"
                                         "条件比較＋技術差補正→Harmony＋RPCA両方（測定間の技術差を補正。"
                                         "交絡下では条件差も縮小するが、DEGは reduction と独立に条件で算出されるため不変）。"
                                         "R既定値は変更しません。",
@@ -727,10 +738,8 @@ def _create_analysis_settings_subtab():
                                     dbc.Select(
                                         id="reanalysis_tims_scenario",
                                         options=[
-                                            {"label": "同一切片の中のクラスタを見る（1切片・部分構造）",
+                                            {"label": "同一切片のクラスタ／群比較（Ctrl vs KO 等）：補正なし＝無補正PCA",
                                              "value": "within_slice"},
-                                            {"label": "群比較：条件ごとに別アノテーション（例 Ctrl vs KO）",
-                                             "value": "condition_compare"},
                                             {"label": "連続切片を技術反復としてまとめる（同一個体の連続切片）",
                                              "value": "serial_section"},
                                             {"label": "切片間の測定差(バッチ)を補正【非推奨・過補正注意】",
@@ -738,8 +747,8 @@ def _create_analysis_settings_subtab():
                                             {"label": "条件比較＋技術差補正：Harmony＋RPCA を適用（測定差を補正・条件差も縮小）",
                                              "value": "integrate_correct"},
                                         ],
-                                        value=ls.get("reanalysis_tims_scenario",
-                                                     ls.get("tims_scenario", "within_slice")),
+                                        value=_norm_scenario(ls.get("reanalysis_tims_scenario")
+                                                             or ls.get("tims_scenario")),
                                     ),
                                     dbc.FormText(
                                         "既定は初回解析のシナリオを引き継ぎます（変更可）。",

@@ -261,12 +261,12 @@
 <h3 class="subsection-heading" id="tims-scenario">🧭 解析シナリオの選び方（TIMS）</h3>
 <p>TIMS の UMAP 解析設定にある「<strong>解析シナリオ（切片アノテーションの意味）</strong>」で、切片アノテーションが何を表すかを選ぶと、補正方法が自動で切り替わります（既定＝無補正PCA＝従来挙動。R 既定値は変更しません）。</p>
 <table class="help-table">
-  <thead><tr><th>シナリオ</th><th>例</th><th>自動で行う解析</th></tr></thead>
+  <thead><tr><th>シナリオ</th><th>例</th><th>行われる補正と出力（reduction）</th></tr></thead>
   <tbody>
-    <tr><td>同一切片の中のクラスタを見る</td><td>1枚の切片の部分構造</td><td>無補正PCA</td></tr>
-    <tr><td>群比較：条件ごとに別アノテーション</td><td>Ctrl vs KO が別アノテーション</td><td>無補正PCA＋condition比較（各条件1切片は交絡注意）</td></tr>
-    <tr><td>連続切片を技術反復としてまとめる</td><td>同一個体の連続切片</td><td>RPCA で slice_id 統合</td></tr>
-    <tr><td>切片間の測定差(バッチ)を補正【非推奨】</td><td>測定ロット差を除きたい</td><td>Harmony で slice_id 補正（過補正の恐れ）</td></tr>
+    <tr><td>同一切片のクラスタ／群比較</td><td>1切片の部分構造／Ctrl vs KO が別アノテーション</td><td><strong>補正なし＝無補正PCA</strong>（条件が2つ以上なら condition 間 DEG も算出。各条件1切片は交絡注意）</td></tr>
+    <tr><td>連続切片を技術反復としてまとめる</td><td>同一個体の連続切片</td><td><strong>RPCA</strong> で slice_id を統合（＋無補正PCA を併走出力）</td></tr>
+    <tr><td>切片間の測定差(バッチ)を補正【非推奨】</td><td>測定ロット差を除きたい</td><td><strong>Harmony</strong> で slice_id を補正（＋無補正PCA を併走出力・過補正の恐れ）</td></tr>
+    <tr><td>条件比較＋技術差補正</td><td>各条件1切片で測定間の技術差を均したい</td><td><strong>Harmony＋RPCA を両方</strong> slice_id に適用（測定差を補正・条件差も縮小／＋無補正PCA を併走出力）</td></tr>
   </tbody>
 </table>
 <div class="help-alert tip">

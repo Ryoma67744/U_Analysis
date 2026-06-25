@@ -12,6 +12,23 @@
 
 ---
 
+## 2026-06-25_ver18.5
+
+### 整理: 解析シナリオの統合（同一切片＋群比較）と「行われる処理」の明記
+
+`within_slice`（同一切片）と `condition_compare`（群比較）は補正方針が**完全に同一**（無補正PCA）で、生の値も
+`_SCENARIO_MAP` 参照以外で分岐しないことを確認。ドロップダウンで**1項目に統合**（5→4）し、各シナリオで「何が
+行われるか（補正手法＋出力reduction）」をヘルプ表に明記、新シナリオ `integrate_correct` も掲載した。**挙動は不変**。
+
+- `settings_tab.py`：初回(`tims_scenario`)・再解析(`reanalysis_tims_scenario`)の両ドロップダウンを
+  「同一切片のクラスタ／群比較（Ctrl vs KO 等）：補正なし＝無補正PCA」の1項目に統合（value=`within_slice`）。
+  `_norm_scenario()` を追加し、旧セッションに保存された `condition_compare` も復元時に統合項目として選択表示
+  （`value=_norm_scenario(ls.get(...))`）。FormText も統合表現に更新。
+- `analysis_callbacks.py`：`_SCENARIO_MAP` の `condition_compare` は**後方互換のため残置**（コメント追記）。写像値は不変。
+- `analysis.html`：シナリオ表を「シナリオ｜例｜行われる補正と出力」に作り直し、同一切片と群比較を1行に統合、各行に
+  出力（RPCA/Harmony は無補正PCA併走）を明記、`integrate_correct` 行を追加。
+- 挙動回帰なし（R 改修なし・補正方針の写像も不変）。ツールチップは既に統合表現のため変更なし。version 18.4→18.5。
+
 ## 2026-06-25_ver18.4
 
 ### 追加: 解析シナリオ「条件比較＋技術差補正（Harmony＋RPCA を適用）」
