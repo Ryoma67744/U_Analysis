@@ -467,12 +467,43 @@ def create_interactive_tab():
                                     value=None,
                                     inline=True,
                                 ),
+                                help_badge("interactive_integration_method"),
                             ],
                         ),
                         id="integration_method_collapse",
                         is_open=True,
                     ),
                 ], className="mb-2", id="integration_method_wrapper"),
+
+                # 結果の読み方（差と共通性）— 折りたたみガイド
+                html.Details([
+                    html.Summary(
+                        "📚 結果の読み方（UMAP/PCA・差と共通性）",
+                        style={"cursor": "pointer", "fontWeight": "600",
+                               "fontSize": "0.85rem", "color": "#495057"},
+                    ),
+                    html.Div(
+                        className="text-muted small",
+                        style={"marginTop": "6px", "paddingLeft": "10px",
+                               "borderLeft": "3px solid #dee2e6"},
+                        children=[
+                            html.Ul(className="mb-0", children=[
+                                html.Li(
+                                    "UMAP は近傍構造の可視化です。クラスタ(共通性)の把握には有効ですが、"
+                                    "島の間の距離＝差の大きさは定量的ではありません"
+                                    "（見た目の分離を生物差の証拠にしない）。"),
+                                html.Li(
+                                    "未補正(PCA)＝『差』の面（技術＋生物が交絡）。"
+                                    "Harmony/RPCA＝『共通性』の面（段階差は除去済み）。"),
+                                html.Li(
+                                    "解剖学的に同じ領域なのに色(クラスタ/発現)が違う場合は生物差の『候補』。"
+                                    "確証には反復切片や直交検証が必要です。"),
+                                html.Li(
+                                    "差の定量は UMAP の幾何ではなく、PCA分散や統計検定(DE等)で行ってください。"),
+                            ]),
+                        ],
+                    ),
+                ], className="mb-2"),
 
                 # アコーディオン（各セクション折りたたみ可能）
                 # 初期表示は全セクション折りたたみ。ユーザーが必要な

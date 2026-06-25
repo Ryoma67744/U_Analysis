@@ -12,6 +12,21 @@
 
 ---
 
+## 2026-06-25_ver13.1
+
+### ドキュメント: データの前提と結果の読み方を「アプリ内コメント＋説明書」で共通認識化
+
+1切片/段階・RMS正規化済みデータの解釈（交絡・正規化・バッチ補正・UMAP/PCA の読み方・解剖アンカー）を明文化し、解析の前提と結果の読み方をチームの共通認識にする。**解析ロジック・R スクリプトは無改修**（UI 説明テキストと説明書の追加のみ）。
+
+- **アプリ内コメント（折りたたみ `html.Details` ＋ `?` バッジ）を4箇所に追加**:
+  - **正規化設定**（`settings_tab.py`）: RMS済みは「正規化 OFF＋NORM_MODE=log1p」で二重正規化を回避。「正規化 ON」＝LogNormalize＝TIC正規化+log。RMS はバッチ補正ではない（構造的バッチは残る）。
+  - **補正手法 `cluster_source`**（`settings_tab.py`）: Harmony/RPCA は共通性を見る統合。各条件1切片（バッチ=条件が交絡）では過補正で生物差も消える。強度差(Harmony>RPCA)は技術/生物の分離器ではない。
+  - **結果ビュー `interactive_integration_method`**（`interactive_tab.py`）: 未補正(PCA)＝差／補正＝共通性。UMAP の大域距離は非定量。解剖が同じで色が違う＝生物差の候補（要検証）。
+  - **PreFlight**（`settings_tab.py`）: `not_identifiable`＝交絡で技術/生物が分離不能。confidence/iLISI の読み方。確証には反復(≥2切片/段階)・共有QC が必要。
+- **ツールチップ**（`tooltips.py`）に上記バッジ（`normalize_input` / `cluster_source` / `interactive_integration_method`）の説明を追加。
+- **説明書**（`templates/help/analysis.html`）に新セクション「**7. データの前提と結果の読み方（重要）**」を追加（目次リンク追加、以降の章番号 8〜13 へ繰り下げ）。
+- 注: PreFlight 診断表の `not_identifiable` 行の赤強調は既存実装（`preflight_callbacks.py`）をそのまま活用（コールバック無改修）。
+
 ## 2026-06-23_ver13.0
 
 ### 修正: 監査で見つかった2件（TIMS の dims 入力を有効化 ＋ DESI の重複作図を除去）

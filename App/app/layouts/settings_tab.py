@@ -173,7 +173,7 @@ def _create_analysis_settings_subtab():
                         ]),
                         # 正規化設定（DESI/TIMS共通・UMAP解析時のみ表示）
                         html.Div(className="param-group", style={"marginTop": "15px"}, children=[
-                            html.H5("正規化 (LogNormalize)"),
+                            html.H5(["正規化 (LogNormalize)", help_badge("normalize_input")]),
                             dbc.RadioItems(
                                 id="normalize_input",
                                 options=[
@@ -200,6 +200,37 @@ def _create_analysis_settings_subtab():
                                 "DESI(生データ)は既定ON。解析法に応じて自動切替（手動変更可）。",
                                 className="text-muted small",
                             ),
+                            html.Details([
+                                html.Summary(
+                                    "📚 正規化の考え方（RMS／二重正規化）",
+                                    style={"cursor": "pointer", "fontWeight": "600",
+                                           "fontSize": "0.85rem", "color": "#495057",
+                                           "marginTop": "6px"},
+                                ),
+                                html.Div(
+                                    className="text-muted small",
+                                    style={"marginTop": "6px", "paddingLeft": "10px",
+                                           "borderLeft": "3px solid #dee2e6"},
+                                    children=[
+                                        html.P(
+                                            "RMS等で正規化済みの入力（SCiLS RMS など）は"
+                                            "「正規化 OFF」(INPUT_NORMALIZED=TRUE)＋NORM_MODE=log1p "
+                                            "が正しい設定です。",
+                                            className="mb-1",
+                                        ),
+                                        html.Ul(className="mb-0", children=[
+                                            html.Li(
+                                                "「正規化 ON」＝LogNormalize＝各スポットを総量(TIC)で"
+                                                "割る＋log。RMS済みに ON すると RMS×TIC の二重正規化です。"),
+                                            html.Li(
+                                                "RMS が消すのは「全体強度（明るさ）」のみ。m/z個別の差や"
+                                                "ドリフト等の構造的バッチは残ります（RMS はバッチ補正ではない）。"),
+                                            html.Li(
+                                                "UMAP には『RMS＋log1p』を使用。生データの直入れは避けてください。"),
+                                        ]),
+                                    ],
+                                ),
+                            ], style={"marginTop": "4px"}),
                         ]),
                         # TIMS イオンモード設定（TIMS選択時のみ表示）
                         html.Div(
@@ -557,7 +588,7 @@ def _create_analysis_settings_subtab():
                                 id="cluster_source_container",
                                 style={"display": "none"},
                                 children=[
-                                    html.H6("クラスタソース", style={"marginTop": "5px"}),
+                                    html.H6(["クラスタソース", help_badge("cluster_source")], style={"marginTop": "5px"}),
                                     dbc.RadioItems(
                                         id="cluster_source",
                                         options=[
@@ -567,6 +598,36 @@ def _create_analysis_settings_subtab():
                                         value=ls.get("cluster_source", "harmony"),
                                         inline=True,
                                     ),
+                                    html.Details([
+                                        html.Summary(
+                                            "📚 補正手法（Harmony/RPCA）と交絡の注意",
+                                            style={"cursor": "pointer", "fontWeight": "600",
+                                                   "fontSize": "0.85rem", "color": "#495057",
+                                                   "marginTop": "6px"},
+                                        ),
+                                        html.Div(
+                                            className="text-muted small",
+                                            style={"marginTop": "6px", "paddingLeft": "10px",
+                                                   "borderLeft": "3px solid #dee2e6"},
+                                            children=[
+                                                html.P(
+                                                    "Harmony/RPCA は段階をまたぐ『共通性（共有構造）』"
+                                                    "を見るための統合です。",
+                                                    className="mb-1",
+                                                ),
+                                                html.Ul(className="mb-0", children=[
+                                                    html.Li(
+                                                        "各条件が1切片のみ（バッチ=条件が交絡）の場合、"
+                                                        "補正は技術差と一緒に生物差も除去します（過補正）。"),
+                                                    html.Li(
+                                                        "補正強度は概ね Harmony＞RPCA（パラメータ依存）。"
+                                                        "ただし強度差は技術差と生物差の『分離器』ではありません。"),
+                                                    html.Li(
+                                                        "段階差の比較が目的なら、未補正(PCA)の結果も必ず併用を。"),
+                                                ]),
+                                            ],
+                                        ),
+                                    ], style={"marginTop": "4px"}),
                                 ],
                             ),
                             # 後方互換: rds_path を非表示で維持（既存State参照用）
@@ -827,6 +888,39 @@ def _create_preflight_section():
                 "既に完了済み解析がある場合は ① を省略して ② から実行できます。"
                 "解析中は ①・④ とも実行できません。",
             ]),
+            html.Details([
+                html.Summary(
+                    "📚 PreFlight 診断結果の読み方（交絡判定）",
+                    style={"cursor": "pointer", "fontWeight": "600",
+                           "fontSize": "0.85rem", "color": "#495057",
+                           "marginTop": "6px"},
+                ),
+                html.Div(
+                    className="text-muted small",
+                    style={"marginTop": "6px", "paddingLeft": "10px",
+                           "borderLeft": "3px solid #dee2e6"},
+                    children=[
+                        html.Ul(className="mb-0", children=[
+                            html.Li([
+                                html.B("設計(交絡): "),
+                                "not_identifiable＝技術差と生物差が分離不能（各条件が1バッチのみ）。"
+                                "この場合、補正結果を『生物差』として読まないでください。",
+                            ]),
+                            html.Li([
+                                html.B("推奨度(confidence): "),
+                                "high＞medium＞low。推奨 dims / n.neighbors の信頼度です。",
+                            ]),
+                            html.Li([
+                                html.B("iLISI: "),
+                                "バッチ混合の程度（高いほどよく混ざる＝バッチ差が小さい）。",
+                            ]),
+                            html.Li(
+                                "交絡を解くには、各条件に反復切片(≥2)、または全ランで測る"
+                                "共有QC・内部標準が必要です。"),
+                        ]),
+                    ],
+                ),
+            ], style={"marginTop": "10px"}),
             dcc.Loading(html.Div(id="preflight_results_container",
                                  style={"marginTop": "10px"})),
             dcc.Store(id="preflight_store"),

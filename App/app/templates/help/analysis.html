@@ -30,6 +30,7 @@
         <li><a href="#lite-viewer">🆕 軽量ビューア（新タブ）</a></li>
       </ul>
     </li>
+    <li><a href="#interpretation">📐 データの前提と結果の読み方（重要）</a></li>
     <li><a href="#history">🗂 セッション履歴</a></li>
     <li><a href="#sharing">🆕 🔗 共有機能（期間付き / 無期限）+ タブ別 URL</a></li>
     <li><a href="#errors">🛟 よくあるエラー</a></li>
@@ -553,7 +554,95 @@
 </div>
 
 <!-- ============================================ -->
-<h2 class="section-heading" id="history">🗂 7. セッション履歴</h2>
+<!-- ============================================ -->
+<h2 class="section-heading" id="interpretation">📐 7. データの前提と結果の読み方（重要）</h2>
+
+<div class="help-alert warn">
+  <div class="alert-title">⚠️ このセクションの位置づけ</div>
+  解析結果（PCA / Harmony / RPCA / UMAP）を<strong>正しく解釈するための前提</strong>をまとめています。
+  特に <strong>「各発生段階＝1切片（反復なし）」</strong> のような交絡データでは、補正結果の読み方を誤ると
+  技術差を生物差と取り違える恐れがあります。解析前・結果確認前に必ず一読してください。
+</div>
+
+<h3 class="subsection-heading">7.1 データの前提（交絡）</h3>
+<p>
+  典型例として、<code>E14 / E16 / E18 / P0</code> などの発生段階を<strong>各1切片</strong>で測定し、
+  各切片を独立に取得（別ラン）、入力は <strong>SCiLS の RMS で正規化済み</strong>、というケースがあります。
+  この場合 <strong>「測定（ラン/切片）」と「生物条件（段階）」が1対1で対応＝交絡</strong>しています。
+</p>
+
+<h3 class="subsection-heading">7.2 正規化（RMS / TIC / LogNormalize）</h3>
+<table class="help-table">
+  <thead><tr><th>用語</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td>GUI「正規化 ON」</td><td>Seurat <code>LogNormalize</code> ＝ 各スポットを総量(TIC)で割る ＋ ×1e4 ＋ log1p（＝「TIC正規化＋α」）</td></tr>
+    <tr><td>RMS（SCiLS）</td><td>各スペクトルを RMS=√(mean(強度²)) で割る。TIC の兄弟（per-spectrum スケーリング）。scRNA の library-size 正規化に相当</td></tr>
+    <tr><td>RMS済みの正しい設定</td><td>GUI「正規化 <strong>OFF</strong>」(<code>INPUT_NORMALIZED=TRUE</code>) ＋ <code>NORM_MODE=log1p</code>（二重正規化を回避）</td></tr>
+  </tbody>
+</table>
+<div class="help-alert warn">
+  <div class="alert-title">⚠️ RMS はバッチ補正ではない</div>
+  RMS が消すのは「全体強度（明るさ）」のみ。<strong>m/z 個別の差・ドリフト・非線形応答などの構造的バッチは残ります</strong>。
+  scRNA で library-size 正規化をしても別途バッチ補正が要るのと同じで、<strong>正規化とバッチ補正は別レイヤ</strong>です。
+</div>
+
+<h3 class="subsection-heading">7.3 バッチ効果と交絡</h3>
+<ul>
+  <li>各段階1切片＝<strong>バッチが段階と完全交絡</strong> → 技術差と生物差を<strong>数学的に分離できない</strong>（計算困難でなく原理的に不可）。</li>
+  <li>空間トランスクリプトーム・メタボロミクス両分野の共通見解：「全条件が各1バッチなら補正不能。<strong>反復</strong>か<strong>共有参照（QC/内部標準）</strong>が必要」。</li>
+  <li>発生空間アトラス MOSTA は<strong>各段階4〜6切片の反復</strong>を置いて交絡を回避している。</li>
+</ul>
+
+<h3 class="subsection-heading">7.4 Harmony / RPCA の挙動と限界</h3>
+<ul>
+  <li>交絡下で段階をバッチとして補正すると、<strong>技術差と生物差を一体で除去</strong>（過補正）。両者を区別する機能はない。</li>
+  <li>補正強度は概ね <strong>Harmony ＞ RPCA</strong>（パラメータ依存）。ただし<strong>強度差は技術/生物の分離器ではない</strong>（残差も差分も同じ技術:生物比の混合）。</li>
+  <li>条件とバッチを分離する専用手法（scDisInFact 等）も <em>multi-batch × multi-condition</em> 設計が前提＝1切片/段階では使えない。</li>
+</ul>
+
+<h3 class="subsection-heading">7.5 結果の読み方（PCA / Harmony・RPCA / UMAP）</h3>
+<table class="help-table">
+  <thead><tr><th>ビュー</th><th>映るもの</th><th>段階の生物差として</th></tr></thead>
+  <tbody>
+    <tr><td>未補正 PCA</td><td>段階間差の全体（技術＋生物・交絡）＝「差」の面</td><td>本命だが交絡。loading・QC で正体を吟味</td></tr>
+    <tr><td>Harmony / RPCA</td><td>段階をまたぐ共有構造＝「共通性」の面（段階差は除去済み）</td><td>差を読む図ではない。残る差情報は組成のみ（記述的）</td></tr>
+  </tbody>
+</table>
+<div class="help-alert tip">
+  <div class="alert-title">💡 UMAP の見方</div>
+  UMAP は<strong>近傍構造の可視化（探索）</strong>ツール。<strong>局所のグルーピング（共通性）は信頼でき、
+  大域距離（差の大きさ）は非定量</strong>です。見た目の分離を生物差の証拠にしないでください。
+  差の定量は <strong>PCA 分散・統計検定（DE 等）</strong>で行います。
+</div>
+
+<h3 class="subsection-heading">7.6 解剖アンカーによる解釈</h3>
+<p>
+  「<strong>解剖学的に同じ領域なのに ROI の色（クラスタ/発現）が違う</strong>」＝ 生物差の<strong>有力な候補</strong>です。
+  解剖は外部の生物学的アンカーで計算統合より頑健（「別構造だから違う」交絡を除ける）。
+  ただし<strong>「別測定（ラン=段階）」交絡は残る</strong>ため、それ単独では候補であって証拠ではありません。
+</p>
+<ul>
+  <li>状況証拠の固め方：差を駆動する特徴が (a) 発生的に妥当か、(b) 技術QC と無相関か。</li>
+  <li>確証は<strong>反復／直交検証</strong>（既知マーカー・別手法・共有参照）。</li>
+</ul>
+
+<h3 class="subsection-heading">7.7 推奨運用</h3>
+<ul>
+  <li><strong>正規化</strong>：RMS済み → 「正規化 OFF」(<code>INPUT_NORMALIZED=TRUE</code>) ＋ <code>NORM_MODE=log1p</code>。生データの直入れは不可。</li>
+  <li><strong>表示</strong>：<strong>未補正(PCA)を必ず併記</strong>（基準・段階比較の本命）。Harmony/RPCA は「共通性」ビューと役割を明示。</li>
+  <li><strong>補正手法</strong>：交絡下では増やさない。見せるなら「補正なし→RPCA→Harmony」の強度スペクトルとして。</li>
+  <li><strong>診断</strong>：未補正 UMAP を総強度/QC で色分け（残存技術チェック）、組成ビュー、PreFlight の交絡判定（<code>not_identifiable</code>）を確認。</li>
+</ul>
+
+<h3 class="subsection-heading">7.8 確証に必要なこと</h3>
+<div class="help-alert warn">
+  <div class="alert-title">⚠️ 確証には実験デザインが必要</div>
+  <strong>各段階に反復切片（≥2）</strong>、または<strong>全ランで測る共有参照（プールQC/内部標準）</strong>があって
+  初めて、技術と生物を分離した「段階差」の主張・統計検定が可能になります。
+</div>
+
+<!-- ============================================ -->
+<h2 class="section-heading" id="history">🗂 8. セッション履歴</h2>
 
 <p>過去の解析実行履歴を一覧表示します。各エントリには以下の情報:</p>
 <ul>
@@ -565,7 +654,7 @@
 </ul>
 
 <!-- ============================================ -->
-<h2 class="section-heading" id="sharing">🆕 🔗 8. 共有機能（期間付き / 無期限）+ タブ別 URL</h2>
+<h2 class="section-heading" id="sharing">🆕 🔗 9. 共有機能（期間付き / 無期限）+ タブ別 URL</h2>
 
 <p>
   ver3.0 から URL 体系と共有機能が拡張されました。<strong>解析画面の各タブに
@@ -682,7 +771,7 @@
 </div>
 
 <!-- ============================================ -->
-<h2 class="section-heading" id="errors">🛟 9. よくあるエラーと対処法</h2>
+<h2 class="section-heading" id="errors">🛟 10. よくあるエラーと対処法</h2>
 
 <div class="row g-3">
   <div class="col-md-6">
@@ -730,7 +819,7 @@
 </div>
 
 <!-- ============================================ -->
-<h2 class="section-heading" id="faq">❓ 10. よくある質問 (FAQ)</h2>
+<h2 class="section-heading" id="faq">❓ 11. よくある質問 (FAQ)</h2>
 
 <div class="row g-3">
   <div class="col-md-6">
@@ -764,7 +853,7 @@
 </div>
 
 <!-- ============================================ -->
-<h2 class="section-heading" id="changelog">📝 11. バージョン履歴</h2>
+<h2 class="section-heading" id="changelog">📝 12. バージョン履歴</h2>
 
 <table class="help-table">
   <thead>
@@ -834,7 +923,7 @@
 </table>
 
 <!-- ============================================ -->
-<h2 class="section-heading" id="maintenance">🧰 12. 保守・ツール（RDS軽量化 / 環境設定 / SCiLS 変換）</h2>
+<h2 class="section-heading" id="maintenance">🧰 13. 保守・ツール（RDS軽量化 / 環境設定 / SCiLS 変換）</h2>
 
 <p>
   日常解析以外の保守系ツールです。<strong>RDS軽量化</strong>と<strong>環境設定</strong>は
