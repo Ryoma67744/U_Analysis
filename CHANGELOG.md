@@ -12,6 +12,37 @@
 
 ---
 
+## 2026-06-25_ver18.0
+
+### 機能: PreFlight 診断結果を「再計算せず再表示」（自動＋ボタン）
+
+PreFlight 結果は `<result_dir>/preflight/diagnostics.json` に保存されるが、従来は②実行直後の一度きりの
+描画で、サブプロジェクトを開き直すと再表示には②での再計算が必要だった。json は自己完結なので、
+プロセスを起動せず読み込んで既存の描画ロジックを呼ぶことで、**再計算ゼロで表と推奨（③反映用）を復元**する。
+
+- `preflight_callbacks.py`：共通ヘルパー `_load_saved_diagnostics(result_dir)`（json読込→`_render_diagnostics_table`
+  →「📂 保存済み」バナー付きで描画＋`preflight_store` を `status="loaded"` で復元）。
+  - **自動表示** `autoload_saved_diagnostics`：サブプロジェクト選択時、保存があれば自動再表示（実行中・保存なしは無反応）。
+  - **手動ボタン** `load_saved_diagnostics_button`：「📂 前回の診断を表示」。保存が無ければ明示メッセージ。
+  - 出力(container/store/poll.disabled)は canonical=poll のまま allow_duplicate で相乗り。
+- `settings_tab.py`：PreFlight ボタン列に「📂 前回の診断を表示（再計算なし）」を追加。
+- R診断・②実行・③反映の本体は不変。RDS が無く（slim 済み等）ても json から再描画可。version 17.1→18.0。
+
+## 2026-06-25_ver17.1
+
+### 改善: PreFlight「③推奨値を反映」を手法間の最大値に＋UMAPパラメータ説明/注記
+
+手法ごと（Harmony/RPCA/PCA）に推奨 dims/n.neighbors は異なるが、解析は1組の共有UMAP設定で全手法を実行する。
+従来は③反映が最確信1手法のみを採用していたため、要求の大きい手法が下限割れし得た。推奨値は「安定/連結に
+必要な最小値」なので、**全手法が満たす最小の共通値＝各手法の推奨の最大値（max）**を採用するよう変更。
+
+- `preflight_callbacks.py` `_render_diagnostics_table`: 集約を「最確信1件」→「**手法間 max**」へ。
+  dims=各手法推奨の最大、n.neighbors=最大かつ**全手法の許容上限内にクランプ**。単一手法のみ推奨ありなら
+  従来同等（その値）。`source` は "max: …"。脚注・docstring を更新。min.dist/metric は既定固定（0.3/cosine）。
+- `settings_tab.py`: 各UMAPパラメータ（n.neighbors/min.dist/metric/dims）の入力下に「何に効く値か」の説明を表示。
+  ヘルプ文に「自動推奨は dims・n.neighbors のみ／③は手法間 max／min.dist・metric は既定固定」を追記。
+- R診断ロジック・解析の共有設計は不変。version 17.0→17.1。
+
 ## 2026-06-25_ver17.0
 
 ### 機能: 解析実行前に「既存結果あり（上書き注意）」を警告
