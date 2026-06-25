@@ -41,6 +41,16 @@ def get_settings_tooltips():
     """解析設定タブ用ツールチップ群を返す"""
     return [
         dbc.Tooltip(
+            "入力が SCiLS RMS 等で正規化済みなら OFF（二重正規化を回避）。"
+            "生データなら ON（LogNormalize=TIC正規化+log を実行）。",
+            target="normalize_input_help_badge", **_TOOLTIP_PROPS,
+        ),
+        dbc.Tooltip(
+            "Harmony/RPCA は段階をまたぐ共通構造を見るための統合。"
+            "各条件1切片(交絡)では生物差も一緒に除去されるため、未補正(PCA)も併用を。",
+            target="cluster_source_help_badge", **_TOOLTIP_PROPS,
+        ),
+        dbc.Tooltip(
             "m/zの一致判定に使う許容誤差（Da単位）。"
             "デフォルト0.01は高分解能MSに適した値です。",
             target="tolerance_mz_help_badge", **_TOOLTIP_PROPS,
@@ -96,6 +106,11 @@ def get_settings_tooltips():
 def get_interactive_tooltips():
     """インタラクティブ解析タブ用ツールチップ群を返す"""
     return [
+        dbc.Tooltip(
+            "表示する解析手法を選択。未補正(PCA)=段階差(技術+生物・交絡)、"
+            "Harmony/RPCA=共通構造(段階差は除去)。読み方は隣の📚ガイド参照。",
+            target="interactive_integration_method_help_badge", **_TOOLTIP_PROPS,
+        ),
         dbc.Tooltip(
             "統合: 全サンプルを1つのUMAPに重ねて表示。"
             "サンプル別: サンプルごとに個別のUMAPを並べて表示。",
