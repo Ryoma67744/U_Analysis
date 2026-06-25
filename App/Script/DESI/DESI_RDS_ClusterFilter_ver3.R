@@ -111,6 +111,10 @@ ENABLE_MERGE_CLUSTERS <- "auto"
 #   その RDS は last_result_dir に残り、PreFlight ②診断 / ④続き が再利用する。
 RERUN_PIPELINE_STAGE <- "full"
 
+# DEG 閾値（アプリの再解析設定から V8_ 経由で注入。未注入なら v16 既定）。
+V8_DEG_P_THRESH_VAL <- 0.05
+V8_DEG_LOGFC_TH_VAL <- 0.10
+
 # マージスクリプトのパス（Python側から自動注入）
 MERGE_SCRIPT_PATH <- ""
 
@@ -346,6 +350,10 @@ replace_assign_line <- function(code_vec, var, new_rhs) {
   if (!identical(RERUN_PIPELINE_STAGE, "full")) {
     code <- replace_assign_line(code, "PIPELINE_STAGE", r_str(RERUN_PIPELINE_STAGE))
   }
+
+  # DEG 閾値 → v16 copy へ伝播（再解析の p/logFC を反映。既定は v16 同等で実質no-op）
+  code <- replace_assign_line(code, "DEG_P_THRESH_VAL", as.character(V8_DEG_P_THRESH_VAL))
+  code <- replace_assign_line(code, "DEG_LOGFC_TH_VAL", as.character(V8_DEG_LOGFC_TH_VAL))
 
   # sample_names ブロック差し替え
   start_pat <- "^\\s*sample_names\\s*<-\\s*c\\s*\\("

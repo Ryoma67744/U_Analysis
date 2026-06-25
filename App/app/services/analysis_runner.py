@@ -610,6 +610,28 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
             "TRUE" if params["v13_allow_condition_correction"] else "FALSE",
         )
 
+    # --- 再解析の DEG 閾値 / m/z アノテーション（フル解析と同じ値を再解析にも反映） ---
+    #   DEG は両モード（TIMS=V13_DEG_*, DESI=V8_DEG_* 経由でメインテンプレ copy に伝播）。
+    #   ion/tolerance は TIMS のみ（V13_ は既に伝播実装あり）。adduct は env 経路（ANNOT_ADDUCTS）。
+    _is_tims_cf = ("DBSCAN" in Path(template_path).stem
+                   or "tims" in Path(template_path).stem.lower())
+    if params.get("p_thresh") is not None:
+        lines = _replace_assign(
+            lines,
+            "V13_DEG_P_THRESH_VAL" if _is_tims_cf else "V8_DEG_P_THRESH_VAL",
+            str(params["p_thresh"]),
+        )
+    if params.get("logfc_thresh") is not None:
+        lines = _replace_assign(
+            lines,
+            "V13_DEG_LOGFC_TH_VAL" if _is_tims_cf else "V8_DEG_LOGFC_TH_VAL",
+            str(params["logfc_thresh"]),
+        )
+    if _is_tims_cf and params.get("ion_mode"):
+        lines = _replace_assign(lines, "V13_ION_MODE", _r_str(params["ion_mode"]))
+    if _is_tims_cf and params.get("tolerance_mz") is not None:
+        lines = _replace_assign(lines, "V13_TOLERANCE_MZ", str(params["tolerance_mz"]))
+
     # --- PreFlight: reduction_only 再解析（① 用）。クラスタフィルタ側の新定数
     #     RERUN_PIPELINE_STAGE を経由してメインテンプレ copy の PIPELINE_STAGE へ伝播。
     #     未指定なら "full"（従来の通常再解析）。DESI ver3 / TIMS ver18 が参照。 ---
@@ -639,6 +661,7 @@ def start_analysis_process(
     script_path: str,
     output_dir: str,
     extra_args=None,
+    env_extra: dict | None = None,
 ) -> dict:
     """Rスクリプトを外部プロセスで非同期実行
     R版: start_analysis_process() in analysis_runner.R
@@ -786,6 +809,10 @@ def start_analysis_process(
     # （本解析はランタイムコピーを <output_dir>/log/*.R として生成して
     #   起動するため、R 側の相対探索 ../helpers/rds_io.R はヒットしない）
     child_env["R_HELPERS_DIR"] = str(R_HELPERS_DIR)
+
+    # 呼び出し元が指定した追加環境変数（例: TIMS再解析の ANNOT_ADDUCTS）
+    if env_extra:
+        child_env.update({str(k): str(v) for k, v in env_extra.items()})
 
     log_fh = None
     try:

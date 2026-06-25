@@ -12,6 +12,24 @@
 
 ---
 
+## 2026-06-25_ver18.1
+
+### 修正: 再解析（クラスターフィルタ）で無視されていた5入力を反映
+
+監査により、再解析では一部のUI入力が収集・保存されるのにRへ注入されず固定値で動く
+「機能はあるが数値が反映されない」不具合を確認。フル解析と同じ要領で再解析にも反映するよう修正。
+
+- 対象5件：`reanalysis_p_thresh` / `reanalysis_logfc_thresh`（DESI+TIMS）、
+  `reanalysis_ion_mode` / `reanalysis_tolerance_mz` / `reanalysis_adduct_filter`（TIMS専用）。
+- 経路（最小・安全に実装）：
+  - **DEG閾値**：`analysis_callbacks` で収集 → `generate_cluster_filter_config` が TIMS=`V13_DEG_*` / DESI=`V8_DEG_*` を注入
+    → クラスタフィルタRの `make_v13_copy/make_v8_copy` がメインテンプレ copy の `DEG_P_THRESH_VAL`/`DEG_LOGFC_TH_VAL` に伝播。
+  - **ion_mode / tolerance（TIMS）**：既存の `V13_ION_MODE`/`V13_TOLERANCE_MZ`（宣言・伝播済み）へ Python 注入を追加。
+  - **adduct（TIMS）**：ver6 の env フック `.get_adduct_override`（`ANNOT_ADDUCTS`）を利用し、`start_analysis_process` に
+    `env_extra` を追加して再解析起動時のみ環境変数で反映（多行ブロック書換え回避）。
+- 非対象：DESI の ion/tolerance/adduct（v16非対応・UI非表示）、UMAP/mz_align の再解析反映（別途）。フル解析は不変。
+- version 18.0→18.1。
+
 ## 2026-06-25_ver18.0
 
 ### 機能: PreFlight 診断結果を「再計算せず再表示」（自動＋ボタン）

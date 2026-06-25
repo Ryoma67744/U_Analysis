@@ -593,6 +593,12 @@ def run_analysis(
                 ),
             }
 
+            # 再解析DEG閾値（フル解析と同じ要領で V13_/V8_ 経由でメインテンプレ copy に反映）
+            if reanalysis_p_thresh is not None:
+                params["p_thresh"] = float(reanalysis_p_thresh)
+            if reanalysis_logfc_thresh is not None:
+                params["logfc_thresh"] = float(reanalysis_logfc_thresh)
+
             # ① PreFlight: 再解析でも reduction_only（絞り込んだ部分集合の reduction だけ
             #    作り UMAP 前で停止）。RERUN_PIPELINE_STAGE 経由でメインテンプレ copy の
             #    PIPELINE_STAGE へ伝播し、後段 merge/ReUMAP もスキップされる。
@@ -622,6 +628,13 @@ def run_analysis(
                 params["v13_annotation_role"] = _r_role
                 params["v13_batch_var"] = _r_bv
                 params["v13_allow_condition_correction"] = _r_allow
+                # 再解析の m/z アノテーション（TIMS専用。ion/tolerance は V13_、adduct は env 経路で反映）
+                if reanalysis_ion_mode:
+                    params["ion_mode"] = reanalysis_ion_mode
+                if reanalysis_tolerance_mz is not None:
+                    params["tolerance_mz"] = float(reanalysis_tolerance_mz)
+                if reanalysis_adduct_filter:
+                    params["adduct_patterns"] = reanalysis_adduct_filter
                 # RDSフォルダ+クラスタソース → R側で解決
                 if rds_folder_reanalysis:
                     params["rds_run_dir"] = rds_folder_reanalysis
@@ -637,8 +650,11 @@ def run_analysis(
 
             config_path = generate_cluster_filter_config(params, full_output_dir)
 
-        # サブプロセス開始
-        result = start_analysis_process(config_path, full_output_dir)
+        # サブプロセス開始（TIMS再解析の adduct は ver6 の env フック ANNOT_ADDUCTS で反映）
+        _env_extra = None
+        if analysis_type == "tims_cluster_filter" and params.get("adduct_patterns"):
+            _env_extra = {"ANNOT_ADDUCTS": ",".join(params["adduct_patterns"])}
+        result = start_analysis_process(config_path, full_output_dir, env_extra=_env_extra)
 
         if not result["success"]:
             return (
