@@ -12,6 +12,22 @@
 
 ---
 
+## 2026-06-25_ver18.0
+
+### 機能: PreFlight 診断結果を「再計算せず再表示」（自動＋ボタン）
+
+PreFlight 結果は `<result_dir>/preflight/diagnostics.json` に保存されるが、従来は②実行直後の一度きりの
+描画で、サブプロジェクトを開き直すと再表示には②での再計算が必要だった。json は自己完結なので、
+プロセスを起動せず読み込んで既存の描画ロジックを呼ぶことで、**再計算ゼロで表と推奨（③反映用）を復元**する。
+
+- `preflight_callbacks.py`：共通ヘルパー `_load_saved_diagnostics(result_dir)`（json読込→`_render_diagnostics_table`
+  →「📂 保存済み」バナー付きで描画＋`preflight_store` を `status="loaded"` で復元）。
+  - **自動表示** `autoload_saved_diagnostics`：サブプロジェクト選択時、保存があれば自動再表示（実行中・保存なしは無反応）。
+  - **手動ボタン** `load_saved_diagnostics_button`：「📂 前回の診断を表示」。保存が無ければ明示メッセージ。
+  - 出力(container/store/poll.disabled)は canonical=poll のまま allow_duplicate で相乗り。
+- `settings_tab.py`：PreFlight ボタン列に「📂 前回の診断を表示（再計算なし）」を追加。
+- R診断・②実行・③反映の本体は不変。RDS が無く（slim 済み等）ても json から再描画可。version 17.1→18.0。
+
 ## 2026-06-25_ver17.1
 
 ### 改善: PreFlight「③推奨値を反映」を手法間の最大値に＋UMAPパラメータ説明/注記

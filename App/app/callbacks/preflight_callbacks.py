@@ -246,6 +246,46 @@ def _render_diagnostics_table(data: dict, rds_methods: dict):
     return html.Div([header, table, footer]), recommended
 
 
+def _load_saved_diagnostics(result_dir: str):
+    """保存済み diagnostics.json を読み、(container, store) を返す（再計算なし）。
+
+    返り値:
+      - None                : 保存ファイルなし（呼び出し側で無反応 or 明示メッセージ）
+      - (error_alert, None) : 読込/パース失敗（描画ノードのみ、store は更新しない）
+      - (container, store)  : 成功（描画ノード＋復元ストア）
+    """
+    if not result_dir:
+        return None
+    diag = Path(result_dir) / "preflight" / "diagnostics.json"
+    if not diag.exists():
+        return None
+    try:
+        data = json.loads(diag.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning("保存済み diagnostics.json 読込失敗: %s", e)
+        return (
+            dbc.Alert(f"保存済み診断結果の読み込みに失敗しました: {e}", color="danger"),
+            None,
+        )
+    # 循環 import 回避のため遅延 import（既存パターン踏襲）
+    from app.callbacks.interactive_callbacks import _detect_integration_methods
+    rds_methods = {k: str(v) for k, v in _detect_integration_methods(result_dir).items()}
+    node, recommended = _render_diagnostics_table(data, rds_methods)
+    banner = dbc.Alert(
+        "📂 保存済みの診断結果を表示中（再計算するには「② PreFlight 診断を実行」）。",
+        color="light", className="py-1 px-2 mb-2 small",
+    )
+    container = html.Div([banner, node])
+    store = {
+        "out_dir": str(diag.parent),
+        "status_file": None,
+        "rds_methods": rds_methods,
+        "status": "loaded",
+        "recommended": recommended,
+    }
+    return (container, store)
+
+
 # ---------------------------------------------------------------------------
 # 診断 実行（ボタン）— 共有 Output は allow_duplicate（canonical は poll 側）
 # ---------------------------------------------------------------------------
@@ -423,6 +463,71 @@ def poll_preflight(n_intervals, store):
         data, store.get("rds_methods", {}),
     )
     return table, {**store, "status": "done", "recommended": recommended}, True
+
+
+# ---------------------------------------------------------------------------
+# 保存済み診断結果の再表示（再計算なし）— 自動＋ボタン
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("preflight_results_container", "children", allow_duplicate=True),
+    Output("preflight_store", "data", allow_duplicate=True),
+    Output("preflight_poll", "disabled", allow_duplicate=True),
+    Input("selected_project", "data"),
+    Input("current_sub_project_id", "data"),
+    prevent_initial_call=True,
+)
+def autoload_saved_diagnostics(selected_project, current_sub_project_id):
+    """サブプロジェクト選択時、保存済み PreFlight 診断があれば自動で再表示（再計算なし）。"""
+    # 実行中は表示を壊さない
+    proc = _preflight_process_state.get("process")
+    if proc is not None and proc.poll() is None:
+        return no_update, no_update, no_update
+    result_dir = _resolve_result_dir(selected_project, current_sub_project_id)
+    if not result_dir:
+        return no_update, no_update, no_update
+    res = _load_saved_diagnostics(result_dir)
+    if not res:
+        return no_update, no_update, no_update          # 保存なし → 無反応
+    container, store = res
+    if store is None:
+        return no_update, no_update, no_update          # パースエラー → 自動は silent
+    return container, store, True
+
+
+@callback(
+    Output("preflight_results_container", "children", allow_duplicate=True),
+    Output("preflight_store", "data", allow_duplicate=True),
+    Output("preflight_poll", "disabled", allow_duplicate=True),
+    Input("btn_preflight_load", "n_clicks"),
+    State("selected_project", "data"),
+    State("current_sub_project_id", "data"),
+    prevent_initial_call=True,
+)
+def load_saved_diagnostics_button(n_clicks, selected_project, current_sub_project_id):
+    """「📂 前回の診断を表示」: 保存済み diagnostics.json を再計算なしで再表示。"""
+    if not n_clicks:
+        return no_update, no_update, no_update
+    proc = _preflight_process_state.get("process")
+    if proc is not None and proc.poll() is None:
+        return no_update, no_update, no_update
+    result_dir = _resolve_result_dir(selected_project, current_sub_project_id)
+    if not result_dir:
+        return (
+            dbc.Alert("プロジェクト／サブプロジェクトを選択してください。", color="warning"),
+            no_update, no_update,
+        )
+    res = _load_saved_diagnostics(result_dir)
+    if not res:
+        return (
+            dbc.Alert("保存された診断結果がありません（「② PreFlight 診断を実行」で作成してください）。",
+                      color="info"),
+            no_update, no_update,
+        )
+    container, store = res
+    if store is None:
+        return container, no_update, no_update          # パースエラー → エラー alert のみ
+    return container, store, True
 
 
 # ---------------------------------------------------------------------------

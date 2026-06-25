@@ -995,6 +995,8 @@ def _create_preflight_section():
                                size="sm", color="secondary", outline=True),
                     dbc.Button("④ 続きを実行（reduction再利用）", id="btn_run_downstream",
                                size="sm", color="primary"),
+                    dbc.Button("📂 前回の診断を表示（再計算なし）", id="btn_preflight_load",
+                               size="sm", color="secondary", outline=True),
                 ],
             ),
             dbc.FormText([
