@@ -63,6 +63,56 @@ def _create_analysis_settings_subtab():
             id="umap_settings_panel",
             children=[
                 html.H4(className="card-title", children=["📊 UMAP解析設定"]),
+                # --- 手法別の「標準フロー」推奨バナー（常時表示・選択手法のみ） ---
+                #     表示切替は file_handlers.py の toggle_settings_panels で制御。
+                #     TIMS選択時=TIMS用のみ / DESI選択時=DESI用のみ（両方同時には出さない）。
+                html.Div(
+                    id="tims_recommended_banner",
+                    style={"display": "none"},
+                    children=[dbc.Alert(color="info", className="mb-3", children=[
+                        html.H6("💡 標準の使い方（TIMS × SCiLS RMS）",
+                                className="alert-heading mb-2"),
+                        html.Ol(className="mb-1", children=[
+                            html.Li("TIMS データを SCiLS RMS で出力"),
+                            html.Li(["正規化 ", html.B("「OFF」"), " ＋ 変換 ", html.B("「log1p」"),
+                                     "（RMS×TIC の二重正規化を回避。TIMS では既定でこの設定）"]),
+                            html.Li("サンプル数で自動分岐：1サンプル→PCAのみ／複数→Harmony・RPCA"
+                                    "（両方算出。下の『クラスタソース』で使用手法を選択）"),
+                            html.Li("UMAP・クラスタリング"),
+                        ]),
+                        html.Small("※ 段階比較が目的なら未補正(PCA)も併用／各条件1切片は交絡に注意。",
+                                   className="text-muted"),
+                        html.Br(),
+                        html.Small(["詳細は ",
+                                    html.A("説明書の『標準フロー』",
+                                           href="/help/analysis#standard-flow", target="_blank"),
+                                    " を参照。"], className="text-muted"),
+                    ])],
+                ),
+                html.Div(
+                    id="desi_recommended_banner",
+                    style={"display": "none"},
+                    children=[dbc.Alert(color="info", className="mb-3", children=[
+                        html.H6("💡 標準の使い方（DESI・生データ）",
+                                className="alert-heading mb-2"),
+                        html.Ol(className="mb-1", children=[
+                            html.Li("DESI データ（生データ）を入力"),
+                            html.Li(["正規化 ", html.B("「ON」"),
+                                     "（LogNormalize＝TIC正規化＋log。DESI では既定でこの設定）"]),
+                            html.Li("サンプル数で自動分岐：1サンプル→PCAのみ／複数→Harmony・RPCA"
+                                    "（両方算出。下の『クラスタソース』で使用手法を選択。"
+                                    "ROIモードで各ROIを別サンプル化すると複数統合）"),
+                            html.Li("UMAP・クラスタリング"),
+                        ]),
+                        html.Small("※ 段階比較が目的なら未補正(PCA)も併用／各条件1切片は交絡に注意。",
+                                   className="text-muted"),
+                        html.Br(),
+                        html.Small(["詳細は ",
+                                    html.A("説明書の『標準フロー』",
+                                           href="/help/analysis#standard-flow", target="_blank"),
+                                    " を参照。"], className="text-muted"),
+                    ])],
+                ),
                 dbc.Row(align="start", children=[
                     dbc.Col(width=6, children=[
                         html.Div(className="param-group", children=[

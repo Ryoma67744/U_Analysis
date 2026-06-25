@@ -64,7 +64,9 @@ def clear_desi_on_tims_select(tims_val):
      Output("reanalysis_settings_panel", "style"),
      Output("tims_ion_settings", "style"),
      Output("tims_reanalysis_ion_settings", "style"),
-     Output("extra_folders_section", "style")],
+     Output("extra_folders_section", "style"),
+     Output("desi_recommended_banner", "style"),
+     Output("tims_recommended_banner", "style")],
     [Input("analysis_method", "value"),
      Input("analysis_method_tims", "value")],
 )
@@ -72,6 +74,7 @@ def toggle_settings_panels(desi_val, tims_val):
     active = desi_val or tims_val or "desi_v8"
     is_umap = active in ("desi_v8", "tims_v8")
     is_reanalysis = active in ("desi_cluster_filter", "tims_cluster_filter")
+    is_desi_umap = active == "desi_v8"
     is_tims_umap = active == "tims_v8"
     is_tims_reanalysis = active == "tims_cluster_filter"
 
@@ -80,8 +83,12 @@ def toggle_settings_panels(desi_val, tims_val):
     tims_ion_style = {} if is_tims_umap else {"display": "none"}
     tims_reanalysis_ion_style = {} if is_tims_reanalysis else {"display": "none"}
     extra_folders_style = {"marginTop": "10px"} if is_tims_umap else {"display": "none"}
+    # 標準フロー推奨バナー: 選択中の手法のものだけ表示（両方同時には出さない）
+    desi_banner_style = {} if is_desi_umap else {"display": "none"}
+    tims_banner_style = {} if is_tims_umap else {"display": "none"}
 
-    return umap_style, reanalysis_style, tims_ion_style, tims_reanalysis_ion_style, extra_folders_style
+    return (umap_style, reanalysis_style, tims_ion_style, tims_reanalysis_ion_style,
+            extra_folders_style, desi_banner_style, tims_banner_style)
 
 
 # ---------------------------------------------------------------------------

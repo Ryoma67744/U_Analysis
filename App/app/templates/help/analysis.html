@@ -19,6 +19,7 @@
     <li><a href="#prepare">📁 データ準備（SFTPアップロード）</a></li>
     <li><a href="#settings">⚙️ 解析設定タブ</a>
       <ul>
+        <li><a href="#standard-flow">🚀 標準フロー（手法別 早見）</a></li>
         <li><a href="#roi-mode">🆕 DESI ROI モード（複数 ROI を別サンプル扱い）</a></li>
       </ul>
     </li>
@@ -227,6 +228,34 @@
 <h2 class="section-heading" id="settings">⚙️ 3. 解析設定タブ</h2>
 
 <p>サブプロジェクトを開くと、まず「解析設定」タブが開きます。画面は <strong>サイドバー（左）+ メインパネル（右）</strong> 構成です。</p>
+
+<h3 class="subsection-heading" id="standard-flow">🚀 標準フロー（手法別の一般的な流れ）</h3>
+<p>もっとも一般的な使い方です。各手法を選ぶと、設定画面にも同じ内容の推奨バナーが表示されます（選択中の手法のものだけ）。</p>
+
+<div class="help-alert tip">
+  <div class="alert-title">💡 TIMS × SCiLS RMS の標準フロー</div>
+  <ol>
+    <li>TIMS データを <strong>SCiLS RMS</strong> で出力</li>
+    <li>正規化 <strong>「OFF」</strong>（<code>INPUT_NORMALIZED=TRUE</code>）＋ 変換 <strong><code>log1p</code></strong>
+        ＝ RMS×TIC の二重正規化を回避（TIMS は既定でこの設定）</li>
+    <li>サンプル数で自動分岐：1サンプル→<strong>PCAのみ</strong>／複数→<strong>Harmony・RPCA</strong>
+        （両方算出。「クラスタソース」で下流に使う手法を選択）</li>
+    <li><strong>UMAP・クラスタリング</strong></li>
+  </ol>
+  段階比較が目的なら<strong>未補正(PCA)も併用</strong>。各条件1切片は交絡に注意（→7章）。
+</div>
+
+<div class="help-alert tip">
+  <div class="alert-title">💡 DESI（生データ）の標準フロー</div>
+  <ol>
+    <li>DESI データ（生データ）を入力</li>
+    <li>正規化 <strong>「ON」</strong>（LogNormalize＝TIC正規化＋log。DESI は既定でこの設定）</li>
+    <li>サンプル数で自動分岐：1サンプル→<strong>PCAのみ</strong>／複数→<strong>Harmony・RPCA</strong>
+        （ROIモードで各ROIを別サンプル化すると複数統合）</li>
+    <li><strong>UMAP・クラスタリング</strong></li>
+  </ol>
+  段階比較が目的なら<strong>未補正(PCA)も併用</strong>。各条件1切片は交絡に注意（→7章）。
+</div>
 
 <div class="figure-frame">
   <svg viewBox="0 0 800 380" xmlns="http://www.w3.org/2000/svg">
