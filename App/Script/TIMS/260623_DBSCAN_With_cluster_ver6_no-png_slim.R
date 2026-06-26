@@ -67,6 +67,10 @@ if (!requireNamespace("leiden", quietly = TRUE)) install.packages("leiden", repo
 library(future)
 plan(sequential)  # workerはFindAllMarkers直前にのみ起動（メモリ節約）
 options(future.globals.maxSize = 4 * 1024^3)  # 4GB制限
+# RPCA(IntegrateLayers) のときだけ一時的に使う上限。実行時の plan は sequential（:68 既定）のため
+# globals はワーカーへ複製されず in-process 参照＝上限を上げてもメモリは多重化しない。
+# この一手の前後だけ適用し、finally で必ず上の 4GB（全域既定; FindAllMarkers の multisession 窓を守る）へ戻す。
+RPCA_FGLOBALS_MAXSIZE <- 64 * 1024^3  # 64GB（>26.25GiB の globals を通すため）
 
 `%||%` <- function(a,b) if (!is.null(a)) a else b
 
@@ -2458,10 +2462,17 @@ if (!step3_done && !.stage_downstream) {
           seu_rpca <- FindVariableFeatures(seu_rpca, nfeatures = nf, verbose = FALSE)
           seu_rpca <- ScaleData(seu_rpca, verbose = FALSE)
           seu_rpca <- RunPCA(seu_rpca, npcs = MAX_PCS, verbose = FALSE)
-          seu_rpca <- IntegrateLayers(seu_rpca, method = RPCAIntegration,
-                                      orig.reduction = "pca", new.reduction = "rpca",
-                                      assay = "Spatial", dims = 1:MAX_PCS,
-                                      k.weight = .kw, verbose = FALSE)
+          # この一手だけ future.globals 上限を一時解除（plan=sequential のため複製なし）。
+          # 成功/失敗いずれでも finally で必ず元（4GB）へ戻す（:69 の全域既定は不変）。
+          .old_gmax <- getOption("future.globals.maxSize")
+          options(future.globals.maxSize = RPCA_FGLOBALS_MAXSIZE)
+          seu_rpca <- tryCatch(
+            IntegrateLayers(seu_rpca, method = RPCAIntegration,
+                            orig.reduction = "pca", new.reduction = "rpca",
+                            assay = "Spatial", dims = 1:MAX_PCS,
+                            k.weight = .kw, verbose = FALSE),
+            finally = options(future.globals.maxSize = .old_gmax)
+          )
           seu_rpca <- JoinLayers(seu_rpca)
           if (!identical(PIPELINE_STAGE, "reduction_only")) {
             .rd <- 1:min(UMAP_DIMS_MAX, ncol(Embeddings(seu_rpca, "rpca")))
