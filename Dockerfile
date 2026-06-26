@@ -16,11 +16,14 @@ RUN useradd -m -s /bin/bash msiapp
 WORKDIR /app
 
 # Bioconductor の準備 (mutoss は multtest に依存)
-RUN Rscript -e 'install.packages("BiocManager"); BiocManager::install("multtest", update = FALSE, ask = FALSE)'
+# r2u の apt 索引は必ず直前に更新する（古い索引のまま bspm→apt 解決すると
+# gtable/rlang 等の依存が取りこぼされ configure 失敗→ビルド落ちするため）。
+RUN apt-get update && Rscript -e 'install.packages("BiocManager"); BiocManager::install("multtest", update = FALSE, ask = FALSE)' && rm -rf /var/lib/apt/lists/*
 
 # R パッケージインストール (r2u が apt バイナリから自動取得 → 5 分以内)
+# 同上: install 直前に apt-get update を入れて索引陳腐化での依存解決崩れを防止。
 COPY App/install_r_packages.R /app/App/
-RUN Rscript /app/App/install_r_packages.R
+RUN apt-get update && Rscript /app/App/install_r_packages.R && rm -rf /var/lib/apt/lists/*
 
 # Python パッケージインストール
 COPY App/requirements.txt /app/App/

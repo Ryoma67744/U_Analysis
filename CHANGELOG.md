@@ -12,6 +12,23 @@
 
 ---
 
+## 2026-06-26_ver19.4
+
+### 修正: Docker ビルドの恒久安定化（r2u 依存解決崩れによるビルド失敗を防止）
+
+- **背景**：`docker compose up -d --build` の `RUN Rscript install_r_packages.R`（Dockerfile）が、
+  `r-cran-gtable` / `r-cran-rlang` / `r-cran-cellranger` 等を**取りこぼし**、依存先（seurat/ggplot2/tidyverse
+  /pheatmap 等）が `dependency problems - leaving unconfigured` で全滅 → exit 1。**19.2/19.3 のデプロイが
+  ビルド失敗**し、稼働アプリが ver19.1 のまま固定されていた。r2u（apt バイナリ配布元）更新後に、キャッシュ
+  された古い apt 索引のまま bspm→apt 解決すると起きる**索引陳腐化**が原因（コード起因ではない）。
+- **変更**：`Dockerfile` の R/apt 実行2ステップ（BiocManager、`install_r_packages.R`）の各 `RUN` を
+  `apt-get update && <既存コマンド> && rm -rf /var/lib/apt/lists/*` に変更。**install 直前に必ず最新の
+  apt 索引**を取得し、依存解決崩れを防止。
+- **効果**：以後は通常の `docker compose up -d --build`（キャッシュ有）でも安定ビルド。`--no-cache` 不要化。
+  アプリ挙動・解析結果は不変（ビルド工程のみの修正）。version 19.3→19.4。
+
+---
+
 ## 2026-06-26_ver19.3
 
 ### 修正: RPCA(IntegrateLayers) のメモリ削減で大規模データの OOM を回避（結果不変）
