@@ -12,6 +12,22 @@
 
 ---
 
+## 2026-06-26_ver19.2
+
+### 整理: 結果RDSから不要な生データ(counts)層を除去（容量削減・機能不変）
+
+- **背景**：Step2/Step3 等の結果RDSは `data`(正規化)と `counts`(生)の両層を保存していたが、調査の結果
+  **保存後に `counts` を読む下流処理は皆無**（DEG=`FindAllMarkers` は data、ビューア抽出/領域平均/cluster filter/
+  RESUME/PreFlight 診断も data＋reduction＋メタのみ）。`counts` を読むのは保存前の初期正規化 `apply_input_norm` だけ。
+- **変更**：共有ヘルパー `rds_io.R` に `keep_counts`（既定 TRUE＝後方互換）を追加し、ver6 の**結果保存**
+  （Step2 Harmony・Step2 無補正PCA・Step3 RPCA・downstream 再保存）で `keep_counts=FALSE` を指定。
+  `DietSeurat(counts=FALSE, data=TRUE, ...)` で生counts層のみ除去（data 層は保持＝v5でも有効なオブジェクト）。
+- **不変**：Step1（RESUME 時の正規化に counts が必要）は変更なし。無補正PCAの比較解析（UMAP/クラスタ/DEG/作図）は
+  **機能・出力とも従来どおり**（ファイルが軽くなるだけ）。ver5・DESI・cluster filter は `keep_counts` 未指定＝
+  **counts 維持で完全に不変**。
+- **効果**：各結果ファイルの assay 格納が概ね半減（counts ぶん）。重い解析の計算時間は不変（容量・I/O の削減）。
+- **対象外**：Harmony/RPCA 間の `data` 重複（2×）解消＝読込時再アタッチ/オンディスク化（別テーマ）。version 19.1→19.2。
+
 ## 2026-06-26_ver19.1
 
 ### 修正: RPCA(IntegrateLayers) の `future.globals.maxSize` 4GB 上限で RPCA が出ない問題を解消

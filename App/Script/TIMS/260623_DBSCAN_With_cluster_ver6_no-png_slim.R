@@ -1596,10 +1596,10 @@ run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_onl
     Idents(obj) <- obj$seurat_clusters
     if (identical(PIPELINE_STAGE, "downstream_from_reduction")) {
       if (identical(prefix, "rpca")) {
-        save_rds_compact(list(obj = obj), file.path(RDS_SAVE_DIR, "Step3_RPCA_Result.rds"))
+        save_rds_compact(list(obj = obj), file.path(RDS_SAVE_DIR, "Step3_RPCA_Result.rds"), keep_counts = FALSE)
       } else if (prefix %in% c("harmony", "pca")) {
         save_rds_compact(list(obj = obj, reduction = REDUCTION_USED),
-                         file.path(RDS_SAVE_DIR, "Step2_HarmonyPCA_Result.rds"))
+                         file.path(RDS_SAVE_DIR, "Step2_HarmonyPCA_Result.rds"), keep_counts = FALSE)
       }
     }
   }
@@ -2359,7 +2359,7 @@ if (!step2_done && !.stage_downstream) {
   if(is.null(seu_harmony)) stop("All pipelines failed.")
   
   # ★要望①: Step2 完了時のRDS保存 (slim: DietSeurat + qs 圧縮)
-  save_rds_compact(list(obj=seu_harmony, reduction=REDUCTION_USED), rds_step2_out)
+  save_rds_compact(list(obj=seu_harmony, reduction=REDUCTION_USED), rds_step2_out, keep_counts=FALSE)  # 生counts層は保存後未使用→除去
   gc()
 
   # ---- ver4: 無補正PCAの併走出力（補正の妥当性を比較するため）----
@@ -2374,7 +2374,7 @@ if (!step2_done && !.stage_downstream) {
     }
     if (!is.null(seu_unc)) {
       save_rds_compact(list(obj=seu_unc, reduction="pca"),
-                       file.path(RDS_SAVE_DIR, "Step2_PCA_uncorrected.rds"))
+                       file.path(RDS_SAVE_DIR, "Step2_PCA_uncorrected.rds"), keep_counts=FALSE)
       rm(seu_unc); gc()
     } else {
       message("!! ver4: 無補正PCAの計算に失敗しました（スキップ）")
@@ -2499,7 +2499,7 @@ if (!step3_done && !.stage_downstream) {
   # （空RDSがあると PreFlight 診断が「reduction が検出されませんでした」と誤表示する。
   #   下流は直後の if(!is.null(seu_rpca)) で既にガード済み。RESUME は file.exists で安全。）
   if (!is.null(seu_rpca)) {
-    save_rds_compact(list(obj=seu_rpca), rds_step3_out)
+    save_rds_compact(list(obj=seu_rpca), rds_step3_out, keep_counts=FALSE)  # 生counts層は保存後未使用→除去
   }
   gc()
 }
