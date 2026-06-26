@@ -12,6 +12,25 @@
 
 ---
 
+## 2026-06-26_ver19.3
+
+### 修正: RPCA(IntegrateLayers) のメモリ削減で大規模データの OOM を回避（結果不変）
+
+- **背景**：PreFlight①（RPCA, `reduction_only`）が 12GiB コンテナで OOM kill（dmesg `constraint=CONSTRAINT_MEMCG`,
+  `anon-rss≈12GiB`、ログ最終行 `Splitting 'counts','data' layers` で停止）。原因は RPCA 直前に **`seu_harmony` を
+  抱えたまま** `counts`/`data` を split し、さらに**古い `scale.data`（dense）を保持**したままでピークが上限超過。
+  （過去に Windows ネイティブで通っていたのは pagefile 退避で低速完走していたため。Docker は硬い上限で即 kill。）
+- **変更**（`260623_..._ver6_no-png_slim.R` の RPCA ブロック、いずれも**解析結果は不変**）：
+  1. `seu_rpca` 確保直後に `rm(seu_harmony); gc()` — split 前の二重保持（harmony + rpca コピー）を解消。
+  2. split 直前に古い `scale.data` 層を破棄（split 対象外＆後段 `ScaleData` で再計算）— dense 行列ぶんを解放。
+  3. split の直前・直後に `gc()` を追加 — 一時ピークを早期解放。
+- **不変**：`counts` 層は維持（`FindVariableFeatures` の vst が使用するため破棄不可）。DESI(v16) は旧 v4 方式
+  （FindIntegrationAnchors）で本件の split 問題なし＝対象外。
+- **運用補足**：`docker-compose.yml` の `memswap_limit: 40g` は稼働コンテナへ未反映だと効かない。
+  イメージ再ビルド＋`--force-recreate` で反映（必要に応じてカーネル `swapaccount=1`）。version 19.2→19.3。
+
+---
+
 ## 2026-06-26_ver19.2
 
 ### 整理: 結果RDSから不要な生データ(counts)層を除去（容量削減・機能不変）

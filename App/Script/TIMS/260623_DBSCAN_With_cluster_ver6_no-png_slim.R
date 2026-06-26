@@ -2447,6 +2447,10 @@ if (!step3_done && !.stage_downstream) {
     DefaultAssay(seu_rpca) <- "Spatial"
     # Step2 由来の reduction(harmony 等)を除去（run_downstream の harmony 優先採用を回避）。
     for (.rn in names(seu_rpca@reductions)) seu_rpca[[.rn]] <- NULL
+    # [ver6.x メモリ削減] seu_rpca 確保後は seu_harmony 不要（最終参照は上の subset）。
+    # split 前に解放して二重保持（harmony + rpca コピー）を解消し、IntegrateLayers の
+    # ピークメモリを下げる（mem_limit コンテナでの OOM 回避）。
+    rm(seu_harmony); gc(verbose = FALSE)
 
     .bt   <- as.character(seu_rpca@meta.data[[.rpca_batch]])
     .keep <- names(which(table(.bt) >= MIN_CELLS_RPCA))
@@ -2454,7 +2458,12 @@ if (!step3_done && !.stage_downstream) {
       seu_rpca <- subset(seu_rpca, cells = colnames(seu_rpca)[.bt %in% .keep])
       .kw <- max(5L, min(100L, as.integer(min(table(as.character(seu_rpca@meta.data[[.rpca_batch]])))) - 1L))
       seu_rpca <- apply_input_norm(seu_rpca)
+      # [ver6.x メモリ削減] 旧 scale.data 層は split 対象外＆後段 ScaleData で再計算されるため、
+      # split 前に破棄して dense 行列ぶんのピークを下げる（結果不変）。
+      suppressWarnings(try(seu_rpca[["Spatial"]]$scale.data <- NULL, silent = TRUE))
+      gc(verbose = FALSE)
       seu_rpca[["Spatial"]] <- split(seu_rpca[["Spatial"]], f = seu_rpca@meta.data[[.rpca_batch]])
+      gc(verbose = FALSE)  # split 直後の一時メモリを早期解放
 
       ok <- FALSE
       for (nf in c(2000L, 1000L, 500L)) {
