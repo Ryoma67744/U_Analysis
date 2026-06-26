@@ -12,6 +12,23 @@
 
 ---
 
+## 2026-06-26_ver19.1
+
+### 修正: RPCA(IntegrateLayers) の `future.globals.maxSize` 4GB 上限で RPCA が出ない問題を解消
+
+- **背景**：ver19.0 の v5 移行で PreFlight① の OOM 強制終了は解消（"All Done" まで完走）し Harmony・無補正PCA は完成。
+  だが **RPCA だけ未完**。原因はメモリ不足ではなく**設定上限**：`IntegrateLayers`（ver6 :2461）が future に渡す globals が
+  **26.25 GiB** で、冒頭 `options(future.globals.maxSize = 4 * 1024^3)`（ver6 :69）の **4GB 上限**に阻まれ、
+  nf=2000/1000/500 の3回すべて `... 26.25 GiB ... exceeds 4.00 GiB ... future.globals.maxSize` で失敗
+  → `seu_rpca=NULL`（空RDS非生成＝ver18.3 ガード通り）。②に RPCA 行が出なかった。
+- **変更**：IntegrateLayers 呼び出しの**直前だけ** `future.globals.maxSize` を一時引き上げ（定数 `RPCA_FGLOBALS_MAXSIZE=64GB`）、
+  `tryCatch(finally=)` で**成功/失敗いずれでも直後に 4GB へ復元**。冒頭 :69 の全域既定値は**不変**。
+- **安全性**：当該箇所の実行時 plan は `sequential`（:68／`multisession` は FindAllMarkers の :1705-1708 窓だけ）。
+  sequential では globals がワーカーへ複製されず in-process 参照のため、**上限を上げてもメモリは多重化しない**
+  （前回の実OOM再来リスクは低い）。全域上限を上げると multisession 窓で4重コピーの恐れがあるため**全域は4GB据え置き**。
+- **不変**：nfeatures フォールバック（2000→1000→500）・空RDSガード（:2490）・Harmony/無補正PCA・下流/RESUME。
+  **ver6（TIMS UMAP）のみ**（ver5/DESI は対象外）。Python 改修なし。R 実行検証は**デプロイ環境（実データ203k）で実施**。version 19.0→19.1。
+
 ## 2026-06-25_ver19.0
 
 ### 変更: TIMS の RPCA を Seurat v5 `IntegrateLayers(RPCAIntegration)` に移行（大規模OOM解消）
