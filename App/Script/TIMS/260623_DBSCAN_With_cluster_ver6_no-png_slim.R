@@ -1596,10 +1596,10 @@ run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_onl
     Idents(obj) <- obj$seurat_clusters
     if (identical(PIPELINE_STAGE, "downstream_from_reduction")) {
       if (identical(prefix, "rpca")) {
-        save_rds_compact(list(obj = obj), file.path(RDS_SAVE_DIR, "Step3_RPCA_Result.rds"))
+        save_rds_compact(list(obj = obj), file.path(RDS_SAVE_DIR, "Step3_RPCA_Result.rds"), keep_counts = FALSE)
       } else if (prefix %in% c("harmony", "pca")) {
         save_rds_compact(list(obj = obj, reduction = REDUCTION_USED),
-                         file.path(RDS_SAVE_DIR, "Step2_HarmonyPCA_Result.rds"))
+                         file.path(RDS_SAVE_DIR, "Step2_HarmonyPCA_Result.rds"), keep_counts = FALSE)
       }
     }
   }
@@ -2359,7 +2359,7 @@ if (!step2_done && !.stage_downstream) {
   if(is.null(seu_harmony)) stop("All pipelines failed.")
   
   # ★要望①: Step2 完了時のRDS保存 (slim: DietSeurat + qs 圧縮)
-  save_rds_compact(list(obj=seu_harmony, reduction=REDUCTION_USED), rds_step2_out)
+  save_rds_compact(list(obj=seu_harmony, reduction=REDUCTION_USED), rds_step2_out, keep_counts=FALSE)  # 生counts層は保存後未使用→除去
   gc()
 
   # ---- ver4: 無補正PCAの併走出力（補正の妥当性を比較するため）----
@@ -2374,7 +2374,7 @@ if (!step2_done && !.stage_downstream) {
     }
     if (!is.null(seu_unc)) {
       save_rds_compact(list(obj=seu_unc, reduction="pca"),
-                       file.path(RDS_SAVE_DIR, "Step2_PCA_uncorrected.rds"))
+                       file.path(RDS_SAVE_DIR, "Step2_PCA_uncorrected.rds"), keep_counts=FALSE)
       rm(seu_unc); gc()
     } else {
       message("!! ver4: 無補正PCAの計算に失敗しました（スキップ）")
@@ -2447,6 +2447,10 @@ if (!step3_done && !.stage_downstream) {
     DefaultAssay(seu_rpca) <- "Spatial"
     # Step2 由来の reduction(harmony 等)を除去（run_downstream の harmony 優先採用を回避）。
     for (.rn in names(seu_rpca@reductions)) seu_rpca[[.rn]] <- NULL
+    # [ver6.x メモリ削減] seu_rpca 確保後は seu_harmony 不要（最終参照は上の subset）。
+    # split 前に解放して二重保持（harmony + rpca コピー）を解消し、IntegrateLayers の
+    # ピークメモリを下げる（mem_limit コンテナでの OOM 回避）。
+    rm(seu_harmony); gc(verbose = FALSE)
 
     .bt   <- as.character(seu_rpca@meta.data[[.rpca_batch]])
     .keep <- names(which(table(.bt) >= MIN_CELLS_RPCA))
@@ -2454,7 +2458,12 @@ if (!step3_done && !.stage_downstream) {
       seu_rpca <- subset(seu_rpca, cells = colnames(seu_rpca)[.bt %in% .keep])
       .kw <- max(5L, min(100L, as.integer(min(table(as.character(seu_rpca@meta.data[[.rpca_batch]])))) - 1L))
       seu_rpca <- apply_input_norm(seu_rpca)
+      # [ver6.x メモリ削減] 旧 scale.data 層は split 対象外＆後段 ScaleData で再計算されるため、
+      # split 前に破棄して dense 行列ぶんのピークを下げる（結果不変）。
+      suppressWarnings(try(seu_rpca[["Spatial"]]$scale.data <- NULL, silent = TRUE))
+      gc(verbose = FALSE)
       seu_rpca[["Spatial"]] <- split(seu_rpca[["Spatial"]], f = seu_rpca@meta.data[[.rpca_batch]])
+      gc(verbose = FALSE)  # split 直後の一時メモリを早期解放
 
       ok <- FALSE
       for (nf in c(2000L, 1000L, 500L)) {
@@ -2499,7 +2508,7 @@ if (!step3_done && !.stage_downstream) {
   # （空RDSがあると PreFlight 診断が「reduction が検出されませんでした」と誤表示する。
   #   下流は直後の if(!is.null(seu_rpca)) で既にガード済み。RESUME は file.exists で安全。）
   if (!is.null(seu_rpca)) {
-    save_rds_compact(list(obj=seu_rpca), rds_step3_out)
+    save_rds_compact(list(obj=seu_rpca), rds_step3_out, keep_counts=FALSE)  # 生counts層は保存後未使用→除去
   }
   gc()
 }

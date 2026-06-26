@@ -64,11 +64,13 @@
 #  obj: Seurat または list。list の場合は各要素に再帰適用。
 #  keep_scale: TRUE なら scale.data を保持 (デフォルト: FALSE = 削除)
 #  keep_graphs: TRUE なら Graphs を保持 (デフォルト: FALSE = 削除)
-diet_seurat_safe <- function(obj, keep_scale = FALSE, keep_graphs = FALSE) {
+diet_seurat_safe <- function(obj, keep_scale = FALSE, keep_graphs = FALSE,
+                             keep_counts = TRUE) {
   # list: 再帰適用 (ただし data.frame は list を継承するので除外)
   if (is.list(obj) && !inherits(obj, "Seurat") && !is.data.frame(obj)) {
     return(lapply(obj, diet_seurat_safe,
-                  keep_scale = keep_scale, keep_graphs = keep_graphs))
+                  keep_scale = keep_scale, keep_graphs = keep_graphs,
+                  keep_counts = keep_counts))
   }
   # Seurat 以外はそのまま返す
   if (!inherits(obj, "Seurat")) return(obj)
@@ -84,7 +86,7 @@ diet_seurat_safe <- function(obj, keep_scale = FALSE, keep_graphs = FALSE) {
     graphs <- if (keep_graphs) names(obj@graphs) else NULL
     suppressWarnings(Seurat::DietSeurat(
       obj,
-      counts = TRUE,
+      counts = keep_counts,
       data = TRUE,
       scale.data = keep_scale,
       dimreducs = dimreducs,
@@ -104,11 +106,13 @@ diet_seurat_safe <- function(obj, keep_scale = FALSE, keep_graphs = FALSE) {
 save_rds_compact <- function(obj, path,
                              diet = TRUE,
                              keep_scale = FALSE,
-                             keep_graphs = FALSE) {
+                             keep_graphs = FALSE,
+                             keep_counts = TRUE) {
   if (isTRUE(diet)) {
     obj <- diet_seurat_safe(obj,
                             keep_scale = keep_scale,
-                            keep_graphs = keep_graphs)
+                            keep_graphs = keep_graphs,
+                            keep_counts = keep_counts)
   }
   # 書き込みはまず一時ファイルに行い、成功後に rename するアトミック更新
   tmp_path <- paste0(path, ".tmp")
