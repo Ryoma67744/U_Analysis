@@ -2344,6 +2344,9 @@ if (!step2_done && !.stage_downstream) {
   
   # Retry Logic
   # ver4: 補正変数が無い(NA)場合は Harmony をスキップし、無補正PCAへフォールバック
+  # [ver6.6] 進捗バー用の段階マーカー。reduction 構築中は一致キーワードが出ず
+  #   UI が「準備中」に見えるため、"preprocessing" を1行出す（_detect_current_step が拾う）。
+  cat("Preprocessing (variable features / scaling / PCA)...\n")
   if (!is.na(group_var)) {
     for (cfg in HARMONY_RETRY_GRID) {
       ok <- tryCatch({ seu_harmony <- run_pipeline(TRUE, cfg); TRUE }, error=function(e) FALSE)

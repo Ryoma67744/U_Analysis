@@ -816,6 +816,7 @@ _STEP_DEFINITIONS = {
     "tims_v8": [
         ("Loading", "reading parquet"),
         ("Preprocessing", "preprocessing"),
+        ("Harmony correction", "harmony"),
         ("Clustering", "findclusters"),
         ("Markers", "finding markers"),
         ("Annotation", "annotating"),
@@ -966,7 +967,7 @@ def update_progress(n_intervals, app_state, log_search, log_level, log_lines_cou
     else:
         raw_log = ""
     # ステップ検出用の生テキスト（フィルタ前に取得）
-    log_text_for_steps = get_analysis_log(log_file, last_n=200) if log_file else ""
+    log_text_for_steps = get_analysis_log(log_file, last_n=600) if log_file else ""
     # 表示用のスタイル付きログ
     styled_log = format_log_lines_styled(
         raw_log, search=log_search or "", level=log_level or "all")
