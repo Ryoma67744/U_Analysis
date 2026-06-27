@@ -2362,22 +2362,22 @@ if (!step2_done && !.stage_downstream) {
   save_rds_compact(list(obj=seu_harmony, reduction=REDUCTION_USED), rds_step2_out, keep_counts=FALSE)  # 生counts層は保存後未使用→除去
   gc()
 
-  # ---- ver4: 無補正PCAの併走出力（補正の妥当性を比較するため）----
-  # 主結果が補正(harmony等)のときのみ、無補正PCAを別途計算して保存する。
-  # （主結果が既に "pca" の場合は同一のため重複出力しない）
+  # ---- 無補正PCAの併走出力（補正の妥当性を比較するため）----
+  # 主結果が補正(harmony等)のときのみ出力。主結果が既に "pca" の場合は同一のため出さない。
+  # [ver6.5] 旧来の run_pipeline(FALSE) による再計算を廃止し、Harmony が内部に持つ
+  #   入力 pca をそのまま流用する。これで (a) 重複PCA計算が消え（時間・メモリ削減）、
+  #   (b) Harmony と同一設定(同HVG/同PC数)の pca になり、補正前後の比較が公平になる。
   if (isTRUE(ALWAYS_OUTPUT_UNCORRECTED_PCA) && !identical(REDUCTION_USED, "pca")) {
-    cat("[ver4] 無補正PCAを別途計算します -> Step2_PCA_uncorrected.rds\n")
-    seu_unc <- NULL
-    for (cfg in c(PCA_RETRY_GRID, HARMONY_RETRY_GRID)) {
-      ok2 <- tryCatch({ seu_unc <- run_pipeline(FALSE, cfg); TRUE }, error=function(e) FALSE)
-      if (ok2) break
-    }
-    if (!is.null(seu_unc)) {
+    if ("pca" %in% names(seu_harmony@reductions)) {
+      cat("無補正PCAは Harmony の pca を流用します -> Step2_PCA_uncorrected.rds\n")
+      seu_unc <- seu_harmony                                   # copy-on-write（即時複製しない）
+      for (.rn in setdiff(names(seu_unc@reductions), "pca"))   # 補正系 reduction を除去し pca のみ残す
+        seu_unc[[.rn]] <- NULL                                 # 既存 RPCA 部と同じ除去イディオム
       save_rds_compact(list(obj=seu_unc, reduction="pca"),
                        file.path(RDS_SAVE_DIR, "Step2_PCA_uncorrected.rds"), keep_counts=FALSE)
       rm(seu_unc); gc()
     } else {
-      message("!! ver4: 無補正PCAの計算に失敗しました（スキップ）")
+      message("!! 無補正PCA: seu_harmony に pca が無いためスキップ")
     }
   }
 }
