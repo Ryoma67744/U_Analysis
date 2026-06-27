@@ -12,6 +12,24 @@
 
 ---
 
+## 2026-06-27_ver19.5
+
+### 改善: 無補正PCAを Harmony の pca から流用（重複PCA計算を廃止・比較の公平化）
+
+- **背景**：補正(Harmony)使用時、無補正PCA(`Step2_PCA_uncorrected.rds`)を `run_pipeline(FALSE)` で
+  **別途フル再計算**していた（ver6）。これは PCA の重複計算であり、さらに無補正側だけ軽い設定
+  （`PCA_RETRY_GRID` の 1000変数/20PC）で計算されるため、Harmony の pca（3000変数/30PC）と**設定が
+  不一致** → 補正前後比較が交絡（科学的に不適切）だった。
+- **変更**（`260623_..._ver6_no-png_slim.R`）：無補正PCAは **`seu_harmony` が内部に持つ入力 pca を
+  そのまま流用**するよう変更（`run_pipeline(FALSE)` 廃止）。copy-on-write で複製せず、補正系 reduction を
+  除去して pca のみ残し保存。保存形式・ファイル名は不変のため**下流・PreFlight 診断・アプリは無改修**。
+- **効果**：(a) 重複 PCA 計算が消え時間・メモリ削減、(b) 無補正PCAが Harmony と同一設定(3000/30)になり
+  **補正前後の比較が公平**（診断表で `PCA (uncorrected)` と `Harmony / pca` の推奨値が一致）。
+- **不変／対象外**：RPCA は自前の per-batch PCA が必須（reciprocal PCA の本質）のため統一せず維持。
+  DESI(v16) は無補正PCAの別途再計算を行っていない（該当パターン無し）ため変更不要。version 19.4→19.5。
+
+---
+
 ## 2026-06-26_ver19.4
 
 ### 修正: Docker ビルドの恒久安定化（r2u 依存解決崩れによるビルド失敗を防止）
