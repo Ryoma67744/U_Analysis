@@ -9,6 +9,7 @@ from app.utils.selection_utils import (
     compute_selection_summary,
     log_transform_intensities,
     top_n_markers,
+    cells_in_clusters,
 )
 
 
@@ -142,3 +143,25 @@ class TestTopNMarkers:
         out = top_n_markers(self._recs(), 0, sort_col="avg_log2FC",
                             ascending=False)
         assert [r["gene"] for r in out] == ["b", "a", "c"]
+
+
+# ---- cells_in_clusters ----
+
+class TestCellsInClusters:
+    def test_empty_clusters(self):
+        assert cells_in_clusters(_df(), []) == []
+
+    def test_none_df(self):
+        assert cells_in_clusters(None, ["0"]) == []
+
+    def test_single_cluster(self):
+        # _df(): c1,c2 -> cluster 0 ; c3,c5 -> 1 ; c4 -> 2
+        assert cells_in_clusters(_df(), ["0"]) == ["c1", "c2"]
+
+    def test_multiple_clusters(self):
+        out = cells_in_clusters(_df(), ["1", "2"])
+        assert set(out) == {"c3", "c5", "c4"}
+
+    def test_cluster_as_int_coerced(self):
+        # クラスタ指定が数値でも文字列照合される
+        assert cells_in_clusters(_df(), [0]) == ["c1", "c2"]

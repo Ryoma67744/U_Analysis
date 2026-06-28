@@ -12,6 +12,29 @@
 
 ---
 
+## 2026-06-28_ver21.0
+
+### 機能追加: アプリ内 on-the-fly 差次発現解析 (DE) (Phase 2)
+
+Loupe Browser の中核機能を再現。事前計算済み DEG の閲覧だけでなく、ユーザーが
+UMAP で選んだ任意の選択範囲・群について **その場で DE 検定を実行**できる。既存の
+DEG（Volcano/Heatmap/マーカー表）は不変で、専用の「選択 DE」タブに結果を表示する。
+
+- **比較モード（Loupe 準拠）**：
+  - **Globally Distinguishing**：現在の選択 vs 残り全体。
+  - **Locally Distinguishing**：現在の選択 vs 指定クラスタ(群)。
+- **検定**：R `Seurat::FindMarkers`（Wilcoxon, `presto` 高速路）+ **BH 補正**（本体 pipeline と同一）。
+  保存 RDS の `JoinLayers → data` layer を使用。1 対比 ≈ 30–60 秒（前景・dcc.Loading 表示）。
+- **結果表示**：ソート可能 DataTable（avg_log2FC / p_val_adj / pct.1 / pct.2）+ Volcano（FC・p 閾値可変）+
+  現在の並び替え/絞り込みを反映した **Top-N CSV 出力**。
+- **キャッシュ**：(mode, CellID集合, パラメータ) のハッシュで cache_dir に保存し再実行は即返す
+  （`FileLock` で多重実行を防止、`export_region_cluster_means` と同じ subprocess パターン）。
+- **新規ファイル**：`App/Script/helpers/run_findmarkers.R`、`app/callbacks/interactive_de.py`。
+  `SeuratBridge.run_differential_expression()` 追加、`selection_utils.cells_in_clusters()` 追加。
+  version 20.0→21.0。
+
+---
+
 ## 2026-06-28_ver20.0
 
 ### 機能追加: Loupe Browser 9 を参考にしたインタラクティブ解析の強化 (Phase 1)

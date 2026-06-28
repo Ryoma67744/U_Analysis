@@ -20,7 +20,20 @@ __all__ = [
     "compute_selection_summary",
     "log_transform_intensities",
     "top_n_markers",
+    "cells_in_clusters",
 ]
+
+
+def cells_in_clusters(df, clusters) -> list[str]:
+    """plot_data df から、指定クラスタに属する CellID のリストを返す。
+
+    on-the-fly DE の Locally モードで「比較対象クラスタ」の ident.2 細胞集合を
+    作るために使う。"""
+    if df is None or not clusters:
+        return []
+    cset = {str(c) for c in clusters}
+    mask = df["Cluster"].astype(str).isin(cset)
+    return df.loc[mask, "CellID"].astype(str).tolist()
 
 
 def natural_cluster_key(value) -> tuple:

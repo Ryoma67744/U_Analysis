@@ -1352,6 +1352,78 @@ def create_interactive_tab():
                                                               "backgroundColor": "#f1f3f5"},
                                             ),
                                         ]),
+                                        # --- 選択 DE タブ (P2: アプリ内 on-the-fly DE) ---
+                                        dbc.Tab(label="選択 DE", tab_id="deg_onthefly_tab", children=[
+                                            dbc.Alert(
+                                                "UMAP で投げ縄/ボックス選択 → モードを選んで「DE 実行」。"
+                                                "Globally=選択 vs 全体 / Locally=選択 vs 指定クラスタ。"
+                                                "（検定: Wilcoxon, 補正: BH。~30-60秒）",
+                                                color="light", className="small mt-2 mb-2 py-2"),
+                                            dbc.Row(className="mb-2 align-items-end", children=[
+                                                dbc.Col(width=3, children=[
+                                                    dbc.Label("比較モード", className="small mb-0"),
+                                                    dbc.RadioItems(
+                                                        id="onthefly_de_mode",
+                                                        options=[
+                                                            {"label": "Globally (vs 全体)", "value": "global"},
+                                                            {"label": "Locally (vs 指定群)", "value": "local"},
+                                                        ],
+                                                        value="global",
+                                                    ),
+                                                ]),
+                                                dbc.Col(width=4, children=[
+                                                    dbc.Label("比較対象クラスタ (Locally)", className="small mb-0"),
+                                                    dcc.Dropdown(id="onthefly_de_target", multi=True,
+                                                                 placeholder="ident.2 のクラスタ"),
+                                                ]),
+                                                dbc.Col(width="auto", className="d-flex align-items-end", children=[
+                                                    dbc.Button("DE 実行", id="btn_run_onthefly_de",
+                                                               size="sm", color="primary", className="mb-1"),
+                                                ]),
+                                                dbc.Col(width=4, className="d-flex align-items-center", children=[
+                                                    dcc.Loading(html.Div(id="onthefly_de_status")),
+                                                ]),
+                                            ]),
+                                            dbc.Row(className="mb-2 align-items-end", children=[
+                                                dbc.Col(width=2, children=[
+                                                    dbc.Label("FC 閾値", className="small mb-0"),
+                                                    dbc.Input(id="onthefly_de_fc", type="number",
+                                                              value=0.5, step=0.1, size="sm"),
+                                                ]),
+                                                dbc.Col(width=2, children=[
+                                                    dbc.Label("-log10(p) 閾値", className="small mb-0"),
+                                                    dbc.Input(id="onthefly_de_p", type="number",
+                                                              value=1.3, step=0.1, size="sm"),
+                                                ]),
+                                                dbc.Col(width=2, children=[
+                                                    dbc.Label("Top N 出力", className="small mb-0"),
+                                                    dcc.Dropdown(
+                                                        id="onthefly_de_top_n",
+                                                        options=[{"label": lbl, "value": v} for lbl, v in
+                                                                 [("10", 10), ("20", 20), ("50", 50),
+                                                                  ("100", 100), ("全件", 0)]],
+                                                        value=50, clearable=False, style={"fontSize": "12px"}),
+                                                ]),
+                                                dbc.Col(width="auto", className="d-flex align-items-end", children=[
+                                                    dbc.Button("CSV 出力", id="btn_export_onthefly_de",
+                                                               size="sm", color="success", className="mb-1"),
+                                                ]),
+                                            ]),
+                                            dcc.Loading(dcc.Graph(
+                                                id="onthefly_de_volcano", style={"height": "420px"},
+                                                config={"toImageButtonOptions": {
+                                                    "format": "png", "filename": "onthefly_DE_volcano",
+                                                    "scale": 3}})),
+                                            dash_table.DataTable(
+                                                id="onthefly_de_table", columns=[], data=[],
+                                                sort_action="native", filter_action="native", page_size=20,
+                                                style_table={"overflowX": "auto"},
+                                                style_cell={"fontSize": "12px", "padding": "4px",
+                                                            "fontFamily": "monospace"},
+                                                style_header={"fontWeight": "bold",
+                                                              "backgroundColor": "#f1f3f5"},
+                                            ),
+                                        ]),
                                     ]),
                                 ],
                             ),
@@ -1454,6 +1526,9 @@ def create_interactive_tab():
         dcc.Store(id="selected_cell_ids_store", data=[]),
         # マーカー表 Top-N CSV ダウンロード
         dcc.Download(id="dl_marker_table_csv"),
+        # --- P2: アプリ内 on-the-fly DE 用 ---
+        dcc.Store(id="onthefly_de_store", data=None),
+        dcc.Download(id="dl_onthefly_de_csv"),
 
         # プロジェクトとして保存モーダル
         _create_save_as_project_modal(),
