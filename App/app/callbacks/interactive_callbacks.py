@@ -1119,3 +1119,4 @@ import app.callbacks.interactive_fullscreen  # noqa: F401  — registers fullscr
 import app.callbacks.interactive_loupe  # noqa: F401  — registers Loupe風 (選択統計/violin/マーカー表) callbacks
 import app.callbacks.interactive_de  # noqa: F401  — registers アプリ内 on-the-fly DE callbacks
 import app.callbacks.interactive_hne_bg  # noqa: F401  — registers H&E 背景オーバーレイ callbacks
+import app.callbacks.interactive_selection_groups  # noqa: F401  — registers 選択グループ callbacks

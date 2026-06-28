@@ -12,6 +12,30 @@
 
 ---
 
+## 2026-06-28_ver23.0
+
+### 機能追加: 選択グループ（名前付き永続選択） (Phase 3)
+
+Loupe Browser の Groups/Filters 相当。UMAP の lasso/box 選択を**名前付きの永続
+オブジェクト**として保存・改名・削除・結合し、CSV で入出力できる。さらに
+「現在の選択に読込」で選択統計(P1)・アプリ内DE(P2) の入力として再利用できる。
+
+- **永続化**：RDS 隣の `selection_groups_state.json`（`hne_persistence` /
+  `label_persistence` と同型の FileLock + atomic write）。データロード時に自動復元。
+- **CRUD**：現在の選択を名前付き保存／改名／削除／**結合（和集合）**。
+- **CSV 入出力**：`CellID,Group` 形式でエクスポート、CSV からインポート
+  （ヘッダの別名 cell_id/barcode・cluster/name に寛容）。
+- **下流再利用**：「現在の選択に読込」で `selected_cell_ids_store` を上書き
+  （P1 capture と同居のため `allow_duplicate`）。→ 選択統計が更新され、
+  選択 DE の ident.1 として使える（保存グループ vs 全体 / vs 指定クラスタ）。
+- **新規**：`app/services/selection_groups.py`（純 CRUD + 単体テスト 15 件）、
+  `app/callbacks/interactive_selection_groups.py`。
+- **今回見送り**：spatial/feature→UMAP の双方向「ハイライト」描画は `update_umap_plot`
+  への描画分岐が必要で実画像検証が要るため次段に延期（選択の共有 Store 化までは完了）。
+  version 22.0→23.0。
+
+---
+
 ## 2026-06-28_ver22.0
 
 ### 機能追加: 登録済み組織像 (H&E) 背景オーバーレイ + スポット透明度 (Phase 4)

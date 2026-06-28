@@ -874,6 +874,79 @@ def create_interactive_tab():
                                 html.Strong("選択範囲の統計", className="small d-block mb-1"),
                                 html.Div(id="selection_summary_card"),
                             ], className="mt-2 border rounded p-2 bg-light"),
+                            # --- 選択グループ (P3: 名前付き永続選択) ---
+                            html.Div([
+                                html.Strong("選択グループ", className="small d-block mb-1"),
+                                dbc.Row(className="g-1 align-items-end mb-1", children=[
+                                    dbc.Col(width=4, children=[
+                                        dbc.Input(id="selection_group_name", size="sm",
+                                                  placeholder="グループ名 (例: 腫瘍領域)"),
+                                    ]),
+                                    dbc.Col(width="auto", children=[
+                                        dbc.Button("現在の選択を保存", id="btn_save_selection_group",
+                                                   size="sm", color="primary"),
+                                    ]),
+                                    dbc.Col(width="auto", className="d-flex align-items-center", children=[
+                                        html.Div(id="selection_groups_status"),
+                                    ]),
+                                ]),
+                                dash_table.DataTable(
+                                    id="selection_groups_table",
+                                    columns=[{"name": "グループ", "id": "name"},
+                                             {"name": "px数", "id": "n", "type": "numeric"},
+                                             {"name": "色", "id": "color"}],
+                                    data=[], page_size=6,
+                                    style_table={"overflowX": "auto"},
+                                    style_cell={"fontSize": "11px", "padding": "3px"},
+                                    style_header={"fontWeight": "bold",
+                                                  "backgroundColor": "#f1f3f5"},
+                                ),
+                                dbc.Row(className="g-1 align-items-end mt-1", children=[
+                                    dbc.Col(width=4, children=[
+                                        dbc.Label("対象グループ", className="small mb-0"),
+                                        dcc.Dropdown(id="selection_group_select",
+                                                     placeholder="グループ", clearable=True),
+                                    ]),
+                                    dbc.Col(width=3, children=[
+                                        dbc.Input(id="selection_group_rename", size="sm",
+                                                  placeholder="新しい名前"),
+                                    ]),
+                                    dbc.Col(width="auto", children=[
+                                        dbc.Button("改名", id="btn_rename_group", size="sm",
+                                                   color="outline-secondary"),
+                                    ]),
+                                    dbc.Col(width="auto", children=[
+                                        dbc.Button("削除", id="btn_delete_group", size="sm",
+                                                   color="outline-danger"),
+                                    ]),
+                                    dbc.Col(width="auto", children=[
+                                        dbc.Button("現在の選択に読込", id="btn_load_group_to_selection",
+                                                   size="sm", color="success"),
+                                    ]),
+                                ]),
+                                html.Div(id="selection_groups_load_status", className="mt-1"),
+                                dbc.Row(className="g-1 align-items-end mt-1", children=[
+                                    dbc.Col(width=5, children=[
+                                        dbc.Label("結合 (2つ以上)", className="small mb-0"),
+                                        dcc.Dropdown(id="selection_groups_combine", multi=True,
+                                                     placeholder="グループを選択"),
+                                    ]),
+                                    dbc.Col(width="auto", children=[
+                                        dbc.Button("結合", id="btn_combine_groups", size="sm",
+                                                   color="outline-primary"),
+                                    ]),
+                                    dbc.Col(width="auto", children=[
+                                        dbc.Button("CSV出力", id="btn_export_groups", size="sm",
+                                                   color="outline-success"),
+                                    ]),
+                                    dbc.Col(width="auto", children=[
+                                        dcc.Upload(id="upload_selection_groups",
+                                                   children=dbc.Button("CSV取込", size="sm",
+                                                                       color="outline-info"),
+                                                   accept=".csv", multiple=False),
+                                    ]),
+                                ]),
+                            ], className="mt-2 border rounded p-2"),
                         ]),
 
                         # --- Spatial Mapping ---
@@ -1563,6 +1636,9 @@ def create_interactive_tab():
         # --- P2: アプリ内 on-the-fly DE 用 ---
         dcc.Store(id="onthefly_de_store", data=None),
         dcc.Download(id="dl_onthefly_de_csv"),
+        # --- P3: 選択グループ用 ---
+        dcc.Store(id="selection_groups_store", data={"groups": []}),
+        dcc.Download(id="dl_selection_groups_csv"),
 
         # プロジェクトとして保存モーダル
         _create_save_as_project_modal(),
