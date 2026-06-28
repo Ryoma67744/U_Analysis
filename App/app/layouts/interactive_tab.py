@@ -1097,6 +1097,19 @@ def create_interactive_tab():
                                     dbc.Input(id="feature_intensity_max", type="number",
                                               placeholder="100", size="sm"),
                                 ]),
+                                dbc.Col(width=3, children=[
+                                    dbc.Label("強度スケール", className="small mb-0"),
+                                    dbc.RadioItems(
+                                        id="feature_scale_mode",
+                                        options=[
+                                            {"label": "LogNorm", "value": "lognorm"},
+                                            {"label": "Log2", "value": "log2"},
+                                            {"label": "Linear", "value": "linear"},
+                                        ],
+                                        value="lognorm",
+                                        inline=True,
+                                    ),
+                                ]),
                             ]),
                             dcc.Loading(html.Div(id="feature_plot_container")),
                         ]),

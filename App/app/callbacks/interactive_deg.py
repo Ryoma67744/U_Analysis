@@ -255,7 +255,8 @@ def update_feature_options_on_mz_filter(mz_filtered, rds_path=None):
      Input("sample_name_map_store", "data"),
      Input("fullscreen_closed_trigger", "data"),
      Input("feature_columns_per_row", "value"),
-     Input("feature_show_compound_names", "value")],
+     Input("feature_show_compound_names", "value"),
+     Input("feature_scale_mode", "value")],
     [State("seurat_rds_path_store", "data"),
      State("seurat_cache_dir_store", "data"),
      State("spatial_rotation_store", "data"),
@@ -265,7 +266,7 @@ def update_feature_options_on_mz_filter(mz_filtered, rds_path=None):
 def update_feature_plot(feature_name, sample, marker_size,
                         intensity_min, intensity_max,
                         name_map, _fs_trigger, columns_per_row,
-                        show_compound_names,
+                        show_compound_names, scale_mode,
                         rds_path, cache_dir_str, rotation_store,
                         deg_data):
     from app.callbacks.interactive_callbacks import _interactive_data, _bridge, _set_active_key
@@ -311,6 +312,18 @@ def update_feature_plot(feature_name, sample, marker_size,
         # expression を df に結合（CellID順で対応）
         df_plot = df.copy()
         df_plot["_expression"] = expression
+
+        # 強度スケール変換（既定 lognorm = Seurat data 層そのまま）
+        #   linear  : expm1(x)  -> 正規化線形強度を復元
+        #   log2    : log2(expm1(x) + 1)
+        #   lognorm : そのまま（data 層は自然対数正規化）
+        _sc = scale_mode or "lognorm"
+        if _sc == "linear":
+            df_plot["_expression"] = np.expm1(df_plot["_expression"])
+        elif _sc == "log2":
+            df_plot["_expression"] = np.log2(np.expm1(df_plot["_expression"]) + 1.0)
+        _scale_label = {"lognorm": "LogNorm", "log2": "Log2",
+                        "linear": "Linear"}.get(_sc, "")
 
         # 表示対象サンプル
         if sample:
@@ -382,7 +395,8 @@ def update_feature_plot(feature_name, sample, marker_size,
             )
             if is_last:
                 marker_opts["colorbar"] = dict(
-                    title=dict(text="Intensity", side="right"),
+                    title=dict(text=f"Intensity ({_scale_label})" if _scale_label
+                               else "Intensity", side="right"),
                     tickvals=[display_min, display_max],
                     ticktext=[
                         f"{int(intensity_min)}%" if intensity_min is not None else "0%",
