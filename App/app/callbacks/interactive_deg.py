@@ -26,6 +26,7 @@ from app.utils.display_helpers import (
 from app.utils.deg_utils import (
     is_meaningful_annotation as _is_meaningful_annotation,
     extract_mz_numeric as _extract_mz_numeric,
+    standardize_deg_df as _standardize_deg_df,
 )
 from app.utils.label_persistence import (
     compute_annotation_offsets as _compute_annotation_offsets,
@@ -972,3 +973,79 @@ def update_heatmap(top_n, scale, annotation_on, merge_toggle, selected_cluster,
         yaxis=dict(autorange="reversed"),
     )
     return fig
+
+
+# ---------------------------------------------------------------------------
+# A vs B 直接比較（pairwise DEG）— FindMarkers をキャッシュ済 RDS に実行
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("deg_pair_a", "options"),
+    Output("deg_pair_b", "options"),
+    Input("deg_pair_source", "value"),
+    Input("seurat_rds_path_store", "data"),
+    Input("manual_cluster_saved_trigger", "data"),
+    prevent_initial_call=True,
+)
+def update_deg_pair_options(source, rds_path, _mc_trig):
+    """A/B クラスタ選択肢を plot_data（Cluster or ManualCluster）から生成。"""
+    from app.callbacks.interactive_callbacks import (
+        _interactive_data, _set_active_key,
+    )
+    _set_active_key(rds_path)
+    df = _interactive_data.get("plot_data")
+    if df is None:
+        return [], []
+    col = source if (source and source in df.columns) else "Cluster"
+    if col not in df.columns:
+        return [], []
+    vals = sorted(df[col].astype(str).unique(), key=_cluster_sort_key)
+    opts = [{"label": str(v), "value": str(v)} for v in vals]
+    return opts, opts
+
+
+@callback(
+    Output("deg_data_store", "data", allow_duplicate=True),
+    Output("deg_pair_status", "children"),
+    Input("deg_pair_run_btn", "n_clicks"),
+    State("deg_pair_source", "value"),
+    State("deg_pair_a", "value"),
+    State("deg_pair_b", "value"),
+    State("seurat_rds_path_store", "data"),
+    State("deg_data_store", "data"),
+    prevent_initial_call=True,
+)
+def run_pairwise_deg_cb(n, source, a, b, rds_path, deg_data):
+    """A vs B の FindMarkers を実行し、結果を既存 DEG に追記（Volcano で選択可能に）。"""
+    from app.callbacks.interactive_callbacks import (
+        _interactive_data, _bridge, _set_active_key,
+    )
+    _set_active_key(rds_path)
+    if not rds_path or a is None or b is None:
+        return no_update, "A と B のクラスタを選択してください"
+    if str(a) == str(b):
+        return no_update, "A と B は別のクラスタを選んでください"
+    df = _interactive_data.get("plot_data")
+    if df is None or "CellID" not in df.columns:
+        return no_update, "データが読み込まれていません"
+    col = source if (source and source in df.columns) else "Cluster"
+    if col not in df.columns:
+        return no_update, "比較元の列がありません"
+    sub = df[df[col].astype(str).isin([str(a), str(b)])][["CellID", col]].copy()
+    if sub.empty:
+        return no_update, "対象セルがありません"
+    groups_df = sub.rename(columns={col: "Group"})
+    groups_df["Group"] = groups_df["Group"].astype(str)
+    groups_df["CellID"] = groups_df["CellID"].astype(str)
+    try:
+        res = _bridge.run_pairwise_deg(rds_path, groups_df, str(a), str(b))
+    except Exception as e:
+        logger.error("pairwise DEG 失敗: %s", e)
+        return no_update, f"❌ 失敗: {str(e)[:200]}"
+    recs = _standardize_deg_df(res)
+    if not recs:
+        return no_update, "結果が空でした"
+    label = f"{a} vs {b}"
+    existing = [r for r in (deg_data or []) if r.get("cluster") != label]
+    merged = existing + recs
+    return merged, f"✅ {a} vs {b}: {len(recs)} 件（Volcanoの「クラスタ」で {label} を選択）"

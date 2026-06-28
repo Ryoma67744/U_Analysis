@@ -1166,6 +1166,38 @@ def create_interactive_tab():
                                     dbc.Tabs(id="deg_viz_tabs", active_tab="deg_volcano_tab", children=[
                                         # --- Volcano Plot タブ ---
                                         dbc.Tab(label="Volcano Plot", tab_id="deg_volcano_tab", children=[
+                                            # A vs B 直接比較（クラスタ / 手動クラスタ）
+                                            dbc.Row(className="mt-2 align-items-end g-2", children=[
+                                                dbc.Col(width="auto", children=[
+                                                    dbc.Label("A vs B 比較元", className="small mb-0"),
+                                                    dbc.RadioItems(
+                                                        id="deg_pair_source",
+                                                        options=[
+                                                            {"label": "Cluster", "value": "Cluster"},
+                                                            {"label": "手動", "value": "ManualCluster"},
+                                                        ],
+                                                        value="Cluster", inline=True,
+                                                    ),
+                                                ]),
+                                                dbc.Col(width=2, children=[
+                                                    dbc.Label("A", className="small mb-0"),
+                                                    dcc.Dropdown(id="deg_pair_a",
+                                                                 placeholder="クラスタA", clearable=True),
+                                                ]),
+                                                dbc.Col(width=2, children=[
+                                                    dbc.Label("B", className="small mb-0"),
+                                                    dcc.Dropdown(id="deg_pair_b",
+                                                                 placeholder="クラスタB", clearable=True),
+                                                ]),
+                                                dbc.Col(width="auto", children=[
+                                                    dbc.Button("A vs B 実行", id="deg_pair_run_btn",
+                                                               size="sm", color="primary"),
+                                                ]),
+                                                dbc.Col(width="auto", children=[
+                                                    html.Span(id="deg_pair_status",
+                                                              className="small text-muted"),
+                                                ]),
+                                            ]),
                                             dbc.Row(className="mt-2 mb-2 align-items-end", children=[
                                                 dbc.Col(width=2, children=[
                                                     dcc.Dropdown(

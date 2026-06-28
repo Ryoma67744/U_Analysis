@@ -463,6 +463,60 @@ class SeuratBridge:
                     f"Region×cluster export produced no output: {out_csv_path}")
             return pd.read_csv(out_csv_path)
 
+    def run_pairwise_deg(self, rds_path, groups_df, ident1, ident2,
+                         logfc=0.1, min_pct=0.1, assay=None, layer="data",
+                         timeout=600):
+        """2群(ident1, ident2)間の FindMarkers(wilcox) を R 側で実行し DataFrame を返す。
+
+        全再実行は不要：キャッシュ済 RDS の data layer に FindMarkers のみ実行。
+        groups_df: 列 [CellID, Group]（Group が ident ラベル。Seurat/手動どちらも可）。
+        Returns: pd.DataFrame（gene, p_val, avg_log2FC, pct.1, pct.2, p_val_adj, cluster）。
+        """
+        from app.utils.file_locks import get_or_create_lock
+        cache_dir = self._get_cache_dir(rds_path)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        out_csv_path = cache_dir / "pairwise_deg.csv"
+        groups_csv = cache_dir / "_pairwise_groups_tmp.csv"
+
+        script = R_HELPERS_DIR / "deg_pairwise.R"
+        if not Path(script).exists():
+            raise RuntimeError(f"R script not found: {script}")
+        rscript = str(RSCRIPT_PATH)
+        if not Path(rscript).exists():
+            rscript = "Rscript"
+
+        lock = get_or_create_lock(out_csv_path, timeout=timeout)
+        with lock:
+            groups_df.to_csv(groups_csv, index=False, encoding="utf-8")
+            cmd = [rscript, "--vanilla", str(script), str(rds_path),
+                   str(groups_csv), str(ident1), str(ident2), str(out_csv_path),
+                   "--logfc", str(logfc), "--minpct", str(min_pct)]
+            if assay:
+                cmd += ["--assay", str(assay)]
+            if layer:
+                cmd += ["--layer", str(layer)]
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, timeout=timeout,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(
+                    f"Pairwise DEG timed out: rds={rds_path}") from e
+            finally:
+                try:
+                    groups_csv.unlink()
+                except OSError:
+                    pass
+            if result.returncode != 0:
+                stderr_text = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
+                raise RuntimeError(
+                    f"Pairwise DEG failed:\n{stderr_text[:2000]}")
+            if not out_csv_path.exists():
+                raise RuntimeError(
+                    f"Pairwise DEG produced no output: {out_csv_path}")
+            return pd.read_csv(out_csv_path)
+
     def _load_extracted_data(self, cache_dir: Path) -> dict:
         """キャッシュディレクトリからデータを読み込み"""
         # plot_data: Parquet優先、CSV fallback
