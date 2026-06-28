@@ -298,6 +298,76 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
     return graphs
 
 
+def _build_umap_facet_graphs(df, facets, color_map, marker_size=2,
+                             columns_per_row=0, cluster_name_map=None,
+                             graph_height="300px", collect_figures=None):
+    """汎用 Split View: facets=[(label, mask_or_cellids), ...]。
+
+    各タイルは「全細胞を淡灰の背景」+「当該ファセットの細胞を Cluster 色」で描き、
+    全タイルで軸範囲を共有 (synchronized small multiples)。Loupe の Split View 相当。
+    facet 要素: ブール mask (Cluster 分割) もしくは CellID 集合 (選択グループ分割)。
+    """
+    if df is None or len(df) == 0 or not facets:
+        return [html.Div("表示できるデータがありません", className="text-muted small mt-2")]
+
+    x_all, y_all = df["UMAP_1"], df["UMAP_2"]
+    pad_x = (float(x_all.max()) - float(x_all.min())) * 0.03 or 1.0
+    pad_y = (float(y_all.max()) - float(y_all.min())) * 0.03 or 1.0
+    xr = [float(x_all.min()) - pad_x, float(x_all.max()) + pad_x]
+    yr = [float(y_all.min()) - pad_y, float(y_all.max()) + pad_y]
+
+    n = len(facets)
+    graphs = []
+    for label, sel in facets:
+        if isinstance(sel, (set, list)):
+            mask = df["CellID"].astype(str).isin({str(s) for s in sel}).to_numpy()
+        else:
+            mask = np.asarray(sel)
+        fig = go.Figure()
+        # 全体を淡灰で背景表示（位置の文脈を保つ）
+        fig.add_trace(go.Scattergl(
+            x=x_all, y=y_all, mode="markers",
+            marker=dict(size=marker_size, color=HIGHLIGHT_GRAY, opacity=0.15),
+            showlegend=False, hoverinfo="skip", name="_bg"))
+        sub = df[mask]
+        for cl in sorted(sub["Cluster"].unique(), key=_cluster_sort_key):
+            m2 = (sub["Cluster"] == cl)
+            fig.add_trace(go.Scattergl(
+                x=sub.loc[m2, "UMAP_1"], y=sub.loc[m2, "UMAP_2"], mode="markers",
+                marker=dict(size=marker_size + 1, color=color_map.get(str(cl), "#999999")),
+                name=_cluster_display_name(cl, cluster_name_map), showlegend=False,
+                legendgroup=_cluster_display_name(cl, cluster_name_map)))
+        fig.update_layout(
+            margin=dict(l=40, r=10, t=28, b=40),
+            title=dict(text=f"{label} ({int(mask.sum())})", font=dict(size=12), x=0.5),
+            xaxis=dict(showgrid=False, showline=False, zeroline=False,
+                       showticklabels=False, title="", range=xr),
+            yaxis=dict(scaleanchor="x", showgrid=False, showline=False,
+                       zeroline=False, showticklabels=False, title="", range=yr),
+            plot_bgcolor="white", showlegend=False)
+        _add_umap_arrows(fig)
+        if collect_figures is not None:
+            collect_figures.append((f"UMAP_facet_{label}", fig.to_dict()))
+        cfg = dict(_UMAP_PER_SAMPLE_CONFIG)
+        cfg["toImageButtonOptions"] = dict(cfg["toImageButtonOptions"],
+                                           filename=f"UMAP_facet_{label}")
+        if columns_per_row:
+            n_cols = columns_per_row
+            gap_total = (n_cols - 1) * 15
+            flex_basis = f"calc({100 / n_cols:.2f}% - {gap_total / n_cols:.1f}px)"
+            min_w = "0"
+        else:
+            n_cols = min(n, 4)
+            flex_basis = f"{max(20, 90 // max(1, n_cols))}%"
+            min_w = "250px"
+        graphs.append(html.Div(
+            style={"flex": f"1 1 {flex_basis}", "minWidth": min_w,
+                   "border": "1px solid #dee2e6", "borderRadius": "6px",
+                   "padding": "5px", "backgroundColor": "#fff"},
+            children=[dcc.Graph(figure=fig, style={"height": graph_height}, config=cfg)]))
+    return graphs
+
+
 def _get_merged_label_positions(accumulated_positions=None,
                                 rds_path=None, method=None):
     """JSON ファイル + 蓄積 Store からマージしたラベル位置を返す。
@@ -454,15 +524,17 @@ def toggle_merge_controls(_rds_path, _fs_trigger):
      Input("custom_color_map_store", "data"),
      Input("umap_columns_per_row", "value"),
      Input("cluster_name_map_store", "data"),
-     Input("interactive_accordion", "active_item")],
-    State("accumulated_label_positions", "data"),
+     Input("interactive_accordion", "active_item"),
+     Input("umap_facet_by", "value")],
+    [State("accumulated_label_positions", "data"),
+     State("selection_groups_store", "data")],
 )
 def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
                             marker_size, exclude_clusters, label_size, rds_path,
                             show_legend, name_map, _fs_trigger, custom_colors,
                             columns_per_row, cluster_name_map, active_items,
-                            accumulated_positions):
-    """表示モード「サンプル別」の場合、各サンプルのUMAPを並列表示"""
+                            facet_by, accumulated_positions, selection_groups):
+    """表示モード「サンプル別」(=分割表示) の場合、facet_by 基準で分割表示する。"""
     active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
     if "acc_umap" not in active_list:
         return no_update, no_update
@@ -474,6 +546,39 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
     if df is None:
         return "", []
     color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
+
+    # --- Split View: facet_by が Cluster / 選択グループ なら汎用ファセット描画 ---
+    facet_by = facet_by or "Sample"
+    if facet_by == "Cluster":
+        if exclude_clusters:
+            ex = {str(c) for c in exclude_clusters}
+            df = df[~df["Cluster"].astype(str).isin(ex)]
+        cats = sorted(df["Cluster"].unique(), key=_cluster_sort_key)
+        facets = [(_cluster_display_name(c, cluster_name_map),
+                   (df["Cluster"].astype(str) == str(c)).to_numpy()) for c in cats]
+        fig_dicts = []
+        graphs = _build_umap_facet_graphs(
+            df, facets, color_map, marker_size=marker_size or 2,
+            columns_per_row=columns_per_row or 0, cluster_name_map=cluster_name_map,
+            collect_figures=fig_dicts)
+        return html.Div(style={"display": "flex", "flexWrap": "wrap",
+                               "gap": "15px", "marginTop": "10px"},
+                        children=graphs), fig_dicts
+    if facet_by == "group":
+        groups = (selection_groups or {}).get("groups", [])
+        if not groups:
+            return html.Div("選択グループがありません（UMAP の「選択グループ」で保存してください）。",
+                            className="text-muted small mt-2"), []
+        facets = [(g.get("name", ""), set(g.get("cell_ids", []))) for g in groups]
+        fig_dicts = []
+        graphs = _build_umap_facet_graphs(
+            df, facets, color_map, marker_size=marker_size or 2,
+            columns_per_row=columns_per_row or 0, cluster_name_map=cluster_name_map,
+            collect_figures=fig_dicts)
+        return html.Div(style={"display": "flex", "flexWrap": "wrap",
+                               "gap": "15px", "marginTop": "10px"},
+                        children=graphs), fig_dicts
+
     method = _interactive_data.get("method")
     all_pos = _get_merged_label_positions(accumulated_positions,
                                           rds_path=rds_path, method=method)

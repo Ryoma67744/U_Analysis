@@ -263,6 +263,25 @@ class SeuratBridge:
         except (KeyError, Exception):
             return None
 
+    def get_features_matrix(self, cache_dir, feature_names):
+        """expression_matrix.parquet から複数 feature 列をまとめて読む (共発現用)。
+
+        存在する列のみ取得する。Returns: (DataFrame, present_list) または
+        (None, []) (parquet 不在 / 一致 0)。"""
+        expr_path = Path(cache_dir) / "expression_matrix.parquet"
+        if not expr_path.exists():
+            return None, []
+        try:
+            import pyarrow.parquet as pq
+            schema_names = set(pq.ParquetFile(str(expr_path)).schema.names)
+            present = [str(f) for f in (feature_names or [])
+                       if str(f) in schema_names]
+            if not present:
+                return None, []
+            return pd.read_parquet(expr_path, columns=present), present
+        except Exception:  # noqa: BLE001
+            return None, []
+
     def _run_extraction(self, rds_path: str, output_dir: Path,
                         with_expression: bool = False, cancel_event=None):
         """R ヘルパースクリプトで Seurat データを抽出

@@ -813,6 +813,19 @@ def create_interactive_tab():
                                         style={"fontSize": "12px"},
                                     ),
                                 ]),
+                                dbc.Col(width=3, children=[
+                                    dbc.Label("分割基準 (サンプル別表示時)", className="small mb-0"),
+                                    dcc.Dropdown(
+                                        id="umap_facet_by",
+                                        options=[
+                                            {"label": "サンプル", "value": "Sample"},
+                                            {"label": "クラスタ", "value": "Cluster"},
+                                            {"label": "選択グループ", "value": "group"},
+                                        ],
+                                        value="Sample", clearable=False,
+                                        style={"fontSize": "12px"},
+                                    ),
+                                ]),
                             ]),
                             # マージ統合 切替コントロール（マージデータがある場合のみ表示）
                             html.Div(
@@ -946,6 +959,34 @@ def create_interactive_tab():
                                                    accept=".csv", multiple=False),
                                     ]),
                                 ]),
+                            ], className="mt-2 border rounded p-2"),
+                            # --- 選択クラスタで再解析 (P5-c: 既存の再解析エンジンへ橋渡し) ---
+                            html.Div([
+                                html.Strong("選択クラスタで再解析", className="small d-block mb-1"),
+                                dbc.Row(className="g-1 align-items-end", children=[
+                                    dbc.Col(width=3, children=[
+                                        dbc.Label("モード", className="small mb-0"),
+                                        dbc.RadioItems(
+                                            id="reanalysis_bridge_mode",
+                                            options=[{"label": "抽出(keep)", "value": "keep"},
+                                                     {"label": "除外(exclude)", "value": "exclude"}],
+                                            value="keep", inline=True),
+                                    ]),
+                                    dbc.Col(width=5, children=[
+                                        dbc.Label("対象クラスタ", className="small mb-0"),
+                                        dcc.Dropdown(id="reanalysis_bridge_clusters", multi=True,
+                                                     placeholder="クラスタを選択"),
+                                    ]),
+                                    dbc.Col(width="auto", children=[
+                                        dbc.Button("再解析フォームへ送る", id="btn_send_to_reanalysis",
+                                                   size="sm", color="warning"),
+                                    ]),
+                                    dbc.Col(width="auto", className="d-flex align-items-center", children=[
+                                        html.Div(id="reanalysis_bridge_status"),
+                                    ]),
+                                ]),
+                                dbc.FormText("設定タブの再解析フォーム(対象クラスタ/モード/RDSフォルダ)を"
+                                             "自動入力し設定タブへ移動します。データフォルダ等を確認して実行してください。"),
                             ], className="mt-2 border rounded p-2"),
                         ]),
 
@@ -1258,6 +1299,93 @@ def create_interactive_tab():
                                     "format": "png", "filename": "Feature_violin",
                                     "scale": 3}},
                             )),
+                            # --- Feature リスト + 共発現散布図 (P5-b) ---
+                            html.Hr(className="my-2"),
+                            html.Strong("Feature リスト / 共発現", className="small d-block mb-1"),
+                            dbc.Row(className="g-1 align-items-end mb-1", children=[
+                                dbc.Col(width=3, children=[
+                                    dbc.Input(id="feature_list_name", size="sm",
+                                              placeholder="リスト名 (例: PC脂質)"),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button("絞り込みから作成", id="btn_list_from_mzfilter",
+                                               size="sm", color="primary",
+                                               title="現在の m/z 範囲絞り込み結果からリスト作成"),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button("ブックマークから作成", id="btn_list_from_bookmarks",
+                                               size="sm", color="outline-primary"),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    dcc.Upload(id="upload_feature_list",
+                                               children=dbc.Button("CSV取込", size="sm",
+                                                                   color="outline-info"),
+                                               accept=".csv", multiple=False),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button("CSV出力", id="btn_export_feature_lists",
+                                               size="sm", color="outline-success"),
+                                ]),
+                                dbc.Col(width="auto", className="d-flex align-items-center", children=[
+                                    html.Div(id="feature_lists_status"),
+                                ]),
+                            ]),
+                            dash_table.DataTable(
+                                id="feature_lists_table",
+                                columns=[{"name": "リスト", "id": "name"},
+                                         {"name": "feature数", "id": "n", "type": "numeric"}],
+                                data=[], page_size=5,
+                                style_table={"overflowX": "auto"},
+                                style_cell={"fontSize": "11px", "padding": "3px"},
+                                style_header={"fontWeight": "bold", "backgroundColor": "#f1f3f5"},
+                            ),
+                            dbc.Row(className="g-1 align-items-end mt-1", children=[
+                                dbc.Col(width=4, children=[
+                                    dbc.Label("対象リスト", className="small mb-0"),
+                                    dcc.Dropdown(id="feature_list_select",
+                                                 placeholder="リスト", clearable=True),
+                                ]),
+                                dbc.Col(width=3, children=[
+                                    dbc.Input(id="feature_list_rename", size="sm",
+                                              placeholder="新しい名前"),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button("改名", id="btn_rename_feature_list", size="sm",
+                                               color="outline-secondary"),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button("削除", id="btn_delete_feature_list", size="sm",
+                                               color="outline-danger"),
+                                ]),
+                            ]),
+                            dbc.Row(className="g-1 align-items-end mt-1", children=[
+                                dbc.Col(width=3, children=[
+                                    dbc.Label("共発現 リストA (x)", className="small mb-0"),
+                                    dcc.Dropdown(id="coexpr_list_a", placeholder="リストA", clearable=True),
+                                ]),
+                                dbc.Col(width=3, children=[
+                                    dbc.Label("リストB (y)", className="small mb-0"),
+                                    dcc.Dropdown(id="coexpr_list_b", placeholder="リストB", clearable=True),
+                                ]),
+                                dbc.Col(width=2, children=[
+                                    dbc.Label("集約", className="small mb-0"),
+                                    dbc.RadioItems(id="coexpr_agg",
+                                                   options=[{"label": "合計", "value": "sum"},
+                                                            {"label": "平均", "value": "mean"}],
+                                                   value="sum", inline=True),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button("共発現を描画", id="btn_run_coexpr",
+                                               size="sm", color="success"),
+                                ]),
+                                dbc.Col(width="auto", className="d-flex align-items-center", children=[
+                                    html.Div(id="coexpr_status"),
+                                ]),
+                            ]),
+                            dcc.Loading(dcc.Graph(
+                                id="coexpr_scatter", style={"height": "420px"},
+                                config={"toImageButtonOptions": {
+                                    "format": "png", "filename": "coexpression", "scale": 2}})),
                         ]),
 
                         # --- DEG マーカー ---
@@ -1639,6 +1767,9 @@ def create_interactive_tab():
         # --- P3: 選択グループ用 ---
         dcc.Store(id="selection_groups_store", data={"groups": []}),
         dcc.Download(id="dl_selection_groups_csv"),
+        # --- P5-b: Feature リスト用 ---
+        dcc.Store(id="feature_lists_store", data={"lists": []}),
+        dcc.Download(id="dl_feature_lists_csv"),
 
         # プロジェクトとして保存モーダル
         _create_save_as_project_modal(),

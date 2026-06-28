@@ -12,6 +12,29 @@
 
 ---
 
+## 2026-06-28_ver24.0
+
+### 機能追加: Split View / Feature リスト+共発現 / 再解析ブリッジ (Phase 5)
+
+Loupe 参考の拡張3種。いずれも既存資産を流用し、既存挙動は不変。
+
+- **Split View（任意カテゴリ分割）**：サンプル別表示に「分割基準」(サンプル/クラスタ/選択グループ)
+  を追加。クラスタ・選択グループ分割は「全細胞を淡灰背景＋当該集団を色付け」+**全タイル軸共有**で
+  synchronized small-multiples を実現（`_build_umap_facet_graphs`）。サンプル分割は従来通り。
+- **Feature リスト + 2リスト共発現散布図**：複数 m/z を名前付きリストとして保存/改名/削除/CSV入出力。
+  作成元は既存の m/z 絞り込み結果・ブックマーク・CSV取込（実 feature 名をそのまま使い堅牢）。
+  リストA集約(x) vs リストB集約(y) を pixel 単位で散布し Cluster 色分け→右上ほど共局在。
+  発現は parquet から複数列一括読込（`SeuratBridge.get_features_matrix`）。
+- **選択クラスタで再解析（ブリッジ）**：**部分集合の再クラスタリングは既に本番機能**
+  （`run_analysis` + `*_Cluster_Filter_ReUMAP.R`）。インタラクティブで残す/除くクラスタを選び、
+  ボタンで設定タブの再解析フォーム（対象クラスタ/モード/RDSフォルダ）へ転記し設定タブへ移動。
+  実証済みエンジンを再利用。任意 lasso 部分集合や UMAP パラメータのみ再描画は将来課題。
+- **新規**：`services/feature_lists.py`（純CRUD+単体テスト11件）、`callbacks/interactive_feature_lists.py`、
+  `callbacks/interactive_reanalysis_bridge.py`、`interactive_umap.py` に `_build_umap_facet_graphs`。
+  version 23.0→24.0。
+
+---
+
 ## 2026-06-28_ver23.0
 
 ### 機能追加: 選択グループ（名前付き永続選択） (Phase 3)
