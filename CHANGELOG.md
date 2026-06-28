@@ -12,6 +12,28 @@
 
 ---
 
+## 2026-06-28_ver26.1
+
+### 追加: Playwright 自動 E2E テスト基盤 (非機能改善 Inc.3, インフラ)
+
+ブラウザ自動操作でアプリの回帰を検知する E2E テスト基盤を追加（アプリ挙動の変更なし）。
+**Dash はコンポーネント `id` がそのまま安定セレクタ**（`#id`）なので testid 追加は不要。
+
+- `App/tests/e2e/conftest.py`：`run_app.py` を試験ポートで起動し `/healthz` 緑を待つ
+  `app_server` fixture と、`#analyst_name`+`#password` でログインしてアプリへ入る `page` fixture。
+  playwright/Chromium が無い環境では skip。版ズレ時は `PLAYWRIGHT_BROWSERS_PATH` 配下の既設
+  Chromium を `executable_path` で自動使用（`PW_CHROMIUM_PATH` で明示可）。
+- `test_smoke.py`（**データ不要**）：起動→ログイン成功→**今回追加した主要UI（選択統計/選択グループ/
+  選択DE/Featureリスト/共発現/H&E/Split View/リセット/Undo/検索picker/マーカー表）が DOM に存在**
+  することを検証（id 欠落の回帰を自動検知）。本環境で実際に緑を確認。
+- `test_interactive_data.py`（`@pytest.mark.requires_data`）：`E2E_RESULT_FOLDER` 指定時のみ
+  実 RDS を読み込み、クラスタ表示・選択グループ保存を検証。未指定なら skip。
+- `pyproject.toml`：`markers=[e2e, requires_data]`、optional-deps `e2e`（playwright/pytest-playwright）。
+- 実行例：`pytest -m e2e App/tests/e2e/test_smoke.py` / `E2E_RESULT_FOLDER=... pytest -m requires_data`。
+  version 26.0→26.1（インフラ・挙動不変）。
+
+---
+
 ## 2026-06-28_ver26.0
 
 ### 機能追加: 検索駆動の Feature リスト作成 + エクスポート文言統一 (非機能改善 Inc.2)
