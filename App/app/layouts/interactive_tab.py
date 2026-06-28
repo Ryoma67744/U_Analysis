@@ -964,6 +964,40 @@ def create_interactive_tab():
                             ]),
                             html.Div(id="spatial_controls_container"),
                             dcc.Loading(html.Div(id="spatial_plots_container")),
+                            # --- 組織像 (H&E) オーバーレイ (P4) ---
+                            html.Hr(className="my-2"),
+                            dbc.Row(className="align-items-center mb-1", children=[
+                                dbc.Col(width="auto", children=[
+                                    dbc.Switch(id="hne_overlay_show",
+                                               label="組織像オーバーレイを表示 (単一サンプル)",
+                                               value=False),
+                                ]),
+                                dbc.Col(width=3, children=[
+                                    dbc.Label("スポット透明度", className="small mb-0"),
+                                    dcc.Slider(id="hne_overlay_opacity", min=0, max=100,
+                                               step=5, value=70,
+                                               marks={0: "0", 50: "50", 100: "100"},
+                                               tooltip={"placement": "bottom",
+                                                        "always_visible": False}),
+                                ]),
+                                dbc.Col(width=2, children=[
+                                    dbc.Label("スポットサイズ", className="small mb-0"),
+                                    dcc.Slider(id="hne_overlay_marker_size", min=2, max=15,
+                                               step=1, value=5,
+                                               marks={2: "2", 5: "5", 10: "10", 15: "15"},
+                                               tooltip={"placement": "bottom",
+                                                        "always_visible": False}),
+                                ]),
+                                dbc.Col(width="auto", className="d-flex align-items-center", children=[
+                                    html.Div(id="hne_overlay_status", className="small"),
+                                ]),
+                            ]),
+                            dcc.Loading(dcc.Graph(
+                                id="hne_overlay_graph", style={"height": "500px"},
+                                config={"scrollZoom": True,
+                                        "toImageButtonOptions": {
+                                            "format": "png", "filename": "HnE_overlay",
+                                            "scale": 2}})),
                         ]),
 
                         # --- Feature Plot ---

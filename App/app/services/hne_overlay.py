@@ -116,6 +116,29 @@ def apply_rotation(x, y, rotation):
     return x_rot, y_rot
 
 
+def msi_to_hne_px(spatial_x, spatial_y, rotation, hne_landmarks, tic_landmarks):
+    """raw SpatialX/SpatialY を、MSI 回転適用後に H&E 画素座標へ射影して返す。
+
+    Interactive タブで「登録済み H&E を背景に、MSI クラスタを重ねて表示」するための
+    順射影。regions_from_overlay と同一規約: M = estimate_affine(hne, tic) は
+    H&E px → 回転後MSI。その逆 (invert_affine) で 回転後MSI → H&E px に射影する。
+
+    Returns: (px_x, px_y)（ndarray）。対応点 < 3 なら None。
+    """
+    tic = tic_landmarks or []
+    hne = hne_landmarks or []
+    npair = min(len(tic), len(hne))
+    if npair < 3:
+        return None
+    M = estimate_affine(hne[:npair], tic[:npair])   # H&E px -> 回転後MSI
+    M_inv = invert_affine(M)                          # 回転後MSI -> H&E px
+    rx, ry = apply_rotation(spatial_x, spatial_y, rotation)
+    pts = np.column_stack([np.asarray(rx, dtype=float),
+                           np.asarray(ry, dtype=float)])
+    px = apply_affine(pts, M_inv)
+    return px[:, 0], px[:, 1]
+
+
 # ---------------------------------------------------------------------------
 # 点-内包判定（ベクトル化レイキャスト）
 # ---------------------------------------------------------------------------
