@@ -955,7 +955,8 @@ def create_interactive_tab():
                                     ]),
                                     dbc.Col(width="auto", children=[
                                         dbc.Button("CSV出力", id="btn_export_groups", size="sm",
-                                                   color="outline-success"),
+                                                   color="outline-success",
+                                                   title="選択グループを CellID,Group 形式で書き出す"),
                                     ]),
                                     dbc.Col(width="auto", children=[
                                         dcc.Upload(id="upload_selection_groups",
@@ -1339,10 +1340,25 @@ def create_interactive_tab():
                                 ]),
                                 dbc.Col(width="auto", children=[
                                     dbc.Button("CSV出力", id="btn_export_feature_lists",
-                                               size="sm", color="outline-success"),
+                                               size="sm", color="outline-success",
+                                               title="Feature リストを Feature,List 形式で書き出す"),
                                 ]),
                                 dbc.Col(width="auto", className="d-flex align-items-center", children=[
                                     html.Div(id="feature_lists_status"),
+                                ]),
+                            ]),
+                            # 検索駆動の作成（feature を検索して選び、リスト化）
+                            dbc.Row(className="g-1 align-items-end mb-1", children=[
+                                dbc.Col(width=6, children=[
+                                    dbc.Label("feature を検索して選択", className="small mb-0"),
+                                    dcc.Dropdown(id="feature_list_picker", multi=True,
+                                                 placeholder="m/z を入力して検索（例: 700.5）...",
+                                                 options=[]),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button("選択 feature でリスト作成",
+                                               id="btn_list_from_picker",
+                                               size="sm", color="primary"),
                                 ]),
                             ]),
                             dash_table.DataTable(
@@ -1586,8 +1602,9 @@ def create_interactive_tab():
                                                     ),
                                                 ]),
                                                 dbc.Col(width="auto", className="d-flex align-items-end", children=[
-                                                    dbc.Button("CSV 出力", id="btn_export_marker_table",
-                                                               size="sm", color="success", className="mb-1"),
+                                                    dbc.Button("CSV出力", id="btn_export_marker_table",
+                                                               size="sm", color="success", className="mb-1",
+                                                               title="マーカー表を現在の並び替え/絞り込みを反映して書き出す"),
                                                 ]),
                                                 dbc.Col(width="auto", className="d-flex align-items-center", children=[
                                                     dbc.FormText("現在の並び替え/絞り込みを反映"),
@@ -1660,8 +1677,9 @@ def create_interactive_tab():
                                                         value=50, clearable=False, style={"fontSize": "12px"}),
                                                 ]),
                                                 dbc.Col(width="auto", className="d-flex align-items-end", children=[
-                                                    dbc.Button("CSV 出力", id="btn_export_onthefly_de",
-                                                               size="sm", color="success", className="mb-1"),
+                                                    dbc.Button("CSV出力", id="btn_export_onthefly_de",
+                                                               size="sm", color="success", className="mb-1",
+                                                               title="選択 DE 結果を現在の並び替え/絞り込みを反映して書き出す"),
                                                 ]),
                                             ]),
                                             dcc.Loading(dcc.Graph(

@@ -38,19 +38,21 @@ def _status(msg, cls="text-muted small"):
      Input("btn_list_from_bookmarks", "n_clicks"),
      Input("btn_rename_feature_list", "n_clicks"),
      Input("btn_delete_feature_list", "n_clicks"),
-     Input("upload_feature_list", "contents")],
+     Input("upload_feature_list", "contents"),
+     Input("btn_list_from_picker", "n_clicks")],
     [State("feature_lists_store", "data"),
      State("feature_list_name", "value"),
      State("feature_mz_filtered_list", "data"),
      State("feature_history_store", "data"),
      State("feature_list_select", "value"),
      State("feature_list_rename", "value"),
+     State("feature_list_picker", "value"),
      State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
 def mutate_feature_lists(rds_trigger, _n_mz, _n_bm, _n_ren, _n_del, upload,
-                         state, new_name, mz_filtered, bookmarks, sel_lid,
-                         rename_text, rds_path):
+                         _n_pick, state, new_name, mz_filtered, bookmarks,
+                         sel_lid, rename_text, picker_feats, rds_path):
     trig = ctx.triggered_id
     state = state or fl.empty_state()
 
@@ -58,6 +60,16 @@ def mutate_feature_lists(rds_trigger, _n_mz, _n_bm, _n_ren, _n_del, upload,
         if not rds_path:
             return fl.empty_state(), no_update
         return fl.load_lists(rds_path), no_update
+
+    if trig == "btn_list_from_picker":
+        feats = picker_feats or []
+        if not feats:
+            return no_update, _status("検索して feature を選択してください", "text-warning small")
+        state = fl.add_list(state, new_name, feats)
+        msg = _status(f"作成: {state['lists'][-1]['name']} ({len(feats)} feature)", "text-success small")
+        if rds_path:
+            fl.save_lists(rds_path, state)
+        return state, msg
 
     if trig == "btn_list_from_mzfilter":
         feats = mz_filtered or []
@@ -105,6 +117,31 @@ def mutate_feature_lists(rds_trigger, _n_mz, _n_bm, _n_ren, _n_del, upload,
     if rds_path:
         fl.save_lists(rds_path, state)
     return state, msg
+
+
+# ---------------------------------------------------------------------------
+# 検索駆動の feature picker (サーバ側検索。interactive_deg.filter_features と同型)
+# ---------------------------------------------------------------------------
+@callback(
+    Output("feature_list_picker", "options"),
+    Input("feature_list_picker", "search_value"),
+    [State("seurat_rds_path_store", "data"),
+     State("feature_list_picker", "value")],
+    prevent_initial_call=True,
+)
+def filter_feature_list_picker(search_value, rds_path, current):
+    from app.callbacks.interactive_callbacks import _interactive_data, _set_active_key
+    _set_active_key(rds_path)
+    features = _interactive_data.get("features_list") or []
+    current = [str(c) for c in (current or [])]
+    base = [{"label": c, "value": c} for c in current]  # 選択済みは表示維持
+    if not search_value:
+        return base[:500]
+    kw = str(search_value).lower()
+    cur_set = set(current)
+    matches = [str(f) for f in features
+               if kw in str(f).lower() and str(f) not in cur_set]
+    return base + [{"label": f, "value": f} for f in matches[:500]]
 
 
 # ---------------------------------------------------------------------------
