@@ -687,6 +687,19 @@ def load_stage_b_extract(trigger):
         state["method"] = integration_method
         state.pop("_deg_data", None)
         state.pop("_calib_warning", None)
+        # 手動クラスタ（lasso 保存）を ManualCluster 列として復元
+        try:
+            _mc = (_load_interactive_settings_util(rds_path) or {}).get(
+                "manual_clusters") or {}
+            _pd = state["plot_data"]
+            if _mc and "CellID" in _pd.columns:
+                _assign = {}
+                for _nm, _ids in _mc.items():
+                    for _cid in _ids:
+                        _assign[_cid] = _nm
+                _pd["ManualCluster"] = _pd["CellID"].map(_assign).fillna("未割当")
+        except Exception:
+            pass
         _set_active_key(rds_path)
     except FileNotFoundError:
         return (no_update, no_update, _PROGRESS_HIDE,

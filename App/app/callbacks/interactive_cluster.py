@@ -376,3 +376,81 @@ def update_cluster_dropdown_labels(cluster_name_map, merge_toggle):
     opts = [{"label": _cluster_display_name(c, cluster_name_map), "value": str(c)}
             for c in clusters]
     return opts, opts, opts, opts, opts
+
+
+# ---------------------------------------------------------------------------
+# 範囲選択 → 名前付き手動クラスタ（Loupe の lasso 相当）
+# ---------------------------------------------------------------------------
+
+def _apply_manual_clusters_to_memory(mc):
+    """_interactive_data の plot_data に ManualCluster 列を反映/削除する。"""
+    df = _interactive_data.get("plot_data")
+    if df is None or "CellID" not in df.columns:
+        return
+    if not mc:
+        if "ManualCluster" in df.columns:
+            df.drop(columns=["ManualCluster"], inplace=True)
+        return
+    assign = {}
+    for nm, ids in mc.items():
+        for cid in ids:
+            assign[cid] = nm
+    df["ManualCluster"] = df["CellID"].map(assign).fillna("未割当")
+
+
+@callback(
+    Output("manual_cluster_status", "children"),
+    Output("manual_cluster_list", "options"),
+    Output("manual_cluster_saved_trigger", "data"),
+    Input("save_manual_cluster_btn", "n_clicks"),
+    Input("delete_manual_cluster_btn", "n_clicks"),
+    State("interactive_umap_plot", "selectedData"),
+    State("manual_cluster_name", "value"),
+    State("manual_cluster_list", "value"),
+    State("seurat_rds_path_store", "data"),
+    State("manual_cluster_saved_trigger", "data"),
+    prevent_initial_call=True,
+)
+def save_or_delete_manual_cluster(save_n, del_n, selected_data, name,
+                                  sel_existing, rds_path, trig_state):
+    """UMAP でなぞった範囲を名前付きクラスタとして保存/削除（interactive_settings.json）。"""
+    if not rds_path:
+        return no_update, no_update, no_update
+    _set_active_key(rds_path)
+    mc = (_load_interactive_settings() or {}).get("manual_clusters") or {}
+    trigger = ctx.triggered_id
+    if trigger == "delete_manual_cluster_btn":
+        if not sel_existing or sel_existing not in mc:
+            return "削除する手動クラスタを選択してください", no_update, no_update
+        mc.pop(sel_existing, None)
+        status = f"🗑 '{sel_existing}' を削除しました"
+    else:  # save
+        if not name or not str(name).strip():
+            return "クラスタ名を入力してください", no_update, no_update
+        ids = []
+        if selected_data and selected_data.get("points"):
+            for pt in selected_data["points"]:
+                if pt.get("text"):
+                    ids.append(pt["text"])
+        if not ids:
+            return ("UMAP 上で範囲をなぞって選択してください（投げ縄/矩形）",
+                    no_update, no_update)
+        mc[str(name).strip()] = ids
+        status = f"✅ '{str(name).strip()}' を {len(ids)} 点で保存しました"
+    _save_interactive_settings("manual_clusters", mc)
+    _apply_manual_clusters_to_memory(mc)
+    opts = [{"label": f"{k} ({len(v)})", "value": k} for k, v in mc.items()]
+    n = (trig_state or {}).get("n", 0) if isinstance(trig_state, dict) else 0
+    return status, opts, {"n": n + 1}
+
+
+@callback(
+    Output("manual_cluster_list", "options", allow_duplicate=True),
+    Input("seurat_rds_path_store", "data"),
+    prevent_initial_call=True,
+)
+def load_manual_cluster_list(rds_path):
+    """データ読込時に保存済み手動クラスタ一覧を復元。"""
+    _set_active_key(rds_path)
+    mc = (_load_interactive_settings() or {}).get("manual_clusters") or {}
+    return [{"label": f"{k} ({len(v)})", "value": k} for k, v in mc.items()]

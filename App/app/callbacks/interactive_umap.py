@@ -354,14 +354,15 @@ def _get_merged_label_positions(accumulated_positions=None,
      Input("cluster_name_map_store", "data"),
      Input("umap_merge_toggle", "value"),
      Input("umap_merge_color_mode", "value"),
-     Input("interactive_accordion", "active_item")],
+     Input("interactive_accordion", "active_item"),
+     Input("manual_cluster_saved_trigger", "data")],
     State("accumulated_label_positions", "data"),
 )
 def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
                      display_mode, marker_size, exclude_clusters, label_size,
                      rds_path, _fs_trigger, custom_colors, cluster_name_map,
                      merge_toggle, merge_color_mode, active_items,
-                     accumulated_positions):
+                     _mc_trigger, accumulated_positions):
     active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
     if "acc_umap" not in active_list:
         return no_update

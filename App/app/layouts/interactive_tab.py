@@ -749,6 +749,7 @@ def create_interactive_tab():
                                         options=[
                                             {"label": "Cluster", "value": "Cluster"},
                                             {"label": "Sample", "value": "Sample"},
+                                            {"label": "手動", "value": "ManualCluster"},
                                         ],
                                         value="Cluster", inline=True,
                                     ),
@@ -814,6 +815,33 @@ def create_interactive_tab():
                                     ),
                                 ]),
                             ]),
+                            # 範囲選択 → 名前付きクラスタ保存（Loupe の lasso 相当）
+                            dbc.Row(className="mt-1 align-items-end g-2", children=[
+                                dbc.Col(width="auto", children=[
+                                    dbc.Label("範囲選択→クラスタ保存", className="small mb-0"),
+                                    dbc.Input(id="manual_cluster_name", type="text",
+                                              placeholder="クラスタ名", size="sm",
+                                              style={"width": "150px"}),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button("選択を保存", id="save_manual_cluster_btn",
+                                               size="sm", color="success"),
+                                ]),
+                                dbc.Col(width=3, children=[
+                                    dbc.Label("手動クラスタ", className="small mb-0"),
+                                    dcc.Dropdown(id="manual_cluster_list",
+                                                 placeholder="保存済み", clearable=True),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button("削除", id="delete_manual_cluster_btn",
+                                               size="sm", color="outline-danger"),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    html.Span(id="manual_cluster_status",
+                                              className="small text-muted"),
+                                ]),
+                            ]),
+                            dcc.Store(id="manual_cluster_saved_trigger"),
                             # マージ統合 切替コントロール（マージデータがある場合のみ表示）
                             html.Div(
                                 id="umap_merge_controls_wrapper",
