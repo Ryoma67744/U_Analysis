@@ -12,6 +12,22 @@
 
 ---
 
+## 2026-06-27_ver19.6
+
+### 改善: PreFlight①(reduction_only) の進捗バーが「準備中」で止まらないように
+
+- **背景**：「① reduction のみ作成」実行中、進捗バーが「準備中」付近で止まり進行が分からなかった。
+  UI は進捗を R ログのキーワードで判定する（`_detect_current_step` / `_STEP_DEFINITIONS["tims_v8"]`）が、
+  reduction 構築中（Harmony 補正・PCA）は一致キーワードが直近ログ窓に無く「準備中」に落ちていた。
+- **変更**：
+  - `260623_..._ver6_no-png_slim.R`：reduction 構築直前に `Preprocessing ...` を1行出力（`preprocessing` 段を表示）。
+  - `analysis_callbacks.py`：`tims_v8` 段階定義に `("Harmony correction","harmony")` を追加（Harmony 中の
+    "Harmony N/10" 出力で段階が進む）。段階検出のログ窓を 200→600 行に拡大し、マーカーの取りこぼしを防止。
+- **効果**：reduction_only 実行中、バーが Loading→Preprocessing→Harmony correction→RPCA→Done と進む。
+  フル解析でも Harmony 段が増え自然に（後方一致のため回帰なし）。version 19.5→19.6。
+
+---
+
 ## 2026-06-27_ver19.5
 
 ### 改善: 無補正PCAを Harmony の pca から流用（重複PCA計算を廃止・比較の公平化）
