@@ -869,6 +869,11 @@ def create_interactive_tab():
                                 # サンプル別 UMAP 表示コンテナ
                                 html.Div(id="umap_per_sample_container"),
                             ]),
+                            # --- 選択範囲のライブ統計 (P1: Loupe 風 即時集計) ---
+                            html.Div([
+                                html.Strong("選択範囲の統計", className="small d-block mb-1"),
+                                html.Div(id="selection_summary_card"),
+                            ], className="mt-2 border rounded p-2 bg-light"),
                         ]),
 
                         # --- Spatial Mapping ---
@@ -1098,7 +1103,54 @@ def create_interactive_tab():
                                               placeholder="100", size="sm"),
                                 ]),
                             ]),
+                            # --- カラースケール制御 (P1) ---
+                            dbc.Row(className="mt-1 align-items-center", children=[
+                                dbc.Col(width=3, children=[
+                                    dbc.Label("カラースケール", className="small mb-0"),
+                                    dcc.Dropdown(
+                                        id="feature_colorscale",
+                                        options=[{"label": c, "value": c} for c in
+                                                 ["Plasma", "Viridis", "Magma", "Inferno",
+                                                  "Cividis", "Turbo", "Hot", "Jet"]],
+                                        value="Plasma", clearable=False,
+                                        style={"fontSize": "12px"},
+                                    ),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Switch(id="feature_log_scale",
+                                               label="log10 表示", value=False),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Switch(id="feature_reverse_scale",
+                                               label="色反転", value=False),
+                                ]),
+                            ]),
                             dcc.Loading(html.Div(id="feature_plot_container")),
+                            # --- Feature 分布 (violin) パネル (P1) ---
+                            html.Hr(className="my-2"),
+                            dbc.Row(className="align-items-center", children=[
+                                dbc.Col(width="auto", children=[
+                                    dbc.Label("分布表示 (Violin)",
+                                              className="small mb-0 fw-bold"),
+                                ]),
+                                dbc.Col(width=4, children=[
+                                    dbc.RadioItems(
+                                        id="feature_violin_group_by",
+                                        options=[
+                                            {"label": "クラスタ別", "value": "Cluster"},
+                                            {"label": "サンプル別", "value": "Sample"},
+                                        ],
+                                        value="Cluster", inline=True,
+                                    ),
+                                ]),
+                            ]),
+                            dcc.Loading(dcc.Graph(
+                                id="feature_violin_plot",
+                                style={"height": "320px"},
+                                config={"toImageButtonOptions": {
+                                    "format": "png", "filename": "Feature_violin",
+                                    "scale": 3}},
+                            )),
                         ]),
 
                         # --- DEG マーカー ---
@@ -1258,6 +1310,48 @@ def create_interactive_tab():
                                                 ),
                                             ),
                                         ]),
+                                        # --- マーカー表 タブ (P1: ソート可能 + Top-N CSV) ---
+                                        dbc.Tab(label="マーカー表", tab_id="deg_table_tab", children=[
+                                            dbc.Row(className="mt-2 mb-2 align-items-end", children=[
+                                                dbc.Col(width=3, children=[
+                                                    dbc.Label("クラスタ", className="small mb-0"),
+                                                    dcc.Dropdown(
+                                                        id="deg_markers_cluster_filter",
+                                                        placeholder="全クラスタ", clearable=True),
+                                                ]),
+                                                dbc.Col(width=2, children=[
+                                                    dbc.Label("Top N 出力", className="small mb-0"),
+                                                    dcc.Dropdown(
+                                                        id="marker_table_top_n",
+                                                        options=[{"label": lbl, "value": v} for lbl, v in
+                                                                 [("10", 10), ("20", 20), ("50", 50),
+                                                                  ("100", 100), ("全件", 0)]],
+                                                        value=50, clearable=False,
+                                                        style={"fontSize": "12px"},
+                                                    ),
+                                                ]),
+                                                dbc.Col(width="auto", className="d-flex align-items-end", children=[
+                                                    dbc.Button("CSV 出力", id="btn_export_marker_table",
+                                                               size="sm", color="success", className="mb-1"),
+                                                ]),
+                                                dbc.Col(width="auto", className="d-flex align-items-center", children=[
+                                                    dbc.FormText("現在の並び替え/絞り込みを反映"),
+                                                ]),
+                                            ]),
+                                            dash_table.DataTable(
+                                                id="deg_markers_table",
+                                                columns=[],
+                                                data=[],
+                                                sort_action="native",
+                                                filter_action="native",
+                                                page_size=20,
+                                                style_table={"overflowX": "auto"},
+                                                style_cell={"fontSize": "12px", "padding": "4px",
+                                                            "fontFamily": "monospace"},
+                                                style_header={"fontWeight": "bold",
+                                                              "backgroundColor": "#f1f3f5"},
+                                            ),
+                                        ]),
                                     ]),
                                 ],
                             ),
@@ -1354,6 +1448,12 @@ def create_interactive_tab():
         dcc.Store(id="int_cal_restore_pending", data=False),
         # プロジェクトとして保存: リセット抑止フラグ
         dcc.Store(id="sap_skip_reset", data=False),
+
+        # --- Loupe 風 追加機能 (P1) 用 Store / Download ---
+        # lasso/box 選択の単一ソース (選択統計・将来の逆リンク/選択グループの土台)
+        dcc.Store(id="selected_cell_ids_store", data=[]),
+        # マーカー表 Top-N CSV ダウンロード
+        dcc.Download(id="dl_marker_table_csv"),
 
         # プロジェクトとして保存モーダル
         _create_save_as_project_modal(),

@@ -30,6 +30,7 @@ from app.utils.deg_utils import (
 from app.utils.label_persistence import (
     compute_annotation_offsets as _compute_annotation_offsets,
 )
+from app.utils.selection_utils import log_transform_intensities
 
 logger = logging.getLogger("msi.interactive.deg")
 
@@ -255,7 +256,10 @@ def update_feature_options_on_mz_filter(mz_filtered, rds_path=None):
      Input("sample_name_map_store", "data"),
      Input("fullscreen_closed_trigger", "data"),
      Input("feature_columns_per_row", "value"),
-     Input("feature_show_compound_names", "value")],
+     Input("feature_show_compound_names", "value"),
+     Input("feature_colorscale", "value"),
+     Input("feature_log_scale", "value"),
+     Input("feature_reverse_scale", "value")],
     [State("seurat_rds_path_store", "data"),
      State("seurat_cache_dir_store", "data"),
      State("spatial_rotation_store", "data"),
@@ -266,6 +270,7 @@ def update_feature_plot(feature_name, sample, marker_size,
                         intensity_min, intensity_max,
                         name_map, _fs_trigger, columns_per_row,
                         show_compound_names,
+                        colorscale, log_scale, reverse_scale,
                         rds_path, cache_dir_str, rotation_store,
                         deg_data):
     from app.callbacks.interactive_callbacks import _interactive_data, _bridge, _set_active_key
@@ -311,6 +316,12 @@ def update_feature_plot(feature_name, sample, marker_size,
         # expression を df に結合（CellID順で対応）
         df_plot = df.copy()
         df_plot["_expression"] = expression
+
+        # P1: log10 表示トグル（MSI のダイナミックレンジ対策。以降の
+        # global_min/max・正規化も変換後の値で一貫させる）
+        if log_scale:
+            df_plot["_expression"] = log_transform_intensities(
+                df_plot["_expression"].values)
 
         # 表示対象サンプル
         if sample:
@@ -375,7 +386,8 @@ def update_feature_plot(feature_name, sample, marker_size,
                 size=m_size,
                 symbol="square",
                 color=df_s["_expression"].values,
-                colorscale="Plasma",
+                colorscale=colorscale or "Plasma",
+                reversescale=bool(reverse_scale),
                 cmin=display_min,
                 cmax=display_max,
                 showscale=is_last,

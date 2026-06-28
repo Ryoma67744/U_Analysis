@@ -12,6 +12,30 @@
 
 ---
 
+## 2026-06-28_ver20.0
+
+### 機能追加: Loupe Browser 9 を参考にしたインタラクティブ解析の強化 (Phase 1)
+
+10x Genomics Loupe Browser 9.1.0 の挙動解析（`App/docs/LOUPE_BENCHMARK.md`）をもとに、
+UMAP インタラクティブ解析へ「選択 → 即時反応」系の機能を追加する第1弾。**新規追加のみで
+既存コールバックの挙動は不変**（feature plot のカラースケールのみ拡張）。
+
+- **lasso/box 選択 + 共有選択 Store**：UMAP の投げ縄/ボックス選択（既定 modebar で利用可能）を
+  単一の `selected_cell_ids_store` に集約。今後の逆リンク・選択グループ・選択範囲 DE の土台。
+- **ライブ選択統計カード**：選択した瞬間に、選択ピクセル数・全体比・クラスタ別/サンプル別構成・
+  表示中 feature の平均強度（parquet 高速路がある時のみ、R 往復なし）を即時表示。
+- **feature カラースケール制御**：パレット選択（Plasma/Viridis/Magma 他）、**log10 表示**
+  （MSI のダイナミックレンジ対策）、色反転。`update_feature_plot` に Input を追加。
+- **violin 分布パネル**：選択 feature の分布をクラスタ別/サンプル別に表示
+  （`get_feature_expression_fast` を流用）。
+- **ソート可能マーカー DataTable + Top-N CSV 出力**：DEG マーカーを列ソート/絞り込み可能な表で
+  表示し、現在の並び替え/絞り込みを反映して Top 10/20/50/100/全件 を CSV 出力。
+- **新規ファイル**：`app/utils/selection_utils.py`（純ロジック・単体テスト付）、
+  `app/callbacks/interactive_loupe.py`（新規コールバック）、`tests/test_selection_utils.py`、
+  `docs/LOUPE_BENCHMARK.md`。version 19.6→20.0。
+
+---
+
 ## 2026-06-27_ver19.6
 
 ### 改善: PreFlight①(reduction_only) の進捗バーが「準備中」で止まらないように
