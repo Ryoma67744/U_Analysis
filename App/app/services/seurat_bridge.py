@@ -263,6 +263,25 @@ class SeuratBridge:
         except (KeyError, Exception):
             return None
 
+    def get_features_matrix(self, cache_dir, feature_names):
+        """expression_matrix.parquet から複数 feature 列をまとめて読む (共発現用)。
+
+        存在する列のみ取得する。Returns: (DataFrame, present_list) または
+        (None, []) (parquet 不在 / 一致 0)。"""
+        expr_path = Path(cache_dir) / "expression_matrix.parquet"
+        if not expr_path.exists():
+            return None, []
+        try:
+            import pyarrow.parquet as pq
+            schema_names = set(pq.ParquetFile(str(expr_path)).schema.names)
+            present = [str(f) for f in (feature_names or [])
+                       if str(f) in schema_names]
+            if not present:
+                return None, []
+            return pd.read_parquet(expr_path, columns=present), present
+        except Exception:  # noqa: BLE001
+            return None, []
+
     def _run_extraction(self, rds_path: str, output_dir: Path,
                         with_expression: bool = False, cancel_event=None):
         """R ヘルパースクリプトで Seurat データを抽出
@@ -462,6 +481,88 @@ class SeuratBridge:
                 raise RuntimeError(
                     f"Region×cluster export produced no output: {out_csv_path}")
             return pd.read_csv(out_csv_path)
+
+    def run_differential_expression(self, rds_path, ident1_ids, ident2_ids=None,
+                                    mode="global", min_pct=0.05, logfc=0.25,
+                                    test_use="wilcox", assay=None,
+                                    cancel_event=None, timeout=600):
+        """選択範囲/群の on-the-fly DE を R (FindMarkers wilcox + BH) で実行する。
+
+        mode="global": ident1_ids (選択) vs 残り全体（ident2 無視）。
+        mode="local" : ident1_ids (選択) vs ident2_ids (指定群) のみ。
+        CellID は plot_data の CellID（= colnames(obj)）。
+
+        Returns: pd.DataFrame[gene,cluster,p_val,avg_log2FC,pct.1,pct.2,p_val_adj]。
+        結果は (mode, ids, params) のハッシュで cache_dir にキャッシュし再実行で即返す。
+        export_region_cluster_means と同じ subprocess/FileLock パターン。
+        """
+        from app.utils.file_locks import get_or_create_lock
+        ident1_ids = [str(c) for c in (ident1_ids or [])]
+        ident2_ids = [str(c) for c in (ident2_ids or [])] if mode == "local" else []
+        if len(ident1_ids) < 3:
+            raise RuntimeError("選択範囲が小さすぎます (3 ピクセル以上を選択してください)")
+        if mode == "local" and len(ident2_ids) < 3:
+            raise RuntimeError("比較対象の群が小さすぎます (3 ピクセル以上)")
+
+        cache_dir = self._get_cache_dir(rds_path)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        h = hashlib.md5("|".join([
+            mode,
+            ",".join(sorted(ident1_ids)),
+            ",".join(sorted(ident2_ids)),
+            str(min_pct), str(logfc), test_use,
+        ]).encode()).hexdigest()[:16]
+        out_csv = cache_dir / f"de_{h}.csv"
+        groups_csv = cache_dir / f"de_groups_{h}.csv"
+
+        script = R_HELPERS_DIR / "run_findmarkers.R"
+        if not Path(script).exists():
+            raise RuntimeError(f"R script not found: {script}")
+        rscript = str(RSCRIPT_PATH)
+        if not Path(rscript).exists():
+            rscript = "Rscript"
+
+        lock = get_or_create_lock(out_csv, timeout=timeout)
+        with lock:
+            if out_csv.exists():
+                return pd.read_csv(out_csv)
+            rows_id = ident1_ids + ident2_ids
+            rows_grp = ["A"] * len(ident1_ids) + ["B"] * len(ident2_ids)
+            pd.DataFrame({"CellID": rows_id, "Group": rows_grp}).to_csv(
+                groups_csv, index=False, encoding="utf-8")
+            cmd = [rscript, "--vanilla", str(script), str(rds_path),
+                   str(groups_csv), str(out_csv), mode,
+                   "--min-pct", str(min_pct), "--logfc", str(logfc),
+                   "--test", test_use]
+            if assay:
+                cmd += ["--assay", str(assay)]
+            try:
+                if cancel_event is None:
+                    result = subprocess.run(
+                        cmd, capture_output=True, timeout=timeout,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                    returncode, stderr_bytes = result.returncode, result.stderr
+                else:
+                    returncode, stderr_bytes = _popen_with_cancel(
+                        cmd, cancel_event, timeout=timeout,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(f"DE timed out: rds={rds_path}") from e
+            except RuntimeError as e:
+                if str(e) == "__TIMEOUT__":
+                    raise RuntimeError(f"DE timed out: rds={rds_path}") from e
+                raise
+            finally:
+                try:
+                    groups_csv.unlink()
+                except OSError:
+                    pass
+            if returncode != 0:
+                stderr_text = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+                raise RuntimeError(f"DE failed:\n{stderr_text[:2000]}")
+            if not out_csv.exists():
+                raise RuntimeError(f"DE produced no output: {out_csv}")
+            return pd.read_csv(out_csv)
 
     def _load_extracted_data(self, cache_dir: Path) -> dict:
         """キャッシュディレクトリからデータを読み込み"""

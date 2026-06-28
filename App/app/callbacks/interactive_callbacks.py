@@ -1116,3 +1116,9 @@ import app.callbacks.interactive_deg  # noqa: F401  — registers DEG/Volcano/He
 import app.callbacks.interactive_cluster  # noqa: F401  — registers cluster callbacks
 import app.callbacks.interactive_project  # noqa: F401  — registers project callbacks
 import app.callbacks.interactive_fullscreen  # noqa: F401  — registers fullscreen/label callbacks
+import app.callbacks.interactive_loupe  # noqa: F401  — registers Loupe風 (選択統計/violin/マーカー表) callbacks
+import app.callbacks.interactive_de  # noqa: F401  — registers アプリ内 on-the-fly DE callbacks
+import app.callbacks.interactive_hne_bg  # noqa: F401  — registers H&E 背景オーバーレイ callbacks
+import app.callbacks.interactive_selection_groups  # noqa: F401  — registers 選択グループ callbacks
+import app.callbacks.interactive_feature_lists  # noqa: F401  — registers Feature リスト/共発現 callbacks
+import app.callbacks.interactive_reanalysis_bridge  # noqa: F401  — registers 再解析ブリッジ callbacks

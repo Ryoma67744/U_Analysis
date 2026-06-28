@@ -12,6 +12,123 @@
 
 ---
 
+## 2026-06-28_ver24.0
+
+### 機能追加: Split View / Feature リスト+共発現 / 再解析ブリッジ (Phase 5)
+
+Loupe 参考の拡張3種。いずれも既存資産を流用し、既存挙動は不変。
+
+- **Split View（任意カテゴリ分割）**：サンプル別表示に「分割基準」(サンプル/クラスタ/選択グループ)
+  を追加。クラスタ・選択グループ分割は「全細胞を淡灰背景＋当該集団を色付け」+**全タイル軸共有**で
+  synchronized small-multiples を実現（`_build_umap_facet_graphs`）。サンプル分割は従来通り。
+- **Feature リスト + 2リスト共発現散布図**：複数 m/z を名前付きリストとして保存/改名/削除/CSV入出力。
+  作成元は既存の m/z 絞り込み結果・ブックマーク・CSV取込（実 feature 名をそのまま使い堅牢）。
+  リストA集約(x) vs リストB集約(y) を pixel 単位で散布し Cluster 色分け→右上ほど共局在。
+  発現は parquet から複数列一括読込（`SeuratBridge.get_features_matrix`）。
+- **選択クラスタで再解析（ブリッジ）**：**部分集合の再クラスタリングは既に本番機能**
+  （`run_analysis` + `*_Cluster_Filter_ReUMAP.R`）。インタラクティブで残す/除くクラスタを選び、
+  ボタンで設定タブの再解析フォーム（対象クラスタ/モード/RDSフォルダ）へ転記し設定タブへ移動。
+  実証済みエンジンを再利用。任意 lasso 部分集合や UMAP パラメータのみ再描画は将来課題。
+- **新規**：`services/feature_lists.py`（純CRUD+単体テスト11件）、`callbacks/interactive_feature_lists.py`、
+  `callbacks/interactive_reanalysis_bridge.py`、`interactive_umap.py` に `_build_umap_facet_graphs`。
+  version 23.0→24.0。
+
+---
+
+## 2026-06-28_ver23.0
+
+### 機能追加: 選択グループ（名前付き永続選択） (Phase 3)
+
+Loupe Browser の Groups/Filters 相当。UMAP の lasso/box 選択を**名前付きの永続
+オブジェクト**として保存・改名・削除・結合し、CSV で入出力できる。さらに
+「現在の選択に読込」で選択統計(P1)・アプリ内DE(P2) の入力として再利用できる。
+
+- **永続化**：RDS 隣の `selection_groups_state.json`（`hne_persistence` /
+  `label_persistence` と同型の FileLock + atomic write）。データロード時に自動復元。
+- **CRUD**：現在の選択を名前付き保存／改名／削除／**結合（和集合）**。
+- **CSV 入出力**：`CellID,Group` 形式でエクスポート、CSV からインポート
+  （ヘッダの別名 cell_id/barcode・cluster/name に寛容）。
+- **下流再利用**：「現在の選択に読込」で `selected_cell_ids_store` を上書き
+  （P1 capture と同居のため `allow_duplicate`）。→ 選択統計が更新され、
+  選択 DE の ident.1 として使える（保存グループ vs 全体 / vs 指定クラスタ）。
+- **新規**：`app/services/selection_groups.py`（純 CRUD + 単体テスト 15 件）、
+  `app/callbacks/interactive_selection_groups.py`。
+- **今回見送り**：spatial/feature→UMAP の双方向「ハイライト」描画は `update_umap_plot`
+  への描画分岐が必要で実画像検証が要るため次段に延期（選択の共有 Store 化までは完了）。
+  version 22.0→23.0。
+
+---
+
+## 2026-06-28_ver22.0
+
+### 機能追加: 登録済み組織像 (H&E) 背景オーバーレイ + スポット透明度 (Phase 4)
+
+Spatial Mapping セクションに「組織像オーバーレイ」パネルを追加。既に実装済みの
+H&E ランドマーク位置合わせ（`hne_overlay` / `hne_persistence`）を再利用し、
+**登録済み H&E を背景に MSI クラスタのスポットを重ねて**表示できる。
+
+- **アフィン射影（画像ワープなし）**：MSI スポット座標を、本番の領域割当
+  （`regions_from_overlay`）と**同一規約のアフィンの逆**で H&E 画素座標へ射影し、
+  ネイティブ H&E 画像（`go.Image`）の上にスポットを散布。画像ワープ不要で堅牢。
+  回転/反転は領域割当と同じ `apply_rotation` を適用。
+- **スポット透明度スライダー**（Loupe の「組織像に対するスポット不透明度」、既定 70%）
+  とスポットサイズ、クラスタ色（既存 color_map）に対応。
+- **位置合わせ品質表示**：`affine_residual`（RMS, MSI 単位）とランドマーク点数を表示。
+- 単一サンプル表示（Spatial の「サンプル」を選択）。H&E 未登録のサンプルは
+  「H&E オーバーレイ」タブでの登録を促すメッセージ。
+- **新規**：`hne_overlay.msi_to_hne_px()`（純関数 + 単体テスト 5 件）、
+  `app/callbacks/interactive_hne_bg.py`。ミクロンスケールバーは pixel-size メタデータが
+  未整備のため今回は見送り。version 21.0→22.0。
+
+---
+
+## 2026-06-28_ver21.0
+
+### 機能追加: アプリ内 on-the-fly 差次発現解析 (DE) (Phase 2)
+
+Loupe Browser の中核機能を再現。事前計算済み DEG の閲覧だけでなく、ユーザーが
+UMAP で選んだ任意の選択範囲・群について **その場で DE 検定を実行**できる。既存の
+DEG（Volcano/Heatmap/マーカー表）は不変で、専用の「選択 DE」タブに結果を表示する。
+
+- **比較モード（Loupe 準拠）**：
+  - **Globally Distinguishing**：現在の選択 vs 残り全体。
+  - **Locally Distinguishing**：現在の選択 vs 指定クラスタ(群)。
+- **検定**：R `Seurat::FindMarkers`（Wilcoxon, `presto` 高速路）+ **BH 補正**（本体 pipeline と同一）。
+  保存 RDS の `JoinLayers → data` layer を使用。1 対比 ≈ 30–60 秒（前景・dcc.Loading 表示）。
+- **結果表示**：ソート可能 DataTable（avg_log2FC / p_val_adj / pct.1 / pct.2）+ Volcano（FC・p 閾値可変）+
+  現在の並び替え/絞り込みを反映した **Top-N CSV 出力**。
+- **キャッシュ**：(mode, CellID集合, パラメータ) のハッシュで cache_dir に保存し再実行は即返す
+  （`FileLock` で多重実行を防止、`export_region_cluster_means` と同じ subprocess パターン）。
+- **新規ファイル**：`App/Script/helpers/run_findmarkers.R`、`app/callbacks/interactive_de.py`。
+  `SeuratBridge.run_differential_expression()` 追加、`selection_utils.cells_in_clusters()` 追加。
+  version 20.0→21.0。
+
+---
+
+## 2026-06-28_ver20.0
+
+### 機能追加: Loupe Browser 9 を参考にしたインタラクティブ解析の強化 (Phase 1)
+
+10x Genomics Loupe Browser 9.1.0 の挙動解析（`App/docs/LOUPE_BENCHMARK.md`）をもとに、
+UMAP インタラクティブ解析へ「選択 → 即時反応」系の機能を追加する第1弾。**新規追加のみで
+既存コールバックの挙動は不変**（feature plot のカラースケールのみ拡張）。
+
+- **lasso/box 選択 + 共有選択 Store**：UMAP の投げ縄/ボックス選択（既定 modebar で利用可能）を
+  単一の `selected_cell_ids_store` に集約。今後の逆リンク・選択グループ・選択範囲 DE の土台。
+- **ライブ選択統計カード**：選択した瞬間に、選択ピクセル数・全体比・クラスタ別/サンプル別構成・
+  表示中 feature の平均強度（parquet 高速路がある時のみ、R 往復なし）を即時表示。
+- **feature カラースケール制御**：パレット選択（Plasma/Viridis/Magma 他）、**log10 表示**
+  （MSI のダイナミックレンジ対策）、色反転。`update_feature_plot` に Input を追加。
+- **violin 分布パネル**：選択 feature の分布をクラスタ別/サンプル別に表示
+  （`get_feature_expression_fast` を流用）。
+- **ソート可能マーカー DataTable + Top-N CSV 出力**：DEG マーカーを列ソート/絞り込み可能な表で
+  表示し、現在の並び替え/絞り込みを反映して Top 10/20/50/100/全件 を CSV 出力。
+- **新規ファイル**：`app/utils/selection_utils.py`（純ロジック・単体テスト付）、
+  `app/callbacks/interactive_loupe.py`（新規コールバック）、`tests/test_selection_utils.py`、
+  `docs/LOUPE_BENCHMARK.md`。version 19.6→20.0。
+
+---
+
 ## 2026-06-27_ver19.6
 
 ### 改善: PreFlight①(reduction_only) の進捗バーが「準備中」で止まらないように
