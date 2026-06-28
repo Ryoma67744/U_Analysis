@@ -933,6 +933,11 @@ def create_interactive_tab():
                                                    color="outline-danger"),
                                     ]),
                                     dbc.Col(width="auto", children=[
+                                        dbc.Button("削除を取り消す", id="btn_restore_deleted_group",
+                                                   size="sm", color="outline-warning",
+                                                   title="直前に削除したグループを復元"),
+                                    ]),
+                                    dbc.Col(width="auto", children=[
                                         dbc.Button("現在の選択に読込", id="btn_load_group_to_selection",
                                                    size="sm", color="success"),
                                     ]),
@@ -1101,6 +1106,11 @@ def create_interactive_tab():
                                                marks={2: "2", 5: "5", 10: "10", 15: "15"},
                                                tooltip={"placement": "bottom",
                                                         "always_visible": False}),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button("リセット", id="hne_overlay_reset",
+                                               size="sm", color="outline-secondary",
+                                               title="透明度・サイズを既定に戻す"),
                                 ]),
                                 dbc.Col(width="auto", className="d-flex align-items-center", children=[
                                     html.Div(id="hne_overlay_status", className="small"),
@@ -1271,6 +1281,11 @@ def create_interactive_tab():
                                 dbc.Col(width="auto", children=[
                                     dbc.Switch(id="feature_reverse_scale",
                                                label="色反転", value=False),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button("リセット", id="feature_colorscale_reset",
+                                               size="sm", color="outline-secondary",
+                                               title="配色・log・反転・強度範囲を既定に戻す"),
                                 ]),
                             ]),
                             dcc.Loading(html.Div(id="feature_plot_container")),
@@ -1460,6 +1475,11 @@ def create_interactive_tab():
                                                         label="アノテーション",
                                                         value=True,
                                                     ),
+                                                ]),
+                                                dbc.Col(width="auto", children=[
+                                                    dbc.Button("リセット", id="volcano_reset",
+                                                               size="sm", color="outline-secondary",
+                                                               title="FC/p/Y軸上限を既定に戻す"),
                                                 ]),
                                             ]),
                                             # ハイライト行
@@ -1767,6 +1787,8 @@ def create_interactive_tab():
         # --- P3: 選択グループ用 ---
         dcc.Store(id="selection_groups_store", data={"groups": []}),
         dcc.Download(id="dl_selection_groups_csv"),
+        # 削除取り消し (Inc.1 Undo) 用に直前の削除グループを退避
+        dcc.Store(id="selection_groups_undo", data=None),
         # --- P5-b: Feature リスト用 ---
         dcc.Store(id="feature_lists_store", data={"lists": []}),
         dcc.Download(id="dl_feature_lists_csv"),

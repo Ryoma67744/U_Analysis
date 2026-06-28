@@ -12,6 +12,27 @@
 
 ---
 
+## 2026-06-28_ver25.0
+
+### 機能追加: 入力バリデーション + リセット/Undo (非機能改善 Inc.1)
+
+Loupe 参考の“機能以外”の改善 第1弾。誤操作の低減と一貫性。既存挙動は不変（追加中心）。
+
+- **範囲バリデーション + インライン警告**：数値入力が有効範囲外だと**入力欄を赤く**する
+  （`dbc.Input.invalid`）。範囲は `app/utils/validation.py`（純関数 + 単体テスト14件）に一元管理。
+  対象: Volcano の FC/p/Y上限・heatmap Top N・選択DE の FC/p・Feature 強度 min/max(%)。
+  Loupe 既定（UMAP min_dist 0–1/既定0.1, n_neighbors≥2/既定15, perplexity≥1/既定30, PCA 10–100）も
+  PARAM_BOUNDS に収録（将来の再解析UI用）。
+- **リセット（“調整には必ずリセット”）**：Feature 配色（palette/log10/反転/強度範囲）・Volcano
+  閾値（FC/p/Y）・H&E オーバーレイ（透明度/サイズ）に「リセット」を追加（既定へ復帰）。
+- **Undo（削除の取り消し）**：選択グループ削除時に直前の削除分を退避し「削除を取り消す」で復元。
+- **新規**：`utils/validation.py`, `callbacks/interactive_validation.py`,
+  `callbacks/interactive_resets.py`, `tests/test_validation.py`。
+  変更: `interactive_selection_groups.py`（削除退避）, `interactive_tab.py`（リセット/取消ボタン+Store）。
+  version 24.0→25.0。
+
+---
+
 ## 2026-06-28_ver24.0
 
 ### 機能追加: Split View / Feature リスト+共発現 / 再解析ブリッジ (Phase 5)
