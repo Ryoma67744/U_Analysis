@@ -27,6 +27,7 @@ from app.utils.display_helpers import (
     display_name as _display_name,
     facet_block as _facet_block,
 )
+from app.callbacks.interactive_hne_bg import build_hne_overlay_fig as _build_hne_overlay_fig
 
 logger = logging.getLogger("msi.interactive.spatial")
 
@@ -933,7 +934,10 @@ def auto_feature_marker(n_clicks, rotation_store, sample):
      Input("umap_merge_toggle", "value"),
      Input("umap_merge_color_mode", "value"),
      Input("interactive_accordion", "active_item"),
-     Input("spatial_legend_hidden_store", "data")],
+     Input("spatial_legend_hidden_store", "data"),
+     Input("hne_overlay_show", "value"),
+     Input("hne_overlay_opacity", "value"),
+     Input("hne_overlay_marker_size", "value")],
     State("accumulated_label_positions", "data"),
 )
 def update_spatial_plots(sample, highlight_clusters, selected_ids,
@@ -941,7 +945,8 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
                          exclude_clusters, label_size, rds_path, name_map,
                          _fs_trigger, custom_colors, columns_per_row,
                          cluster_name_map, merge_toggle, merge_color_mode,
-                         active_items, legend_hidden, accumulated_positions):
+                         active_items, legend_hidden, hne_show, hne_opacity,
+                         hne_marker_size, accumulated_positions):
     active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
     if "acc_spatial" not in active_list:
         return no_update, no_update, no_update
@@ -999,7 +1004,22 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
         flip_h = transform.get("flip_h", False)
         flip_v = transform.get("flip_v", False)
         display_s = _display_name(s, name_map)
-        fig = _create_single_spatial_fig(df_s, color_map, highlight_clusters,
+        # ver30.0: 組織像オーバーレイ ON かつ当該サンプルが H&E 登録済みなら、
+        # H&E 背景＋射影スポットのタイルを使う（未登録/OFF は従来の MSI 空間タイル）。
+        fig = None
+        if hne_show:
+            try:
+                fig = _build_hne_overlay_fig(
+                    df_s, rds_path, s, title=display_s,
+                    opacity=hne_opacity, marker_size=hne_marker_size,
+                    color_map=color_map, cluster_name_map=cluster_name_map,
+                    show_labels=show_labels, exclude_clusters=exclude_clusters,
+                    legend_hidden=legend_hidden)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[H&E overlay] %s: 生成失敗 -> 通常表示にフォールバック: %s", s, e)
+                fig = None
+        if fig is None:
+            fig = _create_single_spatial_fig(df_s, color_map, highlight_clusters,
                                          selected_cell_ids,
                                          rotation_deg=rotation_deg,
                                          show_labels=show_labels,

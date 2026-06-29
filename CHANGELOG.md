@@ -12,6 +12,29 @@
 
 ---
 
+## 2026-06-29_ver30.0
+
+### 機能追加: 組織像(H&E)オーバーレイを Spatial Mapping 本体に統合（スポット透明度で透過）
+
+従来は Spatial Mapping の下にある独立グラフ（単一サンプル）でのみ H&E を背景表示できたが、これを
+**Spatial Mapping 本体の各タイル背景に統合**。登録済みサンプルでは組織像を背景に重ね、
+**「スポット透明度」を下げるとスポットが透過して組織像が見える**。
+
+- `callbacks/interactive_hne_bg.py`：描画を純関数 `build_hne_overlay_fig(...)` に切り出し
+  （`go.Image` 背景＋`msi_to_hne_px` で射影したクラスタ別スポット、透明度/exclude/灰色化(legend_hidden)反映、
+  共有凡例連動のダミー凡例、デコード画像のキャッシュ）。未登録サンプルは `None` を返す。独立グラフ
+  `hne_overlay_graph` と `update_hne_overlay` コールバックは廃止。
+- `callbacks/interactive_spatial.py`：`update_spatial_plots` に `hne_overlay_show/opacity/marker_size` を
+  入力追加。トグル ON かつ登録済みサンプルは `build_hne_overlay_fig` のタイル、それ以外は従来の
+  `_create_single_spatial_fig`（MSI 空間）にフォールバック。`facet-tile`/共有凡例/一括保存は従来どおり。
+- `layouts/interactive_tab.py`：独立 H&E グラフを削除し、コントロール（トグル/スポット透明度/サイズ/リセット/
+  ステータス）を Spatial タイルの上へ移設。トグル文言を「組織像を背景に重ねる（登録済みサンプル）」に更新。
+- 留意：オーバーレイ表示は H&E 登録フレーム（H&E の向き）で描画。spatial の回転/反転スライダーは非オーバーレイ時に有効。
+  選択ブラッシングのハイライトとラベルのドラッグ位置はオーバーレイタイルでは未対応（クラスタ番号は重心から再計算）。
+- version 29.1→30.0。
+
+---
+
 ## 2026-06-29_ver29.1
 
 ### バグ修正: 凡例で非表示にしたクラスタの灰色背景を残す + 再解析を初期閉じプルダウンに
