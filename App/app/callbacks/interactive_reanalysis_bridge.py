@@ -41,25 +41,39 @@ def fill_bridge_cluster_options(rds_path):
     [Output("target_clusters", "value", allow_duplicate=True),
      Output("filter_mode", "value", allow_duplicate=True),
      Output("rds_folder_reanalysis", "value", allow_duplicate=True),
+     # 解析手法を「再解析」へ自動選択する（未設定だと既定 desi_v8=UMAP のままで
+     # 設定タブに UMAP フォームが出てしまうため）。相互排他コールバックも
+     # allow_duplicate でこの2 ID に書くため allow_duplicate=True で出力する。
+     Output("analysis_method", "value", allow_duplicate=True),
+     Output("analysis_method_tims", "value", allow_duplicate=True),
      Output("main_tabs", "active_tab", allow_duplicate=True),
      Output("reanalysis_bridge_status", "children")],
     Input("btn_send_to_reanalysis", "n_clicks"),
     [State("reanalysis_bridge_mode", "value"),
      State("reanalysis_bridge_clusters", "value"),
-     State("seurat_rds_path_store", "data")],
+     State("seurat_rds_path_store", "data"),
+     State("int_cal_ms_instrument", "data")],
     prevent_initial_call=True,
 )
-def send_to_reanalysis(n_clicks, mode, clusters, rds_path):
+def send_to_reanalysis(n_clicks, mode, clusters, rds_path, ms_instrument):
     if not n_clicks:
         raise PreventUpdate
     if not clusters:
-        return (no_update, no_update, no_update, no_update,
+        return (no_update, no_update, no_update, no_update, no_update, no_update,
                 html.Span("対象クラスタを選択してください", className="text-warning small"))
     target = ", ".join(str(c) for c in clusters)
     fm = mode if mode in ("keep", "exclude") else "keep"
     folder = str(Path(rds_path).parent) if rds_path else ""
+    # 読込済み結果の計測種別（DESI/TIMS）を確定し、該当モダリティの「再解析」を選ぶ。
+    # 既存ヘルパーを再利用（明示 DESI 優先 / パス規約 /DESI/・/TIMS/ で補正 / 既定 TIMS）。
+    from app.callbacks.interactive_data_export import _resolve_instrument
+    inst = _resolve_instrument(ms_instrument, rds_path)
+    if inst == "DESI":
+        desi_method, tims_method = "desi_cluster_filter", None
+    else:
+        desi_method, tims_method = None, "tims_cluster_filter"
     msg = html.Span(
-        "再解析フォームに転記しました（対象クラスタ・モード・RDSフォルダ）。"
+        f"{inst} 再解析フォームに転記しました（対象クラスタ・モード・RDSフォルダ）。"
         "設定タブで「再解析データフォルダ」等を確認して ▶解析実行 してください。",
         className="text-success small")
-    return target, fm, folder, "settings", msg
+    return target, fm, folder, desi_method, tims_method, "settings", msg
