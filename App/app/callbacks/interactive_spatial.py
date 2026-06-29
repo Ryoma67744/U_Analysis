@@ -83,9 +83,14 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                                marker_size=4, exclude_clusters=None,
                                label_size=10, saved_positions=None,
                                title_font_size=None, render_height=None,
-                               cluster_name_map=None, scale_factor=1.0):
-    """単一サンプルのSpatial Mapping figureを生成"""
-    # 除外クラスタのフィルタリング
+                               cluster_name_map=None, scale_factor=1.0,
+                               legend_hidden=None):
+    """単一サンプルのSpatial Mapping figureを生成。
+
+    legend_hidden: 共有凡例で灰色化したクラスタ。色付き trace を描かず灰色背景は残す
+        (exclude と異なりセルは消さない, ver29.1)。
+    """
+    # 除外クラスタのフィルタリング（完全除去。灰色背景も消える）
     if exclude_clusters:
         exclude_set = set(str(c) for c in exclude_clusters)
         df_sample = df_sample[~df_sample["Cluster"].astype(str).isin(exclude_set)]
@@ -94,6 +99,8 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
             fig.add_annotation(text="全クラスタが除外されています", showarrow=False,
                                xref="paper", yref="paper", x=0.5, y=0.5)
             return fig
+    # 灰色化クラスタ（色付き trace のみ非表示。灰色背景は残す）
+    legend_hidden_set = {str(c) for c in (legend_hidden or [])}
     fig = go.Figure()
 
     # 座標の取得と変換適用（反転+回転）
@@ -210,6 +217,8 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
             ))
             # 凡例リンク用: クラスタ別個別トレース（legendgroup でダミーと連動）
             for cl in sorted(df_sample["Cluster"].unique(), key=_cluster_sort_key):
+                if str(cl) in legend_hidden_set:
+                    continue  # 凡例で灰色化 → 色付き trace を描かない（灰色背景は残る）
                 mask = (df_sample["Cluster"].astype(str) == str(cl)).values
                 if mask.any():
                     fig.add_trace(go.Scattergl(
@@ -923,7 +932,8 @@ def auto_feature_marker(n_clicks, rotation_store, sample):
      Input("cluster_name_map_store", "data"),
      Input("umap_merge_toggle", "value"),
      Input("umap_merge_color_mode", "value"),
-     Input("interactive_accordion", "active_item")],
+     Input("interactive_accordion", "active_item"),
+     Input("spatial_legend_hidden_store", "data")],
     State("accumulated_label_positions", "data"),
 )
 def update_spatial_plots(sample, highlight_clusters, selected_ids,
@@ -931,7 +941,7 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
                          exclude_clusters, label_size, rds_path, name_map,
                          _fs_trigger, custom_colors, columns_per_row,
                          cluster_name_map, merge_toggle, merge_color_mode,
-                         active_items, accumulated_positions):
+                         active_items, legend_hidden, accumulated_positions):
     active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
     if "acc_spatial" not in active_list:
         return no_update, no_update, no_update
@@ -1001,7 +1011,8 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
                                          exclude_clusters=exclude_clusters,
                                          label_size=label_size or 10,
                                          saved_positions=spatial_pos.get(s),
-                                         cluster_name_map=cluster_name_map)
+                                         cluster_name_map=cluster_name_map,
+                                         legend_hidden=legend_hidden)
         # 出力(一括保存/HTML)は各図に凡例を残す → 先に凡例ありでスナップショット。
         if representative_fig is None:
             representative_fig = fig.to_dict()
@@ -1034,7 +1045,7 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
     # 共有クラスタ凡例(上部に1つ) + 縦線区切りタイル。
     container = _facet_block(graphs, color_map, cluster_name_map=cluster_name_map,
                              show_legend=True, legend_id="spatial_shared_legend",
-                             excluded=exclude_clusters)
+                             hidden=legend_hidden)
     # 代表figureをStoreに保存（HTMLエクスポート用。凡例ありの dict）
     store_data = representative_fig if representative_fig else None
     return container, store_data, batch_fig_dicts

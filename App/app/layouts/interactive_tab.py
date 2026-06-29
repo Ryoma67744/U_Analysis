@@ -438,9 +438,12 @@ def create_interactive_tab():
                 ],
             ),
 
-            # --- 選択クラスタで再解析 (ver29.0: 再アノテーションの下へ移動) ---
-            html.Div([
-                html.Strong("選択クラスタで再解析", className="small d-block mb-1"),
+            # --- 選択クラスタで再解析 (ver29.0 移動 / ver29.1 初期閉じプルダウン化) ---
+            html.Details(open=False, style={"marginTop": "10px"}, children=[
+                html.Summary("選択クラスタで再解析",
+                             style={"cursor": "pointer", "fontSize": "13px",
+                                    "color": "#555", "fontWeight": "600"}),
+                html.Div([
                 dbc.Row(className="g-1 align-items-end", children=[
                     dbc.Col(width=3, children=[
                         dbc.Label("モード", className="small mb-0"),
@@ -466,6 +469,7 @@ def create_interactive_tab():
                 dbc.FormText("設定タブの再解析フォーム(対象クラスタ/モード/RDSフォルダ)を"
                              "自動入力し設定タブへ移動します。データフォルダ等を確認して実行してください。"),
             ], className="mt-2 border rounded p-2"),
+            ]),
 
             html.Div(id="interactive_data_info", className="mt-2 text-muted"),
         ]),
@@ -1840,6 +1844,9 @@ def create_interactive_tab():
         dcc.Store(id="selected_cell_ids_store", data=[]),
         # ver27.0: UMAP ポリゴン下書き（クリックで置いた頂点 [[x,y],...]）
         dcc.Store(id="umap_polygon_draft_store", data=[]),
+        # ver29.1: 共有凡例クリックで「灰色化」するクラスタ (exclude とは別。色だけ消し灰色背景は残す)
+        dcc.Store(id="umap_legend_hidden_store", data=[]),
+        dcc.Store(id="spatial_legend_hidden_store", data=[]),
         # マーカー表 Top-N CSV ダウンロード
         dcc.Download(id="dl_marker_table_csv"),
         # --- P2: アプリ内 on-the-fly DE 用 ---

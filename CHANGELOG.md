@@ -12,6 +12,26 @@
 
 ---
 
+## 2026-06-29_ver29.1
+
+### バグ修正: 凡例で非表示にしたクラスタの灰色背景を残す + 再解析を初期閉じプルダウンに
+
+- **①（灰色背景の復活）**：ver29.0 で共有凡例クリックを「除去(exclude)」に連動させたため、クラスタを
+  非表示にすると `df` からセルごと除外され、**背景の灰色スポット（_background_grey / _bg / _background_tic）も
+  一緒に消えていた**。凡例は「色だけ消して灰色文脈は残す」のが本来の挙動（ネイティブ Plotly 凡例と同じ）なので、
+  専用の **`legend_hidden` ストア**に切り替えた。
+  - `callbacks/interactive_facet_legend.py`：4 コールバックの出力を `*_exclude_cluster.value` →
+    `umap/spatial_legend_hidden_store.data` に変更（メイン/FS でモダリティ別に共有）。
+  - ビルダ（`_build_umap_per_sample_graphs`/`_build_umap_facet_graphs`/`_create_single_spatial_fig`）に
+    `legend_hidden` を追加し、**色付き trace のみ skip**（灰色背景トレースは不変）。`update_umap_per_sample`/
+    `update_spatial_plots`/フルスクリーン各コールバックが新ストアを受けてビルダ＋凡例グラフへ伝播。
+  - `exclude`（「除去するクラスタ」ドロップダウン＝「完全に除去」）は従来どおり独立（灰色も消す）。
+  - 結果：凡例の単一クリック＝そのクラスタが**灰色化**（消滅しない）／ダブルクリック＝そのクラスタのみ色・他は灰色。
+- **②**：「選択クラスタで再解析」を `html.Details(open=False)` で包み、**初期は閉じたプルダウン**に。
+- version 29.0→29.1（バグ修正/UI 微修正）。
+
+---
+
 ## 2026-06-29_ver29.0
 
 ### 機能追加: 共有クラスタ凡例をクリック可能化 + UMAP 選択ツールのプルダウン化 + 再解析ブロック移動
