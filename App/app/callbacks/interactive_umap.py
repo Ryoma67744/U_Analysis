@@ -584,7 +584,8 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
             collect_figures=fig_dicts)
         return _facet_block(
             graphs, color_map, cluster_name_map=cluster_name_map,
-            show_legend=bool(show_legend), outer_style={"marginTop": "10px"}), fig_dicts
+            show_legend=bool(show_legend), legend_id="umap_shared_legend",
+            excluded=exclude_clusters, outer_style={"marginTop": "10px"}), fig_dicts
     if facet_by == "group":
         groups = (selection_groups or {}).get("groups", [])
         if not groups:
@@ -598,7 +599,8 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
             collect_figures=fig_dicts)
         return _facet_block(
             graphs, color_map, cluster_name_map=cluster_name_map,
-            show_legend=bool(show_legend), outer_style={"marginTop": "10px"}), fig_dicts
+            show_legend=bool(show_legend), legend_id="umap_shared_legend",
+            excluded=exclude_clusters, outer_style={"marginTop": "10px"}), fig_dicts
 
     method = _interactive_data.get("method")
     all_pos = _get_merged_label_positions(accumulated_positions,
@@ -617,7 +619,8 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
                                             collect_figures=fig_dicts)
     return _facet_block(
         graphs, color_map, cluster_name_map=cluster_name_map,
-        show_legend=bool(show_legend),
+        show_legend=bool(show_legend), legend_id="umap_shared_legend",
+        excluded=exclude_clusters,
         outer_style={"marginTop": "10px"},
     ), fig_dicts
 

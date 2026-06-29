@@ -418,3 +418,5 @@
 .facet-legend .legend-swatch { width: 12px; height: 12px; border-radius: 2px;
                                margin-right: 4px; display: inline-block;
                                border: 1px solid #00000022; }
+/* クリック可能な共有凡例グラフ (ver29.0): クラスタ番号クリックで表示切替 */
+.facet-legend-graph { margin-bottom: 4px; }

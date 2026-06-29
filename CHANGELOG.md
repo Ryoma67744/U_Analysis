@@ -12,6 +12,29 @@
 
 ---
 
+## 2026-06-29_ver29.0
+
+### 機能追加: 共有クラスタ凡例をクリック可能化 + UMAP 選択ツールのプルダウン化 + 再解析ブロック移動
+
+サンプル別/分割表示の操作性と UMAP セクションの整理。
+
+- **A. 共有クラスタ凡例をクリック可能に**：ver28.0 で統一した上部の共有凡例を「凡例だけの Plotly グラフ」に
+  変更し、Plotly ネイティブの **単一クリック＝当該クラスタを非表示 / ダブルクリック＝当該クラスタのみ表示**
+  を全タイルに一括反映（従来の per-tile 凡例挙動を復活）。
+  - `utils/display_helpers.py` に `cluster_legend_figure`（各クラスタを `meta`=id 付きダミートレース、
+    `itemclick="toggle"`/`itemdoubleclick="toggleothers"`）を追加。`facet_block` に `legend_id`/`excluded`
+    を追加し、`dcc.Graph` の凡例を描画。
+  - 新規 `callbacks/interactive_facet_legend.py`：凡例クリック(`restyleData`)→ `figure` の `visible` を読み、
+    非表示(legendonly)クラスタを当該ビューの `*_exclude_cluster.value` に反映（UMAP/Spatial × メイン/フルスクリーンの
+    4 ビュー）。既存 exclude パイプラインが全タイル＋凡例を再構築し双方向同期。
+- **① UMAP「選択ツール」をプルダウン格納**：ポリゴン選択・選択範囲の統計・選択グループを 1 つの
+  折りたたみ（`html.Details`、既定閉）にまとめて整理（`layouts/interactive_tab.py`）。
+- **② 「選択クラスタで再解析」を移動**：UMAP セクションから、データ読込部の「再アノテーション」直下へ移設。
+  component id 不変で挙動は維持（ver27.1 の遷移修正も維持）。
+- version 28.0→29.0。
+
+---
+
 ## 2026-06-29_ver28.0
 
 ### 機能追加: サンプル別/分割表示を「共有凡例＋縦線区切り」に刷新 + UMAP軸矢印削除 + 出力見切れ防止

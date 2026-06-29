@@ -483,7 +483,8 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
                                                 cluster_name_map=cluster_name_map)
         return _facet_block(
             graphs, color_map, cluster_name_map=cluster_name_map,
-            show_legend=bool(show_legend),
+            show_legend=bool(show_legend), legend_id="fs_umap_shared_legend",
+            excluded=exclude_clusters,
             outer_style={"width": f"{width_val}vw", "margin": "0 auto"},
         )
 
@@ -588,6 +589,7 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
         )
     return _facet_block(
         graphs, color_map, cluster_name_map=cluster_name_map, show_legend=True,
+        legend_id="fs_spatial_shared_legend", excluded=exclude_clusters,
         outer_style={"width": f"{width_val}vw", "margin": "0 auto"},
     )
 
