@@ -80,9 +80,7 @@ def _route_app_url_to_analysis(target, current_page):
 # tab_id ↔ URL path セグメントのマッピング
 _TAB_TO_PATH = {
     "settings": "/app/settings",
-    "results": "/app/results",
     "interactive": "/app/interactive",
-    "history": "/app/history",
 }
 _PATH_TO_TAB = {v: k for k, v in _TAB_TO_PATH.items()}
 

@@ -547,15 +547,6 @@ def render_sub_project_cards(
                                         outline=True,
                                     ),
                                     dbc.Button(
-                                        "結果閲覧",
-                                        id={
-                                            "type": "sub_action_results",
-                                            "index": s["id"],
-                                        },
-                                        color="success",
-                                        outline=True,
-                                    ),
-                                    dbc.Button(
                                         "インタラクティブ",
                                         id={
                                             "type": "sub_action_interactive",
@@ -682,42 +673,6 @@ def sub_action_new_analysis(clicks, project):
         settings.get("reanalysis_logfc_thresh") if settings else no_update,
         settings.get("reanalysis_ion_mode") or no_update,
         settings.get("reanalysis_tolerance_mz") if settings else no_update,
-    )
-
-
-# =========================================================================
-# サブプロジェクト アクション: 結果閲覧 → 解析画面 (results タブ)
-# =========================================================================
-
-@callback(
-    [Output("current_page", "data", allow_duplicate=True),
-     Output("main_tabs", "active_tab", allow_duplicate=True),
-     Output("result_folder_manual", "data", allow_duplicate=True),
-     Output("results_project_select", "value", allow_duplicate=True),
-     Output("results_sub_project_select", "value", allow_duplicate=True)],
-    Input({"type": "sub_action_results", "index": ALL}, "n_clicks"),
-    State("selected_project", "data"),
-    prevent_initial_call=True,
-)
-def sub_action_view_results(clicks, project):
-    """サブプロジェクト「結果閲覧」→ 結果閲覧タブに遷移"""
-    if not ctx.triggered_id or not any(c for c in clicks if c):
-        return no_update, no_update, no_update, no_update, no_update
-
-    sub_id = ctx.triggered_id["index"]
-    project_id = project.get("id", "") if project else ""
-    sub = get_sub_project(project_id, sub_id)
-    if not sub:
-        return no_update, no_update, no_update, no_update, no_update
-
-    # last_result_dir を優先、なければ output_dir にフォールバック
-    result_dir = sub.get("last_result_dir") or sub.get("output_dir", "")
-    return (
-        "analysis",
-        "results",
-        result_dir or no_update,
-        project_id,
-        sub_id,
     )
 
 

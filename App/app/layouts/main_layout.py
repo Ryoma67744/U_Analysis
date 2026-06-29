@@ -8,8 +8,6 @@ import dash_bootstrap_components as dbc
 
 from app.layouts.sidebar import create_sidebar
 from app.layouts.settings_tab import create_settings_tab
-from app.layouts.results_tab import create_results_tab
-from app.layouts.history_tab import create_history_tab
 from app.layouts.interactive_tab import create_interactive_tab
 from app.layouts.hne_overlay_tab import create_hne_overlay_tab
 from app.layouts.file_browser_modal import create_file_browser_modal
@@ -340,11 +338,6 @@ def create_main_layout():
                                                     children=[create_settings_tab()],
                                                 ),
                                                 dbc.Tab(
-                                                    label="結果閲覧",
-                                                    tab_id="results",
-                                                    children=[create_results_tab()],
-                                                ),
-                                                dbc.Tab(
                                                     label="インタラクティブ解析",
                                                     tab_id="interactive",
                                                     children=[
@@ -355,11 +348,6 @@ def create_main_layout():
                                                     label="解剖×クラスタ (H&E)",
                                                     tab_id="hne",
                                                     children=[create_hne_overlay_tab()],
-                                                ),
-                                                dbc.Tab(
-                                                    label="セッション履歴",
-                                                    tab_id="history",
-                                                    children=[create_history_tab()],
                                                 ),
                                             ],
                                         ),
