@@ -12,6 +12,26 @@
 
 ---
 
+## 2026-06-29_ver27.1
+
+### バグ修正: 「再解析フォームへ送る」が再解析フォームを表示するよう修正
+
+インタラクティブ解析でクラスタの抽出/除外を選び「再解析フォームへ送る」
+(`btn_send_to_reanalysis`) を押すと、設定タブで**再解析フォームではなく
+DESI UMAP 解析の設定画面**が表示される不具合を修正。
+
+- 原因：橋渡し `send_to_reanalysis`（`callbacks/interactive_reanalysis_bridge.py`）が
+  対象クラスタ・モード・RDSフォルダの転記と設定タブ移動のみ行い、**解析手法セレクタ
+  （`analysis_method` / `analysis_method_tims`）を設定していなかった**ため、既定の
+  `desi_v8`(UMAP) のままとなり `toggle_settings_panels` が UMAP フォームを表示していた。
+- 修正：橋渡しに `analysis_method` / `analysis_method_tims` の出力を追加し、読込済み結果の
+  計測種別（`int_cal_ms_instrument` ＋ 既存ヘルパー `interactive_data_export._resolve_instrument`
+  でパス規約から補正）に応じて DESI なら `desi_cluster_filter`、TIMS なら `tims_cluster_filter` を
+  自動選択。設定タブで該当モダリティの**再解析フォームが表示**される。
+- version 27.0→27.1（バグ修正・パッチ）。
+
+---
+
 ## 2026-06-29_ver27.0
 
 ### 機能追加: UMAP ポリゴン選択へ統一 + ヘルプ可読性改善 + 説明書最新化
