@@ -899,7 +899,7 @@ def auto_feature_marker(n_clicks, rotation_store, sample):
      Output("batch_spatial_figures_store", "data")],
     [Input("interactive_sample", "value"),
      Input("spatial_highlight_cluster", "value"),
-     Input("interactive_umap_plot", "selectedData"),
+     Input("selected_cell_ids_store", "data"),
      Input("spatial_rotation_store", "data"),
      Input("spatial_show_labels", "value"),
      Input("spatial_marker_size", "value"),
@@ -916,7 +916,7 @@ def auto_feature_marker(n_clicks, rotation_store, sample):
      Input("interactive_accordion", "active_item")],
     State("accumulated_label_positions", "data"),
 )
-def update_spatial_plots(sample, highlight_clusters, selected_data,
+def update_spatial_plots(sample, highlight_clusters, selected_ids,
                          rotation_store, show_labels, marker_size,
                          exclude_clusters, label_size, rds_path, name_map,
                          _fs_trigger, custom_colors, columns_per_row,
@@ -938,12 +938,8 @@ def update_spatial_plots(sample, highlight_clusters, selected_data,
     if not name_map:
         name_map = {}
 
-    # UMAP選択セルID
-    selected_cell_ids = set()
-    if selected_data and selected_data.get("points"):
-        for pt in selected_data["points"]:
-            if pt.get("text"):
-                selected_cell_ids.add(pt["text"])
+    # 選択セルID（ver27.0: UMAP ポリゴン選択由来の共有 Store から直接受け取る）
+    selected_cell_ids = {str(c) for c in (selected_ids or [])}
 
     # マージ表示切替 (Spatial Mapping)
     plot_df = df

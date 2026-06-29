@@ -17,15 +17,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from dash import Input, Output, State, callback, no_update, html, dcc
+from dash import Input, Output, State, callback, ctx, no_update, html, dcc, Patch
 from dash.exceptions import PreventUpdate
 
 from app.utils.selection_utils import (
-    extract_selected_cell_ids,
     compute_selection_summary,
     natural_cluster_key,
 )
 from app.utils.color_utils import get_cluster_color_map as _get_cluster_color_map
+from app.services.hne_overlay import points_in_polygon
 
 logger = logging.getLogger("msi.interactive.loupe")
 
@@ -37,16 +37,110 @@ def _active_items_list(active_items):
 
 
 # ---------------------------------------------------------------------------
-# P1.2: lasso/box 選択 → 共有 CellID Store
-# 任意プロットの selectedData を単一の選択ソースに集約する (逆リンク・統計の土台)。
+# ver27.0: UMAP ポリゴン選択（クリックで頂点を置く）→ 共有 CellID Store
+# 投げ縄/ボックス(selectedData)を廃し、H&E オーバーレイと同じ「クリック頂点」方式に統一。
+# - umap_polygon_draft  : クリック/取消/クリアで下書き頂点を編集
+# - umap_polygon_overlay: 下書きを figure の専用 trace(data[-1]) に Patch で描画
+# - umap_polygon_commit : 下書き(>=3頂点) の内側セルを points_in_polygon で判定し選択へ
+# selected_cell_ids_store の主たる writer は commit。選択統計(P1)/選択DE(P2)/選択グループ(P3)が読む。
 # ---------------------------------------------------------------------------
 @callback(
-    Output("selected_cell_ids_store", "data"),
-    Input("interactive_umap_plot", "selectedData"),
+    Output("umap_polygon_draft_store", "data"),
+    [Input("interactive_umap_plot", "clickData"),
+     Input("umap_polygon_undo", "n_clicks"),
+     Input("umap_polygon_clear", "n_clicks")],
+    [State("umap_polygon_draft_store", "data"),
+     State("umap_display_mode", "value")],
     prevent_initial_call=True,
 )
-def capture_umap_selection(selected_data):
-    return extract_selected_cell_ids(selected_data)
+def umap_polygon_draft(click, _undo_n, _clear_n, draft, display_mode):
+    """UMAP クリックで頂点を追加 / 直前1点を取消 / 下書きをクリア。"""
+    trig = ctx.triggered_id
+    draft = list(draft or [])
+    if trig == "umap_polygon_clear":
+        return []
+    if trig == "umap_polygon_undo":
+        return draft[:-1]
+    if trig == "interactive_umap_plot":
+        # 統合表示のクリックのみ頂点に採用（サンプル別は別グラフ id のため対象外）
+        if display_mode == "per_sample" or not (click and click.get("points")):
+            return no_update
+        p = click["points"][0]
+        return draft + [[p["x"], p["y"]]]
+    return no_update
+
+
+@callback(
+    Output("interactive_umap_plot", "figure", allow_duplicate=True),
+    Input("umap_polygon_draft_store", "data"),
+    prevent_initial_call=True,
+)
+def umap_polygon_overlay(draft):
+    """下書き頂点を図の専用オーバーレイ trace（最後の trace）に流し込む。
+
+    _build_umap_integrated_fig が末尾に空の "_umap_poly_draft" trace を必ず置くため、
+    data[-1] を更新すれば全点を再送せずに下書きを描ける（Patch）。"""
+    pts = list(draft or [])
+    patched = Patch()
+    if len(pts) >= 1:
+        xs = [float(p[0]) for p in pts]
+        ys = [float(p[1]) for p in pts]
+        if len(pts) >= 3:
+            # 3点以上なら閉じた多角形として表示（最初の点へ戻す）
+            xs = xs + [xs[0]]
+            ys = ys + [ys[0]]
+        patched["data"][-1]["x"] = xs
+        patched["data"][-1]["y"] = ys
+    else:
+        patched["data"][-1]["x"] = []
+        patched["data"][-1]["y"] = []
+    return patched
+
+
+@callback(
+    Output("umap_polygon_draft_info", "children"),
+    Input("umap_polygon_draft_store", "data"),
+    prevent_initial_call=True,
+)
+def umap_polygon_draft_info(draft):
+    n = len(draft or [])
+    if n == 0:
+        return ""
+    if n < 3:
+        return f"下書き {n} 点（あと {3 - n} 点で確定可）"
+    return f"下書き {n} 点 — 「確定」で選択を確定"
+
+
+@callback(
+    [Output("selected_cell_ids_store", "data"),
+     Output("umap_polygon_draft_store", "data", allow_duplicate=True)],
+    Input("umap_polygon_commit", "n_clicks"),
+    [State("umap_polygon_draft_store", "data"),
+     State("seurat_rds_path_store", "data"),
+     State("umap_merge_toggle", "value")],
+    prevent_initial_call=True,
+)
+def umap_polygon_commit(n_clicks, draft, rds_path, merge_toggle):
+    """下書き(>=3頂点)の内側にあるピクセルの CellID を選択へ確定し、下書きをクリア。"""
+    draft = list(draft or [])
+    if not n_clicks or len(draft) < 3:
+        raise PreventUpdate
+    from app.callbacks.interactive_callbacks import _interactive_data, _set_active_key
+    _set_active_key(rds_path)
+    df = _interactive_data.get("plot_data")
+    if df is None:
+        raise PreventUpdate
+    # 表示中の座標系（マージ表示なら *_merged 列）でポリゴン内包を判定
+    xcol, ycol = "UMAP_1", "UMAP_2"
+    if merge_toggle == "merged" and "UMAP_1_merged" in df.columns:
+        xcol, ycol = "UMAP_1_merged", "UMAP_2_merged"
+    if xcol not in df.columns or ycol not in df.columns:
+        raise PreventUpdate
+    xs = pd.to_numeric(df[xcol], errors="coerce").to_numpy(dtype=float)
+    ys = pd.to_numeric(df[ycol], errors="coerce").to_numpy(dtype=float)
+    inside = points_in_polygon(xs, ys, draft) & ~(np.isnan(xs) | np.isnan(ys))
+    ids = df.loc[inside, "CellID"].astype(str).tolist()
+    return ids, []
 
 
 # ---------------------------------------------------------------------------

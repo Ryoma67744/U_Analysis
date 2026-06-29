@@ -872,6 +872,10 @@ def create_interactive_tab():
                                                   config={
                                                       "scrollZoom": True,
                                                       "edits": {"annotationPosition": True},
+                                                      # ver27.0: 範囲選択はポリゴン(クリック頂点)に統一。
+                                                      # 投げ縄/ボックスのモードバーボタンを除去。
+                                                      "modeBarButtonsToRemove": [
+                                                          "select2d", "lasso2d"],
                                                       "toImageButtonOptions": {
                                                           "format": "png",
                                                           "filename": "UMAP_plot",
@@ -883,6 +887,32 @@ def create_interactive_tab():
                                 # サンプル別 UMAP 表示コンテナ
                                 html.Div(id="umap_per_sample_container"),
                             ]),
+                            # --- ポリゴン選択 (ver27.0: クリックで頂点を置く範囲選択) ---
+                            html.Div([
+                                html.Strong(["🖊 ポリゴン選択", help_badge("umap_polygon")],
+                                            className="small d-block mb-1"),
+                                html.Span(
+                                    "UMAP をクリックして頂点を順に置き、3点以上で「確定」。",
+                                    className="text-muted small d-block mb-1"),
+                                dbc.Row(className="g-1 align-items-center", children=[
+                                    dbc.Col(width="auto", children=[
+                                        dbc.Button("1点取消", id="umap_polygon_undo",
+                                                   size="sm", color="outline-secondary"),
+                                    ]),
+                                    dbc.Col(width="auto", children=[
+                                        dbc.Button("クリア", id="umap_polygon_clear",
+                                                   size="sm", color="outline-secondary"),
+                                    ]),
+                                    dbc.Col(width="auto", children=[
+                                        dbc.Button("確定", id="umap_polygon_commit",
+                                                   size="sm", color="primary"),
+                                    ]),
+                                    dbc.Col(className="d-flex align-items-center", children=[
+                                        html.Div(id="umap_polygon_draft_info",
+                                                 className="text-muted small"),
+                                    ]),
+                                ]),
+                            ], className="mt-2 border rounded p-2"),
                             # --- 選択範囲のライブ統計 (P1: Loupe 風 即時集計) ---
                             html.Div([
                                 html.Strong("選択範囲の統計", className="small d-block mb-1"),
@@ -1797,8 +1827,11 @@ def create_interactive_tab():
         dcc.Store(id="sap_skip_reset", data=False),
 
         # --- Loupe 風 追加機能 (P1) 用 Store / Download ---
-        # lasso/box 選択の単一ソース (選択統計・将来の逆リンク/選択グループの土台)
+        # 選択の単一ソース (選択統計・逆リンク/選択グループの土台)。
+        # ver27.0: ポリゴン確定コールバックが主たる writer。
         dcc.Store(id="selected_cell_ids_store", data=[]),
+        # ver27.0: UMAP ポリゴン下書き（クリックで置いた頂点 [[x,y],...]）
+        dcc.Store(id="umap_polygon_draft_store", data=[]),
         # マーカー表 Top-N CSV ダウンロード
         dcc.Download(id="dl_marker_table_csv"),
         # --- P2: アプリ内 on-the-fly DE 用 ---

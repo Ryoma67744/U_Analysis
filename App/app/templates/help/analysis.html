@@ -30,6 +30,10 @@
       <ul>
         <li><a href="#flip-rotation">🆕 サンプル別の反転・回転</a></li>
         <li><a href="#lite-viewer">🆕 軽量ビューア（新タブ）</a></li>
+        <li><a href="#selection-groups">🆕 選択グループ（ポリゴン選択・使用例）</a></li>
+        <li><a href="#onthefly-analysis">🆕 その場で実行する解析（選択統計 / 選択DE）</a></li>
+        <li><a href="#feature-lists">🆕 Feature リスト + 共発現散布図</a></li>
+        <li><a href="#hne-split">🆕 H&amp;E オーバーレイ / 分割表示</a></li>
       </ul>
     </li>
     <li><a href="#interpretation">📐 データの前提と結果の読み方（重要）</a></li>
@@ -545,6 +549,11 @@
     <tr><td>📌 <strong>サムネ登録</strong></td><td>UMAP / 空間プロット下の「📌 サムネ登録」で、現在の図をプロジェクト一覧のサムネに設定（§12）</td></tr>
     <tr><td>🗂 <strong>プロジェクトとして保存</strong></td><td>現在のインタラクティブ結果を新規 / 既存プロジェクトに保存（結果・MSI フォルダのパスは自動補完）</td></tr>
     <tr><td>💾 <strong>結果を保存</strong></td><td>編集内容を新しい RDS として明示的に書き出し</td></tr>
+    <tr><td>🖊 <strong>ポリゴン選択</strong></td><td>🆕 UMAP 上でクリックして頂点を置き、関心領域を多角形で囲って選択（§6 <a href="#selection-groups">選択グループ</a>）</td></tr>
+    <tr><td>🏷 <strong>選択グループ</strong></td><td>🆕 選択に名前を付けて保存・改名・削除・結合・CSV 入出力。選択統計 / 選択DE に再利用</td></tr>
+    <tr><td>📊 <strong>選択統計 / 選択DE</strong></td><td>🆕 選択範囲の構成比・平均強度を即時表示。選んだ範囲 vs 全体（Globally）や A vs B（Locally）の DE をその場で検定</td></tr>
+    <tr><td>🧪 <strong>Feature リスト / 共発現</strong></td><td>🆕 m/z を検索してリスト化。2 リストの共局在散布図を描画（§6 <a href="#feature-lists">Feature リスト</a>）</td></tr>
+    <tr><td>🩻 <strong>H&amp;E オーバーレイ / 分割表示</strong></td><td>🆕 組織像を Spatial 背景に重畳。UMAP をサンプル/クラスタ/選択グループで分割比較</td></tr>
   </tbody>
 </table>
 
@@ -603,6 +612,90 @@
     （gene 名の dtype 不整合で reindex 後に全行 NaN 化していた問題を解消）。
   </p>
 </div>
+
+<!-- -------- 選択ベースの解析 (ver27.0) -------- -->
+<h3 class="subsection-heading" id="selection-groups">🆕 選択グループ（名前付き選択の保存・再利用）</h3>
+
+<p>
+  UMAP 上で関心領域を <strong>ポリゴン（多角形）で囲って</strong> 選択し、その選択に名前を付けて
+  保存・再利用できます。一時的な選択を「再現可能な解析単位」に変えるための機能です。
+</p>
+
+<h4>選択（ポリゴン）の作り方</h4>
+<ol>
+  <li>UMAP プロット上で <strong>クリックして頂点を順に置く</strong>（クリックごとに多角形の角が増えます）</li>
+  <li>「<strong>1点取消</strong>」で直前の頂点を取り消し、「<strong>クリア</strong>」で下書きを全消去</li>
+  <li>頂点が <strong>3 点以上</strong> になったら「<strong>確定</strong>」を押すと、囲んだ内側のピクセルが選択されます</li>
+</ol>
+
+<div class="help-alert tip">
+  <div class="alert-title">💡 投げ縄/ボックスからポリゴンへ</div>
+  ver27.0 で UMAP の範囲選択は <strong>クリックで頂点を置くポリゴン方式</strong> に統一されました
+  （従来の投げ縄/ボックスのドラッグ選択は廃止）。ドラッグはパン（移動）、ホイールはズームに割り当てられ、
+  クリックは頂点の追加に使われます。より狙った輪郭を精密に描けます。
+</div>
+
+<h4>選択グループの操作</h4>
+<table class="help-table">
+  <thead><tr><th>操作</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td><strong>現在の選択を保存</strong></td><td>名前（例: 腫瘍領域）を付けて、いま囲んだ選択をグループとして保存</td></tr>
+    <tr><td><strong>改名 / 削除</strong></td><td>グループ名の変更・削除。<strong>「削除を取り消す」</strong> で直前の削除を復元可能</td></tr>
+    <tr><td><strong>結合</strong></td><td>2 つ以上のグループを 1 つにまとめる</td></tr>
+    <tr><td><strong>CSV 出力 / 取込</strong></td><td><code>CellID,Group</code> 形式で書き出し・読み込み（外部解析や他切片への移送に）</td></tr>
+    <tr><td><strong>現在の選択に読込</strong></td><td>保存グループを「現在の選択」に戻し、<strong>選択統計</strong> や <strong>選択DE</strong> の入力として再利用</td></tr>
+  </tbody>
+</table>
+
+<h4>実務的な使用例</h4>
+<ul>
+  <li><strong>(a) 領域間のマーカー比較</strong>：「腫瘍」と「隣接正常」を 2 グループ保存 →
+    DEG タブの <strong>「選択DE（Locally）」</strong> で 2 領域間の発現差マーカーをその場で検定。</li>
+  <li><strong>(b) 条件をまたぐ横断比較</strong>：投与群 / 対照群など複数サンプルの「同じ組織領域」を
+    それぞれグループ化し、構成比・平均強度・DEG を揃った定義で比較。</li>
+  <li><strong>(c) アーティファクト/壊死域の除外</strong>：気泡・マトリクス析出・壊死域などをグループ化し、
+    下流の解釈や図から除外する基準として共有。</li>
+  <li><strong>(d) 領域ラベルの移送</strong>：CSV 出力で領域ラベル（<code>CellID,Group</code>）を書き出し、
+    外部統計や別切片の解析に再利用。</li>
+</ul>
+
+<!-- -------- その場で実行する解析 -------- -->
+<h3 class="subsection-heading" id="onthefly-analysis">🆕 その場で実行する解析（選択統計 / 選択DE）</h3>
+
+<p>
+  選択した範囲に対して、外部パイプラインに戻らず <strong>アプリ内で即座に</strong> 統計と検定を実行できます。
+</p>
+<ul>
+  <li><strong>選択範囲のライブ統計</strong>：ポリゴン確定と同時に、選択ピクセル数・全体比・
+    <strong>クラスタ別/サンプル別の構成比</strong>・表示中 m/z の平均強度をカードに即時表示。</li>
+  <li><strong>選択DE（その場 DE 検定）</strong>：
+    <ul>
+      <li><strong>Globally</strong>：選んだ範囲 <em>vs</em> 残り全体のマーカー検定</li>
+      <li><strong>Locally</strong>：グループ A <em>vs</em> グループ B（2 つの選択グループ）の比較</li>
+    </ul>
+    結果は <strong>Volcano / マーカー表 / ヒートマップ / violin</strong> にそのまま反映されます。</li>
+</ul>
+
+<!-- -------- Feature リスト + 共発現 -------- -->
+<h3 class="subsection-heading" id="feature-lists">🆕 Feature リスト + 共発現散布図</h3>
+
+<p>
+  注目する m/z（feature）を <strong>検索して集め、名前付きリスト</strong> として保存できます。
+  2 つのリストを選ぶと、各ピクセルでの <strong>リスト A 合計 vs リスト B 合計</strong> の
+  <strong>共発現（共局在）散布図</strong> を描画します（脂質クラス間の共局在解析などに有用）。リストは CSV 入出力に対応。
+</p>
+
+<!-- -------- H&amp;E オーバーレイ / 分割表示 -------- -->
+<h3 class="subsection-heading" id="hne-split">🆕 H&amp;E オーバーレイ / 分割表示</h3>
+
+<ul>
+  <li><strong>H&amp;E オーバーレイ</strong>：登録済みの組織像（H&amp;E）を Spatial プロットの
+    <strong>背景</strong> に重ね、スポットの透明度を調整して組織構造とクラスタを対応付けられます
+    （位置合わせ誤差は残差 px で表示）。</li>
+  <li><strong>分割表示（分割基準）</strong>：「表示=サンプル別」のとき、UMAP を
+    <strong>サンプル / クラスタ / 選択グループ</strong> ごとの小図に分割し、全タイルで軸を共有して
+    同じ縮尺で並べて比較できます。</li>
+</ul>
 
 <!-- ============================================ -->
 <!-- ============================================ -->
@@ -911,6 +1004,20 @@
     <tr><th>バージョン</th><th>主要変更点</th></tr>
   </thead>
   <tbody>
+    <tr>
+      <td><strong>ver5.0〜27.0</strong><br><span class="text-muted small">2026-06</span></td>
+      <td>
+        🆕 <strong>Loupe Browser 9 を参考にしたインタラクティブ解析の大幅拡張</strong>：<br>
+        ① <strong>選択基盤</strong>（共有選択 + 選択範囲のライブ統計カード）<br>
+        ② <strong>選択DE</strong>（選択 vs 全体＝Globally / A vs B＝Locally をその場で検定 → Volcano/表/violin に反映）<br>
+        ③ <strong>選択グループ</strong>（名前付き選択の保存・改名・削除・結合・CSV 入出力・下流再利用、§6 <a href="#selection-groups">使用例</a>）<br>
+        ④ <strong>H&amp;E オーバーレイ</strong>（組織像を Spatial 背景に重畳 + 透明度 + 残差 px）<br>
+        ⑤ <strong>分割表示 / Feature リスト + 共発現散布図 / 選択クラスタ→再解析の橋渡し</strong><br>
+        ⑥ <strong>非機能改善</strong>：入力バリデーション + リセット / 削除取り消し（Undo）、エクスポート文言統一、Playwright 自動 E2E<br>
+        ⑦ ver27.0: UMAP 範囲選択を <strong>ポリゴン（クリックで頂点）方式に統一</strong>（投げ縄/ボックス廃止）、
+        ツールチップの可読性改善、本ヘルプを最新化
+      </td>
+    </tr>
     <tr>
       <td><strong>ver4.0</strong><br><span class="text-muted small">2026-05-24</span></td>
       <td>
