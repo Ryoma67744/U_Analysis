@@ -1033,7 +1033,8 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
 
     # 共有クラスタ凡例(上部に1つ) + 縦線区切りタイル。
     container = _facet_block(graphs, color_map, cluster_name_map=cluster_name_map,
-                             show_legend=True)
+                             show_legend=True, legend_id="spatial_shared_legend",
+                             excluded=exclude_clusters)
     # 代表figureをStoreに保存（HTMLエクスポート用。凡例ありの dict）
     store_data = representative_fig if representative_fig else None
     return container, store_data, batch_fig_dicts

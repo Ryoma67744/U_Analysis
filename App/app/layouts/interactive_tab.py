@@ -438,6 +438,35 @@ def create_interactive_tab():
                 ],
             ),
 
+            # --- 選択クラスタで再解析 (ver29.0: 再アノテーションの下へ移動) ---
+            html.Div([
+                html.Strong("選択クラスタで再解析", className="small d-block mb-1"),
+                dbc.Row(className="g-1 align-items-end", children=[
+                    dbc.Col(width=3, children=[
+                        dbc.Label("モード", className="small mb-0"),
+                        dbc.RadioItems(
+                            id="reanalysis_bridge_mode",
+                            options=[{"label": "抽出(keep)", "value": "keep"},
+                                     {"label": "除外(exclude)", "value": "exclude"}],
+                            value="keep", inline=True),
+                    ]),
+                    dbc.Col(width=5, children=[
+                        dbc.Label("対象クラスタ", className="small mb-0"),
+                        dcc.Dropdown(id="reanalysis_bridge_clusters", multi=True,
+                                     placeholder="クラスタを選択"),
+                    ]),
+                    dbc.Col(width="auto", children=[
+                        dbc.Button("再解析フォームへ送る", id="btn_send_to_reanalysis",
+                                   size="sm", color="warning"),
+                    ]),
+                    dbc.Col(width="auto", className="d-flex align-items-center", children=[
+                        html.Div(id="reanalysis_bridge_status"),
+                    ]),
+                ]),
+                dbc.FormText("設定タブの再解析フォーム(対象クラスタ/モード/RDSフォルダ)を"
+                             "自動入力し設定タブへ移動します。データフォルダ等を確認して実行してください。"),
+            ], className="mt-2 border rounded p-2"),
+
             html.Div(id="interactive_data_info", className="mt-2 text-muted"),
         ]),
 
@@ -887,6 +916,12 @@ def create_interactive_tab():
                                 # サンプル別 UMAP 表示コンテナ
                                 html.Div(id="umap_per_sample_container"),
                             ]),
+                            # --- 選択ツール (ver29.0: ポリゴン選択/統計/選択グループをプルダウンに格納) ---
+                            html.Details(open=False, style={"marginTop": "10px"}, children=[
+                                html.Summary(
+                                    "🖊 選択ツール（ポリゴン選択・選択統計・選択グループ）",
+                                    style={"cursor": "pointer", "fontSize": "13px",
+                                           "color": "#555", "fontWeight": "600"}),
                             # --- ポリゴン選択 (ver27.0: クリックで頂点を置く範囲選択) ---
                             html.Div([
                                 html.Strong(["🖊 ポリゴン選択", help_badge("umap_polygon")],
@@ -998,34 +1033,7 @@ def create_interactive_tab():
                                     ]),
                                 ]),
                             ], className="mt-2 border rounded p-2"),
-                            # --- 選択クラスタで再解析 (P5-c: 既存の再解析エンジンへ橋渡し) ---
-                            html.Div([
-                                html.Strong("選択クラスタで再解析", className="small d-block mb-1"),
-                                dbc.Row(className="g-1 align-items-end", children=[
-                                    dbc.Col(width=3, children=[
-                                        dbc.Label("モード", className="small mb-0"),
-                                        dbc.RadioItems(
-                                            id="reanalysis_bridge_mode",
-                                            options=[{"label": "抽出(keep)", "value": "keep"},
-                                                     {"label": "除外(exclude)", "value": "exclude"}],
-                                            value="keep", inline=True),
-                                    ]),
-                                    dbc.Col(width=5, children=[
-                                        dbc.Label("対象クラスタ", className="small mb-0"),
-                                        dcc.Dropdown(id="reanalysis_bridge_clusters", multi=True,
-                                                     placeholder="クラスタを選択"),
-                                    ]),
-                                    dbc.Col(width="auto", children=[
-                                        dbc.Button("再解析フォームへ送る", id="btn_send_to_reanalysis",
-                                                   size="sm", color="warning"),
-                                    ]),
-                                    dbc.Col(width="auto", className="d-flex align-items-center", children=[
-                                        html.Div(id="reanalysis_bridge_status"),
-                                    ]),
-                                ]),
-                                dbc.FormText("設定タブの再解析フォーム(対象クラスタ/モード/RDSフォルダ)を"
-                                             "自動入力し設定タブへ移動します。データフォルダ等を確認して実行してください。"),
-                            ], className="mt-2 border rounded p-2"),
+                            ]),
                         ]),
 
                         # --- Spatial Mapping ---

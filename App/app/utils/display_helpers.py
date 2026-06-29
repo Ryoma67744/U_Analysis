@@ -8,8 +8,11 @@ import base64
 import io
 import logging
 
+import math
+
 import numpy as np
-from dash import html
+import plotly.graph_objects as go
+from dash import html, dcc
 
 logger = logging.getLogger(__name__)
 
@@ -37,16 +40,67 @@ def cluster_legend_row(color_map, cluster_name_map=None):
     return html.Div(items, className="facet-legend")
 
 
+def cluster_legend_figure(color_map, cluster_name_map=None, excluded=None):
+    """クリック可能な「凡例だけ」の Plotly figure を返す (ver29.0)。
+
+    各クラスタを 1 ダミートレースとして横並び凡例にする。Plotly ネイティブ凡例の
+    クリック=トグル非表示 / ダブルクリック=単独表示 をそのまま使う。トレースの
+    ``meta`` にクラスタ id を持たせ、クリック後の visible からどのクラスタが
+    非表示(legendonly)かを復元できるようにする。``excluded`` のクラスタは初期状態で
+    legendonly(淡色)にして exclude ドロップダウンと同期する。
+    """
+    from app.utils.color_utils import cluster_sort_key, cluster_display_name
+    excluded_set = {str(c) for c in (excluded or [])}
+    fig = go.Figure()
+    for cl in sorted(color_map.keys(), key=cluster_sort_key):
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(size=11, color=color_map.get(str(cl), "#999999")),
+            name=cluster_display_name(cl, cluster_name_map),
+            meta=str(cl), showlegend=True,
+            visible=("legendonly" if str(cl) in excluded_set else True),
+        ))
+    fig.update_layout(
+        showlegend=True,
+        legend=dict(orientation="h", itemsizing="constant",
+                    itemclick="toggle", itemdoubleclick="toggleothers",
+                    font=dict(size=11), x=0, y=0.5, xanchor="left",
+                    yanchor="middle", tracegroupgap=0),
+        margin=dict(l=2, r=2, t=2, b=2),
+        xaxis=dict(visible=False, range=[0, 1]),
+        yaxis=dict(visible=False, range=[0, 1]),
+        plot_bgcolor="white", paper_bgcolor="white",
+    )
+    return fig
+
+
+def _legend_graph_height(n_clusters):
+    """横並び凡例の概算高さ(px)。1行に約10件、1行22px + 余白。"""
+    rows = max(1, math.ceil((n_clusters or 1) / 10))
+    return 24 + rows * 22
+
+
 def facet_block(tiles, color_map, cluster_name_map=None, show_legend=True,
-                outer_style=None):
+                outer_style=None, legend_id=None, excluded=None):
     """共有凡例(任意) + タイル群(縦線区切り) をまとめた html.Div を返す。
 
     tiles: className="facet-tile" を持つ図 Div のリスト。
     show_legend=True かつ color_map があるとき、上部に共有クラスタ凡例を1つ付ける。
+    legend_id を渡すと、静的 HTML 凡例の代わりにクリック可能な凡例グラフ(dcc.Graph)を
+    描画する (ver29.0)。excluded は初期 legendonly の同期に使う。
     """
     children = []
     if show_legend and color_map:
-        children.append(cluster_legend_row(color_map, cluster_name_map))
+        if legend_id:
+            children.append(dcc.Graph(
+                id=legend_id,
+                figure=cluster_legend_figure(color_map, cluster_name_map, excluded),
+                config={"displayModeBar": False},
+                style={"height": f"{_legend_graph_height(len(color_map))}px"},
+                className="facet-legend-graph",
+            ))
+        else:
+            children.append(cluster_legend_row(color_map, cluster_name_map))
     children.append(html.Div(tiles, className="facet-tiles"))
     return html.Div(children, style=outer_style or {})
 
