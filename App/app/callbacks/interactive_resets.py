@@ -47,4 +47,4 @@ def reset_volcano(n_clicks):
 def reset_hne_overlay(n_clicks):
     if not n_clicks:
         raise PreventUpdate
-    return 70, 5
+    return 100, 5

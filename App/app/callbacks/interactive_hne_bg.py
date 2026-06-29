@@ -61,7 +61,7 @@ def _msg(text, cls="text-muted small"):
 def build_hne_overlay_fig(df_sample, rds_path, sample, *, title=None, opacity=70,
                           marker_size=5, color_map=None, cluster_name_map=None,
                           show_labels=False, exclude_clusters=None,
-                          legend_hidden=None):
+                          legend_hidden=None, mono=False):
     """登録済み H&E を背景に、当該サンプルの MSI スポットを射影して重ねた figure を返す。
 
     Spatial Mapping 本体の per-sample タイルから呼ぶ。登録未完了（画像が無い / ランドマーク
@@ -109,8 +109,14 @@ def build_hne_overlay_fig(df_sample, rds_path, sample, *, title=None, opacity=70
     color_map = color_map or {}
     hidden = {str(c) for c in (legend_hidden or [])}
 
+    # ver31.0: モノクロ表示。キャッシュ配列を破壊せず新規配列で輝度グレースケール化。
+    arr_show = arr
+    if mono:
+        lum = arr[..., :3].astype(float) @ np.array([0.299, 0.587, 0.114])
+        arr_show = np.repeat(lum[..., None], 3, axis=2).astype(np.uint8)
+
     fig = go.Figure()
-    fig.add_trace(go.Image(z=arr, hoverinfo="skip"))
+    fig.add_trace(go.Image(z=arr_show, hoverinfo="skip"))
 
     cl_series = sub["Cluster"].astype(str).to_numpy()
     cats_present = sorted(set(cl_series), key=natural_cluster_key)

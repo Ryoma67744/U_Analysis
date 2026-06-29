@@ -86,11 +86,13 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                                label_size=10, saved_positions=None,
                                title_font_size=None, render_height=None,
                                cluster_name_map=None, scale_factor=1.0,
-                               legend_hidden=None):
+                               legend_hidden=None, spot_opacity=1.0):
     """単一サンプルのSpatial Mapping figureを生成。
 
     legend_hidden: 共有凡例で灰色化したクラスタ。色付き trace を描かず灰色背景は残す
         (exclude と異なりセルは消さない, ver29.1)。
+    spot_opacity: クラスタ色スポットの不透明度 (0–1, ver31.0)。下げると背後の TIC 背景が透ける
+        (既定 1.0＝従来どおり不透明)。TIC 背景・選択ハイライトには適用しない。
     """
     # 除外クラスタのフィルタリング（完全除去。灰色背景も消える）
     if exclude_clusters:
@@ -186,7 +188,9 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                     x=plot_x[mask],
                     y=plot_y[mask],
                     mode="markers",
-                    marker=dict(size=marker_size + 1, symbol="square", color=color_map.get(str(cl), "#999999")),
+                    marker=dict(size=marker_size + 1, symbol="square",
+                                color=color_map.get(str(cl), "#999999"),
+                                opacity=spot_opacity),
                     name=_cluster_display_name(cl, cluster_name_map),
                     legendgroup=_cluster_display_name(cl, cluster_name_map),
                 ))
@@ -226,7 +230,8 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                     fig.add_trace(go.Scattergl(
                         x=plot_x[mask], y=plot_y[mask], mode="markers",
                         marker=dict(size=marker_size, symbol="square",
-                                    color=color_map.get(str(cl), "#999999")),
+                                    color=color_map.get(str(cl), "#999999"),
+                                    opacity=spot_opacity),
                         text=[_cluster_display_name(cl, cluster_name_map)] * int(mask.sum()),
                         hovertemplate="%{text}<extra></extra>",
                         name=_cluster_display_name(cl, cluster_name_map), showlegend=False,
@@ -248,6 +253,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                     colorscale=discrete_cscale,
                     cmin=0, cmax=1,
                     showscale=False,
+                    opacity=spot_opacity,
                 ),
                 text=[_cluster_display_name(cl, cluster_name_map) for cl in df_sample["Cluster"]],
                 hovertemplate="%{text}<extra></extra>",
@@ -258,7 +264,8 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
             point_colors = [color_map.get(str(cl), "#999999") for cl in df_sample["Cluster"]]
             fig.add_trace(go.Scattergl(
                 x=plot_x, y=plot_y, mode="markers",
-                marker=dict(size=marker_size, symbol="square", color=point_colors),
+                marker=dict(size=marker_size, symbol="square", color=point_colors,
+                            opacity=spot_opacity),
                 text=[_cluster_display_name(cl, cluster_name_map) for cl in df_sample["Cluster"]],
                 hovertemplate="%{text}<extra></extra>",
                 showlegend=False,
@@ -938,7 +945,8 @@ def auto_feature_marker(n_clicks, rotation_store, sample):
      Input("spatial_legend_hidden_store", "data"),
      Input("hne_overlay_show", "value"),
      Input("hne_overlay_opacity", "value"),
-     Input("hne_overlay_marker_size", "value")],
+     Input("hne_overlay_marker_size", "value"),
+     Input("hne_overlay_mono", "value")],
     State("accumulated_label_positions", "data"),
 )
 def update_spatial_plots(sample, highlight_clusters, selected_ids,
@@ -947,7 +955,7 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
                          _fs_trigger, custom_colors, rows,
                          cluster_name_map, merge_toggle, merge_color_mode,
                          active_items, legend_hidden, hne_show, hne_opacity,
-                         hne_marker_size, accumulated_positions):
+                         hne_marker_size, hne_mono, accumulated_positions):
     active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
     if "acc_spatial" not in active_list:
         return no_update, no_update, no_update
@@ -1007,6 +1015,8 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
         display_s = _display_name(s, name_map)
         # ver30.0: 組織像オーバーレイ ON かつ当該サンプルが H&E 登録済みなら、
         # H&E 背景＋射影スポットのタイルを使う（未登録/OFF は従来の MSI 空間タイル）。
+        # ver31.0: スポット透明度を通常タイルにも適用（下げると背後の TIC が透ける）。0 も有効値。
+        _spot_op = (hne_opacity if hne_opacity is not None else 100) / 100.0
         fig = None
         if hne_show:
             try:
@@ -1015,7 +1025,7 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
                     opacity=hne_opacity, marker_size=hne_marker_size,
                     color_map=color_map, cluster_name_map=cluster_name_map,
                     show_labels=show_labels, exclude_clusters=exclude_clusters,
-                    legend_hidden=legend_hidden)
+                    legend_hidden=legend_hidden, mono=hne_mono)
             except Exception as e:  # noqa: BLE001
                 logger.warning("[H&E overlay] %s: 生成失敗 -> 通常表示にフォールバック: %s", s, e)
                 fig = None
@@ -1033,7 +1043,8 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
                                          label_size=label_size or 10,
                                          saved_positions=spatial_pos.get(s),
                                          cluster_name_map=cluster_name_map,
-                                         legend_hidden=legend_hidden)
+                                         legend_hidden=legend_hidden,
+                                         spot_opacity=_spot_op)
         # 出力(一括保存/HTML)は各図に凡例を残す → 先に凡例ありでスナップショット。
         if representative_fig is None:
             representative_fig = fig.to_dict()

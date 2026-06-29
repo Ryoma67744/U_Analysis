@@ -1134,10 +1134,15 @@ def create_interactive_tab():
                                                label="組織像を背景に重ねる（登録済みサンプル）",
                                                value=False),
                                 ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Switch(id="hne_overlay_mono",
+                                               label="組織像をモノクロ表示",
+                                               value=False),
+                                ]),
                                 dbc.Col(width=3, children=[
                                     dbc.Label("スポット透明度", className="small mb-0"),
                                     dcc.Slider(id="hne_overlay_opacity", min=0, max=100,
-                                               step=5, value=70,
+                                               step=5, value=100,
                                                marks={0: "0", 50: "50", 100: "100"},
                                                tooltip={"placement": "bottom",
                                                         "always_visible": False}),
@@ -1344,10 +1349,14 @@ def create_interactive_tab():
                                     "format": "png", "filename": "Feature_violin",
                                     "scale": 3}},
                             )),
-                            # --- Feature リスト + 共発現散布図 (P5-b) ---
+                            # --- Feature リスト + 共発現散布図 (P5-b / ver31.0 初期閉じプルダウン) ---
                             html.Hr(className="my-2"),
-                            html.Strong("Feature リスト / 共発現", className="small d-block mb-1"),
-                            dbc.Row(className="g-1 align-items-end mb-1", children=[
+                            html.Details(open=False, children=[
+                                html.Summary("Feature リスト / 共発現",
+                                             className="mb-1",
+                                             style={"cursor": "pointer", "fontSize": "13px",
+                                                    "fontWeight": "bold"}),
+                                dbc.Row(className="g-1 align-items-end mb-1", children=[
                                 dbc.Col(width=3, children=[
                                     dbc.Input(id="feature_list_name", size="sm",
                                               placeholder="リスト名 (例: PC脂質)"),
@@ -1446,6 +1455,7 @@ def create_interactive_tab():
                                 id="coexpr_scatter", style={"height": "420px"},
                                 config={"toImageButtonOptions": {
                                     "format": "png", "filename": "coexpression", "scale": 2}})),
+                            ]),  # /html.Details (Feature リスト / 共発現)
                         ]),
 
                         # --- DEG マーカー ---
