@@ -64,13 +64,14 @@ logger = logging.getLogger("msi.interactive.fullscreen")
      State("spatial_rotation_store", "data"),
      State("custom_color_map_store", "data"),
      State("spatial_rows_per_view", "value"),
+     State("hne_overlay_opacity", "value"),
      State("cluster_name_map_store", "data"),
      State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
 def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                       umap_fig, feat_container_children, spatial_fig_data, deg_data,
-                      rotation_store, custom_colors, spatial_rows,
+                      rotation_store, custom_colors, spatial_rows, hne_opacity,
                       cluster_name_map=None, rds_path=None):
     from app.callbacks.interactive_callbacks import _set_active_key
     _set_active_key(rds_path)
@@ -225,7 +226,8 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                                              title=display_s, embed_legend=True,
                                              cluster_to_idx=cluster_to_idx,
                                              discrete_cscale=discrete_cscale,
-                                             cluster_name_map=cluster_name_map)
+                                             cluster_name_map=cluster_name_map,
+                                             spot_opacity=(hne_opacity if hne_opacity is not None else 100) / 100.0)
             if spatial_rows:
                 n_cols = max(1, math.ceil(len(samples) / spatial_rows))
                 gap_total = (n_cols - 1) * 15
@@ -511,6 +513,7 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
      Input("spatial_legend_hidden_store", "data")],
     [State("custom_color_map_store", "data"),
      State("spatial_rows_per_view", "value"),
+     State("hne_overlay_opacity", "value"),
      State("accumulated_label_positions", "data"),
      State("cluster_name_map_store", "data"),
      State("seurat_rds_path_store", "data")],
@@ -519,7 +522,7 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
 def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                       exclude_clusters, marker_size, height_val, width_val,
                       label_size, legend_hidden, custom_colors, rows,
-                      accumulated_positions, cluster_name_map=None,
+                      hne_opacity, accumulated_positions, cluster_name_map=None,
                       rds_path=None):
     from app.callbacks.interactive_callbacks import _set_active_key
     _set_active_key(rds_path)
@@ -568,7 +571,8 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                                          saved_positions=spatial_pos.get(s),
                                          render_height=render_h,
                                          cluster_name_map=cluster_name_map,
-                                         legend_hidden=legend_hidden)
+                                         legend_hidden=legend_hidden,
+                                         spot_opacity=(hne_opacity if hne_opacity is not None else 100) / 100.0)
         # 画面表示は per-tile 凡例オフ（上部の共有凡例に集約）。
         fig.update_layout(showlegend=False)
         if rows:

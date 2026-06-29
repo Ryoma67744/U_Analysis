@@ -12,6 +12,27 @@
 
 ---
 
+## 2026-06-29_ver31.0
+
+### 機能追加: Spatial Mapping のスポット透明度で TIC 透過＋組織像モノクロ表示 / Feature リストを折りたたみ化
+
+- **スポット透明度を通常タイル（組織像オーバーレイ OFF / 未登録）にも適用**：通常の Spatial Mapping タイルは
+  既に TIC 背景（Greys）を描いているが、クラスタ色スポットが不透明で覆っていたため見えなかった。スポット透明度を
+  クラスタ色スポットに適用し、**下げるほど背後の TIC が透けて見える**ように（`_create_single_spatial_fig` に
+  `spot_opacity` 引数を追加。embed_legend / discrete / fallback / highlight の各クラスタ色トレースに反映。
+  TIC 背景・選択ハイライトは不変）。フルスクリーンの Spatial も同じ透明度に追従。
+- **スライダー既定値を 70 → 100（不透明）に変更**：通常表示の既定の見た目は現状どおり。下げた時だけ TIC/H&E が
+  透ける。リセットも 100 に統一（`interactive_resets.reset_hne_overlay`）。
+- **「組織像をモノクロ表示」トグルを追加**（`hne_overlay_mono`）：H&E オーバーレイ背景の組織像をグレースケール表示
+  （`build_hne_overlay_fig(mono=...)`。輝度変換、キャッシュ配列は非破壊）。
+- **Feature Plot の「Feature リスト / 共発現」を初期閉じの折りたたみプルダウン化**（`html.Details(open=False)`、
+  見出しを `html.Summary` 化）。内部 id は不変のためコールバックは無改修。
+- 0% も有効な透明度値として扱う（`or` ではなく `is not None` 判定）。`spot_opacity` の既定は 1.0 のため
+  軽量ビューア / 共有 / PPTX 等の他の呼び出し元は従来どおり不透明。
+- version 30.2→31.0。
+
+---
+
 ## 2026-06-29_ver30.2
 
 ### UI 改善: UMAP / Spatial Mapping の「横並び」も行数指定に統一
