@@ -12,6 +12,24 @@
 
 ---
 
+## 2026-06-29_ver31.1
+
+### UI 改善: インタラクティブ解析で UMAP と Spatial Mapping を初期オープンに
+
+インタラクティブ解析のアコーディオン（`interactive_accordion`）は従来 `start_collapsed=True` で全セクション初期閉じ
+だったため、各セクションを毎回クリックして開く必要があった。**UMAP と Spatial Mapping の主要 2 ビューだけを初期
+オープン**にし、クリック不要で即表示されるようにした。
+
+- `layouts/interactive_tab.py`：`start_collapsed=True` を外し `active_item=["acc_umap", "acc_spatial"]` を指定
+  （`always_open=True` のためリスト指定で複数オープン）。
+- 残りのセクション（エクスポート/クラスタ情報/Feature Plot/DEG）は従来どおり初期閉じ＝開いた時だけ計算する遅延
+  ロードを維持。特に重い Feature Plot（初回 expression_matrix 生成 20–60 秒）は初期オープンに含めないため、
+  データロードは重くならない。
+- コールバックは無改修（重い描画は既に `active_item` を見てガード済み。`active_item` を書き込む処理は無い）。
+- version 31.0→31.1。
+
+---
+
 ## 2026-06-29_ver31.0
 
 ### 機能追加: Spatial Mapping のスポット透明度で TIC 透過＋組織像モノクロ表示 / Feature リストを折りたたみ化

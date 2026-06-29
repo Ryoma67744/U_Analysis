@@ -545,7 +545,9 @@ def create_interactive_tab():
                 dbc.Accordion(
                     id="interactive_accordion",
                     always_open=True,
-                    start_collapsed=True,
+                    # UMAP と Spatial Mapping のみ初期オープン（クリック不要で主要2ビューを即表示）。
+                    # 他セクション（特に重い Feature Plot=初回 expression_matrix 20-60秒）は初期閉じ＝遅延計算を維持。
+                    active_item=["acc_umap", "acc_spatial"],
                     flush=True,
                     className="mt-3",
                     children=[
