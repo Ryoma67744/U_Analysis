@@ -1,12 +1,14 @@
 # =============================================================================
-# MSI Analysis Application - H&E background overlay in the Interactive tab (Phase 4)
+# MSI Analysis Application - H&E background overlay (Phase 4 / ver30.0 統合)
 # 登録済みの組織像 (H&E) を背景に、MSI クラスタのスポットを重ねて表示する。
 #
 # 画像のワープは行わず、MSI スポット座標を「登録済みアフィンの逆」で H&E 画素座標へ
 # 射影し、ネイティブ H&E 画像 (go.Image) の上にスポットを散布する（堅牢・検証容易）。
 # 使用するアフィン/回転は本番の領域割当 (hne_overlay.regions_from_overlay) と同一規約。
 #
-# スポット透明度スライダー (Loupe の「組織像に対するスポット不透明度」) を備える。
+# ver30.0: 独立グラフ (hne_overlay_graph) を廃止し、本ロジックを純関数
+# build_hne_overlay_fig に切り出して **Spatial Mapping 本体の各タイル**から呼ぶ
+# （interactive_spatial.update_spatial_plots）。スポット透明度で H&E を透過させる。
 # =============================================================================
 
 import base64
@@ -15,18 +17,17 @@ from io import BytesIO
 
 import numpy as np
 import plotly.graph_objects as go
-from dash import Input, Output, State, callback, no_update, html
+from dash import Input, Output, callback, html
 
 from app.services import hne_persistence as hp
-from app.services.hne_overlay import (
-    msi_to_hne_px, estimate_affine, affine_residual)
-from app.utils.color_utils import (
-    get_cluster_color_map as _get_cluster_color_map,
-    cluster_display_name as _cluster_display_name,
-)
+from app.services.hne_overlay import msi_to_hne_px
+from app.utils.color_utils import cluster_display_name as _cluster_display_name
 from app.utils.selection_utils import natural_cluster_key
 
 logger = logging.getLogger("msi.interactive.hne_bg")
+
+# デコード済み H&E 配列のキャッシュ（複数サンプルを毎回デコードしないため）
+_HNE_ARR_CACHE = {}
 
 
 def _decode_png_to_array(data_uri):
@@ -36,45 +37,44 @@ def _decode_png_to_array(data_uri):
     return np.asarray(img)
 
 
+def _load_hne_array(rds_path, img_file):
+    """rds_path+img_file をキーにデコード済み H&E 配列をキャッシュして返す。失敗時 None。"""
+    key = (str(rds_path), str(img_file))
+    if key in _HNE_ARR_CACHE:
+        return _HNE_ARR_CACHE[key]
+    data_uri = hp.load_hne_image_b64(rds_path, img_file)
+    if not data_uri:
+        return None
+    try:
+        arr = _decode_png_to_array(data_uri)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("H&E 画像デコード失敗: %s", e)
+        return None
+    _HNE_ARR_CACHE[key] = arr
+    return arr
+
+
 def _msg(text, cls="text-muted small"):
     return html.Span(text, className=cls)
 
 
-@callback(
-    [Output("hne_overlay_graph", "figure"),
-     Output("hne_overlay_status", "children")],
-    [Input("hne_overlay_show", "value"),
-     Input("interactive_sample", "value"),
-     Input("hne_overlay_opacity", "value"),
-     Input("hne_overlay_marker_size", "value"),
-     Input("interactive_accordion", "active_item"),
-     Input("custom_color_map_store", "data"),
-     Input("cluster_name_map_store", "data")],
-    State("seurat_rds_path_store", "data"),
-    prevent_initial_call=True,
-)
-def update_hne_overlay(show, sample, opacity, marker_size, active_items,
-                       custom_colors, cluster_name_map, rds_path):
-    active = active_items if isinstance(active_items, list) else (
-        [active_items] if active_items else [])
-    if "acc_spatial" not in active:
-        return no_update, no_update
-    if not show:
-        return go.Figure(), _msg("「組織像オーバーレイを表示」をオンにしてください。")
-    if not rds_path:
-        return go.Figure(), _msg("データが読み込まれていません")
-    if not sample:
-        return go.Figure(), _msg(
-            "単一サンプルを選択してください（Spatial の「サンプル」ドロップダウン）。",
-            "text-warning small")
+def build_hne_overlay_fig(df_sample, rds_path, sample, *, title=None, opacity=70,
+                          marker_size=5, color_map=None, cluster_name_map=None,
+                          show_labels=False, exclude_clusters=None,
+                          legend_hidden=None):
+    """登録済み H&E を背景に、当該サンプルの MSI スポットを射影して重ねた figure を返す。
 
-    from app.callbacks.interactive_callbacks import (
-        _interactive_data, _set_active_key)
-    _set_active_key(rds_path)
-    df = _interactive_data.get("plot_data")
-    if df is None or "SpatialX" not in df.columns:
-        return go.Figure(), _msg("空間座標がありません")
+    Spatial Mapping 本体の per-sample タイルから呼ぶ。登録未完了（画像が無い / ランドマーク
+    3 点未満 / 射影不能）なら **None** を返し、呼び出し側は従来の MSI 空間タイルにフォールバックする。
 
+    - opacity: スポット不透明度 (0–100)。下げると H&E が透ける。
+    - exclude_clusters: 完全除去（描かない）。legend_hidden: 灰色化（色トレースを描かず H&E を透かす）。
+    座標系は登録フレーム（H&E 画素）。共有凡例連動用に欠番空白のダミー凡例 trace を付ける。
+    """
+    if df_sample is None or getattr(df_sample, "empty", True):
+        return None
+    if "SpatialX" not in df_sample.columns or "SpatialY" not in df_sample.columns:
+        return None
     entry = hp.load_hne_sample(rds_path, sample) or {}
     lm = entry.get("landmarks") or {}
     tic = lm.get("tic") or []
@@ -83,65 +83,99 @@ def update_hne_overlay(show, sample, opacity, marker_size, active_items,
     img_info = entry.get("image") or {}
     img_file = img_info.get("file")
     if npair < 3 or not img_file:
-        return go.Figure(), _msg(
-            f"サンプル「{sample}」は H&E 登録（画像 + 3 点以上のランドマーク）が"
-            "未完了です。「H&E オーバーレイ」タブで登録してください。",
-            "text-warning small")
+        return None
+    arr = _load_hne_array(rds_path, img_file)
+    if arr is None:
+        return None
 
-    data_uri = hp.load_hne_image_b64(rds_path, img_file)
-    if not data_uri:
-        return go.Figure(), _msg("H&E 画像の読込に失敗しました。", "text-danger small")
-    try:
-        arr = _decode_png_to_array(data_uri)
-    except Exception as e:  # noqa: BLE001
-        return go.Figure(), _msg(f"画像デコード失敗: {e}", "text-danger small")
-
-    sub = df[df["Sample"].astype(str) == str(sample)]
+    # exclude（完全除去）
+    sub = df_sample
+    if exclude_clusters:
+        ex = {str(c) for c in exclude_clusters}
+        sub = sub[~sub["Cluster"].astype(str).isin(ex)]
     if sub.empty:
-        return go.Figure(), _msg("該当サンプルのピクセルがありません")
+        return None
 
     proj = msi_to_hne_px(
         sub["SpatialX"].to_numpy(dtype=float),
         sub["SpatialY"].to_numpy(dtype=float),
         entry.get("rotation"), hne, tic)
     if proj is None:
-        return go.Figure(), _msg("ランドマークが不足しています（3 点以上必要）。",
-                                 "text-warning small")
+        return None
     px_x, px_y = proj
+
+    op = (opacity if opacity is not None else 70) / 100.0
+    ms = marker_size if (marker_size and marker_size > 0) else 5
+    color_map = color_map or {}
+    hidden = {str(c) for c in (legend_hidden or [])}
 
     fig = go.Figure()
     fig.add_trace(go.Image(z=arr, hoverinfo="skip"))
 
-    op = (opacity if opacity is not None else 70) / 100.0
-    ms = marker_size if (marker_size and marker_size > 0) else 5
-    cats = sorted(sub["Cluster"].astype(str).unique(), key=natural_cluster_key)
-    color_map = _get_cluster_color_map(cats, custom_colors)
-    cell_ids = sub["CellID"].to_numpy()
-    for cl in cats:
-        mask = (sub["Cluster"].astype(str) == cl).to_numpy()
+    cl_series = sub["Cluster"].astype(str).to_numpy()
+    cats_present = sorted(set(cl_series), key=natural_cluster_key)
+    cell_ids = sub["CellID"].to_numpy() if "CellID" in sub.columns else None
+    for cl in cats_present:
+        if cl in hidden:
+            continue  # 灰色化＝色トレースを描かない → H&E が透ける
+        mask = (cl_series == cl)
         if not mask.any():
             continue
         name = _cluster_display_name(cl, cluster_name_map)
-        fig.add_trace(go.Scattergl(
-            x=px_x[mask], y=px_y[mask], mode="markers",
-            marker=dict(size=ms, color=color_map.get(cl, "#999999"), opacity=op),
-            name=name, text=cell_ids[mask],
-            hovertemplate=f"Cluster: {name}<br>%{{text}}<extra></extra>",
-        ))
+        kw = dict(x=px_x[mask], y=px_y[mask], mode="markers",
+                  marker=dict(size=ms, color=color_map.get(cl, "#999999"), opacity=op),
+                  name=name, showlegend=False, legendgroup=name)
+        if cell_ids is not None:
+            kw["text"] = cell_ids[mask]
+            kw["hovertemplate"] = f"Cluster: {name}<br>%{{text}}<extra></extra>"
+        fig.add_trace(go.Scattergl(**kw))
+        if show_labels:
+            fig.add_annotation(x=float(px_x[mask].mean()), y=float(px_y[mask].mean()),
+                               text=name, showarrow=False,
+                               font=dict(size=10, color="black"))
+
+    # 共有凡例連動用ダミー（存在＝色付き / 欠番＝空白スロットで縦位置を保持）
+    all_clusters = sorted({str(c) for c in color_map.keys()} | set(cats_present),
+                          key=natural_cluster_key)
+    present = set(cats_present)
+    for cl in all_clusters:
+        rank = int(cl) if str(cl).isdigit() else 1000
+        if cl in present and cl not in hidden:
+            fig.add_trace(go.Scattergl(
+                x=[None], y=[None], mode="markers",
+                marker=dict(size=10, color=color_map.get(cl, "#999999")),
+                name=_cluster_display_name(cl, cluster_name_map),
+                showlegend=True, legendrank=rank,
+                legendgroup=_cluster_display_name(cl, cluster_name_map)))
+        else:
+            fig.add_trace(go.Scattergl(
+                x=[None], y=[None], mode="markers",
+                marker=dict(size=10, color="rgba(0,0,0,0)"),
+                name=" ", showlegend=True, legendrank=rank,
+                legendgroup=f"_blank_{cl}"))
 
     fig.update_layout(
-        margin=dict(l=10, r=10, t=10, b=10), plot_bgcolor="white",
-        legend=dict(font=dict(size=10)),
+        margin=dict(l=10, r=10, t=max(24, 10), b=10), plot_bgcolor="white",
+        showlegend=True, legend=dict(itemsizing="constant", font=dict(size=10)),
     )
+    if title:
+        fig.update_layout(title=dict(text=str(title), font=dict(size=12), x=0.5))
     fig.update_xaxes(visible=False)
     fig.update_yaxes(visible=False)
+    return fig
 
-    try:
-        M = estimate_affine(hne[:npair], tic[:npair])
-        res = affine_residual(hne[:npair], tic[:npair], M)
-        status = _msg(
-            f"H&E オーバーレイ表示中（位置合わせ残差 RMS: {res:.1f} MSI単位 / "
-            f"ランドマーク {npair} 点）", "text-success small")
-    except Exception:  # noqa: BLE001
-        status = _msg("H&E オーバーレイ表示中", "text-success small")
-    return fig, status
+
+# ---------------------------------------------------------------------------
+# 状態テキスト（コントロール脇）。トグル ON/OFF を案内する軽量コールバック。
+# ---------------------------------------------------------------------------
+@callback(
+    Output("hne_overlay_status", "children"),
+    Input("hne_overlay_show", "value"),
+    prevent_initial_call=True,
+)
+def hne_overlay_status_msg(show):
+    if show:
+        return _msg(
+            "登録済みサンプルの背景に組織像を重畳中（未登録サンプルは通常表示）。"
+            "スポット透明度を下げると組織像が透けます。", "text-success small")
+    return _msg("オフ：通常の Spatial Mapping 表示。", "text-muted small")

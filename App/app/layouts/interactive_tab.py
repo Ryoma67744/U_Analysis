@@ -1127,13 +1127,11 @@ def create_interactive_tab():
                                 ]),
                             ]),
                             html.Div(id="spatial_controls_container"),
-                            dcc.Loading(html.Div(id="spatial_plots_container")),
-                            # --- 組織像 (H&E) オーバーレイ (P4) ---
-                            html.Hr(className="my-2"),
+                            # --- 組織像 (H&E) オーバーレイ (ver30.0: Spatial 本体の背景に統合) ---
                             dbc.Row(className="align-items-center mb-1", children=[
                                 dbc.Col(width="auto", children=[
                                     dbc.Switch(id="hne_overlay_show",
-                                               label="組織像オーバーレイを表示 (単一サンプル)",
+                                               label="組織像を背景に重ねる（登録済みサンプル）",
                                                value=False),
                                 ]),
                                 dbc.Col(width=3, children=[
@@ -1161,12 +1159,7 @@ def create_interactive_tab():
                                     html.Div(id="hne_overlay_status", className="small"),
                                 ]),
                             ]),
-                            dcc.Loading(dcc.Graph(
-                                id="hne_overlay_graph", style={"height": "500px"},
-                                config={"scrollZoom": True,
-                                        "toImageButtonOptions": {
-                                            "format": "png", "filename": "HnE_overlay",
-                                            "scale": 2}})),
+                            dcc.Loading(html.Div(id="spatial_plots_container")),
                         ]),
 
                         # --- Feature Plot ---
