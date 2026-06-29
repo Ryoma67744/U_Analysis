@@ -128,7 +128,10 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
             )
 
     layout_opts = dict(
-        dragmode="select",
+        # ver27.0: 範囲選択はクリックで頂点を置くポリゴン方式に統一。
+        # ドラッグ=パン / ホイール=ズーム / クリック=頂点追加 とするため "pan"。
+        # 選択は interactive_loupe の umap_polygon_* コールバックが担う。
+        dragmode="pan",
         showlegend=bool(show_legend),
         legend=dict(itemsizing="constant", font=dict(size=12), tracegroupgap=2),
         margin=dict(l=60, r=10,
@@ -145,6 +148,14 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
             text=title, font=dict(size=title_font_size or 14), x=0.5)
     fig.update_layout(**layout_opts)
     _add_umap_arrows(fig)
+    # ver27.0: ポリゴン下書きの専用オーバーレイ trace（常に最後＝data[-1]）。
+    # 空で追加し、interactive_loupe の umap_polygon_overlay が Patch で頂点を流し込む。
+    fig.add_trace(go.Scattergl(
+        x=[], y=[], mode="lines+markers", name="_umap_poly_draft",
+        line=dict(color="#d6336c", width=2),
+        marker=dict(color="#d6336c", size=7, symbol="circle"),
+        showlegend=False, hoverinfo="skip", uid="umap_poly_draft",
+    ))
     return fig
 
 

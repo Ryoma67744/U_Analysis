@@ -1,6 +1,11 @@
 # =============================================================================
 # MSI Analysis Application - Tooltip Definitions
 # ツールチップ定義（初心者向けヘルプ）
+#
+# 可読性 (ver27.0): 長文ツールチップは「\n」で意図的に改行している。
+# assets/styles.css の `.tooltip-inner { white-space: pre-line; max-width:360px }`
+# が改行を反映し、横幅を広げて細い縦折返しを防ぐ。文字列の区切り (。) の直後に
+# \n を置くと 1 文 = 1〜数行に整形される。
 # =============================================================================
 
 import dash_bootstrap_components as dbc
@@ -26,7 +31,7 @@ def get_sidebar_tooltips():
     """サイドバー用ツールチップ群を返す"""
     return [
         dbc.Tooltip(
-            "全サンプルのMSIデータからUMAPクラスタリングを新規実行します。"
+            "全サンプルのMSIデータからUMAPクラスタリングを新規実行します。\n"
             "初回解析時に選択してください。",
             target="analysis_method", **_TOOLTIP_PROPS,
         ),
@@ -41,75 +46,79 @@ def get_settings_tooltips():
     """解析設定タブ用ツールチップ群を返す"""
     return [
         dbc.Tooltip(
-            "入力が SCiLS RMS 等で正規化済みなら OFF（二重正規化を回避）。"
+            "入力が SCiLS RMS 等で正規化済みなら OFF（二重正規化を回避）。\n"
             "生データなら ON（LogNormalize=TIC正規化+log を実行）。",
             target="normalize_input_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "Harmony/RPCA は段階をまたぐ共通構造を見るための統合。"
+            "Harmony/RPCA は段階をまたぐ共通構造を見るための統合。\n"
             "各条件1切片(交絡)では生物差も一緒に除去されるため、未補正(PCA)も併用を。",
             target="cluster_source_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "切片アノテーションが何を表すかでシナリオを選択。"
-            "同一切片のクラスタ/Ctrl vs KO比較=無補正、"
-            "連続切片(技術反復)=RPCA統合、測定バッチ補正=Harmony(過補正注意・非推奨)。"
-            "条件比較＋技術差補正=Harmony と RPCA を両方適用し測定差を補正(交絡下では条件差も縮小。"
-            "条件をまたぐ共有埋め込み/クラスタを得たいとき。条件間DEGは独立算出で不変)。",
+            "切片アノテーションが何を表すかでシナリオを選択。\n"
+            "・同一切片のクラスタ / Ctrl vs KO 比較 = 無補正\n"
+            "・連続切片(技術反復) = RPCA 統合\n"
+            "・測定バッチ補正 = Harmony（過補正注意・非推奨）\n"
+            "・条件比較＋技術差補正 = Harmony と RPCA を両方適用し測定差を補正"
+            "（交絡下では条件差も縮小。条件をまたぐ共有埋め込み/クラスタを得たいとき。"
+            "条件間DEGは独立算出で不変）。",
             target="tims_scenario_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "再解析(exclusion/inclusion)の解析シナリオ。既定は初回解析の選択を引き継ぎます。"
-            "意味は初回と同じ（無補正/RPCA統合/Harmony補正/Harmony＋RPCA両方）。",
+            "再解析(exclusion/inclusion)の解析シナリオ。既定は初回解析の選択を引き継ぎます。\n"
+            "意味は初回と同じ（無補正 / RPCA統合 / Harmony補正 / Harmony＋RPCA両方）。",
             target="reanalysis_tims_scenario_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "m/zの一致判定に使う許容誤差（Da単位）。"
+            "m/zの一致判定に使う許容誤差（Da単位）。\n"
             "デフォルト0.01は高分解能MSに適した値です。",
             target="tolerance_mz_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "アノテーション検索に使用するアダクトイオン種を選択します。"
+            "アノテーション検索に使用するアダクトイオン種を選択します。\n"
             "選択したアダクトのみが検索対象になります。",
             target="adduct_filter_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
             "統計的有意性の閾値です。この値より小さいp値を持つ"
-            "マーカーのみが有意と判定されます。一般的には0.05を使用します。",
+            "マーカーのみが有意と判定されます。\n"
+            "一般的には0.05を使用します。",
             target="p_thresh_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "発現変動の最小閾値（log2スケール）。"
+            "発現変動の最小閾値（log2スケール）。\n"
             "例: 0.5 = 約1.4倍以上の発現差を検出します。",
             target="logfc_thresh_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "exclude: 指定クラスタを除外して再解析します。"
+            "exclude: 指定クラスタを除外して再解析します。\n"
             "keep: 指定クラスタのみを残して再解析します。",
             target="filter_mode_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "測定時のイオン化モードを選択します。"
+            "測定時のイオン化モードを選択します。\n"
             "Positive: 陽イオンモード、Negative: 陰イオンモード。",
             target="ion_mode_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "過去の解析で保存したRDSファイルから途中再開できます。"
+            "過去の解析で保存したRDSファイルから途中再開できます。\n"
             "クラスタリング結果を再利用して時間を短縮します。",
             target="resume_rds_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "出力フォルダ名（タイムスタンプ付き）。"
+            "出力フォルダ名（タイムスタンプ付き）。\n"
             "出力先ディレクトリの下にこの名前のサブフォルダが作成されます。",
             target="output_subfolder_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
             "マトリクスの既知ピーク（リファレンスm/z）と実測ピークを対応付けて"
-            "m/z値の回帰補正を行います。補正後のm/zでアノテーションを再検索します。",
+            "m/z値の回帰補正を行います。\n"
+            "補正後のm/zでアノテーションを再検索します。",
             target="calibration_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "線形(1次): ppmずれがm/zに比例する場合（通常はこれで十分）。"
+            "線形(1次): ppmずれがm/zに比例する場合（通常はこれで十分）。\n"
             "多項式(2次/3次): 線形で5ppm以上のずれが残る場合に使用。",
             target="calibration_regression_mode", **_TOOLTIP_PROPS,
         ),
@@ -120,54 +129,57 @@ def get_interactive_tooltips():
     """インタラクティブ解析タブ用ツールチップ群を返す"""
     return [
         dbc.Tooltip(
-            "表示する解析手法を選択。未補正(PCA)=段階差(技術+生物・交絡)、"
-            "Harmony/RPCA=共通構造(段階差は除去)。PCAは未補正PCAのUMAP(比較基準)で、"
-            "専用RDSが無い既存結果でもHarmonyから自動生成して選択可。読み方は隣の📚ガイド参照。",
+            "表示する解析手法を選択。\n"
+            "・未補正(PCA) = 段階差（技術+生物・交絡）\n"
+            "・Harmony/RPCA = 共通構造（段階差は除去）\n"
+            "PCA は未補正PCAのUMAP（比較基準）で、専用RDSが無い既存結果でも"
+            "Harmonyから自動生成して選択可。\n"
+            "読み方は隣の📚ガイド参照。",
             target="interactive_integration_method_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "統合: 全サンプルを1つのUMAPに重ねて表示。"
+            "統合: 全サンプルを1つのUMAPに重ねて表示。\n"
             "サンプル別: サンプルごとに個別のUMAPを並べて表示。",
             target="umap_display_mode_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "Cluster: クラスタ番号で色分け。"
+            "Cluster: クラスタ番号で色分け。\n"
             "Sample: サンプル名で色分け。",
             target="umap_color_by_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "選択したクラスタを強調表示し、他のクラスタを薄く表示します。"
+            "選択したクラスタを強調表示し、他のクラスタを薄く表示します。\n"
             "複数選択可能です。",
             target="umap_highlight_cluster_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "選択したクラスタをプロットから完全に除去します。"
+            "選択したクラスタをプロットから完全に除去します。\n"
             "ノイズクラスタの非表示に便利です。",
             target="umap_exclude_cluster_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "表示するサンプルを選択します。"
+            "表示するサンプルを選択します。\n"
             "空にすると全サンプルを並べて表示します。",
             target="interactive_sample_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "選択したクラスタを強調表示し、他のクラスタを薄く表示します。"
+            "選択したクラスタを強調表示し、他のクラスタを薄く表示します。\n"
             "複数選択可能です。",
             target="spatial_highlight_cluster_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "選択したクラスタをプロットから完全に除去します。"
+            "選択したクラスタをプロットから完全に除去します。\n"
             "ノイズクラスタの非表示に便利です。",
             target="spatial_exclude_cluster_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "Spatial Mappingの点サイズ。"
-            "0=自動（ピクセル間隔から最適サイズを計算）。"
+            "Spatial Mappingの点サイズ。\n"
+            "0=自動（ピクセル間隔から最適サイズを計算）。\n"
             "手動で調整する場合は1以上を設定してください。",
             target="spatial_marker_size_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "プロットをフルスクリーンで拡大表示します。"
+            "プロットをフルスクリーンで拡大表示します。\n"
             "詳細な観察やスクリーンショット撮影に便利です。",
             target="expand_umap_btn", **_TOOLTIP_PROPS,
         ),
@@ -184,22 +196,22 @@ def get_interactive_tooltips():
             target="expand_deg_btn", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "m/z値で検索してFeature Plotに表示するイオンを選択します。"
+            "m/z値で検索してFeature Plotに表示するイオンを選択します。\n"
             "DEGテーブルの行クリックでも選択できます。",
             target="feature_select", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "Volcano Plotで有意とみなす発現変動量（log2FC）の閾値線。"
+            "Volcano Plotで有意とみなす発現変動量（log2FC）の閾値線。\n"
             "この値を超える点が色付きで表示されます。",
             target="volcano_fc_threshold_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "Volcano Plotで有意とみなす-log10(p値)の閾値線。"
+            "Volcano Plotで有意とみなす-log10(p値)の閾値線。\n"
             "デフォルト1.3はp=0.05に相当します。",
             target="volcano_p_threshold_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "Z-score: クラスタ間の相対的な発現パターンを比較（推奨）。"
+            "Z-score: クラスタ間の相対的な発現パターンを比較（推奨）。\n"
             "Raw: 生の発現値をそのまま表示。",
             target="heatmap_scale_help_badge", **_TOOLTIP_PROPS,
         ),
@@ -209,15 +221,26 @@ def get_interactive_tooltips():
             target="heatmap_annotation_switch_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "「表示=サンプル別」のとき、UMAPを何ごとに小図へ分割するかを選びます。"
-            "サンプル=サンプル別、クラスタ=クラスタごと(全体を薄い背景にし当該クラスタを強調)、"
-            "選択グループ=保存した選択ごと。全タイルで軸を共有して同じ縮尺で比較できます。",
+            "「表示=サンプル別」のとき、UMAPを何ごとに小図へ分割するかを選びます。\n"
+            "・サンプル = サンプル別\n"
+            "・クラスタ = クラスタごと（全体を薄い背景にし当該クラスタを強調）\n"
+            "・選択グループ = 保存した選択ごと\n"
+            "全タイルで軸を共有して同じ縮尺で比較できます。",
             target="umap_facet_by_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "UMAPで囲んだ選択範囲に名前を付けて保存・改名・削除・結合・CSV入出力できます。"
-            "「現在の選択に読込」で保存したグループを現在の選択に戻し、選択範囲の統計や"
-            "DEGタブの「選択DE」検定の入力として再利用できます。",
+            "UMAP をクリックして頂点を順に置き、関心領域を多角形で囲って選択します。\n"
+            "・クリック = 頂点を追加 / ドラッグ = 移動(パン) / ホイール = ズーム\n"
+            "・「1点取消」で直前の頂点を取消、「クリア」で下書きを全消去\n"
+            "・頂点が3点以上で「確定」すると、囲んだ内側のピクセルが選択されます。\n"
+            "確定した選択は選択統計・選択グループ・選択DE の入力になります。",
+            target="umap_polygon_help_badge", **_TOOLTIP_PROPS,
+        ),
+        dbc.Tooltip(
+            "UMAP 上でポリゴン（多角形）で囲んだ選択範囲に名前を付けて"
+            "保存・改名・削除・結合・CSV入出力できます。\n"
+            "「現在の選択に読込」で保存したグループを現在の選択に戻し、"
+            "選択範囲の統計や DEGタブの「選択DE」検定の入力として再利用できます。",
             target="selection_groups_help_badge", **_TOOLTIP_PROPS,
         ),
     ]
@@ -227,12 +250,12 @@ def get_results_tooltips():
     """結果閲覧タブ用ツールチップ群を返す"""
     return [
         dbc.Tooltip(
-            "解析結果が保存されているフォルダを選択します。"
+            "解析結果が保存されているフォルダを選択します。\n"
             "プロジェクト選択で自動設定されます。",
             target="result_folder_selector_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "画像の種類で絞り込みます。"
+            "画像の種類で絞り込みます。\n"
             "UMAP、Volcano、Spatial等のカテゴリで分類されています。",
             target="image_category_help_badge", **_TOOLTIP_PROPS,
         ),

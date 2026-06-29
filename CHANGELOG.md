@@ -12,6 +12,39 @@
 
 ---
 
+## 2026-06-29_ver27.0
+
+### 機能追加: UMAP ポリゴン選択へ統一 + ヘルプ可読性改善 + 説明書最新化
+
+運用フィードバック 3 点に対応。①②は挙動不変の改善、③が機能追加のため版を +1.0。
+
+- **③ UMAP の範囲選択をポリゴン形式に統一**（投げ縄/ボックスを廃止）。H&E オーバーレイと同じ
+  「クリックで頂点を置く」方式に揃え、3 頂点以上で「確定」すると囲んだ内側のピクセルを選択する。
+  - `callbacks/interactive_umap.py`：`_build_umap_integrated_fig` の `dragmode` を `select`→`pan`
+    （クリック=頂点 / ドラッグ=パン / ホイール=ズーム）。末尾に空の下書きオーバーレイ trace
+    （`_umap_poly_draft`）を常設。
+  - `callbacks/interactive_loupe.py`：`capture_umap_selection`（selectedData 読取）を撤去し、
+    `umap_polygon_draft`（クリック/取消/クリア）・`umap_polygon_overlay`（`Patch` で下書き描画）・
+    `umap_polygon_draft_info`（状態表示）・`umap_polygon_commit`（`hne_overlay.points_in_polygon` で
+    内包セルの CellID を `selected_cell_ids_store` へ）を追加。マージ表示時は `*_merged` 列で判定。
+  - `callbacks/interactive_spatial.py`：`update_spatial_plots` の入力を
+    `interactive_umap_plot.selectedData`→`selected_cell_ids_store.data` に変更（spatial ハイライトが
+    ポリゴン選択に追従）。
+  - `layouts/interactive_tab.py`：ポリゴン操作 UI（1点取消/クリア/確定+状態表示）と
+    `umap_polygon_draft_store` を追加。UMAP の modebar から `select2d`/`lasso2d` を除去。
+  - 選択統計（P1）・選択グループ（P3）・選択DE（P2）はこの選択をそのまま入力として再利用。
+  - テスト `tests/test_umap_polygon_selection.py`（内包判定→CellID の純ロジック）、
+    `tests/e2e/test_smoke.py` に新ボタン存在チェックを追加。
+- **① ヘルプ⊕バッジ（ツールチップ）の可読性改善**：`assets/styles.css` に
+  `.tooltip-inner { max-width:360px; text-align:left; white-space:pre-line; ... }` を追加し、
+  Bootstrap 既定 200px の細い縦折返しを解消。`layouts/tooltips.py` の長文に意図的な改行（`\n`）を挿入。
+- **② 説明書（`templates/help/analysis.html`）の最新化**：§6 に「選択グループ（ポリゴン選択・実務的な
+  使用例）」「その場で実行する解析（選択統計/選択DE）」「Feature リスト+共発現」「H&E オーバーレイ/
+  分割表示」を追記。TOC アンカー・機能一覧テーブル・バージョン履歴（ver5〜27.0）を更新。
+- version 26.2→27.0。
+
+---
+
 ## 2026-06-28_ver26.2
 
 ### 改善: 「分割基準」「選択グループ」にヘルプ(？)ツールチップを追加

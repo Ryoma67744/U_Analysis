@@ -21,6 +21,8 @@ def test_interactive_panels_present(page):
     # 今回追加した主要コンポーネントが欠落していないことの回帰チェック。
     expected = [
         "interactive_umap_plot",      # UMAP 本体
+        "umap_polygon_commit",        # ver27.0 ポリゴン選択 確定
+        "umap_polygon_draft_info",    # ver27.0 ポリゴン下書き状態
         "selection_summary_card",     # P1 ライブ選択統計
         "selection_groups_table",     # P3 選択グループ
         "btn_restore_deleted_group",  # Inc.1 Undo

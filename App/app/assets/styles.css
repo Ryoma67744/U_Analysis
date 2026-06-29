@@ -391,3 +391,16 @@
    Plotly が .nsewdrag にインライン cursor を当てるため !important で上書きする。
    親 Div の .hne-crosshair クラスは hne_mode に応じて clientside で付け外しする。 */
 .hne-crosshair .nsewdrag { cursor: crosshair !important; }
+
+/* ヘルプ⊕バッジのツールチップ可読性 (ver27.0):
+   Bootstrap 既定の max-width≈200px だと長文が縦に細く折り返されて読みづらい。
+   横幅を広げ・左寄せ・行間を確保し、tooltips.py の意図的な改行 (\n) を
+   white-space: pre-line で反映する。全 dbc.Tooltip に一括適用される。 */
+.tooltip-inner {
+    max-width: 360px;
+    text-align: left;
+    line-height: 1.5;
+    padding: 8px 10px;
+    font-size: 12px;
+    white-space: pre-line;
+}
