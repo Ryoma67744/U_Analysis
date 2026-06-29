@@ -14,8 +14,6 @@ logger = logging.getLogger("msi.interactive.resets")
 
 @callback(
     [Output("feature_colorscale", "value", allow_duplicate=True),
-     Output("feature_log_scale", "value", allow_duplicate=True),
-     Output("feature_reverse_scale", "value", allow_duplicate=True),
      Output("feature_intensity_min", "value", allow_duplicate=True),
      Output("feature_intensity_max", "value", allow_duplicate=True)],
     Input("feature_colorscale_reset", "n_clicks"),
@@ -24,7 +22,7 @@ logger = logging.getLogger("msi.interactive.resets")
 def reset_feature_colorscale(n_clicks):
     if not n_clicks:
         raise PreventUpdate
-    return "Plasma", False, False, None, None
+    return "Plasma", None, None
 
 
 @callback(

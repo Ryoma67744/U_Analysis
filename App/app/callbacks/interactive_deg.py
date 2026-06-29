@@ -7,6 +7,7 @@
 # =============================================================================
 
 import logging
+import math
 import re
 from pathlib import Path
 
@@ -30,7 +31,6 @@ from app.utils.deg_utils import (
 from app.utils.label_persistence import (
     compute_annotation_offsets as _compute_annotation_offsets,
 )
-from app.utils.selection_utils import log_transform_intensities
 
 logger = logging.getLogger("msi.interactive.deg")
 
@@ -255,11 +255,9 @@ def update_feature_options_on_mz_filter(mz_filtered, rds_path=None):
      Input("feature_intensity_max", "value"),
      Input("sample_name_map_store", "data"),
      Input("fullscreen_closed_trigger", "data"),
-     Input("feature_columns_per_row", "value"),
+     Input("feature_rows_per_view", "value"),
      Input("feature_show_compound_names", "value"),
-     Input("feature_colorscale", "value"),
-     Input("feature_log_scale", "value"),
-     Input("feature_reverse_scale", "value")],
+     Input("feature_colorscale", "value")],
     [State("seurat_rds_path_store", "data"),
      State("seurat_cache_dir_store", "data"),
      State("spatial_rotation_store", "data"),
@@ -268,9 +266,9 @@ def update_feature_options_on_mz_filter(mz_filtered, rds_path=None):
 )
 def update_feature_plot(feature_name, sample, marker_size,
                         intensity_min, intensity_max,
-                        name_map, _fs_trigger, columns_per_row,
+                        name_map, _fs_trigger, rows,
                         show_compound_names,
-                        colorscale, log_scale, reverse_scale,
+                        colorscale,
                         rds_path, cache_dir_str, rotation_store,
                         deg_data):
     from app.callbacks.interactive_callbacks import _interactive_data, _bridge, _set_active_key
@@ -316,12 +314,6 @@ def update_feature_plot(feature_name, sample, marker_size,
         # expression を df に結合（CellID順で対応）
         df_plot = df.copy()
         df_plot["_expression"] = expression
-
-        # P1: log10 表示トグル（MSI のダイナミックレンジ対策。以降の
-        # global_min/max・正規化も変換後の値で一貫させる）
-        if log_scale:
-            df_plot["_expression"] = log_transform_intensities(
-                df_plot["_expression"].values)
 
         # 表示対象サンプル
         if sample:
@@ -387,7 +379,6 @@ def update_feature_plot(feature_name, sample, marker_size,
                 symbol="square",
                 color=df_s["_expression"].values,
                 colorscale=colorscale or "Plasma",
-                reversescale=bool(reverse_scale),
                 cmin=display_min,
                 cmax=display_max,
                 showscale=is_last,
@@ -450,8 +441,10 @@ def update_feature_plot(feature_name, sample, marker_size,
             cfg = dict(_FEATURE_IMG_CONFIG)
             cfg["toImageButtonOptions"] = dict(cfg["toImageButtonOptions"],
                                                filename=f"Feature_{feature_name}_{display_s}")
-            if columns_per_row:
-                n_cols = columns_per_row
+            if rows:
+                # 行数指定: 1 行あたりの列数 = ceil(サンプル数 / 行数)。
+                # 結果として最大 rows 行に折り返す（サンプル数 < rows なら 1 行）。
+                n_cols = max(1, math.ceil(len(samples_to_show) / rows))
                 gap_total = (n_cols - 1) * 15
                 flex_basis = f"calc({100 / n_cols:.2f}% - {gap_total / n_cols:.1f}px)"
                 min_w = "0"
