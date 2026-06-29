@@ -109,11 +109,18 @@ def _create_zip_from_figures(figures_list, width, height, scale, section_name=""
     if not figures_list:
         return None
 
+    # ver28.0: 凡例(欠番空白化で常に全クラスタ分)が縦に溢れて PNG で見切れるのを防ぐため、
+    # 凡例行数に応じて書き出し高さを自動拡張する。combined は高さ差を中央寄せで吸収する。
+    def _legend_rows(fd):
+        return sum(1 for t in (fd or {}).get("data", []) if t.get("showlegend"))
+    max_rows = max((_legend_rows(fd) for _, fd in figures_list), default=0)
+    eff_height = max(height, max_rows * 20 + 70)
+
     # 各 figure を PNG に変換
     png_list = []  # (name, png_bytes)
     for name, fig_dict in figures_list:
         try:
-            png = fig_to_png_bytes(fig_dict, width=width, height=height, scale=scale)
+            png = fig_to_png_bytes(fig_dict, width=width, height=eff_height, scale=scale)
             if png:
                 png_list.append((name, png))
         except Exception:

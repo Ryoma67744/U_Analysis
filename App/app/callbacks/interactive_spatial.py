@@ -25,6 +25,7 @@ from app.utils.color_utils import (
 )
 from app.utils.display_helpers import (
     display_name as _display_name,
+    facet_block as _facet_block,
 )
 
 logger = logging.getLogger("msi.interactive.spatial")
@@ -251,19 +252,28 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 hovertemplate="%{text}<extra></extra>",
                 showlegend=False,
             ))
-        # 凡例用ダミートレース（大きいマーカーで見やすく）
+        # 凡例用ダミートレース。全クラスタ分のスロットを作り、この図に存在するクラスタは
+        # 色付き、欠番は「空白スロット」(透明＋空白名)で位置を保持＝全図で番号の縦位置がそろう。
         if embed_legend:
-            for cl in sorted(df_sample["Cluster"].unique(), key=_cluster_sort_key):
+            present = set(df_sample["Cluster"].astype(str).unique())
+            for cl in sorted(color_map.keys(), key=_cluster_sort_key):
                 rank = _cluster_sort_key(cl)[0] if str(cl).isdigit() else 1000
-                fig.add_trace(go.Scattergl(
-                    x=[None], y=[None],
-                    mode="markers",
-                    marker=dict(size=10, symbol="square", color=color_map.get(str(cl), "#999999")),
-                    name=_cluster_display_name(cl, cluster_name_map),
-                    showlegend=True,
-                    legendrank=rank,
-                    legendgroup=_cluster_display_name(cl, cluster_name_map),
-                ))
+                if str(cl) in present:
+                    fig.add_trace(go.Scattergl(
+                        x=[None], y=[None], mode="markers",
+                        marker=dict(size=10, symbol="square",
+                                    color=color_map.get(str(cl), "#999999")),
+                        name=_cluster_display_name(cl, cluster_name_map),
+                        showlegend=True, legendrank=rank,
+                        legendgroup=_cluster_display_name(cl, cluster_name_map),
+                    ))
+                else:
+                    fig.add_trace(go.Scattergl(
+                        x=[None], y=[None], mode="markers",
+                        marker=dict(size=10, symbol="square", color="rgba(0,0,0,0)"),
+                        name=" ", showlegend=True, legendrank=rank,
+                        legendgroup=f"_blank_{cl}",
+                    ))
 
     # クラスタ番号ラベル
     if show_labels:
@@ -992,9 +1002,12 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
                                          label_size=label_size or 10,
                                          saved_positions=spatial_pos.get(s),
                                          cluster_name_map=cluster_name_map)
+        # 出力(一括保存/HTML)は各図に凡例を残す → 先に凡例ありでスナップショット。
         if representative_fig is None:
-            representative_fig = fig
+            representative_fig = fig.to_dict()
         batch_fig_dicts.append((f"Spatial_{display_s}", fig.to_dict()))
+        # 画面表示は per-tile 凡例オフ（上部の共有凡例に集約）。
+        fig.update_layout(showlegend=False)
         cfg = dict(_SPATIAL_IMG_CONFIG)
         cfg["toImageButtonOptions"] = dict(cfg["toImageButtonOptions"],
                                            filename=f"Spatial_{display_s}")
@@ -1009,9 +1022,8 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
             min_w = "300px"
         graphs.append(
             html.Div(
-                style={"flex": f"1 1 {flex_basis}", "minWidth": min_w,
-                        "border": "1px solid #dee2e6", "borderRadius": "6px",
-                        "padding": "5px", "backgroundColor": "#fff"},
+                className="facet-tile",
+                style={"flex": f"1 1 {flex_basis}", "minWidth": min_w},
                 children=[
                     dcc.Graph(id={"type": "spatial_graph", "index": s},
                               figure=fig, style={"height": "350px"}, config=cfg),
@@ -1019,12 +1031,11 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
             )
         )
 
-    container = html.Div(
-        style={"display": "flex", "flexWrap": "wrap", "gap": "15px"},
-        children=graphs,
-    )
-    # 代表figureをStoreに保存（HTMLエクスポート用）
-    store_data = representative_fig.to_dict() if representative_fig else None
+    # 共有クラスタ凡例(上部に1つ) + 縦線区切りタイル。
+    container = _facet_block(graphs, color_map, cluster_name_map=cluster_name_map,
+                             show_legend=True)
+    # 代表figureをStoreに保存（HTMLエクスポート用。凡例ありの dict）
+    store_data = representative_fig if representative_fig else None
     return container, store_data, batch_fig_dicts
 
 

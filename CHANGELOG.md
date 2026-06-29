@@ -12,6 +12,29 @@
 
 ---
 
+## 2026-06-29_ver28.0
+
+### 機能追加: サンプル別/分割表示を「共有凡例＋縦線区切り」に刷新 + UMAP軸矢印削除 + 出力見切れ防止
+
+サンプル別/分割表示（UMAP・Spatial Mapping）の空間効率と見やすさを改善。
+
+- **画面表示＝共有クラスタ凡例（上部に1つ）＋各図を縦線で区切り（枠なし）**。各図の繰り返し凡例と
+  カード枠で生じていた余白を排除し、図そのものを大きく密に表示。
+  - 共通部品 `utils/display_helpers.py` に `cluster_legend_row` / `facet_block` を追加。
+  - `assets/styles.css` に `.facet-tiles` / `.facet-tile`（左罫線で区切り）/ `.facet-legend` を追加。
+  - UMAP（`interactive_umap.py` の per-sample / Split View ビルダ）、Spatial（`interactive_spatial.py`
+    の per-sample ループ）、フルスクリーン（`interactive_fullscreen.py` の UMAP/Spatial）をいずれも
+    `facet_block` でラップし、表示用 figure は `showlegend=False`（上部共有凡例に集約）。
+- **出力（一括保存②-A）は各図に凡例を残す**。ただし各図の凡例は **その図に存在しないクラスタを
+  「空白スロット」**（透明マーカー＋空白名）にして位置を保持し、全図で番号の縦位置をそろえる。
+- **UMAP 左下の軸矢印（UMAP1/UMAP2）を全 UMAP から削除**（`_add_umap_arrows` 呼び出しを撤去）。
+  散布との重なりを解消。
+- **PNG 出力の凡例見切れ防止**：`interactive_batch_save.py` の書き出し高さを凡例行数に応じて自動拡張
+  （`height = max(base, rows*20 + 70)`）。combined は高さ差を中央寄せで吸収。出力は PNG のみ（変更なし）。
+- version 27.1→28.0。
+
+---
+
 ## 2026-06-29_ver27.1
 
 ### バグ修正: 「再解析フォームへ送る」が再解析フォームを表示するよう修正
