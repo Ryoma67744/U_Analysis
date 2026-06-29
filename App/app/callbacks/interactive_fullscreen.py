@@ -8,6 +8,7 @@
 
 import json
 import logging
+import math
 from datetime import datetime
 from pathlib import Path
 
@@ -62,14 +63,14 @@ logger = logging.getLogger("msi.interactive.fullscreen")
      State("deg_data_store", "data"),
      State("spatial_rotation_store", "data"),
      State("custom_color_map_store", "data"),
-     State("spatial_columns_per_row", "value"),
+     State("spatial_rows_per_view", "value"),
      State("cluster_name_map_store", "data"),
      State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
 def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                       umap_fig, feat_container_children, spatial_fig_data, deg_data,
-                      rotation_store, custom_colors, spatial_columns_per_row,
+                      rotation_store, custom_colors, spatial_rows,
                       cluster_name_map=None, rds_path=None):
     from app.callbacks.interactive_callbacks import _set_active_key
     _set_active_key(rds_path)
@@ -225,8 +226,8 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                                              cluster_to_idx=cluster_to_idx,
                                              discrete_cscale=discrete_cscale,
                                              cluster_name_map=cluster_name_map)
-            if spatial_columns_per_row:
-                n_cols = spatial_columns_per_row
+            if spatial_rows:
+                n_cols = max(1, math.ceil(len(samples) / spatial_rows))
                 gap_total = (n_cols - 1) * 15
                 flex_basis = f"calc({100 / n_cols:.2f}% - {gap_total / n_cols:.1f}px)"
                 min_w = "0"
@@ -421,7 +422,7 @@ def on_fullscreen_close(is_open, current_val):
      Input("fs_umap_label_size", "value"),
      Input("umap_legend_hidden_store", "data")],
     [State("custom_color_map_store", "data"),
-     State("umap_columns_per_row", "value"),
+     State("umap_rows_per_view", "value"),
      State("accumulated_label_positions", "data"),
      State("cluster_name_map_store", "data"),
      State("seurat_rds_path_store", "data")],
@@ -429,7 +430,7 @@ def on_fullscreen_close(is_open, current_val):
 )
 def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
                    height_val, width_val, marker_size, exclude_clusters, label_size,
-                   legend_hidden, custom_color_map, columns_per_row,
+                   legend_hidden, custom_color_map, rows,
                    accumulated_positions,
                    cluster_name_map=None, rds_path=None):
     from app.callbacks.interactive_callbacks import _set_active_key
@@ -481,7 +482,7 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
                                                 saved_positions=all_pos.get("umap_per_sample"),
                                                 show_legend=bool(show_legend),
                                                 name_map=name_map,
-                                                columns_per_row=columns_per_row or 0,
+                                                rows=rows or 0,
                                                 cluster_name_map=cluster_name_map,
                                                 legend_hidden=legend_hidden)
         return _facet_block(
@@ -509,7 +510,7 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
      Input("fs_spatial_label_size", "value"),
      Input("spatial_legend_hidden_store", "data")],
     [State("custom_color_map_store", "data"),
-     State("spatial_columns_per_row", "value"),
+     State("spatial_rows_per_view", "value"),
      State("accumulated_label_positions", "data"),
      State("cluster_name_map_store", "data"),
      State("seurat_rds_path_store", "data")],
@@ -517,7 +518,7 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
 )
 def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                       exclude_clusters, marker_size, height_val, width_val,
-                      label_size, legend_hidden, custom_colors, columns_per_row,
+                      label_size, legend_hidden, custom_colors, rows,
                       accumulated_positions, cluster_name_map=None,
                       rds_path=None):
     from app.callbacks.interactive_callbacks import _set_active_key
@@ -570,8 +571,8 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                                          legend_hidden=legend_hidden)
         # 画面表示は per-tile 凡例オフ（上部の共有凡例に集約）。
         fig.update_layout(showlegend=False)
-        if columns_per_row:
-            n_cols = columns_per_row
+        if rows:
+            n_cols = max(1, math.ceil(len(samples_to_show) / rows))
             gap_total = (n_cols - 1) * 15
             flex_basis = f"calc({100 / n_cols:.2f}% - {gap_total / n_cols:.1f}px)"
             min_w = "0"

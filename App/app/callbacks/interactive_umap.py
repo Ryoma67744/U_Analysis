@@ -7,6 +7,7 @@
 # =============================================================================
 
 import logging
+import math
 
 import numpy as np
 import plotly.graph_objects as go
@@ -170,7 +171,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                                    marker_size=2, exclude_clusters=None,
                                    label_size=11, saved_positions=None,
                                    show_legend=True, name_map=None,
-                                   columns_per_row=0, cluster_name_map=None,
+                                   rows=0, cluster_name_map=None,
                                    collect_figures=None, legend_hidden=None):
     """サンプル別UMAPのhtml.Divリストを生成（メイン/フルスクリーン共用）
 
@@ -307,8 +308,9 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
         cfg = dict(_UMAP_PER_SAMPLE_CONFIG)
         cfg["toImageButtonOptions"] = dict(cfg["toImageButtonOptions"],
                                            filename=f"UMAP_{display_s}")
-        if columns_per_row:
-            n_cols = columns_per_row
+        if rows:
+            # 行数指定: 1 行あたりの列数 = ceil(サンプル数 / 行数)（最大 rows 行）
+            n_cols = max(1, math.ceil(len(samples) / rows))
             gap_total = (n_cols - 1) * 15
             flex_basis = f"calc({100 / n_cols:.2f}% - {gap_total / n_cols:.1f}px)"
             min_w = "0"
@@ -330,7 +332,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
 
 
 def _build_umap_facet_graphs(df, facets, color_map, marker_size=2,
-                             columns_per_row=0, cluster_name_map=None,
+                             rows=0, cluster_name_map=None,
                              graph_height="300px", collect_figures=None,
                              legend_hidden=None):
     """汎用 Split View: facets=[(label, mask_or_cellids), ...]。
@@ -386,8 +388,9 @@ def _build_umap_facet_graphs(df, facets, color_map, marker_size=2,
         cfg = dict(_UMAP_PER_SAMPLE_CONFIG)
         cfg["toImageButtonOptions"] = dict(cfg["toImageButtonOptions"],
                                            filename=f"UMAP_facet_{label}")
-        if columns_per_row:
-            n_cols = columns_per_row
+        if rows:
+            # 行数指定: 1 行あたりの列数 = ceil(facet 数 / 行数)（最大 rows 行）
+            n_cols = max(1, math.ceil(n / rows))
             gap_total = (n_cols - 1) * 15
             flex_basis = f"calc({100 / n_cols:.2f}% - {gap_total / n_cols:.1f}px)"
             min_w = "0"
@@ -556,7 +559,7 @@ def toggle_merge_controls(_rds_path, _fs_trigger):
      Input("sample_name_map_store", "data"),
      Input("fullscreen_closed_trigger", "data"),
      Input("custom_color_map_store", "data"),
-     Input("umap_columns_per_row", "value"),
+     Input("umap_rows_per_view", "value"),
      Input("cluster_name_map_store", "data"),
      Input("interactive_accordion", "active_item"),
      Input("umap_facet_by", "value"),
@@ -567,7 +570,7 @@ def toggle_merge_controls(_rds_path, _fs_trigger):
 def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
                             marker_size, exclude_clusters, label_size, rds_path,
                             show_legend, name_map, _fs_trigger, custom_colors,
-                            columns_per_row, cluster_name_map, active_items,
+                            rows, cluster_name_map, active_items,
                             facet_by, legend_hidden, accumulated_positions,
                             selection_groups):
     """表示モード「サンプル別」(=分割表示) の場合、facet_by 基準で分割表示する。"""
@@ -595,7 +598,7 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
         fig_dicts = []
         graphs = _build_umap_facet_graphs(
             df, facets, color_map, marker_size=marker_size or 2,
-            columns_per_row=columns_per_row or 0, cluster_name_map=cluster_name_map,
+            rows=rows or 0, cluster_name_map=cluster_name_map,
             collect_figures=fig_dicts, legend_hidden=legend_hidden)
         return _facet_block(
             graphs, color_map, cluster_name_map=cluster_name_map,
@@ -610,7 +613,7 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
         fig_dicts = []
         graphs = _build_umap_facet_graphs(
             df, facets, color_map, marker_size=marker_size or 2,
-            columns_per_row=columns_per_row or 0, cluster_name_map=cluster_name_map,
+            rows=rows or 0, cluster_name_map=cluster_name_map,
             collect_figures=fig_dicts, legend_hidden=legend_hidden)
         return _facet_block(
             graphs, color_map, cluster_name_map=cluster_name_map,
@@ -629,7 +632,7 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
                                             saved_positions=all_pos.get("umap_per_sample"),
                                             show_legend=bool(show_legend),
                                             name_map=name_map,
-                                            columns_per_row=columns_per_row or 0,
+                                            rows=rows or 0,
                                             cluster_name_map=cluster_name_map,
                                             collect_figures=fig_dicts,
                                             legend_hidden=legend_hidden)
@@ -650,7 +653,7 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
     [Input("umap_marker_size", "value"),
      Input("umap_label_size", "value"),
      Input("umap_show_labels", "value"),
-     Input("umap_columns_per_row", "value"),
+     Input("umap_rows_per_view", "value"),
      Input("umap_exclude_cluster", "value"),
      Input("umap_show_legend", "value"),
      Input("umap_color_by", "value")],
@@ -658,7 +661,7 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
     prevent_initial_call=True,
 )
 def save_umap_display_settings(marker_size, label_size, show_labels,
-                                columns_per_row, exclude_cluster,
+                                rows, exclude_cluster,
                                 show_legend, color_by, rds_path):
     """UMAP表示パラメータの変更を interactive_settings.json に保存。
 
@@ -672,7 +675,7 @@ def save_umap_display_settings(marker_size, label_size, show_labels,
         "marker_size": marker_size if marker_size is not None else 2,
         "label_size": label_size if label_size is not None else 14,
         "show_labels": bool(show_labels),
-        "columns_per_row": columns_per_row if columns_per_row is not None else 0,
+        "rows_per_view": rows if rows is not None else 0,
         "exclude_cluster": list(exclude_cluster) if exclude_cluster else [],
         "show_legend": bool(show_legend) if show_legend is not None else True,
         "color_by": color_by or "Cluster",

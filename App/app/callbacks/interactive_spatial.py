@@ -7,6 +7,7 @@
 # =============================================================================
 
 import logging
+import math
 
 import numpy as np
 import plotly.graph_objects as go
@@ -929,7 +930,7 @@ def auto_feature_marker(n_clicks, rotation_store, sample):
      Input("sample_name_map_store", "data"),
      Input("fullscreen_closed_trigger", "data"),
      Input("custom_color_map_store", "data"),
-     Input("spatial_columns_per_row", "value"),
+     Input("spatial_rows_per_view", "value"),
      Input("cluster_name_map_store", "data"),
      Input("umap_merge_toggle", "value"),
      Input("umap_merge_color_mode", "value"),
@@ -943,7 +944,7 @@ def auto_feature_marker(n_clicks, rotation_store, sample):
 def update_spatial_plots(sample, highlight_clusters, selected_ids,
                          rotation_store, show_labels, marker_size,
                          exclude_clusters, label_size, rds_path, name_map,
-                         _fs_trigger, custom_colors, columns_per_row,
+                         _fs_trigger, custom_colors, rows,
                          cluster_name_map, merge_toggle, merge_color_mode,
                          active_items, legend_hidden, hne_show, hne_opacity,
                          hne_marker_size, accumulated_positions):
@@ -1042,8 +1043,9 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
         cfg = dict(_SPATIAL_IMG_CONFIG)
         cfg["toImageButtonOptions"] = dict(cfg["toImageButtonOptions"],
                                            filename=f"Spatial_{display_s}")
-        if columns_per_row:
-            n_cols = columns_per_row
+        if rows:
+            # 行数指定: 1 行あたりの列数 = ceil(サンプル数 / 行数)（最大 rows 行）
+            n_cols = max(1, math.ceil(len(samples_to_show) / rows))
             gap_total = (n_cols - 1) * 15
             flex_basis = f"calc({100 / n_cols:.2f}% - {gap_total / n_cols:.1f}px)"
             min_w = "0"
@@ -1082,13 +1084,13 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
     [Input("spatial_marker_size", "value"),
      Input("spatial_label_size", "value"),
      Input("spatial_show_labels", "value"),
-     Input("spatial_columns_per_row", "value"),
+     Input("spatial_rows_per_view", "value"),
      Input("spatial_exclude_cluster", "value")],
     State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
 def save_spatial_display_settings(marker_size, label_size, show_labels,
-                                  columns_per_row, exclude_cluster, rds_path):
+                                  rows, exclude_cluster, rds_path):
     """Spatial 表示パラメータの変更を interactive_settings.json に保存。
 
     簡易ビューアー (/lite/...) はこの値を読み出して同じ表示を再現する。
@@ -1102,7 +1104,7 @@ def save_spatial_display_settings(marker_size, label_size, show_labels,
         "marker_size": marker_size if marker_size is not None else 0,
         "label_size": label_size if label_size is not None else 10,
         "show_labels": bool(show_labels),
-        "columns_per_row": columns_per_row if columns_per_row is not None else 0,
+        "rows_per_view": rows if rows is not None else 0,
         "exclude_cluster": list(exclude_cluster) if exclude_cluster else [],
     })
     return no_update
