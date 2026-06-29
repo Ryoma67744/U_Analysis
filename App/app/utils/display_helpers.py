@@ -9,8 +9,46 @@ import io
 import logging
 
 import numpy as np
+from dash import html
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# サンプル別/分割表示: 共有クラスタ凡例 + タイル枠ヘルパー (ver28.0)
+# 各図の個別凡例・枠を廃し、上部に共有凡例1つ＋各図を縦線で区切るための部品。
+# ---------------------------------------------------------------------------
+
+def cluster_legend_row(color_map, cluster_name_map=None):
+    """サンプル別/分割表示の上部に置く「共有クラスタ凡例」(横一列・折返し)。
+
+    color_map: {cluster_str: hex} 全クラスタ。cluster_sort_key 順に色四角＋表示名を並べる。
+    """
+    from app.utils.color_utils import cluster_sort_key, cluster_display_name
+    items = [html.Span("クラスタ", className="legend-item",
+                       style={"fontWeight": "600", "color": "#555",
+                              "marginRight": "2px"})]
+    for cl in sorted(color_map.keys(), key=cluster_sort_key):
+        items.append(html.Span([
+            html.Span(className="legend-swatch",
+                      style={"backgroundColor": color_map.get(str(cl), "#999999")}),
+            cluster_display_name(cl, cluster_name_map),
+        ], className="legend-item"))
+    return html.Div(items, className="facet-legend")
+
+
+def facet_block(tiles, color_map, cluster_name_map=None, show_legend=True,
+                outer_style=None):
+    """共有凡例(任意) + タイル群(縦線区切り) をまとめた html.Div を返す。
+
+    tiles: className="facet-tile" を持つ図 Div のリスト。
+    show_legend=True かつ color_map があるとき、上部に共有クラスタ凡例を1つ付ける。
+    """
+    children = []
+    if show_legend and color_map:
+        children.append(cluster_legend_row(color_map, cluster_name_map))
+    children.append(html.Div(tiles, className="facet-tiles"))
+    return html.Div(children, style=outer_style or {})
 
 
 # ---------------------------------------------------------------------------

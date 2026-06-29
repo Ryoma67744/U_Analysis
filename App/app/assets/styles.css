@@ -404,3 +404,17 @@
     font-size: 12px;
     white-space: pre-line;
 }
+
+/* サンプル別/分割表示 (ver28.0): 各図を枠で囲わず縦線で区切り、
+   クラスタ凡例は上部に1つだけ共有する。空間ロスを抑える。 */
+.facet-tiles { display: flex; flex-wrap: wrap; column-gap: 0; row-gap: 12px; }
+.facet-tiles > .facet-tile { border-left: 1px solid #dee2e6; padding: 0 8px;
+                             background: #fff; box-sizing: border-box; }
+.facet-tiles > .facet-tile:first-child { border-left: none; padding-left: 0; }
+.facet-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center;
+                padding: 2px 0 8px; }
+.facet-legend .legend-item { display: inline-flex; align-items: center;
+                             font-size: 11px; color: #333; }
+.facet-legend .legend-swatch { width: 12px; height: 12px; border-radius: 2px;
+                               margin-right: 4px; display: inline-block;
+                               border: 1px solid #00000022; }

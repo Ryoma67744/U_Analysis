@@ -24,7 +24,7 @@ from app.utils.color_utils import (
 )
 from app.utils.display_helpers import (
     display_name as _display_name,
-    add_umap_arrows as _add_umap_arrows,
+    facet_block as _facet_block,
 )
 from app.utils.label_persistence import (
     merge_label_positions as _merge_label_positions,
@@ -147,7 +147,6 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
         layout_opts["title"] = dict(
             text=title, font=dict(size=title_font_size or 14), x=0.5)
     fig.update_layout(**layout_opts)
-    _add_umap_arrows(fig)
     # ver27.0: ポリゴン下書きの専用オーバーレイ trace（常に最後＝data[-1]）。
     # 空で追加し、interactive_loupe の umap_polygon_overlay が Patch で頂点を流し込む。
     fig.add_trace(go.Scattergl(
@@ -236,16 +235,28 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                     legendgroup=_cluster_display_name(cl, cluster_name_map),
                 ))
 
-        # 凡例用ダミートレース（全クラスタ共通で統一凡例を表示）
+        # 凡例用ダミートレース（出力PNG用）。この図に存在するクラスタは色付き、
+        # 欠番は「空白スロット」(透明マーカー＋空白名)で位置を保持＝全図で番号の縦位置がそろう。
+        # 画面表示では下流で showlegend=False にし、上部の共有凡例(1つ)に集約する。
         if show_legend:
+            present = set(df_s["Cluster"].astype(str).unique())
             for cl in sorted(df["Cluster"].unique(), key=_cluster_sort_key):
                 rank = _cluster_sort_key(cl)[0] if str(cl).isdigit() else 1000
-                fig.add_trace(go.Scattergl(
-                    x=[None], y=[None], mode="markers",
-                    marker=dict(size=10, color=color_map.get(str(cl), "#999999")),
-                    name=_cluster_display_name(cl, cluster_name_map), showlegend=True, legendrank=rank,
-                    legendgroup=_cluster_display_name(cl, cluster_name_map),
-                ))
+                if str(cl) in present:
+                    fig.add_trace(go.Scattergl(
+                        x=[None], y=[None], mode="markers",
+                        marker=dict(size=10, color=color_map.get(str(cl), "#999999")),
+                        name=_cluster_display_name(cl, cluster_name_map),
+                        showlegend=True, legendrank=rank,
+                        legendgroup=_cluster_display_name(cl, cluster_name_map),
+                    ))
+                else:
+                    fig.add_trace(go.Scattergl(
+                        x=[None], y=[None], mode="markers",
+                        marker=dict(size=10, color="rgba(0,0,0,0)"),
+                        name=" ", showlegend=True, legendrank=rank,
+                        legendgroup=f"_blank_{cl}",
+                    ))
 
         if show_labels:
             sample_pos = (saved_positions or {}).get(s, {})
@@ -278,10 +289,12 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
             showlegend=bool(show_legend),
             legend=dict(itemsizing="constant", font=dict(size=9), tracegroupgap=1),
         )
-        _add_umap_arrows(fig)
 
+        # 出力(一括保存/サムネ)は各図に凡例を残す → 先にスナップショット。
         if collect_figures is not None:
             collect_figures.append((f"UMAP_{display_s}", fig.to_dict()))
+        # 画面表示は per-tile 凡例オフ（上部の共有凡例に集約）。
+        fig.update_layout(showlegend=False)
 
         cfg = dict(_UMAP_PER_SAMPLE_CONFIG)
         cfg["toImageButtonOptions"] = dict(cfg["toImageButtonOptions"],
@@ -297,9 +310,8 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
             min_w = "300px"
         graphs.append(
             html.Div(
-                style={"flex": f"1 1 {flex_basis}", "minWidth": min_w,
-                        "border": "1px solid #dee2e6", "borderRadius": "6px",
-                        "padding": "5px", "backgroundColor": "#fff"},
+                className="facet-tile",
+                style={"flex": f"1 1 {flex_basis}", "minWidth": min_w},
                 children=[
                     dcc.Graph(id={"type": "umap_per_sample_graph", "index": s},
                               figure=fig, style={"height": graph_height}, config=cfg),
@@ -356,7 +368,6 @@ def _build_umap_facet_graphs(df, facets, color_map, marker_size=2,
             yaxis=dict(scaleanchor="x", showgrid=False, showline=False,
                        zeroline=False, showticklabels=False, title="", range=yr),
             plot_bgcolor="white", showlegend=False)
-        _add_umap_arrows(fig)
         if collect_figures is not None:
             collect_figures.append((f"UMAP_facet_{label}", fig.to_dict()))
         cfg = dict(_UMAP_PER_SAMPLE_CONFIG)
@@ -372,9 +383,8 @@ def _build_umap_facet_graphs(df, facets, color_map, marker_size=2,
             flex_basis = f"{max(20, 90 // max(1, n_cols))}%"
             min_w = "250px"
         graphs.append(html.Div(
-            style={"flex": f"1 1 {flex_basis}", "minWidth": min_w,
-                   "border": "1px solid #dee2e6", "borderRadius": "6px",
-                   "padding": "5px", "backgroundColor": "#fff"},
+            className="facet-tile",
+            style={"flex": f"1 1 {flex_basis}", "minWidth": min_w},
             children=[dcc.Graph(figure=fig, style={"height": graph_height}, config=cfg)]))
     return graphs
 
@@ -572,9 +582,9 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
             df, facets, color_map, marker_size=marker_size or 2,
             columns_per_row=columns_per_row or 0, cluster_name_map=cluster_name_map,
             collect_figures=fig_dicts)
-        return html.Div(style={"display": "flex", "flexWrap": "wrap",
-                               "gap": "15px", "marginTop": "10px"},
-                        children=graphs), fig_dicts
+        return _facet_block(
+            graphs, color_map, cluster_name_map=cluster_name_map,
+            show_legend=bool(show_legend), outer_style={"marginTop": "10px"}), fig_dicts
     if facet_by == "group":
         groups = (selection_groups or {}).get("groups", [])
         if not groups:
@@ -586,9 +596,9 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
             df, facets, color_map, marker_size=marker_size or 2,
             columns_per_row=columns_per_row or 0, cluster_name_map=cluster_name_map,
             collect_figures=fig_dicts)
-        return html.Div(style={"display": "flex", "flexWrap": "wrap",
-                               "gap": "15px", "marginTop": "10px"},
-                        children=graphs), fig_dicts
+        return _facet_block(
+            graphs, color_map, cluster_name_map=cluster_name_map,
+            show_legend=bool(show_legend), outer_style={"marginTop": "10px"}), fig_dicts
 
     method = _interactive_data.get("method")
     all_pos = _get_merged_label_positions(accumulated_positions,
@@ -605,9 +615,10 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
                                             columns_per_row=columns_per_row or 0,
                                             cluster_name_map=cluster_name_map,
                                             collect_figures=fig_dicts)
-    return html.Div(
-        style={"display": "flex", "flexWrap": "wrap", "gap": "15px", "marginTop": "10px"},
-        children=graphs,
+    return _facet_block(
+        graphs, color_map, cluster_name_map=cluster_name_map,
+        show_legend=bool(show_legend),
+        outer_style={"marginTop": "10px"},
     ), fig_dicts
 
 

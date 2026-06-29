@@ -23,6 +23,7 @@ from app.utils.color_utils import (
 )
 from app.utils.display_helpers import (
     display_name as _display_name,
+    facet_block as _facet_block,
 )
 from app.utils.label_persistence import (
     extract_annotation_positions_by_name as _extract_annotation_positions_by_name,
@@ -478,11 +479,12 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
                                                 saved_positions=all_pos.get("umap_per_sample"),
                                                 show_legend=bool(show_legend),
                                                 name_map=name_map,
-                                                columns_per_row=columns_per_row or 0)
-        return html.Div(
-            style={"display": "flex", "flexWrap": "wrap", "gap": "15px",
-                   "width": f"{width_val}vw", "margin": "0 auto"},
-            children=graphs,
+                                                columns_per_row=columns_per_row or 0,
+                                                cluster_name_map=cluster_name_map)
+        return _facet_block(
+            graphs, color_map, cluster_name_map=cluster_name_map,
+            show_legend=bool(show_legend),
+            outer_style={"width": f"{width_val}vw", "margin": "0 auto"},
         )
 
 
@@ -560,6 +562,8 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                                          saved_positions=spatial_pos.get(s),
                                          render_height=render_h,
                                          cluster_name_map=cluster_name_map)
+        # 画面表示は per-tile 凡例オフ（上部の共有凡例に集約）。
+        fig.update_layout(showlegend=False)
         if columns_per_row:
             n_cols = columns_per_row
             gap_total = (n_cols - 1) * 15
@@ -574,19 +578,17 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                                                filename=f"Spatial_{display_s}")
         graphs.append(
             html.Div(
-                style={"flex": f"1 1 {flex_basis}", "minWidth": min_w,
-                        "border": "1px solid #dee2e6", "borderRadius": "6px",
-                        "padding": "5px", "backgroundColor": "#fff"},
+                className="facet-tile",
+                style={"flex": f"1 1 {flex_basis}", "minWidth": min_w},
                 children=[
                     dcc.Graph(id={"type": "fs_spatial_graph", "index": s},
                               figure=fig, style={"height": f"{height_val}vh"}, config=fs_cfg),
                 ],
             )
         )
-    return html.Div(
-        style={"display": "flex", "flexWrap": "wrap", "gap": "15px",
-               "width": f"{width_val}vw", "margin": "0 auto"},
-        children=graphs,
+    return _facet_block(
+        graphs, color_map, cluster_name_map=cluster_name_map, show_legend=True,
+        outer_style={"width": f"{width_val}vw", "margin": "0 auto"},
     )
 
 
