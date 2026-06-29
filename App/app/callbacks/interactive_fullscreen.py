@@ -418,7 +418,8 @@ def on_fullscreen_close(is_open, current_val):
      Input("fs_umap_width_slider", "value"),
      Input("fs_umap_marker_size", "value"),
      Input("fs_umap_exclude_cluster", "value"),
-     Input("fs_umap_label_size", "value")],
+     Input("fs_umap_label_size", "value"),
+     Input("umap_legend_hidden_store", "data")],
     [State("custom_color_map_store", "data"),
      State("umap_columns_per_row", "value"),
      State("accumulated_label_positions", "data"),
@@ -428,7 +429,8 @@ def on_fullscreen_close(is_open, current_val):
 )
 def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
                    height_val, width_val, marker_size, exclude_clusters, label_size,
-                   custom_color_map, columns_per_row, accumulated_positions,
+                   legend_hidden, custom_color_map, columns_per_row,
+                   accumulated_positions,
                    cluster_name_map=None, rds_path=None):
     from app.callbacks.interactive_callbacks import _set_active_key
     _set_active_key(rds_path)
@@ -480,11 +482,12 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
                                                 show_legend=bool(show_legend),
                                                 name_map=name_map,
                                                 columns_per_row=columns_per_row or 0,
-                                                cluster_name_map=cluster_name_map)
+                                                cluster_name_map=cluster_name_map,
+                                                legend_hidden=legend_hidden)
         return _facet_block(
             graphs, color_map, cluster_name_map=cluster_name_map,
             show_legend=bool(show_legend), legend_id="fs_umap_shared_legend",
-            excluded=exclude_clusters,
+            hidden=legend_hidden,
             outer_style={"width": f"{width_val}vw", "margin": "0 auto"},
         )
 
@@ -503,7 +506,8 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
      Input("fs_spatial_marker_size", "value"),
      Input("fs_spatial_height_slider", "value"),
      Input("fs_spatial_width_slider", "value"),
-     Input("fs_spatial_label_size", "value")],
+     Input("fs_spatial_label_size", "value"),
+     Input("spatial_legend_hidden_store", "data")],
     [State("custom_color_map_store", "data"),
      State("spatial_columns_per_row", "value"),
      State("accumulated_label_positions", "data"),
@@ -513,7 +517,7 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
 )
 def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                       exclude_clusters, marker_size, height_val, width_val,
-                      label_size, custom_colors, columns_per_row,
+                      label_size, legend_hidden, custom_colors, columns_per_row,
                       accumulated_positions, cluster_name_map=None,
                       rds_path=None):
     from app.callbacks.interactive_callbacks import _set_active_key
@@ -562,7 +566,8 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                                          label_size=label_size or 10,
                                          saved_positions=spatial_pos.get(s),
                                          render_height=render_h,
-                                         cluster_name_map=cluster_name_map)
+                                         cluster_name_map=cluster_name_map,
+                                         legend_hidden=legend_hidden)
         # 画面表示は per-tile 凡例オフ（上部の共有凡例に集約）。
         fig.update_layout(showlegend=False)
         if columns_per_row:
@@ -589,7 +594,7 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
         )
     return _facet_block(
         graphs, color_map, cluster_name_map=cluster_name_map, show_legend=True,
-        legend_id="fs_spatial_shared_legend", excluded=exclude_clusters,
+        legend_id="fs_spatial_shared_legend", hidden=legend_hidden,
         outer_style={"width": f"{width_val}vw", "margin": "0 auto"},
     )
 

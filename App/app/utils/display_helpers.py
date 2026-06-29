@@ -40,17 +40,17 @@ def cluster_legend_row(color_map, cluster_name_map=None):
     return html.Div(items, className="facet-legend")
 
 
-def cluster_legend_figure(color_map, cluster_name_map=None, excluded=None):
+def cluster_legend_figure(color_map, cluster_name_map=None, hidden=None):
     """クリック可能な「凡例だけ」の Plotly figure を返す (ver29.0)。
 
     各クラスタを 1 ダミートレースとして横並び凡例にする。Plotly ネイティブ凡例の
     クリック=トグル非表示 / ダブルクリック=単独表示 をそのまま使う。トレースの
     ``meta`` にクラスタ id を持たせ、クリック後の visible からどのクラスタが
-    非表示(legendonly)かを復元できるようにする。``excluded`` のクラスタは初期状態で
-    legendonly(淡色)にして exclude ドロップダウンと同期する。
+    非表示(legendonly)かを復元できるようにする。``hidden`` のクラスタは初期状態で
+    legendonly(淡色)にして「灰色化ストア」と同期する (ver29.1)。
     """
     from app.utils.color_utils import cluster_sort_key, cluster_display_name
-    excluded_set = {str(c) for c in (excluded or [])}
+    hidden_set = {str(c) for c in (hidden or [])}
     fig = go.Figure()
     for cl in sorted(color_map.keys(), key=cluster_sort_key):
         fig.add_trace(go.Scatter(
@@ -58,7 +58,7 @@ def cluster_legend_figure(color_map, cluster_name_map=None, excluded=None):
             marker=dict(size=11, color=color_map.get(str(cl), "#999999")),
             name=cluster_display_name(cl, cluster_name_map),
             meta=str(cl), showlegend=True,
-            visible=("legendonly" if str(cl) in excluded_set else True),
+            visible=("legendonly" if str(cl) in hidden_set else True),
         ))
     fig.update_layout(
         showlegend=True,
@@ -81,20 +81,20 @@ def _legend_graph_height(n_clusters):
 
 
 def facet_block(tiles, color_map, cluster_name_map=None, show_legend=True,
-                outer_style=None, legend_id=None, excluded=None):
+                outer_style=None, legend_id=None, hidden=None):
     """共有凡例(任意) + タイル群(縦線区切り) をまとめた html.Div を返す。
 
     tiles: className="facet-tile" を持つ図 Div のリスト。
     show_legend=True かつ color_map があるとき、上部に共有クラスタ凡例を1つ付ける。
     legend_id を渡すと、静的 HTML 凡例の代わりにクリック可能な凡例グラフ(dcc.Graph)を
-    描画する (ver29.0)。excluded は初期 legendonly の同期に使う。
+    描画する (ver29.0)。hidden は初期 legendonly(灰色化)の同期に使う (ver29.1)。
     """
     children = []
     if show_legend and color_map:
         if legend_id:
             children.append(dcc.Graph(
                 id=legend_id,
-                figure=cluster_legend_figure(color_map, cluster_name_map, excluded),
+                figure=cluster_legend_figure(color_map, cluster_name_map, hidden),
                 config={"displayModeBar": False},
                 style={"height": f"{_legend_graph_height(len(color_map))}px"},
                 className="facet-legend-graph",

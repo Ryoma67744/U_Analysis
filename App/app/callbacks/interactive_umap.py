@@ -171,17 +171,21 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                                    label_size=11, saved_positions=None,
                                    show_legend=True, name_map=None,
                                    columns_per_row=0, cluster_name_map=None,
-                                   collect_figures=None):
+                                   collect_figures=None, legend_hidden=None):
     """サンプル別UMAPのhtml.Divリストを生成（メイン/フルスクリーン共用）
 
     collect_figures: リストを渡すと (display_name, fig_dict) を追加する（一括保存用）
+    legend_hidden: 共有凡例で「灰色化」したクラスタ。色付き trace を描かず灰色背景を残す
+        (exclude と異なりセルは消さない, ver29.1)。
     """
-    # 除外クラスタのフィルタリング
+    # 除外クラスタのフィルタリング（完全除去。灰色背景も消える）
     if exclude_clusters:
         exclude_set = set(str(c) for c in exclude_clusters)
         df = df[~df["Cluster"].astype(str).isin(exclude_set)]
         if df.empty:
             return [html.Div("全クラスタが除外されています", className="text-muted small mt-2")]
+    # 灰色化クラスタ（色付き trace のみ非表示。灰色背景は残す）
+    legend_hidden_set = {str(c) for c in (legend_hidden or [])}
 
     samples = sorted(df["Sample"].unique())
     if len(samples) <= 1:
@@ -205,6 +209,8 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                     name="Other", showlegend=False, hoverinfo="skip",
                 ))
             for cl in highlight_clusters:
+                if str(cl) in legend_hidden_set:
+                    continue  # 凡例で灰色化 → 色付き trace を描かない（灰色背景は残る）
                 mask_cl = df_s["Cluster"].astype(str) == str(cl)
                 if mask_cl.any():
                     fig.add_trace(go.Scattergl(
@@ -225,6 +231,8 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                 name="_background_grey",
             ))
             for cl in sorted(df_s["Cluster"].unique(), key=_cluster_sort_key):
+                if str(cl) in legend_hidden_set:
+                    continue  # 凡例で灰色化 → 色付き trace を描かない（灰色背景は残る）
                 mask_cl = df_s["Cluster"] == cl
                 fig.add_trace(go.Scattergl(
                     x=df_s.loc[mask_cl, "UMAP_1"],
@@ -323,15 +331,18 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
 
 def _build_umap_facet_graphs(df, facets, color_map, marker_size=2,
                              columns_per_row=0, cluster_name_map=None,
-                             graph_height="300px", collect_figures=None):
+                             graph_height="300px", collect_figures=None,
+                             legend_hidden=None):
     """汎用 Split View: facets=[(label, mask_or_cellids), ...]。
 
     各タイルは「全細胞を淡灰の背景」+「当該ファセットの細胞を Cluster 色」で描き、
     全タイルで軸範囲を共有 (synchronized small multiples)。Loupe の Split View 相当。
     facet 要素: ブール mask (Cluster 分割) もしくは CellID 集合 (選択グループ分割)。
+    legend_hidden: 共有凡例で灰色化したクラスタ。色付き trace を描かず灰色背景は残す。
     """
     if df is None or len(df) == 0 or not facets:
         return [html.Div("表示できるデータがありません", className="text-muted small mt-2")]
+    legend_hidden_set = {str(c) for c in (legend_hidden or [])}
 
     x_all, y_all = df["UMAP_1"], df["UMAP_2"]
     pad_x = (float(x_all.max()) - float(x_all.min())) * 0.03 or 1.0
@@ -354,6 +365,8 @@ def _build_umap_facet_graphs(df, facets, color_map, marker_size=2,
             showlegend=False, hoverinfo="skip", name="_bg"))
         sub = df[mask]
         for cl in sorted(sub["Cluster"].unique(), key=_cluster_sort_key):
+            if str(cl) in legend_hidden_set:
+                continue  # 凡例で灰色化 → 色付き trace を描かない（灰色背景は残る）
             m2 = (sub["Cluster"] == cl)
             fig.add_trace(go.Scattergl(
                 x=sub.loc[m2, "UMAP_1"], y=sub.loc[m2, "UMAP_2"], mode="markers",
@@ -546,7 +559,8 @@ def toggle_merge_controls(_rds_path, _fs_trigger):
      Input("umap_columns_per_row", "value"),
      Input("cluster_name_map_store", "data"),
      Input("interactive_accordion", "active_item"),
-     Input("umap_facet_by", "value")],
+     Input("umap_facet_by", "value"),
+     Input("umap_legend_hidden_store", "data")],
     [State("accumulated_label_positions", "data"),
      State("selection_groups_store", "data")],
 )
@@ -554,7 +568,8 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
                             marker_size, exclude_clusters, label_size, rds_path,
                             show_legend, name_map, _fs_trigger, custom_colors,
                             columns_per_row, cluster_name_map, active_items,
-                            facet_by, accumulated_positions, selection_groups):
+                            facet_by, legend_hidden, accumulated_positions,
+                            selection_groups):
     """表示モード「サンプル別」(=分割表示) の場合、facet_by 基準で分割表示する。"""
     active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
     if "acc_umap" not in active_list:
@@ -581,11 +596,11 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
         graphs = _build_umap_facet_graphs(
             df, facets, color_map, marker_size=marker_size or 2,
             columns_per_row=columns_per_row or 0, cluster_name_map=cluster_name_map,
-            collect_figures=fig_dicts)
+            collect_figures=fig_dicts, legend_hidden=legend_hidden)
         return _facet_block(
             graphs, color_map, cluster_name_map=cluster_name_map,
             show_legend=bool(show_legend), legend_id="umap_shared_legend",
-            excluded=exclude_clusters, outer_style={"marginTop": "10px"}), fig_dicts
+            hidden=legend_hidden, outer_style={"marginTop": "10px"}), fig_dicts
     if facet_by == "group":
         groups = (selection_groups or {}).get("groups", [])
         if not groups:
@@ -596,11 +611,11 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
         graphs = _build_umap_facet_graphs(
             df, facets, color_map, marker_size=marker_size or 2,
             columns_per_row=columns_per_row or 0, cluster_name_map=cluster_name_map,
-            collect_figures=fig_dicts)
+            collect_figures=fig_dicts, legend_hidden=legend_hidden)
         return _facet_block(
             graphs, color_map, cluster_name_map=cluster_name_map,
             show_legend=bool(show_legend), legend_id="umap_shared_legend",
-            excluded=exclude_clusters, outer_style={"marginTop": "10px"}), fig_dicts
+            hidden=legend_hidden, outer_style={"marginTop": "10px"}), fig_dicts
 
     method = _interactive_data.get("method")
     all_pos = _get_merged_label_positions(accumulated_positions,
@@ -616,11 +631,12 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
                                             name_map=name_map,
                                             columns_per_row=columns_per_row or 0,
                                             cluster_name_map=cluster_name_map,
-                                            collect_figures=fig_dicts)
+                                            collect_figures=fig_dicts,
+                                            legend_hidden=legend_hidden)
     return _facet_block(
         graphs, color_map, cluster_name_map=cluster_name_map,
         show_legend=bool(show_legend), legend_id="umap_shared_legend",
-        excluded=exclude_clusters,
+        hidden=legend_hidden,
         outer_style={"marginTop": "10px"},
     ), fig_dicts
 
