@@ -12,6 +12,30 @@
 
 ---
 
+## 2026-06-29_ver30.2
+
+### UI 改善: UMAP / Spatial Mapping の「横並び」も行数指定に統一
+
+ver30.1 で Feature Plot の「横並び」を行数指定に変えたが、UMAP と Spatial Mapping は別コントロールのため
+「列」指定のままだった。3 つすべてを **行数指定**に統一（`N行` → 1 行あたり `ceil(タイル数 ÷ N)` 枚で折り返し、
+最大 N 行。`自動` は従来どおり全タイル横一列）。
+
+- `layouts/interactive_tab.py`：id `umap_columns_per_row`→`umap_rows_per_view`、
+  `spatial_columns_per_row`→`spatial_rows_per_view`、ラベル「横並び」→「行数」、選択肢「自動／1行…8行」。
+- `callbacks/interactive_umap.py`：`update_umap_per_sample` と `_build_umap_per_sample_graphs` /
+  `_build_umap_facet_graphs`（サンプル別・クラスタ／選択グループ facet 共通）を行→列換算
+  （`n_cols = ceil(タイル数 / 行数)`、`math` 使用）。`save_umap_display_settings` の保存キーを `rows_per_view` に。
+- `callbacks/interactive_spatial.py`：`update_spatial_plots` を行→列換算に。`save_spatial_display_settings` の
+  保存キーを `rows_per_view` に。
+- `callbacks/interactive_fullscreen.py`：UMAP/Spatial のフルスクリーン 3 箇所も State id 改名＋行→列換算。
+- `callbacks/lite_view_callbacks.py`：軽量ビューアの UMAP グリッドが `rows_per_view` を読み、`_calc_col_lg_width` を
+  行数＋サンプル数から列幅を出す方式へ変更（Spatial 軽量ビューアは元々固定幅で変更なし）。
+- 旧 `interactive_settings.json` の `columns_per_row`（列数）は読まれなくなり軽量ビューアは既定(自動)へフォールバック
+  （列数値が行数として誤解釈されない安全な移行）。メイン解析タブのドロップダウンは元々復元されないため影響なし。
+- version 30.1→30.2。
+
+---
+
 ## 2026-06-29_ver30.1
 
 ### UI 改善: Feature Plot の「横並び」を行数指定に変更／「色反転」「log10表示」を撤去

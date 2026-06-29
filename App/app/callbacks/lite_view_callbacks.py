@@ -19,6 +19,7 @@
 
 import base64
 import logging
+import math
 import re
 from pathlib import Path
 
@@ -865,8 +866,8 @@ def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
         show_labels = bool(umap_display.get("show_labels", False))
     else:
         show_labels = bool(show_labels)
-    columns_per_row = umap_display.get("columns_per_row", 0) or 0
-    col_lg = _calc_col_lg_width(columns_per_row, default_lg=6)
+    rows_per_view = umap_display.get("rows_per_view", 0) or 0
+    col_lg = _calc_col_lg_width(rows_per_view, len(samples), default_lg=6)
     # ver3.5: インタラクティブで除外したクラスタ・凡例表示設定を反映
     exclude_clusters = umap_display.get("exclude_cluster") or []
     show_legend_um = umap_display.get("show_legend")
@@ -904,11 +905,16 @@ def _build_per_sample_umap_grid(df_plot, color_map, cluster_name_map=None,
     return dbc.Row(cols, className="g-2")
 
 
-def _calc_col_lg_width(columns_per_row, default_lg=6):
-    """columns_per_row 値から dbc.Col の lg 幅(1-12)を算出。0 はデフォルト。"""
-    if not columns_per_row or columns_per_row <= 0:
+def _calc_col_lg_width(rows, n_samples, default_lg=6):
+    """行数 + サンプル数から dbc.Col の lg 幅(1-12)を算出。0(自動)/不正はデフォルト。
+
+    行数指定では 1 行あたりの列数 = ceil(サンプル数 / 行数)。Bootstrap の 12 グリッドを
+    その列数で割って 1 タイルの lg 幅を出す（行数指定 → 最大 N 行で折り返し）。
+    """
+    if not rows or rows <= 0 or not n_samples or n_samples <= 0:
         return default_lg
-    return max(1, 12 // columns_per_row)
+    n_cols = max(1, math.ceil(n_samples / rows))
+    return max(1, 12 // n_cols)
 
 
 def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
@@ -1009,8 +1015,8 @@ def _build_per_sample_highlight_umap_grid(
     marker_size = umap_display.get("marker_size", 2) or 2
     label_size = umap_display.get("label_size", 11) or 11
     show_labels = bool(umap_display.get("show_labels", False))
-    columns_per_row = umap_display.get("columns_per_row", 0) or 0
-    col_lg = _calc_col_lg_width(columns_per_row, default_lg=6)
+    rows_per_view = umap_display.get("rows_per_view", 0) or 0
+    col_lg = _calc_col_lg_width(rows_per_view, len(samples), default_lg=6)
 
     cols = []
     for s in samples:
