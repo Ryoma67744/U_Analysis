@@ -814,7 +814,8 @@ def create_interactive_tab():
                                     ),
                                 ]),
                                 dbc.Col(width=3, children=[
-                                    dbc.Label("分割基準 (サンプル別表示時)", className="small mb-0"),
+                                    dbc.Label(["分割基準 (サンプル別表示時)",
+                                               help_badge("umap_facet_by")], className="small mb-0"),
                                     dcc.Dropdown(
                                         id="umap_facet_by",
                                         options=[
@@ -889,7 +890,8 @@ def create_interactive_tab():
                             ], className="mt-2 border rounded p-2 bg-light"),
                             # --- 選択グループ (P3: 名前付き永続選択) ---
                             html.Div([
-                                html.Strong("選択グループ", className="small d-block mb-1"),
+                                html.Strong(["選択グループ", help_badge("selection_groups")],
+                                            className="small d-block mb-1"),
                                 dbc.Row(className="g-1 align-items-end mb-1", children=[
                                     dbc.Col(width=4, children=[
                                         dbc.Input(id="selection_group_name", size="sm",

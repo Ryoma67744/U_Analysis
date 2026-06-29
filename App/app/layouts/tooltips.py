@@ -208,6 +208,18 @@ def get_interactive_tooltips():
             "化合物名を表示します。",
             target="heatmap_annotation_switch_help_badge", **_TOOLTIP_PROPS,
         ),
+        dbc.Tooltip(
+            "「表示=サンプル別」のとき、UMAPを何ごとに小図へ分割するかを選びます。"
+            "サンプル=サンプル別、クラスタ=クラスタごと(全体を薄い背景にし当該クラスタを強調)、"
+            "選択グループ=保存した選択ごと。全タイルで軸を共有して同じ縮尺で比較できます。",
+            target="umap_facet_by_help_badge", **_TOOLTIP_PROPS,
+        ),
+        dbc.Tooltip(
+            "UMAPで囲んだ選択範囲に名前を付けて保存・改名・削除・結合・CSV入出力できます。"
+            "「現在の選択に読込」で保存したグループを現在の選択に戻し、選択範囲の統計や"
+            "DEGタブの「選択DE」検定の入力として再利用できます。",
+            target="selection_groups_help_badge", **_TOOLTIP_PROPS,
+        ),
     ]
 
 
