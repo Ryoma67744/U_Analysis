@@ -12,6 +12,28 @@
 
 ---
 
+## 2026-06-29_ver32.0
+
+### 機能削除: 「結果閲覧」タブと「セッション履歴」タブを撤去
+
+トップナビゲーションを簡素化。「結果閲覧」「セッション履歴」の 2 タブと、それらへの入口・関連機能を削除した
+（サブプロジェクト/プリセット/インタラクティブ解析で代替可能なため）。
+
+- **結果閲覧**：`layouts/main_layout.py` から「結果閲覧」タブと import を削除。プロジェクト画面の
+  「結果閲覧」アクションボタン（`callbacks/project_callbacks.py` の `sub_action_results` ボタン＋
+  `sub_action_view_results` コールバック）を削除。URL ルーティング `/app/results`（`callbacks/tab_url_routing.py`）も撤去。
+- **セッション履歴**：`main_layout.py` から「セッション履歴」タブと import を削除。サイドバーのセッション
+  「💾 保存」「📂 読込」ボタン（`layouts/sidebar.py`）を削除し、見出しを「🗂 プリセット・バックアップ」に変更。
+  セッション保存/読込/履歴テーブル/削除/履歴タブ切替の各コールバック（`callbacks/session_callbacks.py`）を削除。
+  URL ルーティング `/app/history` も撤去。バックアップ一覧モーダルは存続。
+- ナビゲーションは「解析設定 / インタラクティブ解析 / 解剖×クラスタ (H&E)」の 3 タブに集約。
+- 留意：結果ギャラリー/履歴の旧モジュール（`results_tab.py`/`results_callbacks.py`/`history_tab.py`/
+  `session_manager.py`）は描画・登録から外れて不活性化（共有ビューア等への影響回避のためファイル自体は残置）。
+  ヘルプ（`templates/help/analysis.html`）の旧タブ記述は別途更新予定。
+- version 31.1→32.0。
+
+---
+
 ## 2026-06-29_ver31.1
 
 ### UI 改善: インタラクティブ解析で UMAP と Spatial Mapping を初期オープンに

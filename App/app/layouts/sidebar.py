@@ -120,19 +120,11 @@ def create_sidebar():
         _create_output_settings(ls),
         html.Hr(),
 
-        # セッション管理
-        html.H4(["💾 セッション"]),
+        # プリセット / バックアップ / 変換ツール
+        html.H4(["🗂 プリセット・バックアップ"]),
         html.Div(
             style={"display": "flex", "gap": "10px", "flexWrap": "wrap"},
             children=[
-                dbc.Button(
-                    ["💾 保存"], id="save_session",
-                    size="sm", color="success",
-                ),
-                dbc.Button(
-                    ["📂 読込"], id="load_session",
-                    size="sm", color="info",
-                ),
                 dbc.Button(
                     ["📋 プリセット"], id="open_preset_modal",
                     size="sm", color="warning", outline=True,
