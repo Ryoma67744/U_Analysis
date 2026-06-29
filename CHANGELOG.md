@@ -12,6 +12,28 @@
 
 ---
 
+## 2026-06-29_ver30.1
+
+### UI 改善: Feature Plot の「横並び」を行数指定に変更／「色反転」「log10表示」を撤去
+
+- **横並びを「列数」→「行数」指定に変更**：Feature Plot のタイル配置コントロールを、1 行あたりの列数指定から
+  **行数指定**へ変更（より直感的）。`N行` を選ぶと 1 行あたり `ceil(サンプル数 ÷ N)` 枚で折り返し、最大 N 行になる。
+  「自動」は従来どおり全サンプルを横一列に並べる。
+  - `layouts/interactive_tab.py`：id `feature_columns_per_row` → `feature_rows_per_view`、ラベル「横並び」→「行数」、
+    選択肢を「自動／1行…8行」に変更。
+  - `callbacks/interactive_deg.py`：`update_feature_plot` の入力・引数を行数(`rows`)に変更し、
+    `n_cols = ceil(サンプル数 / 行数)` で列幅を算出（`math` を使用）。
+- **「色反転」「log10 表示」トグルを撤去**：Feature Plot のカラースケール行から `feature_reverse_scale`（色反転）と
+  `feature_log_scale`（log10 表示）の 2 スイッチを削除し、UI を簡素化。
+  - `callbacks/interactive_deg.py`：該当入力・引数、log10 変換処理、`reversescale` 指定、未使用化した
+    `log_transform_intensities` の import を削除。
+  - `callbacks/interactive_resets.py`：`reset_feature_colorscale` の出力から 2 トグルを除き、配色・強度範囲のみ
+    既定へ戻す（リセットボタンの説明も更新）。
+- カラースケール選択・強度範囲・リセットは従来どおり存続。UMAP/Spatial Mapping の「横並び（列数）」は変更なし。
+- version 30.0→30.1。
+
+---
+
 ## 2026-06-29_ver30.0
 
 ### 機能追加: 組織像(H&E)オーバーレイを Spatial Mapping 本体に統合（スポット透明度で透過）
