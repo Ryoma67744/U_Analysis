@@ -1,7 +1,7 @@
 {% extends "help/base.html" %}
 
 {% block title %}解析画面ガイド | MSI Analysis App{% endblock %}
-{% block header_subtitle %}⚙️ 解析画面（データ解析・結果閲覧）の使い方{% endblock %}
+{% block header_subtitle %}⚙️ 解析画面（データ解析・インタラクティブ解析）の使い方{% endblock %}
 {% block nav_ana %}active{% endblock %}
 
 {% block content %}
@@ -9,7 +9,7 @@
 <div class="help-alert tip">
   <div class="alert-title">💡 このページについて</div>
   プロジェクトを選択した後に表示される「解析画面」の使い方をまとめています。
-  データフォルダ指定・解析実行・結果閲覧・インタラクティブ操作などはここで行います。
+  データフォルダ指定・解析実行・インタラクティブ解析などはここで行います。
 </div>
 
 <div class="toc">
@@ -25,7 +25,6 @@
       </ul>
     </li>
     <li><a href="#run">▶ 解析実行 + 進捗確認</a></li>
-    <li><a href="#results">📊 結果閲覧タブ</a></li>
     <li><a href="#interactive">🎨 インタラクティブ解析</a>
       <ul>
         <li><a href="#flip-rotation">🆕 サンプル別の反転・回転</a></li>
@@ -37,7 +36,6 @@
       </ul>
     </li>
     <li><a href="#interpretation">📐 データの前提と結果の読み方（重要）</a></li>
-    <li><a href="#history">🗂 セッション履歴</a></li>
     <li><a href="#sharing">🆕 🔗 共有機能（期間付き / 無期限）+ タブ別 URL</a></li>
     <li><a href="#errors">🛟 よくあるエラー</a></li>
     <li><a href="#faq">❓ FAQ</a></li>
@@ -50,38 +48,39 @@
 <h2 class="section-heading" id="intro">🌟 1. はじめに</h2>
 
 <p>
-  解析画面は <strong>4つのタブ</strong> から構成されています:
+  解析画面は <strong>3つのタブ</strong> から構成されています:
 </p>
 
 <div class="row g-3">
-  <div class="col-md-3 col-sm-6">
+  <div class="col-md-4 col-sm-6">
     <div class="ui-card">
       <span class="icon">⚙️</span>
       <div class="name">解析設定</div>
       <p class="small mb-0">データフォルダ・サンプル・パラメータ指定 → ▶実行</p>
     </div>
   </div>
-  <div class="col-md-3 col-sm-6">
-    <div class="ui-card">
-      <span class="icon">📊</span>
-      <div class="name">結果閲覧</div>
-      <p class="small mb-0">UMAPプロット・クラスタ図・代謝物リスト</p>
-    </div>
-  </div>
-  <div class="col-md-3 col-sm-6">
+  <div class="col-md-4 col-sm-6">
     <div class="ui-card">
       <span class="icon">🎨</span>
-      <div class="name">インタラクティブ</div>
-      <p class="small mb-0">クラスタ操作・色変更・マージ・再描画</p>
+      <div class="name">インタラクティブ解析</div>
+      <p class="small mb-0">結果の確認・クラスタ操作・色変更・マージ・Feature/DEG・再描画</p>
     </div>
   </div>
-  <div class="col-md-3 col-sm-6">
+  <div class="col-md-4 col-sm-6">
     <div class="ui-card">
-      <span class="icon">🗂</span>
-      <div class="name">セッション履歴</div>
-      <p class="small mb-0">過去の解析履歴の閲覧・再現</p>
+      <span class="icon">🩻</span>
+      <div class="name">解剖×クラスタ (H&amp;E)</div>
+      <p class="small mb-0">組織像(H&amp;E)の登録・位置合わせ。解剖領域とクラスタの対応付け</p>
     </div>
   </div>
+</div>
+
+<div class="help-alert tip">
+  <div class="alert-title">💡 「結果閲覧」「セッション履歴」タブは廃止（ver32.0）</div>
+  従来あった「結果閲覧」「セッション履歴」タブは廃止しました。解析結果の確認は
+  <strong>インタラクティブ解析タブ</strong>（データを読み込むと UMAP / Spatial Mapping が自動で開きます）と
+  <strong>軽量ビューア</strong>で行えます。設定の使い回しは <strong>サブプロジェクト</strong> /
+  <strong>📋 プリセット</strong> で代替できます。
 </div>
 
 <h3 class="subsection-heading">🧬 DESI と TIMS の違い</h3>
@@ -294,9 +293,8 @@
     <rect x="10" y="65" width="780" height="35" fill="white" stroke="#dee2e6"/>
     <rect x="15" y="68" width="100" height="32" fill="#667eea"/>
     <text x="40" y="89" fill="white" font-size="12" font-weight="bold">⚙️ 解析設定</text>
-    <text x="135" y="89" fill="#6c757d" font-size="12">📊 結果閲覧</text>
-    <text x="230" y="89" fill="#6c757d" font-size="12">🎨 インタラクティブ</text>
-    <text x="370" y="89" fill="#6c757d" font-size="12">🗂 セッション履歴</text>
+    <text x="135" y="89" fill="#6c757d" font-size="12">🎨 インタラクティブ解析</text>
+    <text x="320" y="89" fill="#6c757d" font-size="12">🩻 解剖×クラスタ (H&amp;E)</text>
 
     <!-- サブタブ (解析設定 / データ管理) -->
     <rect x="10" y="100" width="780" height="30" fill="#f8f9fa" stroke="#dee2e6"/>
@@ -434,7 +432,7 @@
   <p><span class="step-badge">2</span> 進捗バー（緑色アニメーション）が表示される</p>
   <p><span class="step-badge">3</span> 黒背景のログコンソールに R スクリプトの出力が流れる</p>
   <p><span class="step-badge">4</span> セクション処理ごとに「N/M セクション」表示が更新</p>
-  <p><span class="step-badge">5</span> 完了すると進捗バーが消え、結果閲覧タブに自動切替</p>
+  <p><span class="step-badge">5</span> 完了すると進捗バーが消える。結果は <strong>インタラクティブ解析</strong>タブで確認（データを読み込むと UMAP / Spatial Mapping が自動で開きます）</p>
 </div>
 
 <h3 class="subsection-heading">ログ表示の便利機能</h3>
@@ -470,47 +468,7 @@
 </div>
 
 <!-- ============================================ -->
-<h2 class="section-heading" id="results">📊 5. 結果閲覧タブ</h2>
-
-<p>解析完了後、自動的に「結果閲覧」タブに遷移します。表示内容:</p>
-
-<div class="row g-3">
-  <div class="col-md-6">
-    <div class="ui-card">
-      <span class="icon">🎯</span>
-      <div class="name">UMAPプロット</div>
-      <p class="small mb-0">2D空間に各ピクセルをマッピング。色はクラスタID。
-        ホバーでm/z値・座標を確認。</p>
-    </div>
-  </div>
-  <div class="col-md-6">
-    <div class="ui-card">
-      <span class="icon">🗺</span>
-      <div class="name">クラスタ画像</div>
-      <p class="small mb-0">組織切片上にクラスタを色塗り表示。
-        ピクセル単位の代謝物分布を可視化。</p>
-    </div>
-  </div>
-  <div class="col-md-6">
-    <div class="ui-card">
-      <span class="icon">📋</span>
-      <div class="name">代謝物リスト</div>
-      <p class="small mb-0">アノテーション付きの m/z 一覧。
-        強度・付加体・分子式・スコアで並び替え可。</p>
-    </div>
-  </div>
-  <div class="col-md-6">
-    <div class="ui-card">
-      <span class="icon">📥</span>
-      <div class="name">ダウンロード</div>
-      <p class="small mb-0">PNG / CSV / RDS をローカルに保存。
-        SFTPでフォルダごと取得もできる。</p>
-    </div>
-  </div>
-</div>
-
-<!-- ============================================ -->
-<h2 class="section-heading" id="interactive">🎨 6. インタラクティブ解析</h2>
+<h2 class="section-heading" id="interactive">🎨 5. インタラクティブ解析</h2>
 
 <p>結果を見て「ここのクラスタをマージしたい」「色を変えたい」と思ったら、
    <strong>インタラクティブタブ</strong> で対話的に修正できます。UMAP・空間マッピング・Feature Plot・
@@ -686,12 +644,21 @@
 </p>
 
 <!-- -------- H&amp;E オーバーレイ / 分割表示 -------- -->
-<h3 class="subsection-heading" id="hne-split">🆕 H&amp;E オーバーレイ / 分割表示</h3>
+<h3 class="subsection-heading" id="hne-split">🆕 スポット透明度 / 組織像(H&amp;E)オーバーレイ / 分割表示</h3>
 
 <ul>
-  <li><strong>H&amp;E オーバーレイ</strong>：登録済みの組織像（H&amp;E）を Spatial プロットの
-    <strong>背景</strong> に重ね、スポットの透明度を調整して組織構造とクラスタを対応付けられます
-    （位置合わせ誤差は残差 px で表示）。</li>
+  <li><strong>スポット透明度（背景の透過）</strong>：Spatial Mapping の <strong>スポット透明度</strong>
+    スライダーを下げると、クラスタのスポットが透けて <strong>背後の TIC（全イオン像）</strong> が見えます。
+    既定は不透明（100%）なので、下げた時だけ透過します（ver31）。</li>
+  <li><strong>組織像(H&amp;E)オーバーレイ（Spatial 本体に統合）</strong>：「組織像を背景に重ねる」を ON にすると、
+    登録済みサンプルの各タイル背景に H&amp;E が表示され、スポット透明度を下げると組織像が透けて
+    組織構造とクラスタを対応付けられます（ver30 で独立グラフから Spatial 本体に統合）。
+    <strong>「組織像をモノクロ表示」</strong> で H&amp;E をグレースケール表示に切替できます（ver31）。
+    H&amp;E の登録・位置合わせは「解剖×クラスタ (H&amp;E)」タブで行います。</li>
+  <li><strong>共有凡例（クリック操作）</strong>：サンプル別/分割表示では凡例をクラスタ番号で 1 つに統一。
+    凡例の番号をクリックすると、<strong>当該クラスタのみ非表示（灰色化）</strong> など表示の切替ができます（ver29）。</li>
+  <li><strong>行数（横並び）</strong>：UMAP / Spatial Mapping / Feature Plot のタイル配置は
+    <strong>「行数」</strong> で指定します（N 行を選ぶと 1 行あたり ⌈サンプル数÷N⌉ 枚で折り返し。ver30–32）。</li>
   <li><strong>分割表示（分割基準）</strong>：「表示=サンプル別」のとき、UMAP を
     <strong>サンプル / クラスタ / 選択グループ</strong> ごとの小図に分割し、全タイルで軸を共有して
     同じ縮尺で並べて比較できます。</li>
@@ -699,7 +666,7 @@
 
 <!-- ============================================ -->
 <!-- ============================================ -->
-<h2 class="section-heading" id="interpretation">📐 7. データの前提と結果の読み方（重要）</h2>
+<h2 class="section-heading" id="interpretation">📐 6. データの前提と結果の読み方（重要）</h2>
 
 <div class="help-alert warn">
   <div class="alert-title">⚠️ このセクションの位置づけ</div>
@@ -786,19 +753,7 @@
 </div>
 
 <!-- ============================================ -->
-<h2 class="section-heading" id="history">🗂 8. セッション履歴</h2>
-
-<p>過去の解析実行履歴を一覧表示します。各エントリには以下の情報:</p>
-<ul>
-  <li>実行日時 + 実行ユーザー</li>
-  <li>使用したパラメータ（m/z range, tolerance, adduct 等）</li>
-  <li>処理時間・出力先パス</li>
-  <li>「再実行」ボタン: 同じパラメータで再解析</li>
-  <li>「結果を開く」ボタン: 結果閲覧タブにジャンプ</li>
-</ul>
-
-<!-- ============================================ -->
-<h2 class="section-heading" id="sharing">🆕 🔗 9. 共有機能（期間付き / 無期限）+ タブ別 URL</h2>
+<h2 class="section-heading" id="sharing">🆕 🔗 7. 共有機能（期間付き / 無期限）+ タブ別 URL</h2>
 
 <p>
   ver3.0 から URL 体系と共有機能が拡張されました。<strong>解析画面の各タブに
@@ -816,7 +771,7 @@
   <ul class="small mb-0">
     <li>共有先の操作は <strong>元プロジェクトに保存されます</strong>（read-only ではありません）。</li>
     <li>共有 URL では <strong>「インタラクティブ解析」タブのみ</strong>が表示され、他のタブ
-      （解析設定 / 結果閲覧 / セッション履歴）・サイドバー・戻るボタンは隠れます。</li>
+      （解析設定 / 解剖×クラスタ(H&amp;E)）・サイドバー・戻るボタンは隠れます。</li>
   </ul>
 </div>
 
@@ -828,16 +783,14 @@
   </thead>
   <tbody>
     <tr><td>解析設定</td><td><code>/app/settings</code></td><td>Tier A</td></tr>
-    <tr><td>結果閲覧</td><td><code>/app/results</code></td><td>Tier A</td></tr>
     <tr><td>インタラクティブ解析</td><td><code>/app/interactive</code></td><td>Tier A</td></tr>
-    <tr><td>セッション履歴</td><td><code>/app/history</code></td><td>Tier A</td></tr>
   </tbody>
 </table>
 
 <div class="help-alert tip">
   <div class="alert-title">💡 双方向同期</div>
   タブを切り替えると URL バーが <code>/app/&lt;tab_id&gt;</code> に更新されます。
-  逆に URL バーで <code>/app/results</code> 等を直接入力（または別タブで開く）
+  逆に URL バーで <code>/app/interactive</code> 等を直接入力（または別タブで開く）
   すれば、対応するタブが選択された状態で解析画面が開きます。
   ブックマークすれば次回起動時も同じタブが開きます。
 </div>
@@ -915,7 +868,7 @@
 </div>
 
 <!-- ============================================ -->
-<h2 class="section-heading" id="errors">🛟 10. よくあるエラーと対処法</h2>
+<h2 class="section-heading" id="errors">🛟 8. よくあるエラーと対処法</h2>
 
 <div class="row g-3">
   <div class="col-md-6">
@@ -963,7 +916,7 @@
 </div>
 
 <!-- ============================================ -->
-<h2 class="section-heading" id="faq">❓ 11. よくある質問 (FAQ)</h2>
+<h2 class="section-heading" id="faq">❓ 9. よくある質問 (FAQ)</h2>
 
 <div class="row g-3">
   <div class="col-md-6">
@@ -983,8 +936,8 @@
   <div class="col-md-6">
     <div class="ui-card">
       <div class="name">❓ 結果をPNGでまとめてダウンロードしたい</div>
-      <p class="small">結果閲覧タブの「📥 全画像をダウンロード」または、SFTPで
-        <code>/srv/msi/output/&lt;プロジェクト名&gt;/</code> をフォルダごと取得。</p>
+      <p class="small">インタラクティブ解析タブの「📤 エクスポート」（PPT レポート / PNG 一括 / CSV）、
+        または SFTP で <code>/srv/msi/output/&lt;プロジェクト名&gt;/</code> をフォルダごと取得。</p>
     </div>
   </div>
   <div class="col-md-6">
@@ -997,13 +950,26 @@
 </div>
 
 <!-- ============================================ -->
-<h2 class="section-heading" id="changelog">📝 12. バージョン履歴</h2>
+<h2 class="section-heading" id="changelog">📝 10. バージョン履歴</h2>
 
 <table class="help-table">
   <thead>
     <tr><th>バージョン</th><th>主要変更点</th></tr>
   </thead>
   <tbody>
+    <tr>
+      <td><strong>ver28.0〜32.0</strong><br><span class="text-muted small">2026-06</span></td>
+      <td>
+        🆕 <strong>サンプル別表示と Spatial Mapping の刷新</strong>：<br>
+        ① <strong>共有凡例の統一</strong>（サンプル別/分割でクラスタ番号を 1 つに統一・縦線区切り、ver28）<br>
+        ② <strong>クリック可能な共有凡例</strong>（凡例の番号クリックで当該クラスタの非表示=灰色化などを切替、ver29）<br>
+        ③ <strong>組織像(H&amp;E)オーバーレイを Spatial Mapping 本体に統合</strong>（スポット透明度で透過、ver30）<br>
+        ④ <strong>スポット透明度で背後の TIC を透過</strong> + <strong>組織像のモノクロ表示</strong>、
+        Feature リスト/共発現を折りたたみ化、データ読込時に UMAP / Spatial を自動オープン（ver31）<br>
+        ⑤ <strong>横並びを「行数」指定に統一</strong>（UMAP / Spatial / Feature Plot）、Feature Plot の「色反転 / log10」撤去<br>
+        ⑥ <strong>「結果閲覧」「セッション履歴」タブを廃止</strong>（解析設定 / インタラクティブ解析 / 解剖×クラスタ の 3 タブに集約、ver32）
+      </td>
+    </tr>
     <tr>
       <td><strong>ver5.0〜27.0</strong><br><span class="text-muted small">2026-06</span></td>
       <td>
@@ -1081,7 +1047,7 @@
 </table>
 
 <!-- ============================================ -->
-<h2 class="section-heading" id="maintenance">🧰 13. 保守・ツール（RDS軽量化 / 環境設定 / SCiLS 変換）</h2>
+<h2 class="section-heading" id="maintenance">🧰 11. 保守・ツール（RDS軽量化 / 環境設定 / SCiLS 変換）</h2>
 
 <p>
   日常解析以外の保守系ツールです。<strong>RDS軽量化</strong>と<strong>環境設定</strong>は

@@ -302,7 +302,6 @@ app.layout = create_main_layout()
 # 各コールバックモジュールの import で自動的に @app.callback が登録される
 from app.callbacks import file_handlers  # noqa: E402, F401
 from app.callbacks import analysis_callbacks  # noqa: E402, F401
-from app.callbacks import results_callbacks  # noqa: E402, F401
 from app.callbacks import session_callbacks  # noqa: E402, F401
 from app.callbacks import interactive_callbacks  # noqa: E402, F401
 from app.callbacks import project_callbacks  # noqa: E402, F401

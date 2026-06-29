@@ -12,6 +12,25 @@
 
 ---
 
+## 2026-06-29_ver32.1
+
+### 後片付け: 旧モジュールの物理削除 + 解析画面ヘルプの更新
+
+ver32.0 で UI から外した「結果閲覧」「セッション履歴」関連の不活性コードを物理削除し、ヘルプ文書を最新化。
+
+- **不活性モジュールの削除**：`layouts/results_tab.py`・`callbacks/results_callbacks.py`・`layouts/history_tab.py` を削除。
+  `main.py` の `results_callbacks` 登録 import を除去。`services/session_manager.py` からセッション保存/読込/一覧/削除の
+  4 関数を削除（`save_last_settings`/`load_last_settings` は他機能で使用中のため存続）。
+- **ヘルプ更新（`templates/help/analysis.html`）**：「結果閲覧」「セッション履歴」の節・目次・タブ一覧・タブ別 URL 表
+  （`/app/results`・`/app/history`）・UI モック SVG・各種参照を撤去し、3 タブ構成（解析設定 / インタラクティブ解析 /
+  解剖×クラスタ(H&E)）へ更新。節番号を振り直し。
+- **ヘルプに不足機能を追記**：スポット透明度による TIC 透過 / 組織像モノクロ表示 / 組織像オーバーレイの Spatial 統合、
+  クリック可能な共有凡例、横並び→行数指定、UMAP/Spatial の初期オープン、解剖×クラスタ(H&E)タブ、を追記。
+  バージョン履歴表に ver28.0〜32.0 の行を追加。
+- version 32.0→32.1。
+
+---
+
 ## 2026-06-29_ver32.0
 
 ### 機能削除: 「結果閲覧」タブと「セッション履歴」タブを撤去
