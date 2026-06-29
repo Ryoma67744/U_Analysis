@@ -27,56 +27,75 @@ def _status(msg, cls="text-muted small"):
 # ---------------------------------------------------------------------------
 @callback(
     [Output("selection_groups_store", "data"),
-     Output("selection_groups_status", "children")],
+     Output("selection_groups_status", "children"),
+     Output("selection_groups_undo", "data")],
     [Input("seurat_rds_path_store", "data"),
      Input("btn_save_selection_group", "n_clicks"),
      Input("btn_rename_group", "n_clicks"),
      Input("btn_delete_group", "n_clicks"),
      Input("btn_combine_groups", "n_clicks"),
-     Input("upload_selection_groups", "contents")],
+     Input("upload_selection_groups", "contents"),
+     Input("btn_restore_deleted_group", "n_clicks")],
     [State("selection_groups_store", "data"),
      State("selected_cell_ids_store", "data"),
      State("selection_group_name", "value"),
      State("selection_group_select", "value"),
      State("selection_group_rename", "value"),
      State("selection_groups_combine", "value"),
+     State("selection_groups_undo", "data"),
      State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
 def mutate_selection_groups(rds_trigger, _n_save, _n_ren, _n_del, _n_comb,
-                            upload_contents, state, selected_ids, new_name,
-                            sel_gid, rename_text, combine_gids, rds_path):
+                            upload_contents, _n_restore, state, selected_ids,
+                            new_name, sel_gid, rename_text, combine_gids,
+                            undo_state, rds_path):
     trig = ctx.triggered_id
     state = state or sg.empty_state()
+    undo_out = no_update  # 削除/取り消し時のみ更新
 
     # データロード時はディスクから読み直す (保存はしない)
     if trig == "seurat_rds_path_store":
         if not rds_path:
-            return sg.empty_state(), no_update
-        return sg.load_groups(rds_path), no_update
+            return sg.empty_state(), no_update, no_update
+        return sg.load_groups(rds_path), no_update, no_update
 
     if trig == "btn_save_selection_group":
         if not selected_ids:
-            return no_update, _status("先に UMAP で選択してください", "text-warning small")
+            return no_update, _status("先に UMAP で選択してください", "text-warning small"), no_update
         state = sg.add_group(state, new_name, selected_ids)
         msg = _status(f"保存しました: {state['groups'][-1]['name']} "
                       f"({len(selected_ids)} px)", "text-success small")
 
     elif trig == "btn_rename_group":
         if not sel_gid:
-            return no_update, _status("改名するグループを選択してください", "text-warning small")
+            return no_update, _status("改名するグループを選択してください", "text-warning small"), no_update
         state = sg.rename_group(state, sel_gid, rename_text)
         msg = _status("改名しました", "text-success small")
 
     elif trig == "btn_delete_group":
         if not sel_gid:
-            return no_update, _status("削除するグループを選択してください", "text-warning small")
+            return no_update, _status("削除するグループを選択してください", "text-warning small"), no_update
+        deleted = next((g for g in state.get("groups", [])
+                        if g.get("id") == sel_gid), None)
         state = sg.delete_group(state, sel_gid)
-        msg = _status("削除しました", "text-success small")
+        undo_out = deleted  # 取り消し用に退避
+        nm = deleted.get("name", "") if deleted else ""
+        msg = _status(f"削除しました: {nm}（取り消し可）", "text-success small")
+
+    elif trig == "btn_restore_deleted_group":
+        if not undo_state:
+            return no_update, _status("取り消せる削除がありません", "text-warning small"), no_update
+        state = sg.add_group(state, undo_state.get("name"),
+                             undo_state.get("cell_ids", []),
+                             color=undo_state.get("color"))
+        undo_out = None  # 1回限り
+        msg = _status(f"削除を取り消しました: {undo_state.get('name','')}",
+                      "text-success small")
 
     elif trig == "btn_combine_groups":
         if not combine_gids or len(combine_gids) < 2:
-            return no_update, _status("結合するグループを2つ以上選択してください", "text-warning small")
+            return no_update, _status("結合するグループを2つ以上選択してください", "text-warning small"), no_update
         state = sg.combine_groups(state, combine_gids)
         msg = _status("結合グループを作成しました", "text-success small")
 
@@ -87,7 +106,7 @@ def mutate_selection_groups(rds_trigger, _n_save, _n_ren, _n_del, _n_comb,
             _ctype, b64 = str(upload_contents).split(",", 1)
             text = base64.b64decode(b64).decode("utf-8", errors="replace")
         except Exception as e:  # noqa: BLE001
-            return no_update, _status(f"CSV 読込失敗: {e}", "text-danger small")
+            return no_update, _status(f"CSV 読込失敗: {e}", "text-danger small"), no_update
         imported = sg.groups_from_csv(text)
         merged = dict(state)
         groups = list(state.get("groups", []))
@@ -103,7 +122,7 @@ def mutate_selection_groups(rds_trigger, _n_save, _n_ren, _n_del, _n_comb,
 
     if rds_path:
         sg.save_groups(rds_path, state)
-    return state, msg
+    return state, msg, undo_out
 
 
 # ---------------------------------------------------------------------------

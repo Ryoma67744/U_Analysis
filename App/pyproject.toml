@@ -31,12 +31,22 @@ dev = [
     "pytest>=7.0",
     "pytest-cov",
 ]
+# E2E (Playwright) テスト用。インストール後に `playwright install chromium` が必要
+# （本番 Docker/CI には Chromium 同梱を想定）。
+e2e = [
+    "playwright>=1.40",
+    "pytest-playwright>=0.4",
+]
 
 [project.scripts]
 msi-app = "run_app:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "e2e: ブラウザ E2E テスト (Playwright)。",
+    "requires_data: 実データ (R/Seurat + 結果フォルダ RDS) が必要なテスト。",
+]
 
 [tool.setuptools]
 packages = ["app", "app.callbacks", "app.layouts", "app.services", "app.utils"]

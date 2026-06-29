@@ -933,6 +933,11 @@ def create_interactive_tab():
                                                    color="outline-danger"),
                                     ]),
                                     dbc.Col(width="auto", children=[
+                                        dbc.Button("削除を取り消す", id="btn_restore_deleted_group",
+                                                   size="sm", color="outline-warning",
+                                                   title="直前に削除したグループを復元"),
+                                    ]),
+                                    dbc.Col(width="auto", children=[
                                         dbc.Button("現在の選択に読込", id="btn_load_group_to_selection",
                                                    size="sm", color="success"),
                                     ]),
@@ -950,7 +955,8 @@ def create_interactive_tab():
                                     ]),
                                     dbc.Col(width="auto", children=[
                                         dbc.Button("CSV出力", id="btn_export_groups", size="sm",
-                                                   color="outline-success"),
+                                                   color="outline-success",
+                                                   title="選択グループを CellID,Group 形式で書き出す"),
                                     ]),
                                     dbc.Col(width="auto", children=[
                                         dcc.Upload(id="upload_selection_groups",
@@ -1101,6 +1107,11 @@ def create_interactive_tab():
                                                marks={2: "2", 5: "5", 10: "10", 15: "15"},
                                                tooltip={"placement": "bottom",
                                                         "always_visible": False}),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button("リセット", id="hne_overlay_reset",
+                                               size="sm", color="outline-secondary",
+                                               title="透明度・サイズを既定に戻す"),
                                 ]),
                                 dbc.Col(width="auto", className="d-flex align-items-center", children=[
                                     html.Div(id="hne_overlay_status", className="small"),
@@ -1272,6 +1283,11 @@ def create_interactive_tab():
                                     dbc.Switch(id="feature_reverse_scale",
                                                label="色反転", value=False),
                                 ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button("リセット", id="feature_colorscale_reset",
+                                               size="sm", color="outline-secondary",
+                                               title="配色・log・反転・強度範囲を既定に戻す"),
+                                ]),
                             ]),
                             dcc.Loading(html.Div(id="feature_plot_container")),
                             # --- Feature 分布 (violin) パネル (P1) ---
@@ -1324,10 +1340,25 @@ def create_interactive_tab():
                                 ]),
                                 dbc.Col(width="auto", children=[
                                     dbc.Button("CSV出力", id="btn_export_feature_lists",
-                                               size="sm", color="outline-success"),
+                                               size="sm", color="outline-success",
+                                               title="Feature リストを Feature,List 形式で書き出す"),
                                 ]),
                                 dbc.Col(width="auto", className="d-flex align-items-center", children=[
                                     html.Div(id="feature_lists_status"),
+                                ]),
+                            ]),
+                            # 検索駆動の作成（feature を検索して選び、リスト化）
+                            dbc.Row(className="g-1 align-items-end mb-1", children=[
+                                dbc.Col(width=6, children=[
+                                    dbc.Label("feature を検索して選択", className="small mb-0"),
+                                    dcc.Dropdown(id="feature_list_picker", multi=True,
+                                                 placeholder="m/z を入力して検索（例: 700.5）...",
+                                                 options=[]),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button("選択 feature でリスト作成",
+                                               id="btn_list_from_picker",
+                                               size="sm", color="primary"),
                                 ]),
                             ]),
                             dash_table.DataTable(
@@ -1461,6 +1492,11 @@ def create_interactive_tab():
                                                         value=True,
                                                     ),
                                                 ]),
+                                                dbc.Col(width="auto", children=[
+                                                    dbc.Button("リセット", id="volcano_reset",
+                                                               size="sm", color="outline-secondary",
+                                                               title="FC/p/Y軸上限を既定に戻す"),
+                                                ]),
                                             ]),
                                             # ハイライト行
                                             dbc.Row(className="mb-2 align-items-end", children=[
@@ -1566,8 +1602,9 @@ def create_interactive_tab():
                                                     ),
                                                 ]),
                                                 dbc.Col(width="auto", className="d-flex align-items-end", children=[
-                                                    dbc.Button("CSV 出力", id="btn_export_marker_table",
-                                                               size="sm", color="success", className="mb-1"),
+                                                    dbc.Button("CSV出力", id="btn_export_marker_table",
+                                                               size="sm", color="success", className="mb-1",
+                                                               title="マーカー表を現在の並び替え/絞り込みを反映して書き出す"),
                                                 ]),
                                                 dbc.Col(width="auto", className="d-flex align-items-center", children=[
                                                     dbc.FormText("現在の並び替え/絞り込みを反映"),
@@ -1640,8 +1677,9 @@ def create_interactive_tab():
                                                         value=50, clearable=False, style={"fontSize": "12px"}),
                                                 ]),
                                                 dbc.Col(width="auto", className="d-flex align-items-end", children=[
-                                                    dbc.Button("CSV 出力", id="btn_export_onthefly_de",
-                                                               size="sm", color="success", className="mb-1"),
+                                                    dbc.Button("CSV出力", id="btn_export_onthefly_de",
+                                                               size="sm", color="success", className="mb-1",
+                                                               title="選択 DE 結果を現在の並び替え/絞り込みを反映して書き出す"),
                                                 ]),
                                             ]),
                                             dcc.Loading(dcc.Graph(
@@ -1767,6 +1805,8 @@ def create_interactive_tab():
         # --- P3: 選択グループ用 ---
         dcc.Store(id="selection_groups_store", data={"groups": []}),
         dcc.Download(id="dl_selection_groups_csv"),
+        # 削除取り消し (Inc.1 Undo) 用に直前の削除グループを退避
+        dcc.Store(id="selection_groups_undo", data=None),
         # --- P5-b: Feature リスト用 ---
         dcc.Store(id="feature_lists_store", data={"lists": []}),
         dcc.Download(id="dl_feature_lists_csv"),

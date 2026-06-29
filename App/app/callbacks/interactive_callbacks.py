@@ -1122,3 +1122,5 @@ import app.callbacks.interactive_hne_bg  # noqa: F401  — registers H&E 背景�
 import app.callbacks.interactive_selection_groups  # noqa: F401  — registers 選択グループ callbacks
 import app.callbacks.interactive_feature_lists  # noqa: F401  — registers Feature リスト/共発現 callbacks
 import app.callbacks.interactive_reanalysis_bridge  # noqa: F401  — registers 再解析ブリッジ callbacks
+import app.callbacks.interactive_validation  # noqa: F401  — registers 入力バリデーション callbacks
+import app.callbacks.interactive_resets  # noqa: F401  — registers リセットボタン callbacks

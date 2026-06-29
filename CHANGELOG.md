@@ -12,6 +12,66 @@
 
 ---
 
+## 2026-06-28_ver26.1
+
+### 追加: Playwright 自動 E2E テスト基盤 (非機能改善 Inc.3, インフラ)
+
+ブラウザ自動操作でアプリの回帰を検知する E2E テスト基盤を追加（アプリ挙動の変更なし）。
+**Dash はコンポーネント `id` がそのまま安定セレクタ**（`#id`）なので testid 追加は不要。
+
+- `App/tests/e2e/conftest.py`：`run_app.py` を試験ポートで起動し `/healthz` 緑を待つ
+  `app_server` fixture と、`#analyst_name`+`#password` でログインしてアプリへ入る `page` fixture。
+  playwright/Chromium が無い環境では skip。版ズレ時は `PLAYWRIGHT_BROWSERS_PATH` 配下の既設
+  Chromium を `executable_path` で自動使用（`PW_CHROMIUM_PATH` で明示可）。
+- `test_smoke.py`（**データ不要**）：起動→ログイン成功→**今回追加した主要UI（選択統計/選択グループ/
+  選択DE/Featureリスト/共発現/H&E/Split View/リセット/Undo/検索picker/マーカー表）が DOM に存在**
+  することを検証（id 欠落の回帰を自動検知）。本環境で実際に緑を確認。
+- `test_interactive_data.py`（`@pytest.mark.requires_data`）：`E2E_RESULT_FOLDER` 指定時のみ
+  実 RDS を読み込み、クラスタ表示・選択グループ保存を検証。未指定なら skip。
+- `pyproject.toml`：`markers=[e2e, requires_data]`、optional-deps `e2e`（playwright/pytest-playwright）。
+- 実行例：`pytest -m e2e App/tests/e2e/test_smoke.py` / `E2E_RESULT_FOLDER=... pytest -m requires_data`。
+  version 26.0→26.1（インフラ・挙動不変）。
+
+---
+
+## 2026-06-28_ver26.0
+
+### 機能追加: 検索駆動の Feature リスト作成 + エクスポート文言統一 (非機能改善 Inc.2)
+
+Loupe 参考の“機能以外”改善 第2弾。既存挙動は不変（追加・文言整備）。
+
+- **検索駆動の Feature リスト作成**：feature を**検索して複数選択 → リスト化**（Loupe の
+  “探して追加”）。サーバ側検索は `interactive_deg.filter_features` と同型（`features_list` を
+  キーワード絞り込み、選択済みは表示維持、上限500件）。実 feature 名を使うので共発現で確実に一致。
+  既存の「絞り込み/ブックマーク/CSV」に**4つ目の作成手段**。
+- **エクスポート文言の統一**：CSV 出力ボタンの表記を「CSV出力」に統一し、各ボタンに
+  **書き出し対象を説明するツールチップ**を付与（マーカー表/選択DE/選択グループ/Feature リスト）。
+- **変更**：`callbacks/interactive_feature_lists.py`（picker 検索 + 作成）,
+  `layouts/interactive_tab.py`（picker + 文言/ツールチップ）。version 25.0→26.0。
+
+---
+
+## 2026-06-28_ver25.0
+
+### 機能追加: 入力バリデーション + リセット/Undo (非機能改善 Inc.1)
+
+Loupe 参考の“機能以外”の改善 第1弾。誤操作の低減と一貫性。既存挙動は不変（追加中心）。
+
+- **範囲バリデーション + インライン警告**：数値入力が有効範囲外だと**入力欄を赤く**する
+  （`dbc.Input.invalid`）。範囲は `app/utils/validation.py`（純関数 + 単体テスト14件）に一元管理。
+  対象: Volcano の FC/p/Y上限・heatmap Top N・選択DE の FC/p・Feature 強度 min/max(%)。
+  Loupe 既定（UMAP min_dist 0–1/既定0.1, n_neighbors≥2/既定15, perplexity≥1/既定30, PCA 10–100）も
+  PARAM_BOUNDS に収録（将来の再解析UI用）。
+- **リセット（“調整には必ずリセット”）**：Feature 配色（palette/log10/反転/強度範囲）・Volcano
+  閾値（FC/p/Y）・H&E オーバーレイ（透明度/サイズ）に「リセット」を追加（既定へ復帰）。
+- **Undo（削除の取り消し）**：選択グループ削除時に直前の削除分を退避し「削除を取り消す」で復元。
+- **新規**：`utils/validation.py`, `callbacks/interactive_validation.py`,
+  `callbacks/interactive_resets.py`, `tests/test_validation.py`。
+  変更: `interactive_selection_groups.py`（削除退避）, `interactive_tab.py`（リセット/取消ボタン+Store）。
+  version 24.0→25.0。
+
+---
+
 ## 2026-06-28_ver24.0
 
 ### 機能追加: Split View / Feature リスト+共発現 / 再解析ブリッジ (Phase 5)
