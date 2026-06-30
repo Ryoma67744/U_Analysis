@@ -112,7 +112,13 @@ markers$p_val_adj <- p.adjust(markers$p_val, method = "BH")
 markers$gene <- rownames(markers)
 markers$cluster <- cl_label
 
-want <- c("gene", "cluster", "p_val", "avg_log2FC", "pct.1", "pct.2", "p_val_adj")
+# pixel 単位の探索的ランキング（空間自己相関未補正・群間検定ではない）である旨を明記
+# （TIMS テンプレ markers_annotated.csv と同一の文言・列）。
+markers$ranking_type   <- "exploratory_pixel_level"
+markers$inference_note <- "Exploratory pixel-level ranking; spatial autocorrelation not modeled; NOT sample-level statistical inference"
+
+want <- c("gene", "cluster", "p_val", "avg_log2FC", "pct.1", "pct.2", "p_val_adj",
+          "ranking_type", "inference_note")
 want <- want[want %in% colnames(markers)]
 out <- markers[, want, drop = FALSE]
 
