@@ -63,6 +63,9 @@ def _empty_record(raw: str = "", is_hit: bool = False) -> dict:
         "extras": {},
         "raw": raw,
         "is_db_hit": is_hit,
+        # 由来（何で付けた注釈か）。SCiLS peak-list 由来はラボ内 "in-house"。
+        "source": "in-house" if is_hit else None,
+        "source_metrics": {},
     }
 
 
@@ -83,6 +86,7 @@ def parse_scils_name(name) -> dict:
     rec["compound"] = parts[0]
     if parts[0].lower() == _NO_DB_HIT:
         rec["is_db_hit"] = False
+        rec["source"] = None
 
     rest = parts[1:]
 
