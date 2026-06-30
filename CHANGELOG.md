@@ -12,6 +12,37 @@
 
 ---
 
+## 2026-06-30_ver33.0
+
+### 科学的信頼性の強化（MVP4: 計算・データ・記録の中核 + 注意書きの全面表示）
+
+評価レポート（`App/docs/EVALUATION_AND_ROADMAP_2026-06.md`）の「科学的信頼性を優先」方針に基づく
+最小実用アップグレード 4 項目の中核を実装。新規の重い依存は追加せず、既存資産を拡張する方針。
+詳細・残課題は `App/docs/MVP4_IMPLEMENTATION_STATUS.md` を参照。
+
+- **P1 アノテーション由来表示**：`services/annotation_sources.py` を新設。LC-MS/MS・METASPACE・MS-DIAL・
+  汎用表の取込、m/z 許容での feature 対応づけ、由来優先（LC/MS>METASPACE>MS-DIAL>in-house>manual）、
+  出典指標（FDR/MSM/score/RT）を**そのまま併記**する由来ラベル生成。`peak_annotation` に
+  `source`/`source_metrics` を追加（SCiLS 由来=in-house）。アプリ側で良し悪しは判定しない。
+- **P2 解析レシート**：`services/receipt.py` を新設。既存 `analysis_params.json` と R サイドカーを
+  1 つに集約し、機械可読 `receipt.json` と人可読 `RECEIPT.md` を出力（Process Run Crate 形）。
+  解析完了時に自動確定（`analysis_callbacks`）。`rds_io.R` に `write_receipt_sidecar()` を追加し、
+  R 版・seed・クラスタ/正規化/補正設定・主要パッケージ版を記録。
+- **P3 pixel↔sample 統計分離**：(c1) pixel-level 注意書きを **DESI テンプレ・オンザフライ DE・
+  DEG 画面・共有画面・PPTX** に展開（これまで TIMS のみ）。出典は `services/caveats.py` に一元化。
+  (c2) `services/spatial_stats.py`：feature ごとの Moran's I（numpy）。
+  (c3) `services/pseudobulk.py`：ROI/サンプル集約 + Welch t による sample-level 比較（反復不足時は記述のみ）。
+- **P4 UMAP/クラスタ安定性**：`services/stability.py`（ARI/Jaccard/silhouette/trustworthiness/旗）、
+  `services/stability_runner.py` と `Script/helpers/stability_diagnostics.R`（複数 seed 再クラスタリング）。
+- **テスト**：新規 7 モジュールに単体テスト計 ~60 件を追加（`pytest -m "not e2e"` 全 395 件パス）。
+- version 32.1→33.0。
+
+> 注: 計算・データ・記録の中核とテスト、注意書きの UI 表示は実装済み。アノテーション由来の
+> 表示パネル/取込 UI、Moran's I・pseudobulk・安定性の結果パネル、レシート閲覧 UI など
+> 一部の対話 UI 配線は、R + 稼働 Dash 環境での検証を伴う後続作業として残している。
+
+---
+
 ## 2026-06-29_ver32.1
 
 ### 後片付け: 旧モジュールの物理削除 + 解析画面ヘルプの更新

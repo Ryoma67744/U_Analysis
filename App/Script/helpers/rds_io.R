@@ -178,3 +178,64 @@ load_rds_compact <- function(path, ensure_scale = FALSE) {
     obj
   })
 }
+
+# ---- 解析レシート用 R サイドカー -------------------------------------------
+#  Python 側 receipt.py が読み込む analysis_receipt_r.json を結果フォルダへ書く。
+#  R 版・乱数 seed・クラスタ/正規化/補正設定・主要パッケージ版を残す。
+#  防御的に実装（変数は get0 で探索、出力先も既知の候補名から自動探索）し、
+#  失敗しても解析本体を壊さない。呼び出しは try(write_receipt_sidecar()) 推奨。
+write_receipt_sidecar <- function(output_dir = NULL) {
+  g <- function(name, default = NULL) {
+    v <- tryCatch(get0(name, envir = .GlobalEnv, inherits = TRUE),
+                  error = function(e) NULL)
+    if (is.null(v)) default else v
+  }
+  if (is.null(output_dir) || !nzchar(as.character(output_dir)[1])) {
+    for (nm in c("OUTPUT_DIR", "V13_OUTPUT_DIR", "V8_OUTPUT_DIR",
+                 "EXPORT_DATA_DIR", "EXPORT_TXT_DIR", "od")) {
+      cand <- g(nm)
+      if (!is.null(cand) && nzchar(as.character(cand)[1])) { output_dir <- cand; break }
+    }
+  }
+  if (is.null(output_dir) || !nzchar(as.character(output_dir)[1])) return(invisible(NULL))
+  if (!requireNamespace("jsonlite", quietly = TRUE)) return(invisible(NULL))
+
+  pkgs <- c("Seurat", "Matrix", "harmony", "dbscan", "leiden", "leidenbase",
+            "uwot", "data.table", "arrow", "qs", "presto", "aricode")
+  pv <- list()
+  for (p in pkgs) {
+    v <- tryCatch(as.character(utils::packageVersion(p)),
+                  error = function(e) NA_character_)
+    if (!is.na(v)) pv[[p]] <- v
+  }
+  alg <- g("CLUSTER_ALGORITHM")
+  alg_name <- if (is.null(alg)) {
+    if (!is.null(g("DBSCAN_EPS")) || !is.null(g("DBSCAN_MINPTS"))) "dbscan" else NULL
+  } else {
+    switch(as.character(alg)[1], "1" = "louvain", "2" = "louvain_multilevel",
+           "3" = "slm", "4" = "leiden", paste0("algorithm_", alg))
+  }
+  threads <- suppressWarnings(as.integer(Sys.getenv("OMP_NUM_THREADS", "")))
+  if (length(threads) == 0 || is.na(threads)) threads <- NULL
+
+  info <- list(
+    r_version             = paste(R.version$major, R.version$minor, sep = "."),
+    seed                  = g("GLOBAL_RANDOM_SEED", g("UMAP_SEED", g("RANDOM_SEED"))),
+    clustering_algorithm  = alg_name,
+    clustering_resolution = g("CLUSTER_RESOLUTION"),
+    clustering_k          = g("CLUSTER_K_PARAM"),
+    norm_mode             = g("NORM_MODE"),
+    input_normalized      = g("INPUT_NORMALIZED"),
+    batch_correction      = g("ANALYSIS_METHOD", g("BATCH_VAR")),
+    threads               = threads,
+    package_versions      = pv,
+    written_at            = format(Sys.time(), "%Y-%m-%dT%H:%M:%S")
+  )
+  fp <- file.path(output_dir, "analysis_receipt_r.json")
+  tryCatch(
+    jsonlite::write_json(info, fp, auto_unbox = TRUE, null = "null", pretty = TRUE),
+    error = function(e) message("[rds_io] receipt sidecar write failed: ",
+                                conditionMessage(e))
+  )
+  invisible(fp)
+}

@@ -29,6 +29,8 @@ from app.services.analysis_runner import (
 from app.services.session_manager import save_last_settings
 from app.services.project_manager import save_sub_project_settings, save_sub_project_result_dir, update_sub_project
 from app.services.notify import warn_user
+from app.services import receipt as _receipt
+from app.version import version_label
 
 
 # 解析シナリオ → 補正ポリシー (ANNOTATION_ROLE, BATCH_VAR, ALLOW_CONDITION_CORRECTION)。
@@ -1029,6 +1031,18 @@ def update_progress(n_intervals, app_state, log_search, log_level, log_lines_cou
                     update_sub_project(proj_id, sub_id, {"data_folder": data_folder})
             except Exception as e:
                 warn_user(f"結果ディレクトリの保存に失敗: {e}")
+
+            # 解析レシートを確定（analysis_params.json + R サイドカーを 1 つに集約）。
+            # 失敗しても解析完了表示は壊さない。
+            try:
+                if output_dir:
+                    _receipt.finalize_receipt(
+                        output_dir,
+                        app_version=version_label(),
+                        ended_at=datetime.now().isoformat(),
+                    )
+            except Exception as e:
+                warn_user(f"解析レシートの作成に失敗: {e}")
         else:
             msg = "解析でエラーが発生しました"
             section_text = f"出力: {file_count} ファイル | ❌ エラー ({step_current}/{step_total}) | {elapsed_text}"

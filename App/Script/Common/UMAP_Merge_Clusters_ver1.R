@@ -469,3 +469,6 @@ result_seu <- merge_clusters(
 )
 
 message(">> [Merge] Script complete.")
+
+# --- 解析レシート: R サイドカー出力（rds_io.R で定義、防御的・失敗しても無害）---
+if (exists("write_receipt_sidecar")) try(write_receipt_sidecar(), silent = TRUE)

@@ -134,6 +134,9 @@ def filter_feature_list_picker(search_value, rds_path, current):
     _set_active_key(rds_path)
     features = _interactive_data.get("features_list") or []
     current = [str(c) for c in (current or [])]
+    # FUTURE(annot-provenance): 将来「由来表示」を足す場合、ここの label に
+    #   app/services/annotation_sources.format_annotation_label() で由来（source）を併記する想定。
+    #   取込設計が未確定のため現状は変更なし。詳細: App/docs/MVP4_IMPLEMENTATION_STATUS.md
     base = [{"label": c, "value": c} for c in current]  # 選択済みは表示維持
     if not search_value:
         return base[:500]

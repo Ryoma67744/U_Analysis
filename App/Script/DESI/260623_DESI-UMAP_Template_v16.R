@@ -2329,6 +2329,9 @@ if ((.stage_downstream && .has_single) || (!.stage_downstream && length(seu_list
       deg_markers$p_val_adj[deg_markers$p_val_adj == 0] <- .Machine$double.xmin
     }
   }
+  # pixel 単位の探索的ランキング（空間自己相関未補正・群間検定ではない）である旨を明記
+  deg_markers$ranking_type   <- "exploratory_pixel_level"
+  deg_markers$inference_note <- "Exploratory pixel-level ranking; spatial autocorrelation not modeled; NOT sample-level statistical inference"
   write.csv(deg_markers, file.path(od_pca, "analysis_deg_all_markers_single.csv"), row.names = FALSE)
   
   top5_markers <- deg_markers %>% dplyr::group_by(cluster) %>% dplyr::top_n(n = 5, wt = avg_log2FC)
@@ -2633,6 +2636,9 @@ if ((.stage_downstream && .has_single) || (!.stage_downstream && length(seu_list
   } else {
     # BH/FDR補正に置換（Seuratデフォルトの Bonferroni は探索的解析に保守的すぎるため）
     deg_markers_harmony$p_val_adj <- p.adjust(deg_markers_harmony$p_val, method = "BH")
+    # pixel 単位の探索的ランキング（空間自己相関未補正・群間検定ではない）である旨を明記
+    deg_markers_harmony$ranking_type   <- "exploratory_pixel_level"
+    deg_markers_harmony$inference_note <- "Exploratory pixel-level ranking; spatial autocorrelation not modeled; NOT sample-level statistical inference"
     write.csv(deg_markers_harmony, file.path(od_harmony, "analysis_deg_all_markers_harmony.csv"), row.names = FALSE)
     
     top5_markers_harmony <- deg_markers_harmony %>% dplyr::group_by(cluster) %>% dplyr::top_n(n = 5, wt = avg_log2FC)
@@ -2904,6 +2910,9 @@ dims_use_rpca <- get_safe_dims_for_rpca(seu_list_pca, max_dims = 30, reduction =
         # ggsave(file.path(od,"analysis_heatmap_top5_markers_rpca.png"), heatmap1, width = 12, height = 8, dpi = 300)
       }
     }
+    # pixel 単位の探索的ランキング（空間自己相関未補正・群間検定ではない）である旨を明記
+    deg_markers$ranking_type   <- "exploratory_pixel_level"
+    deg_markers$inference_note <- "Exploratory pixel-level ranking; spatial autocorrelation not modeled; NOT sample-level statistical inference"
     write.csv(deg_markers, file.path(od_rpca, "analysis_deg_all_markers.csv"), row.names = FALSE)
     write.csv(top5_markers, file.path(od_rpca, "analysis_top5_markers_per_cluster.csv"), row.names = FALSE)
 
@@ -2929,3 +2938,6 @@ for (rp in c(rds_path1_out, rds_path2_out)) {
 
 # ---- 並列化終了: sequential に戻す ----
 plan(sequential)
+
+# --- 解析レシート: R サイドカー出力（rds_io.R で定義、防御的・失敗しても無害）---
+if (exists("write_receipt_sidecar")) try(write_receipt_sidecar(), silent = TRUE)

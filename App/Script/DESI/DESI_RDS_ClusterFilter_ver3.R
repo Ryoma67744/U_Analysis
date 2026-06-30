@@ -532,3 +532,6 @@ if (.should_merge && nzchar(MERGE_SCRIPT_PATH) && file.exists(MERGE_SCRIPT_PATH)
 }
 
 message(">> Done.")
+
+# --- 解析レシート: R サイドカー出力（rds_io.R で定義、防御的・失敗しても無害）---
+if (exists("write_receipt_sidecar")) try(write_receipt_sidecar(), silent = TRUE)

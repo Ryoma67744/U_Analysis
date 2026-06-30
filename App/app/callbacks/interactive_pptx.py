@@ -20,6 +20,7 @@ from dash import (Input, Output, State, callback, dcc, no_update)
 from dash.exceptions import PreventUpdate
 
 from app.services.seurat_bridge import SeuratBridge
+from app.services.caveats import banner_text as _caveat_banner
 from app.utils.color_utils import (
     cluster_sort_key as _cluster_sort_key,
     get_cluster_color_map as _get_cluster_color_map,
@@ -189,6 +190,9 @@ def _build_feature_plot_fig(df, feature_name, cache_dir_path, rds_path,
             marker=marker_opts, showlegend=False,
         ), row=1, col=idx)
 
+    # FUTURE(annot-provenance): 将来「由来表示」を足す場合、feature タイトルに
+    #   app/services/annotation_sources.format_annotation_label() で由来（source）を併記する想定。
+    #   取込設計が未確定のため現状は変更なし。詳細: App/docs/MVP4_IMPLEMENTATION_STATUS.md
     fig.update_layout(
         title=dict(text=feature_name, font=dict(size=20), x=0.5),
         plot_bgcolor="white", paper_bgcolor="white",
@@ -300,7 +304,13 @@ def _build_volcano_fig_for_cluster(deg_data, cluster, fc_thresh=0.5, p_thresh=1.
         xaxis_title="avg_log2FC",
         yaxis_title="-log10(p_val_adj)",
         template="plotly_white",
-        margin=dict(l=50, r=20, t=40, b=40),
+        margin=dict(l=50, r=20, t=40, b=58),
+    )
+    # pixel-level 探索的ランキングである旨を図にも明記（PPTX/共有図に注意書きを残す）
+    fig.add_annotation(
+        text=_caveat_banner("en", short=True), showarrow=False,
+        xref="paper", yref="paper", x=0.5, y=-0.16, xanchor="center",
+        font=dict(size=10, color="#a15c00"),
     )
     return fig
 

@@ -6,6 +6,8 @@
 from dash import html, dcc, dash_table
 import dash_bootstrap_components as dbc
 
+from app.services.caveats import banner_text as _caveat_banner
+
 
 def create_shared_view_layout():
     """共有リンクからアクセスした際の読み取り専用ページ"""
@@ -245,6 +247,8 @@ def create_shared_view_layout():
                             # --- DEG 結果 ---
                             html.Div(id="sv_deg_section", style={"display": "none"},
                                      children=[
+                                dbc.Alert(_caveat_banner("ja"), color="warning",
+                                          className="py-2 mb-2 small"),
                                 # Volcano Plot（クラスタ選択 + ホバーで化合物名表示）
                                 html.Div(className="card mb-3", children=[
                                     html.H5("Volcano Plot"),
