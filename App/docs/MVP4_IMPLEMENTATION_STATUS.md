@@ -32,6 +32,9 @@ R スクリプトと Dash 配線は静的レビュー＋インポート確認に
   サイドカー JSON に保存し、DEG 表（`utils/deg_utils.standardize_deg_df` + `interactive_tab` の DataTable に
   `source` 列）、feature ピッカー（`interactive_feature_lists.py`）、Volcano ラベル（`interactive_deg.py`）で併記。
   取込モーダルは `scils_converter_modal.py` を雛形に。
+  **コード上の配線点には開発者向けヒントを設置済み**：`grep -rn "FUTURE(annot-provenance)" App/app` で一覧可。
+  各ヒントは「現状は変更なし・取込設計は未確定」と明記し、使う関数（`build_feature_source_map()` /
+  `format_annotation_label()`）を指す。
 - **P2 レシート閲覧 UI**：結果画面に `RECEIPT.md`/`receipt.json` の表示と DL（`results_viewer.py` を再利用）。
 - **P3-c2/c3 結果パネル**：`spatial_stats.spatial_autocorr_table()` と `pseudobulk` の結果を出す新パネル
   （`interactive_tab.py` のアコーディオン節 + 新コールバック）。入力は `seurat_bridge.get_features_matrix()` と

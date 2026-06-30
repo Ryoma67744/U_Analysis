@@ -263,6 +263,10 @@ def _build_feature_annotation_map(
             if gene and _is_meaningful_annotation(ann, gene):
                 result[gene] = ann
 
+    # FUTURE(annot-provenance): 将来「由来表示」を足す場合、ここで CSV/DEG に加えて
+    #   外部由来（LC-MS/MS・METASPACE・MS-DIAL）を app/services/annotation_sources で
+    #   取り込み・対応づけし、由来付きラベル（例 "ATP (METASPACE, FDR=10%)"）に統合する想定。
+    #   取込設計が未確定のため現状は変更なし。詳細: App/docs/MVP4_IMPLEMENTATION_STATUS.md
     return result
 
 

@@ -10,6 +10,19 @@
 #
 # 依存は pandas/numpy のみ。重い外部依存（metaspace2020 クライアント等）は持たない
 # （将来 API 直結する場合も、本モジュールの正規化レコードに合わせて橋渡しする）。
+#
+# FUTURE(annot-provenance) — STATUS: 本モジュールは「エンジン」のみ実装＆単体テスト済みで、
+#   現状どの UI／コールバック／アップロード経路にも未接続（＝アプリの挙動・画面は不変）。
+#   取込の設計が固まり次第、build_feature_source_map() / format_annotation_label() を使って
+#   各表示箇所に「由来(source)」を併記する想定。配線先は次を grep:  FUTURE(annot-provenance)
+#     - app/utils/deg_utils.py（DEG 表に source 列）
+#     - app/callbacks/interactive_calibration.py（外部由来の統合）
+#     - app/callbacks/interactive_feature_lists.py（feature ピッカーのラベル）
+#     - app/callbacks/interactive_deg.py（Volcano ラベル）
+#     - app/callbacks/interactive_pptx.py（feature/Volcano タイトル）
+#     - app/services/feature_lists.py（feature→由来サマリのサイドカー保存）
+#     - app/layouts/interactive_tab.py（DEG 表 UI に 由来 列）
+#   詳細・残課題: App/docs/MVP4_IMPLEMENTATION_STATUS.md
 # =============================================================================
 
 from __future__ import annotations

@@ -155,6 +155,9 @@ def save_lists(rds_path, state) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         lock = get_or_create_lock(path)
         with lock:
+            # FUTURE(annot-provenance): feature→由来サマリ（annotation_sources.build_feature_source_map()
+            #   の出力）を、この RDS 隣サイドカー（同じアトミック書込）に併せて保存する想定。
+            #   取込設計が未確定のため現状は変更なし。詳細: App/docs/MVP4_IMPLEMENTATION_STATUS.md
             data = {"lists": (state or {}).get("lists", []),
                     "_saved_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")}
             _atomic_write_json(path, data)

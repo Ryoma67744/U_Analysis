@@ -190,6 +190,9 @@ def _build_feature_plot_fig(df, feature_name, cache_dir_path, rds_path,
             marker=marker_opts, showlegend=False,
         ), row=1, col=idx)
 
+    # FUTURE(annot-provenance): 将来「由来表示」を足す場合、feature タイトルに
+    #   app/services/annotation_sources.format_annotation_label() で由来（source）を併記する想定。
+    #   取込設計が未確定のため現状は変更なし。詳細: App/docs/MVP4_IMPLEMENTATION_STATUS.md
     fig.update_layout(
         title=dict(text=feature_name, font=dict(size=20), x=0.5),
         plot_bgcolor="white", paper_bgcolor="white",

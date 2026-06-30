@@ -68,6 +68,9 @@ def filter_features(search_value, filter_mode, cluster_filter,
 
     # annotation マッピングは load_interactive_data / m/z キャリブで既に
     # DEG マージ済みのため、ここでは直接参照のみ（検索のたびの再構築を回避）
+    # FUTURE(annot-provenance): 将来「由来表示」を足す場合、ann_map のラベルに
+    #   app/services/annotation_sources.format_annotation_label() で由来（source）を併記する想定
+    #   （例 "ATP (METASPACE, FDR=10%)"）。取込設計が未確定のため現状は変更なし。
     ann_map = _interactive_data.get("annotation_map") or {}
 
     def _make_option(f, rank=None):

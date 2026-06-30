@@ -1463,6 +1463,10 @@ def create_interactive_tab():
 
                         # --- DEG マーカー ---
                         dbc.AccordionItem(title="DEG マーカー", item_id="acc_deg", className="accordion-deg", children=[
+                            # FUTURE(annot-provenance): 将来「由来表示」を足す場合、下のマーカー表 DataTable に
+                            #   "由来(source)" 列を追加する想定（データは app/services/annotation_sources、
+                            #   表整形は app/utils/deg_utils.standardize_deg_df を参照）。
+                            #   取込設計が未確定のため現状は変更なし。詳細: App/docs/MVP4_IMPLEMENTATION_STATUS.md
                             dbc.Alert(
                                 _caveat_banner("ja"),
                                 color="warning", className="py-2 mb-2 small",
