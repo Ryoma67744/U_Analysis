@@ -9,6 +9,7 @@ import dash_bootstrap_components as dbc
 from app.config import EDIT_LOCK_HEARTBEAT_INTERVAL_SEC
 from app.layouts.tooltips import help_badge
 from app.services.session_manager import load_last_settings
+from app.services.caveats import banner_text as _caveat_banner
 
 
 
@@ -1462,6 +1463,11 @@ def create_interactive_tab():
 
                         # --- DEG マーカー ---
                         dbc.AccordionItem(title="DEG マーカー", item_id="acc_deg", className="accordion-deg", children=[
+                            dbc.Alert(
+                                _caveat_banner("ja"),
+                                color="warning", className="py-2 mb-2 small",
+                                id="deg_pixel_level_caveat",
+                            ),
                             html.Div(
                                 id="deg_results_section",
                                 style={"display": "none"},
