@@ -48,6 +48,7 @@ from app.utils.pptx_helpers import (
     pptx_add_sections as _pptx_add_sections,
     RenderQueue as _RenderQueue,
 )
+from app.utils import raster as _raster
 
 # 共有状態・ヘルパーを分離モジュールから参照
 from app.callbacks.interactive_callbacks import (
@@ -126,6 +127,7 @@ def _build_feature_plot_fig(df, feature_name, cache_dir_path, rds_path,
     global_min = float(np.nanmin(expr_vals))
     global_max = float(np.nanmax(expr_vals))
 
+    use_raster = _raster.raster_enabled()
     for idx, s in enumerate(samples, 1):
         df_s = df_plot[df_plot["Sample"] == s]
         transform = rotation_store.get(
@@ -141,6 +143,27 @@ def _build_feature_plot_fig(df, feature_name, cache_dir_path, rds_path,
             flip_h=transform.get("flip_h", False),
             flip_v=transform.get("flip_v", False),
         )
+
+        # === ラスター経路（規則グリッドを go.Heatmap 化して kaleido を高速化）===
+        # 座標つき Heatmap のため既存の軸設定（scaleanchor 等）をそのまま活かせる。
+        if use_raster:
+            _res = _raster.bin_to_grid(
+                plot_x, plot_y, df_s["_expression"].values, agg="mean")
+            if _res is not None:
+                _z, _xc, _yc = _res
+                _show_scale = (idx == n_samples) and show_colorbar
+                _cb = None
+                if _show_scale:
+                    _cb = dict(len=0.8, thickness=15,
+                               tickvals=[global_min, global_max],
+                               ticktext=["0%", "100%"])
+                    if show_colorbar_title:
+                        _cb["title"] = "Intensity"
+                fig.add_trace(_raster.heatmap_trace(
+                    _z, _xc, _yc, "Plasma", global_min, global_max,
+                    showscale=_show_scale, colorbar=_cb,
+                ), row=1, col=idx)
+                continue  # 散布経路をスキップ
 
         # サンプル別マーカーサイズ自動計算
         ms = marker_size
@@ -589,6 +612,18 @@ def _build_cluster_slide_combined_fig(
         horizontal_spacing=0.03,
     )
 
+    use_raster = _raster.raster_enabled()
+    # UMAP ラスター化時の共通座標系（範囲指定が無ければデータ範囲）
+    if umap_xrange:
+        _ux = umap_xrange
+    else:
+        _ux = (float(np.nanmin(df["UMAP_1"])), float(np.nanmax(df["UMAP_1"])))
+    if umap_yrange:
+        _uy = umap_yrange
+    else:
+        _uy = (float(np.nanmin(df["UMAP_2"])), float(np.nanmax(df["UMAP_2"])))
+    _bg_gray = "rgb(225,225,225)"
+
     for idx, s in enumerate(samples):
         df_s = df[df["Sample"] == s].copy()
         col = idx + 1
@@ -596,25 +631,50 @@ def _build_cluster_slide_combined_fig(
         bg_df = df_s[~cl_mask]
         hl_df = df_s[cl_mask]
 
-        # === Row 1: UMAP ===
-        if len(bg_df) > 0:
-            fig.add_trace(go.Scattergl(
-                x=bg_df["UMAP_1"], y=bg_df["UMAP_2"],
-                mode="markers",
-                marker=dict(color="lightgray", size=2, opacity=0.8),
-                name="Unselected", legendgroup="bg",
-                showlegend=(idx == 0),
-                hoverinfo="skip",
-            ), row=1, col=col)
-        if len(hl_df) > 0:
-            fig.add_trace(go.Scattergl(
-                x=hl_df["UMAP_1"], y=hl_df["UMAP_2"],
-                mode="markers",
-                marker=dict(color=cl_color, size=2),
-                name=cl_name, legendgroup="hl",
-                showlegend=(idx == 0),
-                hoverinfo="skip",
-            ), row=1, col=col)
+        # === Row 1: UMAP ===（ラスター: 2D ヒストグラム → go.Heatmap）
+        umap_done = False
+        if use_raster and len(df_s) > 0:
+            _ucat = np.where(cl_mask.values, 1.0, 0.0)  # bg=0, hl=1（hl 前面）
+            _ures = _raster.umap_hist_grid(
+                df_s["UMAP_1"].values, df_s["UMAP_2"].values, _ucat, _ux, _uy)
+            if _ures is not None:
+                _uz, _uxc, _uyc = _ures
+                _ucs, _uzmin, _uzmax = _raster.build_discrete_colorscale(
+                    [_bg_gray, cl_color])
+                fig.add_trace(_raster.heatmap_trace(
+                    _uz, _uxc, _uyc, _ucs, _uzmin, _uzmax, showscale=False),
+                    row=1, col=col)
+                if idx == 0:  # 凡例は不可視ダミーで維持
+                    fig.add_trace(go.Scatter(
+                        x=[None], y=[None], mode="markers",
+                        marker=dict(color="lightgray", size=8),
+                        name="Unselected", legendgroup="bg",
+                        showlegend=True, hoverinfo="skip"), row=1, col=col)
+                    fig.add_trace(go.Scatter(
+                        x=[None], y=[None], mode="markers",
+                        marker=dict(color=cl_color, size=8),
+                        name=cl_name, legendgroup="hl",
+                        showlegend=True, hoverinfo="skip"), row=1, col=col)
+                umap_done = True
+        if not umap_done:
+            if len(bg_df) > 0:
+                fig.add_trace(go.Scattergl(
+                    x=bg_df["UMAP_1"], y=bg_df["UMAP_2"],
+                    mode="markers",
+                    marker=dict(color="lightgray", size=2, opacity=0.8),
+                    name="Unselected", legendgroup="bg",
+                    showlegend=(idx == 0),
+                    hoverinfo="skip",
+                ), row=1, col=col)
+            if len(hl_df) > 0:
+                fig.add_trace(go.Scattergl(
+                    x=hl_df["UMAP_1"], y=hl_df["UMAP_2"],
+                    mode="markers",
+                    marker=dict(color=cl_color, size=2),
+                    name=cl_name, legendgroup="hl",
+                    showlegend=(idx == 0),
+                    hoverinfo="skip",
+                ), row=1, col=col)
 
         # === Row 2: Spatial ===
         if "SpatialX" not in df_s.columns:
@@ -632,39 +692,57 @@ def _build_cluster_slide_combined_fig(
             transform.get("angle", 0),
             flip_h=transform.get("flip_h", False),
             flip_v=transform.get("flip_v", False))
-        msize = _calc_zero_gap_marker_size(tx, ty, render_height=300)
         bg_mask_arr = (~cl_mask).values
         hl_mask_arr = cl_mask.values
 
-        # TIC background (Greys)
-        if bg_mask_arr.any():
-            if "TotalCount" in df_s.columns and df_s["TotalCount"].notna().any():
+        # ラスター経路（規則グリッド → go.Heatmap, 背景灰 + highlight 色）
+        spatial_done = False
+        if use_raster:
+            _gi = _raster.grid_index(tx, ty)
+            if _gi is not None:
+                _six, _siy, _sxc, _syc = _gi
+                _sz = np.full((len(_syc), len(_sxc)), np.nan, dtype=float)
+                if bg_mask_arr.any():
+                    _sz[_siy[bg_mask_arr], _six[bg_mask_arr]] = 0.0
+                if hl_mask_arr.any():
+                    _sz[_siy[hl_mask_arr], _six[hl_mask_arr]] = 1.0
+                _scs, _szmin, _szmax = _raster.build_discrete_colorscale(
+                    [_bg_gray, cl_color])
+                fig.add_trace(_raster.heatmap_trace(
+                    _sz, _sxc, _syc, _scs, _szmin, _szmax, showscale=False),
+                    row=2, col=col)
+                spatial_done = True
+        if not spatial_done:
+            msize = _calc_zero_gap_marker_size(tx, ty, render_height=300)
+            # TIC background (Greys)
+            if bg_mask_arr.any():
+                if "TotalCount" in df_s.columns and df_s["TotalCount"].notna().any():
+                    fig.add_trace(go.Scattergl(
+                        x=tx[bg_mask_arr], y=ty[bg_mask_arr],
+                        mode="markers",
+                        marker=dict(
+                            color=df_s["TotalCount"].values[bg_mask_arr],
+                            colorscale="Greys", size=msize,
+                            symbol="square", opacity=0.5, showscale=False),
+                        showlegend=False, hoverinfo="skip",
+                    ), row=2, col=col)
+                else:
+                    fig.add_trace(go.Scattergl(
+                        x=tx[bg_mask_arr], y=ty[bg_mask_arr],
+                        mode="markers",
+                        marker=dict(color="lightgray", size=msize,
+                                    symbol="square", opacity=0.2),
+                        showlegend=False, hoverinfo="skip",
+                    ), row=2, col=col)
+            # Highlighted cluster
+            if hl_mask_arr.any():
                 fig.add_trace(go.Scattergl(
-                    x=tx[bg_mask_arr], y=ty[bg_mask_arr],
+                    x=tx[hl_mask_arr], y=ty[hl_mask_arr],
                     mode="markers",
-                    marker=dict(
-                        color=df_s["TotalCount"].values[bg_mask_arr],
-                        colorscale="Greys", size=msize,
-                        symbol="square", opacity=0.5, showscale=False),
+                    marker=dict(color=cl_color, size=msize,
+                                symbol="square"),
                     showlegend=False, hoverinfo="skip",
                 ), row=2, col=col)
-            else:
-                fig.add_trace(go.Scattergl(
-                    x=tx[bg_mask_arr], y=ty[bg_mask_arr],
-                    mode="markers",
-                    marker=dict(color="lightgray", size=msize,
-                                symbol="square", opacity=0.2),
-                    showlegend=False, hoverinfo="skip",
-                ), row=2, col=col)
-        # Highlighted cluster
-        if hl_mask_arr.any():
-            fig.add_trace(go.Scattergl(
-                x=tx[hl_mask_arr], y=ty[hl_mask_arr],
-                mode="markers",
-                marker=dict(color=cl_color, size=msize,
-                            symbol="square"),
-                showlegend=False, hoverinfo="skip",
-            ), row=2, col=col)
 
     # === Axes configuration ===
     for i in range(1, n + 1):
