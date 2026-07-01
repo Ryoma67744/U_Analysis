@@ -71,6 +71,9 @@ services:
     # （swap=40-12=28GB まで利用可。ホストに 32GB swap がある前提）
     memswap_limit: 40g
     cpus: '6'
+    # ヘッドレス Chromium (kaleido) は共有メモリを使う。既定 64MB では PPTX 画像描画が
+    # 不安定になり得るため拡張する（--disable-dev-shm-usage 併用でも安全側）。
+    shm_size: '1gb'
 
 volumes:
   msi-sessions:

@@ -640,7 +640,7 @@ class SeuratBridge:
         if sidecar is None:
             return {}
         try:
-            from app.utils.deg_utils import _extract_mz_numeric
+            from app.utils.deg_utils import extract_mz_numeric as _extract_mz_numeric
             side = pd.read_parquet(sidecar)
             side_mz = side["mz"].to_numpy(dtype=float)
             out: dict = {}

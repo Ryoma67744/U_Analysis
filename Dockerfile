@@ -10,6 +10,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# kaleido(0.2.1) が同梱するヘッドレス Chromium のランタイム依存 (Ubuntu Noble)。
+# ヘッドレスでも NSS/GBM/フォント等が必要。欠けると PPTX 用の画像描画が失敗/停止し得る。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnss3 libnspr4 libgbm1 libdrm2 libxkbcommon0 \
+    libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libxext6 libxcb1 \
+    libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 \
+    libcups2t64 libasound2t64 libpango-1.0-0 libcairo2 \
+    fonts-liberation fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+
 # 非rootユーザー作成
 RUN useradd -m -s /bin/bash msiapp
 
