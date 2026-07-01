@@ -447,3 +447,71 @@ def get_top_n_features_for_cluster(
             down_records.append(r)
 
     return _extract_top_n(up_records, n), _extract_top_n(down_records, n)
+
+
+def build_marker_rows(clusters, deg_data, top_n: int = 5,
+                      mz_to_compound: dict | None = None,
+                      cluster_name_map: dict | None = None):
+    """DEG 非選択時の marker 集約表の (headers, rows) を返す（描画非依存の純ロジック）。
+
+    列: クラスタ / m/z / 化合物名 / 方向(▲Up/▼Down) / log2FC / 調整p値。
+    化合物名は annotation（意味あり）→ mz_to_compound の近傍一致(±0.1)→ 空欄 の順。
+    """
+    headers = ["クラスタ", "m/z", "化合物名", "方向", "log2FC", "調整p値"]
+    deg_data = deg_data or []
+    name_map = cluster_name_map or {}
+    mz_to_compound = mz_to_compound or {}
+
+    gene_ann, rec_by = {}, {}
+    for r in deg_data:
+        g = str(r.get("gene", ""))
+        a = r.get("annotation", "")
+        if g and is_meaningful_annotation(a, g):
+            gene_ann[g] = a
+        rec_by[(str(r.get("cluster", "")), g)] = r
+
+    def _mz(feat):
+        try:
+            v = extract_mz_numeric(feat)
+            if v is None or v != v or v == float("inf"):
+                return None
+            return float(v)
+        except Exception:
+            return None
+
+    def _compound(gene):
+        if gene in gene_ann:
+            return gene_ann[gene]
+        mz = _mz(gene)
+        if mz is not None and mz_to_compound:
+            best, bestd = "", 0.1
+            for k, nm in mz_to_compound.items():
+                try:
+                    d = abs(float(k) - mz)
+                except (ValueError, TypeError):
+                    continue
+                if d <= bestd:
+                    bestd, best = d, nm
+            return best
+        return ""
+
+    def _fmt(v):
+        try:
+            return f"{float(v):.3g}"
+        except (ValueError, TypeError):
+            return "" if v in (None, "") else str(v)
+
+    rows = []
+    for cl in clusters:
+        cl_str = str(cl)
+        cl_label = str(name_map.get(cl_str, cl_str))
+        up_f, down_f = get_top_n_features_for_cluster(deg_data, cl_str, n=top_n)
+        for direction, feats in (("▲Up", up_f), ("▼Down", down_f)):
+            for feat in feats:
+                rec = rec_by.get((cl_str, str(feat)), {})
+                mz = _mz(feat)
+                mz_s = f"{mz:.4f}" if mz is not None else str(feat)
+                rows.append([cl_label, mz_s, _compound(feat), direction,
+                             _fmt(rec.get("avg_log2FC", "")),
+                             str(rec.get("p_val_adj", ""))])
+    return headers, rows

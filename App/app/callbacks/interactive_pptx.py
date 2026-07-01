@@ -781,21 +781,89 @@ def _build_cluster_slide_combined_fig(
     return fig
 
 
+def _build_marker_table_slides(prs, clusters, deg_data, top_n, mrm_path=None,
+                               cluster_name_map=None, rows_per_slide=18):
+    """DEG 非選択時: 全クラスタの上位 marker を集約した表スライドを追加する。
+
+    列: クラスタ / m/z / 化合物名 / 方向(▲Up/▼Down) / log2FC / 調整p値。
+    行数が rows_per_slide を超えると複数スライドへ自動改ページ（ヘッダー再掲）。
+    化合物名は annotation（意味あり）→ MRM 近傍一致 → 空欄 の順でフォールバック。
+    """
+    from pptx.util import Inches, Pt
+    from pptx.dml.color import RGBColor
+    from app.utils.deg_utils import build_marker_rows
+
+    # MRM フォールバック用 {mz: 化合物名}
+    mz_to_comp = {}
+    if mrm_path:
+        try:
+            mz_to_comp = _build_mz_to_compound_map(mrm_path, tolerance=0.1) or {}
+        except Exception:
+            mz_to_comp = {}
+
+    # 表データ（描画非依存の純ロジックは deg_utils.build_marker_rows に集約）
+    headers, rows = build_marker_rows(
+        clusters, deg_data, top_n=top_n,
+        mz_to_compound=mz_to_comp, cluster_name_map=cluster_name_map)
+
+    if not rows:
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        _pptx_add_title_bar(slide, "Marker 一覧")
+        box = slide.shapes.add_textbox(Inches(1), Inches(3), Inches(11), Inches(1))
+        p = box.text_frame.paragraphs[0]
+        p.text = "DEG データがありません。"
+        p.font.size = Pt(16)
+        p.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
+        return
+
+    col_w = [Inches(1.4), Inches(1.6), Inches(4.6), Inches(1.1),
+             Inches(1.5), Inches(2.0)]
+    total_w = sum(int(w) for w in col_w)
+    n_pages = max(1, (len(rows) + rows_per_slide - 1) // rows_per_slide)
+    for pi in range(n_pages):
+        chunk = rows[pi * rows_per_slide:(pi + 1) * rows_per_slide]
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        title = f"Marker 一覧 (Top {top_n})"
+        if n_pages > 1:
+            title += f"  {pi + 1}/{n_pages}"
+        _pptx_add_title_bar(slide, title)
+        n_rows = len(chunk) + 1
+        tbl = slide.shapes.add_table(
+            n_rows, len(headers), Inches(0.3), Inches(0.9),
+            total_w, Inches(min(6.4, 0.3 * n_rows + 0.3))).table
+        for j, w in enumerate(col_w):
+            tbl.columns[j].width = w
+        for j, h in enumerate(headers):
+            c = tbl.cell(0, j)
+            c.text = h
+            pr = c.text_frame.paragraphs[0]
+            pr.font.size = Pt(11)
+            pr.font.bold = True
+        for i, row in enumerate(chunk):
+            for j, val in enumerate(row):
+                c = tbl.cell(i + 1, j)
+                c.text = str(val)
+                c.text_frame.paragraphs[0].font.size = Pt(9)
+
+
 def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                  sub_name="", volcano_fig=None, heatmap_fig=None,
                  deg_data=None, top_n=5, df=None, cache_dir=None,
                  custom_colors=None, rotation_store=None, name_map=None,
                  set_progress=None, mrm_path=None,
                  existing_prs=None, progress_offset=0, progress_total=None,
-                 saved_positions=None, cluster_name_map=None, deadline=None):
+                 saved_positions=None, cluster_name_map=None,
+                 include_deg=True, deadline=None):
     """グローバル概要 + クラスターごとの詳細スライドを含む PPTX を生成し bytes を返す。
 
     グローバルセクション:
         1. タイトル  2. UMAP+Spatial (統合)  3. クラスタ統計
-    クラスターセクション (各クラスター × 3 スライド):
-        A. UMAP (ハイライト) + Spatial (ハイライト)
-        B. Volcano Plot + Top N Feature Plots
-        C. Heatmap (Top N, Z-score)
+    クラスターセクション:
+        A. UMAP (ハイライト) + Spatial (ハイライト)  … 常設
+        B. Volcano Plot + Top N Feature Plots        … include_deg=True の時のみ
+        C. Heatmap (Top N, Z-score)                  … 常設
+    include_deg=False の場合、B は出さず、代わりに全クラスタの上位 marker（m/z・化合物名・
+    log2FC・調整p値）を集約した表スライド（行数に応じ自動改ページ）を末尾に追加する。
 
     existing_prs: 既存のPresentationオブジェクト。指定時はそこにスライドを追加し、
                   bytes は返さず None を返す。
@@ -819,7 +887,9 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                 key=_cluster_sort_key)
         except Exception:
             pass
-    _local_steps = 3 + len(_clusters_for_progress) * 3  # title, UMAP&Spatial, stats + 3 per cluster
+    _per_cluster = 3 if include_deg else 2  # A(UMAP/Spatial)+C(Heatmap)常設, B(DEG)は任意
+    _local_steps = (3 + len(_clusters_for_progress) * _per_cluster
+                    + (0 if include_deg else 1))  # DEG OFF 時は marker 集約表で +1
     _total_steps = progress_total if progress_total else _local_steps
     _current_step = [progress_offset]  # mutable for nested function
 
@@ -1154,193 +1224,194 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
 
             _progress(f"{_cl_name} — UMAP/Spatial")
 
-            # === Slide B: Volcano + Feature Plots ===
-            slide_b = prs.slides.add_slide(prs.slide_layouts[6])
-            _pptx_add_title_bar(slide_b, f"{_cl_name} — DEG Analysis")
+            # === Slide B: Volcano + Feature Plots ===（DEG 有効時のみ）
+            if include_deg:
+                slide_b = prs.slides.add_slide(prs.slide_layouts[6])
+                _pptx_add_title_bar(slide_b, f"{_cl_name} — DEG Analysis")
 
-            # Top N features (up / down)
-            up_features, down_features = _get_top_n_features_for_cluster(
-                deg_data, cl_str, n=top_n)
+                # Top N features (up / down)
+                up_features, down_features = _get_top_n_features_for_cluster(
+                    deg_data, cl_str, n=top_n)
 
-            # gene→annotation マッピング（Feature Plotタイトル用）
-            _gene_ann_map = {}
-            if deg_data:
-                for _r in deg_data:
-                    _g = _r.get("gene", "")
-                    _a = _r.get("annotation", "")
-                    if _g and _is_meaningful_annotation(_a, _g):
-                        _gene_ann_map[_g] = _a
+                # gene→annotation マッピング（Feature Plotタイトル用）
+                _gene_ann_map = {}
+                if deg_data:
+                    for _r in deg_data:
+                        _g = _r.get("gene", "")
+                        _a = _r.get("annotation", "")
+                        if _g and _is_meaningful_annotation(_a, _g):
+                            _gene_ann_map[_g] = _a
 
-            # Volcano Plot を生成（レイアウト計算に必要）。描画は下段配置時に逐次実行。
-            volcano_cl = _build_volcano_fig_for_cluster(deg_data, cl_str)
+                # Volcano Plot を生成（レイアウト計算に必要）。描画は下段配置時に逐次実行。
+                volcano_cl = _build_volcano_fig_for_cluster(deg_data, cl_str)
 
-            # ---- 自動レイアウト計算 ----
-            has_up = bool(up_features)
-            has_down = bool(down_features)
-            has_volcano = volcano_cl is not None
+                # ---- 自動レイアウト計算 ----
+                has_up = bool(up_features)
+                has_down = bool(down_features)
+                has_volcano = volcano_cl is not None
 
-            _avail_top = 0.65      # Feature配置開始Y (タイトルバー下)
-            _avail_bottom = 7.35   # スライド下端マージン
-            _avail_h = _avail_bottom - _avail_top  # 6.7"
-            _label_h = 0.25        # ラベル行の高さ
-            _gap = 0.1             # セクション間隙間
-            _volcano_h = 2.5       # Volcano固定高さ
+                _avail_top = 0.65      # Feature配置開始Y (タイトルバー下)
+                _avail_bottom = 7.35   # スライド下端マージン
+                _avail_h = _avail_bottom - _avail_top  # 6.7"
+                _label_h = 0.25        # ラベル行の高さ
+                _gap = 0.1             # セクション間隙間
+                _volcano_h = 2.5       # Volcano固定高さ
 
-            _n_feat_rows = (1 if has_up else 0) + (1 if has_down else 0)
+                _n_feat_rows = (1 if has_up else 0) + (1 if has_down else 0)
 
-            if _n_feat_rows > 0 and has_volcano:
-                _non_feat = _n_feat_rows * (_label_h + _gap) + _gap + _volcano_h
-                _feat_h_val = (_avail_h - _non_feat) / _n_feat_rows
-            elif _n_feat_rows > 0:
-                _non_feat = _n_feat_rows * (_label_h + _gap)
-                _feat_h_val = (_avail_h - _non_feat) / _n_feat_rows
-            else:
-                _feat_h_val = 0
+                if _n_feat_rows > 0 and has_volcano:
+                    _non_feat = _n_feat_rows * (_label_h + _gap) + _gap + _volcano_h
+                    _feat_h_val = (_avail_h - _non_feat) / _n_feat_rows
+                elif _n_feat_rows > 0:
+                    _non_feat = _n_feat_rows * (_label_h + _gap)
+                    _feat_h_val = (_avail_h - _non_feat) / _n_feat_rows
+                else:
+                    _feat_h_val = 0
 
-            _feat_h_val = max(1.5, min(_feat_h_val, 3.5))
+                _feat_h_val = max(1.5, min(_feat_h_val, 3.5))
 
-            feat_w_val = min(2.4, 12.0 / max(top_n, 1))
-            feat_w = Inches(feat_w_val)
-            feat_h = Inches(_feat_h_val)
+                feat_w_val = min(2.4, 12.0 / max(top_n, 1))
+                feat_w = Inches(feat_w_val)
+                feat_h = Inches(_feat_h_val)
 
-            # Y座標を順番に計算
-            _cur_y = _avail_top
-            _up_label_y = _up_plot_y = 0
-            _down_label_y = _down_plot_y = 0
-            _volcano_y = 0
+                # Y座標を順番に計算
+                _cur_y = _avail_top
+                _up_label_y = _up_plot_y = 0
+                _down_label_y = _down_plot_y = 0
+                _volcano_y = 0
 
-            if has_up:
-                _up_label_y = _cur_y
-                _cur_y += _label_h + _gap
-                _up_plot_y = _cur_y
-                _cur_y += _feat_h_val + _gap
-            if has_down:
-                _down_label_y = _cur_y
-                _cur_y += _label_h + _gap
-                _down_plot_y = _cur_y
-                _cur_y += _feat_h_val + _gap
-            if has_volcano:
-                _volcano_y = _cur_y
+                if has_up:
+                    _up_label_y = _cur_y
+                    _cur_y += _label_h + _gap
+                    _up_plot_y = _cur_y
+                    _cur_y += _feat_h_val + _gap
+                if has_down:
+                    _down_label_y = _cur_y
+                    _cur_y += _label_h + _gap
+                    _down_plot_y = _cur_y
+                    _cur_y += _feat_h_val + _gap
+                if has_volcano:
+                    _volcano_y = _cur_y
 
-            # "▲ Up-regulated" ラベル
-            if has_up:
-                lbl = slide_b.shapes.add_textbox(
-                    Inches(0.3), Inches(_up_label_y), Inches(3), Inches(0.3))
-                lp = lbl.text_frame.paragraphs[0]
-                lp.text = f"▲ Up-regulated (Top {len(up_features)})"
-                lp.font.size = Pt(10)
-                lp.font.color.rgb = RGBColor(0xFF, 0x2D, 0x2D)
-                lp.font.bold = True
+                # "▲ Up-regulated" ラベル
+                if has_up:
+                    lbl = slide_b.shapes.add_textbox(
+                        Inches(0.3), Inches(_up_label_y), Inches(3), Inches(0.3))
+                    lp = lbl.text_frame.paragraphs[0]
+                    lp.text = f"▲ Up-regulated (Top {len(up_features)})"
+                    lp.font.size = Pt(10)
+                    lp.font.color.rgb = RGBColor(0xFF, 0x2D, 0x2D)
+                    lp.font.bold = True
 
-            # Feature Plot 画像配置 — Up（逐次: 構築→描画→配置）
-            for i, feat in enumerate(up_features):
-                is_last_up = (i == len(up_features) - 1)
-                feat_fig = _build_feature_plot_fig(
-                    df, feat, cache_dir_path, rds_path_str,
-                    rotation_store, name_map, marker_size=2,
-                    show_colorbar_title=is_last_up,
-                    show_colorbar=is_last_up,
-                    auto_marker_size=True)
-                if not feat_fig:
-                    continue
-                _feat_title = feat
-                if feat in _gene_ann_map:
-                    _feat_title = f"{feat}\n({_gene_ann_map[feat]})"
-                feat_fig.update_layout(
-                    title=dict(text=_feat_title, font=dict(size=14), x=0.5),
-                    margin=dict(t=70))
-                png = _fig_to_png_bytes(feat_fig.to_dict(), 400, 280, 2)
-                if not png:
-                    continue
-                left = Inches(0.3 + i * (12.5 / max(top_n, 1)))
-                _pptx_add_image_preserve_ratio(
-                    slide_b, png,
-                    int(left), Inches(_up_plot_y),
-                    feat_w, feat_h,
-                    png_w=400, png_h=280)
+                # Feature Plot 画像配置 — Up（逐次: 構築→描画→配置）
+                for i, feat in enumerate(up_features):
+                    is_last_up = (i == len(up_features) - 1)
+                    feat_fig = _build_feature_plot_fig(
+                        df, feat, cache_dir_path, rds_path_str,
+                        rotation_store, name_map, marker_size=2,
+                        show_colorbar_title=is_last_up,
+                        show_colorbar=is_last_up,
+                        auto_marker_size=True)
+                    if not feat_fig:
+                        continue
+                    _feat_title = feat
+                    if feat in _gene_ann_map:
+                        _feat_title = f"{feat}\n({_gene_ann_map[feat]})"
+                    feat_fig.update_layout(
+                        title=dict(text=_feat_title, font=dict(size=14), x=0.5),
+                        margin=dict(t=70))
+                    png = _fig_to_png_bytes(feat_fig.to_dict(), 400, 280, 2)
+                    if not png:
+                        continue
+                    left = Inches(0.3 + i * (12.5 / max(top_n, 1)))
+                    _pptx_add_image_preserve_ratio(
+                        slide_b, png,
+                        int(left), Inches(_up_plot_y),
+                        feat_w, feat_h,
+                        png_w=400, png_h=280)
 
-            # Up features 間の縦区切り線
-            _tile_w_feat = 12.5 / max(top_n, 1)
-            for i in range(1, len(up_features)):
-                _sep_x = Inches(0.3 + i * _tile_w_feat)
-                _sep = slide_b.shapes.add_shape(
-                    MSO_SHAPE.RECTANGLE,
-                    int(_sep_x) - Emu(6350), Inches(_up_plot_y),
-                    Emu(6350), feat_h)
-                _sep.fill.solid()
-                _sep.fill.fore_color.rgb = RGBColor(0xCC, 0xCC, 0xCC)
-                _sep.line.fill.background()
+                # Up features 間の縦区切り線
+                _tile_w_feat = 12.5 / max(top_n, 1)
+                for i in range(1, len(up_features)):
+                    _sep_x = Inches(0.3 + i * _tile_w_feat)
+                    _sep = slide_b.shapes.add_shape(
+                        MSO_SHAPE.RECTANGLE,
+                        int(_sep_x) - Emu(6350), Inches(_up_plot_y),
+                        Emu(6350), feat_h)
+                    _sep.fill.solid()
+                    _sep.fill.fore_color.rgb = RGBColor(0xCC, 0xCC, 0xCC)
+                    _sep.line.fill.background()
 
-            # "▼ Down-regulated" ラベル
-            if has_down:
-                lbl = slide_b.shapes.add_textbox(
-                    Inches(0.3), Inches(_down_label_y), Inches(3), Inches(0.3))
-                lp = lbl.text_frame.paragraphs[0]
-                lp.text = f"▼ Down-regulated (Top {len(down_features)})"
-                lp.font.size = Pt(10)
-                lp.font.color.rgb = RGBColor(0x1E, 0x5B, 0xFF)
-                lp.font.bold = True
+                # "▼ Down-regulated" ラベル
+                if has_down:
+                    lbl = slide_b.shapes.add_textbox(
+                        Inches(0.3), Inches(_down_label_y), Inches(3), Inches(0.3))
+                    lp = lbl.text_frame.paragraphs[0]
+                    lp.text = f"▼ Down-regulated (Top {len(down_features)})"
+                    lp.font.size = Pt(10)
+                    lp.font.color.rgb = RGBColor(0x1E, 0x5B, 0xFF)
+                    lp.font.bold = True
 
-            # Feature Plot 画像配置 — Down（逐次: 構築→描画→配置）
-            for i, feat in enumerate(down_features):
-                is_last_down = (i == len(down_features) - 1)
-                feat_fig = _build_feature_plot_fig(
-                    df, feat, cache_dir_path, rds_path_str,
-                    rotation_store, name_map, marker_size=2,
-                    show_colorbar_title=is_last_down,
-                    show_colorbar=is_last_down,
-                    auto_marker_size=True)
-                if not feat_fig:
-                    continue
-                _feat_title = feat
-                if feat in _gene_ann_map:
-                    _feat_title = f"{feat}\n({_gene_ann_map[feat]})"
-                feat_fig.update_layout(
-                    title=dict(text=_feat_title, font=dict(size=14), x=0.5),
-                    margin=dict(t=70))
-                png = _fig_to_png_bytes(feat_fig.to_dict(), 400, 280, 2)
-                if not png:
-                    continue
-                left = Inches(0.3 + i * (12.5 / max(top_n, 1)))
-                _pptx_add_image_preserve_ratio(
-                    slide_b, png,
-                    int(left), Inches(_down_plot_y),
-                    feat_w, feat_h,
-                    png_w=400, png_h=280)
+                # Feature Plot 画像配置 — Down（逐次: 構築→描画→配置）
+                for i, feat in enumerate(down_features):
+                    is_last_down = (i == len(down_features) - 1)
+                    feat_fig = _build_feature_plot_fig(
+                        df, feat, cache_dir_path, rds_path_str,
+                        rotation_store, name_map, marker_size=2,
+                        show_colorbar_title=is_last_down,
+                        show_colorbar=is_last_down,
+                        auto_marker_size=True)
+                    if not feat_fig:
+                        continue
+                    _feat_title = feat
+                    if feat in _gene_ann_map:
+                        _feat_title = f"{feat}\n({_gene_ann_map[feat]})"
+                    feat_fig.update_layout(
+                        title=dict(text=_feat_title, font=dict(size=14), x=0.5),
+                        margin=dict(t=70))
+                    png = _fig_to_png_bytes(feat_fig.to_dict(), 400, 280, 2)
+                    if not png:
+                        continue
+                    left = Inches(0.3 + i * (12.5 / max(top_n, 1)))
+                    _pptx_add_image_preserve_ratio(
+                        slide_b, png,
+                        int(left), Inches(_down_plot_y),
+                        feat_w, feat_h,
+                        png_w=400, png_h=280)
 
-            # Down features 間の縦区切り線
-            for i in range(1, len(down_features)):
-                _sep_x = Inches(0.3 + i * _tile_w_feat)
-                _sep = slide_b.shapes.add_shape(
-                    MSO_SHAPE.RECTANGLE,
-                    int(_sep_x) - Emu(6350), Inches(_down_plot_y),
-                    Emu(6350), feat_h)
-                _sep.fill.solid()
-                _sep.fill.fore_color.rgb = RGBColor(0xCC, 0xCC, 0xCC)
-                _sep.line.fill.background()
+                # Down features 間の縦区切り線
+                for i in range(1, len(down_features)):
+                    _sep_x = Inches(0.3 + i * _tile_w_feat)
+                    _sep = slide_b.shapes.add_shape(
+                        MSO_SHAPE.RECTANGLE,
+                        int(_sep_x) - Emu(6350), Inches(_down_plot_y),
+                        Emu(6350), feat_h)
+                    _sep.fill.solid()
+                    _sep.fill.fore_color.rgb = RGBColor(0xCC, 0xCC, 0xCC)
+                    _sep.line.fill.background()
 
-            # Volcano Plot (下段) — 並列レンダリング済みの結果を取得して配置
-            if has_volcano:
-                v_dict = (volcano_cl.to_dict()
-                          if hasattr(volcano_cl, "to_dict") else volcano_cl)
-                vpng = _fig_to_png_bytes(v_dict, 800, 700, 2)
-                v_aspect = 800 / 700  # ≈ 1.14
-                v_height = Inches(_volcano_h)
-                v_width = int(v_height * v_aspect)
-                v_left = int((prs.slide_width - v_width) / 2)
-                _pptx_add_image(slide_b, vpng,
-                                v_left, Inches(_volcano_y), v_width, v_height)
-            elif not up_features and not down_features:
-                # DEG データなし → 注釈
-                no_deg = slide_b.shapes.add_textbox(
-                    Inches(3), Inches(3), Inches(7), Inches(1))
-                np_ = no_deg.text_frame.paragraphs[0]
-                np_.text = "No DEG data available for this cluster"
-                np_.font.size = Pt(16)
-                np_.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
-                np_.alignment = PP_ALIGN.CENTER
+                # Volcano Plot (下段) — 逐次描画して配置
+                if has_volcano:
+                    v_dict = (volcano_cl.to_dict()
+                              if hasattr(volcano_cl, "to_dict") else volcano_cl)
+                    vpng = _fig_to_png_bytes(v_dict, 800, 700, 2)
+                    v_aspect = 800 / 700  # ≈ 1.14
+                    v_height = Inches(_volcano_h)
+                    v_width = int(v_height * v_aspect)
+                    v_left = int((prs.slide_width - v_width) / 2)
+                    _pptx_add_image(slide_b, vpng,
+                                    v_left, Inches(_volcano_y), v_width, v_height)
+                elif not up_features and not down_features:
+                    # DEG データなし → 注釈
+                    no_deg = slide_b.shapes.add_textbox(
+                        Inches(3), Inches(3), Inches(7), Inches(1))
+                    np_ = no_deg.text_frame.paragraphs[0]
+                    np_.text = "No DEG data available for this cluster"
+                    np_.font.size = Pt(16)
+                    np_.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
+                    np_.alignment = PP_ALIGN.CENTER
 
-            _progress(f"{_cl_name} — DEG")
+                _progress(f"{_cl_name} — DEG")
 
             # === Slide C: Per-cluster Heatmap (Top N, Z-score) ===
             hm_fig = _build_heatmap_for_cluster(
@@ -1358,6 +1429,14 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                         png_w=1200, png_h=800)
 
             _progress(f"{_cl_name} — Heatmap")
+
+        # DEG 非選択時: 全クラスタの上位 marker（m/z・化合物名・log2FC・調整p値）を
+        # 1つの集約表（行数に応じ自動改ページ）で出力する。
+        if not include_deg:
+            _build_marker_table_slides(
+                prs, clusters, deg_data, top_n,
+                mrm_path=mrm_path, cluster_name_map=cluster_name_map)
+            _progress("Marker 一覧")
 
     # existing_prs が渡された場合は呼び出し元がまとめて保存するため
     # ここでは保存しない (現在のステップ数を返す)
@@ -1391,17 +1470,17 @@ def sync_export_top_n(value):
     prevent_initial_call=True,
 )
 def update_export_method_options(rds_map):
-    """rds_map の変更に応じてエクスポート対象手法セレクタを更新する。"""
+    """rds_map の変更に応じてエクスポート対象手法セレクタ（複数選択）を更新する。
+
+    Checklist 化に伴い「Both」は廃止。既定は実在する全手法をチェック済みにする
+    （全部欲しければ全部にマークが付いた状態）。value はリスト。
+    """
     if not rds_map or not isinstance(rds_map, dict):
-        return [{"label": "All", "value": "all"}], "all"
+        return [], []
 
     methods = list(rds_map.keys())
     options = [{"label": m, "value": m} for m in methods]
-    if len(methods) > 1:
-        options.append({"label": "Both", "value": "all"})
-
-    default_val = "all" if len(methods) > 1 else methods[0]
-    return options, default_val
+    return options, methods  # 既定で全手法チェック
 
 
 @callback(
@@ -1427,6 +1506,7 @@ def update_export_method_options(rds_map):
      State("interactive_result_folder", "value"),
      State("interactive_integration_method", "value"),
      State("export_method_selector", "value"),
+     State("export_include_deg", "value"),
      State("cluster_name_map_store", "data"),
      State("accumulated_label_positions", "data")],
     background=True,
@@ -1447,13 +1527,13 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                      volcano_fig, heatmap_fig, deg_data, custom_colors,
                      rotation_store, name_map, top_n, cache_dir_str,
                      mrm_path_str, rds_map, result_folder, current_method,
-                     export_method_selection, cluster_name_map,
+                     export_method_selection, include_deg, cluster_name_map,
                      accumulated_positions):
     """PPTX レポートをバックグラウンド生成してダウンロード。
 
-    export_method_selection:
-        "all" → 全手法（比較スライド付き）
-        特定手法名 → その手法のみ
+    export_method_selection: 選択された手法名のリスト（Checklist）。空なら中止。
+    include_deg: DEG(Volcano+Feature)スライドを含めるか。False の場合は代わりに
+        m/z・化合物名の marker 一覧表スライドを出力する。UMAP/Spatial・Heatmap は常時。
     """
     if not n_clicks:
         raise PreventUpdate
@@ -1520,22 +1600,25 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
         # ------------------------------------------------------------------
         # 出力対象手法リストの決定（export_method_selector に基づく）
         # ------------------------------------------------------------------
+        selected = export_method_selection or []
+        if isinstance(selected, str):  # 旧 str 値 ("all"/手法名) との後方互換
+            selected = [] if selected in ("", "all") else [selected]
+
+        has_methods = bool(rds_map and isinstance(rds_map, dict))
+        if has_methods and not selected:
+            return no_update, "出力する手法を1つ以上選択してください。"
+
         methods_to_export = []
-        if rds_map and isinstance(rds_map, dict):
-            if export_method_selection and export_method_selection != "all":
-                # 特定手法のみ選択
-                if export_method_selection in rds_map:
-                    methods_to_export = [export_method_selection]
-                else:
-                    methods_to_export = []
-            elif len(rds_map) > 1:
-                # "all" → 全手法
-                if current_method and current_method in rds_map:
-                    methods_to_export = [current_method] + [
-                        m for m in rds_map if m != current_method
-                    ]
-                else:
-                    methods_to_export = list(rds_map.keys())
+        if has_methods:
+            valid = [m for m in selected if m in rds_map]
+            if not valid:
+                return no_update, "選択した手法が見つかりません。"
+            # current_method を先頭に（比較スライドの基準）
+            if current_method and current_method in valid:
+                methods_to_export = [current_method] + [
+                    m for m in valid if m != current_method]
+            else:
+                methods_to_export = valid
 
         # ------------------------------------------------------------------
         # 単一手法の場合（従来の動作と完全互換）
@@ -1568,6 +1651,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 mrm_path=mrm_path_str,
                 saved_positions=saved_positions,
                 cluster_name_map=cluster_name_map,
+                include_deg=include_deg,
                 deadline=_deadline,
             )
 
@@ -1916,6 +2000,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 progress_total=total_steps,
                 saved_positions=method_saved_positions,
                 cluster_name_map=cluster_name_map,
+                include_deg=include_deg,
                 deadline=_deadline,
             )
             if isinstance(returned, int):
