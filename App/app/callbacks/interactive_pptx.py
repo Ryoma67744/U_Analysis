@@ -46,7 +46,6 @@ from app.utils.pptx_helpers import (
     square_tile_dims as _square_tile_dims,
     build_cluster_legend_fig as _build_cluster_legend_fig,
     pptx_add_sections as _pptx_add_sections,
-    RenderQueue as _RenderQueue,
 )
 from app.utils import raster as _raster
 
@@ -1105,11 +1104,10 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
             else cache_dir
         )
 
-        # === cluster loop を RenderQueue で囲み、kaleido を ProcessPool 並列化 ===
-        # 各クラスタの feature plot / volcano / heatmap を並列レンダリング。
-        # Slide A の combined/umap は 1 枚のみなので逐次のままにする。
-        with _RenderQueue(max_workers=4) as _rq:
-         for cl in clusters:
+        # === cluster loop（描画は共有単一プールで逐次実行）===
+        # ラスター化で 1 枚 1〜2 秒のため並列は不要。並列 kaleido/Chromium は競合して
+        # 1 枚ごとにハング（→タイムアウトでスキップ）＋プロセスリークの原因だったため撤去。
+        for cl in clusters:
             cl_str = str(cl)
             _cl_name = _cluster_display_name(cl_str, cluster_name_map)
 
@@ -1173,14 +1171,8 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                     if _g and _is_meaningful_annotation(_a, _g):
                         _gene_ann_map[_g] = _a
 
-            # Volcano Plot を先に生成（レイアウト計算に必要）
+            # Volcano Plot を生成（レイアウト計算に必要）。描画は下段配置時に逐次実行。
             volcano_cl = _build_volcano_fig_for_cluster(deg_data, cl_str)
-            # 先回り submit: Volcano レンダリングを Down feature plot 配置と並列実行
-            volcano_fut = None
-            if volcano_cl is not None:
-                v_dict = (volcano_cl.to_dict()
-                          if hasattr(volcano_cl, "to_dict") else volcano_cl)
-                volcano_fut = _rq.submit(v_dict, 800, 700, 2)
 
             # ---- 自動レイアウト計算 ----
             has_up = bool(up_features)
@@ -1240,9 +1232,7 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                 lp.font.color.rgb = RGBColor(0xFF, 0x2D, 0x2D)
                 lp.font.bold = True
 
-            # Feature Plot 画像配置 — Up（並列レンダリング: 2 パス）
-            # Pass 1: 全 fig 構築 → RenderQueue へ submit（kaleido が ProcessPool で並列実行）
-            up_render_futs = []
+            # Feature Plot 画像配置 — Up（逐次: 構築→描画→配置）
             for i, feat in enumerate(up_features):
                 is_last_up = (i == len(up_features) - 1)
                 feat_fig = _build_feature_plot_fig(
@@ -1251,22 +1241,15 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                     show_colorbar_title=is_last_up,
                     show_colorbar=is_last_up,
                     auto_marker_size=True)
-                if feat_fig:
-                    _feat_title = feat
-                    if feat in _gene_ann_map:
-                        _feat_title = f"{feat}\n({_gene_ann_map[feat]})"
-                    feat_fig.update_layout(
-                        title=dict(text=_feat_title, font=dict(size=14), x=0.5),
-                        margin=dict(t=70))
-                    up_render_futs.append(_rq.submit(
-                        feat_fig.to_dict(), 400, 280, 2))
-                else:
-                    up_render_futs.append(None)
-            # Pass 2: 結果取得 + スライド配置（submit 済みの kaleido が並列で進行中）
-            for i, fut in enumerate(up_render_futs):
-                if fut is None:
+                if not feat_fig:
                     continue
-                png = _rq.result(fut)
+                _feat_title = feat
+                if feat in _gene_ann_map:
+                    _feat_title = f"{feat}\n({_gene_ann_map[feat]})"
+                feat_fig.update_layout(
+                    title=dict(text=_feat_title, font=dict(size=14), x=0.5),
+                    margin=dict(t=70))
+                png = _fig_to_png_bytes(feat_fig.to_dict(), 400, 280, 2)
                 if not png:
                     continue
                 left = Inches(0.3 + i * (12.5 / max(top_n, 1)))
@@ -1298,8 +1281,7 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                 lp.font.color.rgb = RGBColor(0x1E, 0x5B, 0xFF)
                 lp.font.bold = True
 
-            # Feature Plot 画像配置 — Down（並列レンダリング: 2 パス）
-            down_render_futs = []
+            # Feature Plot 画像配置 — Down（逐次: 構築→描画→配置）
             for i, feat in enumerate(down_features):
                 is_last_down = (i == len(down_features) - 1)
                 feat_fig = _build_feature_plot_fig(
@@ -1308,21 +1290,15 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                     show_colorbar_title=is_last_down,
                     show_colorbar=is_last_down,
                     auto_marker_size=True)
-                if feat_fig:
-                    _feat_title = feat
-                    if feat in _gene_ann_map:
-                        _feat_title = f"{feat}\n({_gene_ann_map[feat]})"
-                    feat_fig.update_layout(
-                        title=dict(text=_feat_title, font=dict(size=14), x=0.5),
-                        margin=dict(t=70))
-                    down_render_futs.append(_rq.submit(
-                        feat_fig.to_dict(), 400, 280, 2))
-                else:
-                    down_render_futs.append(None)
-            for i, fut in enumerate(down_render_futs):
-                if fut is None:
+                if not feat_fig:
                     continue
-                png = _rq.result(fut)
+                _feat_title = feat
+                if feat in _gene_ann_map:
+                    _feat_title = f"{feat}\n({_gene_ann_map[feat]})"
+                feat_fig.update_layout(
+                    title=dict(text=_feat_title, font=dict(size=14), x=0.5),
+                    margin=dict(t=70))
+                png = _fig_to_png_bytes(feat_fig.to_dict(), 400, 280, 2)
                 if not png:
                     continue
                 left = Inches(0.3 + i * (12.5 / max(top_n, 1)))
@@ -1345,7 +1321,9 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
 
             # Volcano Plot (下段) — 並列レンダリング済みの結果を取得して配置
             if has_volcano:
-                vpng = _rq.result(volcano_fut)
+                v_dict = (volcano_cl.to_dict()
+                          if hasattr(volcano_cl, "to_dict") else volcano_cl)
+                vpng = _fig_to_png_bytes(v_dict, 800, 700, 2)
                 v_aspect = 800 / 700  # ≈ 1.14
                 v_height = Inches(_volcano_h)
                 v_width = int(v_height * v_aspect)

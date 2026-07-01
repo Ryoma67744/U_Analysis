@@ -142,3 +142,28 @@ def test_render_png_never_raises_and_cleans_up():
         assert out is None or isinstance(out, (bytes, bytearray))
     finally:
         ph.shutdown_shared_queue()
+
+
+def test_kill_lingering_kaleido_targets_only_kaleido(monkeypatch):
+    """残存 kaleido のみを kill するバックストップ（名前 or cmdline に kaleido）。"""
+    import psutil
+
+    killed = []
+
+    class _FakeProc:
+        def __init__(self, name, cmdline):
+            self.info = {"name": name, "cmdline": cmdline}
+            self._name = name
+
+        def kill(self):
+            killed.append(self._name)
+
+    procs = [
+        _FakeProc("kaleido", ["/x/kaleido", "plotly"]),      # name 一致
+        _FakeProc("bash", ["/bin/bash", "/x/bin/kaleido"]),   # cmdline 一致
+        _FakeProc("python3", ["python3", "run_app.py"]),      # 非対象
+        _FakeProc("chrome", ["chrome", "--headless"]),        # 非対象
+    ]
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: procs)
+    ph._kill_lingering_kaleido()
+    assert set(killed) == {"kaleido", "bash"}
