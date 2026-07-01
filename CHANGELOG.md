@@ -12,6 +12,27 @@
 
 ---
 
+## 2026-07-01_ver33.2
+
+### PPTX DEG(feature)描画の逐次化でハング/低速/プロセスリークを解消
+
+ver33.1 のラスター化で UMAP/Spatial スライドは高速化できたが、実機 heartbeat で **DEG スライド
+だけ 1 枚 5〜38 分**かかり完走できず（step 25/74 で watchdog 発火）、失敗後に kaleido プロセスが
+多数残留していた。原因は DEG の feature/volcano を **4 並列 RenderQueue** で描画しており、並列
+kaleido/Chromium が競合して 1 枚ごとにハング（→per-render タイムアウトでスキップ）＋回収漏れ
+だったこと（結合図は共有単一プールで正常・高速だった）。
+
+- **feature/volcano を逐次・単一プールに統一**（`callbacks/interactive_pptx.py` の `_build_pptx`）:
+  `RenderQueue(max_workers=4)` を撤去し、結合図と同じ `render_png`（タイムアウト付き単一プール）で
+  1 枚ずつ描画。ラスター化済みで 1 枚 1〜2 秒のため並列は不要で、競合ハング・欠落・リークを解消。
+- **kaleido の確実な回収**（`utils/pptx_helpers.py` `shutdown_shared_queue`）: 残存する kaleido/
+  Chromium プロセスを psutil で一掃するバックストップを追加。
+- per-render タイムアウト既定を 120s→60s に短縮（`PPTX_RENDER_TIMEOUT_SEC`）。
+- テスト: `tests/test_pptx_hang_fixes.py` に kaleido 一掃バックストップの単体テストを追加。
+- version 33.1→33.2。
+
+---
+
 ## 2026-07-01_ver33.1
 
 ### PPTX エクスポートのハング修正 + ラスター描画による高速化

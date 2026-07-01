@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # 1 枚あたりの描画タイムアウト（秒）。kaleido 0.2.1 は Docker/ヘッドレスで to_image() が
 # 無言ハングし得るため、必ず打ち切れるようにする。
-_RENDER_TIMEOUT_SEC = float(os.environ.get("PPTX_RENDER_TIMEOUT_SEC", "120"))
+_RENDER_TIMEOUT_SEC = float(os.environ.get("PPTX_RENDER_TIMEOUT_SEC", "60"))
 # 0 以下で無効。>0 の場合、この点数を超える散布図は SVG 化の過負荷を防ぐため均等間引きする。
 _MAX_SCATTER_POINTS = int(os.environ.get("PPTX_MAX_SCATTER_POINTS", "0"))
 
@@ -194,9 +194,31 @@ def _recycle_shared_pool():
     _shutdown_pool_hard(pool)
 
 
+def _kill_lingering_kaleido():
+    """残存する kaleido/Chromium プロセスを一掃するバックストップ。
+
+    ProcessPool worker の子として掴めず（別プロセスグループ化/再親化により）残った kaleido を
+    確実に回収する。PPTX 出力は事実上直列で、対話 UI 側は kaleido を使わないため、
+    出力終了時の一括 kill は安全。
+    """
+    try:
+        import psutil
+    except Exception:
+        return
+    for p in psutil.process_iter(["name", "cmdline"]):
+        try:
+            name = (p.info.get("name") or "").lower()
+            cmd = " ".join(p.info.get("cmdline") or []).lower()
+            if "kaleido" in name or "kaleido" in cmd:
+                p.kill()
+        except Exception:
+            pass
+
+
 def shutdown_shared_queue():
     """共有描画プールを破棄する（エクスポート終了時に必ず呼ぶ）。"""
     _recycle_shared_pool()
+    _kill_lingering_kaleido()
 
 
 def render_png(fig_dict, width=1200, height=800, scale=2, timeout=None):
