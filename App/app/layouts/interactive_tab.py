@@ -581,11 +581,23 @@ def create_interactive_tab():
                                     dbc.Label("出力対象:", className="small mb-0"),
                                 ]),
                                 dbc.Col(children=[
-                                    dbc.RadioItems(
+                                    dbc.Checklist(
                                         id="export_method_selector",
-                                        options=[{"label": "All", "value": "all"}],
-                                        value="all",
+                                        options=[],
+                                        value=[],
                                         inline=True,
+                                        className="small",
+                                    ),
+                                ]),
+                            ]),
+                            # 含める図: UMAP+Spatial と Heatmap は常設、DEG は任意（+α）。
+                            # DEG OFF 時は m/z・化合物名の marker 一覧表を代わりに出力する。
+                            dbc.Row(className="align-items-center mt-2", children=[
+                                dbc.Col(width="auto", children=[
+                                    dbc.Checkbox(
+                                        id="export_include_deg",
+                                        label="DEG（Volcano＋Feature Plot）を含める",
+                                        value=False,
                                         className="small",
                                     ),
                                 ]),

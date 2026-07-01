@@ -12,6 +12,29 @@
 
 ---
 
+## 2026-07-01_ver34.0
+
+### PPTX エクスポートの出力選択機能（手法の複数選択 / DEG 任意＋marker 集約表）
+
+用途に応じてエクスポート内容を選べるようにした。
+
+- **① 出力手法の複数選択**（`layouts/interactive_tab.py` / `callbacks/interactive_pptx.py`）:
+  `export_method_selector` を `dbc.RadioItems`→`dbc.Checklist` に変更し「Both」を廃止。
+  `update_export_method_options` は実在手法（rds_map）から生成し既定で全チェック。
+  `cb_export_report` は選択リストを受け、0 件なら「手法を1つ以上選択」を表示。
+- **② 含める図の選択**（同上 + `_build_pptx`）: **UMAP+Spatial と Heatmap は常設**、
+  **DEG（Volcano＋Feature）は任意**（`export_include_deg`、既定 OFF）。DEG を含めない場合は、
+  DEG に出すはずだった **m/z・化合物名・クラスタ・up/down・log2FC・調整p値**を
+  **全クラスタ集約表**（行数に応じ自動改ページ）で出力する。
+- **表データの純ロジック**は `utils/deg_utils.build_marker_rows` に集約（描画非依存・単体テスト可）。
+  化合物名は annotation→MRM 近傍一致→空欄でフォールバック。表描画は
+  `_build_marker_table_slides`（既存の add_table パターン流用）。
+- 既定 DEG OFF により、最も重い DEG 描画を通常はスキップでき、エクスポートがさらに軽く・速くなる。
+- テスト: `tests/test_marker_rows.py` を追加。
+- version 33.2→34.0（機能追加のためメジャー +1.0）。
+
+---
+
 ## 2026-07-01_ver33.2
 
 ### PPTX DEG(feature)描画の逐次化でハング/低速/プロセスリークを解消
