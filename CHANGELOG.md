@@ -12,6 +12,30 @@
 
 ---
 
+## 2026-07-01_ver33.1
+
+### PPTX エクスポートのハング修正 + ラスター描画による高速化
+
+PPTX レポート出力が特定の 1 枚の画像描画で無限待機し（6 時間以上進捗なし）、ProcessPool と
+ヘッドレス Chromium(kaleido) が回収されずプロセスが増殖する不具合を修正。さらに、ハング回避で
+SVG 散布へ切替えた結果生じた「大量ピクセルの描画が遅く完走できない」問題を、ラスター描画で解消。
+
+- **ハング根絶**（`utils/pptx_helpers.py` / `callbacks/interactive_pptx.py`）:
+  kaleido 描画に 1 枚ごとのタイムアウト（`PPTX_RENDER_TIMEOUT_SEC`, 既定 120s）と全体 watchdog
+  （`PPTX_EXPORT_TIMEOUT_SEC`, 既定 45 分）を導入。タイムアウトした図はスキップし、worker と
+  Chromium をプロセスツリーごと kill してリークを防止。WebGL(scattergl)→SVG 変換で SwiftShader
+  由来の無言ハングを回避。スライドごとのハートビートログを追加し進捗を可視化。
+- **ラスター描画で高速化**（新規 `utils/raster.py`）: PPTX 専用の feature/spatial/UMAP 図を
+  `go.Heatmap`（データ座標つき）に置換し、点数に依存しない一定コストで描画。規則グリッドは
+  binning、UMAP は 2D ヒストグラムで集約。任意角回転など格子化できない場合は従来の散布へ自動
+  フォールバック。`PPTX_RASTER=0` で無効化可。対話 UI 側の図は WebGL のまま変更なし。
+- **Docker**: ヘッドレス Chromium のランタイム依存を導入、`shm_size` を拡張。
+- **既存バグ**: `services/seurat_bridge.py` の `_extract_mz_numeric` 誤 import を修正。
+- **テスト**: `tests/test_pptx_hang_fixes.py`・`tests/test_raster.py` を追加。
+- version 33.0→33.1。
+
+---
+
 ## 2026-06-30_ver33.0
 
 ### 科学的信頼性の強化（MVP4: 計算・データ・記録の中核 + 注意書きの全面表示）
