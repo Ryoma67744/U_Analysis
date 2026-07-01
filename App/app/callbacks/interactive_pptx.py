@@ -694,22 +694,44 @@ def _build_cluster_slide_combined_fig(
         bg_mask_arr = (~cl_mask).values
         hl_mask_arr = cl_mask.values
 
-        # ラスター経路（規則グリッド → go.Heatmap, 背景灰 + highlight 色）
+        # ラスター経路（規則グリッド → go.Heatmap）。背景＝TIC(TotalCount) のグレー濃淡、
+        # 前景＝highlight クラスタ単色 の2層で、散布版の階調表現を保ったまま高速描画する。
         spatial_done = False
         if use_raster:
             _gi = _raster.grid_index(tx, ty)
             if _gi is not None:
                 _six, _siy, _sxc, _syc = _gi
-                _sz = np.full((len(_syc), len(_sxc)), np.nan, dtype=float)
+                _ny, _nx = len(_syc), len(_sxc)
+                # --- 背景: TIC 濃淡（無ければ薄グレー一色）---
                 if bg_mask_arr.any():
-                    _sz[_siy[bg_mask_arr], _six[bg_mask_arr]] = 0.0
+                    _zbg = np.full((_ny, _nx), np.nan, dtype=float)
+                    _has_tic = ("TotalCount" in df_s.columns
+                                and df_s["TotalCount"].notna().any())
+                    if _has_tic:
+                        _tic = df_s["TotalCount"].values.astype(float)
+                        _zbg[_siy[bg_mask_arr], _six[bg_mask_arr]] = _tic[bg_mask_arr]
+                        _tf = _tic[bg_mask_arr]
+                        _tf = _tf[np.isfinite(_tf)]
+                        _bgcs = "Greys"
+                        _bgmin = float(_tf.min()) if _tf.size else 0.0
+                        _bgmax = float(_tf.max()) if _tf.size else 1.0
+                        if _bgmax <= _bgmin:
+                            _bgmax = _bgmin + 1.0
+                    else:
+                        _zbg[_siy[bg_mask_arr], _six[bg_mask_arr]] = 0.0
+                        _bgcs = [[0.0, _bg_gray], [1.0, _bg_gray]]
+                        _bgmin, _bgmax = 0.0, 1.0
+                    fig.add_trace(_raster.heatmap_trace(
+                        _zbg, _sxc, _syc, _bgcs, _bgmin, _bgmax, showscale=False),
+                        row=2, col=col)
+                # --- 前景: highlight クラスタ（単色）を上に重ねる ---
                 if hl_mask_arr.any():
-                    _sz[_siy[hl_mask_arr], _six[hl_mask_arr]] = 1.0
-                _scs, _szmin, _szmax = _raster.build_discrete_colorscale(
-                    [_bg_gray, cl_color])
-                fig.add_trace(_raster.heatmap_trace(
-                    _sz, _sxc, _syc, _scs, _szmin, _szmax, showscale=False),
-                    row=2, col=col)
+                    _zhl = np.full((_ny, _nx), np.nan, dtype=float)
+                    _zhl[_siy[hl_mask_arr], _six[hl_mask_arr]] = 1.0
+                    fig.add_trace(_raster.heatmap_trace(
+                        _zhl, _sxc, _syc, [[0.0, cl_color], [1.0, cl_color]],
+                        0.0, 1.0, showscale=False),
+                        row=2, col=col)
                 spatial_done = True
         if not spatial_done:
             msize = _calc_zero_gap_marker_size(tx, ty, render_height=300)

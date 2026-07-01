@@ -12,6 +12,24 @@
 
 ---
 
+## 2026-07-01_ver34.1
+
+### 結合図 Spatial の TIC 濃淡背景を復活（高速化で簡略化した分の復元）
+
+ラスター化（ver33.1）で結合図(UMAP+Spatial)の Spatial パネル背景を「TotalCount(TIC) の
+グレー濃淡」→「薄グレー一色」に簡略化していたが、要望により **TIC のグレー濃淡（階調表現）
+背景を復活**。
+
+- `callbacks/interactive_pptx.py` `_build_cluster_slide_combined_fig` の Spatial ラスター経路を、
+  単一の離散 Heatmap から **2 層 Heatmap** に変更:
+  背景＝TIC(TotalCount) の `Greys` 濃淡（無い切片は薄グレー一色にフォールバック）、
+  前景＝highlight クラスタ単色をその上に重ねる。空セルは透明。
+- `grid_index` / `heatmap_trace`（`utils/raster.py`）を再利用。ラスター描画のため高速性は維持。
+- feature プロットの TIC 背景は今回対象外（従来どおり発現量のみ）。
+- version 34.0→34.1。
+
+---
+
 ## 2026-07-01_ver34.0
 
 ### PPTX エクスポートの出力選択機能（手法の複数選択 / DEG 任意＋marker 集約表）
