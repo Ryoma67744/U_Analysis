@@ -38,7 +38,8 @@ from app.utils.label_persistence import (
     load_label_positions as _load_label_positions_util,
 )
 from app.utils.pptx_helpers import (
-    fig_to_png_bytes as _fig_to_png_bytes,
+    render_png as _fig_to_png_bytes,
+    shutdown_shared_queue as _shutdown_render_pool,
     pptx_add_title_bar as _pptx_add_title_bar,
     pptx_add_image as _pptx_add_image,
     pptx_add_image_preserve_ratio as _pptx_add_image_preserve_ratio,
@@ -709,7 +710,7 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                  custom_colors=None, rotation_store=None, name_map=None,
                  set_progress=None, mrm_path=None,
                  existing_prs=None, progress_offset=0, progress_total=None,
-                 saved_positions=None, cluster_name_map=None):
+                 saved_positions=None, cluster_name_map=None, deadline=None):
     """グローバル概要 + クラスターごとの詳細スライドを含む PPTX を生成し bytes を返す。
 
     グローバルセクション:
@@ -724,6 +725,8 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
     progress_offset: 進捗計算のオフセット（複数手法ループ時に使用）
     progress_total: 進捗計算の全体ステップ数（複数手法ループ時に使用）
     """
+    import time
+
     from pptx import Presentation
     from pptx.util import Inches, Pt, Emu
     from pptx.enum.text import PP_ALIGN
@@ -745,9 +748,16 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
 
     def _progress(label=""):
         _current_step[0] += 1
+        # サーバログにもハートビートを残す（ブラウザ進捗バーだけだと停止箇所が追えないため）
+        logger.info("[PPTX] %s (%d/%d)", label, _current_step[0], _total_steps)
         if set_progress:
             pct = int(_current_step[0] / _total_steps * 100)
             set_progress((min(pct, 99), 100, label))
+        # 全体 watchdog: 期限超過なら中断（1 枚のタイムアウトだけでは総時間が伸び得るため）
+        if deadline is not None and time.monotonic() > deadline:
+            raise TimeoutError(
+                f"PPTX export exceeded overall timeout "
+                f"(step {_current_step[0]}/{_total_steps})")
 
     if existing_prs is not None:
         prs = existing_prs
@@ -1178,7 +1188,7 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
             for i, fut in enumerate(up_render_futs):
                 if fut is None:
                     continue
-                png = fut.result()
+                png = _rq.result(fut)
                 if not png:
                     continue
                 left = Inches(0.3 + i * (12.5 / max(top_n, 1)))
@@ -1234,7 +1244,7 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
             for i, fut in enumerate(down_render_futs):
                 if fut is None:
                     continue
-                png = fut.result()
+                png = _rq.result(fut)
                 if not png:
                     continue
                 left = Inches(0.3 + i * (12.5 / max(top_n, 1)))
@@ -1257,7 +1267,7 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
 
             # Volcano Plot (下段) — 並列レンダリング済みの結果を取得して配置
             if has_volcano:
-                vpng = volcano_fut.result() if volcano_fut else None
+                vpng = _rq.result(volcano_fut)
                 v_aspect = 800 / 700  # ≈ 1.14
                 v_height = Inches(_volcano_h)
                 v_width = int(v_height * v_aspect)
@@ -1436,6 +1446,13 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
         top_n = top_n or 5
         saved_positions = _get_merged_label_positions(accumulated_positions)
 
+        # 全体 watchdog の期限（既定 45 分, PPTX_EXPORT_TIMEOUT_SEC で調整, 0 で無効）。
+        # 1 枚単位のタイムアウトだけでは、多数がタイムアウトすると総時間が伸び得るため。
+        import os as _os
+        import time as _time
+        _export_timeout = float(_os.environ.get("PPTX_EXPORT_TIMEOUT_SEC", "2700"))
+        _deadline = (_time.monotonic() + _export_timeout) if _export_timeout > 0 else None
+
         # expression_matrix.parquet を必要時に on-demand 生成（feature plot / heatmap が利用）
         set_progress((1, 100, "発現データ準備中（初回は数十秒かかります）..."))
         try:
@@ -1495,6 +1512,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 mrm_path=mrm_path_str,
                 saved_positions=saved_positions,
                 cluster_name_map=cluster_name_map,
+                deadline=_deadline,
             )
 
             return (
@@ -1842,6 +1860,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 progress_total=total_steps,
                 saved_positions=method_saved_positions,
                 cluster_name_map=cluster_name_map,
+                deadline=_deadline,
             )
             if isinstance(returned, int):
                 progress_offset = returned
@@ -1876,3 +1895,9 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
 
     except Exception as e:
         return no_update, f"エクスポートエラー: {e}"
+    finally:
+        # 描画に使った共有プールと配下の Chromium を必ず後始末（PIDS 増殖を防ぐ）
+        try:
+            _shutdown_render_pool()
+        except Exception:
+            pass

@@ -3,9 +3,13 @@
 interactive_callbacks.py から抽出した PPTX 生成ユーティリティ。
 """
 
+import copy
 import logging
+import os
+import threading
 import uuid
 from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from io import BytesIO
 from typing import Optional
 
@@ -19,19 +23,208 @@ from app.utils.color_utils import cluster_display_name, cluster_sort_key
 
 logger = logging.getLogger(__name__)
 
+# 1 枚あたりの描画タイムアウト（秒）。kaleido 0.2.1 は Docker/ヘッドレスで to_image() が
+# 無言ハングし得るため、必ず打ち切れるようにする。
+_RENDER_TIMEOUT_SEC = float(os.environ.get("PPTX_RENDER_TIMEOUT_SEC", "120"))
+# 0 以下で無効。>0 の場合、この点数を超える散布図は SVG 化の過負荷を防ぐため均等間引きする。
+_MAX_SCATTER_POINTS = int(os.environ.get("PPTX_MAX_SCATTER_POINTS", "0"))
+
 
 # ---------------------------------------------------------------------------
 # PNG conversion
 # ---------------------------------------------------------------------------
 
-def fig_to_png_bytes(fig_dict, width=1200, height=800, scale=2):
-    """Plotly figure dict を PNG バイト列に変換する。
-    kaleido が未インストールの場合は None を返す。"""
+def _maybe_downsample_scatter(tr):
+    """散布図 trace の点数が _MAX_SCATTER_POINTS を超える場合、均等間引きする（in-place）。
+
+    x / y と、配列で与えられた marker.color/size・text・customdata を同じ間隔で間引き整合を保つ。
+    既定 (_MAX_SCATTER_POINTS<=0) では何もしない。失敗しても描画は継続。
+    """
+    if _MAX_SCATTER_POINTS <= 0:
+        return
     try:
-        fig = go.Figure(fig_dict)
+        x = tr.get("x")
+        if x is None:
+            return
+        n = len(x)
+        if n <= _MAX_SCATTER_POINTS:
+            return
+        step = (n // _MAX_SCATTER_POINTS) + 1
+
+        def _stride(seq):
+            if isinstance(seq, (list, tuple)) and len(seq) == n:
+                return seq[::step]
+            return seq
+
+        tr["x"] = _stride(tr.get("x"))
+        tr["y"] = _stride(tr.get("y"))
+        if "text" in tr:
+            tr["text"] = _stride(tr.get("text"))
+        if "customdata" in tr:
+            tr["customdata"] = _stride(tr.get("customdata"))
+        marker = tr.get("marker")
+        if isinstance(marker, dict):
+            if isinstance(marker.get("color"), (list, tuple)):
+                marker["color"] = _stride(marker.get("color"))
+            if isinstance(marker.get("size"), (list, tuple)):
+                marker["size"] = _stride(marker.get("size"))
+    except Exception:
+        pass
+
+
+def _sanitize_fig_dict_for_export(fig_dict):
+    """kaleido/ヘッドレス Chromium 向けに図 dict を安全化する（in-place）。
+
+    - WebGL(scattergl) → SVG(scatter): GPU 無しコンテナの SoftGL(SwiftShader) では
+      scattergl の静的描画が無言ハングし得るため、SVG に変換する（ハングの直接対処）。
+    - 過大な点数の散布図はダウンサンプル（既定は無効）。
+    """
+    if not isinstance(fig_dict, dict):
+        return fig_dict
+    data = fig_dict.get("data")
+    if not isinstance(data, list):
+        return fig_dict
+    for tr in data:
+        if not isinstance(tr, dict):
+            continue
+        if tr.get("type") == "scattergl":
+            tr["type"] = "scatter"
+            _maybe_downsample_scatter(tr)
+    return fig_dict
+
+
+def fig_to_png_bytes(fig_dict, width=1200, height=800, scale=2):
+    """Plotly figure (dict または go.Figure) を PNG バイト列に変換する。
+
+    - kaleido 未インストール時や描画失敗時は None を返す。
+    - WebGL(scattergl) を SVG(scatter) に変換し、ヘッドレス Chromium のハングを回避する。
+    - 呼び出し側の dict を壊さないよう deepcopy してから加工する。
+    """
+    try:
+        if hasattr(fig_dict, "to_dict"):
+            d = fig_dict.to_dict()
+        else:
+            d = copy.deepcopy(fig_dict)
+        _sanitize_fig_dict_for_export(d)
+        fig = go.Figure(d)
         fig.update_layout(paper_bgcolor="white", plot_bgcolor="white")
         return pio.to_image(fig, format="png", width=width, height=height, scale=scale)
     except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# タイムアウト付き描画（ハング根絶 + プロセスリーク防止）
+# ---------------------------------------------------------------------------
+# kaleido の描画は必ず worker プロセスで実行し fut.result(timeout) で打ち切る。固まった
+# worker とその配下の Chromium はプロセスツリーごと kill してリーク(PIDS 増殖)を防ぐ。
+
+_shared_lock = threading.Lock()
+_shared_pool = None  # ProcessPoolExecutor(max_workers=1) — 単発描画の共有プール
+
+
+def _kill_process_trees(procs, grace=3.0):
+    """worker プロセスとその子孫(kaleido/Chromium)を確実に終了させる。"""
+    if not procs:
+        return
+    try:
+        import psutil
+    except Exception:
+        for p in procs:
+            try:
+                p.terminate()
+            except Exception:
+                pass
+        return
+    targets = []
+    for p in procs:
+        pid = getattr(p, "pid", None)
+        if not pid:
+            continue
+        try:
+            parent = psutil.Process(pid)
+        except Exception:
+            continue
+        try:
+            targets.extend(parent.children(recursive=True))
+        except Exception:
+            pass
+        targets.append(parent)
+    for t in targets:
+        try:
+            t.terminate()
+        except Exception:
+            pass
+    try:
+        _gone, alive = psutil.wait_procs(targets, timeout=grace)
+    except Exception:
+        alive = targets
+    for t in alive:
+        try:
+            t.kill()
+        except Exception:
+            pass
+
+
+def _shutdown_pool_hard(pool):
+    """pool の worker ツリーを kill してから shutdown する（wait でブロックしない）。"""
+    if pool is None:
+        return
+    try:
+        procs = list(getattr(pool, "_processes", {}).values())
+    except Exception:
+        procs = []
+    try:
+        pool.shutdown(wait=False, cancel_futures=True)
+    except TypeError:  # Python < 3.9 は cancel_futures 無し
+        try:
+            pool.shutdown(wait=False)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    _kill_process_trees(procs)
+
+
+def _recycle_shared_pool():
+    global _shared_pool
+    with _shared_lock:
+        pool = _shared_pool
+        _shared_pool = None
+    _shutdown_pool_hard(pool)
+
+
+def shutdown_shared_queue():
+    """共有描画プールを破棄する（エクスポート終了時に必ず呼ぶ）。"""
+    _recycle_shared_pool()
+
+
+def render_png(fig_dict, width=1200, height=800, scale=2, timeout=None):
+    """1 枚をタイムアウト付きで描画する。タイムアウト/失敗時は None を返す（スキップ可能）。
+
+    固まった場合は worker+Chromium を kill してプールを作り直す。
+    """
+    global _shared_pool
+    t = timeout if timeout is not None else _RENDER_TIMEOUT_SEC
+    with _shared_lock:
+        if _shared_pool is None:
+            _shared_pool = ProcessPoolExecutor(max_workers=1)
+        pool = _shared_pool
+    try:
+        fut = pool.submit(fig_to_png_bytes, fig_dict, width, height, scale)
+    except Exception as e:
+        logger.warning("[PPTX] 描画プールへの投入に失敗、作り直します: %s", e)
+        _recycle_shared_pool()
+        return None
+    try:
+        return fut.result(timeout=t)
+    except FuturesTimeout:
+        logger.warning(
+            "[PPTX] 画像描画が %.0fs を超過。この図をスキップし描画プロセスを回収します。", t)
+        _recycle_shared_pool()
+        return None
+    except Exception as e:
+        logger.warning("[PPTX] 画像描画に失敗、この図をスキップ: %s", e)
         return None
 
 
@@ -66,9 +259,11 @@ class RenderQueue:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        if self._pool is not None:
-            self._pool.shutdown(wait=True)
-            self._pool = None
+        # wait=True は固まった worker を待って二次ブロックするため使わない。
+        # worker ツリー(kaleido/Chromium)を kill してから shutdown し、リークを防ぐ。
+        pool = self._pool
+        self._pool = None
+        _shutdown_pool_hard(pool)
 
     def submit(self, fig_dict, width: int = 1200, height: int = 800,
                scale: int = 2) -> Future:
@@ -78,6 +273,29 @@ class RenderQueue:
                 "RenderQueue は context manager (with) として使ってください"
             )
         return self._pool.submit(fig_to_png_bytes, fig_dict, width, height, scale)
+
+    def result(self, fut, timeout=None):
+        """Future をタイムアウト付きで取得。タイムアウト/失敗時は None（スキップ）。"""
+        if fut is None:
+            return None
+        t = timeout if timeout is not None else _RENDER_TIMEOUT_SEC
+        try:
+            return fut.result(timeout=t)
+        except FuturesTimeout:
+            logger.warning("[PPTX] 画像描画が %.0fs を超過。この図をスキップします。", t)
+            try:
+                fut.cancel()
+            except Exception:
+                pass
+            return None
+        except Exception as e:
+            logger.warning("[PPTX] 画像描画に失敗、この図をスキップ: %s", e)
+            return None
+
+    def render(self, fig_dict, width: int = 1200, height: int = 800,
+               scale: int = 2, timeout=None):
+        """submit + タイムアウト付き result のワンショット。"""
+        return self.result(self.submit(fig_dict, width, height, scale), timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
