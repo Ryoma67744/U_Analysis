@@ -12,6 +12,35 @@
 
 ---
 
+## 2026-07-01_ver35.0
+
+### PPTX エクスポート 4 件修正（画像反転 / 画像の個別配置 / PCA 未出力 / クラスタ毎 marker 表）
+
+App 表示と出力 PPT の不一致・使い勝手・出力漏れを解消した。
+
+- **① Spatial 画像の上下反転を修正**（`callbacks/interactive_pptx.py`）: クラスタ毎スライドの
+  Spatial は `raw_y=-SpatialY` のラスター heatmap（`yc` 昇順）に `autorange="reversed"` を重ねて
+  **App と上下逆**になっていた。個別パネル図を **非反転軸**（データ座標 heatmap）で描画し、App
+  （`_create_single_spatial_fig`）と向きを一致させた。
+- **② PPT 画像の個別オブジェクト化**（同上）: クラスタ毎「UMAP & Spatial」を結合 1 枚 PNG から、
+  **各サンプルの UMAP(上段)/Spatial(下段) を個別画像**として 2×N グリッド配置に変更。
+  PowerPoint 上で各画像を移動/リサイズ可能。新規 `_build_cluster_umap_panel_fig` /
+  `_build_cluster_spatial_panel_fig`（ラスター優先・散布フォールバック、TIC 濃淡背景＋highlight）。
+  旧 `_build_cluster_slide_combined_fig` は撤去。高速化（ラスター）は維持。
+- **③ PCA が選択されても出力されない不具合を修正**（`callbacks/interactive_pptx.py`）: 派生 PCA
+  （未補正）は専用 RDS がディスク未生成のことがあり、エクスポートの Phase-1 が
+  `Path.exists()` で無言スキップしていた。UI 読込（`load_stage_b_extract`）と同様に
+  抽出前に `_bridge.derive_uncorrected_pca(Harmony, PCA)` で遅延生成するようにし、
+  スキップした手法は最終ステータスに明記。
+- **④ marker 一覧を per-cluster 表に変更**（同上 + `utils/deg_utils.build_marker_rows` 再利用）:
+  DEG 非選択時の末尾集約表を廃止し、**各クラスタの「UMAP & Spatial」の次スライド**に
+  そのクラスタの marker 表（クラスタ/m/z/化合物名/方向/log2FC/調整p値）を出力。表描画は
+  再利用ヘルパー `_add_marker_table_slide` に集約。
+- 進捗計算を per-cluster=3 スライド（A + [DEG or marker 表] + Heatmap）に統一。
+- version 34.1→35.0。
+
+---
+
 ## 2026-07-01_ver34.1
 
 ### 結合図 Spatial の TIC 濃淡背景を復活（高速化で簡略化した分の復元）
