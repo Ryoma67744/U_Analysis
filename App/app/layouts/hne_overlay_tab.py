@@ -123,15 +123,20 @@ def create_hne_overlay_tab():
                 dbc.RadioItems(
                     id="hne_export_intensity",
                     options=[
-                        {"label": "線形化 (非log・推奨)", "value": "linear"},
+                        {"label": "線形化 (非log)", "value": "linear"},
                         {"label": "生 counts", "value": "counts"},
                         {"label": "現状 (log)", "value": "data"},
                     ],
                     value="linear", inline=True, className="small mb-1",
                 ),
-                html.Div("MetaboAnalyst は自前で log/スケーリングするため、線形（非log）で"
-                         "渡すのが無難です。出力は強度行列＋対応表の ZIP（2ファイル）。",
-                         className="text-muted", style={"fontSize": "0.72rem"}),
+                html.Div([
+                    html.Div("MetaboAnalyst は自前で log/スケーリングを行うため、非log の線形で"
+                             "渡すのが無難です（『現状(log)』は二重 log になるため非推奨）。"),
+                    html.Div("※SCiLS で RMS 補正済みの TIMS では data=log1p(counts) のため "
+                             "『線形化』と『生 counts』は同値。DESI（生入力・LogNormalize）では "
+                             "線形化＝TIC正規化線形／生counts＝生 で別物です。"),
+                    html.Div("出力は強度行列＋対応表の ZIP。"),
+                ], className="text-muted", style={"fontSize": "0.72rem"}),
                 html.Div("集約単位", className="small fw-bold mt-1"),
                 dbc.RadioItems(
                     id="hne_export_unit",
