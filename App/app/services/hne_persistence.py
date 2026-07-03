@@ -160,8 +160,37 @@ def save_metaboanalyst_csv(rds_path, filename, df):
         return None
 
 
+def save_metaboanalyst_bytes(rds_path, filename, data):
+    """任意バイト列（ZIP バンドル等）を `<RDS隣>/metaboanalyst_exports/<filename>` に atomic 保存。
+
+    保存先パス（str）を返す。失敗時 None。CSV 版と同じディレクトリ規約。
+    """
+    if not rds_path or not filename:
+        return None
+    try:
+        out_dir = Path(rds_path).parent / "metaboanalyst_exports"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / filename
+        fd, tmp_path = tempfile.mkstemp(dir=str(out_dir), suffix=".tmp",
+                                        prefix=path.stem + "_")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            os.replace(tmp_path, str(path))
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        return str(path)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("MetaboAnalyst バンドルのサーバ保存に失敗: %s", e)
+        return None
+
+
 def metaboanalyst_csv_path(rds_path, filename):
-    """`save_metaboanalyst_csv` が書く CSV のパス（Path）。無効時 None。"""
+    """`save_metaboanalyst_csv` が書く CSV/バンドルのパス（Path）。無効時 None。"""
     if not rds_path or not filename:
         return None
     return Path(rds_path).parent / "metaboanalyst_exports" / filename

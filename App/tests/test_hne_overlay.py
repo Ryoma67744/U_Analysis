@@ -350,6 +350,114 @@ def test_assign_regions_invariant_under_shared_rotation():
     pd.testing.assert_series_equal(region0, region1, check_names=False)
 
 
+# --- 強度の線形化 / feature マッピング（下流エクスポート P1）---
+def test_linearize_expression_inverts_transform():
+    v = np.array([0.0, np.log1p(9.0), np.log1p(99.0)])
+    # log1p / LogNormalize / None(既定) → expm1
+    assert np.allclose(hn.linearize_expression(v, "LogNormalize"), [0.0, 9.0, 99.0])
+    assert np.allclose(hn.linearize_expression(v, "RMS_input+log1p"), [0.0, 9.0, 99.0])
+    assert np.allclose(hn.linearize_expression(v, None), [0.0, 9.0, 99.0])
+    # sqrt → 2乗
+    s = np.array([0.0, 2.0, 3.0])
+    assert np.allclose(hn.linearize_expression(s, "RMS_input+sqrt"), [0.0, 4.0, 9.0])
+    # none → 恒等
+    ident = np.array([0.0, 1.5, 7.0])
+    assert np.allclose(hn.linearize_expression(ident, "RMS_input+none"), ident)
+    # DataFrame でも動作・0 は 0 のまま（列 a=[0,4], b=[1,0]）
+    df = pd.DataFrame({"a": [0.0, np.log1p(4.0)], "b": [np.log1p(1.0), 0.0]})
+    out = hn.linearize_expression(df, "LogNormalize")
+    assert np.allclose(out.to_numpy(), [[0.0, 1.0], [4.0, 0.0]])
+
+
+def test_build_region_cluster_export_linear_keeps_mz_and_delogs():
+    df = pd.DataFrame({
+        "CellID": ["c1", "c2", "c3"],
+        "Sample": ["E15", "E15", "E16"],
+        "region": ["Brain", "Brain", "Brain"],
+        "Cluster": ["1", "1", "1"],
+    })
+    # expr は data 層（log1p）を模擬。線形 10,20 / 100 を log1p で格納。
+    expr = pd.DataFrame({
+        "CellID": ["c1", "c2", "c3"],
+        "m/z 419.25720": [np.log1p(10.0), np.log1p(20.0), np.log1p(100.0)],
+    })
+    out = hn.build_region_cluster_export(
+        df, expr, sample_col="Sample",
+        intensity_repr="linear", preprocessing_method="LogNormalize")
+    # 列は m/z のまま（化合物名にリネームしない）
+    assert "m/z 419.25720" in out.columns
+    # 線形平均 = mean(expm1(log1p(10)), expm1(log1p(20))) = mean(10,20) = 15
+    b = out[out["Group"] == "E15_Brain_cluster1"].iloc[0]
+    assert abs(float(b["m/z 419.25720"]) - 15.0) < 1e-9
+    h = out[out["Group"] == "E16_Brain_cluster1"].iloc[0]
+    assert abs(float(h["m/z 419.25720"]) - 100.0) < 1e-9
+    assert out.attrs.get("repr") == "linear"
+
+
+def test_build_region_cluster_export_data_repr_is_unchanged():
+    # intensity_repr="data"（既定）は従来どおり変換なしの群平均
+    df = pd.DataFrame({"CellID": ["c1", "c2"], "region": ["A", "A"],
+                       "Cluster": ["1", "1"]})
+    expr = pd.DataFrame({"CellID": ["c1", "c2"], "m/z 1": [2.0, 4.0]})
+    out = hn.build_region_cluster_export(df, expr, intensity_repr="data")
+    assert abs(float(out.iloc[0]["m/z 1"]) - 3.0) < 1e-9  # mean(2,4), 変換なし
+
+
+def test_build_feature_map_columns_and_missing():
+    fa = {
+        "m/z 419.25720": {"compound": "ADP", "display_name": "ADP",
+                          "adduct": "[M-H]-", "formula": "C10H15N5O10P2",
+                          "ppm": 1.2, "lipid_class": None, "database": "in-house"},
+    }
+    fm = hn.build_feature_map(fa, ["m/z 419.25720", "m/z 999.0"])
+    assert list(fm.columns) == ["feature_id", "compound", "display_name",
+                                "adduct", "formula", "ppm", "lipid_class", "database"]
+    r0 = fm[fm["feature_id"] == "m/z 419.25720"].iloc[0]
+    assert r0["compound"] == "ADP" and r0["adduct"] == "[M-H]-"
+    # 注釈が無い m/z も行として残り、compound は空
+    r1 = fm[fm["feature_id"] == "m/z 999.0"].iloc[0]
+    assert r1["compound"] == ""
+
+
+# --- 同名化合物の統合（代表イオン=最大強度）---
+def test_merge_features_by_compound_representative_max():
+    inten = pd.DataFrame({
+        "Group": ["g1", "g2"],
+        "m/z 400.0": [10.0, 20.0],   # ADP [M-H]-  平均15 → 代表
+        "m/z 402.0": [1.0, 3.0],     # ADP [M+H]+  平均2
+        "m/z 500.0": [5.0, 5.0],     # PI 38:4（単独 compound）
+        "m/z 999.0": [7.0, 8.0],     # 未注釈 → m/z のまま
+    })
+    fa = {
+        "m/z 400.0": {"compound": "ADP", "adduct": "[M-H]-"},
+        "m/z 402.0": {"compound": "ADP", "adduct": "[M+H]+"},
+        "m/z 500.0": {"compound": "PI 38:4", "adduct": "[M-H]-"},
+    }
+    merged, mp = hn.merge_features_by_compound(inten, fa, method="repr_max")
+    # 列順: Group, ADP(=400.0), PI 38:4(=500.0), m/z 999.0（初出順）
+    assert list(merged.columns) == ["Group", "ADP", "PI 38:4", "m/z 999.0"]
+    assert list(merged["ADP"]) == [10.0, 20.0]      # 代表=平均最大の 400.0
+    assert list(merged["PI 38:4"]) == [5.0, 5.0]
+    assert list(merged["m/z 999.0"]) == [7.0, 8.0]  # 未注釈は残る
+    m = mp.set_index("feature_id")
+    assert m.loc["m/z 400.0", "group_key"] == "ADP"
+    assert bool(m.loc["m/z 400.0", "is_representative"]) is True
+    assert bool(m.loc["m/z 402.0", "is_representative"]) is False
+    assert int(m.loc["m/z 400.0", "n_in_group"]) == 2
+    assert bool(m.loc["m/z 500.0", "is_representative"]) is True   # 単独も代表
+    assert m.loc["m/z 999.0", "group_key"] == "m/z 999.0"
+    assert int(m.loc["m/z 999.0", "n_in_group"]) == 1
+
+
+def test_merge_features_by_compound_sum_and_mean():
+    inten = pd.DataFrame({"Group": ["g1", "g2"], "a": [10.0, 20.0], "b": [1.0, 3.0]})
+    fa = {"a": {"compound": "X"}, "b": {"compound": "X"}}
+    msum, _ = hn.merge_features_by_compound(inten, fa, method="sum")
+    assert list(msum["X"]) == [11.0, 23.0]
+    mmean, _ = hn.merge_features_by_compound(inten, fa, method="mean")
+    assert list(mmean["X"]) == [5.5, 11.5]
+
+
 def test_parse_plotly_path():
     pts = hn.parse_plotly_path("M100,200L150,250L120,300Z")
     assert pts == [(100.0, 200.0), (150.0, 250.0), (120.0, 300.0)]

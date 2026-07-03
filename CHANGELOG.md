@@ -12,6 +12,52 @@
 
 ---
 
+## 2026-07-02_ver37.0
+
+### MetaboAnalyst エクスポート: 同名化合物の統合（代表イオン=最大強度）
+
+ver36.0 では別アダクトの同名化合物を別 feature（m/z）として残していたが、要望により
+**同一化合物の m/z を1列に統合**する「集約単位」を追加した。
+
+- **集約単位セレクタ**（`layouts/hne_overlay_tab.py` / `callbacks/hne_overlay_callbacks.py`）:
+  `化合物（既定）` / `m/z`。化合物選択時は同一 `compound` の m/z 列を
+  **代表イオン（全群平均が最大の m/z）** の値で1列に統合し `intensity_matrix_compound.csv` を出力。
+  未注釈（No DB hit）や単独 compound は m/z のまま独立列で残す。
+- **トレーサビリティ**: `feature_map.csv` に各 m/z の `group_key`（統合先）/`is_representative`（代表か）/
+  `n_in_group`（統合数）を付与し、どの m/z を代表に選んだか明記。
+- 純ロジック `merge_features_by_compound`（`services/hne_overlay.py`、`repr_max`/`sum`/`mean` 対応）を
+  新設・単体テスト追加。ZIP 名・キャッシュキー・ステータスに集約単位を反映。
+- 注: 同位体（M+1 等）・異性体は annotation 上区別できないため、代表イオン方式で二重計上を回避する。
+  MetaboAnalyst には化合物名で一意な濃度表として直接投入できる。
+- version 36.0→37.0。
+
+---
+
+## 2026-07-02_ver36.0
+
+### MetaboAnalyst 向けエクスポート改善（強度の線形化 ＋ feature_id=m/z 化・ZIP 2ファイル）
+
+H&E ROI×クラスタの MetaboAnalyst 用出力を下流解析に適した形へ改善した。
+
+- **① 二重正規化の回避（強度セレクタ・既定=線形化）**（`layouts/hne_overlay_tab.py` /
+  `callbacks/hne_overlay_callbacks.py` / `services/seurat_bridge.py` / `Script/helpers/export_region_cluster_means.R`）:
+  現状の強度は Seurat `data` 層＝log 正規化後で、MetaboAnalyst の log/スケーリングと二重変換になる。
+  新セレクタ **`線形化(非log・既定) / 生counts / 現状(log)`** を追加。`linear` は `@misc$preprocessing_method` に応じ
+  **spot 単位で逆変換**（log1p→`expm1`／sqrt→2乗／none→恒等、`f(0)=0` で sparse 維持）してから群平均。
+- **② 化合物名の重複解消（master は m/z=feature_id）**: 別 m/z（アダクト/同位体/候補）が同一化合物名に潰れて
+  列名が重複していた。master を **m/z のまま**出し、名前・注釈は別表に分離。
+- **出力を ZIP（2ファイル）化**（`callbacks/hne_overlay_callbacks.py`）:
+  `intensity_matrix_mz.csv`（行=Group、列=m/z 一意、値=repr 群平均）＋
+  `feature_map.csv`（m/z→compound/display_name/adduct/formula/ppm/lipid_class/database）。
+  ファイル名・ステータスに強度種別と preprocessing_method を明記。キャッシュキーに repr を含める。
+- 純ロジックを `utils`/`services` に集約（`services/hne_overlay.py` に `linearize_expression` /
+  `build_feature_map` を新設・単体テスト追加、`build_region_cluster_export` に `intensity_repr`）。
+  `services/hne_persistence.py` に ZIP バイト保存 `save_metaboanalyst_bytes` を追加。
+- 注: データは N=1（各ステージ＝切片1枚・生物学的反復なし）のため、反復・統計・記述メタは対象外。
+- version 35.0→36.0。
+
+---
+
 ## 2026-07-01_ver35.0
 
 ### PPTX エクスポート 4 件修正（画像反転 / 画像の個別配置 / PCA 未出力 / クラスタ毎 marker 表）

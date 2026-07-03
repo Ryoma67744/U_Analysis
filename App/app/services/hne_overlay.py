@@ -309,11 +309,126 @@ def region_cluster_label(region, cluster):
 
 
 # ---------------------------------------------------------------------------
+# 強度の線形化 / feature マッピング（純ロジック・下流エクスポート用）
+# ---------------------------------------------------------------------------
+def linearize_expression(values, method):
+    """log/sqrt 変換済みの強度を線形へ逆変換する（純関数・spot 単位）。
+
+    method: Seurat の preprocessing_method（例 "LogNormalize" / "RMS_input+log1p" /
+        "..._sqrt" / "..._none"）。log1p/LogNormalize/空/不明 → expm1、sqrt → 2乗、none → 恒等。
+    values: np.ndarray / pd.DataFrame / pd.Series（dtype は保持）。`f(0)=0` で 0 は 0 のまま。
+    """
+    m = (str(method) if method is not None else "").lower()
+    if "sqrt" in m:
+        return values ** 2
+    if "none" in m:
+        return values
+    return np.expm1(values)          # log1p / LogNormalize / 空・不明 → expm1
+
+
+def build_feature_map(feature_annotations, feature_ids):
+    """feature_id(m/z) → 注釈行の DataFrame を返す（純ロジック）。
+
+    列: feature_id / compound / display_name / adduct / formula / ppm / lipid_class / database。
+    feature_annotations: {feature_id: {compound, display_name, adduct, formula, ppm,
+        lipid_class, database, ...}}。注釈が無い feature_id も行として残す（空欄）。
+    """
+    cols = ["feature_id", "compound", "display_name", "adduct",
+            "formula", "ppm", "lipid_class", "database"]
+
+    def _s(v):
+        return "" if v is None else str(v)
+
+    fa = feature_annotations or {}
+    rows = []
+    for fid in feature_ids:
+        a = fa.get(fid) or fa.get(str(fid)) or {}
+        ppm = a.get("ppm")
+        rows.append([
+            str(fid), _s(a.get("compound")), _s(a.get("display_name")),
+            _s(a.get("adduct")), _s(a.get("formula")),
+            ("" if ppm is None else ppm), _s(a.get("lipid_class")),
+            _s(a.get("database")),
+        ])
+    return pd.DataFrame(rows, columns=cols)
+
+
+def merge_features_by_compound(intensity_df, feature_annotations,
+                               method="repr_max", group_col="Group"):
+    """同一 `compound` の m/z 列を1列へ統合する（純ロジック）。
+
+    intensity_df: 先頭に group_col("Group")、以降 m/z(feature_id) の群平均。
+    feature_annotations: {feature_id: {compound, ...}}。compound 非空でグルーピング。
+    method: "repr_max"（全群平均が最大の m/z を代表・既定）/ "sum" / "mean"。
+    未注釈（compound 空/None）や単独 compound はその m/z のまま独立列で残す
+    （列名は annotated なら compound、無ければ m/z）。同位体/異性体は区別できないため、
+    既定の代表イオン方式で二重計上を避ける。
+    Returns: (merged_df, map_df)
+      merged_df: group_col ＋ 集約後列（compound か m/z の値）。
+      map_df: DataFrame[feature_id, group_key, is_representative, n_in_group]。
+    """
+    fa = feature_annotations or {}
+    feat_cols = [c for c in intensity_df.columns if c != group_col]
+
+    def _compound(fid):
+        a = fa.get(fid) or fa.get(str(fid)) or {}
+        c = a.get("compound")
+        return str(c).strip() if c is not None else ""
+
+    # group_key: compound（非空）→ compound、無ければ m/z 自身（独立）
+    members, order = {}, []
+    for fid in feat_cols:
+        comp = _compound(fid)
+        gk = comp if comp else str(fid)
+        if gk not in members:
+            members[gk] = []
+            order.append(gk)
+        members[gk].append(fid)
+
+    # 代表選択用に各列の全群平均（空/全 NaN は -inf）
+    col_mean = {}
+    for fid in feat_cols:
+        v = pd.to_numeric(intensity_df[fid], errors="coerce").to_numpy()
+        with np.errstate(all="ignore"):
+            m = np.nanmean(v) if v.size else np.nan
+        col_mean[fid] = float(m) if np.isfinite(m) else float("-inf")
+
+    out = {group_col: intensity_df[group_col].to_numpy()}
+    map_rows = []
+    for gk in order:
+        mems = members[gk]
+        n = len(mems)
+        if n == 1:
+            out[gk] = intensity_df[mems[0]].to_numpy()
+            map_rows.append([str(mems[0]), gk, True, 1])
+            continue
+        if method == "sum":
+            out[gk] = intensity_df[mems].sum(axis=1).to_numpy()
+            rep = None
+        elif method == "mean":
+            out[gk] = intensity_df[mems].mean(axis=1).to_numpy()
+            rep = None
+        else:  # repr_max（既定）: 全群平均が最大の m/z を代表に採用（値はそのまま）
+            rep = max(mems, key=lambda f: col_mean.get(f, float("-inf")))
+            out[gk] = intensity_df[rep].to_numpy()
+        for fid in mems:
+            map_rows.append([str(fid), gk,
+                             bool(rep is not None and fid == rep), n])
+
+    merged_df = pd.DataFrame(out)
+    map_df = pd.DataFrame(
+        map_rows,
+        columns=["feature_id", "group_key", "is_representative", "n_in_group"])
+    return merged_df, map_df
+
+
+# ---------------------------------------------------------------------------
 # MetaboAnalyst 用エクスポート（region×cluster 群ごとの平均強度）
 # ---------------------------------------------------------------------------
 def build_region_cluster_export(df, expr_df, region_col="region",
                                 cluster_col="Cluster", cellid_col="CellID",
-                                sample_col=None, feature_name_map=None, min_spots=1):
+                                sample_col=None, feature_name_map=None, min_spots=1,
+                                intensity_repr="data", preprocessing_method=None):
     """region×cluster 群ごとの平均強度（行=群, 列=feature）を返す。
 
     Args:
@@ -322,10 +437,14 @@ def build_region_cluster_export(df, expr_df, region_col="region",
         sample_col: 指定すると群ラベルを `{sample}_{region}_cluster{cluster}`（例
             `E15_Brain_cluster23`）にして全切片を1ファイルに統合する。None なら
             `{region}_cluster{cluster}`（後方互換）。
-        feature_name_map: {feature列名 -> 化合物名} があれば列名を化合物名へ。
+        feature_name_map: {feature列名 -> 化合物名} があれば列名を化合物名へ（P1 では未使用）。
         min_spots: この spot 数未満の群は出力しない。
+        intensity_repr: "linear"（data を preprocessing_method で線形化）/ "data"（現状の log）/
+            "counts"（parquet に生 counts は無いため linear で代替＋警告）。
+        preprocessing_method: linear の逆変換に使う手法タグ（None なら LogNormalize を仮定）。
     Returns:
         DataFrame（先頭列 "Group" = 群ラベル、以降 feature 平均）。ROI 未割当（region=NA）は除外。
+        out.attrs["repr"] / out.attrs["preprocessing_method"] に来歴を格納。
     """
     if region_col not in df.columns:
         return pd.DataFrame()
@@ -343,6 +462,15 @@ def build_region_cluster_export(df, expr_df, region_col="region",
     expr = expr_df.set_index(cellid_col)
     feat_cols = list(expr.columns)
 
+    # 強度表現。parquet は data 層（log）なので、linear は逆変換、counts は不可のため linear で代替。
+    if intensity_repr in ("linear", "counts"):
+        if intensity_repr == "counts":
+            import logging
+            logging.getLogger("msi.hne").warning(
+                "parquet フォールバックでは生 counts を出せないため linear で代替します。")
+        expr = expr.copy()
+        expr[feat_cols] = linearize_expression(expr[feat_cols], preprocessing_method)
+
     labels, rows = [], []
     for rc, grp in sub.groupby("__rc__"):
         ids = [cid for cid in grp[cellid_col].tolist() if cid in expr.index]
@@ -357,6 +485,8 @@ def build_region_cluster_export(df, expr_df, region_col="region",
     if feature_name_map:
         out = out.rename(columns={c: feature_name_map.get(c, c) for c in out.columns})
     out.insert(0, "Group", labels)
+    out.attrs["repr"] = str(intensity_repr)
+    out.attrs["preprocessing_method"] = str(preprocessing_method or "")
     return out
 
 

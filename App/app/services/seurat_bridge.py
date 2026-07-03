@@ -428,14 +428,16 @@ class SeuratBridge:
             )
 
     def export_region_cluster_means(self, rds_path, groups_df, out_csv_path=None,
-                                    assay=None, layer="data", timeout=600):
+                                    assay=None, layer="data",
+                                    intensity_repr="linear", timeout=600):
         """ROI×クラスタ群ごとの平均強度を R 側で直接計算し DataFrame を返す（B経路）。
 
-        巨大な expression_matrix.parquet を作らず、RDS の同一 data layer
-        （extract_seurat_data.R と同じ JoinLayers→LayerData(layer="data")）から
-        対象 cell のみ sparse 集計する。
+        巨大な expression_matrix.parquet を作らず、RDS から対象 cell のみ sparse 集計する。
+        intensity_repr: "linear"（既定・data を preprocessing_method で線形化）/ "counts"（生）/
+            "data"（現状の log）。列は m/z（feature_id, 一意）のまま返す（化合物名にリネームしない）。
         groups_df: 列 [CellID, Group]（ROI 割当済みのみ）。
         Returns: pd.DataFrame（先頭列 Group, 以降 feature(m/z) 平均）。
+            df.attrs["repr"] / df.attrs["preprocessing_method"] に来歴を格納。
         """
         from app.utils.file_locks import get_or_create_lock
         cache_dir = self._get_cache_dir(rds_path)
@@ -460,6 +462,8 @@ class SeuratBridge:
                 cmd += ["--assay", str(assay)]
             if layer:
                 cmd += ["--layer", str(layer)]
+            if intensity_repr:
+                cmd += ["--repr", str(intensity_repr)]
             try:
                 result = subprocess.run(
                     cmd, capture_output=True, timeout=timeout,
@@ -480,7 +484,18 @@ class SeuratBridge:
             if not out_csv_path.exists():
                 raise RuntimeError(
                     f"Region×cluster export produced no output: {out_csv_path}")
-            return pd.read_csv(out_csv_path)
+            df = pd.read_csv(out_csv_path)
+            # 来歴を stdout から回収して attrs に格納（明記用）
+            import re as _re
+            _out = (result.stdout.decode("utf-8", errors="replace")
+                    if result.stdout else "")
+            _m_repr = _re.search(r"^REPR=(.*)$", _out, _re.M)
+            _m_prep = _re.search(r"^PREPROCESSING_METHOD=(.*)$", _out, _re.M)
+            df.attrs["repr"] = (_m_repr.group(1).strip()
+                                if _m_repr else str(intensity_repr))
+            df.attrs["preprocessing_method"] = (
+                _m_prep.group(1).strip() if _m_prep else "")
+            return df
 
     def run_differential_expression(self, rds_path, ident1_ids, ident2_ids=None,
                                     mode="global", min_pct=0.05, logfc=0.25,
