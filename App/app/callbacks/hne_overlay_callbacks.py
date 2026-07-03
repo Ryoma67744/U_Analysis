@@ -659,8 +659,23 @@ _HNE_PROG_SHOW = {"display": "block", "marginTop": "6px"}
 _HNE_PROG_HIDE = {"display": "none"}
 
 
-def _export_cache_key(rds_path, state, intensity_repr="data", unit="mz"):
-    """エクスポート結果を一意に決めるキャッシュキー（RDS/ROI状態/化合物名/強度表現/集約単位に依存）。"""
+@callback(
+    [Output("hne_export_method", "options"),
+     Output("hne_export_method", "value")],
+    Input("interactive_rds_map", "data"),
+    prevent_initial_call=True,
+)
+def update_hne_export_method_options(rds_map):
+    """rds_map から出力手法チェックリストを更新（既定で全手法チェック）。"""
+    if not rds_map or not isinstance(rds_map, dict):
+        return [], []
+    methods = list(rds_map.keys())
+    return [{"label": m, "value": m} for m in methods], methods
+
+
+def _export_cache_key(rds_path, state, intensity_repr="data", unit="mz",
+                      methods=None):
+    """エクスポート結果を一意に決めるキャッシュキー（RDS/ROI/化合物名/強度/集約単位/手法に依存）。"""
     import hashlib
     import json as _json
 
@@ -674,10 +689,11 @@ def _export_cache_key(rds_path, state, intensity_repr="data", unit="mz"):
         {k: (v.get("compound") or v.get("display_name") or "")
          for k, v in sorted(fa.items())}, ensure_ascii=False, sort_keys=True)
     sp = hp.hne_state_path(rds_path)
+    methods_key = ",".join(sorted(str(m) for m in (methods or [])))
     raw = "|".join([str(rds_path), _mt(rds_path),
                     _mt(sp) if sp else "0", fa_key,
-                    f"repr={intensity_repr}", f"unit={unit}", "fmt=zip",
-                    "lblfmt=cluster"])
+                    f"repr={intensity_repr}", f"unit={unit}",
+                    f"methods={methods_key}", "fmt=zip", "lblfmt=cluster"])
     return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -711,10 +727,14 @@ def hne_export_stage_a(n):
     State("seurat_cache_dir_store", "data"),
     State("hne_export_intensity", "value"),
     State("hne_export_unit", "value"),
+    State("interactive_rds_map", "data"),
+    State("interactive_integration_method", "value"),
+    State("hne_export_method", "value"),
     prevent_initial_call=True,
 )
 def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
-                       intensity_unit):
+                       intensity_unit, rds_map, current_method,
+                       export_methods):
     if not trigger:
         return (no_update,) * 6
 
@@ -725,6 +745,7 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
         return download, msg, _HNE_PROG_HIDE, "完了", False, False
 
     import io
+    import re as _re
     import zipfile
     from pathlib import Path
 
@@ -737,6 +758,8 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
     if unit not in ("compound", "mz"):
         unit = "compound"
     unit_label = {"compound": "化合物", "mz": "m/z"}[unit]
+    matrix_name = ("intensity_matrix_compound.csv" if unit == "compound"
+                   else "intensity_matrix_mz.csv")
     zip_fname = f"metaboanalyst_{repr_mode}_{unit}.zip"
 
     def _send_zip(data):
@@ -744,6 +767,7 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
         return dcc.send_bytes(lambda b: b.write(data), zip_fname)
 
     try:
+        from app.callbacks.interactive_callbacks import _bridge
         state = _get_state(rds_path)
         plot_data = state.get("plot_data")
         if plot_data is None or "SpatialX" not in plot_data.columns:
@@ -751,93 +775,127 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
         if "Sample" not in plot_data.columns:
             return fail("plot_data に Sample 列がありません。")
 
-        # --- C: キャッシュヒット（ROI/RDS/化合物名/強度表現/集約単位 不変なら即返す） ---
-        key = _export_cache_key(rds_path, state, repr_mode, unit)
+        # --- 出力手法の決定（未選択なら rds_map 全手法、無ければ現在の手法） ---
+        rmap = rds_map if isinstance(rds_map, dict) else {}
+        selected = [m for m in (export_methods or []) if m in rmap]
+        if not selected:
+            selected = list(rmap.keys()) or (
+                [current_method] if current_method else [])
+        if not selected:
+            return fail("出力する手法がありません（データを読み込んでください）。")
+
+        # --- C: キャッシュヒット（ROI/RDS/化合物名/強度/単位/手法 不変なら即返す） ---
+        key = _export_cache_key(rds_path, state, repr_mode, unit, selected)
         if hp.load_export_cache_key(rds_path, zip_fname) == key:
             cached = hp.metaboanalyst_csv_path(rds_path, zip_fname)
             if cached and Path(cached).exists():
-                data = Path(cached).read_bytes()
-                return ok(_send_zip(data),
+                return ok(_send_zip(Path(cached).read_bytes()),
                           f"ZIP を出力しました（キャッシュ／強度: {repr_label}"
-                          f"／単位: {unit_label}）。  保存先: {cached}")
+                          f"／単位: {unit_label}／手法: {' / '.join(selected)}）。"
+                          f"  保存先: {cached}")
 
-        # --- 全切片で region 割当 → CellID,Group の小さな表（B経路の R 入力） ---
-        frames = []
-        for sample in sorted(str(s) for s in plot_data["Sample"].dropna().unique()):
-            d = plot_data[plot_data["Sample"].astype(str) == sample]
-            if d.empty:
-                continue
-            entry = hp.load_hne_sample(rds_path, sample)
-            dd = d.copy()
-            dd["region"] = hn.regions_from_overlay(d, entry).values
-            frames.append(dd)
-        if not frames:
-            return fail("対象個体がありません。")
-        alldf = pd.concat(frames, ignore_index=True)
-        if int(alldf["region"].notna().sum()) == 0:
-            return fail("どの切片でも領域内 spot がありませんでした"
-                        "（各切片で対応点3点以上＋ROIを設定してください）。")
-        groups_df = hn.build_groups_table(alldf, sample_col="Sample")
-        if groups_df.empty:
-            return fail("出力対象（領域内 spot）がありませんでした。")
+        samples = sorted(str(s) for s in plot_data["Sample"].dropna().unique())
 
-        # --- B: R 側で群平均を直接計算（列は m/z=feature_id のまま）。失敗時は parquet 経路へ ---
-        from app.callbacks.interactive_callbacks import _bridge
-        prep_method = str((state.get("meta") or {}).get("preprocessing_method") or "")
-        try:
-            out_raw = _bridge.export_region_cluster_means(
-                rds_path, groups_df, intensity_repr=repr_mode)
-            prep_method = out_raw.attrs.get("preprocessing_method") or prep_method
-        except Exception as e_r:
-            logger.warning("R 集計に失敗、parquet 経路へフォールバック: %s", e_r)
+        def _method_outputs(result, m_rds, m_fa):
+            """1手法の (matrix_df, fmap, prep) を作る。ROI は loaded rds の overlay を、
+            クラスタ・強度は当該手法の RDS/抽出結果を使う。失敗時 None。"""
+            m_plot = result.get("plot_data")
+            if (m_plot is None or "SpatialX" not in m_plot.columns
+                    or "Cluster" not in m_plot.columns):
+                return None
+            frames = []
+            for sample in samples:
+                d = m_plot[m_plot["Sample"].astype(str) == sample]
+                if d.empty:
+                    continue
+                entry = hp.load_hne_sample(rds_path, sample)   # ROI は共通(loaded)
+                dd = d.copy()
+                dd["region"] = hn.regions_from_overlay(d, entry).values
+                frames.append(dd)
+            if not frames:
+                return None
+            alldf = pd.concat(frames, ignore_index=True)
+            if int(alldf["region"].notna().sum()) == 0:
+                return None
+            groups_df = hn.build_groups_table(alldf, sample_col="Sample")
+            if groups_df.empty:
+                return None
+            prep = str((result.get("meta") or {}).get(
+                "preprocessing_method") or "")
             try:
-                _bridge.ensure_expression_matrix(rds_path)
-            except Exception:
-                pass
-            expr_path = None
-            if cache_dir_str:
-                cand = Path(cache_dir_str) / "expression_matrix.parquet"
-                if cand.exists():
-                    expr_path = cand
-            if expr_path is None:
-                return fail("強度行列を用意できませんでした（R / Feature plot を確認してください）。")
-            expr_df = pd.read_parquet(expr_path)
-            out_raw = hn.build_region_cluster_export(
-                alldf, expr_df, sample_col="Sample",
-                intensity_repr=repr_mode, preprocessing_method=(prep_method or None))
-            prep_method = out_raw.attrs.get("preprocessing_method") or prep_method
-        if out_raw is None or getattr(out_raw, "empty", True):
-            return fail("出力対象（領域内 spot）がありませんでした。")
+                out_raw = _bridge.export_region_cluster_means(
+                    m_rds, groups_df, intensity_repr=repr_mode)
+                prep = out_raw.attrs.get("preprocessing_method") or prep
+            except Exception as e_r:
+                logger.warning("R 集計に失敗、parquet 経路へ: %s", e_r)
+                cdir = result.get("cache_dir")
+                expr_path = (Path(cdir) / "expression_matrix.parquet"
+                             if cdir else None)
+                if not (expr_path and expr_path.exists()):
+                    return None
+                out_raw = hn.build_region_cluster_export(
+                    alldf, pd.read_parquet(expr_path), sample_col="Sample",
+                    intensity_repr=repr_mode, preprocessing_method=(prep or None))
+            if out_raw is None or getattr(out_raw, "empty", True):
+                return None
+            feat_ids = [c for c in out_raw.columns if c != "Group"]
+            fmap = hn.build_feature_map(m_fa, feat_ids)
+            if unit == "compound":
+                matrix_df, merge_map = hn.merge_features_by_compound(
+                    out_raw, m_fa, method="repr_max")
+                fmap = fmap.merge(merge_map, on="feature_id", how="left")
+            else:
+                matrix_df = out_raw
+            return matrix_df, fmap, prep
 
-        # --- feature_map（m/z→化合物名/adduct/formula…）。master(out_raw)は m/z のまま ---
-        feature_ids = [c for c in out_raw.columns if c != "Group"]
-        fa_map = state.get("feature_annotations")
-        fmap = hn.build_feature_map(fa_map, feature_ids)
-
-        # --- 集約単位: 化合物なら同名 m/z を代表イオン（最大強度）で1列へ統合 ---
-        if unit == "compound":
-            matrix_df, merge_map = hn.merge_features_by_compound(
-                out_raw, fa_map, method="repr_max")
-            fmap = fmap.merge(merge_map, on="feature_id", how="left")
-            matrix_name = "intensity_matrix_compound.csv"
-        else:
-            matrix_df = out_raw
-            matrix_name = "intensity_matrix_mz.csv"
-        n_feat_out = matrix_df.shape[1] - 1
-
-        # --- ZIP（2ファイル）を生成 ---
+        # --- 手法ごとに ZIP へ（サブフォルダ = 手法名）---
         buf = io.BytesIO()
+        exported, skipped, preps = [], [], []
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(matrix_name, matrix_df.to_csv(index=False))
-            zf.writestr("feature_map.csv", fmap.to_csv(index=False))
+            for m in selected:
+                m_rds = rmap.get(m) or (rds_path if m == current_method else None)
+                # 派生PCA（未補正）はディスク未生成のことがある → Harmony から遅延生成
+                if m == "PCA" and m_rds and not Path(m_rds).exists():
+                    h_rds = rmap.get("Harmony")
+                    if h_rds and Path(h_rds).exists():
+                        try:
+                            _bridge.derive_uncorrected_pca(h_rds, m_rds)
+                        except Exception as e:
+                            logger.warning("PCA 派生生成失敗: %s", e)
+                if not m_rds or not Path(m_rds).exists():
+                    skipped.append(m)
+                    continue
+                try:
+                    result = _bridge.extract_data(m_rds)
+                except Exception as e:
+                    logger.warning("%s: データ抽出エラー: %s", m, e)
+                    skipped.append(m)
+                    continue
+                m_fa = result.get("feature_annotations") or state.get(
+                    "feature_annotations")
+                res = _method_outputs(result, m_rds, m_fa)
+                if res is None:
+                    skipped.append(m)
+                    continue
+                matrix_df, fmap, prep = res
+                safe = _re.sub(r'[\\/:*?"<>|]+', "_", str(m)) or "method"
+                zf.writestr(f"{safe}/{matrix_name}", matrix_df.to_csv(index=False))
+                zf.writestr(f"{safe}/feature_map.csv", fmap.to_csv(index=False))
+                exported.append(m)
+                if prep:
+                    preps.append(prep)
+        if not exported:
+            return fail("出力できる手法がありませんでした"
+                        "（ROI/対応点3点以上/RDS を確認してください）。")
         zip_bytes = buf.getvalue()
 
         saved = hp.save_metaboanalyst_bytes(rds_path, zip_fname, zip_bytes)
         hp.save_export_cache_key(rds_path, zip_fname, key)
-        n_sections = int(alldf.loc[alldf["region"].notna(), "Sample"].nunique())
-        msg = (f"{len(matrix_df)} 群 × {n_feat_out} {unit_label} を ZIP 出力"
-               f"（{n_sections} 切片統合／強度: {repr_label}／単位: {unit_label}"
-               + (f"／preprocessing: {prep_method}" if prep_method else "") + "）。")
+        msg = (f"{len(exported)} 手法を ZIP 出力（{' / '.join(exported)}"
+               f"／強度: {repr_label}／単位: {unit_label}"
+               + (f"／preprocessing: {preps[0]}" if preps else "") + "）。")
+        if skipped:
+            msg += f"（スキップ: {', '.join(dict.fromkeys(skipped))}）"
         if saved:
             msg += f"  保存先: {saved}"
         return ok(_send_zip(zip_bytes), msg)

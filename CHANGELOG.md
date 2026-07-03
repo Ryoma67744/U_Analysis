@@ -12,6 +12,27 @@
 
 ---
 
+## 2026-07-03_ver38.0
+
+### エクスポート時の統合手法（UMAP）選択
+
+データ出力と MetaboAnalyst 出力で、使用する統合手法（Harmony / RPCA / PCA）を選べるようにした。
+
+- **データ出力**（`callbacks/interactive_data_export.py` / `layouts/interactive_tab.py`）:
+  従来は常に全手法のクラスタ列を出力していたが、**手法チェックリスト（既定=全選択）**で絞れるように。
+  `_build_all_method_lookups` に `selected_methods` を追加。あわせて**派生 PCA（未補正）の生成漏れを修正**
+  （`derive_uncorrected_pca` の遅延生成を追加。従来は RDS 未生成で無言スキップ）。
+- **MetaboAnalyst 出力**（`callbacks/hne_overlay_callbacks.py` / `layouts/hne_overlay_tab.py`）:
+  従来は読込中の1手法のみだったが、**手法チェックリスト（複数選択・既定=全）**を追加。選択した各手法を
+  **ZIP 内のサブフォルダ（手法名/）**に出力（`{手法}/intensity_matrix_*.csv` ＋ `{手法}/feature_map.csv`）。
+  強度（data 層）と ROI（空間座標）は手法非依存のため、**ROI は共通、クラスタのみ手法ごとに差し替え**
+  （`extract_data(method_rds)` で各手法の Cluster を取得）。派生 PCA は Harmony から遅延生成。
+  キャッシュキー・ステータスに選択手法を反映。
+- 既存の PPTX 手法セレクタ（ver34.0）と同じ `interactive_rds_map` 駆動パターンを流用。
+- version 37.0→38.0。
+
+---
+
 ## 2026-07-02_ver37.0
 
 ### MetaboAnalyst エクスポート: 同名化合物の統合（代表イオン=最大強度）
