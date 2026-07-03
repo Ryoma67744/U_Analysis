@@ -17,7 +17,7 @@
 
 args_all <- commandArgs(trailingOnly = TRUE)
 if (length(args_all) < 3) {
-  stop("Usage: Rscript export_region_cluster_means.R <rds_path> <groups_csv> <out_csv> [--assay N] [--layer L]")
+  stop("Usage: Rscript export_region_cluster_means.R <rds_path> <groups_csv> <out_csv> [--assay N] [--layer L] [--repr linear|counts|data]")
 }
 rds_path   <- args_all[1]
 groups_csv <- args_all[2]
@@ -30,6 +30,8 @@ get_opt <- function(flag, default = NULL) {
 }
 assay_arg <- get_opt("--assay", NULL)
 layer_arg <- get_opt("--layer", "data")
+# 強度表現。linear=線形化(非log), counts=生, data=現状(log)。未指定なら --layer をそのまま使う（後方互換）。
+repr_arg  <- get_opt("--repr", NA)
 
 if (!file.exists(rds_path))   stop("RDS file not found: ", rds_path)
 if (!file.exists(groups_csv)) stop("groups_csv not found: ", groups_csv)
@@ -63,18 +65,48 @@ if (!is.null(assay_arg) && nzchar(assay_arg)) {
   DefaultAssay(obj) <- assay_arg
 }
 
-# --- 同一 data layer の取得（extract_seurat_data.R:124-139 と逐語一致） ---
+# --- repr（強度表現）の解決 ---
+if (is.na(repr_arg) || !nzchar(repr_arg)) {
+  layer_to_read <- layer_arg; do_linearize <- FALSE       # 後方互換: --layer をそのまま
+} else if (identical(repr_arg, "counts")) {
+  layer_to_read <- "counts";  do_linearize <- FALSE
+} else if (identical(repr_arg, "linear")) {
+  layer_to_read <- "data";    do_linearize <- TRUE
+} else {                                                    # "data" ほか
+  layer_to_read <- "data";    do_linearize <- FALSE
+}
+
+# --- data/counts layer の取得（extract_seurat_data.R:124-139 と同規約） ---
 tryCatch({ obj <- JoinLayers(obj) }, error = function(e) NULL)
 expr_data <- tryCatch({
-  LayerData(obj, layer = layer_arg)
+  LayerData(obj, layer = layer_to_read)
 }, error = function(e) {
   tryCatch({
-    GetAssayData(obj, layer = layer_arg)
+    GetAssayData(obj, layer = layer_to_read)
   }, error = function(e2) {
-    GetAssayData(obj, slot = layer_arg)
+    GetAssayData(obj, slot = layer_to_read)
   })
 })
 # expr_data: features (rows) × cells (cols)。dgCMatrix（sparse）想定。
+
+# --- 前処理手法タグ（線形化の逆変換／来歴表示に使用） ---
+prep_method <- tryCatch({
+  m <- obj@misc$preprocessing_method
+  if (is.null(m) || length(m) == 0) NA_character_ else as.character(m)[1]
+}, error = function(e) NA_character_)
+
+# --- linear: preprocessing_method に応じて data を線形へ逆変換（spot 単位・sparse 維持） ---
+if (do_linearize) {
+  meth <- if (is.na(prep_method) || !nzchar(prep_method)) "LogNormalize" else prep_method
+  ml <- tolower(meth)
+  if (grepl("sqrt", ml)) {
+    expr_data <- expr_data^2                 # sqrt の逆変換（0^2=0 で sparse 維持）
+  } else if (grepl("none", ml)) {
+    # 恒等（変換なし）
+  } else {
+    expr_data <- expm1(expr_data)            # log1p/LogNormalize/不明 → expm1（expm1(0)=0）
+  }
+}
 
 # --- groups (CellID, Group) 読込 ---
 groups <- read.csv(groups_csv, stringsAsFactors = FALSE, check.names = FALSE,
@@ -114,3 +146,8 @@ dir.create(dirname(out_csv), recursive = TRUE, showWarnings = FALSE)
 write.csv(out, out_csv, row.names = FALSE)
 cat("Wrote region x cluster means:", nrow(out), "groups x",
     ncol(out) - 1, "features ->", out_csv, "\n")
+# 機械可読の来歴（Python 側が stdout から回収）
+cat(sprintf("REPR=%s\n",
+            if (is.na(repr_arg) || !nzchar(repr_arg)) layer_arg else repr_arg))
+cat(sprintf("PREPROCESSING_METHOD=%s\n",
+            if (is.na(prep_method)) "" else prep_method))

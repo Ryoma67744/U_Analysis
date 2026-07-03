@@ -112,7 +112,20 @@ def create_hne_overlay_tab():
                            size="sm", color="primary", className="mt-2 w-100"),
 
                 html.Hr(className="my-2"),
-                dbc.Button("④ MetaboAnalyst 用 CSV 出力", id="hne_export_btn",
+                html.Div("強度の種類", className="small fw-bold"),
+                dbc.RadioItems(
+                    id="hne_export_intensity",
+                    options=[
+                        {"label": "線形化 (非log・推奨)", "value": "linear"},
+                        {"label": "生 counts", "value": "counts"},
+                        {"label": "現状 (log)", "value": "data"},
+                    ],
+                    value="linear", inline=True, className="small mb-1",
+                ),
+                html.Div("MetaboAnalyst は自前で log/スケーリングするため、線形（非log）で"
+                         "渡すのが無難です。出力は m/z 一覧＋化合物名対応表の ZIP（2ファイル）。",
+                         className="text-muted", style={"fontSize": "0.72rem"}),
+                dbc.Button("④ 解析用データ出力 (ZIP)", id="hne_export_btn",
                            size="sm", color="success", className="w-100"),
                 # 出力の進捗表示（出力中のみ表示・無反応感の解消）
                 html.Div(id="hne_export_progress_container",
