@@ -123,7 +123,20 @@ def create_hne_overlay_tab():
                     value="linear", inline=True, className="small mb-1",
                 ),
                 html.Div("MetaboAnalyst は自前で log/スケーリングするため、線形（非log）で"
-                         "渡すのが無難です。出力は m/z 一覧＋化合物名対応表の ZIP（2ファイル）。",
+                         "渡すのが無難です。出力は強度行列＋対応表の ZIP（2ファイル）。",
+                         className="text-muted", style={"fontSize": "0.72rem"}),
+                html.Div("集約単位", className="small fw-bold mt-1"),
+                dbc.RadioItems(
+                    id="hne_export_unit",
+                    options=[
+                        {"label": "化合物 (同名を統合)", "value": "compound"},
+                        {"label": "m/z (統合しない)", "value": "mz"},
+                    ],
+                    value="compound", inline=True, className="small mb-1",
+                ),
+                html.Div("化合物：同名（別アダクト）の m/z を代表イオン（最大強度）で1列に"
+                         "統合。どの m/z を代表にしたかは feature_map に明記。"
+                         "同位体/異性体は区別できません。",
                          className="text-muted", style={"fontSize": "0.72rem"}),
                 dbc.Button("④ 解析用データ出力 (ZIP)", id="hne_export_btn",
                            size="sm", color="success", className="w-100"),

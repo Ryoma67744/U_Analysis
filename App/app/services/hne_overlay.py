@@ -353,6 +353,75 @@ def build_feature_map(feature_annotations, feature_ids):
     return pd.DataFrame(rows, columns=cols)
 
 
+def merge_features_by_compound(intensity_df, feature_annotations,
+                               method="repr_max", group_col="Group"):
+    """同一 `compound` の m/z 列を1列へ統合する（純ロジック）。
+
+    intensity_df: 先頭に group_col("Group")、以降 m/z(feature_id) の群平均。
+    feature_annotations: {feature_id: {compound, ...}}。compound 非空でグルーピング。
+    method: "repr_max"（全群平均が最大の m/z を代表・既定）/ "sum" / "mean"。
+    未注釈（compound 空/None）や単独 compound はその m/z のまま独立列で残す
+    （列名は annotated なら compound、無ければ m/z）。同位体/異性体は区別できないため、
+    既定の代表イオン方式で二重計上を避ける。
+    Returns: (merged_df, map_df)
+      merged_df: group_col ＋ 集約後列（compound か m/z の値）。
+      map_df: DataFrame[feature_id, group_key, is_representative, n_in_group]。
+    """
+    fa = feature_annotations or {}
+    feat_cols = [c for c in intensity_df.columns if c != group_col]
+
+    def _compound(fid):
+        a = fa.get(fid) or fa.get(str(fid)) or {}
+        c = a.get("compound")
+        return str(c).strip() if c is not None else ""
+
+    # group_key: compound（非空）→ compound、無ければ m/z 自身（独立）
+    members, order = {}, []
+    for fid in feat_cols:
+        comp = _compound(fid)
+        gk = comp if comp else str(fid)
+        if gk not in members:
+            members[gk] = []
+            order.append(gk)
+        members[gk].append(fid)
+
+    # 代表選択用に各列の全群平均（空/全 NaN は -inf）
+    col_mean = {}
+    for fid in feat_cols:
+        v = pd.to_numeric(intensity_df[fid], errors="coerce").to_numpy()
+        with np.errstate(all="ignore"):
+            m = np.nanmean(v) if v.size else np.nan
+        col_mean[fid] = float(m) if np.isfinite(m) else float("-inf")
+
+    out = {group_col: intensity_df[group_col].to_numpy()}
+    map_rows = []
+    for gk in order:
+        mems = members[gk]
+        n = len(mems)
+        if n == 1:
+            out[gk] = intensity_df[mems[0]].to_numpy()
+            map_rows.append([str(mems[0]), gk, True, 1])
+            continue
+        if method == "sum":
+            out[gk] = intensity_df[mems].sum(axis=1).to_numpy()
+            rep = None
+        elif method == "mean":
+            out[gk] = intensity_df[mems].mean(axis=1).to_numpy()
+            rep = None
+        else:  # repr_max（既定）: 全群平均が最大の m/z を代表に採用（値はそのまま）
+            rep = max(mems, key=lambda f: col_mean.get(f, float("-inf")))
+            out[gk] = intensity_df[rep].to_numpy()
+        for fid in mems:
+            map_rows.append([str(fid), gk,
+                             bool(rep is not None and fid == rep), n])
+
+    merged_df = pd.DataFrame(out)
+    map_df = pd.DataFrame(
+        map_rows,
+        columns=["feature_id", "group_key", "is_representative", "n_in_group"])
+    return merged_df, map_df
+
+
 # ---------------------------------------------------------------------------
 # MetaboAnalyst 用エクスポート（region×cluster 群ごとの平均強度）
 # ---------------------------------------------------------------------------

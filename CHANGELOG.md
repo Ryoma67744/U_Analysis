@@ -12,6 +12,27 @@
 
 ---
 
+## 2026-07-02_ver37.0
+
+### MetaboAnalyst エクスポート: 同名化合物の統合（代表イオン=最大強度）
+
+ver36.0 では別アダクトの同名化合物を別 feature（m/z）として残していたが、要望により
+**同一化合物の m/z を1列に統合**する「集約単位」を追加した。
+
+- **集約単位セレクタ**（`layouts/hne_overlay_tab.py` / `callbacks/hne_overlay_callbacks.py`）:
+  `化合物（既定）` / `m/z`。化合物選択時は同一 `compound` の m/z 列を
+  **代表イオン（全群平均が最大の m/z）** の値で1列に統合し `intensity_matrix_compound.csv` を出力。
+  未注釈（No DB hit）や単独 compound は m/z のまま独立列で残す。
+- **トレーサビリティ**: `feature_map.csv` に各 m/z の `group_key`（統合先）/`is_representative`（代表か）/
+  `n_in_group`（統合数）を付与し、どの m/z を代表に選んだか明記。
+- 純ロジック `merge_features_by_compound`（`services/hne_overlay.py`、`repr_max`/`sum`/`mean` 対応）を
+  新設・単体テスト追加。ZIP 名・キャッシュキー・ステータスに集約単位を反映。
+- 注: 同位体（M+1 等）・異性体は annotation 上区別できないため、代表イオン方式で二重計上を回避する。
+  MetaboAnalyst には化合物名で一意な濃度表として直接投入できる。
+- version 36.0→37.0。
+
+---
+
 ## 2026-07-02_ver36.0
 
 ### MetaboAnalyst 向けエクスポート改善（強度の線形化 ＋ feature_id=m/z 化・ZIP 2ファイル）

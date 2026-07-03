@@ -419,6 +419,45 @@ def test_build_feature_map_columns_and_missing():
     assert r1["compound"] == ""
 
 
+# --- 同名化合物の統合（代表イオン=最大強度）---
+def test_merge_features_by_compound_representative_max():
+    inten = pd.DataFrame({
+        "Group": ["g1", "g2"],
+        "m/z 400.0": [10.0, 20.0],   # ADP [M-H]-  平均15 → 代表
+        "m/z 402.0": [1.0, 3.0],     # ADP [M+H]+  平均2
+        "m/z 500.0": [5.0, 5.0],     # PI 38:4（単独 compound）
+        "m/z 999.0": [7.0, 8.0],     # 未注釈 → m/z のまま
+    })
+    fa = {
+        "m/z 400.0": {"compound": "ADP", "adduct": "[M-H]-"},
+        "m/z 402.0": {"compound": "ADP", "adduct": "[M+H]+"},
+        "m/z 500.0": {"compound": "PI 38:4", "adduct": "[M-H]-"},
+    }
+    merged, mp = hn.merge_features_by_compound(inten, fa, method="repr_max")
+    # 列順: Group, ADP(=400.0), PI 38:4(=500.0), m/z 999.0（初出順）
+    assert list(merged.columns) == ["Group", "ADP", "PI 38:4", "m/z 999.0"]
+    assert list(merged["ADP"]) == [10.0, 20.0]      # 代表=平均最大の 400.0
+    assert list(merged["PI 38:4"]) == [5.0, 5.0]
+    assert list(merged["m/z 999.0"]) == [7.0, 8.0]  # 未注釈は残る
+    m = mp.set_index("feature_id")
+    assert m.loc["m/z 400.0", "group_key"] == "ADP"
+    assert bool(m.loc["m/z 400.0", "is_representative"]) is True
+    assert bool(m.loc["m/z 402.0", "is_representative"]) is False
+    assert int(m.loc["m/z 400.0", "n_in_group"]) == 2
+    assert bool(m.loc["m/z 500.0", "is_representative"]) is True   # 単独も代表
+    assert m.loc["m/z 999.0", "group_key"] == "m/z 999.0"
+    assert int(m.loc["m/z 999.0", "n_in_group"]) == 1
+
+
+def test_merge_features_by_compound_sum_and_mean():
+    inten = pd.DataFrame({"Group": ["g1", "g2"], "a": [10.0, 20.0], "b": [1.0, 3.0]})
+    fa = {"a": {"compound": "X"}, "b": {"compound": "X"}}
+    msum, _ = hn.merge_features_by_compound(inten, fa, method="sum")
+    assert list(msum["X"]) == [11.0, 23.0]
+    mmean, _ = hn.merge_features_by_compound(inten, fa, method="mean")
+    assert list(mmean["X"]) == [5.5, 11.5]
+
+
 def test_parse_plotly_path():
     pts = hn.parse_plotly_path("M100,200L150,250L120,300Z")
     assert pts == [(100.0, 200.0), (150.0, 250.0), (120.0, 300.0)]
