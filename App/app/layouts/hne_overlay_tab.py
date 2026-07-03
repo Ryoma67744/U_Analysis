@@ -112,7 +112,14 @@ def create_hne_overlay_tab():
                            size="sm", color="primary", className="mt-2 w-100"),
 
                 html.Hr(className="my-2"),
-                html.Div("強度の種類", className="small fw-bold"),
+                html.Div("出力手法 (UMAP)", className="small fw-bold"),
+                dbc.Checklist(
+                    id="hne_export_method",
+                    options=[], value=[], inline=True, className="small mb-1",
+                ),
+                html.Div("選んだ手法ごとに ZIP 内へ出力（強度・ROI は共通、クラスタのみ手法で変化）。",
+                         className="text-muted", style={"fontSize": "0.72rem"}),
+                html.Div("強度の種類", className="small fw-bold mt-1"),
                 dbc.RadioItems(
                     id="hne_export_intensity",
                     options=[

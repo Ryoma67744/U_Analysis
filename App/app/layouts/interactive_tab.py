@@ -651,6 +651,16 @@ def create_interactive_tab():
                                     ],
                                 ),
                             ]),
+                            # 出力手法（UMAP cluster）の選択。既定=全手法。
+                            html.Div(className="mt-1", children=[
+                                html.Span("出力手法 (UMAP): ",
+                                          className="small fw-bold me-2"),
+                                dbc.Checklist(
+                                    id="data_export_method_selector",
+                                    options=[], value=[], inline=True,
+                                    className="small d-inline-block",
+                                ),
+                            ]),
                             html.Div(
                                 id="div_data_export_status",
                                 className="mt-1 text-muted",

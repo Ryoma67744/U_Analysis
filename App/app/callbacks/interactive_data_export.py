@@ -280,53 +280,65 @@ def _build_all_method_lookups(
     rds_map: dict | None,
     current_method: str | None,
     cluster_name_map: dict | None = None,
+    selected_methods: list | None = None,
 ) -> OrderedDict:
-    """全手法のクラスタールックアップを構築。
+    """選択手法のクラスタールックアップを構築。
 
+    selected_methods: 出力対象の手法名リスト（None/空 → rds_map の全手法）。
+    現在の手法は ``_interactive_data["plot_data"]`` を再利用し、それ以外は
+    ``_bridge.extract_data()`` で動的ロードする。派生 PCA は Harmony から遅延生成。
     Returns:
         OrderedDict {method_name: cluster_lookup_dict}
-        現在の手法は ``_interactive_data["plot_data"]`` を再利用し、
-        それ以外は ``_bridge.extract_data()`` で動的ロードする。
     """
     method_lookups: OrderedDict[str, dict] = OrderedDict()
+    full_map = rds_map if isinstance(rds_map, dict) else {}
 
-    if not rds_map or not isinstance(rds_map, dict) or len(rds_map) <= 1:
-        # rds_map がない or 単一手法 → 現在の plot_data のみ
+    # 選択手法でフィルタ（None/空 → 全手法）
+    sel = set(str(m) for m in (selected_methods or []))
+    rmap = {m: p for m, p in full_map.items() if (not sel or m in sel)}
+
+    if not rmap:
+        # rds_map 無し → 現在の plot_data のみ
         plot_data = _interactive_data.get("plot_data")
         if plot_data is not None:
             method_name = _interactive_data.get("method") or "Unknown"
             method_lookups[method_name] = _build_cluster_lookup(plot_data, cluster_name_map)
         return method_lookups
 
-    # 複数手法: 現在の手法を先頭に配置
+    # 現在の手法を先頭に配置
     ordered_methods = []
-    if current_method and current_method in rds_map:
+    if current_method and current_method in rmap:
         ordered_methods.append(current_method)
-    for m in rds_map:
+    for m in rmap:
         if m not in ordered_methods:
             ordered_methods.append(m)
 
     for method_name in ordered_methods:
-        if method_name == current_method:
+        if method_name == current_method and _interactive_data.get("plot_data") is not None:
             # 現在の手法は再読込不要
-            plot_data = _interactive_data.get("plot_data")
-            if plot_data is not None:
-                method_lookups[method_name] = _build_cluster_lookup(plot_data, cluster_name_map)
-        else:
-            rds_path = rds_map[method_name]
-            if rds_path and Path(rds_path).exists():
+            method_lookups[method_name] = _build_cluster_lookup(
+                _interactive_data.get("plot_data"), cluster_name_map)
+            continue
+        rds_path = rmap[method_name]
+        # 派生 PCA（未補正）はディスク未生成のことがある → Harmony から遅延生成
+        if method_name == "PCA" and rds_path and not Path(rds_path).exists():
+            harmony_rds = full_map.get("Harmony")
+            if harmony_rds and Path(harmony_rds).exists():
                 try:
-                    result = _bridge.extract_data(rds_path)
-                    # 手法ごとにクラスタ名変更マップは独立。現在の手法は引数の
-                    # cluster_name_map（store）、他手法はその手法の保存分を読み込む。
-                    other_map = load_cluster_name_map(rds_path, method_name)
-                    method_lookups[method_name] = _build_cluster_lookup(
-                        result["plot_data"], other_map
-                    )
+                    _bridge.derive_uncorrected_pca(harmony_rds, rds_path)
                 except Exception as e:
-                    logger.warning(
-                        "[DataExport] %s: データ抽出エラー: %s", method_name, e
-                    )
+                    logger.warning("[DataExport] PCA 派生生成失敗: %s", e)
+        if not rds_path or not Path(rds_path).exists():
+            logger.warning("[DataExport] %s: RDS が見つかりません → スキップ", method_name)
+            continue
+        try:
+            result = _bridge.extract_data(rds_path)
+            # 手法ごとにクラスタ名変更マップは独立。他手法はその手法の保存分を読む。
+            other_map = load_cluster_name_map(rds_path, method_name)
+            method_lookups[method_name] = _build_cluster_lookup(
+                result["plot_data"], other_map)
+        except Exception as e:
+            logger.warning("[DataExport] %s: データ抽出エラー: %s", method_name, e)
 
     return method_lookups
 
@@ -562,7 +574,7 @@ def _export_tims(
 def _do_export(
     data_folder, ms_instrument, export_format,
     rds_map, current_method, result_folder, project_id, sub_project_id,
-    loaded_rds, cluster_name_map=None,
+    loaded_rds, cluster_name_map=None, selected_methods=None,
 ):
     """データ出力の本体。開いている(読み込み済みの)プロジェクトにスコープを固定して、
     元データに UMAP cluster 列を付与したファイルを生成する。
@@ -606,8 +618,9 @@ def _do_export(
         # SpatialX/SpatialY が必要
         if "SpatialX" not in plot_data.columns or "SpatialY" not in plot_data.columns:
             return no_update, "空間座標データ (SpatialX/SpatialY) がありません。"
-        # 全手法のクラスタールックアップを構築
-        method_lookups = _build_all_method_lookups(rds_map, current_method, cluster_name_map)
+        # 選択手法のクラスタールックアップを構築（未選択なら全手法）
+        method_lookups = _build_all_method_lookups(
+            rds_map, current_method, cluster_name_map, selected_methods)
         if not method_lookups:
             return no_update, "クラスターデータを構築できませんでした。"
 
@@ -651,6 +664,20 @@ _PROG_HIDE = {"display": "none"}
 
 
 @callback(
+    [Output("data_export_method_selector", "options"),
+     Output("data_export_method_selector", "value")],
+    Input("interactive_rds_map", "data"),
+    prevent_initial_call=True,
+)
+def update_data_export_method_options(rds_map):
+    """rds_map から出力手法チェックリストを更新（既定で全手法チェック）。"""
+    if not rds_map or not isinstance(rds_map, dict):
+        return [], []
+    methods = list(rds_map.keys())
+    return [{"label": m, "value": m} for m in methods], methods
+
+
+@callback(
     [Output("data_export_progress_container", "style"),
      Output("data_export_progress_label", "children"),
      Output("data_export_progress_bar", "value"),
@@ -685,18 +712,21 @@ def data_export_stage_a(n_clicks):
      State("interactive_project_select", "value"),
      State("interactive_sub_project_select", "value"),
      State("seurat_rds_path_store", "data"),
-     State("cluster_name_map_store", "data")],
+     State("cluster_name_map_store", "data"),
+     State("data_export_method_selector", "value")],
     prevent_initial_call=True,
 )
 def data_export_stage_b(trigger, data_folder, ms_instrument, export_format,
                         rds_map, current_method, result_folder,
-                        project_id, sub_project_id, loaded_rds, cluster_name_map):
+                        project_id, sub_project_id, loaded_rds, cluster_name_map,
+                        selected_methods):
     """出力本体を実行し、ダウンロードと完了表示を返す。"""
     if not trigger:
         raise PreventUpdate
     download, msg = _do_export(
         data_folder, ms_instrument, export_format, rds_map, current_method,
         result_folder, project_id, sub_project_id, loaded_rds, cluster_name_map,
+        selected_methods,
     )
     return (download, msg, _PROG_HIDE, "完了", 100, False, False)
 
