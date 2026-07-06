@@ -12,6 +12,31 @@
 
 ---
 
+## 2026-07-06_ver39.0
+
+### 新機能: MetaboAnalyst エンリッチメント(QEA)へ「そのまま投入」できる濃度表を一括出力
+
+④出力（H&E ROI×クラスタ平均強度）を、MetaboAnalyst の Quantitative Enrichment Analysis (QEA) に
+ドラッグ&ドロップで投入できる **Sample+Class 濃度表 CSV** へ変換する機能を追加。
+
+- **UI**（`layouts/hne_overlay_tab.py`）: 「エンリッチメント(QEA)用も出力」チェックを追加（化合物単位時のみ有効）。
+- **新規サービス**（`services/metaboanalyst_qea.py`）: 既存の強度行列（行=`{stage}_{anatomy}_cluster{n}`）を分解し、
+  各手法フォルダへ以下を生成:
+  - `exploratory_QEA_stage_{raw,zeroAsNA}.csv` … Class=発生ステージ（最優先）
+  - `exploratory_QEA_anatomy_{raw,zeroAsNA}.csv` … Class=臓器（原ラベル）
+  - `exploratory_QEA_cluster_all_/ge10_{raw,zeroAsNA}.csv` … Class=UMAPクラスタ（小clusterは行数≥10で除外）
+  - `sample_metadata.csv`（Sample↔原Group・stage/anatomy/cluster）、`compound_name_map.csv`、`README.txt`
+  - 各表は 1列目=Sample(S0001…英数字ID)・2列目=Class・以降=化合物。0保持版と 0→NA 版の両方。
+- **RefMet 保守正規化**: 脂質名（`PG 32:1` 等）は既に RefMet/LIPID MAPS shorthand に近いため、空白/句読点の
+  正規化のみ行い（衝突時は原文保持）、照合は MetaboAnalyst の smart-match に委ねる。原文は `compound_name_map.csv` に保持。
+- **探索的である旨を明記**: 各行は擬似バルク（1個体運用の切片×臓器×クラスタ平均）で、同一 Class 内反復は
+  空間的擬似反復。README とファイル名接頭 `exploratory_` に明記（`run_findmarkers.R` の方針と一致）。
+- 出力キャッシュキー（`_export_cache_key`）に QEA フラグを追加。anatomy の意味的標準化（Brain/CNS 等）は
+  生物学的対応表が必要なため原ラベルで出力（対応表提供時に標準化版を追加可能）。
+- version 38.1→39.0。
+
+---
+
 ## 2026-07-06_ver38.1
 
 ### 修正: 強度/発現の下流を常に「測定アッセイ(Spatial)」から読む（RPCA の補正値を混入させない）

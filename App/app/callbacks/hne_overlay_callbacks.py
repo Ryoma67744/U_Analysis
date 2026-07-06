@@ -674,8 +674,8 @@ def update_hne_export_method_options(rds_map):
 
 
 def _export_cache_key(rds_path, state, intensity_repr="data", unit="mz",
-                      methods=None):
-    """エクスポート結果を一意に決めるキャッシュキー（RDS/ROI/化合物名/強度/集約単位/手法に依存）。"""
+                      methods=None, with_qea=False):
+    """エクスポート結果を一意に決めるキャッシュキー（RDS/ROI/化合物名/強度/集約単位/手法/QEA に依存）。"""
     import hashlib
     import json as _json
 
@@ -696,7 +696,7 @@ def _export_cache_key(rds_path, state, intensity_repr="data", unit="mz",
                     f"methods={methods_key}", "fmt=zip", "lblfmt=cluster",
                     # 強度ソースを測定アッセイ(Spatial)へ是正した版。旧 integrated 由来の
                     # キャッシュ ZIP(負値含む)を返さないための版ソルト。
-                    "assaysrc=measured_v1"])
+                    "assaysrc=measured_v1", f"qea={int(bool(with_qea))}"])
     return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -733,11 +733,12 @@ def hne_export_stage_a(n):
     State("interactive_rds_map", "data"),
     State("interactive_integration_method", "value"),
     State("hne_export_method", "value"),
+    State("hne_export_qea", "value"),
     prevent_initial_call=True,
 )
 def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
                        intensity_unit, rds_map, current_method,
-                       export_methods):
+                       export_methods, qea_opt):
     if not trigger:
         return (no_update,) * 6
 
@@ -763,7 +764,9 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
     unit_label = {"compound": "化合物", "mz": "m/z"}[unit]
     matrix_name = ("intensity_matrix_compound.csv" if unit == "compound"
                    else "intensity_matrix_mz.csv")
-    zip_fname = f"metaboanalyst_{repr_mode}_{unit}.zip"
+    # エンリッチメント(QEA)用 CSV も出すか（化合物単位のときのみ意味を持つ）。
+    want_qea = bool(qea_opt) and "qea" in (qea_opt or []) and unit == "compound"
+    zip_fname = f"metaboanalyst_{repr_mode}_{unit}{'_qea' if want_qea else ''}.zip"
 
     def _send_zip(data):
         # dcc.send_bytes: writer 関数形式（bytes 直渡し非対応バージョン対策）
@@ -788,7 +791,8 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
             return fail("出力する手法がありません（データを読み込んでください）。")
 
         # --- C: キャッシュヒット（ROI/RDS/化合物名/強度/単位/手法 不変なら即返す） ---
-        key = _export_cache_key(rds_path, state, repr_mode, unit, selected)
+        key = _export_cache_key(rds_path, state, repr_mode, unit, selected,
+                                with_qea=want_qea)
         if hp.load_export_cache_key(rds_path, zip_fname) == key:
             cached = hp.metaboanalyst_csv_path(rds_path, zip_fname)
             if cached and Path(cached).exists():
@@ -891,6 +895,15 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
                 safe = _re.sub(r'[\\/:*?"<>|]+', "_", str(m)) or "method"
                 zf.writestr(f"{safe}/{matrix_name}", matrix_df.to_csv(index=False))
                 zf.writestr(f"{safe}/feature_map.csv", fmap.to_csv(index=False))
+                # エンリッチメント(QEA)用: Sample+Class 濃度表を手法フォルダへ追加
+                if want_qea:
+                    try:
+                        from app.services import metaboanalyst_qea as mq
+                        for fn, content in mq.build_qea_bundle(
+                                matrix_df, fmap).items():
+                            zf.writestr(f"{safe}/{fn}", content)
+                    except Exception as e_q:
+                        logger.warning("%s: QEA 生成に失敗: %s", m, e_q)
                 exported.append(m)
                 if prep:
                     preps.append(prep)
@@ -905,10 +918,11 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
         hp.save_export_cache_key(rds_path, zip_fname, key)
         assay_note = (f"／強度アッセイ: {'/'.join(dict.fromkeys(assays))}（測定値）"
                       if assays else "")
+        qea_note = "／QEA用CSV同梱(探索的)" if want_qea else ""
         msg = (f"{len(exported)} 手法を ZIP 出力（{' / '.join(exported)}"
                f"／強度: {repr_label}／単位: {unit_label}"
                + (f"／preprocessing: {preps[0]}" if preps else "")
-               + assay_note + "）。")
+               + assay_note + qea_note + "）。")
         if skipped:
             msg += f"（スキップ: {', '.join(dict.fromkeys(skipped))}）"
         if saved:

@@ -147,6 +147,15 @@ def create_hne_overlay_tab():
                          "統合。どの m/z を代表にしたかは feature_map に明記。"
                          "同位体/異性体は区別できません。",
                          className="text-muted", style={"fontSize": "0.72rem"}),
+                dbc.Checklist(
+                    id="hne_export_qea",
+                    options=[{"label": "エンリッチメント(QEA)用も出力", "value": "qea"}],
+                    value=[], className="small mt-1",
+                ),
+                html.Div("ON で MetaboAnalyst の Enrichment(QEA) に「そのまま投入」できる濃度表"
+                         "（Sample+Class、stage/anatomy/cluster 別・0/NA 両版）を各手法フォルダへ追加。"
+                         "擬似バルクの探索的解析である旨は README に明記。化合物単位で使用してください。",
+                         className="text-muted", style={"fontSize": "0.72rem"}),
                 dbc.Button("④ 解析用データ出力 (ZIP)", id="hne_export_btn",
                            size="sm", color="success", className="w-100"),
                 # 出力の進捗表示（出力中のみ表示・無反応感の解消）
