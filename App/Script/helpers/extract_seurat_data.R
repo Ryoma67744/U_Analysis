@@ -119,6 +119,14 @@ colnames(cluster_counts) <- c("Cluster", "Count")
 write.csv(cluster_counts, file.path(output_dir, "cluster_stats.csv"), row.names = FALSE)
 cat("Wrote cluster_stats.csv\n")
 
+# --- 強度/発現は測定アッセイ(Spatial)から読む ---
+# RPCA(v4 IntegrateData)の integrated は補正値のため定量に使わない（統合手法非依存）。
+# UMAP座標/クラスタ/plot_data は上で確定済み（reduction/Idents/meta 由来）→ 本切替の影響外。
+# 以降の features_list / expression_matrix.parquet が測定強度になる。
+if (exists("pick_measurement_assay", mode = "function")) {
+  DefaultAssay(obj) <- pick_measurement_assay(obj)
+}
+
 # --- Features list ---
 # Seurat v5 では JoinLayers() が必要（複数レイヤー対応）
 tryCatch({

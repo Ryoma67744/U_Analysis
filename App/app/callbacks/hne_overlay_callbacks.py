@@ -693,7 +693,10 @@ def _export_cache_key(rds_path, state, intensity_repr="data", unit="mz",
     raw = "|".join([str(rds_path), _mt(rds_path),
                     _mt(sp) if sp else "0", fa_key,
                     f"repr={intensity_repr}", f"unit={unit}",
-                    f"methods={methods_key}", "fmt=zip", "lblfmt=cluster"])
+                    f"methods={methods_key}", "fmt=zip", "lblfmt=cluster",
+                    # 強度ソースを測定アッセイ(Spatial)へ是正した版。旧 integrated 由来の
+                    # キャッシュ ZIP(負値含む)を返さないための版ソルト。
+                    "assaysrc=measured_v1"])
     return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -797,8 +800,9 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
         samples = sorted(str(s) for s in plot_data["Sample"].dropna().unique())
 
         def _method_outputs(result, m_rds, m_fa):
-            """1手法の (matrix_df, fmap, prep) を作る。ROI は loaded rds の overlay を、
-            クラスタ・強度は当該手法の RDS/抽出結果を使う。失敗時 None。"""
+            """1手法の (matrix_df, fmap, prep, assay_used) を作る。ROI は loaded rds の
+            overlay を、クラスタは当該手法の RDS を使う。強度は統合手法に依存せず
+            測定アッセイ(Spatial)から読む。失敗時 None。"""
             m_plot = result.get("plot_data")
             if (m_plot is None or "SpatialX" not in m_plot.columns
                     or "Cluster" not in m_plot.columns):
@@ -822,10 +826,15 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
                 return None
             prep = str((result.get("meta") or {}).get(
                 "preprocessing_method") or "")
+            # 強度を読んだアッセイ（測定強度＝Spatial であることの来歴）。R 経路は
+            # export_region_cluster_means.R が明記、parquet 経路も extract_seurat_data.R
+            # 側で測定アッセイに統一済み。
+            assay_used = ""
             try:
                 out_raw = _bridge.export_region_cluster_means(
                     m_rds, groups_df, intensity_repr=repr_mode)
                 prep = out_raw.attrs.get("preprocessing_method") or prep
+                assay_used = str(out_raw.attrs.get("assay_used") or "")
             except Exception as e_r:
                 logger.warning("R 集計に失敗、parquet 経路へ: %s", e_r)
                 cdir = result.get("cache_dir")
@@ -836,6 +845,7 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
                 out_raw = hn.build_region_cluster_export(
                     alldf, pd.read_parquet(expr_path), sample_col="Sample",
                     intensity_repr=repr_mode, preprocessing_method=(prep or None))
+                assay_used = "measurement(parquet)"
             if out_raw is None or getattr(out_raw, "empty", True):
                 return None
             feat_ids = [c for c in out_raw.columns if c != "Group"]
@@ -846,11 +856,11 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
                 fmap = fmap.merge(merge_map, on="feature_id", how="left")
             else:
                 matrix_df = out_raw
-            return matrix_df, fmap, prep
+            return matrix_df, fmap, prep, assay_used
 
         # --- 手法ごとに ZIP へ（サブフォルダ = 手法名）---
         buf = io.BytesIO()
-        exported, skipped, preps = [], [], []
+        exported, skipped, preps, assays = [], [], [], []
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for m in selected:
                 m_rds = rmap.get(m) or (rds_path if m == current_method else None)
@@ -877,13 +887,15 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
                 if res is None:
                     skipped.append(m)
                     continue
-                matrix_df, fmap, prep = res
+                matrix_df, fmap, prep, assay_used = res
                 safe = _re.sub(r'[\\/:*?"<>|]+', "_", str(m)) or "method"
                 zf.writestr(f"{safe}/{matrix_name}", matrix_df.to_csv(index=False))
                 zf.writestr(f"{safe}/feature_map.csv", fmap.to_csv(index=False))
                 exported.append(m)
                 if prep:
                     preps.append(prep)
+                if assay_used:
+                    assays.append(assay_used)
         if not exported:
             return fail("出力できる手法がありませんでした"
                         "（ROI/対応点3点以上/RDS を確認してください）。")
@@ -891,9 +903,12 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
 
         saved = hp.save_metaboanalyst_bytes(rds_path, zip_fname, zip_bytes)
         hp.save_export_cache_key(rds_path, zip_fname, key)
+        assay_note = (f"／強度アッセイ: {'/'.join(dict.fromkeys(assays))}（測定値）"
+                      if assays else "")
         msg = (f"{len(exported)} 手法を ZIP 出力（{' / '.join(exported)}"
                f"／強度: {repr_label}／単位: {unit_label}"
-               + (f"／preprocessing: {preps[0]}" if preps else "") + "）。")
+               + (f"／preprocessing: {preps[0]}" if preps else "")
+               + assay_note + "）。")
         if skipped:
             msg += f"（スキップ: {', '.join(dict.fromkeys(skipped))}）"
         if saved:

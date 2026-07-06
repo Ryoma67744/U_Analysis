@@ -47,6 +47,11 @@ if (file.exists(.rds_io_path)) {
   obj <- readRDS(rds_path)
 }
 
+# 発現は測定アッセイ(Spatial)から。RPCA(v4 IntegrateData)の integrated は補正値のため使わない。
+if (exists("pick_measurement_assay", mode = "function")) {
+  DefaultAssay(obj) <- pick_measurement_assay(obj)
+}
+
 # Seurat v5 では JoinLayers() が必要（複数レイヤー対応）
 tryCatch({
   obj <- JoinLayers(obj)

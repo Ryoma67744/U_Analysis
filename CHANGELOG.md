@@ -12,6 +12,35 @@
 
 ---
 
+## 2026-07-06_ver38.1
+
+### 修正: 強度/発現の下流を常に「測定アッセイ(Spatial)」から読む（RPCA の補正値を混入させない）
+
+MetaboAnalyst 出力 `intensity_matrix_compound.csv`（RPCA/線形化）に**負値が約2.64%**含まれる不具合を修正。
+原因は、旧 RPCA の RDS が Seurat v4 `IntegrateData` の **`integrated` アッセイ（バッチ補正後の再構成値）を
+`DefaultAssay` として保持**しており、強度を読む処理が `DefaultAssay` の `data` 層を読んでいたこと。
+`integrated` は測定強度ではなく補正値で0未満を取りうるため（`expm1` 下限 -1 → 実測 min ≈ -0.9187）、
+線形化で負値が表面化していた。統合手法(RPCA/Harmony/PCA)の正当な成果物は**次元削減（UMAP/クラスタ）だけ**であり、
+強度は統合手法に依存させず常に測定アッセイから読むべき、という方針で是正。
+
+- **共通ヘルパー追加**（`Script/helpers/rds_io.R`）: `pick_measurement_assay()` ＝ 補正アッセイ
+  (`integrated`/`SCT`) を避け **`Spatial` を優先**。明示 `--assay` 指定時はそれを尊重（後方互換）。
+- **強度/発現を読む R ヘルパー4本を測定アッセイ固定に**:
+  - `export_region_cluster_means.R`（MetaboAnalyst 出力＝本丸）。来歴 `ASSAY_USED=` を stdout に出力。
+  - `extract_seurat_data.R`（`expression_matrix.parquet` / `features_list` → Feature plot・m/z キャリブ・共発現・出力フォールバック）。
+  - `extract_features.R`（単一 feature 抽出）。
+  - `run_findmarkers.R`（オンザフライ DE の `avg_log2FC`/`pct`）。
+  - **UMAP 座標・クラスタは `reduction`/`Idents` 由来のため不変**（見た目は統合結果のまま、量だけ測定値）。
+- **Python 側**（`services/seurat_bridge.py` / `callbacks/hne_overlay_callbacks.py`）:
+  `ASSAY_USED` を回収し `df.attrs["assay_used"]` に格納、完了メッセージに「強度アッセイ: Spatial（測定値）」を明記。
+  出力キャッシュキー `_export_cache_key` に版ソルト `assaysrc=measured_v1` を追加し、**旧・負値 ZIP を再利用しない**ように。
+- UI 文言（`layouts/hne_overlay_tab.py`）に「強度は測定アッセイ(Spatial)から算出／RPCA/Harmony/PCA はクラスタ計算のみ」を明記。
+- 効果: 負値 → 0%。integrated はアンカー ≤500 特徴のみのため、出力の化合物列が全 m/z に増える場合がある（測定された全化合物＝正）。
+  Harmony/PCA/単一sample/最新 RPCA(v5 IntegrateLayers) は元から `DefaultAssay=Spatial` のため挙動不変。
+- version 38.0→38.1。
+
+---
+
 ## 2026-07-03_ver38.0
 
 ### エクスポート時の統合手法（UMAP）選択

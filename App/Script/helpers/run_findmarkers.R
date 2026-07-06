@@ -64,7 +64,11 @@ if (file.exists(.rds_io_path)) {
 if (is.list(obj) && !inherits(obj, "Seurat") && "obj" %in% names(obj)) {
   obj <- obj$obj
 }
-if (!is.null(assay_arg) && nzchar(assay_arg)) {
+# DE の発現も測定アッセイ(Spatial)から。RPCA(v4 IntegrateData)の integrated は
+# 補正値のため検定に使わない（統合手法非依存）。明示 --assay があればそれを尊重。
+if (exists("pick_measurement_assay", mode = "function")) {
+  DefaultAssay(obj) <- pick_measurement_assay(obj, assay_arg)
+} else if (!is.null(assay_arg) && nzchar(assay_arg)) {
   DefaultAssay(obj) <- assay_arg
 }
 
