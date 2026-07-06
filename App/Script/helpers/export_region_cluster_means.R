@@ -61,9 +61,14 @@ if (file.exists(.rds_io_path)) {
 if (is.list(obj) && !inherits(obj, "Seurat") && "obj" %in% names(obj)) {
   obj <- obj$obj
 }
-if (!is.null(assay_arg) && nzchar(assay_arg)) {
+# 強度は「測定アッセイ」から読む。RPCA(v4 IntegrateData)の integrated は補正値のため
+# 定量に使わない（統合手法に依存させない）。明示 --assay があればそれを尊重。
+if (exists("pick_measurement_assay", mode = "function")) {
+  DefaultAssay(obj) <- pick_measurement_assay(obj, assay_arg)
+} else if (!is.null(assay_arg) && nzchar(assay_arg)) {
   DefaultAssay(obj) <- assay_arg
 }
+assay_used <- tryCatch(DefaultAssay(obj), error = function(e) NA_character_)
 
 # --- repr（強度表現）の解決 ---
 if (is.na(repr_arg) || !nzchar(repr_arg)) {
@@ -151,3 +156,5 @@ cat(sprintf("REPR=%s\n",
             if (is.na(repr_arg) || !nzchar(repr_arg)) layer_arg else repr_arg))
 cat(sprintf("PREPROCESSING_METHOD=%s\n",
             if (is.na(prep_method)) "" else prep_method))
+cat(sprintf("ASSAY_USED=%s\n",
+            if (is.na(assay_used)) "" else assay_used))

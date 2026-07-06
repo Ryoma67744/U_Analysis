@@ -491,10 +491,14 @@ class SeuratBridge:
                     if result.stdout else "")
             _m_repr = _re.search(r"^REPR=(.*)$", _out, _re.M)
             _m_prep = _re.search(r"^PREPROCESSING_METHOD=(.*)$", _out, _re.M)
+            _m_assay = _re.search(r"^ASSAY_USED=(.*)$", _out, _re.M)
             df.attrs["repr"] = (_m_repr.group(1).strip()
                                 if _m_repr else str(intensity_repr))
             df.attrs["preprocessing_method"] = (
                 _m_prep.group(1).strip() if _m_prep else "")
+            # 強度を読んだアッセイ（測定強度＝Spatial であることの来歴表示用）
+            df.attrs["assay_used"] = (
+                _m_assay.group(1).strip() if _m_assay else "")
             return df
 
     def run_differential_expression(self, rds_path, ident1_ids, ident2_ids=None,

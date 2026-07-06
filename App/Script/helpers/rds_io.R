@@ -99,6 +99,23 @@ diet_seurat_safe <- function(obj, keep_scale = FALSE, keep_graphs = FALSE,
   })
 }
 
+# ---- 測定強度アッセイの選択 -------------------------------------------------
+#  強度/発現の定量は「測定アッセイ」から読む。RPCA(v4 IntegrateData)の
+#  "integrated" は バッチ補正後の再構成値（負値を取りうる）であり測定強度ではない
+#  ため、統合手法に依存せず常に生アッセイ(既定 Spatial)を優先する。
+#  UMAP座標/クラスタは reduction・Idents 由来で assay に依存しないため本選択の影響外。
+#
+#  assay_arg: 明示指定があれば最優先（後方互換 / 特殊用途）。
+#  戻り値: 採用アッセイ名（Spatial > integrated/SCT 以外の生アッセイ > DefaultAssay）。
+pick_measurement_assay <- function(obj, assay_arg = NULL) {
+  if (!is.null(assay_arg) && nzchar(assay_arg)) return(assay_arg)
+  avail <- tryCatch(Seurat::Assays(obj), error = function(e) character(0))
+  if ("Spatial" %in% avail) return("Spatial")
+  raw <- setdiff(avail, c("integrated", "SCT"))
+  if (length(raw) >= 1) return(raw[1])
+  tryCatch(Seurat::DefaultAssay(obj), error = function(e) "Spatial")  # 最後の手段
+}
+
 # ---- 圧縮保存 ---------------------------------------------------------------
 #  path の拡張子は .rds のまま使う (qs バイナリでも名称は .rds)。
 #  qs が使える環境では qs::qsave、使えない/失敗時は xz 圧縮 saveRDS に
