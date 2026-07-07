@@ -7,9 +7,11 @@ TIMS: Parquet/CSV → 選択形式（Excel / CSV / Parquet）
 1つのファイルにまとめて出力する（Method 列 + UMAP cluster 列）。
 """
 
+import contextvars
 import io
 import logging
 import re
+import threading
 from collections import OrderedDict
 from pathlib import Path
 
@@ -29,6 +31,17 @@ from app.services.data_manager import (
 
 logger = logging.getLogger(__name__)
 logger.info("[DataExport] モジュール読み込み完了 (v2)")
+
+
+# 進捗ジョブレジストリ（Dash 非依存の services モジュールへ分離＝単体テスト可）。
+from app.services.export_progress import (  # noqa: E402
+    new_job as _new_job,
+    update_job as _update_job,
+    finish_job as _finish_job,
+    fail_job as _fail_job,
+    get_job as _get_job,
+    pop_job as _pop_job,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +294,9 @@ def _build_all_method_lookups(
     current_method: str | None,
     cluster_name_map: dict | None = None,
     selected_methods: list | None = None,
+    progress_cb=None,
+    base: int = 0,
+    span: int = 0,
 ) -> OrderedDict:
     """選択手法のクラスタールックアップを構築。
 
@@ -313,7 +329,11 @@ def _build_all_method_lookups(
         if m not in ordered_methods:
             ordered_methods.append(m)
 
-    for method_name in ordered_methods:
+    n_methods = max(1, len(ordered_methods))
+    for i_m, method_name in enumerate(ordered_methods):
+        if progress_cb:
+            progress_cb(int(base + span * i_m / n_methods),
+                        f"手法クラスタを準備中… ({method_name})")
         if method_name == current_method and _interactive_data.get("plot_data") is not None:
             # 現在の手法は再読込不要
             method_lookups[method_name] = _build_cluster_lookup(
@@ -348,7 +368,8 @@ def _build_all_method_lookups(
 # ---------------------------------------------------------------------------
 
 def _export_desi(
-    data_folder: str, method_lookups: OrderedDict, region_lookup: dict | None = None
+    data_folder: str, method_lookups: OrderedDict, region_lookup: dict | None = None,
+    progress_cb=None, base: int = 0, span: int = 0,
 ) -> tuple[bytes, str]:
     """DESI .txt → Excel バイト列（サンプル別シート + 手法別クラスター列）。
 
@@ -372,9 +393,13 @@ def _export_desi(
         all_sample_names.update(k[0] for k in lookup.keys())
     sample_names = sorted(all_sample_names)
 
+    n_files = max(1, len(file_stems))
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        for stem in file_stems:
+        for i_f, stem in enumerate(file_stems):
+            if progress_cb:
+                progress_cb(int(base + span * i_f / n_files),
+                            f"書き込み中… {i_f + 1}/{n_files} ({stem})")
             txt_path = Path(data_folder) / f"{stem}.txt"
             if not txt_path.exists():
                 continue
@@ -472,7 +497,8 @@ def _read_tims_file(file_path: str) -> pd.DataFrame:
 
 def _export_tims(
     data_folder: str, method_lookups: OrderedDict, fmt: str,
-    region_lookup: dict | None = None
+    region_lookup: dict | None = None,
+    progress_cb=None, base: int = 0, span: int = 0,
 ) -> tuple[bytes, str]:
     """TIMS 入力ファイルに手法別クラスター列を追加してエクスポート。
 
@@ -495,8 +521,12 @@ def _export_tims(
         all_sample_names.update(k[0] for k in lookup.keys())
     all_sample_list = sorted(all_sample_names)
 
+    n_files = max(1, len(input_paths))
     dfs_out = []
-    for fp in input_paths:
+    for i_f, fp in enumerate(input_paths):
+        if progress_cb:
+            progress_cb(int(base + span * i_f / n_files),
+                        f"書き込み中… {i_f + 1}/{n_files} ({Path(fp).stem})")
         df = _read_tims_file(fp)
         stem = Path(fp).stem
         has_annotation = "annotation" in df.columns
@@ -574,13 +604,21 @@ def _export_tims(
 def _do_export(
     data_folder, ms_instrument, export_format,
     rds_map, current_method, result_folder, project_id, sub_project_id,
-    loaded_rds, cluster_name_map=None, selected_methods=None,
+    loaded_rds, cluster_name_map=None, selected_methods=None, progress_cb=None,
 ):
     """データ出力の本体。開いている(読み込み済みの)プロジェクトにスコープを固定して、
     元データに UMAP cluster 列を付与したファイルを生成する。
 
+    progress_cb: progress_cb(pct:int, label:str) を渡すと 0-100 の進捗を報告する（任意）。
     Returns: (dcc.send_bytes(...) または no_update, status_message)
     """
+    def _p(pct, label=""):
+        if progress_cb:
+            try:
+                progress_cb(int(pct), label)
+            except Exception:  # noqa: BLE001
+                pass
+
     from app.callbacks.interactive_callbacks import _set_active_key
     # 開いているプロジェクト(= 実際に読み込んだ RDS)にアクティブキーを固定する。
     # 別プロジェクトの plot_data / クラスタを読まないよう loaded_rds を最優先・無条件に設定。
@@ -598,6 +636,7 @@ def _do_export(
         # 入る事象への対策）。metadata が "DESI" でなくてもパス規約から DESI を判定する。
         ms_instrument = _resolve_instrument(ms_instrument, data_folder, result_folder)
         logger.info("[DataExport] instrument 確定: %s", ms_instrument)
+        _p(5, "準備中…")
 
         # MSI データフォルダの自動推定（当該プロジェクト内に限定して推定する）
         if not data_folder:
@@ -618,24 +657,31 @@ def _do_export(
         # SpatialX/SpatialY が必要
         if "SpatialX" not in plot_data.columns or "SpatialY" not in plot_data.columns:
             return no_update, "空間座標データ (SpatialX/SpatialY) がありません。"
-        # 選択手法のクラスタールックアップを構築（未選択なら全手法）
+        # 選択手法のクラスタールックアップを構築（未選択なら全手法）: 進捗 10→50%
         method_lookups = _build_all_method_lookups(
-            rds_map, current_method, cluster_name_map, selected_methods)
+            rds_map, current_method, cluster_name_map, selected_methods,
+            progress_cb=progress_cb, base=10, span=40)
         if not method_lookups:
             return no_update, "クラスターデータを構築できませんでした。"
 
         # 領域名(ROI) ルックアップ（読込中 RDS の H&E オーバーレイ保存状態から）。
         # 設定が無ければ空 dict（最終列は空欄）。
+        _p(52, "ROI(領域名)を割当中…")
         region_lookup = _build_region_lookup(plot_data, loaded_rds)
 
         is_desi = (ms_instrument or "").upper() == "DESI"
 
+        # ファイル書き込み: 進捗 58→98%
         if is_desi:
-            file_bytes, filename = _export_desi(data_folder, method_lookups, region_lookup)
+            file_bytes, filename = _export_desi(
+                data_folder, method_lookups, region_lookup,
+                progress_cb=progress_cb, base=58, span=40)
         else:
             fmt = export_format or "xlsx"
             file_bytes, filename = _export_tims(
-                data_folder, method_lookups, fmt, region_lookup)
+                data_folder, method_lookups, fmt, region_lookup,
+                progress_cb=progress_cb, base=58, span=40)
+        _p(99, "仕上げ中…")
 
         # ステータスメッセージ
         n_methods = len(method_lookups)
@@ -652,11 +698,12 @@ def _do_export(
 
 
 # ---------------------------------------------------------------------------
-# 進捗表示付き 2 段チェーン（前景）。
-#  Stage A: 進捗UI表示 + ボタン無効化 + Stage B をトリガ（ここで一度描画される）
-#  Stage B: 出力本体を実行 → ダウンロード返却 + 進捗「完了」→ 非表示
-# background=True は使わない（_do_export が _interactive_data のインプロセス状態を
-# 参照するため、DiskcacheManager の fork worker では共有されない）。
+# 進捗 % 表示（インプロセス作業スレッド + dcc.Interval ポーリング）。
+#  start : ボタン押下で作業スレッドを起動し、進捗UI(0%)表示・ボタン無効・Interval 有効化。
+#  poll  : Interval ごとにジョブレジストリを読み、バー%/ラベル更新。完了でダウンロード配信。
+# background=True(set_progress) は使わない（_do_export が _interactive_data のインプロセス
+# 状態＝セッションの plot_data 等を参照するため、DiskcacheManager の fork worker では共有されない）。
+# サーバは単一プロセス・マルチスレッドなので、作業スレッドと poll は同一プロセス＝レジストリ共有可。
 # ---------------------------------------------------------------------------
 
 _PROG_SHOW = {"display": "block", "marginTop": "8px"}
@@ -677,32 +724,29 @@ def update_data_export_method_options(rds_map):
     return [{"label": m, "value": m} for m in methods], methods
 
 
+def _run_export_job(job_id, args):
+    """作業スレッド本体: _do_export を実行し進捗をレジストリへ反映する。"""
+    try:
+        download, msg = _do_export(
+            *args, progress_cb=lambda p, l="": _update_job(job_id, p, l))
+        if download is no_update or not download:
+            _fail_job(job_id, msg or "出力に失敗しました")
+        else:
+            _finish_job(job_id, download, msg)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[DataExport] ジョブ実行エラー")
+        _fail_job(job_id, f"❌ エラー: {e}")
+
+
 @callback(
     [Output("data_export_progress_container", "style"),
      Output("data_export_progress_label", "children"),
      Output("data_export_progress_bar", "value"),
      Output("data_export_progress_bar", "animated"),
      Output("btn_export_data", "disabled"),
-     Output("data_export_trigger", "data")],
+     Output("data_export_job", "data"),
+     Output("data_export_poll", "disabled")],
     Input("btn_export_data", "n_clicks"),
-    prevent_initial_call=True,
-)
-def data_export_stage_a(n_clicks):
-    """出力開始: 進捗UIを表示しボタンを無効化、Stage B をトリガする。"""
-    if not n_clicks:
-        raise PreventUpdate
-    return (_PROG_SHOW, "出力中… ファイルを生成しています", 100, True, True, {"n": n_clicks})
-
-
-@callback(
-    [Output("dl_data_export", "data"),
-     Output("div_data_export_status", "children"),
-     Output("data_export_progress_container", "style", allow_duplicate=True),
-     Output("data_export_progress_label", "children", allow_duplicate=True),
-     Output("data_export_progress_bar", "value", allow_duplicate=True),
-     Output("data_export_progress_bar", "animated", allow_duplicate=True),
-     Output("btn_export_data", "disabled", allow_duplicate=True)],
-    Input("data_export_trigger", "data"),
     [State("interactive_msi_folder", "value"),
      State("int_cal_ms_instrument", "data"),
      State("data_export_format", "value"),
@@ -716,19 +760,61 @@ def data_export_stage_a(n_clicks):
      State("data_export_method_selector", "value")],
     prevent_initial_call=True,
 )
-def data_export_stage_b(trigger, data_folder, ms_instrument, export_format,
-                        rds_map, current_method, result_folder,
-                        project_id, sub_project_id, loaded_rds, cluster_name_map,
-                        selected_methods):
-    """出力本体を実行し、ダウンロードと完了表示を返す。"""
-    if not trigger:
+def data_export_start(n_clicks, data_folder, ms_instrument, export_format,
+                      rds_map, current_method, result_folder,
+                      project_id, sub_project_id, loaded_rds, cluster_name_map,
+                      selected_methods):
+    """出力開始: 作業スレッドを起動し、進捗UI(0%)表示・ボタン無効・Interval 有効化。"""
+    if not n_clicks:
         raise PreventUpdate
-    download, msg = _do_export(
-        data_folder, ms_instrument, export_format, rds_map, current_method,
-        result_folder, project_id, sub_project_id, loaded_rds, cluster_name_map,
-        selected_methods,
-    )
-    return (download, msg, _PROG_HIDE, "完了", 100, False, False)
+    job_id = _new_job()
+    args = (data_folder, ms_instrument, export_format, rds_map, current_method,
+            result_folder, project_id, sub_project_id, loaded_rds, cluster_name_map,
+            selected_methods)
+    # 親コンテキスト(ContextVar の active key 等)を引き継いでスレッド実行。
+    ctx = contextvars.copy_context()
+    threading.Thread(
+        target=ctx.run, args=(_run_export_job, job_id, args), daemon=True
+    ).start()
+    return (_PROG_SHOW, "準備中…  0%", 0, False, True, {"job": job_id}, False)
+
+
+@callback(
+    [Output("dl_data_export", "data"),
+     Output("div_data_export_status", "children"),
+     Output("data_export_progress_container", "style", allow_duplicate=True),
+     Output("data_export_progress_label", "children", allow_duplicate=True),
+     Output("data_export_progress_bar", "value", allow_duplicate=True),
+     Output("data_export_progress_bar", "animated", allow_duplicate=True),
+     Output("btn_export_data", "disabled", allow_duplicate=True),
+     Output("data_export_poll", "disabled", allow_duplicate=True)],
+    Input("data_export_poll", "n_intervals"),
+    State("data_export_job", "data"),
+    prevent_initial_call=True,
+)
+def data_export_poll(n_intervals, job_store):
+    """Interval ごとにジョブ進捗を読み、バー/ラベル更新。完了でダウンロード配信＆停止。"""
+    job_id = (job_store or {}).get("job")
+    if not job_id:
+        raise PreventUpdate
+    job = _get_job(job_id)
+    if job is None:
+        # 既に配信済み or 不明 → ポーリング停止のみ
+        return (no_update,) * 7 + (True,)
+    status = job["status"]
+    if status == "running":
+        pct = job["pct"]
+        label = f"{job['label']}  {pct}%"
+        return (no_update, no_update, no_update, label, pct,
+                False, no_update, no_update)
+    if status == "done":
+        _pop_job(job_id)
+        return (job["download"], job["msg"], _PROG_HIDE, "完了", 100,
+                False, False, True)
+    # error
+    _pop_job(job_id)
+    return (no_update, job["msg"], _PROG_HIDE, "失敗", no_update,
+            False, False, True)
 
 
 @callback(
