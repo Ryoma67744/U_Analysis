@@ -12,6 +12,31 @@
 
 ---
 
+## 2026-07-06_ver40.0
+
+### インタラクティブ「データ出力」の進捗を実 % 表示に
+
+「📥 データ出力 (UMAP cluster)」の進捗バーが不定表示（animated）だったのを、**実際の % 進捗**に変更。
+手法クラスタ準備（手法ごと）→ ROI 割当 → ファイル書き込み（ファイルごと）の各段階で 0→100% と
+ラベル（例「書き込み中… 3/8 (Section_A)」）が進む。DESI/TIMS 両対応。
+
+- **方式**: サーバは単一プロセス・マルチスレッドで、本出力はセッションのライブ状態
+  （`_interactive_data` の plot_data＝flip/rotation・クラスタ改名を含む）を参照するため
+  fork型の background callback（`set_progress`）は使えない。代わりに
+  **インプロセス作業スレッド ＋ ジョブレジストリ ＋ `dcc.Interval` ポーリング**で実装。
+- **新規** `services/export_progress.py`: Dash 非依存のスレッド安全なジョブレジストリ
+  （new/update/finish/fail/get/pop。% は 0-99 クランプ＆単調増加）。単体テスト可。
+- `callbacks/interactive_data_export.py`: `_do_export` / `_build_all_method_lookups` /
+  `_export_desi` / `_export_tims` に `progress_cb(pct,label)` を配線。ボタン押下で
+  `contextvars.copy_context()` 付き作業スレッドを起動（active key を維持）、Interval が
+  レジストリをポーリングしてバー更新、完了でダウンロード配信・ボタン復帰。
+- `layouts/interactive_tab.py`: `dcc.Interval(data_export_poll)` ＋ `dcc.Store(data_export_job)` を追加
+  （旧 `data_export_trigger` は廃止）。
+- 出力ファイル・形式（DESI xlsx / TIMS xlsx/csv/parquet）は不変。UX のみ変更。MetaboAnalyst ④出力は対象外。
+- テスト `tests/test_data_export_progress.py`（5件）。version 39.0→40.0。
+
+---
+
 ## 2026-07-06_ver39.0
 
 ### 新機能: MetaboAnalyst エンリッチメント(QEA)へ「そのまま投入」できる濃度表を一括出力

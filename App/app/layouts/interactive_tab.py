@@ -1858,7 +1858,9 @@ def create_interactive_tab():
         dcc.Download(id="dl_batch_zip"),
         # データ出力 (UMAP cluster) 用
         dcc.Download(id="dl_data_export"),
-        dcc.Store(id="data_export_trigger", data=None),
+        dcc.Store(id="data_export_job", data=None),
+        dcc.Interval(id="data_export_poll", interval=400, n_intervals=0,
+                     disabled=True),
         # インタラクティブキャリブレーション用
         dcc.Store(id="int_cal_table_data", data=[]),
         dcc.Store(id="int_cal_save_trigger", data=None),
