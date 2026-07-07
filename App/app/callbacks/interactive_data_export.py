@@ -16,7 +16,9 @@ from collections import OrderedDict
 from pathlib import Path
 
 import pandas as pd
-from dash import Input, Output, State, callback, dcc, no_update
+from dash import (
+    Input, Output, State, callback, clientside_callback, html, no_update,
+)
 from dash.exceptions import PreventUpdate
 
 from app.callbacks.interactive_callbacks import _bridge, _interactive_data
@@ -27,6 +29,9 @@ from app.services import hne_persistence as hp
 from app.services.data_manager import (
     build_tims_input_paths,
     list_msi_files,
+)
+from app.services.export_transform import (
+    append_cluster_region_columns as _append_cluster_region_columns,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,6 +46,7 @@ from app.services.export_progress import (  # noqa: E402
     fail_job as _fail_job,
     get_job as _get_job,
     pop_job as _pop_job,
+    sweep_old_files as _sweep_old_files,
 )
 
 
@@ -513,7 +519,6 @@ def _export_tims(
         raise ValueError("TIMS 入力ファイルが見つかりません")
 
     is_multi = len(method_lookups) > 1
-    method_names = list(method_lookups.keys())
 
     # 全手法の Sample 名を統合
     all_sample_names: set[str] = set()
@@ -529,48 +534,10 @@ def _export_tims(
                         f"書き込み中… {i_f + 1}/{n_files} ({Path(fp).stem})")
         df = _read_tims_file(fp)
         stem = Path(fp).stem
-        has_annotation = "annotation" in df.columns
-
-        # 各行のサンプルマッチングと座標キーを一度だけ計算
-        row_keys: list[tuple[str | None, float | None, float | None]] = []
-        for _, row in df.iterrows():
-            x_val = row.get("x")
-            y_val = row.get("y")
-
-            if has_annotation:
-                sample_id = str(row["annotation"])
-            else:
-                sample_id = stem
-
-            matched = None
-            if sample_id in all_sample_list:
-                matched = sample_id
-            else:
-                matched = _match_sample_name(sample_id, all_sample_list)
-
-            if matched and pd.notna(x_val) and pd.notna(y_val):
-                row_keys.append(
-                    (matched, round(float(x_val), 4), round(float(y_val), 4))
-                )
-            else:
-                row_keys.append((None, None, None))
-
-        # 各手法のクラスター列を追加
-        for method_name in method_names:
-            cluster_lookup = method_lookups[method_name]
-            col_name = method_name if is_multi else "UMAP cluster"
-            df[col_name] = [
-                cluster_lookup.get((m, x, y), "") if m else ""
-                for m, x, y in row_keys
-            ]
-
-        # 最終列に領域名(ROI)
-        if region_lookup is not None:
-            df["領域名"] = [
-                region_lookup.get((m, x, y), "") if m else ""
-                for m, x, y in row_keys
-            ]
-
+        # 右端に手法別クラスタ列・領域名列をベクトル付与（iterrows 撤廃＝軽い）。
+        df = _append_cluster_region_columns(
+            df, method_lookups, region_lookup, all_sample_list, is_multi, stem,
+            _match_sample_name)
         dfs_out.append(df)
 
     df_all = (
@@ -579,6 +546,11 @@ def _export_tims(
 
     # 出力形式に応じてバイト列を生成
     buf = io.BytesIO()
+    if fmt == "xlsx" and df_all.shape[1] > 16384:
+        # Excel の列上限。MSI は m/z 列が多く超過し得る → CSV/Parquet を案内。
+        raise ValueError(
+            f"xlsx は列数上限(16,384)を超えます（{df_all.shape[1]} 列）。"
+            "出力形式で CSV または Parquet を選択してください。")
     if fmt == "xlsx":
         with pd.ExcelWriter(buf, engine="openpyxl") as writer:
             df_all.to_excel(writer, index=False, sheet_name="Data")
@@ -610,7 +582,7 @@ def _do_export(
     元データに UMAP cluster 列を付与したファイルを生成する。
 
     progress_cb: progress_cb(pct:int, label:str) を渡すと 0-100 の進捗を報告する（任意）。
-    Returns: (dcc.send_bytes(...) または no_update, status_message)
+    Returns: (file_bytes|None, filename|None, status_message)。失敗時は (None, None, msg)。
     """
     def _p(pct, label=""):
         if progress_cb:
@@ -645,24 +617,24 @@ def _do_export(
             )
             logger.info("[DataExport] 自動推定結果: %s", data_folder)
         if not data_folder:
-            return no_update, (
+            return None, None, (
                 "❌ MSIデータフォルダが見つかりません。"
                 "サブプロジェクト設定でMSIデータフォルダを指定してください。"
             )
 
         plot_data = _interactive_data.get("plot_data")
         if plot_data is None or plot_data.empty:
-            return no_update, "データが読み込まれていません。先にデータを読み込んでください。"
+            return None, None, "データが読み込まれていません。先にデータを読み込んでください。"
 
         # SpatialX/SpatialY が必要
         if "SpatialX" not in plot_data.columns or "SpatialY" not in plot_data.columns:
-            return no_update, "空間座標データ (SpatialX/SpatialY) がありません。"
+            return None, None, "空間座標データ (SpatialX/SpatialY) がありません。"
         # 選択手法のクラスタールックアップを構築（未選択なら全手法）: 進捗 10→50%
         method_lookups = _build_all_method_lookups(
             rds_map, current_method, cluster_name_map, selected_methods,
             progress_cb=progress_cb, base=10, span=40)
         if not method_lookups:
-            return no_update, "クラスターデータを構築できませんでした。"
+            return None, None, "クラスターデータを構築できませんでした。"
 
         # 領域名(ROI) ルックアップ（読込中 RDS の H&E オーバーレイ保存状態から）。
         # 設定が無ければ空 dict（最終列は空欄）。
@@ -686,15 +658,15 @@ def _do_export(
         # ステータスメッセージ
         n_methods = len(method_lookups)
         methods_str = " / ".join(method_lookups.keys())
-        msg = f"✅ {filename} をダウンロードしました"
+        msg = f"✅ {filename} を生成しました"
         if n_methods > 1:
             msg += f" ({methods_str})"
 
-        return dcc.send_bytes(file_bytes, filename), msg
+        return file_bytes, filename, msg
 
     except Exception as e:
         logger.exception("データ出力エラー")
-        return no_update, f"❌ エラー: {e}"
+        return None, None, f"❌ エラー: {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -725,14 +697,24 @@ def update_data_export_method_options(rds_map):
 
 
 def _run_export_job(job_id, args):
-    """作業スレッド本体: _do_export を実行し進捗をレジストリへ反映する。"""
+    """作業スレッド本体: _do_export を実行し、出力を一時ファイルへ保存して進捗を反映する。
+
+    base64 でブラウザに載せる（＝タブ落ちの原因）代わりに、生成バイト列を
+    DATA_EXPORT_TMP_DIR に保存し、Flask の send_file ルートでストリーム配信する。
+    """
     try:
-        download, msg = _do_export(
+        file_bytes, filename, msg = _do_export(
             *args, progress_cb=lambda p, l="": _update_job(job_id, p, l))
-        if download is no_update or not download:
+        if not file_bytes or not filename:
             _fail_job(job_id, msg or "出力に失敗しました")
-        else:
-            _finish_job(job_id, download, msg)
+            return
+        from app.config import DATA_EXPORT_TMP_DIR
+        DATA_EXPORT_TMP_DIR.mkdir(parents=True, exist_ok=True)
+        _sweep_old_files(DATA_EXPORT_TMP_DIR, max_age_sec=3600)  # 古い一時ファイルを掃除
+        safe = re.sub(r'[\\/:*?"<>|]+', "_", str(filename)) or "export.bin"
+        path = DATA_EXPORT_TMP_DIR / f"{job_id}__{safe}"
+        path.write_bytes(file_bytes)
+        _finish_job(job_id, str(path), filename, msg)
     except Exception as e:  # noqa: BLE001
         logger.exception("[DataExport] ジョブ実行エラー")
         _fail_job(job_id, f"❌ エラー: {e}")
@@ -780,7 +762,7 @@ def data_export_start(n_clicks, data_folder, ms_instrument, export_format,
 
 
 @callback(
-    [Output("dl_data_export", "data"),
+    [Output("data_export_download_url", "data"),
      Output("div_data_export_status", "children"),
      Output("data_export_progress_container", "style", allow_duplicate=True),
      Output("data_export_progress_label", "children", allow_duplicate=True),
@@ -793,7 +775,12 @@ def data_export_start(n_clicks, data_folder, ms_instrument, export_format,
     prevent_initial_call=True,
 )
 def data_export_poll(n_intervals, job_store):
-    """Interval ごとにジョブ進捗を読み、バー/ラベル更新。完了でダウンロード配信＆停止。"""
+    """Interval ごとにジョブ進捗を読み、バー/ラベル更新。完了で DL URL を配信して停止する。
+
+    完了時はブラウザに base64 を載せず、`/api/data_export/<job_id>` を配信して
+    clientside で自動DL＋ステータスに明示リンクを出す（send_file ストリーム）。
+    ジョブは pop しない（ルートがファイル解決に使うため。掃除は TTL / 上限で行う）。
+    """
     job_id = (job_store or {}).get("job")
     if not job_id:
         raise PreventUpdate
@@ -808,13 +795,31 @@ def data_export_poll(n_intervals, job_store):
         return (no_update, no_update, no_update, label, pct,
                 False, no_update, no_update)
     if status == "done":
-        _pop_job(job_id)
-        return (job["download"], job["msg"], _PROG_HIDE, "完了", 100,
+        url = f"/api/data_export/{job_id}"
+        link = html.A("⬇ ダウンロード", href=url,
+                      className="fw-bold text-decoration-none")
+        status_children = html.Span([f"{job['msg']} → ", link])
+        # url を store に出して clientside が自動DL。リンクはフォールバック。
+        return (url, status_children, _PROG_HIDE, "完了", 100,
                 False, False, True)
     # error
     _pop_job(job_id)
-    return (no_update, job["msg"], _PROG_HIDE, "失敗", no_update,
+    return ("", job["msg"], _PROG_HIDE, "失敗", no_update,
             False, False, True)
+
+
+# 完了時、DL URL が入ったら clientside で自動ダウンロード（attachment のため画面遷移しない）。
+clientside_callback(
+    """
+    function(url) {
+        if (url) { window.location.href = url; }
+        return '';
+    }
+    """,
+    Output("data_export_download_sink", "data"),
+    Input("data_export_download_url", "data"),
+    prevent_initial_call=True,
+)
 
 
 @callback(

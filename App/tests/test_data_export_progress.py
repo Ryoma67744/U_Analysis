@@ -41,9 +41,11 @@ def test_finish_and_fail_transitions():
     jid = ep.new_job()
     try:
         ep.update_job(jid, 60, "書き込み中… 3/5")
-        ep.finish_job(jid, {"content": "..."}, "✅ 完了")
+        ep.finish_job(jid, "/tmp/x.parquet", "UMAP_cluster_TIMS.parquet", "✅ 完了")
         d = ep.get_job(jid)
-        assert d["status"] == "done" and d["pct"] == 100 and d["download"]
+        assert d["status"] == "done" and d["pct"] == 100
+        assert d["filepath"] == "/tmp/x.parquet"
+        assert d["filename"] == "UMAP_cluster_TIMS.parquet"
         # 完了後は update を無視（running でない）
         ep.update_job(jid, 10, "x")
         assert ep.get_job(jid)["pct"] == 100
@@ -65,8 +67,25 @@ def test_pop_and_missing():
     assert ep.get_job(jid) is None
     # 未知IDへの操作は例外を出さない
     ep.update_job("nope", 50, "x")
-    ep.finish_job("nope", None, "x")
+    ep.finish_job("nope", "/tmp/f", "f", "x")
     assert ep.get_job("nope") is None
+
+
+def test_sweep_old_files(tmp_path):
+    import os
+    import time
+    old = tmp_path / "old__x.parquet"
+    new = tmp_path / "new__y.parquet"
+    old.write_bytes(b"a")
+    new.write_bytes(b"b")
+    # old のみ 2 時間前に
+    past = time.time() - 7200
+    os.utime(old, (past, past))
+    removed = ep.sweep_old_files(tmp_path, max_age_sec=3600)
+    assert removed == 1
+    assert not old.exists() and new.exists()
+    # 不在ディレクトリでも例外を出さない
+    assert ep.sweep_old_files(tmp_path / "nope") == 0
 
 
 def test_max_jobs_cleanup_keeps_running():
@@ -75,7 +94,7 @@ def test_max_jobs_cleanup_keeps_running():
     try:
         # いくつか完了させておく
         for j in ids[:10]:
-            ep.finish_job(j, {"c": 1}, "done")
+            ep.finish_job(j, "/tmp/f", "f", "done")
         # さらに新規作成 → 掃除が走る
         newj = ep.new_job()
         assert ep.get_job(newj) is not None

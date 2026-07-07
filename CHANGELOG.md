@@ -12,6 +12,28 @@
 
 ---
 
+## 2026-07-06_ver40.1
+
+### 修正: データ出力を「本来の軽さ」に（ベクトル化＋ストリーム配信でタブ落ち解消）
+
+インタラクティブ「📥 データ出力」で大容量時に **Chrome タブが落ちる**問題を修正。出力は本来
+「入力 parquet ＋ 右に2列（UMAPクラスタ・領域名）」なので軽いはずだが、実装が重くしていた。
+
+- **A. 変形をベクトル化**（`services/export_transform.py` 新規 ＋ `_export_tims`）:
+  `df.iterrows()`（全スポット×全 m/z 列を1行ずつ Series 箱詰め＝O(行×列)）を撤廃。
+  x/y/annotation の**3列だけ**をベクトル処理し、キー `(sample, round(x,4), round(y,4))` を作って
+  `Series.map(lookup)` で2列付与（丸めは lookup と同一の Python round でキー完全一致）。数分→数秒級・低メモリに。
+- **B. 出力形式の健全化**: xlsx は列数 > 16,384（Excel 上限）で明確なエラーを返し CSV/Parquet を案内。
+- **C. 配信をストリーム化**（タブ落ち根絶）: `dcc.send_bytes`（base64 でブラウザに全載せ）を廃止。
+  生成バイト列を一時ファイル（`DATA_EXPORT_TMP_DIR`）に保存し、**Flask `send_file` ルート
+  `/api/data_export/<job_id>`** でストリーム配信。完了時は DL URL を配信して clientside 自動DL＋明示リンク。
+- `services/export_progress.py`: `finish_job` にファイルパス/名を保持、`sweep_old_files` で古い一時ファイル掃除。
+  `config.py`: `DATA_EXPORT_TMP_DIR`（既定 `SEURAT_CACHE_DIR/_data_exports`、env 上書き可）。
+- 出力ファイルの内容・形式は不変（ベクトル版が iterrows 版と同一結果であることをテスト）。
+- テスト追加 `tests/test_export_transform.py`（3件）＋ `test_data_export_progress.py` 拡張。version 40.0→40.1。
+
+---
+
 ## 2026-07-06_ver40.0
 
 ### インタラクティブ「データ出力」の進捗を実 % 表示に
