@@ -235,7 +235,9 @@ register_auth(server)
 # ヘルプページ（取扱説明書）: 認証不要
 # auth_middleware._BYPASS_PREFIXES に "/help/" を登録済み
 from flask import render_template as _render_template  # noqa: E402
-from flask import send_file as _send_file, make_response as _make_response  # noqa: E402
+from flask import (  # noqa: E402
+    send_file as _send_file, make_response as _make_response, abort as _abort,
+)
 from app.version import version_label as _version_label  # noqa: E402
 
 
@@ -293,6 +295,23 @@ def _project_thumbnail(project_id):
     # 短めキャッシュ: 解析後に新サムネが出るまでの待ち時間を最小化
     response.headers["Cache-Control"] = "public, max-age=60"
     return response
+
+
+@server.route("/api/data_export/<job_id>")
+def _data_export_download(job_id):
+    """データ出力(UMAP cluster)の生成済みファイルを send_file でストリーム配信する。
+
+    base64 でブラウザに載せるとタブが落ちるため、作業スレッドが保存した一時ファイルを
+    ここでストリーム配信する。job は export_progress レジストリで解決する。
+    """
+    from pathlib import Path as _Path
+    from app.services import export_progress as _ep
+    job = _ep.get_job(job_id)
+    fp = (job or {}).get("filepath")
+    name = (job or {}).get("filename") or "export.bin"
+    if not fp or not _Path(fp).exists():
+        _abort(404)
+    return _send_file(fp, as_attachment=True, download_name=name)
 
 
 # レイアウト設定

@@ -6,8 +6,11 @@
 # サーバは単一プロセス・マルチスレッドのため、モジュールグローバルをロックで共有する。
 # =============================================================================
 
+import os
 import threading
+import time
 import uuid
+from pathlib import Path
 from typing import Optional
 
 _JOBS: "dict[str, dict]" = {}
@@ -24,7 +27,7 @@ def new_job() -> str:
             for k in stale[: len(_JOBS) - _MAX_JOBS + 1]:
                 _JOBS.pop(k, None)
         _JOBS[job_id] = {"pct": 0, "label": "準備中…", "status": "running",
-                         "download": None, "msg": ""}
+                         "filepath": None, "filename": None, "msg": ""}
     return job_id
 
 
@@ -38,11 +41,13 @@ def update_job(job_id: str, pct: int, label: str = "") -> None:
                 j["label"] = label
 
 
-def finish_job(job_id: str, download, msg: str) -> None:
+def finish_job(job_id: str, filepath: str, filename: str, msg: str) -> None:
+    """完了：ダウンロード対象の一時ファイルパスと DL 名を保持する。"""
     with _LOCK:
         j = _JOBS.get(job_id)
         if j:
-            j.update(pct=100, label="完了", status="done", download=download, msg=msg)
+            j.update(pct=100, label="完了", status="done",
+                     filepath=str(filepath), filename=filename, msg=msg)
 
 
 def fail_job(job_id: str, msg: str) -> None:
@@ -62,3 +67,26 @@ def get_job(job_id: str) -> Optional[dict]:
 def pop_job(job_id: str) -> None:
     with _LOCK:
         _JOBS.pop(job_id, None)
+
+
+def sweep_old_files(dir_path, max_age_sec: int = 3600) -> int:
+    """dir_path 内の max_age_sec を超えて古いファイルを削除する（ダウンロード一時ファイルの掃除）。
+
+    Returns: 削除したファイル数。dir 不在や個別削除失敗は無視する。
+    """
+    removed = 0
+    try:
+        d = Path(dir_path)
+        if not d.is_dir():
+            return 0
+        now = time.time()
+        for f in d.iterdir():
+            try:
+                if f.is_file() and (now - f.stat().st_mtime) > max_age_sec:
+                    f.unlink()
+                    removed += 1
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return removed

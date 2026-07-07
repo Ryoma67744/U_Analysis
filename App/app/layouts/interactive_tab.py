@@ -1856,9 +1856,11 @@ def create_interactive_tab():
         dcc.Store(id="batch_spatial_figures_store", data=[]),
         dcc.Store(id="batch_feature_figures_store", data=[]),
         dcc.Download(id="dl_batch_zip"),
-        # データ出力 (UMAP cluster) 用
-        dcc.Download(id="dl_data_export"),
+        # データ出力 (UMAP cluster) 用: 巨大ファイルは base64 でなく send_file ルートで
+        # ストリーム配信する（ブラウザのタブ落ち回避）。DL URL を store 経由で clientside 自動DL。
         dcc.Store(id="data_export_job", data=None),
+        dcc.Store(id="data_export_download_url", data=None),
+        dcc.Store(id="data_export_download_sink", data=None),
         dcc.Interval(id="data_export_poll", interval=400, n_intervals=0,
                      disabled=True),
         # インタラクティブキャリブレーション用

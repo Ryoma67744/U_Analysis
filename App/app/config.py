@@ -170,6 +170,12 @@ _seurat_cache_env = os.environ.get("SEURAT_CACHE_DIR", "").strip()
 SEURAT_CACHE_DIR = (Path(_seurat_cache_env) if _seurat_cache_env
                     else Path(tempfile.gettempdir()) / "msi_seurat_cache")
 
+# データ出力(UMAP cluster)のダウンロード用一時ファイル置き場。
+# 巨大になり得るため base64 でブラウザへ渡さず、ここに保存して send_file でストリーム配信する。
+_data_export_tmp_env = os.environ.get("DATA_EXPORT_TMP_DIR", "").strip()
+DATA_EXPORT_TMP_DIR = (Path(_data_export_tmp_env) if _data_export_tmp_env
+                       else SEURAT_CACHE_DIR / "_data_exports")
+
 # クラスタ色パレット（Rスクリプト UMAP_DISTINCT_COLORS_50 と同一）
 DESI_COLORS_50 = [
     "#FF2D2D", "#1E5BFF", "#00A650", "#B000FF", "#FF8C00",
