@@ -12,6 +12,25 @@
 
 ---
 
+## 2026-07-08_ver42.1
+
+### 修正: 全「...」参照ボタンが無反応になるバグ（ファイルブラウザ復活）
+
+フォルダ/ファイル選択の「...」ボタンが**すべて**クリックしても反応しない不具合を修正。
+
+- **原因**: ファイルブラウザは1つの共有コールバック（`open_file_browser` / `apply_file_browser_selection`）で
+  全ボタンを処理し、`_ALL_TARGET_IDS`（＝`_BROWSE_BUTTONS` から生成）に依存する。その中に、削除済み
+  「手動結果フォルダ」機能の**孤児参照** `browse_result_folder` / `result_folder_manual`（どのレイアウトにも
+  未生成）が残っていた。Dash は「Input/State/Output が1つでも DOM に存在しない共有コールバックは実行しない」ため、
+  この孤児1つで両コールバックが停止し、**全参照ボタンが道連れで無反応**になっていた
+  （コンソールに `nonexistent object ... browse_result_folder` エラー）。
+- **修正**: `callbacks/file_handlers.py` の `_BROWSE_BUTTONS` と `_STORE_TARGETS` から孤児参照を削除（2箇所）。
+  他ファイルからの参照は無く副作用なし。全「...」が復活する。
+- `selected_samples` 系のコンソール警告は、データフォルダ選択時に動的生成される部品の設計上のもので実害なし（対象外）。
+- version 42.0→42.1。
+
+---
+
 ## 2026-07-08_ver42.0
 
 ### 追加: ChatGPT 連携 — インタラクティブ Export のオンデマンド生成 (`/api/gpt/*`) — フェーズ2

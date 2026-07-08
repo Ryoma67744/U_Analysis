@@ -638,7 +638,6 @@ _BROWSE_BUTTONS = {
     "browse_reanalysis_folder": ("folder", "reanalysis_data_folder"),
     "browse_reanalysis_annotation": ("file", "reanalysis_annotation_path"),
     "browse_output": ("folder", "output_dir"),
-    "browse_result_folder": ("folder", "result_folder_manual"),
     "browse_interactive_result": ("folder", "interactive_result_folder"),
     "browse_interactive_msi": ("folder", "interactive_msi_folder"),
     # サイドバーの参照ボタン
@@ -696,7 +695,11 @@ _DEFAULT_START_DIR = {
 }
 
 # dcc.Store は "data" プロパティ、dbc.Input/dcc.Input は "value" プロパティ
-_STORE_TARGETS = {"result_folder_manual", "extra_folder_pending_store"}
+# NOTE: 旧「手動結果フォルダ」機能の孤児参照 result_folder_manual / browse_result_folder は
+#       レイアウト未生成のため削除済み（存在しない Input/Output は共有コールバック
+#       open_file_browser / apply_file_browser_selection を丸ごと停止させ、全参照ボタンを
+#       無反応にしていた）。
+_STORE_TARGETS = {"extra_folder_pending_store"}
 
 def _target_property(tid):
     return "data" if tid in _STORE_TARGETS else "value"
