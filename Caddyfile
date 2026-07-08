@@ -1,39 +1,27 @@
 # =============================================================================
 # MSI Analysis Application - Caddy リバースプロキシ設定
 #
-# 現状: ドメイン未取得のため IP アドレス直アクセス + Caddy ローカル CA で
-#       自己署名証明書を発行する構成 (本番暫定)。
+# ドメイン取得済み: cciiumap.duckdns.org (DuckDNS 無料サブドメイン) → 133.167.73.188
+# Caddy が Let's Encrypt から正規の TLS 証明書を自動取得・自動更新する。
+#   - :443 リスナー + :80 → :443 リダイレクトを auto_https が自動構成
+#   - 証明書取得には 80/443 が外部から到達可能である必要がある
+#     (さくらのパケットフィルタで HTTP:80 / HTTPS:443 を開放済み)
 #
-# 構成は Caddy 公式の最小パターン:
-#   https://caddyserver.com/docs/automatic-https
-#   "192.168.1.10 { tls internal; ... }" 形式
-# auto_https は **デフォルトのまま (有効)** にする。これにより:
-#   - :443 リスナーが自動生成され、tls internal で内部 CA leaf が発行される
-#   - :80 → :443 への 308 リダイレクトも自動で構成される
-#
-# 将来ドメインを取得したら:
-#   1. 133.167.73.188 → msi.yourlab.com に置換
-#   2. tls internal の行を削除 (Let's Encrypt 自動取得に戻る)
-#   3. （任意）Strict-Transport-Security ヘッダを復活させ HSTS 有効化
+# 旧構成 (IP 直アクセス + tls internal 自己署名) に戻す場合は git 履歴の旧版を参照。
 # =============================================================================
 
 {
-	# SNI を送らないクライアント (curl 7.77+ で IP 直アクセス、ブラウザの一部
-	# サブ接続 / pre-connect / HTTP/3 probe など) に対するフォールバック。
-	# これがないと SNI 空 ClientHello に対し Caddy は "no matching cert" を返し
-	# TLS alert internal error → ブラウザでは ERR_SSL_PROTOCOL_ERROR になる。
-	default_sni 133.167.73.188
-
-	# TLS handshake / 証明書発行の詳細をログに出す（原因切り分け用）。
-	# 動作が安定したらこの行を削除して通常運用に戻すこと。
+	# TLS handshake / 証明書発行の詳細をログに出す (初回発行の切り分け用)。
+	# 正規証明書の取得が安定したらこの行を削除して通常運用に戻すこと。
 	debug
+
+	# Let's Encrypt の有効期限通知などを受け取るメール (任意・推奨)。
+	# email you@example.com
 }
 
-# Site address に IP を指定。スキーム省略 (':443' でも 'https://' でもなく)
-# が公式推奨。Caddy が IP として認識し、内部 CA で leaf を発行する。
-133.167.73.188 {
-	tls internal
-
+# Site address にドメインを指定。スキームを省略すると Caddy が自動的に
+# HTTPS 化し、Let's Encrypt から証明書を取得する (tls ディレクティブ不要)。
+cciiumap.duckdns.org {
 	reverse_proxy msi-app:3838 {
 		transport http {
 			read_timeout 600s
@@ -49,12 +37,14 @@
 	}
 
 	# セキュリティヘッダー (clickjacking / sniff / referrer)
-	# 自己署名運用では HSTS は有効化しない（ドメイン切替時に詰むため）
 	header {
 		X-Frame-Options "DENY"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Cache-Control "no-store"
+		# 正規ドメイン + 正規 TLS になったので HSTS を有効化してよい (任意)。
+		# 有効化するとブラウザが以後 HTTPS を強制する (切替直後は慎重に)。
+		# Strict-Transport-Security "max-age=31536000; includeSubDomains"
 	}
 
 	# Caddy アクセスログ (json) を stdout に。docker logs で確認可能。

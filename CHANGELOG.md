@@ -12,6 +12,71 @@
 
 ---
 
+## 2026-07-08_ver42.0
+
+### 追加: ChatGPT 連携 — インタラクティブ Export のオンデマンド生成 (`/api/gpt/*`) — フェーズ2
+
+フェーズ1（読み取り＋保存済みエクスポート取得）に続き、**インタラクティブ解析の Export
+（UMAP_cluster：元データ＋右端に手法別クラスタ列・領域名列）を ChatGPT からその場で生成して
+ダウンロード**できるようにした。R 抽出が走り得る重い処理のため**非同期**（開始→ポーリング→取得）。
+
+- **セッション非依存ドライバ** `build_interactive_export_for_project(...)`
+  （`callbacks/interactive_data_export.py` 新規関数）:
+  `_do_export` からブラウザ session（`_interactive_data`）依存を取り除いた版。全手法のクラスタは
+  `_build_all_method_lookups(current_method=None)` で**ディスクから**構築する
+  （current_method=None のとき同関数は `_interactive_data` を一切参照しない）。ROI(領域名) は
+  primary RDS（既定 Harmony）の plot_data ＋ `hne_overlay_state.json` から割当。既存の
+  `_export_tims` / `_export_desi`（純粋関数）をそのまま再利用（＝画面出力と同一結果）。
+- **非同期エンドポイント**（`services/gpt_api.py`）:
+  - `POST /api/gpt/projects/{pid}/sub/{sid}/exports/interactive?format=parquet|csv|xlsx&methods=...`
+    → 作業スレッドを起動し `job_id` と `status_url` を返す。同時実行は `_GPT_EXPORT_SEM`（既定2）で制限。
+  - `GET /api/gpt/exports/jobs/{job_id}` → 進捗（running/pct）と、完了時に `download_url`。
+  - `GET /api/gpt/exports/jobs/{job_id}/file` → `send_file` でストリーム配信。
+  - ジョブは `services/export_progress`（ver40.0）を流用。生成物は `GPT_EXPORT_TMP_DIR` に保存し、
+    レジストリが掃除で消えても**ファイルから解決**（`<job_id>__*` をグロブ）。`job_id` は
+    `valid_job_id`（16進16-64桁）で検証してからグロブ/送出（パストラバーサル対策）。
+- OpenAPI 仕様に 3 オペレーション（startInteractiveExport / getExportJob / downloadExportJob）を追記。
+- **テスト** `tests/test_gpt_api.py` に `valid_job_id` とフェーズ2 OpenAPI の検証を追加。
+- ChatGPT 実接続には**独自ドメイン＋正規TLS**が別途必要（運用側作業。コード実装とは独立）。version 41.0→42.0。
+
+---
+
+## 2026-07-08_ver41.0
+
+### 追加: ChatGPT 連携用の読み取り専用 API「受付窓口」(`/api/gpt/*`) — フェーズ1
+
+このアプリを ChatGPT（Custom GPT の Action）から使い、**データの検索・抽出・保存済み
+エクスポート取得**を自然言語で行えるようにするための「受付窓口」を新設。前アプリのように別サービス
+（Supabase/Render）を立てず、**既存 Flask に読み取り専用ルートを追加**して同一プロセスの
+データ関数を再利用する（画面と同じ数値を返す）。
+
+- **新規** `services/gpt_api.py`（`register_gpt_api(server)`）:
+  - **認証**: `/api/gpt/*` は独自の合言葉 **`X-API-Key`** で保護（`config.GPT_API_KEY`）。
+    照合は `hmac.compare_digest`（定数時間比較）。**鍵未設定なら 503 で窓口を閉じる**（fail-closed）。
+    判定は flask 非依存の純関数 `key_decision(path, provided, configured)` に分離（単体テスト可）。
+    `openapi.json` / `health` のみ鍵不要（ChatGPT の Action 設定用の契約・死活）。
+  - **読み取り専用 JSON**: `projects` / `projects/{id}`（詳細＋サブ）/ サブ単位の
+    `clusters`（ウォーム抽出キャッシュのみ）/ `markers`（`deg_utils.load_deg_results`）/
+    `compounds`（feature アノテーション検索：名前・m/z±tol・脂質クラス）/ `outputs`（出力画像一覧）。
+  - **R は起動しない**: 抽出は `SeuratBridge.get_cache_dir` + `_is_cached` で
+    **ウォームキャッシュがある場合のみ** CSV/JSON を直接読む（未生成なら「アプリで開くと取得可」と返す）。
+  - **保存済み MetaboAnalyst エクスポート取得**: `exports` で
+    `<RDS隣>/metaboanalyst_exports/*.zip|*.csv` を列挙し、`download/<token>` で
+    `send_file` ストリーム配信（ver40.1 の方式を踏襲）。トークンは (project, sub, kind, name) のみを
+    載せ、配信時に列挙し直して一致検証するためパストラバーサルは起きない。
+  - **OpenAPI 3.1 仕様** を `openapi.json` で提供（`servers` は実ホストを反映、鍵は仕様書に出さない）。
+- `main.py`: `register_auth(server)` の直後に `register_gpt_api(server)` を登録。
+- `auth_middleware.py`: `/api/gpt/` をログインゲートの bypass に追加（独自の X-API-Key で守るため）。
+- `config.py`: `GPT_API_KEY`（未設定で窓口クローズ）と `GPT_EXPORT_TMP_DIR`（フェーズ2用）を追加。
+  `docker-compose.yml` / `.env.docker` に `GPT_API_KEY` を追記。
+- **テスト** `tests/test_gpt_api.py`（16件、Dash/Flask 非依存）: 鍵判定・トークン往復・化合物検索・
+  マーカー整形・一覧整形・OpenAPI 形。
+- 数値・強度（intensity）のオンデマンド算出と**インタラクティブ Export のオンデマンド生成**は
+  重い処理のため**フェーズ2**（次リリース）で追加予定。ChatGPT 実接続には**独自ドメイン＋正規TLS**が別途必要
+  （運用側作業。コード実装とは独立）。version 40.1→41.0。
+
+---
+
 ## 2026-07-06_ver40.1
 
 ### 修正: データ出力を「本来の軽さ」に（ベクトル化＋ストリーム配信でタブ落ち解消）

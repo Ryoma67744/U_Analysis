@@ -231,6 +231,13 @@ from app.services.auth_middleware import register as register_auth  # noqa: E402
 auth_service.init_from_env()
 register_auth(server)
 
+# ver41.0: ChatGPT 連携用の読み取り専用 API (/api/gpt/*)。
+# auth_middleware は /api/gpt/ を bypass するため、ここで独自の X-API-Key で保護する。
+# register_auth の後に登録し、before_request チェーンで _require_login → _gpt_before_request の順に評価される。
+from app.services.gpt_api import register_gpt_api  # noqa: E402
+
+register_gpt_api(server)
+
 
 # ヘルプページ（取扱説明書）: 認証不要
 # auth_middleware._BYPASS_PREFIXES に "/help/" を登録済み
