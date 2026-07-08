@@ -670,6 +670,109 @@ def _do_export(
 
 
 # ---------------------------------------------------------------------------
+# セッション非依存ドライバ（API / バッチから駆動）
+# ---------------------------------------------------------------------------
+
+def _pick_primary_rds(rds_map: dict):
+    """ROI(領域名) 割当の基準にする RDS を選ぶ。UI 既定の Harmony を優先。"""
+    for m in ("Harmony", "RPCA", "PCA", "PCA (uncorrected)"):
+        p = (rds_map or {}).get(m)
+        if p and Path(p).exists():
+            return p
+    for p in (rds_map or {}).values():
+        if p and Path(p).exists():
+            return p
+    return None
+
+
+def build_interactive_export_for_project(
+    data_folder, ms_instrument, export_format,
+    rds_map, result_folder, project_id, sub_project_id,
+    selected_methods=None, progress_cb=None,
+):
+    """ライブ session に依存せず UMAP_cluster エクスポートを生成する（API / バッチ用）。
+
+    `_do_export` から `_interactive_data`（ブラウザ session のライブ状態）依存を取り除いた版。
+    全手法のクラスタは `_build_all_method_lookups(current_method=None)` でディスクから読む
+    （current_method=None のとき同関数は `_interactive_data` を一切参照しない）。
+    ROI(領域名) は primary RDS の plot_data + `hne_overlay_state.json`（ディスク）から割り当てる。
+
+    Returns: ``(file_bytes|None, filename|None, message)``。失敗時は ``(None, None, msg)``。
+    抽出キャッシュが cold の場合は内部で R 抽出が走り得る（＝重い処理）。
+    """
+    def _p(pct, label=""):
+        if progress_cb:
+            try:
+                progress_cb(int(pct), label)
+            except Exception:  # noqa: BLE001
+                pass
+
+    try:
+        ms_instrument = _resolve_instrument(ms_instrument, data_folder, result_folder)
+        _p(5, "準備中…")
+
+        if not data_folder:
+            data_folder = _infer_data_folder(
+                result_folder, project_id, sub_project_id, ms_instrument)
+        if not data_folder:
+            return None, None, (
+                "❌ MSIデータフォルダが見つかりません。"
+                "サブプロジェクト設定でMSIデータフォルダを指定してください。")
+
+        rmap = rds_map if isinstance(rds_map, dict) else {}
+        if not rmap:
+            return None, None, "❌ 解析済み RDS が見つかりません。"
+
+        # selected_methods を rds_map 内に正規化（空/不一致なら全手法）。
+        # これにより _build_all_method_lookups の rmap が空にならず、session を参照する
+        # フォールバック経路（rds_map 無し時のみ）に落ちない。
+        if selected_methods:
+            sel = [m for m in selected_methods if m in rmap]
+        else:
+            sel = list(rmap.keys())
+        if not sel:
+            sel = list(rmap.keys())
+
+        # 全手法のクラスタルックアップをディスクから構築（current_method=None → session 非参照）
+        method_lookups = _build_all_method_lookups(
+            rmap, None, None, sel, progress_cb=progress_cb, base=10, span=40)
+        if not method_lookups:
+            return None, None, "クラスターデータを構築できませんでした。"
+
+        # ROI(領域名) ルックアップ（primary RDS の plot_data + H&E オーバーレイ保存状態）
+        _p(52, "ROI(領域名)を割当中…")
+        region_lookup = {}
+        primary_rds = _pick_primary_rds(rmap)
+        if primary_rds:
+            try:
+                pdat = _bridge.extract_data(primary_rds).get("plot_data")
+                region_lookup = _build_region_lookup(pdat, primary_rds)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[APIExport] ROI 割当をスキップ: %s", e)
+
+        is_desi = (ms_instrument or "").upper() == "DESI"
+        if is_desi:
+            file_bytes, filename = _export_desi(
+                data_folder, method_lookups, region_lookup,
+                progress_cb=progress_cb, base=58, span=40)
+        else:
+            fmt = export_format or "parquet"
+            file_bytes, filename = _export_tims(
+                data_folder, method_lookups, fmt, region_lookup,
+                progress_cb=progress_cb, base=58, span=40)
+        _p(99, "仕上げ中…")
+
+        msg = f"✅ {filename} を生成しました"
+        if len(method_lookups) > 1:
+            msg += " (" + " / ".join(method_lookups.keys()) + ")"
+        return file_bytes, filename, msg
+
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[APIExport] エクスポート生成エラー")
+        return None, None, f"❌ エラー: {e}"
+
+
+# ---------------------------------------------------------------------------
 # 進捗 % 表示（インプロセス作業スレッド + dcc.Interval ポーリング）。
 #  start : ボタン押下で作業スレッドを起動し、進捗UI(0%)表示・ボタン無効・Interval 有効化。
 #  poll  : Interval ごとにジョブレジストリを読み、バー%/ラベル更新。完了でダウンロード配信。

@@ -22,6 +22,8 @@ import base64
 import hmac
 import json
 import logging
+import re
+import threading
 from pathlib import Path
 
 logger = logging.getLogger("msi.gpt_api")
@@ -31,6 +33,14 @@ _KEYFREE_PATHS = ("/api/gpt/openapi.json", "/api/gpt/health")
 
 # 補正手法名 → RDS ファイル名のヒント（表示用の既定順）
 _METHOD_ORDER = ("Harmony", "RPCA", "PCA", "PCA (uncorrected)")
+
+# インタラクティブ Export のオンデマンド生成（重い＝R 抽出が走り得る）の同時実行上限。
+# 1 ユーザーの ChatGPT からの利用を想定。過負荷を防ぐため小さめに固定する。
+_GPT_EXPORT_MAX_CONCURRENCY = 2
+_GPT_EXPORT_SEM = threading.BoundedSemaphore(_GPT_EXPORT_MAX_CONCURRENCY)
+
+# 出力形式の許可値（TIMS のみ意味を持つ。DESI は常に xlsx）。
+_EXPORT_FORMATS = ("parquet", "csv", "xlsx")
 
 
 # ===========================================================================
@@ -81,6 +91,14 @@ def decode_ref(token: str):
     except Exception:  # noqa: BLE001
         pass
     return None
+
+
+def valid_job_id(job_id: str) -> bool:
+    """ジョブ ID が `export_progress.new_job()`（uuid4.hex=32桁16進）の形式か（純関数）。
+
+    ダウンロード/状態ルートの path 引数をグロブ/送出に使う前の防御（パストラバーサル対策）。
+    """
+    return bool(job_id) and bool(re.fullmatch(r"[0-9a-fA-F]{16,64}", str(job_id)))
 
 
 # ===========================================================================
@@ -398,6 +416,32 @@ def build_openapi_spec(base_url: str = "") -> dict:
                                                   {"schema": {"type": "string",
                                                               "format": "binary"}}}},
                               "404": {"description": "not found"}}}},
+            "/api/gpt/projects/{pid}/sub/{sid}/exports/interactive": {"post": {
+                "operationId": "startInteractiveExport",
+                "summary": ("インタラクティブ Export（UMAP_cluster）をその場で生成開始"
+                            "（非同期。job_id を返す。重い処理）"),
+                "parameters": [_p("pid", "path", required=True),
+                               _p("sid", "path", required=True),
+                               _p("format", desc="parquet / csv / xlsx（TIMSのみ有効）"),
+                               _p("methods", desc="カンマ区切り手法名。省略で全手法")],
+                "responses": {"200": {"description": "生成ジョブを開始（job_id/status_url）",
+                                      "content": {"application/json": {"schema": obj}}}}}},
+            "/api/gpt/exports/jobs/{job_id}": {"get": {
+                "operationId": "getExportJob",
+                "summary": "生成ジョブの状態（done なら download_url を返す）",
+                "parameters": [_p("job_id", "path", required=True)],
+                "responses": {"200": {"description": "状態",
+                                      "content": {"application/json": {"schema": obj}}},
+                              "404": {"description": "unknown job"}}}},
+            "/api/gpt/exports/jobs/{job_id}/file": {"get": {
+                "operationId": "downloadExportJob",
+                "summary": "生成済みインタラクティブ Export のダウンロード",
+                "parameters": [_p("job_id", "path", required=True)],
+                "responses": {"200": {"description": "ファイル本体",
+                                      "content": {"application/octet-stream":
+                                                  {"schema": {"type": "string",
+                                                              "format": "binary"}}}},
+                              "404": {"description": "not found"}}}},
         },
     }
 
@@ -582,6 +626,72 @@ def _iso(ts: float) -> str:
         return datetime.fromtimestamp(ts).strftime("%Y-%m-%dT%H:%M:%S")
     except Exception:  # noqa: BLE001
         return ""
+
+
+# ===========================================================================
+# インタラクティブ Export のオンデマンド生成（フェーズ2・重い＝R 抽出が走り得る）
+# ===========================================================================
+def _find_export_job_file(job_id: str):
+    """GPT_EXPORT_TMP_DIR 内の `<job_id>__*` を探して Path を返す（無ければ None）。
+
+    ジョブレジストリが上限掃除で消えてもファイルから解決できるようにする。
+    job_id は事前に valid_job_id で検証すること。
+    """
+    if not valid_job_id(job_id):
+        return None
+    try:
+        from app.config import GPT_EXPORT_TMP_DIR
+        d = Path(GPT_EXPORT_TMP_DIR)
+        if not d.is_dir():
+            return None
+        matches = sorted(d.glob(f"{job_id}__*"))
+        return matches[0] if matches else None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("export job file 解決に失敗: %s", e)
+        return None
+
+
+def _run_interactive_export(job_id: str, resolved: dict, methods, fmt: str):
+    """作業スレッド本体: セッション非依存ドライバで Export を生成し一時ファイルへ保存。
+
+    生成バイト列は base64 でチャットに載せず、GPT_EXPORT_TMP_DIR に保存して
+    `/api/gpt/exports/jobs/<job_id>/file`（send_file）でストリーム配信する。
+    同時実行は _GPT_EXPORT_SEM で制限（過負荷防止）。
+    """
+    from app.services import export_progress as ep
+    acquired = False
+    try:
+        acquired = _GPT_EXPORT_SEM.acquire(timeout=3600)
+        if not acquired:
+            ep.fail_job(job_id, "❌ 混雑のため生成できませんでした。時間をおいて再試行してください。")
+            return
+        from app.callbacks.interactive_data_export import (
+            build_interactive_export_for_project,
+        )
+        from app.config import GPT_EXPORT_TMP_DIR
+        file_bytes, filename, msg = build_interactive_export_for_project(
+            resolved.get("data_folder"), resolved.get("ms_instrument"), fmt,
+            resolved.get("rds_map"), resolved.get("result_dir"),
+            (resolved.get("project") or {}).get("id"),
+            (resolved.get("sub") or {}).get("id"),
+            selected_methods=methods,
+            progress_cb=lambda p, l="": ep.update_job(job_id, p, l),
+        )
+        if not file_bytes or not filename:
+            ep.fail_job(job_id, msg or "出力に失敗しました")
+            return
+        GPT_EXPORT_TMP_DIR.mkdir(parents=True, exist_ok=True)
+        ep.sweep_old_files(GPT_EXPORT_TMP_DIR, max_age_sec=3600)  # 古い一時ファイル掃除
+        safe = re.sub(r'[\\/:*?"<>|]+', "_", str(filename)) or "export.bin"
+        path = Path(GPT_EXPORT_TMP_DIR) / f"{job_id}__{safe}"
+        path.write_bytes(file_bytes)
+        ep.finish_job(job_id, str(path), filename, msg)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[GPT] インタラクティブ Export ジョブ失敗")
+        ep.fail_job(job_id, f"❌ エラー: {e}")
+    finally:
+        if acquired:
+            _GPT_EXPORT_SEM.release()
 
 
 # ===========================================================================
@@ -776,6 +886,66 @@ def register_gpt_api(server) -> None:
         return send_file(match["path"], as_attachment=True,
                          download_name=match["filename"])
 
+    # ---- インタラクティブ Export オンデマンド生成（フェーズ2・非同期） --------
+    def _export_interactive(pid, sid):
+        # POST: 生成ジョブを起動し job_id と status_url を返す（重い＝R が走り得る）。
+        r = _resolve_sub(pid, sid)
+        if not r:
+            return _fail("project/sub not found", 404)
+        if not r["rds_map"]:
+            return _fail("この結果には解析済み RDS が見つかりません。", 404)
+        fmt = (request.args.get("format") or "parquet").strip().lower()
+        if fmt not in _EXPORT_FORMATS:
+            fmt = "parquet"
+        methods_arg = request.args.get("methods")
+        methods = ([m.strip() for m in methods_arg.split(",") if m.strip()]
+                   if methods_arg else None)
+        from app.services import export_progress as ep
+        job_id = ep.new_job()
+        threading.Thread(
+            target=_run_interactive_export,
+            args=(job_id, r, methods, fmt), daemon=True,
+        ).start()
+        return _ok({
+            "job_id": job_id,
+            "status_url": f"/api/gpt/exports/jobs/{job_id}",
+            "message": ("エクスポート生成を開始しました。status_url を数秒おきに"
+                        "ポーリングし、status=done になったら download_url を取得してください。"),
+        })
+
+    def _export_job_status(job_id):
+        # GET: 生成ジョブの状態。完了ならファイル解決して download_url を返す。
+        if not valid_job_id(job_id):
+            return _fail("bad job id", 404)
+        from app.services import export_progress as ep
+        job = ep.get_job(job_id)
+        f = _find_export_job_file(job_id)
+        if f is not None:
+            fname = (job or {}).get("filename") or f.name.split("__", 1)[-1]
+            return _ok({
+                "status": "done", "pct": 100, "filename": fname,
+                "download_url": f"/api/gpt/exports/jobs/{job_id}/file",
+                "message": (job or {}).get("msg", "完了"),
+            })
+        if job is None:
+            return _fail("unknown or expired job", 404)
+        if job.get("status") == "error":
+            return _ok({"status": "error", "message": job.get("msg", "失敗")})
+        return _ok({"status": "running", "pct": job.get("pct", 0),
+                    "label": job.get("label", "")})
+
+    def _export_job_file(job_id):
+        # GET: 生成済みファイルを send_file でストリーム配信。
+        if not valid_job_id(job_id):
+            abort(404)
+        f = _find_export_job_file(job_id)
+        if f is None or not f.exists():
+            abort(404)
+        from app.services import export_progress as ep
+        job = ep.get_job(job_id)
+        dl_name = (job or {}).get("filename") or f.name.split("__", 1)[-1]
+        return send_file(str(f), as_attachment=True, download_name=dl_name)
+
     # ---- ルート登録 ----------------------------------------------------------
     routes = [
         ("/api/gpt/health", "gpt.health", _health),
@@ -788,9 +958,18 @@ def register_gpt_api(server) -> None:
         ("/api/gpt/projects/<pid>/sub/<sid>/outputs", "gpt.outputs", _outputs),
         ("/api/gpt/projects/<pid>/sub/<sid>/exports", "gpt.exports", _exports),
         ("/api/gpt/download/<token>", "gpt.download", _download),
+        ("/api/gpt/exports/jobs/<job_id>", "gpt.export_job_status", _export_job_status),
+        ("/api/gpt/exports/jobs/<job_id>/file", "gpt.export_job_file", _export_job_file),
     ]
     for rule, endpoint, view in routes:
         server.add_url_rule(rule, endpoint=endpoint, view_func=view, methods=["GET"])
+
+    # インタラクティブ Export の生成開始のみ POST（副作用＝ジョブ起動があるため）。
+    server.add_url_rule(
+        "/api/gpt/projects/<pid>/sub/<sid>/exports/interactive",
+        endpoint="gpt.export_interactive", view_func=_export_interactive,
+        methods=["POST"],
+    )
 
     logger.info("GPT API registered (/api/gpt/*); key=%s",
                 "set" if _cfg_key() else "UNSET(closed)")

@@ -236,3 +236,32 @@ def test_to_jsonable_records_from_dataframe():
     out = g.to_jsonable(recs)
     json.dumps(out)  # 例外が出ないこと
     assert out[0]["cluster"] == 0 and out[1]["n_cells"] == 50
+
+
+# ---------------------------------------------------------------------------
+# フェーズ2: インタラクティブ Export のオンデマンド生成
+# ---------------------------------------------------------------------------
+def test_valid_job_id():
+    assert g.valid_job_id("a" * 32) is True          # uuid4.hex
+    assert g.valid_job_id("0123456789abcdef") is True  # 16桁
+    # パストラバーサル/不正はすべて False（グロブ・送出前の防御）
+    assert g.valid_job_id("") is False
+    assert g.valid_job_id("../etc/passwd") is False
+    assert g.valid_job_id("abc") is False             # 短すぎ
+    assert g.valid_job_id("g" * 32) is False          # 16進以外
+    assert g.valid_job_id("a" * 65) is False          # 長すぎ
+    assert g.valid_job_id(None) is False
+
+
+def test_openapi_has_phase2_export_ops():
+    spec = g.build_openapi_spec("https://msi.example.com")
+    paths = spec["paths"]
+    # 生成開始は POST（副作用あり）
+    ip = paths["/api/gpt/projects/{pid}/sub/{sid}/exports/interactive"]
+    assert "post" in ip and ip["post"]["operationId"] == "startInteractiveExport"
+    # 状態・ファイルは GET
+    assert paths["/api/gpt/exports/jobs/{job_id}"]["get"]["operationId"] == "getExportJob"
+    assert (paths["/api/gpt/exports/jobs/{job_id}/file"]["get"]["operationId"]
+            == "downloadExportJob")
+    # これらは鍵不要ではない（health のように security:[] を持たない → グローバル鍵が効く）
+    assert "security" not in ip["post"]
