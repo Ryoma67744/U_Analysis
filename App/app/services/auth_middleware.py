@@ -32,6 +32,9 @@ _BYPASS_PREFIXES = (
     "/_dash-component-suites/",
     "/_favicon.ico",
     "/help/",  # ヘルプページ (取扱説明書) は認証なしで閲覧可
+    # ver41.0: ChatGPT 連携 API。セッション Cookie ではなく独自の X-API-Key
+    # (gpt_api.py の before_request) で保護するため、ログインゲートは素通りさせる。
+    "/api/gpt/",
     # ver4.2: /view/ は無条件バイパスをやめ、共有レコードの require_password で
     # 判定する (_share_password_required)。無期限でもパス保護を選べるように。
 )

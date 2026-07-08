@@ -26,6 +26,8 @@ services:
       - SESSION_COOKIE_MAX_AGE_SEC=${SESSION_COOKIE_MAX_AGE_SEC:-86400}
       - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-}
       - SHARE_BASE_URL=${SHARE_BASE_URL:-}
+      # ver41.0: ChatGPT 連携 API (/api/gpt/*) の合言葉。未設定なら窓口は 503 で閉じる。
+      - GPT_API_KEY=${GPT_API_KEY:-}
       # 生データ・出力外部パス (.env で上書き可。未設定時は named volume にフォールバック)
       - DESI_DATA_DIR=/app/Data/DESI/Data
       - TIMS_DATA_DIR=/app/Data/TIMS/Data

@@ -240,3 +240,19 @@ EDIT_LOCK_TIMEOUT_SEC = int(os.environ.get("EDIT_LOCK_TIMEOUT_SEC", "30"))
 EDIT_LOCK_HEARTBEAT_INTERVAL_SEC = int(
     os.environ.get("EDIT_LOCK_HEARTBEAT_INTERVAL_SEC", "10")
 )
+
+# =============================================================================
+# ChatGPT 連携 API (受付窓口 /api/gpt/*) 用の設定  (ver41.0)
+# =============================================================================
+# GPT_API_KEY: ChatGPT (Custom GPT の Action) から /api/gpt/* を呼ぶための合言葉。
+#   - サーバ側のみに保持し、OpenAPI 仕様書や URL には一切出さない。
+#   - 未設定 (空) の場合、/api/gpt/* は 503 を返して窓口を閉じる
+#     (誤って無防備公開されるのを防ぐ fail-closed)。
+#   - 照合は hmac.compare_digest (定数時間比較)。
+GPT_API_KEY = os.environ.get("GPT_API_KEY", "").strip()
+
+# ChatGPT 連携でオンデマンド生成したエクスポートの一時ファイル置き場 (Phase 2)。
+# DATA_EXPORT_TMP_DIR と同じ流儀 (send_file でストリーム配信)。
+_gpt_export_tmp_env = os.environ.get("GPT_EXPORT_TMP_DIR", "").strip()
+GPT_EXPORT_TMP_DIR = (Path(_gpt_export_tmp_env) if _gpt_export_tmp_env
+                      else SEURAT_CACHE_DIR / "_gpt_exports")
