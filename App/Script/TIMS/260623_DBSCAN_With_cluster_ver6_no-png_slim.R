@@ -1562,7 +1562,6 @@ run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_onl
   if (!("umap" %in% names(obj@reductions))) {
     message(">> UMAP reduction not found. Running RunUMAP() ...")
     # Choose dims & reduction source
-    dims_use <- 1:min(UMAP_DIMS_MAX, MAX_PCS)
     red_src <- if ("harmony" %in% names(obj@reductions)) {
       "harmony"
     } else if ("rpca" %in% names(obj@reductions)) {
@@ -1572,6 +1571,9 @@ run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_onl
     } else {
       "pca"
     }
+    # dims は選んだ reduction が実際に持つ次元数を超えないよう上限を合わせる
+    #   （下の FindNeighbors:.dims_clust と対称。④で①と dims 設定が食い違っても RunUMAP が落ちないよう防御）。
+    dims_use <- 1:min(UMAP_DIMS_MAX, MAX_PCS, ncol(Embeddings(obj, red_src)))
     obj <- RunUMAP(obj, dims = dims_use, reduction = red_src, reduction.name = "umap", reduction.key = "UMAP_",
                    n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
                    metric = UMAP_METRIC, seed.use = GLOBAL_RANDOM_SEED)
@@ -1771,10 +1773,18 @@ if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
     heat_labels <- ifelse(.is_missing_annot_h | !.is_hit_format_h, mz_only_heat[top_genes], as.character(ann_for_top))
     heat_label_map <- setNames(heat_labels, top_genes)
 
-    hm <- DoHeatmap(subset(obj, cells=cells_sub), features=top_genes, group.by="ident", size=3) + 
-      scale_fill_gradientn(colors=c("blue", "white", "red")) +
-      scale_y_discrete(labels = heat_label_map) +
-      ggtitle(paste0("Top 5 Markers (", prefix, ")"))
+    # ④ downstream: 再利用する reduction RDS は DietSeurat で scale.data を落としているため、
+    #   DoHeatmap 用に heatmap 対象 feature の scale.data をその場で補完する（DESI v16 と同様）。
+    #   ヒートマップは画像保存されない補助計算のため、失敗しても解析全体は止めない（tryCatch）。
+    hm <- tryCatch({
+      obj_h <- ScaleData(subset(obj, cells=cells_sub), features=top_genes, assay="Spatial", verbose=FALSE)  # slim RDS/diet で空の scale.data を補完（DoHeatmap 用）
+      DoHeatmap(obj_h, features=top_genes, group.by="ident", size=3) +
+        scale_fill_gradientn(colors=c("blue", "white", "red")) +
+        scale_y_discrete(labels = heat_label_map) +
+        ggtitle(paste0("Top 5 Markers (", prefix, ")"))
+    }, error = function(e) {
+      message("!! Heatmap skipped (scale.data/DoHeatmap): ", conditionMessage(e)); NULL
+    })
     # ggsave(file.path(sub_od, "heatmap_top5.png"), hm, width=12, height=10)
 
     # 要望②: Average Heatmap（クラスタ平均）

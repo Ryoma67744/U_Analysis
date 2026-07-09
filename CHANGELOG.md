@@ -12,6 +12,32 @@
 
 ---
 
+## 2026-07-09_ver42.2
+
+### 修正: ④「続きを実行」(reduction再利用) の UMAP が DoHeatmap で停止するバグ
+
+PreFlight の **④「続きを実行（reduction再利用）」**（`PIPELINE_STAGE=downstream_from_reduction`）で
+UMAP 実行が途中停止する不具合を修正。TIMS ver6 テンプレ
+（`App/Script/TIMS/260623_DBSCAN_With_cluster_ver6_no-png_slim.R`）のみ対象。
+
+- **原因**: ④は①の軽量化 RDS（`DietSeurat` で `scale.data` を除去して保存）を再利用するが、
+  `run_downstream_analysis` の `DoHeatmap` は `scale.data` を必須とする。①（`reduction_only`）は
+  下流処理をスキップするため `scale.data` 不在が露呈せず、フル解析（`ScaleData` を毎回実行）でも
+  問題にならないが、**④だけ**が `scale.data` 復元なしに `DoHeatmap` へ到達し
+  `No requested features found in the scale.data layer for the Spatial assay` →
+  `Execution halted` で解析全体が停止していた（harmony 経路の最初のヒートマップで発生）。
+- **修正**: `DoHeatmap` 直前に `ScaleData(features=top_genes, assay="Spatial")` を実行して
+  scale.data をその場で補完（**DESI v16 に既存の対策を TIMS ver6 へ移植**。DESI 側は L2348/2656/2891）。
+  共通関数のため harmony/pca_uncorrected/rpca の3手法すべてに適用。ヒートマップは画像保存されない
+  補助計算のため `tryCatch` で保護し、万一失敗しても解析全体は止めない。
+- **防御（潜在バグ予防）**: `RunUMAP` の `dims` を選択 reduction の実次元数
+  `ncol(Embeddings(obj, red_src))` で上限クランプ（直下 `FindNeighbors` の `.dims_clust` と対称化）。
+  ①と④で dims 設定が食い違った場合の `RunUMAP` クラッシュを予防。
+- 本リポジトリに R 無しのため実行検証はデプロイ環境で実施（①→④ 通し）。括弧バランスは静的確認済み。
+- version 42.1→42.2。
+
+---
+
 ## 2026-07-08_ver42.1
 
 ### 修正: 全「...」参照ボタンが無反応になるバグ（ファイルブラウザ復活）
