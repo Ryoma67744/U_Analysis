@@ -185,6 +185,11 @@ def create_main_layout():
         # Dash の allow_duplicate ハッシュ衝突で実行時エラーになるため、
         # lite_target_store / navigate_to_lite_page と同じ二段パターンを採用)
         dcc.Store(id="app_path_target_store", data=None),
+        # /open/<pid>/<sid> deep link 用の中間 Store。ChatGPT が返す解析ページ
+        # リンクをブラウザが開いたとき、指定プロジェクトをフル解析画面へ自動ロード
+        # する。app_path_target_store と同じ二段パターン（url_bar.pathname と
+        # current_page.data を直接結ばない）で allow_duplicate 衝突を避ける。
+        dcc.Store(id="open_target_store", data=None),
 
         # ========== 認証情報 (clientside callback で /api/whoami から読み込み) ==========
         dcc.Store(id="current_analyst", data={"name": "", "tier": ""}),

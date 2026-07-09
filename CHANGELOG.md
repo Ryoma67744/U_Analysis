@@ -12,6 +12,33 @@
 
 ---
 
+## 2026-07-09_ver43.0
+
+### 追加: ChatGPT 連携 — 応答に「フル解析画面を開くリンク」(`view_url`) を追加
+
+ChatGPT でデータを調べたあと、その該当プロジェクトの**フル解析画面（インタラクティブ解析）を
+ワンクリックで開ける**ようにした。`/api/gpt/*` の各応答に、その解析画面を開く絶対 URL `view_url`
+を添える。
+
+- **新しいディープリンク `/open/<pid>/<sid>`**: ブラウザで開くと、指定プロジェクトをフル解析画面へ
+  自動ロードする。共有リンク（`/share`・`/view`）と同じロード経路をたどるが `shared_session` を
+  立てないため、共有モードではなく解析者自身の通常表示になる（＝サブプロジェクトのカードを
+  クリックして開くのと同じ最終状態）。URL 自体に pid/sid を含むのでリロード/deep link でも
+  プロジェクトを特定でき、`interactive_entry_mode="sub_project"` により自動ロードが起動する。
+  既存の URL ルーティングと衝突しないよう、`app_path` / `lite` と同じ**二段（中間 Store）
+  パターン**で追加（`open_target_store` → `tab_url_routing._detect_open_path` /
+  `_open_project_in_interactive`）。認証は Tier A 必須（未ログインでもログイン後に元リンクへ復帰）。
+- **`view_url` の付与**: `getProject`（各サブ）/ `getClusters` / `getMarkers` / `searchCompounds` /
+  `listOutputs` / `listExports` の応答に `view_url` を追加。URL は `X-Forwarded-Proto` を見た
+  https 公開ホスト（`SHARE_BASE_URL` 優先）で組み立てる。組み立て・解釈は flask/dash 非依存の
+  純関数 `services/deeplink.py`（`open_view_path` / `parse_open_path`）に集約しテスト可能にした。
+- **OpenAPI**: 各エンドポイントに「結果報告時は view_url を必ず提示する」旨の説明を追記。
+  `components.schemas` を `{}` で明示（ChatGPT 側の要件）。配信スキーマの `servers[0].url` も
+  https で出す（`request.url_root` の http 化を回避）。
+- version 42.1→43.0。
+
+---
+
 ## 2026-07-08_ver42.1
 
 ### 修正: 全「...」参照ボタンが無反応になるバグ（ファイルブラウザ復活）

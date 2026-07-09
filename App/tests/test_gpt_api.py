@@ -265,3 +265,53 @@ def test_openapi_has_phase2_export_ops():
             == "downloadExportJob")
     # これらは鍵不要ではない（health のように security:[] を持たない → グローバル鍵が効く）
     assert "security" not in ip["post"]
+
+
+# ---------------------------------------------------------------------------
+# ver43.0: 解析ページ deep link（/open/<pid>/<sid>）の組み立て・解釈
+# ---------------------------------------------------------------------------
+def test_open_view_path_basic():
+    from app.services.deeplink import open_view_path
+    assert open_view_path("p1", "s1") == "/open/p1/s1"
+
+
+def test_open_view_path_encodes_special_chars():
+    from app.services.deeplink import open_view_path
+    # スペース・スラッシュはパーセントエンコードされ URL 安全になる
+    p = open_view_path("proj a", "sub/b")
+    assert p == "/open/proj%20a/sub%2Fb"
+    assert " " not in p
+
+
+def test_parse_open_path_matches_and_rejects():
+    from app.services.deeplink import parse_open_path
+    assert parse_open_path("/open/p1/s1") == ("p1", "s1")
+    assert parse_open_path("/open/p1/s1/") == ("p1", "s1")  # 末尾スラッシュ許容
+    # 非対象パス / 不正はすべて None
+    assert parse_open_path("") is None
+    assert parse_open_path(None) is None
+    assert parse_open_path("/app/interactive") is None
+    assert parse_open_path("/open/p1") is None            # セグメント不足
+    assert parse_open_path("/open/p1/s1/extra") is None   # セグメント過多
+
+
+def test_open_path_roundtrip():
+    from app.services.deeplink import open_view_path, parse_open_path
+    for pid, sid in [("p1", "s1"), ("proj a", "sub/b"), ("2025_案件", "E14P0")]:
+        assert parse_open_path(open_view_path(pid, sid)) == (pid, sid)
+
+
+# ---------------------------------------------------------------------------
+# ver43.0: OpenAPI に view_url の案内 / components.schemas / 説明を反映
+# ---------------------------------------------------------------------------
+def test_openapi_has_schemas_object_and_view_url_hint():
+    spec = g.build_openapi_spec("https://msi.example.com")
+    # ChatGPT 側の要件: components.schemas が object として存在する
+    assert spec["components"]["schemas"] == {}
+    # 全体説明に view_url の提示指示が入っている
+    assert "view_url" in spec["info"]["description"]
+    # サブプロジェクト系エンドポイントの description に view_url の言及がある
+    for path in ("/api/gpt/projects/{pid}/sub/{sid}/markers",
+                 "/api/gpt/projects/{pid}/sub/{sid}/clusters",
+                 "/api/gpt/projects/{pid}/sub/{sid}/compounds"):
+        assert "view_url" in spec["paths"][path]["get"]["description"]

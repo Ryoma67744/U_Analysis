@@ -142,6 +142,20 @@ def project_detail(p: dict) -> dict:
     }
 
 
+def _view_url(project_id, sub_project_id) -> str:
+    """該当プロジェクトのフル解析画面を開く絶対 URL を返す（ChatGPT に添える）。
+
+    SHARE_BASE_URL が設定されていればそれを優先し、無ければ X-Forwarded-Proto を
+    見て公開ホストから https URL を組み立てる（`request.url_root` はリバースプロキシ
+    背後で http になり得るため使わない）。request 文脈内（各ハンドラ）で呼ぶこと。
+    """
+    from app.config import APP_PORT, SHARE_BASE_URL
+    from app.services.url_utils import external_base_url
+    from app.services.deeplink import open_view_path
+    base = SHARE_BASE_URL.rstrip("/") if SHARE_BASE_URL else external_base_url(APP_PORT)
+    return base + open_view_path(project_id, sub_project_id)
+
+
 def _rec_mz(rec: dict):
     """レコードから m/z を float で取り出す（無ければ feature 文字列から抽出）。"""
     v = rec.get("mz")
@@ -341,11 +355,15 @@ def build_openapi_spec(base_url: str = "") -> dict:
             "description": (
                 "MSI 解析アプリの読み取り専用 API。プロジェクト/化合物/クラスタ/"
                 "マーカーの検索・抽出と、保存済み MetaboAnalyst エクスポートの取得。"
+                " サブプロジェクト単位の応答には view_url（該当データのフル解析画面を"
+                "ブラウザで開くリンク）が含まれる。検索結果を報告する際は、末尾に view_url を"
+                "『解析ページ:（URL）』として必ずユーザーに提示すること。"
             ),
         },
         "servers": [{"url": server_url}],
         "security": [{"ApiKeyAuth": []}],
         "components": {
+            "schemas": {},
             "securitySchemes": {
                 "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
             }
@@ -361,12 +379,16 @@ def build_openapi_spec(base_url: str = "") -> dict:
                                       "content": {"application/json": {"schema": obj}}}}}},
             "/api/gpt/projects/{pid}": {"get": {
                 "operationId": "getProject", "summary": "プロジェクト詳細",
+                "description": ("各サブプロジェクトに view_url（そのデータのフル解析画面を"
+                                "開くリンク）を含む。ユーザーに案内する際は view_url を提示する。"),
                 "parameters": [_p("pid", "path", required=True)],
                 "responses": {"200": {"description": "詳細",
                                       "content": {"application/json": {"schema": obj}}}}}},
             "/api/gpt/projects/{pid}/sub/{sid}/clusters": {"get": {
                 "operationId": "getClusters",
                 "summary": "クラスタ統計（ウォームキャッシュがある場合）",
+                "description": ("応答に view_url（フル解析画面を開くリンク）を含む。"
+                                "結果を報告する際は末尾に view_url を必ず提示する。"),
                 "parameters": [_p("pid", "path", required=True),
                                _p("sid", "path", required=True),
                                _p("method", desc="Harmony / RPCA / PCA")],
@@ -374,6 +396,8 @@ def build_openapi_spec(base_url: str = "") -> dict:
                                       "content": {"application/json": {"schema": obj}}}}}},
             "/api/gpt/projects/{pid}/sub/{sid}/markers": {"get": {
                 "operationId": "getMarkers", "summary": "クラスタ別マーカー（DEG）",
+                "description": ("応答に view_url（フル解析画面を開くリンク）を含む。"
+                                "結果を報告する際は末尾に view_url を必ず提示する。"),
                 "parameters": [_p("pid", "path", required=True),
                                _p("sid", "path", required=True),
                                _p("method", desc="Harmony / RPCA / PCA"),
@@ -384,6 +408,8 @@ def build_openapi_spec(base_url: str = "") -> dict:
             "/api/gpt/projects/{pid}/sub/{sid}/compounds": {"get": {
                 "operationId": "searchCompounds",
                 "summary": "化合物アノテーション検索（名前 / m/z / 脂質クラス）",
+                "description": ("応答に view_url（フル解析画面を開くリンク）を含む。"
+                                "結果を報告する際は末尾に view_url を必ず提示する。"),
                 "parameters": [_p("pid", "path", required=True),
                                _p("sid", "path", required=True),
                                _p("method", desc="Harmony / RPCA / PCA"),
@@ -396,6 +422,8 @@ def build_openapi_spec(base_url: str = "") -> dict:
                                       "content": {"application/json": {"schema": obj}}}}}},
             "/api/gpt/projects/{pid}/sub/{sid}/outputs": {"get": {
                 "operationId": "listOutputs", "summary": "出力画像一覧（ダウンロードURL付き）",
+                "description": ("応答に view_url（フル解析画面を開くリンク）を含む。"
+                                "結果を報告する際は末尾に view_url を必ず提示する。"),
                 "parameters": [_p("pid", "path", required=True),
                                _p("sid", "path", required=True)],
                 "responses": {"200": {"description": "画像一覧",
@@ -403,6 +431,8 @@ def build_openapi_spec(base_url: str = "") -> dict:
             "/api/gpt/projects/{pid}/sub/{sid}/exports": {"get": {
                 "operationId": "listExports",
                 "summary": "保存済み MetaboAnalyst エクスポート一覧（ダウンロードURL付き）",
+                "description": ("応答に view_url（フル解析画面を開くリンク）を含む。"
+                                "結果を報告する際は末尾に view_url を必ず提示する。"),
                 "parameters": [_p("pid", "path", required=True),
                                _p("sid", "path", required=True)],
                 "responses": {"200": {"description": "エクスポート一覧",
@@ -746,7 +776,12 @@ def register_gpt_api(server) -> None:
         })
 
     def _openapi():
-        return _json(build_openapi_spec(request.url_root))
+        # servers[0].url は https の公開ホストにする（request.url_root はリバース
+        # プロキシ背後で http になり ChatGPT 側で手動修正が必要になるため使わない）。
+        from app.config import APP_PORT, SHARE_BASE_URL
+        from app.services.url_utils import external_base_url
+        base = SHARE_BASE_URL.rstrip("/") if SHARE_BASE_URL else external_base_url(APP_PORT)
+        return _json(build_openapi_spec(base))
 
     # ---- プロジェクト --------------------------------------------------------
     def _projects():
@@ -758,7 +793,11 @@ def register_gpt_api(server) -> None:
         p = get_project(pid)
         if not p:
             return _fail("project not found", 404)
-        return _ok({"project": project_detail(p)})
+        det = project_detail(p)
+        for s in det.get("sub_projects", []):
+            if s.get("id"):
+                s["view_url"] = _view_url(pid, s["id"])
+        return _ok({"project": det})
 
     # ---- クラスタ統計（ウォームのみ） ---------------------------------------
     def _clusters(pid, sid):
@@ -770,10 +809,11 @@ def register_gpt_api(server) -> None:
             return _fail("この結果には解析済み RDS が見つかりません。", 404)
         cache_dir = _warm_cache_dir(rds)
         if not cache_dir:
-            return _ok({"warm": False, "method": method,
+            return _ok({"warm": False, "method": method, "view_url": _view_url(pid, sid),
                         "message": "抽出キャッシュ未生成です。アプリで一度開くと取得できます。"})
         recs, meta = _read_clusters(cache_dir)
-        return _ok({"warm": True, "method": method, **shape_clusters(recs, meta)})
+        return _ok({"warm": True, "method": method, "view_url": _view_url(pid, sid),
+                    **shape_clusters(recs, meta)})
 
     # ---- マーカー（DEG。純ファイル読み） ------------------------------------
     def _markers(pid, sid):
@@ -792,9 +832,9 @@ def register_gpt_api(server) -> None:
         from app.utils.deg_utils import load_deg_results
         recs = load_deg_results(Path(r["result_dir"]), method)
         if recs is None:
-            return _ok({"method": method, "markers": [],
+            return _ok({"method": method, "markers": [], "view_url": _view_url(pid, sid),
                         "message": "この手法の DEG 結果が見つかりません。"})
-        return _ok({"method": method,
+        return _ok({"method": method, "view_url": _view_url(pid, sid),
                     "markers": shape_markers(recs, cluster=cluster, top=top)})
 
     # ---- 化合物検索（ウォームのアノテーション） -----------------------------
@@ -808,6 +848,7 @@ def register_gpt_api(server) -> None:
         cache_dir = _warm_cache_dir(rds)
         if not cache_dir:
             return _ok({"warm": False, "method": method, "compounds": [],
+                        "view_url": _view_url(pid, sid),
                         "message": "抽出キャッシュ未生成です。アプリで一度開くと取得できます。"})
         recs = _read_annotations(cache_dir)
         mz = request.args.get("mz")
@@ -827,7 +868,7 @@ def register_gpt_api(server) -> None:
             recs, query=request.args.get("query"), mz=mz, tol=tol,
             lipid_class=request.args.get("lipid_class"), limit=limit,
         )
-        return _ok({"warm": True, "method": method,
+        return _ok({"warm": True, "method": method, "view_url": _view_url(pid, sid),
                     "n_total_annotated": len(recs), "compounds": result})
 
     # ---- 出力画像一覧 --------------------------------------------------------
@@ -846,7 +887,7 @@ def register_gpt_api(server) -> None:
                 "download_token": tok,
                 "download_url": "/api/gpt/download/" + tok,
             })
-        return _ok({"outputs": out})
+        return _ok({"view_url": _view_url(pid, sid), "outputs": out})
 
     # ---- 保存済み MetaboAnalyst エクスポート一覧 ----------------------------
     def _exports(pid, sid):
@@ -863,7 +904,7 @@ def register_gpt_api(server) -> None:
                 "download_token": tok,
                 "download_url": "/api/gpt/download/" + tok,
             })
-        return _ok({"exports": out})
+        return _ok({"view_url": _view_url(pid, sid), "exports": out})
 
     # ---- ダウンロード（列挙し直して検証 → send_file ストリーム） -------------
     def _download(token):

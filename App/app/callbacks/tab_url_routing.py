@@ -10,6 +10,8 @@
 #   /app/results      → 結果閲覧タブ
 #   /app/interactive  → インタラクティブ解析タブ
 #   /app/history      → セッション履歴タブ
+#   /open/<pid>/<sid> → 指定プロジェクトをフル解析画面へ直接ロード
+#                       (ChatGPT が返す「解析ページを開くリンク」の着地点)
 #   /                 → デフォルト (landing 経由で settings)
 #
 # 認証: /app/* は Tier A 必須 (auth_middleware のデフォルト)。共有用ではなく
@@ -147,3 +149,82 @@ def _sync_url_from_tab(active_tab, current_pathname, current_page, shared):
     if current_pathname and current_pathname.rstrip("/") == target:
         return no_update
     return target
+
+
+# ---------------------------------------------------------------------------
+# 3) URL → フル解析画面: /open/<pid>/<sid> で特定プロジェクトを直接開く
+#
+#    ChatGPT が返す「解析ページを開くリンク」の着地点。共有リンク
+#    (share_callbacks.route_share_url) と同じロード経路をたどるが、shared_session
+#    を立てないため、共有モードではなく解析者自身の通常表示になる。
+#
+#    /app/* と違い URL 自体に pid/sid を含むので、リロード/deep link でもプロジェクト
+#    を特定でき、_route_app_url_to_analysis のような "/" 正規化は不要。
+#
+#    二段パターン（既存の app_path / lite と同じ）:
+#      step 1: url_bar.pathname       → open_target_store.data   (中間 Store)
+#      step 2: open_target_store.data → interactive_* / current_page / main_tabs
+#    step 2 の Input は open_target_store なので、url_bar.pathname を Input に持つ
+#    既存 callback (route_share_url / _sync_tab_from_url) と Output ペアが衝突しない
+#    （current_page / main_tabs.active_tab 等は他 callback が書くため allow_duplicate 必須）。
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("open_target_store", "data"),
+    Input("url_bar", "pathname"),
+    prevent_initial_call=True,
+)
+def _detect_open_path(pathname):
+    """pathname が /open/<pid>/<sid> なら (pid, sid) を Store に書く。それ以外は no_update。"""
+    from app.services.deeplink import parse_open_path
+    parsed = parse_open_path(pathname)
+    if not parsed:
+        return no_update
+    pid, sid = parsed
+    return {"project_id": pid, "sub_project_id": sid}
+
+
+@callback(
+    [Output("current_page", "data", allow_duplicate=True),
+     Output("main_tabs", "active_tab", allow_duplicate=True),
+     Output("interactive_result_folder", "value", allow_duplicate=True),
+     Output("interactive_msi_folder", "value", allow_duplicate=True),
+     Output("interactive_project_select", "value", allow_duplicate=True),
+     Output("interactive_sub_project_select", "value", allow_duplicate=True),
+     Output("interactive_entry_mode", "data", allow_duplicate=True),
+     Output("current_sub_project_id", "data", allow_duplicate=True)],
+    Input("open_target_store", "data"),
+    prevent_initial_call=True,
+)
+def _open_project_in_interactive(target):
+    """指定プロジェクトをフル解析画面（インタラクティブ解析タブ）へ自動ロードする。
+
+    通常のカードクリック経路 sub_action_interactive と同じストア群を設定する。
+    要点は interactive_entry_mode="sub_project" で、これが
+    auto_load_on_rds_ready（interactive_result_folder → rds スキャン → 自動ロード）
+    を起動する。shared_session は立てないので共有モードにはならず、解析者自身の
+    通常表示になる。
+    """
+    if not target:
+        return (no_update,) * 8
+    pid = target.get("project_id")
+    sid = target.get("sub_project_id")
+    if not pid or not sid:
+        return (no_update,) * 8
+    from app.services.project_manager import get_sub_project
+    sub = get_sub_project(pid, sid)
+    if not sub:
+        logger.info("open deep link: project/sub not found pid=%s sid=%s", pid, sid)
+        return (no_update,) * 8
+    result_dir = sub.get("last_result_dir") or sub.get("output_dir", "")
+    data_folder = sub.get("data_folder", "")
+    return (
+        "analysis",          # current_page
+        "interactive",       # main_tabs.active_tab
+        result_dir or no_update,    # interactive_result_folder.value
+        data_folder or no_update,   # interactive_msi_folder.value
+        pid,                 # interactive_project_select.value
+        sid,                 # interactive_sub_project_select.value
+        "sub_project",       # interactive_entry_mode.data（自動ロードの鍵）
+        sid,                 # current_sub_project_id.data
+    )
