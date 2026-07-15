@@ -33,6 +33,9 @@ nul
 
 # 環境設定（機密情報を含む可能性あり）
 .env
+# env_file_manager / filelock が実行時に生成するロックファイル（一時物）
+.env.lock
+*.env.lock
 
 # Python 仮想環境
 .venv/
