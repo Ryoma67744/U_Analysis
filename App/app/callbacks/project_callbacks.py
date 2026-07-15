@@ -33,6 +33,7 @@ from app.services.share_manager import (
     build_share_url,
     cleanup_expired,
 )
+from app.services.annotation_inspect import has_compound_names
 from app.services.persistent_share_manager import (
     create_persistent_share,
     build_persistent_view_url,
@@ -455,6 +456,16 @@ def render_sub_project_cards(
             badges.append(dbc.Badge(
                 pol, color="secondary", className="me-1",
             ))
+        # 化合物名（注釈）バッジ: サイドカー/ヘッダの安価チェックのみ（生データは開かない）
+        try:
+            _has_comp = has_compound_names(s)
+        except Exception:
+            _has_comp = False
+        if _has_comp:
+            badges.append(dbc.Badge("化合物名 ✓", color="success", className="me-1"))
+        else:
+            badges.append(dbc.Badge("化合物名 なし", color="light",
+                                    text_color="secondary", className="me-1"))
 
         # 情報テキスト
         info_parts = []
@@ -563,6 +574,16 @@ def render_sub_project_cards(
                                         },
                                         color="warning",
                                         outline=True,
+                                    ),
+                                    dbc.Button(
+                                        "化合物名",
+                                        id={
+                                            "type": "sub_action_annotations",
+                                            "index": s["id"],
+                                        },
+                                        color="success",
+                                        outline=True,
+                                        title="登録データに化合物名が含まれるか確認",
                                     ),
                                 ],
                             ),

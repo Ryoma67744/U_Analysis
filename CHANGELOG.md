@@ -12,6 +12,32 @@
 
 ---
 
+## 2026-07-15_ver44.0
+
+### 機能: 登録済みデータの「化合物名の有無」を生データを開かずに確認
+
+登録したデータに化合物名（注釈）が最初から含まれているかを確認する手段が無く、生データ（.parquet/.txt）は
+**1GB 超**で手元で開けなかった。SCiLS 変換時に生成される**小さな副産物だけ**を読んで注釈状況を要約表示する
+ビューを追加した（生データ本体は一切開かない）。
+
+- **新規 `services/annotation_inspect.py`（Dash 非依存）**:
+  - `has_compound_names(sub)` … バッジ用の安価チェック。TIMS/SCiLS は `<BASE>_feature_annotations.parquet`
+    サイドカーの**存在**、DESI は正規化 `.txt` の化合物名行/named ヘッダで判定（本体 parquet は開かない）。
+  - `inspect_annotations(sub)` … サイドカーを読み `status / 付与件数 / カバレッジ% / 化合物名の例` を返す。
+    件数は `is_meaningful_annotation` ＋ `No DB hit`/数値のみ除外で算出。サイドカー欠如時は本体 parquet の
+    フッタ schema メタ `b"peak_list"`（数 KB 読取）にフォールバック。DESI は `.txt` 3 行目/named csv・xlsx ヘッダ由来。
+  - サイドカー探索は親フォルダを走査せず対象フォルダ＋直下サブフォルダのみ（別データセットの誤検出防止）。
+- **UI**: サブプロジェクトカード（`project_callbacks.render_sub_project_cards`）に
+  **化合物名バッジ**（✓ / なし）と**「化合物名」ボタン**を追加。ボタンで新規モーダル
+  （`annotation_preview_modal.py`）を開き、「N / M feature に付与（xx%）」の要約＋
+  `m/z / 表示名 / 化合物名 / アダクト / 組成式` のプレビュー表（`dash_table`）を表示。
+- **配線**: `annotation_preview_callbacks.py`（新規、`main.py` に登録）。既存の登録済みデータにもそのまま効く
+  （新規メタ永続化に非依存）。追加のみ・既存挙動は不変。
+- 退行防止: 新規 `tests/test_annotation_inspect.py`（サイドカー件数/`No DB hit` 除外・フッタ `b"peak_list"`
+  フォールバック・DESI named 判定・親走査なしの兄弟誤検出防止）。`pytest -m "not e2e"` 全 **509 passed**。
+
+---
+
 ## 2026-07-15_ver43.0
 
 ### 機能: 化合物名表示を全表示面に統一（m/z 残存を解消）
