@@ -11,7 +11,10 @@ from collections import OrderedDict
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 import app.callbacks.interactive_data_export as de
 
@@ -237,3 +240,184 @@ def test_ensure_sub_project_data_folder_keeps_existing(monkeypatch):
     got = de.ensure_sub_project_data_folder("p", "s", "/some/result", "DESI")
     assert got == "/already/set"
     assert called["n"] == 0  # 既存値があれば更新しない
+
+
+# ---------------------------------------------------------------------------
+# TIMS Parquet 出力: 入力(登録)parquet と同一の内部構造で書き出す
+#   - スキーマメタ (mz_sorted/annotation_files/peak_list) を保持
+#   - 圧縮を zstd に統一
+#   - 追加解析列を analysis_columns メタに記録
+#   - 出力を再登録しても壊れない（読取側ガード）
+# ---------------------------------------------------------------------------
+
+def _make_input_parquet(path, rows, mz_values, *, annotated, with_meta=True):
+    """scils_converter 出力を模した TIMS 入力 parquet を1本作る。
+
+    rows: [(sample_name, x, y), ...]（各行=1スポット、annotation 列にサンプル名）
+    列: id, x, y, <特徴量>, annotation ＋ スキーマメタ mz_sorted/annotation_files。
+    戻り値: (mz_sorted(np.ndarray), 特徴量列名 list)
+    """
+    mz_sorted = np.sort(np.asarray(mz_values, dtype=float))
+    if annotated:
+        feat_names = [f"Cpd{i}_{m:.4f} | HMDB | [M+H]+"
+                      for i, m in enumerate(mz_sorted)]
+    else:
+        feat_names = [f"{m:.6f}" for m in mz_sorted]
+
+    n = len(rows)
+    ids = pa.array(np.arange(1, n + 1, dtype=np.int64))
+    xs = pa.array(np.array([r[1] for r in rows], dtype=np.float64))
+    ys = pa.array(np.array([r[2] for r in rows], dtype=np.float64))
+    anns = pa.array([r[0] for r in rows], type=pa.string())
+    feat_arrays = [pa.array(np.full(n, float(j + 1), dtype=np.float32))
+                   for j in range(len(feat_names))]
+
+    fields = (
+        [pa.field("id", pa.int64()), pa.field("x", pa.float64()),
+         pa.field("y", pa.float64())]
+        + [pa.field(nm, pa.float32()) for nm in feat_names]
+        + [pa.field("annotation", pa.string())]
+    )
+    md = {}
+    if with_meta:
+        md[b"mz_sorted"] = ",".join(f"{v:.10g}" for v in mz_sorted).encode("utf-8")
+        md[b"annotation_files"] = b"ann.csv"
+    schema = pa.schema(fields, metadata=md or None)
+    table = pa.Table.from_arrays([ids, xs, ys] + feat_arrays + [anns], schema=schema)
+    pq.write_table(table, str(path), compression="zstd")
+    return mz_sorted, feat_names
+
+
+def _mz_sorted_bytes(mz_sorted):
+    return ",".join(f"{v:.10g}" for v in mz_sorted).encode("utf-8")
+
+
+def test_export_tims_parquet_carries_metadata_and_zstd(tmp_path):
+    mz_sorted, _ = _make_input_parquet(
+        tmp_path / "S1.parquet",
+        [("S1", 10.0, 20.0), ("S1", 11.0, 21.0), ("S1", 99.0, 99.0)],
+        [700.1234, 759.5678, 810.9999], annotated=True)
+    lookups = OrderedDict([
+        ("Harmony", {("S1", 10.0, 20.0): "3", ("S1", 11.0, 21.0): "5"}),
+    ])
+    region = {("S1", 10.0, 20.0): "Tumor"}
+
+    out_bytes, filename = de._export_tims(
+        str(tmp_path), lookups, "parquet", region_lookup=region)
+    assert filename == "UMAP_cluster_TIMS.parquet"
+
+    pf = pq.ParquetFile(io.BytesIO(out_bytes))
+    md = pf.schema_arrow.metadata or {}
+    # 入力のスキーマメタを保持
+    assert md.get(b"mz_sorted") == _mz_sorted_bytes(mz_sorted)
+    assert md.get(b"annotation_files") == b"ann.csv"
+    # 追加解析列をメタに記録
+    assert md.get(b"analysis_columns") == "UMAP cluster,領域名".encode("utf-8")
+    # 追加列が実在
+    names = pf.schema_arrow.names
+    assert "UMAP cluster" in names and "領域名" in names
+    # 圧縮は zstd（入力と一致）
+    assert pf.metadata.row_group(0).column(0).compression == "ZSTD"
+
+
+def test_export_tims_parquet_multi_file_reconciles(tmp_path):
+    mz = [700.1, 800.2]
+    m1, _ = _make_input_parquet(
+        tmp_path / "S1.parquet", [("S1", 1.0, 1.0)], mz, annotated=False)
+    _make_input_parquet(
+        tmp_path / "S2.parquet", [("S2", 2.0, 2.0)], mz, annotated=False)
+    lookups = OrderedDict([
+        ("Harmony", {("S1", 1.0, 1.0): "1", ("S2", 2.0, 2.0): "2"}),
+    ])
+
+    out_bytes, _ = de._export_tims(str(tmp_path), lookups, "parquet")
+    pf = pq.ParquetFile(io.BytesIO(out_bytes))
+    md = pf.schema_arrow.metadata or {}
+    # 入力間で mz_sorted が一致 → 保持
+    assert md.get(b"mz_sorted") == _mz_sorted_bytes(m1)
+    assert pf.metadata.num_rows == 2  # 2ファイル分の行が連結
+
+
+def test_export_tims_parquet_meta_mismatch_drops(tmp_path, caplog):
+    _make_input_parquet(
+        tmp_path / "S1.parquet", [("S1", 1.0, 1.0)], [700.1, 800.2], annotated=False)
+    _make_input_parquet(
+        tmp_path / "S2.parquet", [("S2", 2.0, 2.0)], [700.1, 900.3], annotated=False)
+    lookups = OrderedDict([("Harmony", {("S1", 1.0, 1.0): "1"})])
+
+    with caplog.at_level("WARNING"):
+        out_bytes, _ = de._export_tims(str(tmp_path), lookups, "parquet")
+
+    pf = pq.ParquetFile(io.BytesIO(out_bytes))
+    md = pf.schema_arrow.metadata or {}
+    # 不一致なので誤った m/z 軸は書かない
+    assert b"mz_sorted" not in md
+    # analysis_columns は付く（region なしなので UMAP cluster のみ）
+    assert md.get(b"analysis_columns") == "UMAP cluster".encode("utf-8")
+    assert any("mz_sorted" in r.message for r in caplog.records)
+
+
+def test_export_tims_parquet_csv_input_graceful(tmp_path):
+    df = pd.DataFrame({
+        "id": [1, 2], "x": [1.0, 2.0], "y": [1.0, 2.0],
+        "700.100000": [0.1, 0.2], "800.200000": [0.3, 0.4],
+        "annotation": ["S1", "S1"],
+    })
+    df.to_csv(tmp_path / "S1.csv", index=False)
+    lookups = OrderedDict([("Harmony", {("S1", 1.0, 1.0): "1"})])
+
+    out_bytes, _ = de._export_tims(str(tmp_path), lookups, "parquet")
+    pf = pq.ParquetFile(io.BytesIO(out_bytes))
+    md = pf.schema_arrow.metadata or {}
+    # CSV 入力はメタを持たない → mz_sorted 無し・破綻せず出力
+    assert b"mz_sorted" not in md
+    assert md.get(b"analysis_columns") == "UMAP cluster".encode("utf-8")
+    assert pf.metadata.row_group(0).column(0).compression == "ZSTD"
+
+
+def test_export_tims_parquet_multi_method_analysis_columns(tmp_path):
+    _make_input_parquet(
+        tmp_path / "S1.parquet", [("S1", 1.0, 1.0)], [700.1, 800.2], annotated=False)
+    lookups = OrderedDict([
+        ("Harmony", {("S1", 1.0, 1.0): "1"}),
+        ("RPCA", {("S1", 1.0, 1.0): "2"}),
+    ])
+    region = {("S1", 1.0, 1.0): "R"}
+
+    out_bytes, _ = de._export_tims(
+        str(tmp_path), lookups, "parquet", region_lookup=region)
+    pf = pq.ParquetFile(io.BytesIO(out_bytes))
+    md = pf.schema_arrow.metadata or {}
+    # 複数手法は手法名が列名 → analysis_columns も手法名＋領域名
+    assert md.get(b"analysis_columns") == "Harmony,RPCA,領域名".encode("utf-8")
+    names = pf.schema_arrow.names
+    assert "Harmony" in names and "RPCA" in names and "領域名" in names
+
+
+def test_output_reregisters_via_reader(tmp_path):
+    """出力 parquet を新規入力として再登録 → 読取側が特徴量列を正しく復元
+    （追加解析列が m/z 特徴量に混入しない）ことを確認。"""
+    from app.services import data_manager as dm
+
+    mz_sorted, _ = _make_input_parquet(
+        tmp_path / "S1.parquet",
+        [("S1", 10.0, 20.0), ("S1", 11.0, 21.0)],
+        [700.1234, 759.5678, 810.9999], annotated=True)
+    lookups = OrderedDict([
+        ("Harmony", {("S1", 10.0, 20.0): "3", ("S1", 11.0, 21.0): "5"}),
+    ])
+    region = {("S1", 10.0, 20.0): "Tumor"}
+    out_bytes, _ = de._export_tims(
+        str(tmp_path), lookups, "parquet", region_lookup=region)
+
+    # 出力を別フォルダに「再登録」
+    reg = tmp_path / "reg"
+    reg.mkdir()
+    (reg / "UMAP_cluster_TIMS.parquet").write_bytes(out_bytes)
+
+    avg = dm._read_tims_raw(reg, "UMAP_cluster_TIMS")
+    assert avg is not None
+    # 特徴量列数 = m/z 数（UMAP cluster / 領域名 が混入しない）
+    assert avg.shape[1] == len(mz_sorted)
+    # mz_sorted メタから mz_ 正規化された列名になる
+    assert all(str(c).startswith("mz_") for c in avg.columns)

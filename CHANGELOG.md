@@ -12,7 +12,31 @@
 
 ---
 
-## 2026-07-09_ver42.2
+## 2026-07-15_ver42.3
+
+### 修正: インタラクティブ「データ出力(Parquet)」を登録入力と同一の内部構造に揃える
+
+インタラクティブ解析の **データ出力(Parquet)**（`_export_tims`）が書き出す parquet の内部構造が、
+UMAP 解析に **登録する入力 parquet**（SCiLS 変換器 `scils_converter.py` 出力）と食い違っていた。
+`pd.read_parquet → pandas → df_all.to_parquet` を経るため、入力に付いていた**スキーマメタデータ
+`mz_sorted`（フル桁 m/z の正）/`annotation_files`/`peak_list` がすべて欠落**し、圧縮も
+zstd→snappy に変わっていた。この出力を新規入力として**再登録すると内部構造が一致せず**、特に
+**注釈（peak-list）付きデータで m/z 復元が 4 桁精度へ劣化**したり、追加列が m/z 特徴量へ混入していた。
+
+- **出力側の修正**（`interactive_data_export.py`）: parquet 出力を pandas 既定書き出しから
+  pyarrow 直書きに変更。新ヘルパ `_read_source_parquet_metadata` がソース parquet 群から
+  `mz_sorted`/`annotation_files`/`peak_list` を直接読み、**出力へ再付与**。圧縮を **zstd** に統一。
+  追加した解析列（`UMAP cluster`／手法名／`領域名`）を新メタ **`analysis_columns`** に記録。
+  複数入力で `mz_sorted` が欠落・不一致の場合は誤った m/z 軸を書かないよう **メタ非付与＋警告**にフォールバック
+  （CSV/TSV 入力もメタ無しで安全に出力）。
+- **読取側の最小ガード**（`data_manager.py`）: `_read_tims_raw` の予約列に `analysis_columns`
+  （新ヘルパ `_read_analysis_columns`）を union し、再登録された出力 parquet の追加解析列が
+  m/z 特徴量として誤検出されないようにした。素の数値／`mz_` 列形式は従来どおり。
+- **退行防止**: `tests/test_data_export.py` に往復検証を含む6テストを追加
+  （メタ保持＋zstd／複数入力の突合／不一致時のメタ非付与＋警告／CSV入力／複数手法の `analysis_columns`／
+  出力→再登録で特徴量列数が m/z 数に一致）。全ユニット `473 passed`。
+- 注: R 側（`read_desi_data` の通常列名は既に安全）と Cluster_Filter/ReUMAP の同種メタ喪失は本修正の対象外。
+- version 42.2→42.3。
 
 ### 修正: ④「続きを実行」(reduction再利用) の UMAP が DoHeatmap で停止するバグ
 

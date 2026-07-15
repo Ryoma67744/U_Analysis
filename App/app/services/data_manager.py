@@ -163,6 +163,20 @@ def _read_mz_sorted_metadata(pf) -> Optional[list]:
         return None
 
 
+def _read_analysis_columns(pf) -> set:
+    """Parquet schema メタデータ `analysis_columns`（インタラクティブ出力が付与する
+    解析由来の追加列＝UMAP cluster / 手法名 / 領域名）を集合で返す。
+
+    インタラクティブ「データ出力」parquet を新規入力として再登録した場合に、これらを
+    特徴量(m/z)列から除外するために使う。
+    """
+    try:
+        raw = (pf.schema_arrow.metadata or {}).get(b"analysis_columns")
+        return {c for c in raw.decode("utf-8").split(",") if c.strip()} if raw else set()
+    except Exception:
+        return set()
+
+
 def _mz_from_embedded_name(colname: str) -> Optional[float]:
     """埋め込み列名（`化合物名_<m/z> | …`）の先頭から m/z 数値を抽出（メタ無し時の保険）。"""
     import re as _re
@@ -197,7 +211,9 @@ def _read_tims_raw(folder: Path, sample_name: str = None) -> Optional[pd.DataFra
 
         pf = pq.ParquetFile(fp)
         all_names = pf.schema.names
-        non_meta = {"id", "x", "y", "annotation"}
+        # 予約列。インタラクティブ出力 parquet を再登録した場合の解析由来列
+        # (UMAP cluster / 手法名 / 領域名) も特徴量から除外する。
+        non_meta = {"id", "x", "y", "annotation"} | _read_analysis_columns(pf)
         # 旧形式: mz_ 接頭辞 / 裸の数値列名
         mz_cols = [n for n in all_names if n.startswith("mz_")]
         if not mz_cols:

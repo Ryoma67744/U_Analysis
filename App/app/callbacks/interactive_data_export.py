@@ -501,6 +501,48 @@ def _read_tims_file(file_path: str) -> pd.DataFrame:
         return pd.read_csv(file_path)
 
 
+def _read_source_parquet_metadata(input_paths: list) -> dict:
+    """入力 parquet 群が共有するスキーマメタ (mz_sorted/annotation_files/peak_list) を返す。
+
+    SCiLS 変換器が付与するこれらのメタは pandas 読込(`pd.read_parquet`)で失われるため、
+    出力 parquet に再付与できるよう、ソース parquet から直接読み出す。
+
+    - `.parquet/.pq` 入力のみ対象（CSV/TSV は元々メタを持たない）。
+    - `mz_sorted` は「フル桁 m/z の正」なので、いずれかの入力で欠落 or 入力間で不一致の
+      ときは誤った m/z 軸を書かないよう `{}` を返す（＝メタ非付与）。
+    """
+    pqs = [p for p in input_paths if Path(p).suffix.lower() in (".parquet", ".pq")]
+    if not pqs:
+        return {}
+    import pyarrow.parquet as pq
+
+    mds = []
+    for p in pqs:
+        try:
+            md = pq.ParquetFile(p).schema_arrow.metadata or {}
+        except Exception as e:  # 読めない入力があればメタ付与を諦める（データ出力は継続）
+            logger.warning("[DataExport] スキーマメタ読取失敗 (%s): %s", p, e)
+            return {}
+        mds.append(md)
+
+    mz_list = [md.get(b"mz_sorted") for md in mds]
+    if any(v is None for v in mz_list):
+        logger.warning(
+            "[DataExport] 一部入力に mz_sorted メタが無いため、出力へメタを付与しません。")
+        return {}
+    if any(v != mz_list[0] for v in mz_list):
+        logger.warning(
+            "[DataExport] 入力間で mz_sorted が一致しないため、出力へメタを付与しません。")
+        return {}
+
+    md0 = mds[0]
+    return {
+        k: md0[k]
+        for k in (b"mz_sorted", b"annotation_files", b"peak_list")
+        if k in md0
+    }
+
+
 def _export_tims(
     data_folder: str, method_lookups: OrderedDict, fmt: str,
     region_lookup: dict | None = None,
@@ -559,7 +601,28 @@ def _export_tims(
         buf.write(df_all.to_csv(index=False).encode("utf-8"))
         filename = "UMAP_cluster_TIMS.csv"
     elif fmt == "parquet":
-        df_all.to_parquet(buf, index=False)
+        # 入力(登録)parquet と同一の内部構造で書き出す:
+        #  - ソースのスキーマメタ (mz_sorted/annotation_files/peak_list) を再付与
+        #    （pandas 経由で失われるため入力から直接復元）
+        #  - 圧縮を入力と同じ zstd に統一
+        #  - 追加した解析列(UMAP cluster/手法名/領域名)を analysis_columns メタに記録し、
+        #    再登録時に読取側が特徴量列と区別できるようにする
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        analysis_cols = (
+            list(method_lookups.keys()) if is_multi else ["UMAP cluster"]
+        )
+        if region_lookup is not None:
+            analysis_cols.append("領域名")
+
+        carried = _read_source_parquet_metadata(input_paths)  # {} なら N/A
+        table = pa.Table.from_pandas(df_all, preserve_index=False)
+        md = dict(table.schema.metadata or {})  # pandas 自身の b"pandas" を保持
+        md.update(carried)                      # mz_sorted / annotation_files / peak_list
+        md[b"analysis_columns"] = ",".join(analysis_cols).encode("utf-8")
+        table = table.replace_schema_metadata(md)
+        pq.write_table(table, buf, compression="zstd")
         filename = "UMAP_cluster_TIMS.parquet"
     else:
         buf.write(df_all.to_csv(index=False).encode("utf-8"))
