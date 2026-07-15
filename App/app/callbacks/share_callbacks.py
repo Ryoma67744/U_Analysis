@@ -37,6 +37,8 @@ from app.callbacks.interactive_callbacks import (
 from app.callbacks.interactive_umap import _build_umap_integrated_fig
 from app.callbacks.interactive_spatial import _create_single_spatial_fig
 from app.utils.deg_utils import is_meaningful_annotation as _is_meaningful_annotation
+from app.utils.deg_utils import backfill_annotations as _backfill_annotations
+from app.utils.annotation_label import feature_display_label as _feature_display_label
 
 # Seuratブリッジ
 _sv_bridge = SeuratBridge()
@@ -277,6 +279,12 @@ def initialize_shared_view(token):
             features = extracted["features_list"]
             meta = extracted["meta"]
 
+            # 化合物アノテーション（SCiLS サイドカー由来）。共有ビューでも m/z ではなく
+            # 化合物名を出せるよう、feature_annotations と annotation_map を同梱する。
+            feat_ann = extracted.get("feature_annotations") or {}
+            ann_map = {feat: rec.get("compound")
+                       for feat, rec in feat_ann.items() if rec.get("compound")}
+
             # キャッシュに保存
             _shared_data[token] = {
                 "plot_data": df_plot,
@@ -285,6 +293,8 @@ def initialize_shared_view(token):
                 "meta": meta,
                 "rds_path": rds_path,
                 "cache_dir": str(extracted["cache_dir"]),
+                "feature_annotations": feat_ann,
+                "annotation_map": ann_map,
             }
 
             # クラスタオプション
@@ -297,19 +307,28 @@ def initialize_shared_view(token):
                 samples = sorted(df_plot["Sample"].unique())
                 sample_options = [{"label": s, "value": s} for s in samples]
 
-            # フィーチャーオプション（上位100件のみ表示用）
+            # フィーチャーオプション（上位100件のみ表示用・化合物名付き）
             if features:
-                feature_options = [{"label": f, "value": f} for f in features[:100]]
+                feature_options = [
+                    {"label": _feature_display_label(
+                        f, annotation_map=ann_map, feature_annotations=feat_ann,
+                        style="paren"), "value": f}
+                    for f in features[:100]
+                ]
 
             # クラスタ統計
             if df_stats is not None:
                 stats_data = df_stats.to_dict("records")
                 stats_columns = [{"name": col, "id": col} for col in df_stats.columns]
 
-            # DEG データ
+            # DEG データ（空 annotation を annotation_map から補完して化合物名を表示）
             if result_dir and Path(result_dir).is_dir():
                 deg_records = _load_deg_results(Path(result_dir), integration_method)
                 if deg_records:
+                    try:
+                        _backfill_annotations(deg_records, ann_map)
+                    except Exception:
+                        pass
                     deg_style = show
                     deg_data = deg_records
 
@@ -582,6 +601,10 @@ def sv_update_feature_plot(feature, token):
     if not rds_path or df is None:
         return empty
 
+    feat_label = _feature_display_label(
+        feature, annotation_map=data.get("annotation_map"),
+        feature_annotations=data.get("feature_annotations"), style="paren")
+
     try:
         # 必要時に expression_matrix.parquet を生成（初回 feature plot で 20-60 秒、以降は即座）
         try:
@@ -605,11 +628,11 @@ def sv_update_feature_plot(feature, token):
                 size=2,
                 color=expression,
                 colorscale="Plasma",
-                colorbar=dict(title=feature),
+                colorbar=dict(title=feat_label),
                 showscale=True,
             ),
             text=df["CellID"],
-            hovertemplate=f"{feature}: " + "%{marker.color:.4f}<br>%{text}<extra></extra>",
+            hovertemplate=f"{feat_label}: " + "%{marker.color:.4f}<br>%{text}<extra></extra>",
         ))
         fig.update_layout(
             xaxis_title="UMAP_1", yaxis_title="UMAP_2",
@@ -638,9 +661,14 @@ def sv_filter_features(search_value, token):
     features = data.get("features_list", [])
     if not features:
         return no_update
+    ann_map = data.get("annotation_map") or {}
+    feat_ann = data.get("feature_annotations") or {}
     q = search_value.lower()
-    filtered = [f for f in features if q in f.lower()]
-    return [{"label": f, "value": f} for f in filtered[:100]]
+    filtered = [f for f in features
+                if q in f.lower() or q in (ann_map.get(f, "") or "").lower()]
+    return [{"label": _feature_display_label(
+        f, annotation_map=ann_map, feature_annotations=feat_ann, style="paren"),
+        "value": f} for f in filtered[:100]]
 
 
 # =========================================================================

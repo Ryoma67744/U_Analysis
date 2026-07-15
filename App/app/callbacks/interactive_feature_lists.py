@@ -19,6 +19,7 @@ from app.utils.color_utils import (
     get_cluster_color_map as _get_cluster_color_map,
     cluster_sort_key as _cluster_sort_key,
 )
+from app.utils.annotation_label import feature_display_label as _feature_display_label
 
 logger = logging.getLogger("msi.interactive.featurelists")
 
@@ -133,18 +134,25 @@ def filter_feature_list_picker(search_value, rds_path, current):
     from app.callbacks.interactive_callbacks import _interactive_data, _set_active_key
     _set_active_key(rds_path)
     features = _interactive_data.get("features_list") or []
+    ann_map = _interactive_data.get("annotation_map") or {}
     current = [str(c) for c in (current or [])]
+
+    # ラベルは化合物名付き（"m/z (化合物名)"）。interactive_deg.filter_features と同型。
     # FUTURE(annot-provenance): 将来「由来表示」を足す場合、ここの label に
     #   app/services/annotation_sources.format_annotation_label() で由来（source）を併記する想定。
-    #   取込設計が未確定のため現状は変更なし。詳細: App/docs/MVP4_IMPLEMENTATION_STATUS.md
-    base = [{"label": c, "value": c} for c in current]  # 選択済みは表示維持
+    def _opt(f):
+        return {"label": _feature_display_label(f, annotation_map=ann_map, style="paren"),
+                "value": f}
+
+    base = [_opt(c) for c in current]  # 選択済みは表示維持
     if not search_value:
         return base[:500]
     kw = str(search_value).lower()
     cur_set = set(current)
     matches = [str(f) for f in features
-               if kw in str(f).lower() and str(f) not in cur_set]
-    return base + [{"label": f, "value": f} for f in matches[:500]]
+               if (kw in str(f).lower() or kw in ann_map.get(f, "").lower())
+               and str(f) not in cur_set]
+    return base + [_opt(f) for f in matches[:500]]
 
 
 # ---------------------------------------------------------------------------

@@ -910,6 +910,8 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
                         adduct_filter, project_id, sub_project_id,
                         annotation_csv):
     from app.callbacks.interactive_calibration import _build_feature_annotation_map
+    from app.utils.annotation_label import feature_display_label
+    from app.utils.deg_utils import backfill_annotations
     _no_cal = (no_update,) * 11  # キャリブレーション設定復元用
     _sap_hide = ({"display": "none"},)  # sap_btn_wrapper 非表示
     _no_label_clear = (no_update,)  # accumulated_label_positions 変更なし
@@ -954,10 +956,46 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
         samples = sorted(_interactive_data["plot_data"]["Sample"].unique())
         sample_options = [{"label": s, "value": s} for s in samples]
 
+        # --- アノテーションマップの構築（Feature検索・表示用） ---
+        # 外部アノテーション（SCiLS peak Name 由来）があれば CSV 照合をスキップし、
+        # それを直接使う（feature文字列 → 化合物名）。初期 Feature 選択肢や DEG 表示が
+        # これを参照するため、feature_options / deg_data 補完より前に構築する。
+        ext_ann = state.get("feature_annotations") or {}
+        if ext_ann:
+            _interactive_data["annotation_map"] = {
+                feat: rec.get("compound")
+                for feat, rec in ext_ann.items()
+                if rec.get("compound")
+            }
+        else:
+            try:
+                _interactive_data["annotation_map"] = _build_feature_annotation_map(
+                    state["features_list"],
+                    annotation_csv_path=annotation_csv or "",
+                    ion_mode=ion_mode or "Positive",
+                    adduct_patterns=adduct_filter,
+                    tolerance=float(tolerance_mz or 0.01),
+                    deg_data=deg_data,
+                )
+            except Exception:
+                _interactive_data["annotation_map"] = {}
+
+        # DEG レコードの空 annotation を annotation_map から補完しておくと、
+        # Volcano/Heatmap/クラスタTop5/マーカー表/PPTX が化合物名を一括参照できる。
+        try:
+            backfill_annotations(deg_data, _interactive_data.get("annotation_map"))
+        except Exception:
+            pass
+
         # Feature選択肢: 初期は上位 500 件のみ（18k 件 eager 送信を回避）
-        # 検索すると filter_features callback がサーバサイドで全 features から再フィルタする
+        # ラベルは化合物名付き（"m/z (化合物名)"）。検索すると filter_features が再フィルタする。
         features = state["features_list"]
-        feature_options = [{"label": f, "value": f} for f in features[:500]]
+        _ann_map = _interactive_data.get("annotation_map") or {}
+        feature_options = [
+            {"label": feature_display_label(f, annotation_map=_ann_map, style="paren"),
+             "value": f}
+            for f in features[:500]
+        ]
 
         # DEGセクションは常に表示、データ有無でメッセージ切替
         deg_section_style = {}  # 常に表示
@@ -1003,29 +1041,6 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
             r_sw = cal_search_window or 0.5
             r_mp = cal_min_peaks or 2
             r_reg = cal_regression_mode or "poly3"
-
-        # --- アノテーションマップの構築（Feature検索用） ---
-        # 外部アノテーション（SCiLS peak Name 由来）があれば CSV 照合をスキップし、
-        # それを直接使う（feature文字列 → 化合物名）。
-        ext_ann = state.get("feature_annotations") or {}
-        if ext_ann:
-            _interactive_data["annotation_map"] = {
-                feat: rec.get("compound")
-                for feat, rec in ext_ann.items()
-                if rec.get("compound")
-            }
-        else:
-            try:
-                _interactive_data["annotation_map"] = _build_feature_annotation_map(
-                    state["features_list"],
-                    annotation_csv_path=annotation_csv or "",
-                    ion_mode=ion_mode or "Positive",
-                    adduct_patterns=adduct_filter,
-                    tolerance=float(tolerance_mz or 0.01),
-                    deg_data=deg_data,
-                )
-            except Exception:
-                _interactive_data["annotation_map"] = {}
 
         # ms_instrument をサブプロジェクトから取得
         r_instrument = "TIMS"

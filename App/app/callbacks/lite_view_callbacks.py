@@ -1533,10 +1533,19 @@ def _build_heatmap_section(deg_records, top_n_per_cluster=3,
         cluster_name_map.get(str(c), f"C{c}") for c in pivot.columns
     ]
 
+    # y ラベルに化合物名を付与（DEG 表・Volcano と同様に annotation 列を使用）
+    gene_ann = {}
+    if "annotation" in df.columns:
+        for g, a in zip(df["gene"].astype(str), df["annotation"]):
+            if g not in gene_ann and isinstance(a, str) and is_meaningful_annotation(a, g):
+                gene_ann[g] = a
+    y_labels = [f"{g} ({gene_ann[g]})" if g in gene_ann else g
+                for g in pivot.index.astype(str)]
+
     fig = go.Figure(data=go.Heatmap(
         z=pivot.values,
         x=x_labels,
-        y=pivot.index.astype(str),
+        y=y_labels,
         colorscale="RdBu_r",
         zmid=0,
         colorbar=dict(title="log2FC"),

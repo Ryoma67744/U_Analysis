@@ -47,6 +47,35 @@ def extract_mz_numeric(f: str) -> float:
     return float(match.group(1)) if match else float("inf")
 
 
+def backfill_annotations(deg_data, annotation_map):
+    """deg_data の空/無意味な annotation を annotation_map(feat→compound) から補完する。
+
+    DEG 系の表示面（Volcano/Heatmap/クラスタTop5/マーカー表/PPTX）は deg レコードの
+    ``annotation`` を読むが、これは R が markers_annotated.csv を出した場合のみ埋まる
+    （TIMS: あり／DESI: なし）。一方 annotation_map は SCiLS サイドカーや CSV 由来の
+    化合物名を含むスーパーセットなので、ここで空欄だけ補完すると上記が一括で点灯する。
+
+    - 既存の「意味ある」annotation は上書きしない（R 出力を正とする）。
+    - deg_data / annotation_map が空なら no-op。
+    - レコードを in-place 更新し、同じ deg_data を返す。キーは gene(=feature 文字列)で直接一致。
+    """
+    if not deg_data or not annotation_map:
+        return deg_data
+    for r in deg_data:
+        if not isinstance(r, dict):
+            continue
+        g = str(r.get("gene", ""))
+        if not g:
+            continue
+        cur = r.get("annotation", "")
+        if isinstance(cur, str) and is_meaningful_annotation(cur, g):
+            continue
+        cand = annotation_map.get(g)
+        if isinstance(cand, str) and is_meaningful_annotation(cand, g):
+            r["annotation"] = cand.strip()
+    return deg_data
+
+
 # ---------------------------------------------------------------------------
 # DEG DataFrame 標準化・読み込み
 # ---------------------------------------------------------------------------

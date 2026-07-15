@@ -25,6 +25,7 @@ from app.utils.selection_utils import (
     natural_cluster_key,
 )
 from app.utils.color_utils import get_cluster_color_map as _get_cluster_color_map
+from app.utils.annotation_label import label_from_active_state as _label_from_active_state
 from app.services.hne_overlay import points_in_polygon
 
 logger = logging.getLogger("msi.interactive.loupe")
@@ -170,8 +171,9 @@ def _render_summary_card(summary):
         ], className="mb-1"),
     ]
     if summary.get("mean_intensity") is not None and summary.get("feature_name"):
+        _feat_lbl = _label_from_active_state(summary["feature_name"], style="paren")
         children.append(html.Div([
-            html.Span(f"{summary['feature_name']} 平均強度: ",
+            html.Span(f"{_feat_lbl} 平均強度: ",
                       className="small fw-bold"),
             html.Span(f"{summary['mean_intensity']:.4g}", className="small"),
         ], className="mb-1"))
@@ -284,7 +286,7 @@ def update_feature_violin(feature_name, group_by, active_items,
         fig.add_trace(go.Violin(**kwargs))
     fig.update_layout(
         showlegend=False, margin=dict(l=55, r=10, t=32, b=45),
-        title=dict(text=f"{feature_name} 分布 ({gcol})", x=0.5,
+        title=dict(text=f"{_label_from_active_state(feature_name, style='paren')} 分布 ({gcol})", x=0.5,
                    font=dict(size=13)),
         yaxis_title="強度 (data layer)", xaxis_title=gcol,
         plot_bgcolor="white",
