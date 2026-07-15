@@ -63,3 +63,14 @@ def test_empty_deg_returns_no_rows():
     headers, rows = build_marker_rows(["0", "1"], [], top_n=5)
     assert headers[0] == "クラスタ"
     assert rows == []
+
+
+def test_backfilled_annotation_flows_to_marker_rows():
+    """Phase1→Phase2 の連結: annotation 空でも annotation_map から補完すれば
+    marker 表（PPTX と同経路）に化合物名が出る。"""
+    from app.utils.deg_utils import backfill_annotations
+    deg = _deg()  # mz_200.1 / mz_100.5 は annotation 空
+    backfill_annotations(deg, {"mz_200.1": "Taurine"})
+    headers, rows = build_marker_rows(["0"], deg, top_n=5)
+    up = [r for r in rows if r[3] == "▲Up"][0]
+    assert up[2] == "Taurine"

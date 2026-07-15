@@ -12,6 +12,42 @@
 
 ---
 
+## 2026-07-15_ver43.0
+
+### 機能: 化合物名表示を全表示面に統一（m/z 残存を解消）
+
+化合物名付きデータ（SCiLS peak Name / 注釈CSV / MRM）を登録しても、MSI画像表示（Feature Plot）
+やドロップダウン・各種プロット・共有ビュー等が **m/z 表記のまま**になっていた問題を解消。
+原因は「feature→表示ラベル」の解決関数が無く、化合物名が 3〜4 系統のソース
+（`feature_annotations` / `annotation_map` / `deg_data.annotation` / MRM）に分散し、各表示箇所が
+思い思いに 1 系統だけを参照していたこと。**注釈の無いデータ（例: DESI）は素の m/z に安全劣化**（加算的）。
+
+- **新規 `utils/annotation_label.py`（単一リゾルバ）**: `feature_display_label()`（Dash 非依存の純関数）と
+  `label_from_active_state()`（アクティブ state から `annotation_map`/`feature_annotations` を読む薄いラッパ）。
+  優先順位 `annotation_map` → `feature_annotations.compound` → `deg annotation` を
+  `is_meaningful_annotation` で選別。style（`heading`＝`化合物名_m/z` / `paren`＝`m/z (化合物名)` /
+  `compound` / `filename`＝ファイル名安全化 / `auto`）で各表示面の既存フォーマットを保つ。
+- **新規 `deg_utils.backfill_annotations()`**: DEG レコードの空 `annotation` を `annotation_map` から補完
+  （既存の意味ある注釈は上書きしない）。ロード時（`interactive_callbacks.load_stage_d_finish`）と
+  オンザフライ DE（`interactive_de.py`）で 1 回適用するだけで、Volcano/Heatmap/クラスタTop5/
+  マーカー表/PPTX が化合物名を一括参照する。
+- **画面表示（主訴）**: イオン画像ホバー・Feature Plot 見出しの m/z フォールバック（`annotation_map` も参照）・
+  PNG/一括ダウンロードのファイル名・初期/m/zフィルタ/ブックマーク/リストの各 Feature ドロップダウン・
+  バイオリン図タイトル・選択サマリカードを化合物名対応に。ホバー/見出しは既存の
+  「化合物名で表示（m/z ⇄ 化合物名）」トグルに追従。
+- **共有 / Lite ビュー**: 共有バンドルへ `feature_annotations`/`annotation_map` を同梱し、共有 DEG 表に
+  「化合物名」列を追加、共有 Feature 図（colorbar/ホバー）とドロップダウン、Lite クロスクラスタ
+  ヒートマップの Y ラベルを化合物名対応に。
+- **エクスポート**: PPTX の Feature スライドタイトル・クラスタ別マーカー表は補完済み `deg_data` 経由で
+  自動的に化合物名を表示。データ書出し（CSV/Parquet）の列見出しは MetaboAnalyst 等の互換維持のため
+  m/z のまま（化合物名ラベル出力は H&E オーバーレイの compound 単位が担当・不変）。
+- **未対応（別対応）**: DESI R テンプレは注釈サイドカー/annotation 列を出力しないため、DESI データは
+  上記各面で素の m/z のまま（安全劣化）。DESI への化合物ソース整備は今後の課題。
+- 退行防止: 新規 `tests/test_annotation_label.py`（リゾルバ優先順位・各 style・ファイル名安全化・
+  補完ロジック）＋`tests/test_marker_rows.py` 拡張。`pytest -m "not e2e"` 全 **495 passed**。
+
+---
+
 ## 2026-07-09_ver42.2
 
 ### 修正: ④「続きを実行」(reduction再利用) の UMAP が DoHeatmap で停止するバグ

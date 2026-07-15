@@ -281,6 +281,7 @@ def create_shared_view_layout():
                                         id="sv_deg_table",
                                         columns=[
                                             {"name": "Gene/m/z", "id": "gene"},
+                                            {"name": "化合物名", "id": "annotation"},
                                             {"name": "Cluster", "id": "cluster"},
                                             {"name": "avg_log2FC", "id": "avg_log2FC"},
                                             {"name": "p_val_adj", "id": "p_val_adj"},

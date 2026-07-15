@@ -20,6 +20,8 @@ from dash import Input, Output, State, callback, no_update, html, dcc
 from dash.exceptions import PreventUpdate
 
 from app.utils.deg_utils import standardize_deg_df as _standardize_deg_df
+from app.utils.deg_utils import backfill_annotations
+from app.utils.annotation_label import feature_display_label
 from app.utils.selection_utils import natural_cluster_key, cells_in_clusters
 from app.callbacks.interactive_loupe import _MARKER_TABLE_COLUMNS
 
@@ -47,7 +49,8 @@ def _build_de_volcano(records, fc_th=0.5, p_th=1.3):
             y = -math.log10(p) if p > 0 else 300.0
             xs.append(fc)
             ys.append(y)
-            texts.append(r.get("gene", ""))
+            texts.append(feature_display_label(
+                r.get("gene", ""), deg_annotation=r.get("annotation"), style="paren"))
             if y >= p_th and abs(fc) >= fc_th:
                 colors.append("#d6334c" if fc > 0 else "#2c6fbb")
             else:
@@ -134,6 +137,11 @@ def run_onthefly_de(n_clicks, selected_ids, mode, target_clusters, rds_path):
         return no_update, _err(f"DE 失敗: {e}")
 
     records = _standardize_deg_df(result_df) or []
+    # 空 annotation を annotation_map から補完（表・Volcano で化合物名を表示）
+    try:
+        backfill_annotations(records, _interactive_data.get("annotation_map"))
+    except Exception:
+        pass
     n_sig = 0
     for r in records:
         v = r.get("p_val_adj_raw")

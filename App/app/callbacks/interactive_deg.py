@@ -28,6 +28,10 @@ from app.utils.deg_utils import (
     is_meaningful_annotation as _is_meaningful_annotation,
     extract_mz_numeric as _extract_mz_numeric,
 )
+from app.utils.annotation_label import (
+    feature_display_label as _feature_display_label,
+    label_from_active_state as _label_from_active_state,
+)
 from app.utils.label_persistence import (
     compute_annotation_offsets as _compute_annotation_offsets,
 )
@@ -232,14 +236,20 @@ def update_feature_options_on_mz_filter(mz_filtered, rds_path=None):
     """m/zフィルタ適用後、ドロップダウンの選択肢を即時更新"""
     from app.callbacks.interactive_callbacks import _interactive_data, _set_active_key
     _set_active_key(rds_path)
+    ann_map = _interactive_data.get("annotation_map") or {}
+
+    def _opt(f):
+        return {"label": _feature_display_label(
+            f, annotation_map=ann_map, style="paren"), "value": f}
+
     if mz_filtered is None:
         # フィルタ解除 -> 全件に戻す
         features = _interactive_data.get("features_list")
         if not features:
             return []
-        return [{"label": f, "value": f} for f in features[:500]]
+        return [_opt(f) for f in features[:500]]
 
-    return [{"label": f, "value": f} for f in mz_filtered[:500]]
+    return [_opt(f) for f in mz_filtered[:500]]
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +358,12 @@ def update_feature_plot(feature_name, sample, marker_size,
 
         auto_mode = (marker_size is None or marker_size <= 0)
 
+        # ホバー/ファイル名用ラベル（化合物名を利用可能なら付与）。
+        # ホバーは 化合物名⇄m/z トグルに追従、ファイル名は常に安全化した識別子。
+        hover_label = _label_from_active_state(
+            feature_name, style="paren", show_compound=bool(show_compound_names))
+        file_label = _label_from_active_state(feature_name, style="filename")
+
         graphs = []
         batch_fig_dicts = []
         for s in samples_to_show:
@@ -424,7 +440,7 @@ def update_feature_plot(feature_name, sample, marker_size,
                 mode="markers",
                 marker=marker_opts,
                 text=df_s["CellID"],
-                hovertemplate=f"{feature_name}: " + "%{marker.color:.4f}<br>%{text}<extra></extra>",
+                hovertemplate=f"{hover_label}: " + "%{marker.color:.4f}<br>%{text}<extra></extra>",
                 showlegend=False,
             ))
 
@@ -439,11 +455,11 @@ def update_feature_plot(feature_name, sample, marker_size,
                 plot_bgcolor="white",
             )
 
-            batch_fig_dicts.append((f"Feature_{feature_name}_{display_s}", fig.to_dict()))
+            batch_fig_dicts.append((f"Feature_{file_label}_{display_s}", fig.to_dict()))
 
             cfg = dict(_FEATURE_IMG_CONFIG)
             cfg["toImageButtonOptions"] = dict(cfg["toImageButtonOptions"],
-                                               filename=f"Feature_{feature_name}_{display_s}")
+                                               filename=f"Feature_{file_label}_{display_s}")
             if rows:
                 # 行数指定: 1 行あたりの列数 = ceil(サンプル数 / 行数)。
                 # 結果として最大 rows 行に折り返す（サンプル数 < rows なら 1 行）。
@@ -482,6 +498,12 @@ def update_feature_plot(feature_name, sample, marker_size,
                     if _is_meaningful_annotation(ann, feature_name):
                         annotation = ann
                     break
+        # deg に無ければ annotation_map（SCiLS/CSV 由来）から補完（見出しの m/z 残存を解消）
+        if not annotation:
+            amap = _interactive_data.get("annotation_map") or {}
+            cand = amap.get(feature_name)
+            if _is_meaningful_annotation(cand or "", feature_name):
+                annotation = cand
         if show_compound_names and rec and rec.get("display_name"):
             title_text = rec["display_name"]
         elif annotation:
@@ -562,8 +584,10 @@ def update_bookmark_options(bookmarks, deg_data):
             ann = r.get("annotation", "")
             if gene and _is_meaningful_annotation(ann, gene):
                 ann_map[gene] = ann
+    # annotation_map（SCiLS/CSV 由来）も参照して化合物名を付与（deg のみに依存しない）
     return [
-        {"label": f"{f} ({ann_map[f]})" if f in ann_map else f, "value": f}
+        {"label": _label_from_active_state(
+            f, deg_annotation=ann_map.get(f), style="paren"), "value": f}
         for f in bookmarks
     ]
 
