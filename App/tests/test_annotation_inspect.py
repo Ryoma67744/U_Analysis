@@ -170,3 +170,69 @@ class TestEdge:
 
     def test_none_sub(self):
         assert has_compound_names(None) is False
+
+
+# ---- 性能: xlsx 高速読取 & キャッシュ（ver44.1） ----
+
+class TestPerf:
+    def test_xlsx_header_fast_matches_pandas(self, tmp_path):
+        # 高速読取（openpyxl read_only 先頭1行）が pandas の read_excel と同じヘッダを返す
+        from app.services.annotation_inspect import _xlsx_header_fast
+        p = tmp_path / "h.xlsx"
+        pd.DataFrame([[0, 0, 1, 2]],
+                     columns=["x", "y", "Cpd_A_1", "Cpd_B_2"]).to_excel(p, index=False)
+        assert _xlsx_header_fast(p) == list(pd.read_excel(p, nrows=0).columns)
+
+    def test_named_xlsx_detected(self, tmp_path):
+        # DESI named 形式 xlsx（x,y,<化合物名>_...）を高速読取経路で検出できる
+        p = tmp_path / "raw.xlsx"
+        pd.DataFrame(columns=["x", "y", "Acetylcholine_15_10", "GSH_20_5"]).to_excel(
+            p, index=False)
+        r = inspect_annotations({"data_folder": str(tmp_path),
+                                 "ms_instrument": "DESI", "id": "xlsx1"})
+        assert r["status"] == "annotated"
+        comps = [e["compound"] for e in r["examples"]]
+        assert "Acetylcholine" in comps and "GSH" in comps
+
+    def test_inspect_annotations_is_cached(self, tmp_path, monkeypatch):
+        from app.services import annotation_inspect as ai
+        ai._INSPECT_CACHE.clear()
+        _write_sidecar(tmp_path)
+        calls = {"n": 0}
+        real = ai._inspect_annotations_uncached
+
+        def counting(sub, max_examples=200):
+            calls["n"] += 1
+            return real(sub, max_examples)
+
+        monkeypatch.setattr(ai, "_inspect_annotations_uncached", counting)
+        sub = {"data_folder": str(tmp_path), "ms_instrument": "TIMS", "id": "s1"}
+        r1 = ai.inspect_annotations(sub)
+        r2 = ai.inspect_annotations(sub)
+        assert calls["n"] == 1                       # 2回目はキャッシュヒット
+        assert r1["status"] == r2["status"] == "annotated"
+        # 別サブプロジェクト（id違い）は署名が変わり再計算
+        ai.inspect_annotations({**sub, "id": "s2"})
+        assert calls["n"] == 2
+
+    def test_cache_invalidates_on_folder_change(self, tmp_path, monkeypatch):
+        import os
+        from app.services import annotation_inspect as ai
+        ai._INSPECT_CACHE.clear()
+        _write_sidecar(tmp_path)
+        calls = {"n": 0}
+        real = ai._inspect_annotations_uncached
+
+        def counting(sub, max_examples=200):
+            calls["n"] += 1
+            return real(sub, max_examples)
+
+        monkeypatch.setattr(ai, "_inspect_annotations_uncached", counting)
+        sub = {"data_folder": str(tmp_path), "ms_instrument": "TIMS", "id": "s1"}
+        ai.inspect_annotations(sub)
+        assert calls["n"] == 1
+        # フォルダの mtime を進める → 署名が変わりキャッシュ無効化 → 再計算
+        st = tmp_path.stat()
+        os.utime(tmp_path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+        ai.inspect_annotations(sub)
+        assert calls["n"] == 2

@@ -85,28 +85,52 @@ def _render(info: dict) -> html.Div:
 
 @callback(
     [Output("annotation_preview_modal", "is_open", allow_duplicate=True),
-     Output("annotation_preview_body", "children")],
+     Output("annotation_preview_target", "data"),
+     Output("annotation_preview_body", "children", allow_duplicate=True)],
     Input({"type": "sub_action_annotations", "index": ALL}, "n_clicks"),
     State("selected_project", "data"),
     prevent_initial_call=True,
 )
 def open_annotation_preview(clicks, project):
-    """「化合物名」ボタン → サブプロジェクトの注釈状況を読み、モーダルを開いて描画。"""
+    """「化合物名」ボタン → まずモーダルを即座に開く（重い判定は populate へ委譲）。
+
+    注釈判定はファイル読取を伴い、サブプロジェクトによっては時間がかかる。ここで
+    それを実行すると「押しても開かない（＝実際は待ち時間）」に見えるため、クリック時は
+    モーダルを開いて対象を Store に積むだけにし、本文の描画は populate 側で行う。
+    `dcc.Loading` が populate 実行中に自動でスピナーを表示する。
+    """
     if not ctx.triggered_id or not any(c for c in (clicks or []) if c):
-        return no_update, no_update
+        return no_update, no_update, no_update
     sub_id = ctx.triggered_id["index"]
     project_id = project.get("id", "") if project else ""
-    sub = get_sub_project(project_id, sub_id)
+    # n_clicks を nonce に含め、同じサブプロジェクトを再度開いても Store が変化して
+    # populate が確実に再発火するようにする（同一値だと Dash が発火しない）。
+    nonce = ctx.triggered[0].get("value") if ctx.triggered else None
+    placeholder = html.Div("読み込み中…", className="text-muted small py-2")
+    return True, {"project_id": project_id, "sub_id": sub_id, "nonce": nonce}, placeholder
+
+
+@callback(
+    Output("annotation_preview_body", "children", allow_duplicate=True),
+    Input("annotation_preview_target", "data"),
+    prevent_initial_call=True,
+)
+def populate_annotation_preview(target):
+    """Store 更新 → 注釈状況を読み（重い）本文を描画。モーダルは既に開いており、
+    `dcc.Loading` がこの実行中スピナーを表示する。inspect と描画の両方を保護する。"""
+    if not target:
+        return no_update
+    sub = get_sub_project(target.get("project_id", ""), target.get("sub_id"))
     if not sub:
-        return True, dbc.Alert("サブプロジェクトが見つかりません。", color="danger",
-                               className="mb-0 py-2")
+        return dbc.Alert("サブプロジェクトが見つかりません。", color="danger",
+                         className="mb-0 py-2")
     try:
         info = inspect_annotations(sub)
-    except Exception as e:  # noqa: BLE001 — UI にエラーを出して継続
-        logger.exception("annotation inspect 失敗")
-        return True, dbc.Alert(f"確認中にエラーが発生しました: {e}", color="danger",
-                               className="mb-0 py-2")
-    return True, _render(info)
+        return _render(info)
+    except Exception as e:  # noqa: BLE001 — UI にエラーを出して継続（描画失敗も捕捉）
+        logger.exception("annotation inspect/render 失敗")
+        return dbc.Alert(f"確認中にエラーが発生しました: {e}", color="danger",
+                         className="mb-0 py-2")
 
 
 @callback(
