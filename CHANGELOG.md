@@ -12,6 +12,30 @@
 
 ---
 
+## 2026-07-16_ver44.1
+
+### 修正: 「化合物名」モーダルが特定サブプロジェクトで“開くのが遅い”問題を解消
+
+サブプロジェクトカードの「化合物名」ボタン（ver44.0）を押すと、特定のサブプロジェクトだけモーダル表示までに
+長い待ちが生じ、「押しても開かない（無反応）」に見えていた（実際は時間が掛かって開いていた）。原因は、クリック
+コールバックが**重い `inspect_annotations`（ファイル読取）を完了してからモーダルを開く**構造で、進捗スピナー
+（`dcc.Loading`）もモーダル本文内にあるため開くまでフィードバックが出ないこと。
+
+- **即時オープン＋スピナー化**（`annotation_preview_callbacks.py` / `annotation_preview_modal.py`）:
+  コールバックを「即時オープン（I/O なし・対象を `dcc.Store="annotation_preview_target"` へ積む）」と
+  「後追い populate（`inspect_annotations`→描画）」の 2 段に分割。モーダルは即座に開き、`dcc.Loading` が
+  populate 実行中のスピナーを表示する。再オープン確実化のためクリック `n_clicks` を Store の nonce に含める。
+  併せて未保護だった `_render` を try/except で保護（描画失敗もモーダル内エラー表示になり無反応化しない）。
+- **判定の高速化・キャッシュ**（`annotation_inspect.py`）:
+  - DESI の named ヘッダ読取を `pd.read_excel(nrows=0)`（openpyxl がブック全体をパース）から
+    **`_xlsx_header_fast`（read_only で先頭 1 行のみ）**へ置換。
+  - `inspect_annotations` を**署名（sub id＋候補フォルダの mtime）ベースでメモ化**。同一状態の再オープンを即時化。
+  - `_main_parquet_peaklist` のフッタ走査に上限（`_PEAKLIST_SCAN_CAP=50`）を追加。
+- 退行防止: `tests/test_annotation_inspect.py` に xlsx 高速読取の等価性・キャッシュのヒット/無効化テストを追加。
+- version 44.0→44.1。
+
+---
+
 ## 2026-07-15_ver44.0
 
 ### 機能: 登録済みデータの「化合物名の有無」を生データを開かずに確認

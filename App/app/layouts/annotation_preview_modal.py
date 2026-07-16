@@ -19,6 +19,9 @@ def create_annotation_preview_modal():
         centered=True,
         scrollable=True,
         children=[
+            # クリックされたサブプロジェクト（project_id/sub_id）を後追いの
+            # populate コールバックへ渡す。オープンは即時・重い判定は populate 側。
+            dcc.Store(id="annotation_preview_target"),
             dbc.ModalHeader(dbc.ModalTitle("🧪 化合物名アノテーション")),
             dbc.ModalBody(
                 dcc.Loading(html.Div(id="annotation_preview_body", className="small")),

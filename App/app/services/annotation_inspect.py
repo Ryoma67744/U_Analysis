@@ -84,15 +84,21 @@ def find_annotation_sidecar(dirs) -> Optional[Path]:
     return None
 
 
+_PEAKLIST_SCAN_CAP = 50
+
+
 def _main_parquet_peaklist(dirs) -> Optional[str]:
     """本体 parquet のフッタ schema メタに `b"peak_list"` があればその値（ファイル名）を返す。
 
     フッタ（数 KB）のみ読む。サイドカーが欠けているが本体には peak-list メタがある場合の保険。
+    結果フォルダに parquet が大量にある/ディスクが遅いと待ちが伸びるため、走査は
+    `_PEAKLIST_SCAN_CAP` 件で打ち切る（初ヒットで即 return する挙動は維持）。
     """
     try:
         import pyarrow.parquet as pq
     except Exception:
         return None
+    scanned = 0
     for d in dirs:
         try:
             if d is None or not Path(d).is_dir():
@@ -103,6 +109,10 @@ def _main_parquet_peaklist(dirs) -> Optional[str]:
         for pth in parquets:
             if pth.name.endswith("_feature_annotations.parquet"):
                 continue
+            if scanned >= _PEAKLIST_SCAN_CAP:
+                logger.info("peak_list メタ走査を %d 件で打ち切り", _PEAKLIST_SCAN_CAP)
+                return None
+            scanned += 1
             try:
                 md = pq.read_schema(str(pth)).metadata or {}
             except Exception:
@@ -141,13 +151,31 @@ def _desi_tokens_from_txt(pth: Path) -> Optional[list]:
     return None
 
 
+def _xlsx_header_fast(pth: Path) -> list:
+    """xlsx の先頭シート 1 行目だけを openpyxl の read_only で読む（全体パースを避ける）。
+
+    `pd.read_excel(nrows=0)` は openpyxl でブック全体を読み込むため大きい xlsx で非常に遅い。
+    ヘッダ行の判定に必要なのは 1 行目だけなので、遅延読取でその 1 行のみ取得する。
+    空セルは "" にして pandas 版（`Unnamed: N`）と同様に下流でスキップされるようにする。
+    """
+    import openpyxl
+
+    wb = openpyxl.load_workbook(pth, read_only=True, data_only=True)
+    try:
+        ws = wb[wb.sheetnames[0]]
+        first = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
+    finally:
+        wb.close()
+    return ["" if c is None else c for c in first]
+
+
 def _desi_tokens_from_named_header(pth: Path) -> Optional[list]:
     """named 形式 csv/xlsx の 1 行目（`x,y,<化合物名>_...`）から化合物名を取り出す（無ければ None）。"""
     try:
         if pth.suffix.lower() == ".csv":
             header = list(pd.read_csv(pth, nrows=0).columns)
         else:
-            header = list(pd.read_excel(pth, nrows=0).columns)
+            header = _xlsx_header_fast(pth)
     except Exception:
         return None
     if len(header) < 3:
@@ -264,8 +292,44 @@ def _inspect_desi(dirs, max_examples: int, result: dict) -> dict:
     return result
 
 
+# --------------------------------------------------------------------------
+# キャッシュ（同一状態の再オープンを即時化）
+# --------------------------------------------------------------------------
+_INSPECT_CACHE: dict = {}
+_INSPECT_CACHE_MAX = 256
+
+
+def _cache_signature(sub: Optional[dict], max_examples: int) -> str:
+    """候補フォルダのパス＋mtime を元にした軽い署名。フォルダ内のファイル増減
+    （サイドカー生成/削除・変換のやり直し等）で mtime が変わりキャッシュが無効化される。
+    """
+    parts = [
+        str((sub or {}).get("id", "")),
+        str((sub or {}).get("ms_instrument", "")),
+        str(max_examples),
+    ]
+    for d in _candidate_dirs(sub):
+        try:
+            parts.append(f"{d}:{d.stat().st_mtime_ns}")
+        except OSError:
+            parts.append(f"{d}:NA")
+    return "|".join(parts)
+
+
 def inspect_annotations(sub: Optional[dict], max_examples: int = 200) -> dict:
-    """モーダル用の詳細サマリを返す（生データ本体は読まない）。"""
+    """モーダル用の詳細サマリを返す（生データ本体は読まない）。署名ベースでメモ化する。"""
+    sig = _cache_signature(sub, max_examples)
+    cached = _INSPECT_CACHE.get(sig)
+    if cached is not None:
+        return dict(cached)  # 呼び出し側の変更から守るため浅いコピーを返す
+    result = _inspect_annotations_uncached(sub, max_examples)
+    if len(_INSPECT_CACHE) >= _INSPECT_CACHE_MAX:
+        _INSPECT_CACHE.clear()  # 上限超過時は単純に一掃（LRU は不要）
+    _INSPECT_CACHE[sig] = dict(result)
+    return result
+
+
+def _inspect_annotations_uncached(sub: Optional[dict], max_examples: int = 200) -> dict:
     result = _empty_result()
     dirs = _candidate_dirs(sub)
     if not dirs:
