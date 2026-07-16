@@ -585,6 +585,16 @@ def render_sub_project_cards(
                                         outline=True,
                                         title="登録データに化合物名が含まれるか確認",
                                     ),
+                                    dbc.Button(
+                                        "分子情報を登録",
+                                        id={
+                                            "type": "sub_action_add_molinfo",
+                                            "index": s["id"],
+                                        },
+                                        color="success",
+                                        outline=True,
+                                        title="SCiLS feature-list CSV から化合物名を後付け登録",
+                                    ),
                                 ],
                             ),
                         ]),

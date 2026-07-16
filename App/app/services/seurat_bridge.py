@@ -647,15 +647,26 @@ class SeuratBridge:
         サイドカー無し / 候補なし feature はキーに含めない（= m/z 表示のまま）。
         """
         cache_file = cache_dir / "feature_annotations.json"
+        sidecar = self._find_feature_annotation_sidecar(rds_path)
+        # キャッシュがサイドカー以降に作られていれば再利用。サイドカーが後から
+        # 付与/更新された（= サイドカーの方が新しい）場合はキャッシュを捨てて作り直す。
         if cache_file.exists():
+            cache_fresh = True
             try:
-                with open(cache_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                pass
+                if sidecar is not None and (
+                    sidecar.stat().st_mtime > cache_file.stat().st_mtime
+                ):
+                    cache_fresh = False
+            except OSError:
+                cache_fresh = True
+            if cache_fresh:
+                try:
+                    with open(cache_file, "r", encoding="utf-8") as f:
+                        return json.load(f)
+                except Exception:
+                    pass
         if not features_list:
             return {}
-        sidecar = self._find_feature_annotation_sidecar(rds_path)
         if sidecar is None:
             return {}
         try:

@@ -34,6 +34,12 @@ def list_msi_files(data_folder: str) -> list[str]:
 
 _PARQUET_EXTS = {".parquet", ".pq"}
 _CSV_EXTS = {".csv", ".tsv", ".txt"}
+# 注釈サイドカー（1 feature 1 行のメタ表）は解析/エクスポートの「サンプル」ではないため除外する。
+_SIDECAR_SUFFIX = "_feature_annotations.parquet"
+
+
+def _is_sidecar(f: Path) -> bool:
+    return f.name.endswith(_SIDECAR_SUFFIX)
 
 
 def _filter_tims_candidates(folder: Path) -> list[Path]:
@@ -41,13 +47,14 @@ def _filter_tims_candidates(folder: Path) -> list[Path]:
 
     - Parquet (.parquet/.pq) が 1 本以上あれば Parquet のみを返す
     - それ以外は CSV/TSV/TXT を返す
+    - `*_feature_annotations.parquet`（注釈サイドカー）はサンプルではないので常に除外
     - いずれもソート済み
     """
     if not folder.is_dir():
         return []
     parquets = sorted(
         f for f in folder.iterdir()
-        if f.is_file() and f.suffix.lower() in _PARQUET_EXTS
+        if f.is_file() and f.suffix.lower() in _PARQUET_EXTS and not _is_sidecar(f)
     )
     if parquets:
         csv_count = sum(

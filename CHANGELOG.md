@@ -12,6 +12,38 @@
 
 ---
 
+## 2026-07-16_ver45.0
+
+### 機能: 登録済みデータへ「分子情報（化合物名）」を後から登録
+
+分子情報（化合物名 / m/z / データベース / アダクト / 組成式）は通常 SCiLS→Parquet 変換時に peak-list CSV から
+付与されるが、peak-list 無しで登録すると「分子情報なし」データになる。数GBの本体を再登録し UMAP を再計算するのは
+非現実的だったため、**SCiLS「Static feature list」CSV を後からアップロードし、本体 parquet を書き換えずに
+サイドカー `<BASE>_feature_annotations.parquet` を生成**して分子情報を反映できるようにした。生成物は通常登録と同一
+（既存の `scils_converter._read_peaklist` / `peak_annotation.build_feature_annotation_table` を再利用）。対象は
+TIMS/SCiLS（MALDI 含む）。
+
+- **新規 `services/molinfo_attach.py`（Dash 非依存）**: `attach_molecular_info(sub, csv_path)` が、本体 parquet の
+  footer メタ `mz_sorted`（分子情報なし登録でも存在）から特徴量 m/z を取得し、CSV を最近傍 0.01 Da で突き合わせて
+  サイドカーを生成。`data_folder`（＋現行の結果ディレクトリ）へ書き出し、キャッシュを無効化。`dry_run` でマッチ
+  件数のみのプレビューも可能。
+- **UI**: サブプロジェクトカードに**「分子情報を登録」ボタン**（`sub_action_add_molinfo`）と新規モーダル
+  （`add_molinfo_modal.py`）を追加。CSV をアップロードするとマッチ件数をプレビューし、「登録」でサイドカー生成。
+  登録後は化合物名バッジ・プレビュー・インタラクティブ解析・PPTX・共有に反映（配線 `add_molinfo_callbacks.py`）。
+- **反映範囲を拡張**:
+  - `seurat_bridge._load_feature_annotations`: `feature_annotations.json` キャッシュが**サイドカーより古ければ
+    作り直す**よう自己修復（後付け/更新が確実に反映）。
+  - データ出力（生エクスポート）: `interactive_data_export._export_tims` に `_apply_feature_annotation_columns` を追加し、
+    **エクスポート時にサイドカーで m/z 列名を埋め込み名へ変換**（本体多GBは書き換えない）。
+  - `data_manager._filter_tims_candidates`: 注釈サイドカー（`*_feature_annotations.parquet`）を TIMS 入力サンプル
+    候補から除外（後付けサイドカーが誤ってサンプル扱いされるのを防止）。
+- 退行防止: 新規 `tests/test_molinfo_attach.py`（サイドカー生成・件数・tol境界・列名フォールバック・サイドカー除外）、
+  `test_seurat_annotation_cache.py`（キャッシュ自己修復）、`test_data_export_annotation.py`（列名変換・冪等）、
+  `test_add_molinfo_callbacks.py`（プレビュー/確定/エラー処理）。
+- version 44.1→45.0。
+
+---
+
 ## 2026-07-16_ver44.1
 
 ### 修正: 「化合物名」モーダルが特定サブプロジェクトで“開くのが遅い”問題を解消

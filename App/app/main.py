@@ -337,6 +337,7 @@ from app.callbacks import interactive_batch_save  # noqa: E402, F401
 from app.callbacks import interactive_data_export  # noqa: E402, F401
 from app.callbacks import scils_converter_callbacks  # noqa: E402, F401
 from app.callbacks import annotation_preview_callbacks  # noqa: E402, F401
+from app.callbacks import add_molinfo_callbacks  # noqa: E402, F401
 from app.callbacks import hne_overlay_callbacks  # noqa: E402, F401
 from app.callbacks import env_settings_callbacks  # noqa: E402, F401
 from app.callbacks import lite_view_callbacks  # noqa: E402, F401
