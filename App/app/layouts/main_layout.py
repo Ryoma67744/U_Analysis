@@ -13,6 +13,7 @@ from app.layouts.hne_overlay_tab import create_hne_overlay_tab
 from app.layouts.file_browser_modal import create_file_browser_modal
 from app.layouts.scils_converter_modal import create_scils_converter_modal
 from app.layouts.annotation_preview_modal import create_annotation_preview_modal
+from app.layouts.add_molinfo_modal import create_add_molinfo_modal
 from app.layouts.env_settings_modal import create_env_settings_modal
 from app.layouts.rds_maintenance_modal import create_rds_maintenance_modal
 from app.layouts.landing_page import create_landing_page
@@ -368,6 +369,9 @@ def create_main_layout():
 
                         # 化合物名アノテーション・プレビューモーダル
                         create_annotation_preview_modal(),
+
+                        # 分子情報を後から登録モーダル
+                        create_add_molinfo_modal(),
 
                         # RDS 軽量化モーダル
                         create_rds_maintenance_modal(),

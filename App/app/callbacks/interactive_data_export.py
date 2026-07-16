@@ -501,6 +501,57 @@ def _read_tims_file(file_path: str) -> pd.DataFrame:
         return pd.read_csv(file_path)
 
 
+def _apply_feature_annotation_columns(df: pd.DataFrame, data_folder: str) -> pd.DataFrame:
+    """サイドカーがあれば m/z 特徴量列を埋め込み名（`化合物名_<m/z> | …`）へリネームする。
+
+    本体 parquet（数 GB）は書き換えず、エクスポート時に列名だけを差し替える。これにより
+    「分子情報を後から登録」した（サイドカーのみ付与した）データでも、通常登録と同じ
+    化合物名付き列名で出力できる。サイドカー無しなら無変換。非特徴量列（id/x/y/annotation）
+    は対象外。列名が既に埋め込み済みでも m/z を再抽出して同名に解決するため冪等。
+    """
+    try:
+        import numpy as np
+
+        from app.services.annotation_inspect import find_annotation_sidecar
+        from app.services.peak_annotation import make_column_name
+        from app.utils.deg_utils import extract_mz_numeric
+
+        sidecar = find_annotation_sidecar([Path(data_folder)])
+        if sidecar is None:
+            return df
+        side = pd.read_parquet(sidecar)
+        if "mz" not in side.columns or "raw" not in side.columns:
+            return df
+        side_mz = side["mz"].to_numpy(dtype=float)
+        raws = side["raw"].tolist()
+        if side_mz.size == 0:
+            return df
+
+        non_meta = {"id", "x", "y", "annotation"}
+        tol = 0.005
+        rename: dict = {}
+        for col in df.columns:
+            if col in non_meta:
+                continue
+            mz = extract_mz_numeric(col)
+            if mz is None or mz == float("inf"):
+                continue
+            j = int(np.argmin(np.abs(side_mz - mz)))
+            if abs(side_mz[j] - mz) > tol:
+                continue
+            raw = raws[j]
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            new = make_column_name(raw, float(mz))
+            if new and new != col and new not in rename.values():
+                rename[col] = new
+        if rename:
+            df = df.rename(columns=rename)
+    except Exception as e:  # noqa: BLE001 — 変換失敗時はそのまま出力
+        logger.warning("エクスポート列名のアノテーション変換に失敗（未変換で出力）: %s", e)
+    return df
+
+
 def _export_tims(
     data_folder: str, method_lookups: OrderedDict, fmt: str,
     region_lookup: dict | None = None,
@@ -533,6 +584,7 @@ def _export_tims(
             progress_cb(int(base + span * i_f / n_files),
                         f"書き込み中… {i_f + 1}/{n_files} ({Path(fp).stem})")
         df = _read_tims_file(fp)
+        df = _apply_feature_annotation_columns(df, data_folder)
         stem = Path(fp).stem
         # 右端に手法別クラスタ列・領域名列をベクトル付与（iterrows 撤廃＝軽い）。
         df = _append_cluster_region_columns(
