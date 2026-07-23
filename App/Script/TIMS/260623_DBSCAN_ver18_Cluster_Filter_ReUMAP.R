@@ -695,11 +695,16 @@ patch_v13_step2_pipeline <- function(code_vec) {
     s2 <- grep("^\\s*for\\s*\\(cfg\\s+in\\s+HARMONY_RETRY_GRID\\)", code_vec[(hdr+1):length(code_vec)])
     if (length(s2) >= 1) {
       s2 <- s2[1] + hdr
+      # ver6+ ベースでは Harmony ループが `if (!is.na(group_var)) { ... }` ガードで包まれている。
+      # 置換範囲がガードの閉じ `}` を巻き込むと開き `{` だけ残ってコピーが構文破綻するため、
+      # ガードを検出して「置換範囲」「置換テキスト」の両方で保持する（無ければ従来動作）。
+      has_guard <- (s2 > 1) &&
+        grepl("^\\s*if\\s*\\(\\s*!is\\.na\\(group_var\\)\\s*\\)\\s*\\{\\s*$", code_vec[s2 - 1])
+      start_idx <- if (has_guard) s2 - 1L else s2
       e2 <- grep('^\\s*if\\s*\\(is\\.null\\(seu_harmony\\)\\)\\s*stop\\("All pipelines failed\\."\\)', code_vec[s2:length(code_vec)])
       if (length(e2) >= 1) {
         e2 <- e2[1] + s2 - 1
-        new_retry <- c(
-          '  # Retry Logic (verbose)',
+        harmony_loop <- c(
           '  for (cfg in HARMONY_RETRY_GRID) {',
           '    ok <- tryCatch({',
           '      seu_harmony <- run_pipeline(TRUE, cfg); TRUE',
@@ -711,7 +716,17 @@ patch_v13_step2_pipeline <- function(code_vec) {
           '      FALSE',
           '    })',
           '    if (ok) { REDUCTION_USED <- "harmony"; break }',
-          '  }',
+          '  }'
+        )
+        # ガードがある場合は元の意味（group_var が NA なら Harmony スキップ）を保つよう包み直す
+        harmony_block <- if (has_guard) {
+          c('  if (!is.na(group_var)) {', paste0('  ', harmony_loop), '  }')
+        } else {
+          harmony_loop
+        }
+        new_retry <- c(
+          '  # Retry Logic (verbose)',
+          harmony_block,
           '  if (is.null(seu_harmony)) {',
           '    for (cfg in PCA_RETRY_GRID) {',
           '      ok <- tryCatch({',
@@ -728,7 +743,7 @@ patch_v13_step2_pipeline <- function(code_vec) {
           '  }',
           '  if (is.null(seu_harmony)) stop("All pipelines failed.")'
         )
-        code_vec <- c(code_vec[1:(s2-1)], new_retry, code_vec[(e2+1):length(code_vec)])
+        code_vec <- c(code_vec[1:(start_idx-1)], new_retry, code_vec[(e2+1):length(code_vec)])
       }
     }
   }
@@ -852,6 +867,18 @@ make_v13_copy_with_settings <- function(v13_path, out_path,
   code <- patch_v13_step2_pipeline(code)
 
   writeLines(code, con = out_path, useBytes = TRUE)
+
+  # 生成コピーの構文検証: source() 前に parse() で確認し、失敗時は出力パスを明示して即停止
+  # （"unexpected end of input" のような不明瞭なエラーを未然に検知）。
+  parse_ok <- tryCatch({ parse(file = out_path); TRUE },
+                       error = function(e) {
+                         message("!! 生成した ver13 コピーの構文解析に失敗: ", conditionMessage(e))
+                         FALSE
+                       })
+  if (!isTRUE(parse_ok)) {
+    stop(sprintf("生成した ver13 コピーが構文的に不正です: %s", out_path), call. = FALSE)
+  }
+
   invisible(out_path)
 }
 

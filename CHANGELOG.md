@@ -12,6 +12,22 @@
 
 ---
 
+## 2026-07-23_ver45.1
+
+### 修正: ClusterFilter_ReUMAP の再解析コピー生成が構文破綻して解析が停止する不具合
+
+クラスタ除外/抽出の再UMAP時、ベース解析スクリプトを複製して設定を差し替える
+`patch_v13_step2_pipeline()`（`App/Script/TIMS/260623_DBSCAN_ver18_Cluster_Filter_ReUMAP.R`）の
+「Retry Logic」置換が、ベース側の `if (!is.na(group_var)) { ... }` ガードの閉じ括弧を巻き込んで削除し、
+生成コピーの波括弧が1個閉じられず `unexpected end of input` で `source()` が失敗、解析が status=error で
+停止していた。
+
+- **修正**: ガードを検出し、置換範囲と置換テキストの両方で `if (!is.na(group_var)) { ... }` を保持
+  （group_var が NA のとき Harmony をスキップする本来の挙動も回復）。ガードの無い旧ベースは従来動作を維持。
+- **防御**: `make_v13_copy_with_settings()` で生成直後に `parse()` 検証を追加し、構文不正なら出力パスを
+  明示して即停止。
+- ベース/オーケストレータの R スクリプト版番号（ver6 / ver18）は据え置き（挙動修正のみ）。
+
 ## 2026-07-16_ver45.0
 
 ### 機能: 登録済みデータへ「分子情報（化合物名）」を後から登録
