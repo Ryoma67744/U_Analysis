@@ -12,6 +12,28 @@
 
 ---
 
+## 2026-07-24_ver45.2
+
+### 修正: 再解析(exclude)の FindAllMarkers でメモリ枯渇(OOM)により解析が停止する不具合
+
+ver45.1 で構文破綻は解消したが、クラスタ除外の再解析が `FindAllMarkers`（`plan(multisession)` で
+並列化される段階）で無言終了（R エラー無し）し status=error になる事例が残っていた。原因は、再解析
+オーケストレータ（`App/Script/TIMS/260623_DBSCAN_ver18_Cluster_Filter_ReUMAP.R`）が、置換
+（`apply_reumap_replace`）用に元の巨大 Seurat オブジェクトを退避保持したまま `source()` で再解析全体を
+同一プロセス内実行していたため。exclude では置換が無効で退避が使われないにもかかわらず元データ（例:
+158k セル）を抱え続け、その上で FindAllMarkers が並列ワーカー（別プロセス）を起動した瞬間に物理RAM上限
+（`mem_limit 12g`）を突破し、cgroup OOM kill が発生していた。1回目の単独実行（RPCA まで完走）が通るのに
+より軽い再解析が落ちる、という矛盾もこれが原因。
+
+- **修正**: 置換を実際に行うとき（keep ＋ 置換有効）だけ元オブジェクトを退避し、それ以外（exclude 等で
+  置換無効）は `source()` 前に元データを解放（`rm` ＋ `gc`）してから再解析を実行するようにした。再解析
+  コピーは自前で入力 parquet を読むため元オブジェクトは不要で、再解析プロセスのベースメモリが単独実行と
+  同等まで下がる。FindAllMarkers の並列数は据え置き（速度不変）。
+- （運用）`R_MAX_VSIZE_GB`（`analysis_runner.py` 参照）を memswap 上限に近い値で設定すると、超過時に
+  無言 OOM ではなく `Error: vector memory exhausted` で明示終了でき、切り分けが容易になる（値は環境依存の
+  ため本修正では未設定）。
+- R スクリプトのバージョン番号（ver6 / ver18）は据え置き（挙動修正のみ）。
+
 ## 2026-07-23_ver45.1
 
 ### 修正: ClusterFilter_ReUMAP の再解析コピー生成が構文破綻して解析が停止する不具合
