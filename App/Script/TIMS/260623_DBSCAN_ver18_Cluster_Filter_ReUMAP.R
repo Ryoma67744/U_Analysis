@@ -1214,7 +1214,18 @@ if (isTRUE(RUN_V13_AFTER_EXPORT)) {
   )
 
   message(">> Running patched ver13 copy: ", v13_copy_path)
-  .base_seu_original <- seu   # 退避（source内でseuが上書きされるため）
+  # 置換(apply_reumap_replace)を行う時だけ元オブジェクトを退避する。それ以外(exclude 等で
+  # 置換無効)は、source 内の再解析が同一プロセスで FindAllMarkers(multisession) までメモリを
+  # 使うため、ここで元データを解放して OOM を回避する（再解析コピーは自前で parquet を読むため
+  # 元 seu は不要）。判定は下の ENABLE_REUMAP_REPLACE 置換ブロックの実行条件と厳密に一致させる。
+  .will_replace <- isTRUE(ENABLE_REUMAP_REPLACE) &&
+    !identical(RERUN_PIPELINE_STAGE, "reduction_only")
+  if (.will_replace) {
+    .base_seu_original <- seu   # 退避（source内でseuが上書きされるため）
+  } else {
+    rm(seu, rds_obj)            # 両参照を外さないと大行列が解放されない（seu<-rds_obj で共有）
+    invisible(gc(verbose = FALSE))
+  }
   source(v13_copy_path)
 
   message("=== ver13 re-run finished ===")
