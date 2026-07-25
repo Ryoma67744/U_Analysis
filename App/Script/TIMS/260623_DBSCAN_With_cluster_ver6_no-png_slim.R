@@ -763,9 +763,12 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
         }
       }
     }
-    need_cols <- c("id", "x", "y", mz_cols)
-    if ("annotation" %in% all_names) need_cols <- c(need_cols, "annotation")
-    df <- arrow::read_parquet(file_path, col_select = dplyr::all_of(need_cols), as_data_frame = TRUE)
+    # [ver45.5 メモリ根本対策] 旧実装は全表を密 data.frame 化したうえ as.matrix / 論理行列 /
+    # t() / dgCMatrix と密コピーを 4〜5 個同時に抱え、取り込みだけでデータ実体の数倍を要した
+    # （10万px 級で 12GB コンテナを超過）。ここではメタ列だけ先に読み、強度は m/z 列を
+    # ブロック単位で読んで逐次スパース化して積む。全体の密行列・論理行列・t() を作らない。
+    meta_cols <- intersect(c("id", "x", "y", "annotation"), all_names)
+    df <- arrow::read_parquet(file_path, col_select = dplyr::all_of(meta_cols), as_data_frame = TRUE)
 
     miss <- setdiff(c("id", "x", "y"), colnames(df))
     if (length(miss) > 0) stop("Parquet is missing required columns: ", paste(miss, collapse = ", "))
@@ -817,6 +820,8 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
     }
 
     # ---- Annotation Filter: 指定された切片のみ保持 ----
+    # 行マスクは強度ブロック側にも同じ順序で適用する（旧実装が df を同時に絞っていたのと等価）。
+    row_mask <- NULL
     if (!is.null(ANNOTATION_FILTER) && length(ANNOTATION_FILTER) > 0 &&
         "annotation" %in% colnames(coordinates)) {
       mask <- coordinates$annotation %in% ANNOTATION_FILTER
@@ -828,15 +833,49 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
                   sum(mask), nrow(coordinates),
                   paste(ANNOTATION_FILTER, collapse = ", ")))
       coordinates <- coordinates[mask, , drop = FALSE]
-      df <- df[mask, , drop = FALSE]
       spot_id <- coordinates$spot_id
+      row_mask <- mask
     }
+    n_rows_total <- nrow(df)
+    rm(df); invisible(gc(verbose = FALSE))   # メタ列はもう不要（座標へ写し済み）
 
-    feat_mat <- as.matrix(df[, mz_cols, drop = FALSE])
-    feat_mat[!is.finite(feat_mat)] <- 0
+    # ---- 必要メモリの事前見積り（PreFlight）----
+    # 見積りを先に出しておくと、2 時間走ってから OOM で落ちる事故を避けられる。
+    .n_feat <- length(mz_cols)
+    .n_cell <- length(spot_id)
+    .dense_gb <- .n_cell * .n_feat * 8 / 1024^3
+    cat(sprintf("  [size] %d spots x %d features (密換算 %.2f GB / スパース化して保持)\n",
+                .n_cell, .n_feat, .dense_gb))
 
-    # CSV reader returns features x cells (counts), so we transpose here
-    count_matrix <- t(feat_mat)
+    # ---- 強度行列: m/z 列をブロック単位で読み、逐次スパース化して積む ----
+    # ブロック幅は「1 ブロックの密サイズが .blk_budget を超えない」よう行数から決める。
+    .blk_budget <- 256 * 1024^2   # 256MB/ブロック
+    .blk_ncol <- max(1L, min(.n_feat,
+                             as.integer(floor(.blk_budget / max(1, n_rows_total * 8)))))
+    .starts <- seq.int(1L, .n_feat, by = .blk_ncol)
+    cat(sprintf("  [stream] %d 列ずつ %d ブロックで読み込みます\n",
+                .blk_ncol, length(.starts)))
+
+    blocks <- vector("list", length(.starts))
+    for (.bi in seq_along(.starts)) {
+      .s <- .starts[.bi]
+      .e <- min(.n_feat, .s + .blk_ncol - 1L)
+      .cols <- mz_cols[.s:.e]
+      .blk <- arrow::read_parquet(file_path, col_select = dplyr::all_of(.cols),
+                                  as_data_frame = TRUE)
+      .m <- as.matrix(.blk)
+      rm(.blk)
+      if (!is.null(row_mask)) .m <- .m[row_mask, , drop = FALSE]
+      .m[!is.finite(.m)] <- 0
+      # dimnames は最終行列へまとめて付けるため、ここでは外して rbind の挙動を決定的にする
+      dimnames(.m) <- NULL
+      # 転置はブロック単位なので一時領域も小さい。features x cells の向きで積む。
+      blocks[[.bi]] <- as(t(.m), "dgCMatrix")
+      rm(.m)
+      if (.bi %% 10L == 0L || .bi == length(.starts)) invisible(gc(verbose = FALSE))
+    }
+    count_matrix <- if (length(blocks) == 1L) blocks[[1L]] else do.call(rbind, blocks)
+    rm(blocks); invisible(gc(verbose = FALSE))
 
     # Align dimnames
     if (nrow(count_matrix) != length(metabolite_names)) {
@@ -847,7 +886,7 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
     rownames(count_matrix) <- metabolite_names
     colnames(count_matrix) <- spot_id
 
-    return(list(count_matrix = as(count_matrix, "dgCMatrix"), coordinates = coordinates,
+    return(list(count_matrix = count_matrix, coordinates = coordinates,
                 feature_annotations = if (!is.null(feature_annotations))
                   feature_annotations[match(rownames(count_matrix), feature_annotations$feature), , drop = FALSE]
                   else NULL))
