@@ -542,18 +542,39 @@ export_filtered_input <- function(in_path, out_path, id_keep, debug_tsv_path = N
   if (ext %in% c("parquet", "pq")) {
     .stopif(requireNamespace("arrow", quietly = TRUE), "Parquet入出力に arrow が必要です。install.packages('arrow')")
 
-    df <- arrow::read_parquet(in_path, as_data_frame = TRUE)
-    .stopif("id" %in% colnames(df), paste0("Parquetに id 列がありません: ", in_path))
+    # [ver45.5 メモリ根本対策] 旧実装は元 Parquet 全体を密 data.frame 化し、行フィルタで
+    # もう 1 個作っていた（10万px 級で計 8GB 超）。Arrow Table のまま扱えば列バッファは
+    # R ヒープ外に置かれ、float32 も広げずに済む。R 側に載せるのは id 列だけ。
+    tab <- arrow::read_parquet(in_path, as_data_frame = FALSE)
+    .stopif("id" %in% names(tab), paste0("Parquetに id 列がありません: ", in_path))
 
-    id_num <- suppressWarnings(as.numeric(df$id))
+    id_num <- suppressWarnings(as.numeric(as.vector(tab$id)))
     keep_flag <- id_num %in% id_keep
-    df2 <- df[keep_flag, , drop = FALSE]
+    n_total <- tab$num_rows
+    n_kept  <- sum(keep_flag, na.rm = TRUE)
 
-    if (nrow(df2) == 0) {
+    # Arrow Table の行サブセットは arrow のバージョン差がありうるため、失敗時は
+    # 従来の data.frame 経路へフォールバックして必ず処理を通す。
+    .subset_err <- NULL
+    tab2 <- tryCatch(tab[keep_flag, ],
+                     error = function(e) { .subset_err <<- conditionMessage(e); NULL })
+    if (is.null(tab2)) {
+      message(">> [ver45.5] Arrow Table の行抽出に失敗したため data.frame 経路にフォールバックします: ",
+              .subset_err)
+      df <- as.data.frame(tab)
+      rm(tab); invisible(gc(verbose = FALSE))
+      df2 <- df[keep_flag, , drop = FALSE]
+      rm(df); invisible(gc(verbose = FALSE))
+    } else {
+      rm(tab); invisible(gc(verbose = FALSE))
+      df2 <- tab2
+    }
+
+    if (n_kept == 0) {
       if (!is.null(debug_tsv_path)) {
         dbg <- data.frame(
           input = basename(in_path),
-          n_rows = nrow(df),
+          n_rows = n_total,
           n_keep = length(id_keep),
           keep_min = min(id_keep, na.rm = TRUE),
           keep_max = max(id_keep, na.rm = TRUE),
@@ -572,8 +593,12 @@ export_filtered_input <- function(in_path, out_path, id_keep, debug_tsv_path = N
            call. = FALSE)
     }
 
-    arrow::write_parquet(df2, out_path)
-    return(invisible(list(n_kept = nrow(df2), n_total = nrow(df))))
+    # 行グループを明示的に分割して書く。既定（単一行グループ）だと下流で行グループ単位の
+    # 分割読みができなくなるため、1 行グループが概ね 64MB 以内に収まる行数を指定する。
+    .ncol_out <- length(names(df2))
+    .chunk <- max(1024L, as.integer(floor(64 * 1024^2 / max(1, .ncol_out * 4))))
+    arrow::write_parquet(df2, out_path, chunk_size = .chunk)
+    return(invisible(list(n_kept = n_kept, n_total = n_total)))
   }
 
   # ---- Case B) CSV/TSV/TXT (legacy SCiLS Transform) ----
@@ -1215,18 +1240,31 @@ if (isTRUE(RUN_V13_AFTER_EXPORT)) {
 
   message(">> Running patched ver13 copy: ", v13_copy_path)
   # 置換(apply_reumap_replace)を行う時だけ元オブジェクトを退避する。それ以外(exclude 等で
-  # 置換無効)は、source 内の再解析が同一プロセスで FindAllMarkers(multisession) までメモリを
-  # 使うため、ここで元データを解放して OOM を回避する（再解析コピーは自前で parquet を読むため
+  # 置換無効)は不要なので解放してから再解析へ進む（再解析コピーは自前で parquet を読むため
   # 元 seu は不要）。判定は下の ENABLE_REUMAP_REPLACE 置換ブロックの実行条件と厳密に一致させる。
   .will_replace <- isTRUE(ENABLE_REUMAP_REPLACE) &&
     !identical(RERUN_PIPELINE_STAGE, "reduction_only")
   if (.will_replace) {
-    .base_seu_original <- seu   # 退避（source内でseuが上書きされるため）
+    .base_seu_original <- seu   # 退避（再解析結果とのマージに使う）
   } else {
     rm(seu, rds_obj)            # 両参照を外さないと大行列が解放されない（seu<-rds_obj で共有）
     invisible(gc(verbose = FALSE))
   }
-  source(v13_copy_path)
+
+  # [ver45.5 メモリ根本対策] 再解析を source() で同一プロセス実行すると、オーケストレータが
+  # 抱えている中間データの上に本解析のピーク（PCA/Harmony/UMAP/FindAllMarkers/RPCA）が
+  # そのまま積み上がる。子プロセスで起動すれば終了時に OS がメモリを全回収するため、
+  # この積み上がりが構造的に起こらない。生成コピーは設定を焼き込んだスタンドアロン版
+  # （初回解析と同じ形）なので単独実行できる。標準出力は親＝解析ログへそのまま連結される。
+  .rscript <- file.path(R.home("bin"), "Rscript")
+  if (!file.exists(.rscript)) .rscript <- "Rscript"
+  flush(stdout())   # 親の出力を先に流し切り、子の出力とログ上で前後しないようにする
+  .rc <- system2(.rscript, args = c("--vanilla", shQuote(v13_copy_path)),
+                 stdout = "", stderr = "")
+  if (!identical(as.integer(.rc), 0L)) {
+    stop(sprintf("再解析(ver13 コピー)が異常終了しました (exit=%s): %s",
+                 as.character(.rc), v13_copy_path), call. = FALSE)
+  }
 
   message("=== ver13 re-run finished ===")
 }
