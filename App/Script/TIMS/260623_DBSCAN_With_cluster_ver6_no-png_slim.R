@@ -183,6 +183,16 @@ NORM_MODE <- "log1p"
 # TRUE のとき、補正(Harmony等)を使った場合でも無補正PCAを別途出力し、補正の妥当性を比較可能にする。
 ALWAYS_OUTPUT_UNCORRECTED_PCA <- TRUE
 
+# --- Step3 RPCA(IntegrateLayers) の実行可否 ---
+# RPCA は「技術的バッチ」の補正用で、Harmony/PCA の結果だけで足りる場面も多い。
+# メモリ上限の厳しい環境（mem_limit 12g 等）で Step3 が OOM で落ちる場合は FALSE にすると、
+# Harmony/無補正PCA まで完走して正常終了する。環境変数 RUN_RPCA=0/1 でも上書き可。
+ENABLE_RPCA <- TRUE
+local({
+  .e <- Sys.getenv("RUN_RPCA", unset = "")
+  if (nzchar(.e)) ENABLE_RPCA <<- !(.e %in% c("0", "false", "FALSE", "no", "NO"))
+})
+
 # ============================================================
 # ==== 【2】 解析の前提条件 (Annotation & Statistics) ========
 # ============================================================
@@ -2446,7 +2456,10 @@ if (!step3_done && !.stage_downstream) {
   #   - それ以外（生物学的ROI/群; 既定）→ RPCAをスキップ（生物差を消さない）
   .n_slice         <- length(unique(na.omit(seu_harmony$slice_id)))
   .rpca_section_ok <- (ANNOTATION_ROLE == "section_id") && .n_slice >= 2
-  if (length(seu_list) >= 2 || .rpca_section_ok) {
+  if (!isTRUE(ENABLE_RPCA)) {
+    cat("RPCA skip: ENABLE_RPCA=FALSE (Harmony/無補正PCA の結果で完了します)\n")
+    seu_rpca <- NULL
+  } else if (length(seu_list) >= 2 || .rpca_section_ok) {
     cat("Running RPCA (Seurat v5 IntegrateLayers)...\n")
 
     # ---- v5 ネイティブ統合（IntegrateLayers + RPCAIntegration; 省メモリ）----
@@ -2454,16 +2467,45 @@ if (!step3_done && !.stage_downstream) {
     # 大規模(>~10万px)で OOM する。低次元PCA空間で統合し reduction だけ作る
     # IntegrateLayers に置換。新 reduction 名 "rpca"（下流/診断がそのまま採用）。
     .rpca_batch <- if (length(seu_list) >= 2) "sample" else "slice_id"
-    seu_rpca <- tryCatch(
-      subset(seu_harmony, subset = slice_id %in% unique(na.omit(seu_harmony$slice_id))),
-      error = function(e) seu_harmony)
+
+    # [ver6.x メモリ削減] Step3 に入る前に、直前段階(Harmony/無補正PCAの下流解析)が
+    # 残した巨大な副産物を先に捨てる。RPCA は PCA 空間しか使わないため結果は不変。
+    #   - graphs: FindNeighbors が作る近傍グラフ(セル数^2 相当のスパース)。RPCA では未使用。
+    #   - reductions: RPCA は RunPCA から作り直すため後段でどのみち全除去する。subset(複製)
+    #     する前に落として複製サイズ自体を小さくする（umap/harmony の embedding ぶん）。
+    #   - scale.data: RPCA ブロック内の ScaleData で作り直されるため保持不要(dense で最大)。
+    for (.gn in names(seu_harmony@graphs))     seu_harmony[[.gn]] <- NULL
+    for (.rn in names(seu_harmony@reductions)) seu_harmony[[.rn]] <- NULL
+    suppressWarnings(try(seu_harmony[["Spatial"]]$scale.data <- NULL, silent = TRUE))
+    gc(verbose = FALSE)
+    .mem_note <- function(tag) {
+      # 段階ごとの使用量をログに残す（無言 OOM 時に「どこまで進み、どれだけ使ったか」を追える）。
+      # gc() の第2列が Mb 表示（Ncells/Vcells の2行ぶんを合算して GB に直す）。
+      .gb <- tryCatch(sum(gc(verbose = FALSE)[, 2]) / 1024, error = function(e) NA_real_)
+      cat(sprintf("[mem] %s: R heap approx %.2f GB\n", tag, .gb))
+    }
+    .mem_note("Step3 RPCA 開始前")
+
+    # [ver6.x メモリ削減] 「元(seu_harmony)から部分集合(seu_rpca)を作ってから元を捨てる」
+    # 順序だと両方が同時に載るピークが必ず出る。全セルが対象で内容が変わらないケースでは
+    # 複製を作らず参照を付け替え、複製が要る場合も直後に元参照を外して即回収する。
+    .sl_all  <- unique(na.omit(seu_harmony$slice_id))
+    .need_ss <- any(is.na(seu_harmony$slice_id)) ||
+                !all(as.character(seu_harmony$slice_id) %in% as.character(.sl_all))
+    if (.need_ss) {
+      seu_rpca <- tryCatch(
+        subset(seu_harmony, subset = slice_id %in% .sl_all),
+        error = function(e) seu_harmony)
+      rm(seu_harmony); gc(verbose = FALSE)   # 複製直後に元を解放（二重保持の窓を最小化）
+    } else {
+      seu_rpca <- seu_harmony                # 内容同一 → 複製せず付け替え（copy-on-write）
+      rm(seu_harmony)                        # 参照を1本にしてから以降の破壊的変更を行う
+    }
     DefaultAssay(seu_rpca) <- "Spatial"
     # Step2 由来の reduction(harmony 等)を除去（run_downstream の harmony 優先採用を回避）。
     for (.rn in names(seu_rpca@reductions)) seu_rpca[[.rn]] <- NULL
-    # [ver6.x メモリ削減] seu_rpca 確保後は seu_harmony 不要（最終参照は上の subset）。
-    # split 前に解放して二重保持（harmony + rpca コピー）を解消し、IntegrateLayers の
-    # ピークメモリを下げる（mem_limit コンテナでの OOM 回避）。
-    rm(seu_harmony); gc(verbose = FALSE)
+    gc(verbose = FALSE)
+    .mem_note("Step3 RPCA 入力確定後")
 
     .bt   <- as.character(seu_rpca@meta.data[[.rpca_batch]])
     .keep <- names(which(table(.bt) >= MIN_CELLS_RPCA))
@@ -2478,8 +2520,11 @@ if (!step3_done && !.stage_downstream) {
       seu_rpca[["Spatial"]] <- split(seu_rpca[["Spatial"]], f = seu_rpca@meta.data[[.rpca_batch]])
       gc(verbose = FALSE)  # split 直後の一時メモリを早期解放
 
+      .mem_note("Step3 split 完了・統合開始前")
+
       ok <- FALSE
       for (nf in c(2000L, 1000L, 500L)) {
+        cat(sprintf("  [RPCA] IntegrateLayers 試行: nfeatures=%d, k.weight=%d\n", nf, .kw))
         ok <- tryCatch({
           seu_rpca <- FindVariableFeatures(seu_rpca, nfeatures = nf, verbose = FALSE)
           seu_rpca <- ScaleData(seu_rpca, verbose = FALSE)

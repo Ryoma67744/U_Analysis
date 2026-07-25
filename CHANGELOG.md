@@ -12,6 +12,30 @@
 
 ---
 
+## 2026-07-25_ver45.3
+
+### 修正: 再解析が Step3 RPCA でメモリ枯渇(OOM)により停止する不具合
+
+ver45.2 で FindAllMarkers は完走するようになったが、停止点が **Step3 RPCA(IntegrateLayers)** へ移り、
+`Running RPCA (Seurat v5 IntegrateLayers)...` の直後に無言終了（R エラー無し）して status=error になっていた。
+RPCA は `IntegrateLayers` を tryCatch し失敗時は `!! RPCA(IntegrateLayers) failed:` を出して nfeatures を
+2000→1000→500 と下げて再試行する設計であり、そのメッセージすら出ないのは R がエラーを出す前に
+cgroup OOM kill されたことを意味する。Step3 突入時点で (a) Harmony 側オブジェクト、(b) そこから
+subset した RPCA 用の複製、(c) 直前の無補正PCA下流解析が残した近傍グラフ等の中間、が同時に載っていた。
+
+- **RPCA 前の中間破棄**: 近傍グラフ(graphs)、RPCA で使わない reduction(umap 等)、scale.data を
+  Step3 開始前に破棄。RPCA は PCA 空間のみ使うため結果は不変で、複製前に落とすことで複製サイズ自体も縮む。
+- **二重保持の解消**: 「複製を作ってから元を捨てる」順序をやめ、全セルが対象で内容が変わらない場合は
+  複製せず参照を付け替え、複製が必要な場合も直後に元参照を外して即回収する。
+- **診断性**: Step3 の各段階で R ヒープ使用量を `[mem]` 行として出力し、IntegrateLayers の試行ごとに
+  nfeatures/k.weight をログ表示。無言終了時も「どこまで進み、どれだけ使ったか」を追える。
+- **逃げ道**: `ENABLE_RPCA`（環境変数 `RUN_RPCA=0` で上書き可）を追加。低メモリ環境では RPCA を
+  スキップし Harmony/無補正PCA まで完走して正常終了できる。
+- **環境変数の配線漏れ修正**: `R_MAX_VSIZE_GB` / `R_ANALYSIS_TIMEOUT_SEC` は `docker-compose.yml` の
+  `environment:` に列挙されておらず、`.env` に設定してもコンテナへ渡っていなかった（ヘルプは
+  「`.env` の `R_MAX_VSIZE_GB` を増やす」と案内しているのに無効だった）。`RUN_RPCA` と併せて中継するよう修正。
+- R スクリプトのバージョン番号（ver6 / ver18）は据え置き（挙動修正のみ）。
+
 ## 2026-07-24_ver45.2
 
 ### 修正: 再解析(exclude)の FindAllMarkers でメモリ枯渇(OOM)により解析が停止する不具合
