@@ -43,6 +43,13 @@ services:
       - OPENBLAS_NUM_THREADS=5
       - OMP_NUM_THREADS=5
       - MKL_NUM_THREADS=5
+      # 解析(R)のメモリ/実行時間ガード。.env に書いても environment に列挙しないと
+      # コンテナへ渡らない（compose の .env は ${VAR} 置換専用）ため明示的に中継する。
+      # R_MAX_VSIZE_GB>0 で cgroup OOM kill(無言終了)を R の明示エラーに変えられる。
+      - R_MAX_VSIZE_GB=${R_MAX_VSIZE_GB:-0}
+      - R_ANALYSIS_TIMEOUT_SEC=${R_ANALYSIS_TIMEOUT_SEC:-0}
+      # Step3 RPCA(IntegrateLayers) の実行可否。0 でスキップ（低メモリ環境の逃げ道）。
+      - RUN_RPCA=${RUN_RPCA:-1}
     volumes:
       # 永続化データ (Data/Other/ 配下のアプリ内部データ)
       - msi-sessions:/app/Data/Other/sessions
