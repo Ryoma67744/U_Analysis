@@ -25,6 +25,37 @@ R_ANALYSIS_TIMEOUT_SEC = int(os.environ.get("R_ANALYSIS_TIMEOUT_SEC", 0))
 # 0 / 未設定なら制限なし (Docker mem_limit に委ねる)。
 R_MAX_VSIZE_GB = int(os.environ.get("R_MAX_VSIZE_GB", 0))
 
+# R_MAX_VSIZE_GB がコンテナ上限に対してこの割合を下回ると「低すぎ」と判定して警告する。
+# (mem_limit=12g に対し 8g 設定で解析が Parquet 読込直後に落ちた事故の再発防止)
+_VSIZE_WARN_RATIO = 0.75
+
+
+def _container_memory_limit_gb() -> Optional[float]:
+    """コンテナ(cgroup)の物理メモリ上限を GB で返す。取得できなければ None。
+
+    cgroup v2 は /sys/fs/cgroup/memory.max、v1 は memory/memory.limit_in_bytes。
+    v2 は無制限時に "max" を返し、v1 は極端に大きい値を入れるため、いずれも
+    「上限なし」とみなして None を返す。判定材料が無いときは呼び出し側で
+    警告をスキップさせるため、例外は投げずに None に倒す。
+    """
+    for path in ("/sys/fs/cgroup/memory.max",
+                 "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            raw = Path(path).read_text(encoding="utf-8").strip()
+        except (OSError, ValueError):
+            continue
+        if not raw or raw == "max":
+            continue
+        try:
+            limit = int(raw)
+        except ValueError:
+            continue
+        # v1 の「無制限」は PAGE_SIZE 単位の巨大値。1PB 超は上限なしとみなす。
+        if limit <= 0 or limit >= 1 << 50:
+            continue
+        return limit / (1024 ** 3)
+    return None
+
 # プロセスごとの watchdog timer 管理 (PID → Timer)。check_process_completion で
 # 終了検知時に timer を cancel し、不要な kill を防ぐ。
 _watchdog_timers: dict[int, threading.Timer] = {}
@@ -799,9 +830,28 @@ def start_analysis_process(
     # PR-H3 C2: R 内部メモリ上限 (R >= 3.5)。R_MAX_VSIZE_GB > 0 で有効化。
     # R が指定上限を超えると "Error: vector memory exhausted" で安全に終了し、
     # システム全体の OOM を回避できる。
+    # ver45.4: 適用したこと自体をログ先頭に残す。無言で効くと「なぜ N GB で落ちたか」を
+    # 解析ログだけから追えず、低すぎる設定が原因の停止を誤診しやすいため。
+    log_notes: list[str] = []
     if R_MAX_VSIZE_GB > 0:
         # R_MAX_VSIZE は "<n>Gb" 形式の文字列で受け取る
         child_env["R_MAX_VSIZE"] = f"{R_MAX_VSIZE_GB}Gb"
+        log_notes.append(
+            f"[NOTE] R メモリ上限 R_MAX_VSIZE_GB={R_MAX_VSIZE_GB}GB を適用しました。"
+        )
+        limit_gb = _container_memory_limit_gb()
+        if limit_gb and R_MAX_VSIZE_GB < limit_gb * _VSIZE_WARN_RATIO:
+            logger.warning(
+                "R_MAX_VSIZE_GB=%dGB はコンテナ上限 %.1fGB に対して低すぎます。"
+                "大規模解析が開始直後に 'vector memory limit ... reached' で失敗する恐れがあります。",
+                R_MAX_VSIZE_GB, limit_gb,
+            )
+            log_notes.append(
+                f"[WARN] この値はコンテナのメモリ上限 {limit_gb:.1f}GB に対して低すぎます。"
+                " 解析が 'vector memory limit of N Gb reached' で早期終了する場合は、"
+                " .env の R_MAX_VSIZE_GB を 0 (制限なし) にするか、"
+                f" コンテナ上限の 9 割程度 ({round(limit_gb * 0.9)}) まで引き上げてください。"
+            )
 
     # サブプロセスを起動（stdout/stderrをログファイルにリダイレクト）
     # R スクリプトが App/Script/helpers/rds_io.R を解決できるよう、
@@ -817,6 +867,11 @@ def start_analysis_process(
     log_fh = None
     try:
         log_fh = open(log_file, "w", encoding="utf-8")
+        # R の出力より前にメモ書きを流し込む（Popen へ渡す前なので必ず先頭に来る）。
+        # ユーザーがエラーを見る場所そのものに原因と対処を出すのが狙い。
+        if log_notes:
+            log_fh.write("\n".join(log_notes) + "\n")
+            log_fh.flush()
         cmd = [rscript, "--vanilla", script_path] + [
             str(a) for a in (extra_args or [])
         ]

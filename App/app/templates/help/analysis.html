@@ -1020,9 +1020,12 @@ ZIP名: metaboanalyst_&lt;強度種別&gt;_&lt;単位&gt;[_qea].zip
   </div>
   <div class="col-md-6">
     <div class="help-alert danger">
-      <div class="alert-title">🛑 vector memory exhausted</div>
-      <p class="small mb-1"><strong>原因</strong>: Rのメモリ上限超過</p>
-      <p class="small mb-0"><strong>対処</strong>: <code>.env</code> の <code>R_MAX_VSIZE_GB</code> を増やす or Docker mem_limit を引き上げる</p>
+      <div class="alert-title">🛑 vector memory limit of N Gb reached</div>
+      <p class="small mb-1"><strong>原因</strong>: <code>R_MAX_VSIZE_GB</code> で設定した R のメモリ上限に到達。
+        <strong>解析の開始直後（Parquet 読込付近）で落ちる場合は、この値が低すぎる</strong>可能性が高い</p>
+      <p class="small mb-0"><strong>対処</strong>: まず <code>.env</code> の <code>R_MAX_VSIZE_GB</code> を
+        <code>0</code>（制限なし・Docker mem_limit に委ねる）にする。切り分けのため上限を残すなら
+        mem_limit の 9 割程度（12g なら 11）。それでも不足なら Docker の mem_limit を引き上げる</p>
     </div>
   </div>
   <div class="col-md-6">
