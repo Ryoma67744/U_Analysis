@@ -126,18 +126,35 @@ save_rds_compact <- function(obj, path,
                              keep_graphs = FALSE,
                              keep_counts = TRUE) {
   if (isTRUE(diet)) {
+    # [ver45.8] DietSeurat も候補のひとつなので、前後を残して切り分け可能にする。
+    cat(sprintf("[rds_io] DietSeurat 開始: %s\n", basename(path))); flush(stdout())
     obj <- diet_seurat_safe(obj,
                             keep_scale = keep_scale,
                             keep_graphs = keep_graphs,
                             keep_counts = keep_counts)
+    cat(sprintf("[rds_io] DietSeurat 完了: %s\n", basename(path))); flush(stdout())
   }
   # 書き込みはまず一時ファイルに行い、成功後に rename するアトミック更新
   tmp_path <- paste0(path, ".tmp")
   if (.rds_io_has_qs()) {
     tryCatch({
-      nthreads <- max(1L, parallel::detectCores(logical = FALSE) - 1L)
+      # [ver45.8] スレッド数を環境変数 QS_NTHREADS で上書き可能にする（未設定なら従来どおり）。
+      #   qs のマルチスレッド圧縮はネイティブコードで動くため、ここでのクラッシュは R の
+      #   エラーメッセージを残さずプロセスごと落ちる（＝ログが途切れる）形になる。
+      #   QS_NTHREADS=1 で単スレッドにすると、その切り分けができる。
+      #   また detectCores はコンテナの CPU 制限ではなくホストのコア数を返すことがあり、
+      #   割り当て以上のスレッドを立ててしまう点でも上書き手段があった方がよい。
+      .qn <- suppressWarnings(as.integer(Sys.getenv("QS_NTHREADS", unset = "")))
+      nthreads <- if (!is.na(.qn) && .qn >= 1L) .qn else
+        max(1L, parallel::detectCores(logical = FALSE) - 1L)
+      # 保存の開始/完了を必ず残す。開始だけ出て完了が出なければ保存中に落ちたと分かる。
+      cat(sprintf("[rds_io] 保存開始: %s (qs, nthreads=%d)\n", basename(path), nthreads))
+      flush(stdout())
       qs::qsave(obj, tmp_path, preset = "balanced", nthreads = nthreads)
       file.rename(tmp_path, path)
+      cat(sprintf("[rds_io] 保存完了: %s (%.2f GB)\n", basename(path),
+                  file.size(path) / 1024^3))
+      flush(stdout())
       return(invisible(path))
     }, error = function(e) {
       message("[rds_io] qs::qsave failed, falling back to saveRDS: ",

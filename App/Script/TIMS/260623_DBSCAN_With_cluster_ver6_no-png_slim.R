@@ -2328,14 +2328,27 @@ seu$condition <- seu$slice_id
   }
   
   # [P6] NormalizeData/ScaleData はStep2で再実行されるため、ここではFindVariableFeaturesのみ
+  .mem_note_base("Step1 FindVariableFeatures 前")
   for(i in seq_along(seu_list)) {
     seu_list[[i]] <- FindVariableFeatures(seu_list[[i]], selection.method = "vst", nfeatures = N_VAR_FEATURES)
   }
-  
+  .mem_note_base("Step1 FindVariableFeatures 後")
+
   # ★要望①: Step1 完了時のRDS保存 (slim: DietSeurat + qs 圧縮)
-  save_rds_compact(seu_list, rds_step1_out)
+  # [ver45.8] この RDS は「同一実行内では一度も読まれず、解析完了時に削除される」
+  #   （読むのは RESUME_FROM_RDS で別ディレクトリを指した後続実行のみ / 削除は末尾 cleanup）。
+  #   つまり中断時の再開専用の一時ファイルであり、通常完走時は保存コストが丸ごと無駄になる。
+  #   保存は DietSeurat による複製 + qs 圧縮を伴い、10万px 級では最も重い山のひとつ。
+  #   メモリ逼迫環境では SAVE_STEP1_RDS=0 でスキップできる（最終出力は一切変わらない）。
+  .save_step1 <- Sys.getenv("SAVE_STEP1_RDS", unset = "1")
+  if (.save_step1 %in% c("0", "false", "FALSE", "no", "NO")) {
+    message(">> Step1 RDS の保存をスキップしました (SAVE_STEP1_RDS=0)。",
+            "中断時の再開はできませんが、完走時の出力は同一です。")
+  } else {
+    save_rds_compact(seu_list, rds_step1_out)
+  }
   gc()
-  .mem_note_base("Step1 完了 (counts + data 両層を保持した状態)")
+  .mem_note_base("Step1 完了")
 }
 if (.stage_downstream && !step1_done) {
   # ④: Step1 RDS は①の末尾cleanupで削除済み。raw 再読込を避け seu_list を空にする

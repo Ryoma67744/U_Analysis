@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import threading
 from datetime import datetime
@@ -1000,6 +1001,33 @@ def check_process_completion(
     except Exception:
         pass
 
+    exit_code = process.returncode
+    status = "finished" if exit_code == 0 else "error"
+
+    # [ver45.8] 終了コード/シグナルを必ず記録する。
+    # R がエラーメッセージを出さずにログが途切れるケースでは、この値だけが原因を分ける:
+    #   負値 = シグナルによる強制終了 (-9 SIGKILL: OOM killer や外部 kill /
+    #          -11 SIGSEGV: ネイティブコードのクラッシュ / -15 SIGTERM: 停止要求)
+    #   正値 = R 自身が異常終了 (通常はエラーメッセージがログに残る)
+    # これが無かったため「無言終了 = OOM」と誤って推定していた。
+    if exit_code is not None and exit_code < 0:
+        try:
+            signame = signal.Signals(-exit_code).name
+        except (ValueError, AttributeError):
+            signame = "UNKNOWN"
+        detail = f"シグナル {signame}({-exit_code}) による強制終了"
+    else:
+        detail = f"終了コード {exit_code}"
+    logger.info("R subprocess pid=%s 終了: %s (status=%s)", process.pid, detail, status)
+
+    # 解析ログの末尾にも残す（ユーザーがエラーを見る場所そのものに出す）
+    if log_file_handle and exit_code != 0:
+        try:
+            log_file_handle.write(f"\n[EXIT] R プロセスは {detail} で終了しました。\n")
+            log_file_handle.flush()
+        except Exception as e:
+            logger.debug(f"終了コードのログ追記に失敗（非重大）: {e}")
+
     # プロセス終了 → ログファイルハンドルを閉じる
     if log_file_handle:
         try:
@@ -1007,8 +1035,6 @@ def check_process_completion(
         except Exception as e:
             logger.debug(f"ログハンドルクローズ失敗（非重大）: {e}")
 
-    exit_code = process.returncode
-    status = "finished" if exit_code == 0 else "error"
     Path(status_file).write_text(status, encoding="utf-8")
     return status
 
