@@ -17,6 +17,23 @@
 
 message("=== RUNNING: ClusterFilter_ReUMAP for DBSCAN ver13 ===")
 
+# ---- [ver45.7 計測] プロセス実使用量(RSS)の記録 ----
+# これまでメモリを推測で議論してきたため、実測値をログに残す。
+# RSS はプロセスが実際に確保している物理メモリで、cgroup(mem_limit) が見ているのもこれ。
+# R ヒープ(gc)の値と違い、Arrow のメモリプールや未返却領域も含むため実態に一致する。
+# /proc/self/status を読むだけなので依存追加なし。取得できない環境では静かに諦める。
+.rss_gb <- function() {
+  tryCatch({
+    ln <- grep("^VmRSS:", readLines("/proc/self/status", warn = FALSE), value = TRUE)
+    if (length(ln) == 0) return(NA_real_)
+    as.numeric(sub("^VmRSS:\\s*([0-9]+)\\s*kB.*$", "\\1", ln[1])) / 1024^2
+  }, error = function(e) NA_real_)
+}
+.mem_note_orch <- function(tag) {
+  cat(sprintf("[mem/orch] %s: RSS %.2f GB\n", tag, .rss_gb()))
+  flush(stdout())
+}
+
 # ---- 共通 RDS I/O ヘルパーの読み込み (slim RDS / 旧 RDS の両対応) ----
 local({
   helper_path <- NULL
@@ -686,8 +703,13 @@ patch_v13_step2_pipeline <- function(code_vec) {
         '    }',
         '    # 既存 scale.data のfeature不整合警告を抑えるため、scale.data をクリア',
         '    try({ Seurat::DefaultAssay(s) <- Seurat::DefaultAssay(seu_merged); s[[Seurat::DefaultAssay(s)]]@scale.data <- matrix(nrow=0, ncol=0) }, silent = TRUE)',
+        '    # [ver45.7 計測] 今回の停止点。ScaleData は密行列(hvf x cells x 8byte)を作るため',
+        '    #   ここが全工程で最も急激にメモリが増える。前後を実測する。',
+        '    if (exists(".mem_note_base")) .mem_note_base(sprintf("Step2 ScaleData 前 (hvf=%d, cells=%d)", n_feat, n_cells))',
         '    s <- ScaleData(s, features = hvf)',
+        '    if (exists(".mem_note_base")) .mem_note_base("Step2 ScaleData 後")',
         '    s <- RunPCA(s, npcs = npcs_use, features = hvf)',
+        '    if (exists(".mem_note_base")) .mem_note_base("Step2 RunPCA 後")',
         '',
         '    # 2) dims を「実際に存在する次元数」で丸める（UMAP/Neighborsの範囲外エラー回避）',
         '    dims_use <- 1:min(cfg$umap_dims, npcs_use)',
@@ -1091,7 +1113,9 @@ apply_reumap_replace <- function(base_seu, rerun_seu,
 RDS_RESOLVED <- resolve_rds_path(RDS_PATH, RDS_RUN_DIR, CLUSTER_SOURCE)
 message(">> Loading Seurat RDS: ", RDS_RESOLVED)
 .stopif(file.exists(RDS_RESOLVED), paste0("RDSが見つかりません: ", RDS_RESOLVED))
+.mem_note_orch("起動直後")
 rds_obj <- load_rds_compact(RDS_RESOLVED)
+.mem_note_orch("元 RDS 読み込み後")
 
 # Step2/Step3 は list(obj=..., reduction=...) の形式になっている場合がある
 seu <- rds_obj
@@ -1213,6 +1237,7 @@ for (fp in ORIGINAL_INPUT_PATHS) {
 message("=== Export finished ===")
 message("Exported files:")
 for (x in exported) message("  - ", x)
+.mem_note_orch("フィルタ Parquet 書き出し後（Arrow プールの残留を含む）")
 
 # ------------------------------------------------------------
 # (OPTION) ver13 をコピーして設定だけ差し替えて自動実行
@@ -1249,22 +1274,21 @@ if (isTRUE(RUN_V13_AFTER_EXPORT)) {
   } else {
     rm(seu, rds_obj)            # 両参照を外さないと大行列が解放されない（seu<-rds_obj で共有）
     invisible(gc(verbose = FALSE))
+    # gc() 後に RSS が下がらない場合、解放領域が OS へ返らず常駐している（＝解析側の
+    # 使える枠がその分減る）。ここが下がるかどうかが対策方針を分ける決定的な指標。
+    .mem_note_orch("元オブジェクト解放 + gc 後")
   }
 
-  # [ver45.5 メモリ根本対策] 再解析を source() で同一プロセス実行すると、オーケストレータが
-  # 抱えている中間データの上に本解析のピーク（PCA/Harmony/UMAP/FindAllMarkers/RPCA）が
-  # そのまま積み上がる。子プロセスで起動すれば終了時に OS がメモリを全回収するため、
-  # この積み上がりが構造的に起こらない。生成コピーは設定を焼き込んだスタンドアロン版
-  # （初回解析と同じ形）なので単独実行できる。標準出力は親＝解析ログへそのまま連結される。
-  .rscript <- file.path(R.home("bin"), "Rscript")
-  if (!file.exists(.rscript)) .rscript <- "Rscript"
-  flush(stdout())   # 親の出力を先に流し切り、子の出力とログ上で前後しないようにする
-  .rc <- system2(.rscript, args = c("--vanilla", shQuote(v13_copy_path)),
-                 stdout = "", stderr = "")
-  if (!identical(as.integer(.rc), 0L)) {
-    stop(sprintf("再解析(ver13 コピー)が異常終了しました (exit=%s): %s",
-                 as.character(.rc), v13_copy_path), call. = FALSE)
-  }
+  # [ver45.7] ver45.5 で子プロセス起動(system2)に変えたが、実測で退行が確認されたため
+  # source() による同一プロセス実行へ戻す。
+  #   子プロセス方式: 親は system2 でブロックしたまま常駐し、子は綺麗なヒープを得る代わりに
+  #     「親の解放済み領域を再利用できない」。ピークは 親 + 子 になる。
+  #   source() 方式  : 1 プロセスなので、オーケストレータが解放したヒープを解析側が再利用でき、
+  #     ピークは max(親, 子) で済む。
+  # 実測: 子プロセス方式で 127,901 spot が Step2 ScaleData で OOM。source() 方式では
+  # それより多い 139,682 spot が Step3 RPCA まで到達していた。よって source() が有利。
+  .mem_note_orch("ver13 コピー実行直前（この値が解析側のベースに積み上がる）")
+  source(v13_copy_path)
 
   message("=== ver13 re-run finished ===")
 }

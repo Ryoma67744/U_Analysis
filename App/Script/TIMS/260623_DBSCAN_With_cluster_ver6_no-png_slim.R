@@ -74,6 +74,22 @@ RPCA_FGLOBALS_MAXSIZE <- 64 * 1024^3  # 64GB（>26.25GiB の globals を通す�
 
 `%||%` <- function(a,b) if (!is.null(a)) a else b
 
+# ---- [ver45.7 計測] プロセス実使用量(RSS)の記録 ----
+# これまでメモリを推測で議論してきたため、実測値をログに残す。RSS はプロセスが実際に確保して
+# いる物理メモリで、cgroup(mem_limit) が見ているのもこれ。R ヒープ(gc)の値と違い、未返却領域や
+# Arrow のプールも含むため実態に一致する。/proc/self/status を読むだけで依存追加なし。
+.rss_gb <- function() {
+  tryCatch({
+    ln <- grep("^VmRSS:", readLines("/proc/self/status", warn = FALSE), value = TRUE)
+    if (length(ln) == 0) return(NA_real_)
+    as.numeric(sub("^VmRSS:\\s*([0-9]+)\\s*kB.*$", "\\1", ln[1])) / 1024^2
+  }, error = function(e) NA_real_)
+}
+.mem_note_base <- function(tag) {
+  cat(sprintf("[mem] %s: RSS %.2f GB\n", tag, .rss_gb()))
+  flush(stdout())
+}
+
 # ---- 共通 RDS I/O ヘルパーの読み込み ----
 # scale.data を落とした DietSeurat + qs 圧縮で Step1/2/3 RDS を軽量化する。
 # 旧形式 (.rds = saveRDS 出力) もマジックバイト判定で透過的に読める。
@@ -881,6 +897,20 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
     }
     count_matrix <- if (length(blocks) == 1L) blocks[[1L]] else do.call(rbind, blocks)
     rm(blocks); invisible(gc(verbose = FALSE))
+
+    # ---- [ver45.7 計測] 実際の疎性を出す ----
+    # MSI 強度はゼロが少なく、dgCMatrix は 12 byte/非ゼロ要素（密は 8 byte/要素）なので、
+    # 密度が 2/3 を超えると「スパース化」の方が密より重い。これまで疎性を測っておらず
+    # スパース保持が得か損か判断できていなかったため、実測値をログに残す。
+    .nz <- tryCatch(Matrix::nnzero(count_matrix), error = function(e) NA_real_)
+    if (is.finite(.nz)) {
+      .dens <- .nz / (as.numeric(nrow(count_matrix)) * ncol(count_matrix))
+      .sp_gb <- .nz * 12 / 1024^3
+      cat(sprintf("  [sparsity] 非ゼロ %.0f (密度 %.1f%%) / スパース保持 %.2f GB vs 密 %.2f GB%s\n",
+                  .nz, .dens * 100, .sp_gb, .dense_gb,
+                  if (.sp_gb > .dense_gb) "  ← 密の方が小さい" else ""))
+    }
+    .mem_note_base("取り込み完了")
 
     # Align dimnames
     if (nrow(count_matrix) != length(metabolite_names)) {
@@ -2305,6 +2335,7 @@ seu$condition <- seu$slice_id
   # ★要望①: Step1 完了時のRDS保存 (slim: DietSeurat + qs 圧縮)
   save_rds_compact(seu_list, rds_step1_out)
   gc()
+  .mem_note_base("Step1 完了 (counts + data 両層を保持した状態)")
 }
 if (.stage_downstream && !step1_done) {
   # ④: Step1 RDS は①の末尾cleanupで削除済み。raw 再読込を避け seu_list を空にする
@@ -2522,12 +2553,9 @@ if (!step3_done && !.stage_downstream) {
     for (.rn in names(seu_harmony@reductions)) seu_harmony[[.rn]] <- NULL
     suppressWarnings(try(seu_harmony[["Spatial"]]$scale.data <- NULL, silent = TRUE))
     gc(verbose = FALSE)
-    .mem_note <- function(tag) {
-      # 段階ごとの使用量をログに残す（無言 OOM 時に「どこまで進み、どれだけ使ったか」を追える）。
-      # gc() の第2列が Mb 表示（Ncells/Vcells の2行ぶんを合算して GB に直す）。
-      .gb <- tryCatch(sum(gc(verbose = FALSE)[, 2]) / 1024, error = function(e) NA_real_)
-      cat(sprintf("[mem] %s: R heap approx %.2f GB\n", tag, .gb))
-    }
+    # [ver45.7] gc() の値は R ヒープしか見ておらず、未返却領域や Arrow プールを含む実態と
+    # 乖離する。cgroup が見ているのは RSS なので、そちらに統一する。
+    .mem_note <- .mem_note_base
     .mem_note("Step3 RPCA 開始前")
 
     # [ver6.x メモリ削減] 「元(seu_harmony)から部分集合(seu_rpca)を作ってから元を捨てる」
