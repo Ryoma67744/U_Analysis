@@ -180,10 +180,8 @@ cat("Target parquet:", target, "\n")
 
 new_reader <- load_new_reader(base_script)
 
-cat("--- 旧実装で読み込み ---\n")
+cat("--- 旧実装で読み込み（基準） ---\n")
 old <- read_parquet_legacy(target, sample_prefix = "Sample")
-cat("--- 新実装で読み込み ---\n")
-new <- new_reader(target, sample_prefix = "Sample")
 
 ok <- TRUE
 chk <- function(label, cond, extra = "") {
@@ -192,26 +190,48 @@ chk <- function(label, cond, extra = "") {
   if (!isTRUE(cond)) ok <<- FALSE
 }
 
-cat("--- 比較 ---\n")
-chk("count_matrix の次元", identical(dim(old$count_matrix), dim(new$count_matrix)),
-    sprintf("old=%s new=%s", paste(dim(old$count_matrix), collapse = "x"),
-            paste(dim(new$count_matrix), collapse = "x")))
-chk("rownames (特徴量名)", identical(rownames(old$count_matrix), rownames(new$count_matrix)))
-chk("colnames (spot ID)", identical(colnames(old$count_matrix), colnames(new$count_matrix)))
-chk("クラス", identical(class(old$count_matrix), class(new$count_matrix)),
-    sprintf("old=%s new=%s", class(old$count_matrix)[1], class(new$count_matrix)[1]))
+# 1 回分の比較。新実装を指定のブロック予算で走らせ、旧実装の結果と突き合わせる。
+compare_pass <- function(pass_label, block_mb) {
+  cat(sprintf("\n=== %s (INGEST_BLOCK_MB=%s) ===\n", pass_label,
+              if (is.null(block_mb)) "既定(256)" else as.character(block_mb)))
+  if (is.null(block_mb)) {
+    Sys.unsetenv("INGEST_BLOCK_MB")
+  } else {
+    Sys.setenv(INGEST_BLOCK_MB = as.character(block_mb))
+  }
+  new <- new_reader(target, sample_prefix = "Sample")
+  Sys.unsetenv("INGEST_BLOCK_MB")
 
-if (identical(dim(old$count_matrix), dim(new$count_matrix))) {
-  d <- max(abs(old$count_matrix - new$count_matrix))
-  chk("全要素の一致 (最大絶対差 0)", isTRUE(d == 0), sprintf("max|diff|=%g", d))
-  chk("非ゼロ要素数", identical(Matrix::nnzero(old$count_matrix),
-                                Matrix::nnzero(new$count_matrix)))
+  chk("count_matrix の次元", identical(dim(old$count_matrix), dim(new$count_matrix)),
+      sprintf("old=%s new=%s", paste(dim(old$count_matrix), collapse = "x"),
+              paste(dim(new$count_matrix), collapse = "x")))
+  chk("rownames (特徴量名)", identical(rownames(old$count_matrix), rownames(new$count_matrix)))
+  chk("colnames (spot ID)", identical(colnames(old$count_matrix), colnames(new$count_matrix)))
+  chk("クラス", identical(class(old$count_matrix), class(new$count_matrix)),
+      sprintf("old=%s new=%s", class(old$count_matrix)[1], class(new$count_matrix)[1]))
+  if (identical(dim(old$count_matrix), dim(new$count_matrix))) {
+    d <- max(abs(old$count_matrix - new$count_matrix))
+    chk("全要素の一致 (最大絶対差 0)", isTRUE(d == 0), sprintf("max|diff|=%g", d))
+    chk("非ゼロ要素数", identical(Matrix::nnzero(old$count_matrix),
+                                  Matrix::nnzero(new$count_matrix)))
+  }
+  chk("coordinates 完全一致", isTRUE(all.equal(old$coordinates, new$coordinates)))
+  invisible(NULL)
 }
-chk("coordinates 完全一致", isTRUE(all.equal(old$coordinates, new$coordinates)))
+
+# パス 1: 既定のブロック予算（小さなデータでは単一ブロックになる）
+compare_pass("パス1: 既定ブロック幅", NULL)
+
+# パス 2: ブロック予算を極小にして「複数ブロックの連結」経路を強制的に通す。
+#   ここを通さないと do.call(rbind, blocks) が未検証のまま本番だけで走ることになり、
+#   特徴量の順序ずれ（エラーにならず結果だけ間違う）を見逃す。
+compare_pass("パス2: 複数ブロック強制", 0.05)
 
 cat("\n")
 if (ok) {
-  cat("RESULT: PASS - 新旧の出力は一致しています。\n")
+  cat("RESULT: PASS - 単一ブロック・複数ブロックの両経路で新旧の出力が一致しています。\n")
+  cat("  ※ パス2 の [stream] 行が 2 ブロック以上になっていることを確認してください。\n")
+  cat("     1 ブロックのままなら連結経路は未検証です。\n")
   quit(status = 0)
 } else {
   cat("RESULT: FAIL - 出力に差異があります。導入しないでください。\n")

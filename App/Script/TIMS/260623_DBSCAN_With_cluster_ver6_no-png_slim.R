@@ -849,7 +849,12 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
 
     # ---- 強度行列: m/z 列をブロック単位で読み、逐次スパース化して積む ----
     # ブロック幅は「1 ブロックの密サイズが .blk_budget を超えない」よう行数から決める。
-    .blk_budget <- 256 * 1024^2   # 256MB/ブロック
+    # 既定 256MB/ブロック。環境変数 INGEST_BLOCK_MB で上書き可（未設定なら既定＝挙動不変）。
+    # 等価性テストが小さなデータでも複数ブロック経路を通せるようにするためのフック兼、
+    # メモリ逼迫時の調整つまみ。
+    .blk_mb <- suppressWarnings(as.numeric(Sys.getenv("INGEST_BLOCK_MB", unset = "")))
+    if (!is.finite(.blk_mb) || .blk_mb <= 0) .blk_mb <- 256
+    .blk_budget <- .blk_mb * 1024^2
     .blk_ncol <- max(1L, min(.n_feat,
                              as.integer(floor(.blk_budget / max(1, n_rows_total * 8)))))
     .starts <- seq.int(1L, .n_feat, by = .blk_ncol)
