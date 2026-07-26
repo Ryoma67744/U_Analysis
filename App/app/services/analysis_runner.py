@@ -63,11 +63,17 @@ _watchdog_timers: dict[int, threading.Timer] = {}
 _watchdog_lock = threading.Lock()
 
 
-def _schedule_watchdog(process: subprocess.Popen) -> None:
+def _schedule_watchdog(process: subprocess.Popen, log_file_handle=None) -> None:
     """R subprocess に対する wallclock timeout 監視を開始。
 
     R_ANALYSIS_TIMEOUT_SEC > 0 の場合のみ動作。N 秒経過してもプロセスが
     生きていれば SIGTERM → 5 秒後でも生きていれば SIGKILL を送る。
+
+    ver45.8: kill の理由を解析ログにも書く。従来はアプリログ
+    (Data/Other/logs/msi_app.log) にしか残らず、ユーザーが見る解析ログでは
+    「ログが途中で途切れるだけ」に見えた。これが停止原因を長期にわたり
+    メモリ不足と誤診する直接の原因になったため、ユーザーがエラーを見る場所に
+    理由と対処を明記する。
     """
     if R_ANALYSIS_TIMEOUT_SEC <= 0:
         return
@@ -79,6 +85,19 @@ def _schedule_watchdog(process: subprocess.Popen) -> None:
                     "R subprocess pid=%s が R_ANALYSIS_TIMEOUT_SEC=%ds を超過、SIGTERM 送信",
                     process.pid, R_ANALYSIS_TIMEOUT_SEC,
                 )
+                if log_file_handle:
+                    try:
+                        log_file_handle.write(
+                            f"\n[TIMEOUT] 実行時間が R_ANALYSIS_TIMEOUT_SEC="
+                            f"{R_ANALYSIS_TIMEOUT_SEC}秒 "
+                            f"({R_ANALYSIS_TIMEOUT_SEC / 60:.0f}分) を超過したため強制終了します。\n"
+                            f"          解析自体は正常に進行していた可能性があります。"
+                            f" .env の R_ANALYSIS_TIMEOUT_SEC を延長するか、"
+                            f"0 を設定して無効化してください。\n"
+                        )
+                        log_file_handle.flush()
+                    except Exception as e:
+                        logger.debug(f"タイムアウト理由のログ追記に失敗（非重大）: {e}")
                 process.terminate()
                 # 5 秒待って強制 kill
                 def _force_kill():
@@ -834,6 +853,17 @@ def start_analysis_process(
     # ver45.4: 適用したこと自体をログ先頭に残す。無言で効くと「なぜ N GB で落ちたか」を
     # 解析ログだけから追えず、低すぎる設定が原因の停止を誤診しやすいため。
     log_notes: list[str] = []
+    # ver45.8: 有効な実行制限は「すべて」開始時に明示する。
+    # R_ANALYSIS_TIMEOUT_SEC はこれまで無言で適用されており、超過して kill されても
+    # 解析ログにはログが途切れた形跡しか残らなかった。これが停止原因を長期にわたり
+    # メモリ不足と誤診する原因になった。
+    if R_ANALYSIS_TIMEOUT_SEC > 0:
+        log_notes.append(
+            f"[NOTE] 実行時間の上限 R_ANALYSIS_TIMEOUT_SEC={R_ANALYSIS_TIMEOUT_SEC}秒"
+            f" ({R_ANALYSIS_TIMEOUT_SEC / 60:.0f}分) が有効です。"
+            f" 超過すると解析途中でも強制終了されます"
+            f"（.env で延長、0 で無効化）。"
+        )
     if R_MAX_VSIZE_GB > 0:
         # R_MAX_VSIZE は "<n>Gb" 形式の文字列で受け取る
         child_env["R_MAX_VSIZE"] = f"{R_MAX_VSIZE_GB}Gb"
@@ -886,7 +916,8 @@ def start_analysis_process(
         )
         pid_file.write_text(str(process.pid), encoding="utf-8")
         # PR-H3 C2: wallclock timeout 監視を開始
-        _schedule_watchdog(process)
+        # ver45.8: kill 理由を解析ログにも書けるようログハンドルを渡す
+        _schedule_watchdog(process, log_fh)
     except Exception as e:
         if log_fh:
             log_fh.close()
