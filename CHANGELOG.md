@@ -12,6 +12,50 @@
 
 ---
 
+## 2026-07-26_ver45.9
+
+### 修正: 実測に基づくメモリ削減（scale.data の早期破棄・DEG 並列数の動的決定）
+
+ver45.8 のタイムアウト修正により解析は **2.4 時間**走り、Step1 / Step2(Harmony 8反復収束) / UMAP と
+**harmony ダウンストリーム（24 クラスタのマーカー検出・注釈・ヒートマップ・ボルケーノ・MSI画像・
+TIC重ね合わせ）を完走**した。続く pca_uncorrected の `FindAllMarkers` で停止し、
+ver45.8 で追加した記録が原因を明示した:
+```
+[EXIT] R プロセスは シグナル SIGKILL(9) による強制終了 で終了しました。
+```
+タイムアウトは無効なので SIGTERM ではなく **SIGKILL = OOM**。今回は推測ではなく計測が裏づけている。
+
+**実測されたメモリ推移**（138,142 spot × 2000 features、密度 36.5%、スパース 1.13 GB）:
+
+| 段階 | RSS | 増分 |
+|---|---|---|
+| 解析のベース（orch 解放後） | 3.05 GB | |
+| 取り込み完了 | 3.54 GB | +0.49（ストリーミングが有効） |
+| Step1 完了 | 4.29 GB | |
+| Step2 ScaleData 前 | 7.28 GB | +2.99 |
+| **Step2 ScaleData 後** | **11.96 GB** | **+4.68 ← 上限 12.0GB に肉薄** |
+| Step2 RunPCA 後 | 11.44 GB | |
+| pca_uncorrected の FindAllMarkers | — | **SIGKILL** |
+
+- **`scale.data` を `RunPCA` 直後に破棄**（ver6 の `run_pipeline` と ver18 のパッチ版の両方）:
+  `ScaleData` の +4.68 GB は PCA 計算後は不要。以後 11.4 GB 前後で全工程（Harmony/UMAP/
+  downstream ×2/RPCA）が走っていたため、ここで破棄すると**以降すべてが軽くなる**。
+  安全な根拠はコードで確認済み — downstream のヒートマップは
+  `ScaleData(subset(obj, cells=cells_sub), features=top_genes, ...)` で 1000 セル×上位遺伝子に
+  限定して作り直しており（「slim RDS/diet で空の scale.data を補完」というコメントのとおり
+  **空である前提の設計**）、Step2 の RDS 保存も `keep_scale=FALSE` で元々落としている。
+  `RunHarmony` は PCA 埋め込みに対して動く。RPCA ブロックでも既に破棄済みで、それを前倒しするだけ。
+- **`FindAllMarkers` の並列ワーカー数を実測メモリから決定**: 従来は空きメモリを一切見ずに
+  常に 4 ワーカーを起こしていた。`multisession` は各ワーカーへオブジェクトを複製するため、
+  残 0.6 GB で 4 ワーカーを起こせば確実に落ちる（これが死因）。cgroup の
+  `memory.max − memory.current` とオブジェクトサイズから安全な数を算出し、乏しければ
+  `sequential`（並列化しない）に落とす。決定理由と採用値を `[deg]` 行に記録する。
+  環境変数 `DEG_WORKERS` で明示指定も可能（0/1 で逐次）。
+- **downstream に計測を追加**: 開始時・`FindAllMarkers` 前後・終了時の RSS を記録し、
+  harmony と pca_uncorrected の間でどれだけ解放されたかを追えるようにした。
+- R スクリプトのバージョン番号（ver6 / ver18）は据え置き。**解析結果（クラスタ・reduction・
+  マーカー）は不変**で、メモリ特性のみ改善。
+
 ## 2026-07-26_ver45.8
 
 ### 修正: 停止の真因は 20 分タイムアウトだった。無言 kill の可視化と誤診の是正

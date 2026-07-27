@@ -90,6 +90,59 @@ RPCA_FGLOBALS_MAXSIZE <- 64 * 1024^3  # 64GB（>26.25GiB の globals を通す�
   flush(stdout())
 }
 
+# ---- [ver45.9] コンテナの残メモリ ----
+# cgroup v2: memory.max / memory.current、v1: memory.limit_in_bytes / usage_in_bytes。
+# 取得できなければ NA を返し、呼び出し側は保守的な既定にフォールバックする。
+.cgroup_avail_gb <- function() {
+  rd <- function(p) tryCatch({
+    v <- trimws(readLines(p, warn = FALSE)[1])
+    if (!nzchar(v) || v == "max") return(NA_real_)
+    n <- suppressWarnings(as.numeric(v))
+    if (!is.finite(n) || n <= 0 || n >= 2^50) NA_real_ else n
+  }, error = function(e) NA_real_)
+  lim <- rd("/sys/fs/cgroup/memory.max")
+  use <- rd("/sys/fs/cgroup/memory.current")
+  if (is.na(lim)) {
+    lim <- rd("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+    use <- rd("/sys/fs/cgroup/memory/memory.usage_in_bytes")
+  }
+  if (is.na(lim) || is.na(use)) return(NA_real_)
+  max(0, (lim - use)) / 1024^3
+}
+
+# ---- [ver45.9] FindAllMarkers のワーカー数を実測メモリから決める ----
+# multisession は各ワーカーへ解析オブジェクトを複製する。残メモリを見ずに
+# 固定 4 ワーカーを起こしていたため、11.4GB 使用中に OOM(SIGKILL) していた。
+# 環境変数 DEG_WORKERS で明示指定も可能（0 または 1 で並列化しない）。
+.decide_deg_workers <- function(obj) {
+  .env <- suppressWarnings(as.integer(Sys.getenv("DEG_WORKERS", unset = "")))
+  .cpu_max <- min(4L, max(1L, parallel::detectCores(logical = FALSE) - 1L))
+  if (!is.na(.env) && .env >= 0L) {
+    w <- max(1L, .env)
+    cat(sprintf("[deg] ワーカー数=%d (DEG_WORKERS=%d による明示指定)\n", w, .env))
+    flush(stdout())
+    return(w)
+  }
+  avail <- .cgroup_avail_gb()
+  obj_gb <- tryCatch(as.numeric(utils::object.size(obj)) / 1024^3,
+                     error = function(e) NA_real_)
+  if (is.na(avail)) {
+    cat(sprintf("[deg] ワーカー数=%d (コンテナ残量を取得できず既定値)\n", .cpu_max))
+    flush(stdout())
+    return(.cpu_max)
+  }
+  # ワーカー1つあたりオブジェクト複製ぶんを要すると見積もる。
+  # 安全率として残量の 70% までしか使わない。
+  per <- if (is.finite(obj_gb) && obj_gb > 0.05) obj_gb else 1.0
+  w <- as.integer(floor((avail * 0.7) / per))
+  w <- max(1L, min(.cpu_max, w))
+  cat(sprintf("[deg] ワーカー数=%d (残メモリ %.2f GB / オブジェクト %.2f GB / 上限 %d)%s\n",
+              w, avail, per, .cpu_max,
+              if (w <= 1L) "  ← 並列化せず逐次実行します" else ""))
+  flush(stdout())
+  w
+}
+
 # ---- 共通 RDS I/O ヘルパーの読み込み ----
 # scale.data を落とした DietSeurat + qs 圧縮で Step1/2/3 RDS を軽量化する。
 # 旧形式 (.rds = saveRDS 出力) もマジックバイト判定で透過的に読める。
@@ -1630,6 +1683,7 @@ run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_onl
     return(invisible(NULL))
   }
   cat(paste0("\n>>> Starting Downstream Analysis for: ", prefix, " <<<\n"))
+  .mem_note_base(paste0("downstream 開始 (", prefix, ")"))
   
   # サブフォルダに出力 (上書き防止)
   sub_od <- file.path(outdir, prefix)
@@ -1792,10 +1846,22 @@ if (exists("RESUME_FROM_RDS", envir = .GlobalEnv) && isTRUE(get("RESUME_FROM_RDS
 
 if (is.null(deg)) {
   # ---- 並列化開始: FindAllMarkers用 ----
-  plan(multisession, workers = min(4, max(1, parallel::detectCores(logical = FALSE) - 1)))
+  # [ver45.9] 従来は空きメモリを一切見ずに常に 4 ワーカーを起こしていた。
+  #   multisession は各ワーカーへオブジェクトを複製するため、残メモリが乏しい状態で
+  #   起動すると即座に上限を超える。実測では 11.4GB 使用中に 4 ワーカーを起こして
+  #   SIGKILL(OOM) された。ここでは cgroup の残量から安全なワーカー数を決める。
+  .deg_workers <- .decide_deg_workers(obj)
+  if (.deg_workers <= 1L) {
+    plan(sequential)
+  } else {
+    plan(multisession, workers = .deg_workers)
+  }
+  .mem_note_base("FindAllMarkers 前")
   deg <- FindAllMarkers(obj, only.pos=FALSE, min.pct=DEG_MIN_PCT_VAL, logfc.threshold=DEG_LOGFC_TH_VAL, test.use="wilcox")
   # ---- 並列化終了: メモリ解放 ----
   plan(sequential)
+  invisible(gc(verbose = FALSE))
+  .mem_note_base("FindAllMarkers 後")
   }
   # BH/FDR補正に置換（Seuratデフォルトの Bonferroni は探索的解析に保守的すぎるため）
   deg$p_val_adj <- p.adjust(deg$p_val, method = "BH")
@@ -2211,6 +2277,10 @@ if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
   }
 
 cat("  Done.\n")
+# [ver45.9] downstream 終了時の残量。harmony と pca_uncorrected の間でどれだけ解放
+#   されたかが分かり、次の downstream / RPCA に入れる余裕を判断できる。
+invisible(gc(verbose = FALSE))
+.mem_note_base(paste0("downstream 終了 (", prefix, ")"))
 }
 
 # ============================================================
@@ -2433,6 +2503,14 @@ if (!step2_done && !.stage_downstream) {
     s <- FindVariableFeatures(s, nfeatures = cfg$n_var_features)
     s <- ScaleData(s)
     s <- RunPCA(s, npcs = cfg$max_pcs)
+    # [ver45.9] scale.data は PCA 計算後は不要。実測(再解析)では ScaleData が +4.68GB を要し、
+    #   以後 11.4GB 前後で全工程が走って FindAllMarkers の並列化時に OOM した。ここで破棄する。
+    #   安全な根拠: downstream のヒートマップは subset に対し ScaleData を作り直す(空の前提の
+    #   設計)、Step2 の RDS 保存は keep_scale=FALSE で元々落としている、RunHarmony は PCA
+    #   埋め込みに対して動く、RPCA ブロックでも既に破棄済み(前倒しするだけ)。
+    suppressWarnings(try(s[[DefaultAssay(s)]]$scale.data <- NULL, silent = TRUE))
+    invisible(gc(verbose = FALSE))
+    .mem_note_base("Step2 scale.data 破棄後")
     if(use_harmony) {
       s <- RunHarmony(s, group.by.vars=group_var)
     }
