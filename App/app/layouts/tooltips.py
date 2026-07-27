@@ -107,6 +107,14 @@ def get_settings_tooltips():
             target="resume_rds_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
+            "前回の再解析が途中で止まった場合に、Step1/Step2 の中間結果を読み込んで"
+            "その先だけを実行します。指定するのは前回実行の RDS_Files フォルダです。\n"
+            "上の「RDS指定」とは別の設定です："
+            "「RDS指定」はどのクラスタリングの番号で除外するかを選ぶ欄で、再開地点ではありません。\n"
+            "主に動作検証用です。通常の解析では OFF のままにしてください。",
+            target="resume_reanalysis_help_badge", **_TOOLTIP_PROPS,
+        ),
+        dbc.Tooltip(
             "出力フォルダ名（タイムスタンプ付き）。\n"
             "出力先ディレクトリの下にこの名前のサブフォルダが作成されます。",
             target="output_subfolder_help_badge", **_TOOLTIP_PROPS,

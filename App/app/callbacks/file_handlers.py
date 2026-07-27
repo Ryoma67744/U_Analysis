@@ -144,6 +144,20 @@ def toggle_resume_panel(resume):
 
 
 # ---------------------------------------------------------------------------
+# 再解析の途中再開パネル表示 (ver46.0)
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("resume_reanalysis_panel", "style"),
+    Input("resume_reanalysis", "value"),
+)
+def toggle_resume_reanalysis_panel(resume):
+    if resume:
+        return {"marginTop": "10px"}
+    return {"display": "none"}
+
+
+# ---------------------------------------------------------------------------
 # データフォルダ → サンプル一覧
 # ---------------------------------------------------------------------------
 
@@ -635,6 +649,7 @@ _BROWSE_BUTTONS = {
     "browse_annotation": ("file", "annotation_path"),
     "browse_rds_folder": ("folder", "rds_folder"),
     "browse_rds_folder_reanalysis": ("folder", "rds_folder_reanalysis"),
+    "browse_resume_reanalysis_dir": ("folder", "resume_reanalysis_dir"),
     "browse_reanalysis_folder": ("folder", "reanalysis_data_folder"),
     "browse_reanalysis_annotation": ("file", "reanalysis_annotation_path"),
     "browse_output": ("folder", "output_dir"),
@@ -923,6 +938,7 @@ def handle_fb_shortcut(clicks, state):
 _PATH_INPUT_IDS = [
     "data_folder", "rds_folder", "annotation_path", "output_dir",
     "reanalysis_data_folder", "rds_folder_reanalysis", "reanalysis_annotation_path",
+    "resume_reanalysis_dir",
     "desi_v8_script_path", "desi_cluster_filter_script_path",
     "tims_v8_script_path", "tims_cluster_filter_script_path",
     "default_desi_data_folder", "default_annotation_file", "default_desi_output_dir",

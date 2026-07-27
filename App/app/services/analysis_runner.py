@@ -595,6 +595,17 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
             lines, "CLUSTER_SOURCE", _r_str(params["cluster_source"])
         )
 
+    # --- ver46.0: 途中から再開（Step1/Step2 の中間結果を再利用） ---
+    # 上の RDS_RUN_DIR は「どのクラスタリングの番号で除外するか」の参照元であり、
+    # こちらは「どこまで計算済みの結果を再利用するか」。別の設定なので混同しないこと。
+    # 再解析は完走に 2 時間超かかるため、Step3(RPCA) だけを検証したいときに使う。
+    # 未指定なら V13_RESUME_FROM_RDS は FALSE のまま＝従来どおり最初から実行される。
+    if params.get("resume_reanalysis") and params.get("resume_reanalysis_dir"):
+        lines = _replace_assign(lines, "V13_RESUME_FROM_RDS", "TRUE")
+        lines = _replace_assign(
+            lines, "V13_RESUME_DIR_PATH", _r_str(params["resume_reanalysis_dir"])
+        )
+
     # --- 再解析用アノテーションファイルの注入 ---
     if params.get("reanalysis_annotation_path"):
         ann_path = params["reanalysis_annotation_path"]
