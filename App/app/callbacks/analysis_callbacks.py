@@ -231,6 +231,9 @@ def close_overwrite_modal(cancel_clicks, confirm_clicks):
      State("default_annotation_csv", "value"),
      State("rds_folder_reanalysis", "value"),
      State("cluster_source", "value"),
+     # ver46.0: 再解析の途中再開（「RDS指定」とは別物。中間結果の再利用先）
+     State("resume_reanalysis", "value"),
+     State("resume_reanalysis_dir", "value"),
      State("reanalysis_annotation_path", "value"),
      State("desi_v8_script_path", "value"),
      State("desi_cluster_filter_script_path", "value"),
@@ -281,7 +284,9 @@ def run_analysis(
     reanalysis_p_thresh, reanalysis_logfc_thresh,
     reanalysis_ion_mode, reanalysis_tolerance_mz, reanalysis_adduct_filter,
     annotation_csv,
-    rds_folder_reanalysis, cluster_source, reanalysis_annotation_path,
+    rds_folder_reanalysis, cluster_source,
+    resume_reanalysis, resume_reanalysis_dir,
+    reanalysis_annotation_path,
     desi_v8_script, desi_cluster_script,
     tims_v8_script, tims_cluster_script,
     app_state,
@@ -694,6 +699,12 @@ def run_analysis(
                     params["cluster_source"] = resolved_cluster_source
                 elif rds_path:
                     params["rds_run_dir"] = str(Path(rds_path).parent)
+                # ver46.0: 途中から再開（Step1/Step2 の中間結果を再利用）。
+                #   上の rds_run_dir（= クラスタ番号の参照元）とは別物なので混同しないこと。
+                #   OFF のときは params を立てない → 従来どおり最初から実行される。
+                if resume_reanalysis and resume_reanalysis_dir:
+                    params["resume_reanalysis"] = True
+                    params["resume_reanalysis_dir"] = resume_reanalysis_dir
 
             # --- m/z キャリブレーション（TIMS 再解析） ---
             if analysis_type == "tims_cluster_filter":
