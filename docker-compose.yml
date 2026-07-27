@@ -50,6 +50,19 @@ services:
       - R_ANALYSIS_TIMEOUT_SEC=${R_ANALYSIS_TIMEOUT_SEC:-0}
       # Step3 RPCA(IntegrateLayers) の実行可否。0 でスキップ（低メモリ環境の逃げ道）。
       - RUN_RPCA=${RUN_RPCA:-1}
+      # 再解析の検証用: 前回実行の RDS_Files を指定すると Step1/Step2 を再利用して再開する。
+      # 2 時間超の再解析で Step3(RPCA) だけを試したいときに使う。空なら通常どおり最初から。
+      - REUMAP_RESUME_DIR=${REUMAP_RESUME_DIR:-}
+      # Step2 RDS に counts 層を含める。再開して RPCA まで走らせるには必須（RPCA が counts を読む）。
+      - SAVE_STEP2_WITH_COUNTS=${SAVE_STEP2_WITH_COUNTS:-0}
+      # Step1 RDS の保存可否（0 でスキップ）。完走時の出力は不変だが中断時の再開ができなくなる。
+      - SAVE_STEP1_RDS=${SAVE_STEP1_RDS:-1}
+      # DEG(FindAllMarkers) の並列ワーカー数。未設定なら残メモリから自動決定、0/1 で逐次。
+      - DEG_WORKERS=${DEG_WORKERS:-}
+      # 取り込み時の 1 ブロックあたり予算(MB)。未設定なら 256。
+      - INGEST_BLOCK_MB=${INGEST_BLOCK_MB:-}
+      # qs 保存のスレッド数。未設定なら detectCores-1。1 で単スレッド。
+      - QS_NTHREADS=${QS_NTHREADS:-}
     volumes:
       # 永続化データ (Data/Other/ 配下のアプリ内部データ)
       - msi-sessions:/app/Data/Other/sessions
