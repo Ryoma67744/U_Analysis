@@ -146,6 +146,28 @@ V13_PROJECT_LABEL_PREFIX <- "ClusterFiltered_"
 # (L) Re-UMAP では新規入力から解析し直すので、Resume は基本OFF推奨
 V13_RESUME_FROM_RDS <- FALSE
 V13_RESUME_DIR_PATH <- ""
+# [ver46.0] 環境変数 REUMAP_RESUME_DIR に前回実行の RDS_Files を指定すると再開する。
+#   10万px 級の再解析は 2 時間超かかるため、Step3(RPCA) だけを検証したいときに
+#   毎回 Step1/Step2 をやり直すのは現実的でない。前回の Step1/Step2 RDS を読んで
+#   その先だけを実行する。
+#   条件: 再開元にしたい実行を SAVE_STEP2_WITH_COUNTS=1 で回しておくこと
+#         （RPCA は counts 層を必要とし、既定の Step2 RDS には含まれないため）。
+#   なお Parquet エクスポートは再開時もそのまま実行する。これは無駄ではなく、
+#   オーケストレータ側のメモリ状態（Arrow プールの残留を含む）を通常実行と揃え、
+#   RPCA 直前の条件を忠実に再現するためである。
+local({
+  .rd <- Sys.getenv("REUMAP_RESUME_DIR", unset = "")
+  if (nzchar(.rd)) {
+    if (dir.exists(.rd)) {
+      V13_RESUME_FROM_RDS <<- TRUE
+      V13_RESUME_DIR_PATH <<- .rd
+      message(">> [ver46.0] RESUME 有効: ", .rd,
+              " （Step1/Step2 RDS があればそこから再開します）")
+    } else {
+      message("!! [ver46.0] REUMAP_RESUME_DIR が存在しないため無視します: ", .rd)
+    }
+  }
+})
 
 # (M) （必要なときだけ）ver13 の設定をこのスクリプト側から“上書き”したい場合
 #     空("") / NA の場合は、ver13 側に書かれている設定をそのまま使います。

@@ -12,6 +12,39 @@
 
 ---
 
+## 2026-07-26_ver46.0
+
+### 機能: 再解析（クラスタ除外→再UMAP）を Step1/Step2 から再開できるようにした
+
+10万px 級の再解析は完走に **2 時間超**かかる。Step3(RPCA) の挙動だけを確認したい場合でも
+毎回 Step1/Step2 をやり直すのは現実的でなく、メモリ対策の検証が進めにくかった。
+調査の結果、再開できなかった原因は 2 つあった。
+
+1. **再解析パスに再開機能が配線されていなかった**。`V13_RESUME_FROM_RDS` / `V13_RESUME_DIR_PATH`
+   はオーケストレータに `FALSE` / `""` とハードコードされ、アプリ側からも設定されていなかった
+   （生成コピーへ値を流す仕組み自体は既に存在していた）。
+2. **保存済み Step2 RDS に `counts` 層が無い**。`keep_counts=FALSE` で保存されるが、
+   Step3 の `apply_input_norm(seu_rpca)` が `counts` を読むため、再開すると RPCA が動かない。
+
+- **`REUMAP_RESUME_DIR` を追加**（`260623_DBSCAN_ver18_Cluster_Filter_ReUMAP.R`）:
+  前回実行の `RDS_Files` を指定すると Step1/Step2 RDS を読んでその先だけを実行する。
+  未指定なら従来どおり最初から。存在しないパスは警告して無視する。
+- **`apply_input_norm` を slim RDS 対応に**（`260623_DBSCAN_With_cluster_ver6_no-png_slim.R`）:
+  本関数がやることは `data <- <NORM_MODE>(counts)` なので、**`counts` が無くても `data` が既に
+  あれば再計算は不要で結果も同一**。counts の不在で停止せず既存の `data` を使うようにした。
+  これにより **`keep_counts=FALSE` で保存済みの既存 Step2 RDS からも再開できる**
+  （＝過去に失敗した実行の成果物を捨てずに済む）。slim RDS 全般に対する堅牢化でもある。
+- **`SAVE_STEP2_WITH_COUNTS` を追加**: Step2 RDS に `counts` を含めて保存する。既定は従来どおり
+  `0`（対話ビューアがこの RDS を読むため軽い方が良い）。上の堅牢化により通常は不要だが、
+  完全に同一の状態から再開したい場合に使う。
+- **`docker-compose.yml` / `.env.docker` の整備**: これまで R 側にだけ追加してコンテナへ渡って
+  いなかった `DEG_WORKERS` / `INGEST_BLOCK_MB` / `QS_NTHREADS` / `SAVE_STEP1_RDS` も含め、
+  検証用オプションを一括で中継・文書化した（`.env` 変更のみで反映でき、再ビルド不要）。
+
+**再開時も Parquet エクスポートは実行される**。これは無駄ではなく、オーケストレータ側の
+メモリ状態（Arrow プールの残留を含む）を通常実行と揃え、**RPCA 直前の条件を忠実に再現する**ため。
+また `seu_list`（Step1 RDS 由来）は Step3 の分岐判定で参照されるため、Step1 も読み込む。
+
 ## 2026-07-26_ver45.9
 
 ### 修正: 実測に基づくメモリ削減（scale.data の早期破棄・DEG 並列数の動的決定）

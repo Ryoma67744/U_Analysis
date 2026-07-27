@@ -2445,7 +2445,21 @@ apply_input_norm <- function(s) {
     asy <- DefaultAssay(s)
     # v5: 複数sampleの merge で counts が複数レイヤーに分かれている場合があるため統合
     s   <- tryCatch(JoinLayers(s), error = function(e) s)
-    cm  <- LayerData(s[[asy]], layer = "counts")
+    # [ver46.0] slim RDS（DietSeurat で counts を落とした Step2/Step3 RDS）から再開した場合、
+    #   counts 層が存在しない。本関数がやることは data <- <NORM_MODE>(counts) なので、
+    #   既に data 層がある（＝前回の実行で同じ変換を済ませている）なら再計算は不要で、
+    #   結果も同一になる。counts が無いだけで停止させず、既存の data をそのまま使う。
+    cm <- tryCatch(LayerData(s[[asy]], layer = "counts"), error = function(e) NULL)
+    if (is.null(cm) || length(cm) == 0L) {
+      .dat_exist <- tryCatch(LayerData(s[[asy]], layer = "data"), error = function(e) NULL)
+      if (!is.null(.dat_exist) && length(.dat_exist) > 0L) {
+        message(">> apply_input_norm: counts 層が無いため、既存の data 層（正規化済み）を",
+                "そのまま使用します（slim RDS からの再開）。")
+        s@misc$preprocessing_method <- paste0("RMS_input+", NORM_MODE, " (reused)")
+        return(s)
+      }
+      stop("apply_input_norm: counts / data のいずれも取得できません（RDS が壊れている可能性）。")
+    }
     dat <- switch(NORM_MODE,
                   "none"  = cm,
                   "sqrt"  = sqrt(cm),
@@ -2548,7 +2562,18 @@ if (!step2_done && !.stage_downstream) {
   if(is.null(seu_harmony)) stop("All pipelines failed.")
   
   # ★要望①: Step2 完了時のRDS保存 (slim: DietSeurat + qs 圧縮)
-  save_rds_compact(list(obj=seu_harmony, reduction=REDUCTION_USED), rds_step2_out, keep_counts=FALSE)  # 生counts層は保存後未使用→除去
+  # [ver46.0] Step2 RDS は「中断時に Step3(RPCA) から再開する」ための成果物でもある。
+  #   ところが RPCA は apply_input_norm(seu_rpca) 経由で counts 層を読むため
+  #   (INPUT_NORMALIZED=TRUE のとき)、counts を落として保存した RDS では再開できない。
+  #   既定は従来どおり counts を落とす（対話ビューアがこの RDS を読むため軽い方が良い）。
+  #   再開したい場合は SAVE_STEP2_WITH_COUNTS=1 を「再開元にしたい実行の前に」設定する。
+  .s2_counts <- Sys.getenv("SAVE_STEP2_WITH_COUNTS", unset = "0") %in% c("1", "true", "TRUE", "yes", "YES")
+  if (.s2_counts) {
+    message(">> Step2 RDS を counts 込みで保存します (SAVE_STEP2_WITH_COUNTS=1)。",
+            "ファイルは大きくなりますが、Step3(RPCA) からの再開が可能になります。")
+  }
+  save_rds_compact(list(obj=seu_harmony, reduction=REDUCTION_USED), rds_step2_out,
+                   keep_counts = .s2_counts)
   gc()
 
   # ---- 無補正PCAの併走出力（補正の妥当性を比較するため）----
