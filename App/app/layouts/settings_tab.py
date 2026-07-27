@@ -726,6 +726,54 @@ def _create_analysis_settings_subtab():
                             dbc.Input(id="rds_path", value="",
                                       style={"display": "none"}),
                         ]),
+                        # --- 途中から再開（上の「RDS指定」とは別物）---
+                        # 「RDS指定」は "どのクラスタリングの番号で除外するか" を選ぶ欄であり、
+                        # 再開地点ではない。混同されやすいため独立した param-group として離し、
+                        # ラベルと説明文で明確に区別する。
+                        html.Div(className="param-group", style={"marginTop": "15px"}, children=[
+                            html.H5(["途中から再開", help_badge("resume_reanalysis")]),
+                            dbc.Checkbox(
+                                id="resume_reanalysis",
+                                label="前回の中間結果を使う（Step1/Step2 をやり直さない）",
+                                value=ls.get("resume_reanalysis", False),
+                            ),
+                            html.Div(
+                                id="resume_reanalysis_panel",
+                                style={"display": "none", "marginTop": "10px"},
+                                children=[
+                                    html.Div(
+                                        style={"display": "flex", "gap": "5px", "marginBottom": "5px"},
+                                        children=[
+                                            dbc.Input(
+                                                id="resume_reanalysis_dir",
+                                                value=ls.get("resume_reanalysis_dir", ""),
+                                                placeholder="前回実行の RDS_Files フォルダ",
+                                            ),
+                                            dbc.Button("参照...", id="browse_resume_reanalysis_dir",
+                                                       size="sm", color="secondary"),
+                                        ],
+                                    ),
+                                    html.Small(
+                                        id="resume_reanalysis_dir_path_hint", children="",
+                                        style={"color": "#6c757d", "fontSize": "0.75rem",
+                                               "marginTop": "2px", "display": "block"},
+                                    ),
+                                    dbc.Alert(
+                                        color="warning",
+                                        className="py-2 px-3 mt-2 mb-0",
+                                        style={"fontSize": "0.8rem"},
+                                        children=[
+                                            html.Div("上の「RDS指定」とは別の設定です。",
+                                                     style={"fontWeight": "600"}),
+                                            html.Div("「RDS指定」＝どのクラスタリングの番号で除外するか。"),
+                                            html.Div("ここ＝どこまで計算済みの結果を再利用するか。"),
+                                            html.Div("主に動作検証用です。通常の解析では OFF のままにしてください。",
+                                                     style={"marginTop": "4px"}),
+                                        ],
+                                    ),
+                                ],
+                            ),
+                        ]),
                         # TIMS 再解析イオンモード
                         html.Div(
                             id="tims_reanalysis_ion_settings",

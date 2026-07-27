@@ -45,6 +45,31 @@
 メモリ状態（Arrow プールの残留を含む）を通常実行と揃え、**RPCA 直前の条件を忠実に再現する**ため。
 また `seu_list`（Step1 RDS 由来）は Step3 の分岐判定で参照されるため、Step1 も読み込む。
 
+#### UI からも指定できるようにした
+
+初回解析（UMAP解析）には「途中再開 (RDSから)」の UI があるが、**再解析側には存在しなかった**
+（`generate_analysis_config` には RESUME 処理があるのに `generate_cluster_filter_config` には無い）。
+再解析画面に**独立した「途中から再開」ブロック**を追加した。
+
+**「RDS指定」との混同を防ぐことを最優先に設計した。** あの欄は
+`resolve_rds_path` → `get_cells_to_keep` に渡る「**どのクラスタリングの番号で除外するか**」の
+参照元であって再開地点ではないが、名前が紛らわしく実際に誤解を招いていた。そこで新 UI は
+「RDS指定」ブロックの**外**に離して配置し、ラベル・ツールチップ・警告表示で
+「上の『RDS指定』とは別の設定です」「『RDS指定』＝どのクラスタリングの番号で除外するか／
+ここ＝どこまで計算済みの結果を再利用するか」と明示。あわせて「主に動作検証用です。通常の解析では
+OFF のままにしてください」と注意書きを出す。
+
+- `App/app/layouts/settings_tab.py`: チェックボックス `resume_reanalysis` と
+  フォルダ指定 `resume_reanalysis_dir`（参照ボタン・パスヒント付き）
+- `App/app/callbacks/file_handlers.py`: パネル表示切替、参照ボタン登録、パスヒント対象へ追加
+- `App/app/callbacks/analysis_callbacks.py`: State と params 収集
+- `App/app/services/analysis_runner.py`: `generate_cluster_filter_config` で
+  `V13_RESUME_FROM_RDS` / `V13_RESUME_DIR_PATH` を置換
+- `App/app/layouts/tooltips.py`: 説明ツールチップ
+
+**チェック OFF のときは params 自体を立てないため、既定挙動は完全に従来どおり。**
+パスが未入力の場合も安全側で無効になる。
+
 ## 2026-07-26_ver45.9
 
 ### 修正: 実測に基づくメモリ削減（scale.data の早期破棄・DEG 並列数の動的決定）
