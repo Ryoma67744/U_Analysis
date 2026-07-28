@@ -195,10 +195,14 @@ def build_hne_overlay_fig(df_sample, rds_path, sample, *, title=None, opacity=70
                   marker=dict(size=ms, color=color_map.get(cl, "#999999"), opacity=op),
                   name=name, showlegend=False, legendgroup=name,
                   # ver46.1: clientside restyle 対象（サイズ・不透明度スライダー）
-                  meta={"dsz": 0, "op": True})
+                  # ver46.2: クラスタ表示名も meta で渡す。従来は hovertemplate に
+                  # f-string で直接埋めていたが、クラスタ名はユーザーが変更でき、
+                  # "%{x}" のような Plotly のテンプレート記法を含むとホバーで
+                  # 展開されてしまう。meta 経由なら値として扱われ再解釈されない。
+                  meta={"dsz": 0, "op": True, "nm": name})
         if cell_ids is not None:
             kw["text"] = cell_ids[mask]
-            kw["hovertemplate"] = f"Cluster: {name}<br>%{{text}}<extra></extra>"
+            kw["hovertemplate"] = "Cluster: %{meta.nm}<br>%{text}<extra></extra>"
         fig.add_trace(go.Scattergl(**kw))
         if show_labels:
             fig.add_annotation(x=float(px_x[mask].mean()), y=float(px_y[mask].mean()),

@@ -299,10 +299,18 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                                     color=color_map.get(str(cl), "#999999"),
                                     opacity=spot_opacity),
                         # ver46.1: 同一文字列を点数ぶん並べた配列だった（5 万点で
-                        # 約 0.7MB の純粋な無駄）。Plotly はスカラーを全点へ
-                        # ブロードキャストするので %{text} の表示は変わらない。
-                        text=_cluster_display_name(cl, cluster_name_map),
-                        hovertemplate="%{text}<extra></extra>",
+                        # 約 0.7MB の純粋な無駄）。
+                        #
+                        # ver46.2: `text=<スカラー>` + `hovertemplate="%{text}"` は
+                        # **動かない**。plotly.py はスカラーをそのまま直列化するが、
+                        # plotly.js は scattergl の `%{text}` をスカラーから解決できず、
+                        # ツールチップに文字列 "%{text}" がそのまま出ていた。
+                        # `hovertext`(スカラー可) + `hoverinfo="text"` なら
+                        # 全点に同じ文字列が出る（配列を作らずに済む点は同じ）。
+                        # テンプレート解釈が入らないので、ユーザーが変更できる
+                        # クラスタ名に "%{...}" が含まれていても安全。
+                        hovertext=_cluster_display_name(cl, cluster_name_map),
+                        hoverinfo="text",
                         name=_cluster_display_name(cl, cluster_name_map), showlegend=False,
                         legendgroup=_cluster_display_name(cl, cluster_name_map),
                         meta=_MSZ_SPOT,

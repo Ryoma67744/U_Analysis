@@ -147,12 +147,32 @@ def test_spatial_hover_text_is_scalar_not_per_point_array():
     fig, df = _spatial_fig()
     n_points = len(df)
     for t in _all_traces(fig):
+        for key in ("text", "hovertext"):
+            val = t.get(key)
+            if isinstance(val, (list, tuple, np.ndarray)) and len(val) > 1:
+                # 配列で持ってよいのは「点ごとに中身が違う」場合だけ
+                assert len(set(map(str, val))) > 1, (
+                    f"全要素が同一の {key} 配列が復活している（スカラーにできるはず）")
+                assert len(val) == n_points
+
+
+def test_spatial_scalar_hover_uses_hovertext_not_template():
+    """スカラーのホバー文字列は hovertext + hoverinfo で持つこと (ver46.2)。
+
+    `text=<スカラー>` + `hovertemplate="%{text}"` は plotly.py の直列化は通るが、
+    plotly.js が scattergl のスカラー text から %{text} を解決できず、
+    ツールチップに "%{text}" がそのまま出る（実際に ver46.1 で発生した回帰）。
+    ブラウザ側の検証は tests/e2e/test_render_perf.py にある。
+    """
+    fig, _ = _spatial_fig()
+    for t in _all_traces(fig):
+        tmpl = t.get("hovertemplate") or ""
+        if "%{text}" not in tmpl:
+            continue
         txt = t.get("text")
-        if isinstance(txt, (list, tuple, np.ndarray)) and len(txt) > 1:
-            # 配列 text が残っていてよいのは「点ごとに中身が違う」場合だけ
-            assert len(set(map(str, txt))) > 1, (
-                "全要素が同一の text 配列が復活している（スカラーにできるはず）")
-            assert len(txt) == n_points
+        assert isinstance(txt, (list, tuple, np.ndarray)), (
+            "hovertemplate の %{text} は配列 text でしか解決されない。"
+            "スカラーで済ませたい場合は hovertext + hoverinfo='text' を使うこと")
 
 
 def test_spatial_uirevision_ignores_cosmetic_changes():
