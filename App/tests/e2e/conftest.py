@@ -7,11 +7,13 @@ Playwright/ブラウザが無い環境では該当テストを skip する（CI/
 Dash ではコンポーネント `id` がそのまま安定セレクタ（`#id`）。data-testid は不要。
 """
 
+import collections
 import os
 import secrets
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -21,6 +23,34 @@ import pytest
 HOST = "127.0.0.1"
 APP_ROOT = Path(__file__).resolve().parents[2]  # .../App
 MASTER_PW = "e2e-master-pass"
+
+
+class _LogDrain:
+    """子プロセスの stdout を読み続けて最後の N 行だけ保持する。
+
+    ver46.1: 以前は stdout=PIPE のまま誰も読んでいなかったため、アプリの
+    アクセスログが OS のパイプバッファ (既定 64KiB) を埋めた時点で
+    **アプリ側が write でブロックし、無応答になっていた**。
+    ブラウザでページを 1 回開くだけで約 9KB 出るため、E2E テストを
+    7〜8 本並べると再現する（テストを増やすと直前まで通っていたテストが
+    突然 goto タイムアウトする、という形で現れる）。
+    """
+
+    def __init__(self, stream, max_lines=400):
+        self._lines = collections.deque(maxlen=max_lines)
+        self._stream = stream
+        self._thread = threading.Thread(target=self._pump, daemon=True)
+        self._thread.start()
+
+    def _pump(self):
+        try:
+            for line in iter(self._stream.readline, b""):
+                self._lines.append(line.decode("utf-8", "replace"))
+        except Exception:  # noqa: BLE001 - プロセス終了時の競合は無視
+            pass
+
+    def text(self) -> str:
+        return "".join(self._lines)
 
 
 def _free_port() -> int:
@@ -48,13 +78,14 @@ def app_server():
     proc = subprocess.Popen(
         [sys.executable, "run_app.py"], cwd=str(APP_ROOT), env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    # パイプを読み続ける（詰まるとアプリが write でブロックして無応答になる）
+    drain = _LogDrain(proc.stdout)
     base = f"http://{HOST}:{port}"
 
     healthy = False
     for _ in range(60):
         if proc.poll() is not None:
-            out = (proc.stdout.read() or b"").decode("utf-8", "replace")
-            pytest.skip(f"アプリ起動に失敗（依存不足の可能性）:\n{out[-1500:]}")
+            pytest.skip(f"アプリ起動に失敗（依存不足の可能性）:\n{drain.text()[-1500:]}")
         try:
             with urllib.request.urlopen(base + "/healthz", timeout=2) as r:
                 if r.status == 200:

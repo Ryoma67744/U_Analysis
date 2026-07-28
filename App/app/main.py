@@ -70,6 +70,13 @@ app = dash.Dash(
     assets_folder="assets",
     background_callback_manager=_background_manager,
     server=_flask_server,
+    # ver46.1: コールバック応答 (Plotly figure JSON) を gzip 圧縮する。
+    # figure JSON は座標・色の数値が延々と並ぶため 8〜12 倍に縮む。Dash の既定は
+    # 圧縮なしで、数 MB〜数十 MB がそのまま流れていた。
+    # 本番は Caddy の `encode` でも圧縮されるが、リバースプロキシを通さない
+    # 直アクセス (docker-compose 単体 / E2E テスト) でも効かせるためここでも有効化する。
+    # 既に Content-Encoding が付いた応答を Caddy が二重圧縮することはない。
+    compress=True,
 )
 
 # Flask サーバーへの参照（画像配信用 / 認証ミドルウェア用）

@@ -43,16 +43,36 @@ cciiumap.duckdns.org {
 		max_size 500MB
 	}
 
+	# -------------------------------------------------------------------------
+	# 応答の圧縮 (ver46.1)
+	# -------------------------------------------------------------------------
+	# Dash のコールバック応答 (/_dash-update-component) は Plotly の figure JSON
+	# であり、座標や色の数値が延々と並ぶため 8〜12 倍に圧縮される。これまで
+	# 圧縮指定が無く、数 MB〜数十 MB がそのまま流れていた（画像切替・パンが重い
+	# 主要因のひとつ）。Caddy は Accept-Encoding を見て自動で選択する。
+	encode zstd gzip
+
 	# セキュリティヘッダー (clickjacking / sniff / referrer)
 	header {
 		X-Frame-Options "DENY"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"
-		Cache-Control "no-store"
 		# 正規ドメイン + 正規 TLS になったので HSTS を有効化してよい (任意)。
 		# 有効化するとブラウザが以後 HTTPS を強制する (切替直後は慎重に)。
 		# Strict-Transport-Security "max-age=31536000; includeSubDomains"
 	}
+
+	# Cache-Control は「静的アセット」と「それ以外」で分ける (ver46.1)。
+	# 従来は全応答に no-store を付けていたため、Dash/Plotly の JS バンドル
+	# (plotly.js だけで約 3.5MB) をページを開くたび再ダウンロードしていた。
+	# 両者は排他のマッチャにしてある。同じ header ディレクティブを重ねると
+	# 後勝ちで上書きされるため、matcher を重複させないこと。
+	@static path /_dash-component-suites/* /assets/* /_favicon.ico
+	@dynamic not path /_dash-component-suites/* /assets/* /_favicon.ico
+	# 内容ハッシュ付き URL で配信されるので長期キャッシュしてよい。
+	header @static Cache-Control "public, max-age=31536000, immutable"
+	# 認証付きアプリのため、HTML とコールバック応答は従来どおりキャッシュ禁止。
+	header @dynamic Cache-Control "no-store"
 
 	# Caddy アクセスログ (json) を stdout に。docker logs で確認可能。
 	log {

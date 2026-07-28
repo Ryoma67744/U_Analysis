@@ -23,6 +23,7 @@ from app.utils.color_utils import (
 )
 from app.utils.display_helpers import (
     display_name as _display_name,
+    transform_uirevision as _transform_uirevision,
 )
 from app.utils.deg_utils import (
     is_meaningful_annotation as _is_meaningful_annotation,
@@ -259,8 +260,7 @@ def update_feature_options_on_mz_filter(mz_filtered, rds_path=None):
 @callback(
     [Output("feature_plot_container", "children"),
      Output("feature_intensity_min", "placeholder"),
-     Output("feature_intensity_max", "placeholder"),
-     Output("batch_feature_figures_store", "data")],
+     Output("feature_intensity_max", "placeholder")],
     [Input("feature_select", "value"),
      Input("feature_sample_select", "value"),
      Input("feature_marker_size", "value"),
@@ -274,7 +274,8 @@ def update_feature_options_on_mz_filter(mz_filtered, rds_path=None):
     [State("seurat_rds_path_store", "data"),
      State("seurat_cache_dir_store", "data"),
      State("spatial_rotation_store", "data"),
-     State("deg_data_store", "data")],
+     State("deg_data_store", "data"),
+     State("session_id_store", "data")],
     prevent_initial_call=True,
 )
 def update_feature_plot(feature_name, sample, marker_size,
@@ -283,23 +284,33 @@ def update_feature_plot(feature_name, sample, marker_size,
                         show_compound_names,
                         colorscale,
                         rds_path, cache_dir_str, rotation_store,
-                        deg_data):
-    from app.callbacks.interactive_callbacks import _interactive_data, _bridge, _set_active_key
-    from app.callbacks.interactive_spatial import _transform_coords, _calc_zero_gap_marker_size
+                        deg_data, session_id=None):
+    from app.callbacks.interactive_callbacks import (
+        _interactive_data, _bridge, _set_active_key, set_export_figures)
+    from app.callbacks.interactive_spatial import (
+        _transform_coords, _calc_zero_gap_marker_size, _round_for_display)
     _set_active_key(rds_path)
+
+    def _finish(children, ph_min, ph_max, fig_dicts):
+        """ver46.1: 一括保存用 figure はサーバ側に保持し、ブラウザへは送らない。"""
+        set_export_figures("feature", session_id, rds_path, fig_dicts)
+        return children, ph_min, ph_max
     # 名前変更・フルスクリーン閉鎖トリガーだがFeature未選択 -> スキップ
     if ctx.triggered_id in ("sample_name_map_store", "fullscreen_closed_trigger") and not feature_name:
-        return no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update
 
     if not feature_name or not rds_path:
-        return html.Div("m/z Feature を選択してください", className="text-muted p-3"), no_update, no_update, []
+        return _finish(html.Div("m/z Feature を選択してください", className="text-muted p-3"),
+                       no_update, no_update, [])
 
     df = _interactive_data.get("plot_data")
     if df is None:
-        return html.Div("データが読み込まれていません", className="text-muted p-3"), no_update, no_update, []
+        return _finish(html.Div("データが読み込まれていません", className="text-muted p-3"),
+                       no_update, no_update, [])
 
     if "SpatialX" not in df.columns:
-        return html.Div("空間座標データがありません", className="text-muted p-3"), no_update, no_update, []
+        return _finish(html.Div("空間座標データがありません", className="text-muted p-3"),
+                       no_update, no_update, [])
 
     if not rotation_store:
         rotation_store = {}
@@ -339,7 +350,8 @@ def update_feature_plot(feature_name, sample, marker_size,
             df_plot["Sample"].isin(samples_to_show), "_expression"
         ].values
         if len(expr_vals) == 0 or np.all(np.isnan(expr_vals)):
-            return html.Div("発現データがありません", className="text-muted p-3"), no_update, no_update, []
+            return _finish(html.Div("発現データがありません", className="text-muted p-3"),
+                           no_update, no_update, [])
         global_min = float(np.nanmin(expr_vals))
         global_max = float(np.nanmax(expr_vals))
         if global_min == global_max:
@@ -365,7 +377,7 @@ def update_feature_plot(feature_name, sample, marker_size,
         file_label = _label_from_active_state(feature_name, style="filename")
 
         graphs = []
-        batch_fig_dicts = []
+        export_figs = []
         for s in samples_to_show:
             df_s = df_plot[df_plot["Sample"] == s]
             display_s = _display_name(s, name_map)
@@ -384,6 +396,8 @@ def update_feature_plot(feature_name, sample, marker_size,
                 flip_h=transform.get("flip_h", False),
                 flip_v=transform.get("flip_v", False),
             )
+            # ver46.1: 表示用に座標の有効桁を落とす（転送量 2〜3 倍削減、見た目同一）
+            plot_x, plot_y = _round_for_display(plot_x, plot_y)
 
             # マーカーサイズ: 自動モード(0)ならサンプル毎に計算
             if auto_mode:
@@ -417,8 +431,10 @@ def update_feature_plot(feature_name, sample, marker_size,
             fig = go.Figure()
 
             # TIC 背景（Greys, opacity=0.5）
+            # ver46.1: go.Scatter(SVG) -> go.Scattergl(WebGL)。SVG は 1 点 = 1 DOM ノードのため
+            # 数万 spot で描画・パンが破綻していた（Spatial/UMAP は元から Scattergl）。
             if "TotalCount" in df_s.columns:
-                fig.add_trace(go.Scatter(
+                fig.add_trace(go.Scattergl(
                     x=plot_x, y=plot_y, mode="markers",
                     marker=dict(size=m_size, symbol="square",
                                 color=df_s["TotalCount"].values,
@@ -428,18 +444,29 @@ def update_feature_plot(feature_name, sample, marker_size,
                 ))
 
             # 発現量オーバーレイ
+            # ver46.1: 強度しきい値未満の点は opacity=0 で「見えないのに転送・描画される」
+            # だけだったので、トレースから除外する（見た目は同一、点数と転送量が減る）。
+            # 全点が対象外になる場合（Intensity Range 下限 100% 等）は、カラーバーを
+            # 従来どおり表示するため全点を残す（＝従来と完全に同じ図）。
             expr_raw = df_s["_expression"].values
             if display_max > display_min:
                 norm = np.clip((expr_raw - display_min) / (display_max - display_min), 0, 1)
             else:
                 norm = np.zeros_like(expr_raw)
-            marker_opts["opacity"] = np.where(norm > 0.01, 0.3 + 0.7 * norm, 0.0).tolist()
-            fig.add_trace(go.Scatter(
-                x=plot_x,
-                y=plot_y,
+            alpha = np.where(norm > 0.01, 0.3 + 0.7 * norm, 0.0)
+            visible_mask = alpha > 0.0
+            if not visible_mask.any():
+                visible_mask = np.ones_like(alpha, dtype=bool)
+            fg_marker = dict(marker_opts)
+            # 小数 3 桁で十分（描画差は視認不能）。float64 の全桁を JSON に出さない。
+            fg_marker["opacity"] = np.round(alpha[visible_mask], 3)
+            fg_marker["color"] = np.asarray(marker_opts["color"])[visible_mask]
+            fig.add_trace(go.Scattergl(
+                x=plot_x[visible_mask],
+                y=plot_y[visible_mask],
                 mode="markers",
-                marker=marker_opts,
-                text=df_s["CellID"],
+                marker=fg_marker,
+                text=df_s["CellID"].values[visible_mask],
                 hovertemplate=f"{hover_label}: " + "%{marker.color:.4f}<br>%{text}<extra></extra>",
                 showlegend=False,
             ))
@@ -453,9 +480,12 @@ def update_feature_plot(feature_name, sample, marker_size,
                            showticklabels=False, title="", visible=False),
                 margin=dict(l=10, r=r_margin, t=30, b=10),
                 plot_bgcolor="white",
+                # ver46.1: 強度レンジ・配色・マーカーサイズ変更でズーム/パンを維持する。
+                # 幾何が本当に変わる操作（サンプル・回転・反転）でのみリセットさせる。
+                uirevision=_transform_uirevision(s, transform),
             )
 
-            batch_fig_dicts.append((f"Feature_{file_label}_{display_s}", fig.to_dict()))
+            export_figs.append((f"Feature_{file_label}_{display_s}", fig.to_dict()))
 
             cfg = dict(_FEATURE_IMG_CONFIG)
             cfg["toImageButtonOptions"] = dict(cfg["toImageButtonOptions"],
@@ -477,7 +507,10 @@ def update_feature_plot(feature_name, sample, marker_size,
                             "border": "1px solid #dee2e6", "borderRadius": "6px",
                             "padding": "5px", "backgroundColor": "#fff"},
                     children=[
-                        dcc.Graph(figure=fig, style={"height": "350px"}, config=cfg),
+                        # ver46.1: id を付与し、React が再マウントではなく差分更新
+                        # できるようにする（WebGL コンテキストの作り直しを避ける）。
+                        dcc.Graph(id={"type": "feature_graph", "index": str(s)},
+                                  figure=fig, style={"height": "350px"}, config=cfg),
                     ],
                 )
             )
@@ -516,10 +549,11 @@ def update_feature_plot(feature_name, sample, marker_size,
             style={"color": "#333", "fontSize": "0.95rem"},
         )
 
-        return html.Div([heading, container]), "0", "100", batch_fig_dicts
+        return _finish(html.Div([heading, container]), "0", "100", export_figs)
 
     except Exception as e:
-        return html.Div(f"\u30a8\u30e9\u30fc: {e}", className="text-danger p-3"), no_update, no_update, []
+        return _finish(html.Div(f"\u30a8\u30e9\u30fc: {e}", className="text-danger p-3"),
+                       no_update, no_update, [])
 
 
 # ---------------------------------------------------------------------------

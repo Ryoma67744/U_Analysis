@@ -26,6 +26,7 @@ from app.utils.color_utils import (
 from app.utils.display_helpers import (
     display_name as _display_name,
     facet_block as _facet_block,
+    geom_uirevision as _geom_uirevision,
 )
 from app.utils.label_persistence import (
     merge_label_positions as _merge_label_positions,
@@ -43,8 +44,13 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                                 marker_size=2, exclude_clusters=None,
                                 label_size=14, saved_positions=None,
                                 custom_colors=None, bg_opacity=0.1,
-                                title_font_size=None, cluster_name_map=None):
-    """統合UMAPのgo.Figureを生成（メイン/フルスクリーン共用）"""
+                                title_font_size=None, cluster_name_map=None,
+                                uirevision=None):
+    """統合UMAPのgo.Figureを生成（メイン/フルスクリーン共用）
+
+    uirevision: 同値なら Plotly がズーム/パンを保持する (ver46.1)。埋め込み座標が
+        変わる要素 (表示モード・マージ切替・除外クラスタ) のみを含めること。
+    """
     fig = go.Figure()
 
     # 除外クラスタのフィルタリング
@@ -80,7 +86,9 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                     name=_cluster_display_name(cl, cluster_name_map),
                     text=df.loc[mask, "CellID"],
                     hovertemplate="Cluster: %{meta}<br>%{text}<extra></extra>",
-                    meta=[str(cl)] * mask.sum(),
+                    # ver46.1: 同一文字列を点数ぶん並べた配列だった。Plotly は
+                    # スカラーを全点にブロードキャストするので表示は変わらない。
+                    meta=str(cl),
                 ))
     else:
         # 凡例ダブルクリック時に他クラスタを灰色で残すための背景 trace。
@@ -143,6 +151,8 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
         yaxis=dict(scaleanchor="x", showgrid=False, showline=False,
                    zeroline=False, showticklabels=False, title=""),
         plot_bgcolor="white",
+        # ver46.1: マーカーサイズ・色・ラベル・凡例の変更でズーム/パンを保持する。
+        uirevision=uirevision,
     )
     if title:
         layout_opts["title"] = dict(
@@ -172,7 +182,8 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                                    label_size=11, saved_positions=None,
                                    show_legend=True, name_map=None,
                                    rows=0, cluster_name_map=None,
-                                   collect_figures=None, legend_hidden=None):
+                                   collect_figures=None, legend_hidden=None,
+                                   uirevision=None):
     """サンプル別UMAPのhtml.Divリストを生成（メイン/フルスクリーン共用）
 
     collect_figures: リストを渡すと (display_name, fig_dict) を追加する（一括保存用）
@@ -297,6 +308,8 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
             plot_bgcolor="white",
             showlegend=bool(show_legend),
             legend=dict(itemsizing="constant", font=dict(size=9), tracegroupgap=1),
+            # ver46.1: 見た目だけの変更ではズーム/パンを保持する。
+            uirevision=(f"{uirevision}|{s}" if uirevision else None),
         )
 
         # 出力(一括保存/サムネ)は各図に凡例を残す → 先にスナップショット。
@@ -472,7 +485,12 @@ def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
     active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
     if "acc_umap" not in active_list:
         return no_update
-    from app.callbacks.interactive_callbacks import _interactive_data, _set_active_key
+    from app.callbacks.interactive_callbacks import (
+        _interactive_data, _set_active_key, accordion_toggle_is_noop)
+    # ver46.1: 他セクションの開閉だけで統合 UMAP を作り直さない
+    if accordion_toggle_is_noop("acc_umap_integrated", None, rds_path,
+                                active_items, ctx.triggered_id):
+        return no_update
     _set_active_key(rds_path)
     if display_mode == "per_sample":
         return go.Figure()
@@ -497,6 +515,10 @@ def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
     method = _interactive_data.get("method")
     all_pos = _get_merged_label_positions(accumulated_positions,
                                           rds_path=rds_path, method=method)
+    # ver46.1: 座標(埋め込み)が変わる要素のみを uirevision に含める。除外クラスタは
+    # 点集合が変わり autorange も変わるためリセット対象に含める。
+    uirev = _geom_uirevision("umap", merge_toggle,
+                             ",".join(sorted(str(c) for c in (exclude_clusters or []))))
     return _build_umap_integrated_fig(plot_df, color_by, highlight_clusters,
                                        show_legend, show_labels,
                                        marker_size=marker_size or 2,
@@ -504,6 +526,7 @@ def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
                                        label_size=label_size or 14,
                                        saved_positions=all_pos.get("umap_integrated"),
                                        custom_colors=effective_custom_colors,
+                                       uirevision=uirev,
                                        cluster_name_map=cluster_name_map)
 
 
@@ -546,8 +569,7 @@ def toggle_merge_controls(_rds_path, _fs_trigger):
 # ---------------------------------------------------------------------------
 
 @callback(
-    [Output("umap_per_sample_container", "children"),
-     Output("batch_umap_figures_store", "data")],
+    Output("umap_per_sample_container", "children"),
     [Input("umap_display_mode", "value"),
      Input("umap_highlight_cluster", "value"),
      Input("umap_show_labels", "value"),
@@ -565,26 +587,43 @@ def toggle_merge_controls(_rds_path, _fs_trigger):
      Input("umap_facet_by", "value"),
      Input("umap_legend_hidden_store", "data")],
     [State("accumulated_label_positions", "data"),
-     State("selection_groups_store", "data")],
+     State("selection_groups_store", "data"),
+     State("session_id_store", "data")],
 )
 def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
                             marker_size, exclude_clusters, label_size, rds_path,
                             show_legend, name_map, _fs_trigger, custom_colors,
                             rows, cluster_name_map, active_items,
                             facet_by, legend_hidden, accumulated_positions,
-                            selection_groups):
+                            selection_groups, session_id=None):
     """表示モード「サンプル別」(=分割表示) の場合、facet_by 基準で分割表示する。"""
     active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
     if "acc_umap" not in active_list:
-        return no_update, no_update
-    from app.callbacks.interactive_callbacks import _interactive_data, _set_active_key
+        return no_update
+    from app.callbacks.interactive_callbacks import (
+        _interactive_data, _set_active_key, accordion_toggle_is_noop,
+        set_export_figures)
+    # ver46.1: 他セクションの開閉だけで全図を作り直さない
+    if accordion_toggle_is_noop("acc_umap_facet", session_id, rds_path,
+                                active_items, ctx.triggered_id):
+        return no_update
     _set_active_key(rds_path)
+
+    def _finish(children, fig_dicts):
+        """ver46.1: 一括保存/サムネ用 figure はサーバ側に保持し、ブラウザへは送らない。"""
+        set_export_figures("umap", session_id, rds_path, fig_dicts)
+        return children
+
     if display_mode != "per_sample":
-        return "", []
+        return _finish("", [])
     df = _interactive_data.get("plot_data")
     if df is None:
-        return "", []
+        return _finish("", [])
     color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
+    # ver46.1: 埋め込み座標/点集合が変わる要素のみ uirevision に含める。
+    uirev = _geom_uirevision(
+        "umap_facet", facet_by,
+        ",".join(sorted(str(c) for c in (exclude_clusters or []))))
 
     # --- Split View: facet_by が Cluster / 選択グループ なら汎用ファセット描画 ---
     facet_by = facet_by or "Sample"
@@ -600,25 +639,26 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
             df, facets, color_map, marker_size=marker_size or 2,
             rows=rows or 0, cluster_name_map=cluster_name_map,
             collect_figures=fig_dicts, legend_hidden=legend_hidden)
-        return _facet_block(
+        return _finish(_facet_block(
             graphs, color_map, cluster_name_map=cluster_name_map,
             show_legend=bool(show_legend), legend_id="umap_shared_legend",
-            hidden=legend_hidden, outer_style={"marginTop": "10px"}), fig_dicts
+            hidden=legend_hidden, outer_style={"marginTop": "10px"}), fig_dicts)
     if facet_by == "group":
         groups = (selection_groups or {}).get("groups", [])
         if not groups:
-            return html.Div("選択グループがありません（UMAP の「選択グループ」で保存してください）。",
-                            className="text-muted small mt-2"), []
+            return _finish(html.Div(
+                "選択グループがありません（UMAP の「選択グループ」で保存してください）。",
+                className="text-muted small mt-2"), [])
         facets = [(g.get("name", ""), set(g.get("cell_ids", []))) for g in groups]
         fig_dicts = []
         graphs = _build_umap_facet_graphs(
             df, facets, color_map, marker_size=marker_size or 2,
             rows=rows or 0, cluster_name_map=cluster_name_map,
             collect_figures=fig_dicts, legend_hidden=legend_hidden)
-        return _facet_block(
+        return _finish(_facet_block(
             graphs, color_map, cluster_name_map=cluster_name_map,
             show_legend=bool(show_legend), legend_id="umap_shared_legend",
-            hidden=legend_hidden, outer_style={"marginTop": "10px"}), fig_dicts
+            hidden=legend_hidden, outer_style={"marginTop": "10px"}), fig_dicts)
 
     method = _interactive_data.get("method")
     all_pos = _get_merged_label_positions(accumulated_positions,
@@ -635,13 +675,14 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
                                             rows=rows or 0,
                                             cluster_name_map=cluster_name_map,
                                             collect_figures=fig_dicts,
-                                            legend_hidden=legend_hidden)
-    return _facet_block(
+                                            legend_hidden=legend_hidden,
+                                            uirevision=uirev)
+    return _finish(_facet_block(
         graphs, color_map, cluster_name_map=cluster_name_map,
         show_legend=bool(show_legend), legend_id="umap_shared_legend",
         hidden=legend_hidden,
         outer_style={"marginTop": "10px"},
-    ), fig_dicts
+    ), fig_dicts)
 
 
 # ---------------------------------------------------------------------------
