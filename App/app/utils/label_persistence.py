@@ -11,12 +11,20 @@ import logging
 import os
 import re
 import tempfile
+import threading
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 
 from app.utils.file_locks import get_or_create_lock
 
 logger = logging.getLogger(__name__)
+
+# label_positions JSON の内容キャッシュ (ver46.1)。
+# キーは (path, mtime_ns, size) なので、保存 (os.replace) されれば自動失効する。
+_POSITIONS_CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
+_POSITIONS_CACHE_MAX = int(os.environ.get("LABEL_POSITIONS_CACHE_MAX", 16))
+_POSITIONS_CACHE_LOCK = threading.Lock()
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:
@@ -54,6 +62,43 @@ def get_label_positions_path(rds_path: str | None, method: str | None = None) ->
     return Path(rds_path).parent / "label_positions.json"
 
 
+def _read_positions_json(path: Path) -> dict | None:
+    """label_positions JSON を (path, mtime, size) キーでキャッシュして読む (ver46.1)。
+
+    この関数は Spatial / UMAP / Feature の描画コールバックから **1 回の再描画ごとに
+    複数回**呼ばれる（ファセット表示では図の数だけ）。ファイル自体は
+    ラベルをドラッグしたときにしか変わらないので、毎回 read_text + json.loads +
+    logger.info を実行するのは無駄だった。
+
+    書き込みは save_label_positions が os.replace で原子的に行うため、
+    更新されれば mtime/size が変わりキャッシュは自動的に無効化される。
+    失敗時 None（呼び出し元は「読めなかった」として従来どおり処理する）。
+    """
+    try:
+        st = path.stat()
+        key = (str(path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+    with _POSITIONS_CACHE_LOCK:
+        hit = _POSITIONS_CACHE.get(key)
+        if hit is not None:
+            _POSITIONS_CACHE.move_to_end(key)
+            return hit
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning("[label_persistence] load failed: %s", e)
+        return None
+    if not isinstance(data, dict):
+        return None
+    with _POSITIONS_CACHE_LOCK:
+        _POSITIONS_CACHE[key] = data
+        _POSITIONS_CACHE.move_to_end(key)
+        while len(_POSITIONS_CACHE) > _POSITIONS_CACHE_MAX:
+            _POSITIONS_CACHE.popitem(last=False)
+    return data
+
+
 def load_label_positions(rds_path: str | None, method: str | None = None) -> dict:
     """label_positions.json を読み込んで dict を返す。ファイルなし or エラー時は空dict。
 
@@ -61,30 +106,26 @@ def load_label_positions(rds_path: str | None, method: str | None = None) -> dic
     """
     path = get_label_positions_path(rds_path, method)
     if path and path.exists():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            logger.info(
+        data = _read_positions_json(path)
+        if data is not None:
+            logger.debug(
                 "[label_persistence] loaded: path=%s sections=%s",
                 path.name, list(data.keys()),
             )
             return data
-        except Exception as e:
-            logger.warning("[label_persistence] load failed: %s", e)
-            return {}
+        return {}
     # フォールバック: 手法別ファイルがない場合、旧共有 label_positions.json を読む
     if method:
         legacy = get_label_positions_path(rds_path, None)
         if legacy and legacy.exists():
-            try:
-                data = json.loads(legacy.read_text(encoding="utf-8"))
-                logger.info(
+            data = _read_positions_json(legacy)
+            if data is not None:
+                logger.debug(
                     "[label_persistence] loaded (legacy fallback): path=%s sections=%s",
                     legacy.name, list(data.keys()),
                 )
                 return data
-            except Exception:
-                pass
-    logger.info(
+    logger.debug(
         "[label_persistence] no file found: rds_path=%s method=%s",
         rds_path, method,
     )

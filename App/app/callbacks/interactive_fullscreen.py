@@ -395,17 +395,45 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
 # ---------------------------------------------------------------------------
 
 @callback(
-    Output("fullscreen_closed_trigger", "data"),
+    [Output("fullscreen_closed_trigger", "data"),
+     Output("fs_label_positions_snapshot", "data")],
     Input("fullscreen_plot_modal", "is_open"),
-    State("fullscreen_closed_trigger", "data"),
+    [State("fullscreen_closed_trigger", "data"),
+     State("accumulated_label_positions", "data"),
+     State("fs_label_positions_snapshot", "data")],
     prevent_initial_call=True,
 )
-def on_fullscreen_close(is_open, current_val):
-    """フルスクリーンモーダルが閉じた時にトリガー値をインクリメントし、
-    メインプロットの再描画をトリガーする"""
-    if not is_open:
-        return (current_val or 0) + 1
-    return no_update
+def on_fullscreen_close(is_open, current_val, label_positions, snapshot):
+    """フルスクリーンを閉じたとき、必要な場合だけメインプロットを再描画させる。
+
+    ver46.1: 従来は閉じるたびに無条件でトリガーを進めていたため、**何も変更せずに
+    閉じただけでも** 統合 UMAP・サンプル別 UMAP・Spatial 全タイル・Feature Plot の
+    5 つの重いコールバックが一斉に走っていた。
+
+    フルスクリーン側が書き込む共有 Store は `accumulated_label_positions`
+    (クラスタラベルのドラッグ位置) **だけ**である。他の共有 Store
+    (回転・クラスタ色・クラスタ名・凡例の灰色化) は読み取り専用で、変更された場合は
+    それら自身がメイン側の Input なので独立に再描画が走る。
+    したがって「開いた時点のラベル位置」と「閉じた時点のラベル位置」を比べ、
+    変化が無ければ再描画は不要。
+
+    安全側の方針: スナップショットが無い / 比較できない場合は従来どおり再描画する。
+    """
+    def _fingerprint(data):
+        try:
+            return json.dumps(data or {}, sort_keys=True, default=str)
+        except Exception:  # noqa: BLE001 - 比較できなければ再描画側に倒す
+            return None
+
+    if is_open:
+        # 開いた時点のラベル位置を控える（この時点では再描画しない）
+        return no_update, _fingerprint(label_positions)
+
+    now = _fingerprint(label_positions)
+    if snapshot is not None and now is not None and now == snapshot:
+        # フルスクリーン中にラベル位置が変わっていない → メインは再描画不要
+        return no_update, no_update
+    return (current_val or 0) + 1, None
 
 
 # ---------------------------------------------------------------------------

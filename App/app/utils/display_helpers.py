@@ -146,6 +146,73 @@ def transform_uirevision(sample, transform, extra=None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 見た目パラメータの後付け適用 (ver46.1)
+# ---------------------------------------------------------------------------
+# マーカーサイズ・ラベルサイズ・スポット不透明度は figure のデータを変えないため、
+# サーバで全図を作り直さず、ブラウザ側の Plotly.restyle で更新する
+# (assets/spatial_restyle.js)。
+#
+# その結果「画面の figure」と「サーバが保持しているエクスポート用 figure」が
+# ずれるので、一括保存 / サムネ登録の直前に本関数で同じ変換をサーバ側にも適用する。
+# **JS 側 (applyOverrides) と本関数は同じ規則を実装している**。両者が食い違うと
+# 「画面と保存した PNG が違う」という最悪の壊れ方をするため、
+# tests/test_render_payload.py で「最初からそのサイズで作った図」と一致することを
+# 検証している (test_display_overrides_match_fresh_build)。
+#
+# 判定にはトレースの meta を使う:
+#   meta = {"dsz": 0|1, "op": bool}
+#     dsz : 基準マーカーサイズからの差分
+#     op  : スポット不透明度スライダーの対象か
+# meta を持たないトレース (凡例ダミー・H&E 画像など) は一切触らない。
+# ---------------------------------------------------------------------------
+
+def apply_display_overrides(fig_dict, *, marker_size=None, label_size=None,
+                            spot_opacity=None, kinds=("msi", "hne")):
+    """figure dict にマーカーサイズ / ラベルサイズ / スポット不透明度を適用する。
+
+    fig_dict は破壊的に更新して返す（呼び出し側が必要なら事前にコピーすること）。
+
+    marker_size: None または 0 以下なら layout.meta.auto_msz（自動値）を使う。
+    label_size:  None なら変更しない。
+    spot_opacity: 0–1。None なら変更しない。
+    kinds: 対象とするタイル種別。layout.meta.kind がこれに含まれない図は無視する
+        （通常タイル用スライダーが H&E タイルに効かないようにするため）。
+    """
+    if not isinstance(fig_dict, dict):
+        return fig_dict
+    layout = fig_dict.get("layout") or {}
+    meta = layout.get("meta") or {}
+    if meta.get("kind") not in kinds:
+        return fig_dict
+
+    if marker_size is not None:
+        base = float(marker_size) if float(marker_size) > 0 else None
+        if base is None:
+            base = meta.get("auto_msz")
+        if base:
+            for tr in fig_dict.get("data") or []:
+                tmeta = tr.get("meta")
+                if not isinstance(tmeta, dict) or "dsz" not in tmeta:
+                    continue
+                marker = tr.setdefault("marker", {})
+                marker["size"] = float(base) + float(tmeta.get("dsz", 0))
+
+    if spot_opacity is not None:
+        for tr in fig_dict.get("data") or []:
+            tmeta = tr.get("meta")
+            if not isinstance(tmeta, dict) or not tmeta.get("op"):
+                continue
+            tr.setdefault("marker", {})["opacity"] = float(spot_opacity)
+
+    if label_size is not None:
+        for ann in layout.get("annotations") or []:
+            # クラスタ番号ラベルのみ対象（矢印つき注記などは作っていない）
+            ann.setdefault("font", {})["size"] = float(label_size)
+
+    return fig_dict
+
+
+# ---------------------------------------------------------------------------
 # 表示名ヘルパー
 # ---------------------------------------------------------------------------
 

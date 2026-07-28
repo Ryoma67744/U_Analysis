@@ -336,8 +336,12 @@ def update_feature_plot(feature_name, sample, marker_size,
             expression = _bridge.get_feature_expression(rds_path, feature_name)
 
         # expression を df に結合（CellID順で対応）
-        df_plot = df.copy()
-        df_plot["_expression"] = expression
+        # ver46.1: 発現量 1 列を足すためだけに 10 万行の全列コピーをしていた。
+        # Feature Plot が使う列だけを取り出す。
+        _cols = [c for c in ("Sample", "SpatialX", "SpatialY", "CellID", "TotalCount")
+                 if c in df.columns]
+        df_plot = df[_cols].copy()
+        df_plot["_expression"] = np.asarray(expression)
 
         # 表示対象サンプル
         if sample:

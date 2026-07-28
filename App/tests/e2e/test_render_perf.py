@@ -100,7 +100,76 @@ def test_relayout_filter_seq_is_monotonic(page):
 
 
 # ---------------------------------------------------------------------------
-# 2. HTTP 圧縮
+# 2. 見た目スライダーの clientside restyle
+# ---------------------------------------------------------------------------
+
+def test_spatial_restyle_is_loaded(page):
+    fns = page.evaluate(
+        """() => {
+            const ns = window.dash_clientside && window.dash_clientside.spatial_restyle;
+            return ns ? Object.keys(ns).sort() : null;
+        }"""
+    )
+    assert fns == ["hne_marker_size", "label_size", "marker_size", "spot_opacity"]
+
+
+def test_spatial_restyle_updates_only_tagged_traces(page):
+    """meta タグ付きトレースだけを、役割どおりに更新すること。
+
+    実データ無しでも検証できるよう、テスト用の Plotly グラフを
+    #spatial_plots_container に差し込んで restyle を走らせる。
+    """
+    result = page.evaluate(
+        """async () => {
+            const host = document.querySelector('#spatial_plots_container');
+            if (!host || !window.Plotly) { return {error: 'no host/plotly'}; }
+            const div = document.createElement('div');
+            host.appendChild(div);
+            await window.Plotly.newPlot(div, [
+                {type: 'scattergl', x: [1,2], y: [1,2], mode: 'markers',
+                 marker: {size: 3, opacity: 1}, meta: {dsz: 0, op: false}},   // 背景
+                {type: 'scattergl', x: [1,2], y: [1,2], mode: 'markers',
+                 marker: {size: 3, opacity: 1}, meta: {dsz: 0, op: true}},    // スポット
+                {type: 'scattergl', x: [1,2], y: [1,2], mode: 'markers',
+                 marker: {size: 3, opacity: 1}, meta: {dsz: 1, op: true}},    // +1
+                {type: 'scattergl', x: [null], y: [null], mode: 'markers',
+                 marker: {size: 10}},                                          // 凡例ダミー
+            ], {meta: {kind: 'msi', auto_msz: 4.5}, annotations: [
+                {text: 'C1', x: 1, y: 1, showarrow: false, font: {size: 10}}]});
+
+            window.dash_clientside.spatial_restyle.marker_size(8);
+            window.dash_clientside.spatial_restyle.spot_opacity(40);
+            window.dash_clientside.spatial_restyle.label_size(18);
+            const sizes = div.data.map(t => t.marker.size);
+            const ops = div.data.map(t => t.marker.opacity);
+            const labelSize = div.layout.annotations[0].font.size;
+
+            // 「自動」(0) に戻すと layout.meta.auto_msz が使われる
+            window.dash_clientside.spatial_restyle.marker_size(0);
+            const autoSizes = div.data.map(t => t.marker.size);
+
+            // H&E 用スライダーは kind='msi' のこの図を触らない
+            window.dash_clientside.spatial_restyle.hne_marker_size(30);
+            const afterHne = div.data.map(t => t.marker.size);
+
+            host.removeChild(div);
+            return {sizes, ops, labelSize, autoSizes, afterHne};
+        }"""
+    )
+    assert "error" not in result, result
+    # 背景=8, スポット=8, +1=9, 凡例ダミー=10(不変)
+    assert result["sizes"] == [8, 8, 9, 10]
+    # 不透明度は op:true のトレースだけ 0.4、他は 1 のまま
+    assert result["ops"] == [1, 0.4, 0.4, None] or result["ops"][:3] == [1, 0.4, 0.4]
+    assert result["labelSize"] == 18
+    # 自動 → auto_msz(4.5) と +1
+    assert result["autoSizes"] == [4.5, 4.5, 5.5, 10]
+    # 種別違いのスライダーでは変化しない
+    assert result["afterHne"] == result["autoSizes"]
+
+
+# ---------------------------------------------------------------------------
+# 3. HTTP 圧縮
 # ---------------------------------------------------------------------------
 
 def test_dash_callback_response_is_gzipped(app_server):

@@ -616,11 +616,15 @@ def test_spatial_and_umap_callbacks_return_expected_output_counts(
 
     spatial = _call_callback(
         dash_app, "spatial_plots_container",
-        # Inputs(22) + States(2)
-        args=["S1", None, [], {}, False, 3, None, 10, rds_path, {}, 0, {}, 0,
-              {}, "separate", "shade", ["acc_spatial"], [], False, 100, 5,
-              False,
-              {}, "sess-spatial"],
+        # Inputs(18): sample, highlight, selected, rotation, show_labels,
+        #   exclude, rds_path, name_map, fs_trigger, colors, rows,
+        #   cluster_names, merge_toggle, merge_mode, accordion, legend_hidden,
+        #   hne_show, hne_mono
+        # States(6): label_positions, session_id, marker_size, label_size,
+        #   hne_opacity, hne_marker_size
+        args=["S1", None, [], {}, False, None, rds_path, {}, 0, {}, 0,
+              {}, "separate", "shade", ["acc_spatial"], [], False, False,
+              {}, "sess-spatial", 3, 10, 100, 5],
         triggered_prop="interactive_sample.value")
     assert set(spatial) == {"spatial_plots_container", "last_spatial_figure_store"}
 
@@ -646,3 +650,158 @@ def test_spatial_and_umap_callbacks_return_expected_output_counts(
     assert umap_figs, "サンプル別 UMAP の figure が生成されていない"
     for f in umap_figs:
         assert f["layout"].get("uirevision"), "uirevision が設定されていない"
+
+
+# ---------------------------------------------------------------------------
+# 9. 見た目パラメータの後付け適用が「最初からその値で作った図」と一致すること
+# ---------------------------------------------------------------------------
+# マーカーサイズ等は clientside の Plotly.restyle で画面だけを更新し、
+# 一括保存の直前にサーバ側 figure へ同じ変換を掛けている。
+# ここが食い違うと「画面と保存した PNG が違う」という最悪の壊れ方をするため、
+# 後付け適用の結果が新規ビルドと一致することを固定する。
+
+def _marker_sizes(fig_dict):
+    return [t.get("marker", {}).get("size")
+            for t in fig_dict.get("data", [])
+            if isinstance(t.get("meta"), dict) and "dsz" in t["meta"]]
+
+
+def _marker_opacities(fig_dict):
+    return [t.get("marker", {}).get("opacity")
+            for t in fig_dict.get("data", [])
+            if isinstance(t.get("meta"), dict) and t["meta"].get("op")]
+
+
+def _label_sizes(fig_dict):
+    return [a.get("font", {}).get("size")
+            for a in fig_dict.get("layout", {}).get("annotations", [])]
+
+
+@pytest.mark.parametrize("marker_size", [3, 9, 0])
+def test_display_overrides_match_fresh_build(marker_size):
+    """後付け適用 == 最初からその値でビルド（マーカーサイズ）。"""
+    from app.utils.display_helpers import apply_display_overrides
+
+    fresh, _ = _spatial_fig(marker_size=marker_size)
+    built, _ = _spatial_fig(marker_size=1)          # 別の値で作ってから
+    patched = apply_display_overrides(built.to_dict(), marker_size=marker_size)
+
+    assert _marker_sizes(patched) == _marker_sizes(fresh.to_dict())
+    assert _marker_sizes(patched), "meta タグ付きトレースが 1 つも無い"
+
+
+def test_display_overrides_match_fresh_build_opacity_and_label():
+    """後付け適用 == 最初からその値でビルド（不透明度・ラベルサイズ）。"""
+    from app.utils.display_helpers import apply_display_overrides
+
+    fresh, _ = _spatial_fig(marker_size=4, spot_opacity=0.4,
+                            label_size=18, show_labels=True)
+    built, _ = _spatial_fig(marker_size=4, spot_opacity=1.0,
+                            label_size=10, show_labels=True)
+    patched = apply_display_overrides(built.to_dict(), marker_size=4,
+                                      spot_opacity=0.4, label_size=18)
+
+    fresh_d = fresh.to_dict()
+    assert _marker_opacities(patched) == _marker_opacities(fresh_d)
+    assert _label_sizes(patched) == _label_sizes(fresh_d)
+    assert _label_sizes(patched), "ラベル注記が 1 つも無い"
+
+
+def test_display_overrides_auto_uses_layout_meta():
+    """marker_size=0（自動）は layout.meta.auto_msz を使う。"""
+    from app.utils.display_helpers import apply_display_overrides
+
+    fig, _ = _spatial_fig(marker_size=7)
+    d = fig.to_dict()
+    auto = d["layout"]["meta"]["auto_msz"]
+    assert auto > 0
+    patched = apply_display_overrides(d, marker_size=0)
+    # dsz=0 のトレースはちょうど auto、dsz=1 のトレースは auto+1
+    sizes = set(_marker_sizes(patched))
+    assert sizes <= {auto, auto + 1} and auto in sizes
+
+
+def test_display_overrides_respects_tile_kind():
+    """kinds に合わない図は一切変更しない（通常用スライダーが H&E に効かない）。"""
+    from app.utils.display_helpers import apply_display_overrides
+
+    fig, _ = _spatial_fig(marker_size=4)
+    d = fig.to_dict()
+    before = _marker_sizes(d)
+    apply_display_overrides(d, marker_size=20, kinds=("hne",))
+    assert _marker_sizes(d) == before
+
+
+def test_display_overrides_ignores_untagged_traces():
+    """meta を持たないトレース（凡例ダミー等）は触らない。"""
+    from app.utils.display_helpers import apply_display_overrides
+
+    fig, _ = _spatial_fig(marker_size=4)
+    d = fig.to_dict()
+    untagged_before = [t.get("marker", {}).get("size")
+                       for t in d["data"] if not isinstance(t.get("meta"), dict)]
+    apply_display_overrides(d, marker_size=25, spot_opacity=0.1)
+    untagged_after = [t.get("marker", {}).get("size")
+                      for t in d["data"] if not isinstance(t.get("meta"), dict)]
+    assert untagged_before == untagged_after
+    assert untagged_before, "凡例ダミートレースが存在しない"
+
+
+def test_cosmetic_sliders_are_not_inputs_of_spatial_callback(dash_app):
+    """見た目スライダーが Input に戻っていないこと（戻ると全図再構築が復活する）。"""
+    import dash._callback as dc
+
+    key = [k for k in dc.GLOBAL_CALLBACK_MAP if "spatial_plots_container" in k][0]
+    spec = dc.GLOBAL_CALLBACK_MAP[key]
+    input_ids = {i["id"] for i in spec["inputs"]}
+    state_ids = {s["id"] for s in spec["state"]}
+    for cid in ("spatial_marker_size", "spatial_label_size",
+                "hne_overlay_opacity", "hne_overlay_marker_size"):
+        assert cid not in input_ids, f"{cid} が Input に戻っている"
+        assert cid in state_ids, f"{cid} が State から消えている"
+
+
+def test_perf_callbacks_are_registered_clientside(dash_app):
+    """パン/ズームのフィルタと見た目 restyle が **ブラウザ側** で動くこと。
+
+    ここがサーバ側コールバックとして登録されてしまうと、無音のまま
+    「ホイールを回すたびに POST」「スライダーのたびに全図再構築」に逆戻りする。
+    """
+    import dash._callback as dc
+
+    expected = {
+        "annotation_relayout_signal": ("relayout", "filter_annotations"),
+        "fs_annotation_relayout_signal": ("relayout", "filter_annotations"),
+    }
+    found = {}
+    restyle_fns = set()
+    for cb in dc.GLOBAL_CALLBACK_LIST:
+        out = str(cb.get("output"))
+        fn = cb.get("clientside_function")
+        for name in expected:
+            if out.startswith(name):
+                found[name] = (fn or {}).get("namespace"), (fn or {}).get("function_name")
+        if out.startswith("spatial_restyle_dummy"):
+            assert fn, "見た目 restyle がサーバ側コールバックになっている"
+            restyle_fns.add(fn["function_name"])
+
+    assert found == expected, f"relayout フィルタが clientside でない: {found}"
+    assert restyle_fns == {"marker_size", "label_size",
+                           "spot_opacity", "hne_marker_size"}, restyle_fns
+
+
+def test_no_server_callback_takes_relayoutdata_directly(dash_app):
+    """relayoutData をサーバ側 Input に直結したコールバックが復活しないこと。"""
+    import dash._callback as dc
+
+    offenders = []
+    clientside_outputs = {
+        str(cb.get("output")) for cb in dc.GLOBAL_CALLBACK_LIST
+        if cb.get("clientside_function")
+    }
+    for key, spec in dc.GLOBAL_CALLBACK_MAP.items():
+        if not any(i.get("property") == "relayoutData" for i in spec["inputs"]):
+            continue
+        if not any(o.startswith(key.split("@")[0]) for o in clientside_outputs):
+            offenders.append(key)
+    assert not offenders, f"サーバ側で relayoutData を受けている: {offenders}"

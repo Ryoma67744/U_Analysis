@@ -266,11 +266,12 @@ def update_feature_violin(feature_name, group_by, active_items,
         return go.Figure()
 
     arr = np.asarray(expr, dtype=float)
-    dfp = df.copy()
-    if len(arr) != len(dfp):
+    # ver46.1: violin はグループ列と発現量しか使わないので全列コピーは不要。
+    gcol = group_by if group_by in df.columns else "Cluster"
+    if len(arr) != len(df):
         return go.Figure()
+    dfp = df[[gcol]].copy()
     dfp["_expr"] = arr
-    gcol = group_by if group_by in dfp.columns else "Cluster"
     cats = sorted(dfp[gcol].astype(str).unique(), key=natural_cluster_key)
     color_map = _get_cluster_color_map(cats, custom_colors) if gcol == "Cluster" else {}
 
