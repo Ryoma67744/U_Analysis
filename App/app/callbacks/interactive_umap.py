@@ -115,7 +115,11 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                 name=_cluster_display_name(cat, cluster_name_map),
                 legendrank=rank,
                 text=df.loc[mask, "CellID"],
-                hovertemplate=f"{color_col}: {cat}<br>" + "%{text}<extra></extra>",
+                # ver46.3: cat（クラスタ値 / サンプル名）はデータ由来なので
+                # テンプレートに直接埋めず meta で渡す。color_col は
+                # "Cluster"/"Sample" の固定値なので埋め込みのままで安全。
+                meta=str(cat),
+                hovertemplate=f"{color_col}: " + "%{meta}<br>%{text}<extra></extra>",
             ))
 
     if show_labels:

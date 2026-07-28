@@ -632,7 +632,10 @@ def sv_update_feature_plot(feature, token):
                 showscale=True,
             ),
             text=df["CellID"],
-            hovertemplate=f"{feat_label}: " + "%{marker.color:.4f}<br>%{text}<extra></extra>",
+            # ver46.3: ラベルはユーザー提供のアノテーション由来のため meta 経由で渡す
+            # （テンプレート記法を含んでいても展開されない）。
+            meta=feat_label,
+            hovertemplate="%{meta}: %{marker.color:.4f}<br>%{text}<extra></extra>",
         ))
         fig.update_layout(
             xaxis_title="UMAP_1", yaxis_title="UMAP_2",

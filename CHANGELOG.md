@@ -72,9 +72,24 @@ run_app.py にもその旨を明記した。
 - heartbeat が兼ねている `cleanup_expired` / `evict_stale_project_states`（リーク防止）
   は抑制時も必ず実行することをテストで固定した。
 
+#### hovertemplate へのテキスト直接埋め込みを全廃
+
+ver46.2 で H&E オーバーレイ 1 箇所を直したが、同じ形が 3 箇所残っていた。
+いずれも **ユーザー提供のアノテーションファイル由来の化合物名**などが入るため、
+`%{x}` のような Plotly のテンプレート記法を含むとホバー時に展開されてしまう。
+
+- `interactive_deg.py`（Feature Plot の強度ラベル）
+- `share_callbacks.py`（共有ビューの強度ラベル）
+- `interactive_umap.py`（クラスタ値 / サンプル名）
+
+いずれも `meta` 経由で値として渡す形に統一した。あわせて、
+「hovertemplate に動的文字列を f-string で埋め込まない」ことを検査する
+テストを追加し、再発を防いでいる（`color_col` は "Cluster"/"Sample" の
+固定値のみのため例外として許可）。
+
 #### テスト
 
-単体 575 件 / E2E 14 件すべて通過。E2E はアプリを実際に起動するため、
+単体 576 件 / E2E 14 件すべて通過。E2E はアプリを実際に起動するため、
 waitress 経由での動作（gzip 維持を含む）もこれで確認できている。
 
 ---

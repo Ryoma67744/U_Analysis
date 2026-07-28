@@ -471,7 +471,11 @@ def update_feature_plot(feature_name, sample, marker_size,
                 mode="markers",
                 marker=fg_marker,
                 text=df_s["CellID"].values[visible_mask],
-                hovertemplate=f"{hover_label}: " + "%{marker.color:.4f}<br>%{text}<extra></extra>",
+                # ver46.3: ラベル(化合物名)はユーザー提供のアノテーションファイル由来で、
+                # "%{x}" 等の Plotly テンプレート記法を含み得る。hovertemplate に
+                # 直接埋めると展開されてしまうため meta 経由で値として渡す。
+                meta=hover_label,
+                hovertemplate="%{meta}: %{marker.color:.4f}<br>%{text}<extra></extra>",
                 showlegend=False,
             ))
 

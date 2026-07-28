@@ -889,3 +889,35 @@ def test_wsgi_server_defaults_to_waitress_single_worker():
 def test_wsgi_dependency_is_declared():
     for path in ("requirements.txt", "pyproject.toml"):
         assert "waitress" in (APP_ROOT / path).read_text(encoding="utf-8"), path
+
+
+# ---------------------------------------------------------------------------
+# 12. hovertemplate へのテキスト直接埋め込みの禁止 (ver46.3)
+# ---------------------------------------------------------------------------
+
+def test_no_hovertemplate_embeds_dynamic_text():
+    """動的な文字列を hovertemplate に f-string で埋め込まないこと。
+
+    クラスタ表示名や化合物名はユーザー（またはユーザー提供のアノテーション
+    ファイル）由来で、"%{x}" のような Plotly のテンプレート記法を含み得る。
+    直接埋め込むとホバー時に展開されてしまうため、meta 経由で値として渡す。
+    ブラウザでの挙動は tests/e2e/test_render_perf.py で検証している。
+    """
+    import re
+
+    offenders = []
+    for path in sorted((APP_ROOT / "app" / "callbacks").glob("*.py")):
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            m = re.search(r'hovertemplate=f"([^"]*)"', line)
+            if not m:
+                continue
+            # f-string 内の {...} のうち、Plotly の %{...} ではないもの＝Python の補間
+            body = m.group(1)
+            interpolations = [x for x in re.findall(r'(?<!%)\{([^}]*)\}', body)]
+            # 固定の安全な識別子（"Cluster"/"Sample" しか入らない color_col）だけ許可
+            risky = [x for x in interpolations if x not in ("color_col",)]
+            if risky:
+                offenders.append(f"{path.name}:{i}: {risky}")
+    assert not offenders, (
+        "hovertemplate に動的文字列を埋め込んでいる箇所がある "
+        "(meta 経由にすること):\n" + "\n".join(offenders))
