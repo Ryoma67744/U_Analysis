@@ -25,15 +25,43 @@ from app.utils.pptx_helpers import fig_to_png_bytes
 logger = logging.getLogger(__name__)
 
 
-def _get_export_figures(kind, session_id, rds_path):
+def _get_export_figures(kind, session_id, rds_path, *, marker_size=None,
+                        label_size=None, spot_opacity=None, hne_marker_size=None):
     """描画コールバックがサーバ側に置いた figure リストを取り出す (ver46.1)。
 
     以前は同じ内容を dcc.Store 経由でブラウザに持たせていたが、描画のたびに
     全タイルの点データが往復していたためサーバ保持に変更した。
+
+    さらに、マーカーサイズ / ラベルサイズ / スポット不透明度のスライダーは
+    clientside の Plotly.restyle で画面だけを更新する（サーバは作り直さない）ため、
+    保持している figure はスライダー操作前の値のままになっている。
+    保存直前にここで同じ変換を掛けて、**画面と保存 PNG を一致させる**。
+
     循環 import を避けるため関数内で遅延 import する。
     """
+    import copy
+
     from app.callbacks.interactive_callbacks import get_export_figures
-    return get_export_figures(kind, session_id, rds_path)
+    from app.utils.display_helpers import apply_display_overrides
+
+    figs = get_export_figures(kind, session_id, rds_path)
+    if not figs:
+        return figs
+    if all(v is None for v in (marker_size, label_size, spot_opacity,
+                               hne_marker_size)):
+        return figs
+    out = []
+    for name, fig in figs:
+        fig = copy.deepcopy(fig)  # 保持中の figure は壊さない
+        # 通常 (MSI) タイル用のスライダー
+        apply_display_overrides(fig, marker_size=marker_size,
+                                label_size=label_size,
+                                spot_opacity=spot_opacity, kinds=("msi",))
+        # H&E タイル用のスライダー（サイズだけ別系統。不透明度は共通）
+        apply_display_overrides(fig, marker_size=hne_marker_size,
+                                spot_opacity=spot_opacity, kinds=("hne",))
+        out.append((name, fig))
+    return out
 
 # ---------------------------------------------------------------------------
 # 表示サイズ定数（CSS で指定している値に合わせる）
@@ -215,13 +243,22 @@ def cb_batch_save_umap(n_clicks, umap_fig, display_mode, session_id, rds_path):
     Output("dl_batch_zip", "data", allow_duplicate=True),
     Input("btn_batch_save_spatial", "n_clicks"),
     [State("session_id_store", "data"),
-     State("seurat_rds_path_store", "data")],
+     State("seurat_rds_path_store", "data"),
+     State("spatial_marker_size", "value"),
+     State("spatial_label_size", "value"),
+     State("hne_overlay_opacity", "value"),
+     State("hne_overlay_marker_size", "value")],
     prevent_initial_call=True,
 )
-def cb_batch_save_spatial(n_clicks, session_id, rds_path):
+def cb_batch_save_spatial(n_clicks, session_id, rds_path, marker_size,
+                          label_size, hne_opacity, hne_marker_size):
     if not n_clicks:
         raise PreventUpdate
-    spatial_figs = _get_export_figures("spatial", session_id, rds_path)
+    spatial_figs = _get_export_figures(
+        "spatial", session_id, rds_path,
+        marker_size=marker_size, label_size=label_size,
+        spot_opacity=(None if hne_opacity is None else hne_opacity / 100.0),
+        hne_marker_size=hne_marker_size)
 
     if not spatial_figs:
         raise PreventUpdate
@@ -405,13 +442,22 @@ def _save_figure_as_thumbnail(figures_list, width, height, scale,
     [State("interactive_project_select", "value"),
      State("project_list_refresh", "data"),
      State("session_id_store", "data"),
-     State("seurat_rds_path_store", "data")],
+     State("seurat_rds_path_store", "data"),
+     State("spatial_marker_size", "value"),
+     State("spatial_label_size", "value"),
+     State("hne_overlay_opacity", "value"),
+     State("hne_overlay_marker_size", "value")],
     prevent_initial_call=True,
 )
-def cb_set_thumbnail_spatial(n_clicks, project_id, refresh, session_id, rds_path):
+def cb_set_thumbnail_spatial(n_clicks, project_id, refresh, session_id, rds_path,
+                             marker_size, label_size, hne_opacity, hne_marker_size):
     if not n_clicks:
         raise PreventUpdate
-    spatial_figs = _get_export_figures("spatial", session_id, rds_path)
+    spatial_figs = _get_export_figures(
+        "spatial", session_id, rds_path,
+        marker_size=marker_size, label_size=label_size,
+        spot_opacity=(None if hne_opacity is None else hne_opacity / 100.0),
+        hne_marker_size=hne_marker_size)
     # ver3.15: サムネ用に小さい解像度で kaleido を呼ぶ (5-10× 高速化)
     ok, msg = _save_figure_as_thumbnail(
         spatial_figs or [],

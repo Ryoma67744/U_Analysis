@@ -48,12 +48,21 @@ clientside_callback(
     Input("edit_lock_heartbeat", "n_intervals"),
     State("seurat_rds_path_store", "data"),
     State("session_id_store", "data"),
+    State("edit_lock_state", "data"),
     prevent_initial_call=False,
 )
-def refresh_edit_lock_state(_n, rds_path, _session_id):
+def refresh_edit_lock_state(_n, rds_path, _session_id, current=None):
     """heartbeat 間隔で全 lock 状態を Store に同期 + 期限切れを削除。
 
     並行して _project_states の stale eviction も実行 (リソースリーク防止)。
+
+    ver46.3: **内容が変わっていなければ `no_update` を返す。**
+    従来は毎ティック新しい dict を返していたため、Store の値が実質同じでも
+    Dash は「変化した」と見なし、`edit_lock_state` を Input にする 6 つの
+    コールバックへ扇形に配信していた。うち 4 つは MATCH でサンプル別 /
+    クラスタ別コンポーネントに展開されるため、8 サンプル × 15 クラスタ規模では
+    **10 秒ごとに数十件のコールバック実行**が、パン/ズームや描画と同じ
+    サーバに積まれていた。ロックは滅多に変わらないので、ほぼ常に抑制できる。
     """
     elm.cleanup_expired()
     # PR-H3 C1: project state も heartbeat で stale eviction
@@ -62,9 +71,10 @@ def refresh_edit_lock_state(_n, rds_path, _session_id):
         evict_stale_project_states()
     except Exception:
         pass
-    if not rds_path:
-        return {}
-    return elm.get_locks_for_project(rds_path)
+    new_state = {} if not rds_path else elm.get_locks_for_project(rds_path)
+    if current is not None and new_state == current:
+        return no_update
+    return new_state
 
 
 # ---------------------------------------------------------------------------

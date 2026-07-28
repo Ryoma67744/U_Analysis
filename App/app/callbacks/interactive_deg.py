@@ -336,8 +336,12 @@ def update_feature_plot(feature_name, sample, marker_size,
             expression = _bridge.get_feature_expression(rds_path, feature_name)
 
         # expression を df に結合（CellID順で対応）
-        df_plot = df.copy()
-        df_plot["_expression"] = expression
+        # ver46.1: 発現量 1 列を足すためだけに 10 万行の全列コピーをしていた。
+        # Feature Plot が使う列だけを取り出す。
+        _cols = [c for c in ("Sample", "SpatialX", "SpatialY", "CellID", "TotalCount")
+                 if c in df.columns]
+        df_plot = df[_cols].copy()
+        df_plot["_expression"] = np.asarray(expression)
 
         # 表示対象サンプル
         if sample:
@@ -467,7 +471,11 @@ def update_feature_plot(feature_name, sample, marker_size,
                 mode="markers",
                 marker=fg_marker,
                 text=df_s["CellID"].values[visible_mask],
-                hovertemplate=f"{hover_label}: " + "%{marker.color:.4f}<br>%{text}<extra></extra>",
+                # ver46.3: ラベル(化合物名)はユーザー提供のアノテーションファイル由来で、
+                # "%{x}" 等の Plotly テンプレート記法を含み得る。hovertemplate に
+                # 直接埋めると展開されてしまうため meta 経由で値として渡す。
+                meta=hover_label,
+                hovertemplate="%{meta}: %{marker.color:.4f}<br>%{text}<extra></extra>",
                 showlegend=False,
             ))
 

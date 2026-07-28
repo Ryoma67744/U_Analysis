@@ -110,6 +110,53 @@ def _signal_handler(signum, frame):
     sys.exit(0)
 
 
+# ---------------------------------------------------------------------------
+# WSGI サーバ (ver46.3)
+# ---------------------------------------------------------------------------
+# 従来は Flask の `app.run()` = Werkzeug 開発サーバで本番運用していた。
+# waitress は純 Python の本番用 WSGI サーバで、追加のシステム依存が無く
+# （gunicorn と違い C 拡張もプロセスマネージャも不要）、Dockerfile を変えずに
+# 差し替えられる。接続まわり・タイムアウト・バックプレッシャの扱いが堅い。
+#
+# **ワーカーは 1 プロセスのままにすること。** このアプリは読み込んだ
+# `plot_data`（数百 MB）やエクスポート用 figure、H&E 画像キャッシュを
+# **プロセス内メモリ**に保持しており（interactive_callbacks._project_states 等）、
+# 複数ワーカーにすると「別ワーカーに当たった瞬間データ未ロード扱い」になる。
+# マルチプロセス化する場合は、それらを diskcache 等の共有ストアへ移すのが先。
+# スレッド数だけは MSI_WSGI_THREADS で調整できる（既定 8）。
+#
+# MSI_WSGI_SERVER=werkzeug で従来どおりの起動に戻せる（切り分け用）。
+_WSGI_SERVER = os.environ.get("MSI_WSGI_SERVER", "waitress").strip().lower()
+_WSGI_THREADS = int(os.environ.get("MSI_WSGI_THREADS", "8"))
+
+
+def _serve():
+    """設定に応じて WSGI サーバを起動する（ブロックする）。"""
+    if _WSGI_SERVER == "waitress":
+        try:
+            from waitress import serve as _waitress_serve
+        except ImportError:
+            logger.warning(
+                "waitress が見つからないため Werkzeug 開発サーバで起動します "
+                "(pip install waitress を推奨)")
+        else:
+            logger.info("Serving with waitress (threads=%d, workers=1)",
+                        _WSGI_THREADS)
+            _waitress_serve(
+                app.server, host=APP_HOST, port=APP_PORT,
+                threads=_WSGI_THREADS,
+                # 解析ジョブの応答が長いので既定 (120s) では切れる。
+                # Caddy 側も read/write 600s に合わせてある。
+                channel_timeout=int(os.environ.get("MSI_WSGI_TIMEOUT_SEC", "600")),
+                # 大きな figure JSON を返すのでバッファを大きめに取る
+                outbuf_overflow=1 << 24,
+                ident="MSI",
+            )
+            return
+    logger.info("Serving with Werkzeug development server")
+    app.run(debug=False, host=APP_HOST, port=APP_PORT)
+
+
 def main():
     """アプリケーションのエントリーポイント。"""
     # graceful shutdown 用のシグナルハンドラを登録
@@ -134,13 +181,13 @@ def main():
         threading.Timer(5.0, _periodic_metrics_logger).start()
 
     try:
-        app.run(debug=False, host=APP_HOST, port=APP_PORT)
+        _serve()
     except SystemExit:
         raise
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt received, exiting")
     finally:
-        # app.run() がブロックを抜けた時 (graceful 完了 / 例外) も flush
+        # サーバがブロックを抜けた時 (graceful 完了 / 例外) も flush
         if not _shutdown_event.is_set():
             _flush_logs_and_caches()
 

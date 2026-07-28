@@ -13,7 +13,7 @@ import numpy as np
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
 from dash import (Input, Output, State, callback, ctx, no_update, html, dcc,
-                  ALL, MATCH)
+                  ALL, MATCH, ClientsideFunction, clientside_callback)
 from dash.exceptions import PreventUpdate
 
 from app.config import CLUSTER_PRESET_COLORS, HIGHLIGHT_GRAY
@@ -56,6 +56,23 @@ def _transform_coords(x, y, angle_deg, flip_h=False, flip_v=False):
     x_rot = cos_a * (x - cx) - sin_a * (y - cy) + cx
     y_rot = sin_a * (x - cx) + cos_a * (y - cy) + cy
     return x_rot, y_rot
+
+
+# ---------------------------------------------------------------------------
+# トレースの「見た目の役割」タグ (ver46.1)
+# ---------------------------------------------------------------------------
+# マーカーサイズ / スポット不透明度のスライダーは図のデータを変えないので、
+# サーバで全図を作り直さず clientside の Plotly.restyle で更新する
+# (assets/spatial_restyle.js)。JS 側がトレース構成を仮定しないで済むよう、
+# 各トレースに「基準サイズからの差分」と「スポット不透明度を適用するか」を
+# meta として持たせる。凡例ダミーなど触ってほしくないトレースには付けない。
+#
+#   dsz : 基準マーカーサイズからの差分 (0 or 1)
+#   op  : True なら spot_opacity スライダーの対象
+_MSZ_BG = {"dsz": 0, "op": False}          # TIC / 灰色の背景
+_MSZ_SPOT = {"dsz": 0, "op": True}          # クラスタ色スポット
+_MSZ_SPOT_PLUS1 = {"dsz": 1, "op": True}    # ハイライト時のクラスタ色スポット
+_MSZ_PLUS1 = {"dsz": 1, "op": False}        # 選択セルの赤ハイライト
 
 
 def _cluster_names_for(cluster_str, cluster_name_map):
@@ -163,25 +180,19 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
     cluster_str = df_sample["Cluster"].astype(str)
     cluster_str_values = cluster_str.values
 
-    # marker_size=0 の場合、データ密度ベースで自動計算（隙間ゼロ）
-    if marker_size <= 0 and len(plot_x) > 1:
-        sorted_ux = np.sort(np.unique(plot_x))
-        if len(sorted_ux) > 1:
-            min_spacing = float(np.min(np.diff(sorted_ux)))
-            x_range = float(plot_x.max() - plot_x.min())
-            y_range = float(plot_y.max() - plot_y.min()) if len(plot_y) > 1 else 1.0
-            # scaleanchor="x" のため、描画幅は高さ×アスペクト比で決定
-            # render_height 指定時はそれを使用、未指定時はWebデフォルト310px
-            effective_h = render_height or 310
-            if y_range > 0 and x_range > 0:
-                effective_w = effective_h * (x_range / y_range)
-                marker_size = max(2.0, min_spacing * effective_w / x_range * scale_factor)
-            else:
-                marker_size = 4
-        else:
-            marker_size = 4
-    elif marker_size <= 0:
-        marker_size = 4
+    # 「自動」時のマーカーサイズ（データ密度ベース＝隣接点が接するサイズ）。
+    # ver46.1: 従来は marker_size<=0 のときだけ計算していたが、常に計算して
+    # layout.meta に載せる。マーカーサイズスライダーは clientside の
+    # Plotly.restyle で更新するため、「自動」に戻されたときの基準値を
+    # サーバに問い合わせずブラウザ側で復元できる必要があるため。
+    # （計算内容は従来のインライン実装と同一。重複を解消して helper に一本化した）
+    auto_msz = _calc_zero_gap_marker_size(
+        plot_x, plot_y,
+        render_height=render_height or 310,
+        scale_factor=scale_factor,
+    )
+    if marker_size <= 0:
+        marker_size = auto_msz
 
     if selected_cell_ids:
         mask_selected = df_sample["CellID"].isin(selected_cell_ids).values
@@ -201,6 +212,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 mode="markers",
                 marker=bg_marker,
                 name=bg_name, showlegend=False, hoverinfo="skip",
+                meta=_MSZ_BG,
             ))
         if mask_selected.any():
             fig.add_trace(go.Scattergl(
@@ -209,6 +221,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 mode="markers",
                 marker=dict(size=marker_size + 1, symbol="square", color="red"),
                 name=f"Selected ({mask_selected.sum()})",
+                meta=_MSZ_PLUS1,
             ))
     elif highlight_clusters and len(highlight_clusters) > 0:
         highlight_set = set(str(c) for c in highlight_clusters)
@@ -229,6 +242,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 mode="markers",
                 marker=bg_marker,
                 name=bg_name, showlegend=False, hoverinfo="skip",
+                meta=_MSZ_BG,
             ))
         # ハイライトクラスタを色付きで描画
         for cl in sorted(highlight_clusters, key=lambda x: _cluster_sort_key(x), reverse=True):
@@ -243,6 +257,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                                 opacity=spot_opacity),
                     name=_cluster_display_name(cl, cluster_name_map),
                     legendgroup=_cluster_display_name(cl, cluster_name_map),
+                    meta=_MSZ_SPOT_PLUS1,
                 ))
     else:
         if embed_legend:
@@ -270,6 +285,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 marker=bg_marker,
                 showlegend=False, hoverinfo="skip",
                 name="_background_tic",
+                meta=_MSZ_BG,
             ))
             # 凡例リンク用: クラスタ別個別トレース（legendgroup でダミーと連動）
             for cl in sorted(df_sample["Cluster"].unique(), key=_cluster_sort_key):
@@ -283,12 +299,21 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                                     color=color_map.get(str(cl), "#999999"),
                                     opacity=spot_opacity),
                         # ver46.1: 同一文字列を点数ぶん並べた配列だった（5 万点で
-                        # 約 0.7MB の純粋な無駄）。Plotly はスカラーを全点へ
-                        # ブロードキャストするので %{text} の表示は変わらない。
-                        text=_cluster_display_name(cl, cluster_name_map),
-                        hovertemplate="%{text}<extra></extra>",
+                        # 約 0.7MB の純粋な無駄）。
+                        #
+                        # ver46.2: `text=<スカラー>` + `hovertemplate="%{text}"` は
+                        # **動かない**。plotly.py はスカラーをそのまま直列化するが、
+                        # plotly.js は scattergl の `%{text}` をスカラーから解決できず、
+                        # ツールチップに文字列 "%{text}" がそのまま出ていた。
+                        # `hovertext`(スカラー可) + `hoverinfo="text"` なら
+                        # 全点に同じ文字列が出る（配列を作らずに済む点は同じ）。
+                        # テンプレート解釈が入らないので、ユーザーが変更できる
+                        # クラスタ名に "%{...}" が含まれていても安全。
+                        hovertext=_cluster_display_name(cl, cluster_name_map),
+                        hoverinfo="text",
                         name=_cluster_display_name(cl, cluster_name_map), showlegend=False,
                         legendgroup=_cluster_display_name(cl, cluster_name_map),
+                        meta=_MSZ_SPOT,
                     ))
         elif cluster_to_idx is not None and discrete_cscale is not None:
             # 数値インデックス + discrete colorscale 方式
@@ -309,6 +334,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 text=_cluster_names_for(cluster_str, cluster_name_map),
                 hovertemplate="%{text}<extra></extra>",
                 showlegend=False,
+                meta=_MSZ_SPOT,
             ))
         else:
             # フォールバック: HEX文字列配列方式
@@ -320,6 +346,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                 text=_cluster_names_for(cluster_str, cluster_name_map),
                 hovertemplate="%{text}<extra></extra>",
                 showlegend=False,
+                meta=_MSZ_SPOT,
             ))
         # 凡例用ダミートレース。全クラスタ分のスロットを作り、この図に存在するクラスタは
         # 色付き、欠番は「空白スロット」(透明＋空白名)で位置を保持＝全図で番号の縦位置がそろう。
@@ -374,6 +401,10 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
         # 保持する。座標が変わる操作 (サンプル切替・回転・反転) では呼び出し側が
         # 別の値を渡すのでリセットされる。
         uirevision=uirevision,
+        # ver46.1: clientside restyle 用のタイル情報。
+        # kind でどのスライダーの対象かを判別し、auto_msz を「自動」時の基準サイズにする。
+        meta=dict(kind="msi", auto_msz=float(auto_msz),
+                  label_size=float(label_size or 10)),
     )
     if title:
         layout_opts["title"] = dict(text=title, font=dict(size=title_font_size or 14), x=0.5)
@@ -979,14 +1010,18 @@ def auto_feature_marker(n_clicks, rotation_store, sample):
 @callback(
     [Output("spatial_plots_container", "children"),
      Output("last_spatial_figure_store", "data")],
+    # ver46.1: マーカーサイズ / ラベルサイズ / スポット不透明度 / H&E スポットサイズは
+    # figure の **データ** を変えないので Input から外し State にした。これらは
+    # assets/spatial_restyle.js の clientside callback が Plotly.restyle で直接
+    # 反映するため、スライダー操作ではサーバ往復も再描画も発生しない。
+    # State に残しているのは、別の理由で作り直すとき (サンプル切替など) に
+    # 現在値で図を組み立てるため。
     [Input("interactive_sample", "value"),
      Input("spatial_highlight_cluster", "value"),
      Input("selected_cell_ids_store", "data"),
      Input("spatial_rotation_store", "data"),
      Input("spatial_show_labels", "value"),
-     Input("spatial_marker_size", "value"),
      Input("spatial_exclude_cluster", "value"),
-     Input("spatial_label_size", "value"),
      Input("seurat_rds_path_store", "data"),
      Input("sample_name_map_store", "data"),
      Input("fullscreen_closed_trigger", "data"),
@@ -998,20 +1033,23 @@ def auto_feature_marker(n_clicks, rotation_store, sample):
      Input("interactive_accordion", "active_item"),
      Input("spatial_legend_hidden_store", "data"),
      Input("hne_overlay_show", "value"),
-     Input("hne_overlay_opacity", "value"),
-     Input("hne_overlay_marker_size", "value"),
      Input("hne_overlay_mono", "value")],
     [State("accumulated_label_positions", "data"),
-     State("session_id_store", "data")],
+     State("session_id_store", "data"),
+     State("spatial_marker_size", "value"),
+     State("spatial_label_size", "value"),
+     State("hne_overlay_opacity", "value"),
+     State("hne_overlay_marker_size", "value")],
 )
 def update_spatial_plots(sample, highlight_clusters, selected_ids,
-                         rotation_store, show_labels, marker_size,
-                         exclude_clusters, label_size, rds_path, name_map,
+                         rotation_store, show_labels,
+                         exclude_clusters, rds_path, name_map,
                          _fs_trigger, custom_colors, rows,
                          cluster_name_map, merge_toggle, merge_color_mode,
-                         active_items, legend_hidden, hne_show, hne_opacity,
-                         hne_marker_size, hne_mono, accumulated_positions,
-                         session_id=None):
+                         active_items, legend_hidden, hne_show,
+                         hne_mono, accumulated_positions,
+                         session_id=None, marker_size=0, label_size=10,
+                         hne_opacity=100, hne_marker_size=5):
     active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
     if "acc_spatial" not in active_list:
         return no_update, no_update
@@ -1042,8 +1080,12 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
     plot_df = df
     effective_custom_colors = custom_colors
     if merge_toggle == "merged" and "Cluster_merged" in df.columns:
-        plot_df = df.copy()
-        plot_df["Cluster"] = plot_df["Cluster_merged"]
+        # ver46.1: 従来は 10 万行の全列コピーだった。Spatial 描画が使う列だけを
+        # 取り出せば足りる（UMAP 座標やマージ前後の別列は使わない）。
+        _cols = [c for c in ("Sample", "SpatialX", "SpatialY", "CellID", "TotalCount")
+                 if c in df.columns]
+        plot_df = df[_cols].copy()
+        plot_df["Cluster"] = df["Cluster_merged"].to_numpy()
         effective_custom_colors = _get_merged_cluster_color_map(
             plot_df["Cluster"], mode=merge_color_mode or "shade"
         )
@@ -1374,3 +1416,24 @@ def reflect_cluster_color_lock(lock_state, comp_id, my_session_id):
     if owner and owner.get("user_id") != my_session_id:
         return True, f"編集中: {owner.get('user_display', '?')}"
     return False, ""
+
+
+# ---------------------------------------------------------------------------
+# 見た目だけのコントロール → clientside restyle (ver46.1)
+# ---------------------------------------------------------------------------
+# これらのスライダーは figure のデータを変えないため、サーバで作り直さず
+# ブラウザ側で Plotly.restyle する（assets/spatial_restyle.js）。
+# Output はダミー Store。実際の更新は JS が DOM 上のグラフに直接行う。
+
+for _slider_id, _fn in (
+    ("spatial_marker_size", "marker_size"),
+    ("spatial_label_size", "label_size"),
+    ("hne_overlay_opacity", "spot_opacity"),
+    ("hne_overlay_marker_size", "hne_marker_size"),
+):
+    clientside_callback(
+        ClientsideFunction(namespace="spatial_restyle", function_name=_fn),
+        Output("spatial_restyle_dummy", "data", allow_duplicate=True),
+        Input(_slider_id, "value"),
+        prevent_initial_call=True,
+    )

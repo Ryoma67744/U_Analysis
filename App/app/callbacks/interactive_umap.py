@@ -115,7 +115,11 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                 name=_cluster_display_name(cat, cluster_name_map),
                 legendrank=rank,
                 text=df.loc[mask, "CellID"],
-                hovertemplate=f"{color_col}: {cat}<br>" + "%{text}<extra></extra>",
+                # ver46.3: cat（クラスタ値 / サンプル名）はデータ由来なので
+                # テンプレートに直接埋めず meta で渡す。color_col は
+                # "Cluster"/"Sample" の固定値なので埋め込みのままで安全。
+                meta=str(cat),
+                hovertemplate=f"{color_col}: " + "%{meta}<br>%{text}<extra></extra>",
             ))
 
     if show_labels:
@@ -502,10 +506,12 @@ def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
     plot_df = df
     effective_custom_colors = custom_colors
     if merge_toggle == "merged" and df is not None and "Cluster_merged" in df.columns:
-        plot_df = df.copy()
-        plot_df["Cluster"] = plot_df["Cluster_merged"]
-        plot_df["UMAP_1"] = plot_df["UMAP_1_merged"]
-        plot_df["UMAP_2"] = plot_df["UMAP_2_merged"]
+        # ver46.1: 全列コピーをやめ、UMAP 描画が使う列だけを組み立てる。
+        _cols = [c for c in ("Sample", "CellID") if c in df.columns]
+        plot_df = df[_cols].copy()
+        plot_df["Cluster"] = df["Cluster_merged"].to_numpy()
+        plot_df["UMAP_1"] = df["UMAP_1_merged"].to_numpy()
+        plot_df["UMAP_2"] = df["UMAP_2_merged"].to_numpy()
         effective_custom_colors = _get_merged_cluster_color_map(
             plot_df["Cluster"], mode=merge_color_mode or "shade"
         )

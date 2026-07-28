@@ -1834,6 +1834,12 @@ def create_interactive_tab():
         dcc.Store(id="feature_history_store", data=[]),
         # フルスクリーン閉じトリガー
         dcc.Store(id="fullscreen_closed_trigger", data=0),
+        # ver46.1: フルスクリーンを開いた時点のラベル位置の指紋。閉じたときに
+        # 比較し、変化が無ければメインプロットの再描画をスキップする。
+        dcc.Store(id="fs_label_positions_snapshot", data=None),
+        # ver46.1: 見た目スライダーの clientside restyle 用ダミー Output。
+        # 実際の更新は assets/spatial_restyle.js が DOM のグラフへ直接行う。
+        dcc.Store(id="spatial_restyle_dummy", data=None),
         # 軽量ビューア「開く」前の設定 flush 完了シグナル（タイムスタンプ）
         # clientside_callback はこの Store の data 変化で window.open を発火する
         dcc.Store(id="lite_viewer_open_signal", data=0),

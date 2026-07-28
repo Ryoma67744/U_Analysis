@@ -193,10 +193,16 @@ def build_hne_overlay_fig(df_sample, rds_path, sample, *, title=None, opacity=70
         name = _cluster_display_name(cl, cluster_name_map)
         kw = dict(x=px_x[mask], y=px_y[mask], mode="markers",
                   marker=dict(size=ms, color=color_map.get(cl, "#999999"), opacity=op),
-                  name=name, showlegend=False, legendgroup=name)
+                  name=name, showlegend=False, legendgroup=name,
+                  # ver46.1: clientside restyle 対象（サイズ・不透明度スライダー）
+                  # ver46.2: クラスタ表示名も meta で渡す。従来は hovertemplate に
+                  # f-string で直接埋めていたが、クラスタ名はユーザーが変更でき、
+                  # "%{x}" のような Plotly のテンプレート記法を含むとホバーで
+                  # 展開されてしまう。meta 経由なら値として扱われ再解釈されない。
+                  meta={"dsz": 0, "op": True, "nm": name})
         if cell_ids is not None:
             kw["text"] = cell_ids[mask]
-            kw["hovertemplate"] = f"Cluster: {name}<br>%{{text}}<extra></extra>"
+            kw["hovertemplate"] = "Cluster: %{meta.nm}<br>%{text}<extra></extra>"
         fig.add_trace(go.Scattergl(**kw))
         if show_labels:
             fig.add_annotation(x=float(px_x[mask].mean()), y=float(px_y[mask].mean()),
@@ -226,6 +232,9 @@ def build_hne_overlay_fig(df_sample, rds_path, sample, *, title=None, opacity=70
     fig.update_layout(
         margin=dict(l=10, r=10, t=max(24, 10), b=10), plot_bgcolor="white",
         showlegend=True, legend=dict(itemsizing="constant", font=dict(size=10)),
+        # ver46.1: H&E タイルであることと基準マーカーサイズを clientside に伝える。
+        # kind="hne" なので H&E 用スライダーだけが対象になる（通常タイルとは分離）。
+        meta=dict(kind="hne", auto_msz=float(ms), label_size=10.0),
         # ver46.1: 透明度・マーカーサイズ・モノクロ切替ではズーム/パンを保持し、
         # 座標系が変わる要素 (サンプル / 表示倍率) が変わったときだけリセットする。
         uirevision=_transform_uirevision(sample, None, extra=f"hne:{img_scale:.4f}"),
