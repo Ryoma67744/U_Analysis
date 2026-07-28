@@ -258,6 +258,113 @@ class _InteractiveDataProxy:
 _interactive_data = _InteractiveDataProxy()
 
 
+# ---------------------------------------------------------------------------
+# エクスポート用 figure のサーバ側保持 (ver46.1)
+# ---------------------------------------------------------------------------
+# 従来は Spatial/UMAP/Feature の各描画コールバックが、表示用の figure に加えて
+# 同じ figure を dcc.Store (batch_*_figures_store) にも詰めて返していた。これらの
+# Store は「一括保存」「サムネ登録」ボタンでしか読まれないのに、**描画のたびに**
+# 全タイル分の点データがブラウザへ送られ、ボタン押下時にサーバへ送り返されていた
+# （1 操作あたり実質 2 倍の転送量）。
+#
+# figure はサーバ側に置き、ボタン押下時に取り出す。同一プロジェクトを複数ユーザーが
+# 別々の表示設定で見ている場合に中身が混ざらないよう、session_id も鍵に含める。
+#
+# 注意: これはプロセス内メモリなので、`background=True` のコールバック
+# (multiprocess で spawn される) からは見えない。参照元は全て通常コールバックで
+# あることを確認済み (interactive_batch_save.py)。将来 gunicorn 等でマルチ
+# ワーカー化する場合は diskcache 等の共有ストアへ移すこと。
+_MAX_EXPORT_FIG_ENTRIES = int(os.environ.get("MAX_EXPORT_FIG_ENTRIES", 24))
+_EXPORT_FIG_TTL_SEC = int(os.environ.get("EXPORT_FIG_TTL_SEC", 30 * 60))
+_export_figures: "OrderedDict[tuple, list]" = OrderedDict()
+_export_figures_time: dict[tuple, float] = {}
+_export_figures_lock = threading.Lock()
+
+
+def _export_key(kind: str, session_id, rds_path):
+    return (str(kind), str(session_id or "__nosession__"), str(rds_path or ""))
+
+
+def set_export_figures(kind: str, session_id, rds_path, figures) -> None:
+    """描画コールバックが作った (名前, figure dict) のリストをサーバ側に保持する。
+
+    figures: [(name, fig_dict), ...]。空リストも「今は無い」として正しく保持する。
+    """
+    key = _export_key(kind, session_id, rds_path)
+    now = time.time()
+    with _export_figures_lock:
+        _export_figures[key] = figures
+        _export_figures.move_to_end(key)  # LRU: 末尾 = 最近使用
+        _export_figures_time[key] = now
+        # TTL 超過を掃除
+        for k in [k for k, ts in _export_figures_time.items()
+                  if (now - ts) > _EXPORT_FIG_TTL_SEC and k != key]:
+            _export_figures.pop(k, None)
+            _export_figures_time.pop(k, None)
+        # 件数上限 (最古から)
+        while len(_export_figures) > _MAX_EXPORT_FIG_ENTRIES:
+            k, _ = _export_figures.popitem(last=False)
+            _export_figures_time.pop(k, None)
+
+
+def get_export_figures(kind: str, session_id, rds_path) -> list:
+    """保持済みの (名前, figure dict) リストを返す。無ければ空リスト。"""
+    key = _export_key(kind, session_id, rds_path)
+    with _export_figures_lock:
+        figs = _export_figures.get(key)
+        if figs is not None:
+            _export_figures.move_to_end(key)
+            _export_figures_time[key] = time.time()
+            return figs
+    return []
+
+
+# ---------------------------------------------------------------------------
+# アコーディオン開閉による無関係な再描画の抑制 (ver46.1)
+# ---------------------------------------------------------------------------
+# interactive_accordion は always_open=True で、`active_item` は「今開いている
+# セクションのリスト」。この値は Spatial / UMAP / 選択サマリの重い描画コールバック
+# の Input になっているため、**どのセクションを開閉しても**、開いている図が
+# 全部作り直されていた（例: Feature Plot を開いただけで Spatial の全タイルが再構築）。
+#
+# セクションごとに「前回この描画が見た開閉状態」を覚えておき、accordion 単独の
+# 発火で、かつ当該セクションの開閉が変わっていないなら再描画を省く。
+#
+# 安全側に倒す方針: 記録が無い / 判断がつかない場合は必ず再描画する。
+# 誤って抑制すると図が古いまま残るため、「遅い」より悪い結果になる。
+_accordion_seen: "OrderedDict[tuple, bool]" = OrderedDict()
+_accordion_seen_lock = threading.Lock()
+_MAX_ACCORDION_SEEN = 256
+
+
+def accordion_toggle_is_noop(section: str, session_id, rds_path,
+                             active_items, triggered_id) -> bool:
+    """accordion の開閉だけが理由の発火で、当該セクションの状態が不変なら True。
+
+    True を返した呼び出し元は no_update を返してよい（＝再描画不要）。
+    """
+    active_list = (active_items if isinstance(active_items, list)
+                   else ([active_items] if active_items else []))
+    is_open = section in active_list
+    key = (str(section), str(session_id or "__nosession__"), str(rds_path or ""))
+
+    with _accordion_seen_lock:
+        prev = _accordion_seen.get(key)
+        _accordion_seen[key] = is_open
+        _accordion_seen.move_to_end(key)
+        while len(_accordion_seen) > _MAX_ACCORDION_SEEN:
+            _accordion_seen.popitem(last=False)
+
+    # accordion 以外がトリガー → 通常の再描画（表示内容が変わっている）
+    if triggered_id != "interactive_accordion":
+        return False
+    # 初回（記録が無い）→ 必ず描画する
+    if prev is None:
+        return False
+    # 当該セクションの開閉が変わったときだけ描画する
+    return prev == is_open
+
+
 # キャリブレーション・アノテーション関連は interactive_calibration.py に分離済み
 # 循環import回避のため、使用箇所で遅延importする
 

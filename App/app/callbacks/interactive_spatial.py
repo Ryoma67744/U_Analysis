@@ -27,6 +27,7 @@ from app.utils.color_utils import (
 from app.utils.display_helpers import (
     display_name as _display_name,
     facet_block as _facet_block,
+    transform_uirevision as _transform_uirevision,
 )
 from app.callbacks.interactive_hne_bg import build_hne_overlay_fig as _build_hne_overlay_fig
 
@@ -55,6 +56,47 @@ def _transform_coords(x, y, angle_deg, flip_h=False, flip_v=False):
     x_rot = cos_a * (x - cx) - sin_a * (y - cy) + cx
     y_rot = sin_a * (x - cx) + cos_a * (y - cy) + cy
     return x_rot, y_rot
+
+
+def _cluster_names_for(cluster_str, cluster_name_map):
+    """クラスタ列 (str) を表示名の list に変換する（ver46.1）。
+
+    従来は点ごとに `_cluster_display_name()` を呼ぶ内包表記だった（10 万点なら
+    10 万回の Python 関数呼び出し）。ユニーク値ぶんだけ解決して map するので、
+    出力は同一のままクラスタ数ぶんの呼び出しで済む。
+    """
+    lookup = {c: _cluster_display_name(c, cluster_name_map)
+              for c in cluster_str.unique()}
+    return cluster_str.map(lookup).tolist()
+
+
+def _round_for_display(x, y):
+    """表示用に座標の有効桁を落とす（JSON 転送量の削減、ver46.1）。
+
+    回転/反転をかけると座標は float64 の 17 桁表記になり、JSON では 1 点あたり
+    約 19 バイトになる。データ範囲の約 1/100000 の量子化まで丸めれば表示上の差は
+    視認できず、転送量は 2〜3 倍小さくなる。
+
+    範囲に対する相対量で丸めるため、座標の単位（画素 / µm / mm）に依存しない。
+
+    figure を作る経路（画面表示・一括保存 PNG・PPTX）では一貫してこれを通す。
+    画面と出力で同じ figure になる方が「一括保存が画面と一致する」既存の前提に
+    合うため。量子化は範囲の 1/100000 なので、PPTX の 3 倍解像度 (約 3000px)
+    でも 0.1 画素未満であり見た目に影響しない。
+
+    注意: **幾何計算には使わないこと**。H&E 射影 (`msi_to_hne_px`) や
+    `hne_overlay.apply_rotation` との一致検証には `_transform_coords` の生値を使う。
+    """
+    finite_x = x[np.isfinite(x)] if getattr(x, "size", 0) else x
+    finite_y = y[np.isfinite(y)] if getattr(y, "size", 0) else y
+    if getattr(finite_x, "size", 0) == 0 or getattr(finite_y, "size", 0) == 0:
+        return x, y
+    span = max(float(finite_x.max() - finite_x.min()),
+               float(finite_y.max() - finite_y.min()))
+    if not np.isfinite(span) or span <= 0:
+        return x, y
+    decimals = int(np.clip(5 - np.floor(np.log10(span)), 0, 12))
+    return np.round(x, decimals), np.round(y, decimals)
 
 
 def _calc_zero_gap_marker_size(plot_x, plot_y, render_height=310, scale_factor=1.0):
@@ -86,13 +128,16 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                                label_size=10, saved_positions=None,
                                title_font_size=None, render_height=None,
                                cluster_name_map=None, scale_factor=1.0,
-                               legend_hidden=None, spot_opacity=1.0):
+                               legend_hidden=None, spot_opacity=1.0,
+                               uirevision=None):
     """単一サンプルのSpatial Mapping figureを生成。
 
     legend_hidden: 共有凡例で灰色化したクラスタ。色付き trace を描かず灰色背景は残す
         (exclude と異なりセルは消さない, ver29.1)。
     spot_opacity: クラスタ色スポットの不透明度 (0–1, ver31.0)。下げると背後の TIC 背景が透ける
         (既定 1.0＝従来どおり不透明)。TIC 背景・選択ハイライトには適用しない。
+    uirevision: 同値なら Plotly がズーム/パンを保持する (ver46.1)。座標そのものが
+        変わる要素 (サンプル・回転・反転) だけを含めた文字列を渡すこと。
     """
     # 除外クラスタのフィルタリング（完全除去。灰色背景も消える）
     if exclude_clusters:
@@ -112,6 +157,11 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
     raw_y = -df_sample["SpatialY"].values  # Y軸反転
     plot_x, plot_y = _transform_coords(raw_x, raw_y, rotation_deg,
                                         flip_h=flip_h, flip_v=flip_v)
+    plot_x, plot_y = _round_for_display(plot_x, plot_y)
+    # ver46.1: クラスタ列の文字列化はクラスタ数ぶんのループ内で毎回行われていた
+    # （30 クラスタ × 5 万行 = 150 万回の変換）。1 回だけ作って使い回す。
+    cluster_str = df_sample["Cluster"].astype(str)
+    cluster_str_values = cluster_str.values
 
     # marker_size=0 の場合、データ密度ベースで自動計算（隙間ゼロ）
     if marker_size <= 0 and len(plot_x) > 1:
@@ -163,7 +213,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
     elif highlight_clusters and len(highlight_clusters) > 0:
         highlight_set = set(str(c) for c in highlight_clusters)
         # 非ハイライトクラスタをTIC or 灰色で描画
-        mask_bg = ~df_sample["Cluster"].astype(str).isin(highlight_set)
+        mask_bg = ~cluster_str.isin(highlight_set)
         if mask_bg.values.any():
             if "TotalCount" in df_sample.columns:
                 tc_values = df_sample["TotalCount"].values[mask_bg.values]
@@ -182,7 +232,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
             ))
         # ハイライトクラスタを色付きで描画
         for cl in sorted(highlight_clusters, key=lambda x: _cluster_sort_key(x), reverse=True):
-            mask = (df_sample["Cluster"].astype(str) == str(cl)).values
+            mask = (cluster_str_values == str(cl))
             if mask.any():
                 fig.add_trace(go.Scattergl(
                     x=plot_x[mask],
@@ -225,14 +275,17 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
             for cl in sorted(df_sample["Cluster"].unique(), key=_cluster_sort_key):
                 if str(cl) in legend_hidden_set:
                     continue  # 凡例で灰色化 → 色付き trace を描かない（灰色背景は残る）
-                mask = (df_sample["Cluster"].astype(str) == str(cl)).values
+                mask = (cluster_str_values == str(cl))
                 if mask.any():
                     fig.add_trace(go.Scattergl(
                         x=plot_x[mask], y=plot_y[mask], mode="markers",
                         marker=dict(size=marker_size, symbol="square",
                                     color=color_map.get(str(cl), "#999999"),
                                     opacity=spot_opacity),
-                        text=[_cluster_display_name(cl, cluster_name_map)] * int(mask.sum()),
+                        # ver46.1: 同一文字列を点数ぶん並べた配列だった（5 万点で
+                        # 約 0.7MB の純粋な無駄）。Plotly はスカラーを全点へ
+                        # ブロードキャストするので %{text} の表示は変わらない。
+                        text=_cluster_display_name(cl, cluster_name_map),
                         hovertemplate="%{text}<extra></extra>",
                         name=_cluster_display_name(cl, cluster_name_map), showlegend=False,
                         legendgroup=_cluster_display_name(cl, cluster_name_map),
@@ -240,9 +293,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
         elif cluster_to_idx is not None and discrete_cscale is not None:
             # 数値インデックス + discrete colorscale 方式
             n_clusters = max(len(cluster_to_idx), 1)
-            point_values = np.array(
-                [cluster_to_idx.get(str(cl), 0) for cl in df_sample["Cluster"]]
-            )
+            point_values = cluster_str.map(lambda c: cluster_to_idx.get(c, 0)).to_numpy()
             point_normalized = (point_values + 0.5) / n_clusters
             fig.add_trace(go.Scattergl(
                 x=plot_x, y=plot_y, mode="markers",
@@ -255,25 +306,25 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                     showscale=False,
                     opacity=spot_opacity,
                 ),
-                text=[_cluster_display_name(cl, cluster_name_map) for cl in df_sample["Cluster"]],
+                text=_cluster_names_for(cluster_str, cluster_name_map),
                 hovertemplate="%{text}<extra></extra>",
                 showlegend=False,
             ))
         else:
             # フォールバック: HEX文字列配列方式
-            point_colors = [color_map.get(str(cl), "#999999") for cl in df_sample["Cluster"]]
+            point_colors = cluster_str.map(lambda c: color_map.get(c, "#999999")).tolist()
             fig.add_trace(go.Scattergl(
                 x=plot_x, y=plot_y, mode="markers",
                 marker=dict(size=marker_size, symbol="square", color=point_colors,
                             opacity=spot_opacity),
-                text=[_cluster_display_name(cl, cluster_name_map) for cl in df_sample["Cluster"]],
+                text=_cluster_names_for(cluster_str, cluster_name_map),
                 hovertemplate="%{text}<extra></extra>",
                 showlegend=False,
             ))
         # 凡例用ダミートレース。全クラスタ分のスロットを作り、この図に存在するクラスタは
         # 色付き、欠番は「空白スロット」(透明＋空白名)で位置を保持＝全図で番号の縦位置がそろう。
         if embed_legend:
-            present = set(df_sample["Cluster"].astype(str).unique())
+            present = set(cluster_str.unique())
             for cl in sorted(color_map.keys(), key=_cluster_sort_key):
                 rank = _cluster_sort_key(cl)[0] if str(cl).isdigit() else 1000
                 if str(cl) in present:
@@ -319,6 +370,10 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
         plot_bgcolor="white",
         showlegend=embed_legend,
         legend=dict(itemsizing="constant", font=dict(size=12), tracegroupgap=2),
+        # ver46.1: マーカーサイズ・色・ラベル・凡例の変更ではユーザーのズーム/パンを
+        # 保持する。座標が変わる操作 (サンプル切替・回転・反転) では呼び出し側が
+        # 別の値を渡すのでリセットされる。
+        uirevision=uirevision,
     )
     if title:
         layout_opts["title"] = dict(text=title, font=dict(size=title_font_size or 14), x=0.5)
@@ -923,8 +978,7 @@ def auto_feature_marker(n_clicks, rotation_store, sample):
 
 @callback(
     [Output("spatial_plots_container", "children"),
-     Output("last_spatial_figure_store", "data"),
-     Output("batch_spatial_figures_store", "data")],
+     Output("last_spatial_figure_store", "data")],
     [Input("interactive_sample", "value"),
      Input("spatial_highlight_cluster", "value"),
      Input("selected_cell_ids_store", "data"),
@@ -947,7 +1001,8 @@ def auto_feature_marker(n_clicks, rotation_store, sample):
      Input("hne_overlay_opacity", "value"),
      Input("hne_overlay_marker_size", "value"),
      Input("hne_overlay_mono", "value")],
-    State("accumulated_label_positions", "data"),
+    [State("accumulated_label_positions", "data"),
+     State("session_id_store", "data")],
 )
 def update_spatial_plots(sample, highlight_clusters, selected_ids,
                          rotation_store, show_labels, marker_size,
@@ -955,17 +1010,25 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
                          _fs_trigger, custom_colors, rows,
                          cluster_name_map, merge_toggle, merge_color_mode,
                          active_items, legend_hidden, hne_show, hne_opacity,
-                         hne_marker_size, hne_mono, accumulated_positions):
+                         hne_marker_size, hne_mono, accumulated_positions,
+                         session_id=None):
     active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
     if "acc_spatial" not in active_list:
-        return no_update, no_update, no_update
-    from app.callbacks.interactive_callbacks import _set_active_key
+        return no_update, no_update
+    from app.callbacks.interactive_callbacks import (
+        _set_active_key, accordion_toggle_is_noop, set_export_figures)
+    # ver46.1: 他セクションの開閉だけで全タイルを作り直さない
+    # （Feature Plot を開いただけで Spatial 全図が再構築されていた）。
+    if accordion_toggle_is_noop("acc_spatial", session_id, rds_path,
+                                active_items, ctx.triggered_id):
+        return no_update, no_update
     _set_active_key(rds_path)
     from app.callbacks.interactive_callbacks import _interactive_data
     from app.callbacks.interactive_umap import _get_merged_label_positions
     df = _interactive_data.get("plot_data")
     if df is None or "SpatialX" not in df.columns:
-        return html.Div("空間座標データがありません", className="text-muted p-3"), None, []
+        set_export_figures("spatial", session_id, rds_path, [])
+        return html.Div("空間座標データがありません", className="text-muted p-3"), None
 
     if not rotation_store:
         rotation_store = {}
@@ -1013,6 +1076,11 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
         flip_h = transform.get("flip_h", False)
         flip_v = transform.get("flip_v", False)
         display_s = _display_name(s, name_map)
+        # ver46.1: 座標そのものが変わる要素だけを uirevision に含める。
+        # これでマーカーサイズ/色/ラベル/凡例の変更ではズーム・パンが保たれ、
+        # サンプル切替・回転・反転・H&E 座標系への切替では正しくリセットされる。
+        tile_uirev = _transform_uirevision(
+            s, transform, extra=("hne" if hne_show else "msi"))
         # ver30.0: 組織像オーバーレイ ON かつ当該サンプルが H&E 登録済みなら、
         # H&E 背景＋射影スポットのタイルを使う（未登録/OFF は従来の MSI 空間タイル）。
         # ver31.0: スポット透明度を通常タイルにも適用（下げると背後の TIC が透ける）。0 も有効値。
@@ -1044,11 +1112,15 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
                                          saved_positions=spatial_pos.get(s),
                                          cluster_name_map=cluster_name_map,
                                          legend_hidden=legend_hidden,
-                                         spot_opacity=_spot_op)
+                                         spot_opacity=_spot_op,
+                                         uirevision=tile_uirev)
         # 出力(一括保存/HTML)は各図に凡例を残す → 先に凡例ありでスナップショット。
+        # ver46.1: to_dict() は 1 タイルにつき 1 回だけ。従来は先頭タイルで 2 回
+        # 呼んでおり、同じ点データを 2 度ディープコピーしていた。
+        fig_dict = fig.to_dict()
         if representative_fig is None:
-            representative_fig = fig.to_dict()
-        batch_fig_dicts.append((f"Spatial_{display_s}", fig.to_dict()))
+            representative_fig = fig_dict
+        batch_fig_dicts.append((f"Spatial_{display_s}", fig_dict))
         # 画面表示は per-tile 凡例オフ（上部の共有凡例に集約）。
         fig.update_layout(showlegend=False)
         cfg = dict(_SPATIAL_IMG_CONFIG)
@@ -1079,9 +1151,14 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
     container = _facet_block(graphs, color_map, cluster_name_map=cluster_name_map,
                              show_legend=True, legend_id="spatial_shared_legend",
                              hidden=legend_hidden)
-    # 代表figureをStoreに保存（HTMLエクスポート用。凡例ありの dict）
+    # ver46.1: 一括保存/サムネ用の全タイル figure はサーバ側に保持する。従来は
+    # dcc.Store 経由でブラウザへ送っていたため、描画のたびに表示用と同じ点データが
+    # もう 1 セット（非圧縮で数 MB〜数十 MB）流れていた。読み出すのは
+    # 「一括保存」「サムネ登録」ボタンだけなので、往復させる必要が無い。
+    set_export_figures("spatial", session_id, rds_path, batch_fig_dicts)
+    # 代表figureはPPTX出力(background=True の別プロセス)から参照されるため Store のまま。
     store_data = representative_fig if representative_fig else None
-    return container, store_data, batch_fig_dicts
+    return container, store_data
 
 
 # ---------------------------------------------------------------------------

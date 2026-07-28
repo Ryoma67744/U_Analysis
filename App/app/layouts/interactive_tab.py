@@ -1819,6 +1819,11 @@ def create_interactive_tab():
         dcc.Store(id="sample_name_map_store", data={}),
         # アノテーション位置の蓄積（relayoutData イベントからリアルタイム蓄積）
         dcc.Store(id="accumulated_label_positions", data={}),
+        # ver46.1: relayoutData のクライアント側フィルタ結果を受け渡す Store。
+        # assets/relayout_filter.js がアノテーション移動だけを通すため、
+        # パン/ズームではサーバへの POST が一切発生しない。
+        dcc.Store(id="annotation_relayout_signal", data=None),
+        dcc.Store(id="fs_annotation_relayout_signal", data=None),
         # Feature Plot m/zフィルタ結果リスト
         dcc.Store(id="feature_mz_filtered_list", data=None),
         # カスタムクラスタ色マッピング（{"0": "#FF0000", ...}）
@@ -1851,10 +1856,11 @@ def create_interactive_tab():
         dcc.Store(id="export_top_n_store", data=5),
         # PPTXダウンロード用
         dcc.Download(id="dl_report_pptx"),
-        # 一括保存用 Store / Download
-        dcc.Store(id="batch_umap_figures_store", data=[]),
-        dcc.Store(id="batch_spatial_figures_store", data=[]),
-        dcc.Store(id="batch_feature_figures_store", data=[]),
+        # 一括保存用 Download
+        # ver46.1: batch_{umap,spatial,feature}_figures_store は廃止。図の実体を
+        # 描画のたびにブラウザへ送っていたため（表示用と同じ点データがもう 1 セット、
+        # 非圧縮で数 MB〜数十 MB）。一括保存・サムネ登録でしか使わないので
+        # サーバ側 (interactive_callbacks.set_export_figures) に保持する。
         dcc.Download(id="dl_batch_zip"),
         # データ出力 (UMAP cluster) 用: 巨大ファイルは base64 でなく send_file ルートで
         # ストリーム配信する（ブラウザのタブ落ち回避）。DL URL を store 経由で clientside 自動DL。

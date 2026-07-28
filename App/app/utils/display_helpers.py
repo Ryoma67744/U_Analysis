@@ -106,6 +106,46 @@ def facet_block(tiles, color_map, cluster_name_map=None, show_legend=True,
 
 
 # ---------------------------------------------------------------------------
+# uirevision ヘルパー (ver46.1)
+# ---------------------------------------------------------------------------
+# Plotly は figure を差し替えるたびにズーム/パンを既定へリセットする。layout.uirevision
+# の値が前回と同じなら UI 状態(ズーム/パン/凡例のトグル)を保持するため、「見た目だけの
+# 変更」ではユーザーの視野を壊さずに済む。
+#
+# 逆に、座標そのものが変わる操作(サンプル切替・回転・反転・座標系の切替)では視野を
+# 保持すると「前のサンプルのズーム位置に固定されて何も見えない」状態になるため、
+# 値を変えて明示的にリセットさせる。
+# ---------------------------------------------------------------------------
+
+def geom_uirevision(*parts) -> str:
+    """図の「幾何」を一意に表す uirevision 文字列を返す。
+
+    parts には座標そのものを変える要素だけを渡す(サンプル名・回転角・反転・座標系)。
+    マーカーサイズ・色・ラベル・凡例・強度レンジのような見た目だけの要素は
+    **渡さない**（渡すとその操作のたびにズームがリセットされてしまう）。
+    """
+    return "|".join("" if p is None else str(p) for p in parts)
+
+
+def transform_uirevision(sample, transform, extra=None) -> str:
+    """per-sample の回転/反転 dict から uirevision を作る共通ヘルパー。
+
+    transform: {"angle": int, "flip_h": bool, "flip_v": bool}（旧形式の int も許容）。
+    extra: 座標系を切り替える追加要素（例: H&E 射影座標 か MSI 空間座標か）。
+    """
+    if isinstance(transform, (int, float)):
+        transform = {"angle": int(transform), "flip_h": False, "flip_v": False}
+    transform = transform or {}
+    return geom_uirevision(
+        sample,
+        transform.get("angle", 0),
+        bool(transform.get("flip_h", False)),
+        bool(transform.get("flip_v", False)),
+        extra,
+    )
+
+
+# ---------------------------------------------------------------------------
 # 表示名ヘルパー
 # ---------------------------------------------------------------------------
 

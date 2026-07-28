@@ -24,6 +24,17 @@ from app.utils.pptx_helpers import fig_to_png_bytes
 
 logger = logging.getLogger(__name__)
 
+
+def _get_export_figures(kind, session_id, rds_path):
+    """描画コールバックがサーバ側に置いた figure リストを取り出す (ver46.1)。
+
+    以前は同じ内容を dcc.Store 経由でブラウザに持たせていたが、描画のたびに
+    全タイルの点データが往復していたためサーバ保持に変更した。
+    循環 import を避けるため関数内で遅延 import する。
+    """
+    from app.callbacks.interactive_callbacks import get_export_figures
+    return get_export_figures(kind, session_id, rds_path)
+
 # ---------------------------------------------------------------------------
 # 表示サイズ定数（CSS で指定している値に合わせる）
 # ---------------------------------------------------------------------------
@@ -166,12 +177,14 @@ def _timestamp():
     Input("btn_batch_save_umap", "n_clicks"),
     [State("interactive_umap_plot", "figure"),
      State("umap_display_mode", "value"),
-     State("batch_umap_figures_store", "data")],
+     State("session_id_store", "data"),
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def cb_batch_save_umap(n_clicks, umap_fig, display_mode, per_sample_figs):
+def cb_batch_save_umap(n_clicks, umap_fig, display_mode, session_id, rds_path):
     if not n_clicks:
         raise PreventUpdate
+    per_sample_figs = _get_export_figures("umap", session_id, rds_path)
 
     figures = []
     if display_mode == "per_sample" and per_sample_figs:
@@ -201,12 +214,14 @@ def cb_batch_save_umap(n_clicks, umap_fig, display_mode, per_sample_figs):
 @callback(
     Output("dl_batch_zip", "data", allow_duplicate=True),
     Input("btn_batch_save_spatial", "n_clicks"),
-    State("batch_spatial_figures_store", "data"),
+    [State("session_id_store", "data"),
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def cb_batch_save_spatial(n_clicks, spatial_figs):
+def cb_batch_save_spatial(n_clicks, session_id, rds_path):
     if not n_clicks:
         raise PreventUpdate
+    spatial_figs = _get_export_figures("spatial", session_id, rds_path)
 
     if not spatial_figs:
         raise PreventUpdate
@@ -229,12 +244,14 @@ def cb_batch_save_spatial(n_clicks, spatial_figs):
 @callback(
     Output("dl_batch_zip", "data", allow_duplicate=True),
     Input("btn_batch_save_feature", "n_clicks"),
-    State("batch_feature_figures_store", "data"),
+    [State("session_id_store", "data"),
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def cb_batch_save_feature(n_clicks, feature_figs):
+def cb_batch_save_feature(n_clicks, session_id, rds_path):
     if not n_clicks:
         raise PreventUpdate
+    feature_figs = _get_export_figures("feature", session_id, rds_path)
 
     if not feature_figs:
         raise PreventUpdate
@@ -385,14 +402,16 @@ def _save_figure_as_thumbnail(figures_list, width, height, scale,
     Output("notification_toast", "icon", allow_duplicate=True),
     Output("project_list_refresh", "data", allow_duplicate=True),
     Input("btn_set_thumbnail_spatial", "n_clicks"),
-    [State("batch_spatial_figures_store", "data"),
-     State("interactive_project_select", "value"),
-     State("project_list_refresh", "data")],
+    [State("interactive_project_select", "value"),
+     State("project_list_refresh", "data"),
+     State("session_id_store", "data"),
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def cb_set_thumbnail_spatial(n_clicks, spatial_figs, project_id, refresh):
+def cb_set_thumbnail_spatial(n_clicks, project_id, refresh, session_id, rds_path):
     if not n_clicks:
         raise PreventUpdate
+    spatial_figs = _get_export_figures("spatial", session_id, rds_path)
     # ver3.15: サムネ用に小さい解像度で kaleido を呼ぶ (5-10× 高速化)
     ok, msg = _save_figure_as_thumbnail(
         spatial_figs or [],
@@ -409,16 +428,19 @@ def cb_set_thumbnail_spatial(n_clicks, spatial_figs, project_id, refresh):
     Output("project_list_refresh", "data", allow_duplicate=True),
     Input("btn_set_thumbnail_umap", "n_clicks"),
     [State("interactive_umap_plot", "figure"),
-     State("batch_umap_figures_store", "data"),
      State("umap_display_mode", "value"),
      State("interactive_project_select", "value"),
-     State("project_list_refresh", "data")],
+     State("project_list_refresh", "data"),
+     State("session_id_store", "data"),
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def cb_set_thumbnail_umap(n_clicks, umap_fig, per_sample_figs,
-                          display_mode, project_id, refresh):
+def cb_set_thumbnail_umap(n_clicks, umap_fig,
+                          display_mode, project_id, refresh,
+                          session_id, rds_path):
     if not n_clicks:
         raise PreventUpdate
+    per_sample_figs = _get_export_figures("umap", session_id, rds_path)
     # 表示モードに応じて選択: per_sample なら 1 枚目、それ以外は統合 UMAP
     if display_mode == "per_sample" and per_sample_figs:
         figs = per_sample_figs

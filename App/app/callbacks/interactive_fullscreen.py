@@ -13,7 +13,8 @@ from datetime import datetime
 from pathlib import Path
 
 import dash_bootstrap_components as dbc
-from dash import (Input, Output, State, callback, ctx, no_update, html, dcc, ALL)
+from dash import (Input, Output, State, callback, ctx, no_update, html, dcc, ALL,
+                  ClientsideFunction, clientside_callback)
 from dash.exceptions import PreventUpdate
 
 from app.utils.color_utils import (
@@ -24,6 +25,7 @@ from app.utils.color_utils import (
 )
 from app.utils.display_helpers import (
     display_name as _display_name,
+    transform_uirevision as _transform_uirevision,
     facet_block as _facet_block,
 )
 from app.utils.label_persistence import (
@@ -572,7 +574,9 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                                          render_height=render_h,
                                          cluster_name_map=cluster_name_map,
                                          legend_hidden=legend_hidden,
-                                         spot_opacity=(hne_opacity if hne_opacity is not None else 100) / 100.0)
+                                         spot_opacity=(hne_opacity if hne_opacity is not None else 100) / 100.0,
+                                         # ver46.1: 見た目だけの変更ではズーム/パンを保持
+                                         uirevision=_transform_uirevision(s, transform, extra="fs"))
         # 画面表示は per-tile 凡例オフ（上部の共有凡例に集約）。
         fig.update_layout(showlegend=False)
         if rows:
@@ -615,26 +619,39 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
 # v4: 通常モード / FS モードに分割（動的 Input がコールバック全体をブロックする問題の対策）
 
 
-def _accumulate_core(triggered_id, existing, excl_fn):
+def _signal_parts(signal):
+    """clientside フィルタ (assets/relayout_filter.js) が作った dict をほどく。
+
+    ver46.1: 以前は relayoutData を直接 Input にしていたため、パン/ズームの
+    たびにサーバ往復が発生していた（サーバ側は annotations[ が無いことを確認して
+    捨てるだけ）。今はブラウザ側でアノテーション移動のみに絞ってから送られてくる。
+
+    Returns (relayout_dict, triggered_id)。不正な形なら (None, None)。
+    """
+    if not isinstance(signal, dict):
+        return None, None
+    rd = signal.get("relayout")
+    if not isinstance(rd, dict):
+        return None, None
+    return rd, signal.get("triggered_id")
+
+
+def _accumulate_core(triggered_id, existing, excl_fn, rd):
     """蓄積コールバックの共通ロジック。
 
     Args:
-        triggered_id: ctx.triggered_id
+        triggered_id: 発火元のグラフ id（文字列 or パターンマッチ dict）
         existing: accumulated_label_positions Store の現在値
         excl_fn: triggered_id に応じた除外セットを返す関数
+        rd: relayoutData 本体（clientside フィルタ済み）
     Returns:
         更新された existing dict、または PreventUpdate
     """
-    # triggered[0]["value"] から relayoutData を取得
-    rd = None
-    for t in ctx.triggered:
-        if t.get("value") and isinstance(t["value"], dict):
-            rd = t["value"]
-            break
     if not rd:
         raise PreventUpdate
 
-    # annotation 位置変更のみ処理（zoom/pan はスキップ）
+    # クライアント側で絞り込み済みだが、二重防御としてサーバでも確認する
+    # （直接 Store を書き換えられた場合などに備える）。
     if not any(k.startswith("annotations[") for k in rd):
         raise PreventUpdate
 
@@ -724,29 +741,46 @@ def _excl_set(val):
     return set(str(c) for c in val)
 
 
-# 1a: 通常モード蓄積（静的 Input のみ → 常に発火可能）
-@callback(
-    Output("accumulated_label_positions", "data", allow_duplicate=True),
+# ver46.1: relayoutData → clientside フィルタ → Store → サーバ、の順に通す。
+# パン/ズームはブラウザ内で捨てられ、アノテーション移動だけがサーバへ届く。
+clientside_callback(
+    ClientsideFunction(namespace="relayout", function_name="filter_annotations"),
+    Output("annotation_relayout_signal", "data"),
     [Input("interactive_umap_plot", "relayoutData"),
      Input({"type": "umap_per_sample_graph", "index": ALL}, "relayoutData"),
      Input({"type": "spatial_graph", "index": ALL}, "relayoutData")],
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="relayout", function_name="filter_annotations"),
+    Output("fs_annotation_relayout_signal", "data"),
+    [Input("fs_umap_integrated_graph", "relayoutData"),
+     Input({"type": "fs_spatial_graph", "index": ALL}, "relayoutData")],
+    prevent_initial_call=True,
+)
+
+
+# 1a: 通常モード蓄積
+@callback(
+    Output("accumulated_label_positions", "data", allow_duplicate=True),
+    Input("annotation_relayout_signal", "data"),
     [State("accumulated_label_positions", "data"),
      State("umap_exclude_cluster", "value"),
      State("spatial_exclude_cluster", "value"),
      State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def accumulate_annotation_positions_normal(umap_rd, umap_ps_rds,
-                                            spatial_rds, existing,
+def accumulate_annotation_positions_normal(signal, existing,
                                             umap_exclude, spatial_exclude,
                                             rds_path):
-    """通常モード: relayoutData のアノテーション位置変更をリアルタイムで蓄積。
+    """通常モード: アノテーション位置変更をリアルタイムで蓄積。
 
     rds_path State を取り、_set_active_key 経由で _interactive_data
     の正しいエントリにアクセスできるようにする (multi-thread 下での
     ContextVar 未設定対策)。
     """
-    triggered_id = ctx.triggered_id
+    rd, triggered_id = _signal_parts(signal)
     if not triggered_id:
         raise PreventUpdate
 
@@ -764,53 +798,39 @@ def accumulate_annotation_positions_normal(umap_rd, umap_ps_rds,
                 return _excl_set(umap_exclude)
         return _excl_set(umap_exclude)
 
-    result = _accumulate_core(triggered_id, existing, _get_excl)
+    result = _accumulate_core(triggered_id, existing, _get_excl, rd)
     _auto_save_label_positions(result, rds_path=rds_path, method=method)
     return result
 
 
-# 1b: FS UMAP 蓄積（Input 1個: 文字列 ID → UMAP FS 時のみ存在）
+# 1b: フルスクリーン蓄積（UMAP / Spatial 共通。発火元 id で除外リストを切替）
 @callback(
     Output("accumulated_label_positions", "data", allow_duplicate=True),
-    Input("fs_umap_integrated_graph", "relayoutData"),
+    Input("fs_annotation_relayout_signal", "data"),
     [State("accumulated_label_positions", "data"),
      State("fs_umap_exclude_cluster", "value"),
-     State("seurat_rds_path_store", "data")],
-    prevent_initial_call=True,
-)
-def accumulate_annotation_positions_fs_umap(fs_umap_rd, existing,
-                                              fs_umap_exclude, rds_path):
-    """FS UMAP: relayoutData のアノテーション位置変更を蓄積。"""
-    triggered_id = ctx.triggered_id
-    if not triggered_id:
-        raise PreventUpdate
-    from app.callbacks.interactive_callbacks import _set_active_key
-    _set_active_key(rds_path)
-    method = _interactive_data.get("method")
-    result = _accumulate_core(triggered_id, existing, lambda _: _excl_set(fs_umap_exclude))
-    _auto_save_label_positions(result, rds_path=rds_path, method=method)
-    return result
-
-
-# 1c: FS Spatial 蓄積（Input 1個: パターンマッチ → Spatial FS 時のみ存在）
-@callback(
-    Output("accumulated_label_positions", "data", allow_duplicate=True),
-    Input({"type": "fs_spatial_graph", "index": ALL}, "relayoutData"),
-    [State("accumulated_label_positions", "data"),
      State("fs_spatial_exclude_cluster", "value"),
      State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def accumulate_annotation_positions_fs_spatial(fs_spatial_rds, existing,
-                                                 fs_spatial_exclude, rds_path):
-    """FS Spatial: relayoutData のアノテーション位置変更を蓄積。"""
-    triggered_id = ctx.triggered_id
+def accumulate_annotation_positions_fs(signal, existing,
+                                        fs_umap_exclude, fs_spatial_exclude,
+                                        rds_path):
+    """FS: アノテーション位置変更を蓄積（UMAP 統合 / Spatial タイルの両方）。"""
+    rd, triggered_id = _signal_parts(signal)
     if not triggered_id:
         raise PreventUpdate
     from app.callbacks.interactive_callbacks import _set_active_key
     _set_active_key(rds_path)
     method = _interactive_data.get("method")
-    result = _accumulate_core(triggered_id, existing, lambda _: _excl_set(fs_spatial_exclude))
+
+    def _get_excl(tid):
+        # dict id = fs_spatial_graph（パターンマッチ）、文字列 id = FS UMAP 統合
+        if isinstance(tid, dict):
+            return _excl_set(fs_spatial_exclude)
+        return _excl_set(fs_umap_exclude)
+
+    result = _accumulate_core(triggered_id, existing, _get_excl, rd)
     _auto_save_label_positions(result, rds_path=rds_path, method=method)
     return result
 

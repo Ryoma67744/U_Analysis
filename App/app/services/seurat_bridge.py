@@ -9,7 +9,9 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +21,13 @@ import pandas as pd
 from app.config import R_HELPERS_DIR, RSCRIPT_PATH, SEURAT_CACHE_DIR
 
 logger = logging.getLogger("msi.seurat_bridge")
+
+# expression_matrix.parquet の列名キャッシュ (ver46.1)。
+# 約 18,000 列のフッタを Feature 切替のたびに何度もパースしないための小さな LRU。
+# キーは (path, mtime_ns, size) なのでファイル差し替えで自動的に無効化される。
+_PARQUET_SCHEMA_CACHE: "OrderedDict[tuple, set]" = OrderedDict()
+_PARQUET_SCHEMA_CACHE_MAX = int(os.environ.get("PARQUET_SCHEMA_CACHE_MAX", 8))
+_PARQUET_SCHEMA_LOCK = threading.Lock()
 
 
 class ExtractionCancelled(Exception):
@@ -245,6 +254,38 @@ class SeuratBridge:
         df = pd.read_csv(feature_file, header=None)
         return df.iloc[:, 0]
 
+    @staticmethod
+    def _parquet_column_names(expr_path: Path):
+        """parquet の列名 set を (path, mtime, size) キーでキャッシュして返す。
+
+        ver46.1: expression_matrix.parquet は約 18,000 列あり、フッタの
+        パースだけで無視できないコストになる。ファイルが差し替われば
+        mtime/size が変わるのでキャッシュは自動的に無効化される。
+        失敗時 None（呼び出し元は「判定不能」として通常経路を続ける）。
+        """
+        try:
+            st = expr_path.stat()
+            key = (str(expr_path), st.st_mtime_ns, st.st_size)
+        except OSError:
+            return None
+        with _PARQUET_SCHEMA_LOCK:
+            hit = _PARQUET_SCHEMA_CACHE.get(key)
+            if hit is not None:
+                _PARQUET_SCHEMA_CACHE.move_to_end(key)
+                return hit
+        try:
+            import pyarrow.parquet as pq
+            names = set(pq.ParquetFile(str(expr_path)).schema.names)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("parquet スキーマ読取に失敗: %s", e)
+            return None
+        with _PARQUET_SCHEMA_LOCK:
+            _PARQUET_SCHEMA_CACHE[key] = names
+            _PARQUET_SCHEMA_CACHE.move_to_end(key)
+            while len(_PARQUET_SCHEMA_CACHE) > _PARQUET_SCHEMA_CACHE_MAX:
+                _PARQUET_SCHEMA_CACHE.popitem(last=False)
+        return names
+
     def get_feature_expression_fast(
         self, cache_dir: Path, feature_name: str
     ) -> Optional[pd.Series]:
@@ -252,15 +293,33 @@ class SeuratBridge:
 
         expression_matrix.parquet が存在する場合、指定カラムのみ読み込む。
         存在しない場合は None を返す（呼び出し元で R fallback を使用）。
+
+        ver46.1: 列名の有無を **キャッシュ済みスキーマ** で先に判定する。
+        expression_matrix.parquet は約 18,000 列あり、`pd.read_parquet` は
+        1 回の呼び出しごとに全列ぶんのフッタ (schema + column chunk metadata) を
+        パースする。Feature を切り替えるたびに 3 つのコールバックが独立に
+        読んでいたため、ここが数百 ms〜数秒の固定費になっていた。
         """
-        expr_path = cache_dir / "expression_matrix.parquet"
+        expr_path = Path(cache_dir) / "expression_matrix.parquet"
         if not expr_path.exists():
+            return None
+
+        # 列名の不一致は「無い」ことを先に判定する。以前は read_parquet に投げて
+        # 例外で握りつぶしていたため、呼び出し元が R subprocess の
+        # フォールバック (30〜300 秒) に落ちてもログに何も残らなかった。
+        names = self._parquet_column_names(expr_path)
+        if names is not None and str(feature_name) not in names:
+            logger.warning(
+                "expression_matrix.parquet に列 %r が無い (R フォールバックへ): %s",
+                feature_name, expr_path)
             return None
 
         try:
             df = pd.read_parquet(expr_path, columns=[feature_name])
             return df[feature_name]
-        except (KeyError, Exception):
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Feature %r の parquet 読込に失敗 (R フォールバックへ): %s",
+                           feature_name, e)
             return None
 
     def get_features_matrix(self, cache_dir, feature_names):
@@ -272,8 +331,11 @@ class SeuratBridge:
         if not expr_path.exists():
             return None, []
         try:
-            import pyarrow.parquet as pq
-            schema_names = set(pq.ParquetFile(str(expr_path)).schema.names)
+            # ver46.1: スキーマはキャッシュから引く（従来はここで ParquetFile を
+            # 開き、直後の read_parquet でもう一度フッタを読んでいた）。
+            schema_names = self._parquet_column_names(expr_path)
+            if schema_names is None:
+                return None, []
             present = [str(f) for f in (feature_names or [])
                        if str(f) in schema_names]
             if not present:
