@@ -12,6 +12,73 @@
 
 ---
 
+## 2026-07-28_ver46.3
+
+### 変更: 本番 WSGI サーバ化 + heartbeat の扇形抑制 / plotly 6 は見送り
+
+#### plotly 6 化は「計測の結果、逆効果」と判断して見送った
+
+当初の計画では「plotly 6 の base64 型付き配列で転送量が 3〜5 倍減る」としていたが、
+**実測したところ ver46.1 の座標丸めを入れた後では逆に増える**ことが分かった。
+gzip 圧縮後（＝実際に流れる量）で比較すると:
+
+| 形式 | raw | **gzip 後** | to_json + gzip の CPU |
+|---|---|---|---|
+| **現行（丸め済み list / plotly 5）** | 0.78MB | **0.35MB** | 116ms |
+| plotly 6 numpy float64 → base64 | 1.13MB | 0.46MB (+31%) | 39ms |
+| plotly 6 numpy float32 → base64 | 0.57MB | 0.40MB (+14%) | 28ms |
+
+（5 万点 1 トレースあたり）base64 は高エントロピーで gzip が効かず、
+既に丸めてある短い十進数のほうが小さい。**報告された症状（転送量）に対しては
+plotly 6 は改善ではなく悪化**する。
+
+さらに、plotly 6 は `fig.to_dict()` の配列を `{"dtype": "f8", "bdata": ...}` に
+変えるため、figure dict を **list 前提で扱っているコードが無言で誤動作**する。
+実際 `pptx_helpers._maybe_downsample_scatter` は `len(x)` と
+`isinstance(seq, (list, tuple))` で判定しており、PPTX 出力の間引きが
+黙って無効化されることを確認した（例外は出ない）。
+
+サーバ CPU だけは 3〜4 倍速くなるが、それは下記の WSGI 化と将来の共有ストア化で
+別途対処できる。リスクに見合わないため **plotly 5 系のまま据え置く**。
+kaleido 0.2.1 も現状維持（plotly 6.9 でも動作はするが非推奨警告が出る）。
+
+#### 本番 WSGI サーバを waitress に
+
+`run_app.py` は Flask の `app.run()`（Werkzeug 開発サーバ）で本番運用していた。
+waitress は純 Python の本番用 WSGI サーバで、C 拡張もプロセスマネージャも不要なため
+**Dockerfile を変えずに**差し替えられる。接続・タイムアウト・バックプレッシャの扱いが堅い。
+
+- `MSI_WSGI_THREADS`（既定 8）でスレッド数を調整可能。
+- `MSI_WSGI_SERVER=werkzeug` で従来の起動に戻せる（切り分け用）。
+- タイムアウトは Caddy 側（read/write 600s）に合わせて既定 600s。
+
+**ワーカーは 1 プロセスのまま。** このアプリは `plot_data`（数百 MB）・
+エクスポート用 figure・H&E 画像キャッシュを**プロセス内メモリ**に持つため
+（`interactive_callbacks._project_states` 等）、複数ワーカーにすると
+「別ワーカーに当たった瞬間データ未ロード扱い」になる。マルチプロセス化は
+それらを diskcache 等の共有ストアへ移すのが先で、本 PR の範囲外。
+run_app.py にもその旨を明記した。
+
+#### 編集ロック heartbeat の扇形を抑制
+
+`refresh_edit_lock_state` は 10 秒ごとに**毎回新しい dict** を返していたため、
+中身が同じでも Dash は変化とみなし、`edit_lock_state` を Input にする 6 つの
+コールバックへ配信していた。うち 4 つは MATCH でサンプル別 / クラスタ別に
+展開されるため、8 サンプル × 15 クラスタ規模では **10 秒ごとに数十件の
+コールバック実行**が、パン/ズームや描画と同じサーバに積まれていた。
+
+- 内容が前回と同じなら `no_update` を返すようにした。ロックは滅多に変わらないので
+  ほぼ常に抑制される。
+- heartbeat が兼ねている `cleanup_expired` / `evict_stale_project_states`（リーク防止）
+  は抑制時も必ず実行することをテストで固定した。
+
+#### テスト
+
+単体 575 件 / E2E 14 件すべて通過。E2E はアプリを実際に起動するため、
+waitress 経由での動作（gzip 維持を含む）もこれで確認できている。
+
+---
+
 ## 2026-07-28_ver46.2
 
 ### 修正: Spatial Mapping のホバーに「%{text}」がそのまま表示される（ver46.1 の回帰）

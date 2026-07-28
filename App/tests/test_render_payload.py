@@ -825,3 +825,67 @@ def test_no_server_callback_takes_relayoutdata_directly(dash_app):
         if not any(o.startswith(key.split("@")[0]) for o in clientside_outputs):
             offenders.append(key)
     assert not offenders, f"サーバ側で relayoutData を受けている: {offenders}"
+
+
+# ---------------------------------------------------------------------------
+# 10. heartbeat の扇形抑制 (ver46.3)
+# ---------------------------------------------------------------------------
+
+def test_edit_lock_heartbeat_is_noop_when_unchanged(monkeypatch):
+    """ロック状態が変わらない限り Store を更新しない。
+
+    更新すると edit_lock_state を Input にする 6 コールバック（うち 4 つは
+    MATCH でサンプル別/クラスタ別に展開）へ 10 秒ごとに扇形配信され、
+    描画やパンと同じサーバに数十件が積まれる。
+    """
+    from dash import no_update
+
+    import app.callbacks.edit_lock_callbacks as EL
+
+    locks = {"cluster_rename:0": {"user_id": "u1", "user_display": "alice"}}
+    monkeypatch.setattr(EL.elm, "cleanup_expired", lambda: None)
+    monkeypatch.setattr(EL.elm, "get_locks_for_project", lambda p: dict(locks))
+
+    # 現在値と同じ -> 更新しない
+    assert EL.refresh_edit_lock_state(1, "/rds/a.rds", "s1", dict(locks)) is no_update
+    # 現在値が未設定（初回）-> 更新する
+    assert EL.refresh_edit_lock_state(1, "/rds/a.rds", "s1", None) == locks
+    # 内容が変わった -> 更新する
+    assert EL.refresh_edit_lock_state(1, "/rds/a.rds", "s1", {}) == locks
+    # プロジェクト未選択で現在値も空 -> 更新しない
+    assert EL.refresh_edit_lock_state(1, None, "s1", {}) is no_update
+
+
+def test_edit_lock_heartbeat_still_evicts_stale_state(monkeypatch):
+    """抑制しても、heartbeat が担っている stale eviction は必ず走ること。"""
+    import app.callbacks.edit_lock_callbacks as EL
+    import app.callbacks.interactive_callbacks as IC
+
+    calls = {"cleanup": 0, "evict": 0}
+    monkeypatch.setattr(EL.elm, "cleanup_expired",
+                        lambda: calls.__setitem__("cleanup", calls["cleanup"] + 1))
+    monkeypatch.setattr(EL.elm, "get_locks_for_project", lambda p: {})
+    monkeypatch.setattr(IC, "evict_stale_project_states",
+                        lambda: calls.__setitem__("evict", calls["evict"] + 1))
+
+    EL.refresh_edit_lock_state(1, "/rds/a.rds", "s1", {})   # 抑制されるケース
+    assert calls == {"cleanup": 1, "evict": 1}
+
+
+# ---------------------------------------------------------------------------
+# 11. WSGI サーバ設定 (ver46.3)
+# ---------------------------------------------------------------------------
+
+def test_wsgi_server_defaults_to_waitress_single_worker():
+    """本番は waitress。ワーカーは 1 固定（プロセス内メモリ前提を壊さないため）。"""
+    src = (APP_ROOT / "run_app.py").read_text(encoding="utf-8")
+    assert 'MSI_WSGI_SERVER", "waitress"' in src
+    # ワーカー数を増やす設定を足していないこと（増やすと plot_data 等が分断される）
+    assert "workers=" not in src.replace("workers=1", "")
+    # 切り戻し手段が残っていること
+    assert "Werkzeug development server" in src
+
+
+def test_wsgi_dependency_is_declared():
+    for path in ("requirements.txt", "pyproject.toml"):
+        assert "waitress" in (APP_ROOT / path).read_text(encoding="utf-8"), path
