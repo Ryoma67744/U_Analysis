@@ -33,6 +33,19 @@ from app.services import receipt as _receipt
 from app.version import version_label
 
 
+def _analyst_name():
+    """ログイン中の解析者名（request context 外では None）。
+
+    レシートの agent.operator を埋めるため。auth_callbacks.populate_current_analyst
+    と同じく、Flask の request context 外で呼ばれても壊れないようにする。
+    """
+    try:
+        from flask import session
+        return session.get("analyst_name") or None
+    except Exception:
+        return None
+
+
 # 解析シナリオ → 補正ポリシー (ANNOTATION_ROLE, BATCH_VAR, ALLOW_CONDITION_CORRECTION)。
 # 既定 within_slice = 現状（無補正PCA）。settings_tab.py の tims_scenario と対応。
 #   within_slice/condition_compare : 無補正（補正しない）
@@ -729,19 +742,29 @@ def run_analysis(
             )
 
         # 解析パラメータを結果フォルダに保存 (C1: パラメータ履歴)
+        # 値は原則 params（＝実際に R テンプレへ注入された dict）から取る。UI の
+        # State を直接読むと、再解析経路で full-analysis 側の値を記録してしまう。
         try:
-            import json as _json
+            from app.utils.file_locks import atomic_write_json
+            from app.services.receipt import sha256_file
+
+            _is_reanalysis = analysis_type in ("desi_cluster_filter",
+                                               "tims_cluster_filter")
+            _template = params.get("template_path") or ""
             _params_to_save = {
                 "analysis_type": analysis_type,
-                "data_folder": data_folder,
+                "data_folder": (reanalysis_data_folder if _is_reanalysis
+                                else data_folder) or data_folder,
                 "output_dir": full_output_dir,
-                "annotation_path": annotation_path or "",
-                "annotation_csv": annotation_csv or "",
-                "ion_mode": ion_mode or "",
-                "tolerance_mz": tolerance_mz,
-                "adduct_filter": adduct_filter or [],
-                "p_thresh": p_thresh,
-                "logfc_thresh": logfc_thresh,
+                "annotation_path": (params.get("reanalysis_annotation_path")
+                                    if _is_reanalysis else annotation_path) or "",
+                "annotation_csv": params.get("annotation_csv_path") or annotation_csv or "",
+                "ion_mode": params.get("ion_mode") or "",
+                "tolerance_mz": params.get("tolerance_mz"),
+                "adduct_filter": params.get("adduct_patterns")
+                                 or (adduct_filter or []),
+                "p_thresh": params.get("p_thresh", p_thresh),
+                "logfc_thresh": params.get("logfc_thresh", logfc_thresh),
                 "filter_mode": filter_mode or "",
                 "target_clusters": target_clusters or "",
                 "resume_rds": bool(resume_rds),
@@ -751,21 +774,48 @@ def run_analysis(
                 "umap_metric": params.get("umap_metric"),
                 "umap_dims_n": params.get("umap_dims_n"),
                 "pipeline_stage": params.get("pipeline_stage", "full"),
+                # --- ver47.0: Methods を書くのに必要だが従来欠落していた項目 ---
+                # どの R テンプレ版で走ったか（v14/v15/v16 で結果が変わりうる）
+                "template_path": _template,
+                "template_sha256": sha256_file(_template) if _template else None,
+                # 誰が回したか（レシートの agent.operator が常に null だった）
+                "operator": _analyst_name(),
+                # 正規化ポリシー（従来は R サイドカー経由でしか残らなかった）
+                "input_normalized": params.get("input_normalized"),
+                "norm_mode": params.get("norm_mode"),
+                "mz_align_ppm": params.get("mz_align_ppm"),
+                # どのサンプル/ROI/セクションを解析に入れたか
+                "sample_names": params.get("sample_names"),
+                "roi_filter": params.get("roi_filter"),
+                "annotation_filter": params.get("annotation_filter"),
+                "use_roi_as_sample": params.get("use_roi_as_sample"),
+                "tims_scenario": (reanalysis_tims_scenario if _is_reanalysis
+                                  else tims_scenario),
+                "batch_var": params.get("batch_var") or params.get("v13_batch_var"),
+                "cluster_source": params.get("cluster_source"),
+                "resume_reanalysis_dir": params.get("resume_reanalysis_dir"),
             }
-            # キャリブレーション情報の保存
-            cal_r = params.get("calibration_result", {})
+            # キャリブレーション情報の保存。
+            # 再解析（前回の係数を流用）経路は calibration_result を作らず
+            # calibration_coefficients を直接入れるため、両方を見る。
+            cal_r = params.get("calibration_result") or {}
+            _coefs = cal_r.get("coefficients")
+            if _coefs is None:
+                _coefs = params.get("calibration_coefficients")
             _params_to_save["calibration_enable"] = bool(params.get("calibration_enable"))
-            _params_to_save["calibration_coefficients"] = cal_r.get("coefficients")
-            _params_to_save["calibration_degree"] = cal_r.get("degree")
+            _params_to_save["calibration_coefficients"] = _coefs
+            _params_to_save["calibration_degree"] = (
+                cal_r.get("degree")
+                if cal_r.get("degree") is not None
+                else (len(_coefs) - 1 if isinstance(_coefs, list) and _coefs else None)
+            )
             _params_to_save["calibration_r_squared"] = cal_r.get("r_squared")
             _params_to_save["calibration_n_points"] = cal_r.get("n_points")
             _params_to_save["calibration_regression_mode"] = calibration_regression_mode
             _params_to_save["calibration_table"] = calibration_table_data
-            _pf = Path(full_output_dir) / "analysis_params.json"
-            _pf.write_text(
-                _json.dumps(_params_to_save, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            _params_to_save["calibration_by_sample"] = params.get("calibration_by_sample")
+            atomic_write_json(_params_to_save,
+                              Path(full_output_dir) / "analysis_params.json")
         except Exception as e:
             warn_user(f"パラメータ保存に失敗: {e}")
 

@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence
 
-RECEIPT_VERSION = "1"
+RECEIPT_VERSION = "2"
 RECEIPT_JSON = "receipt.json"
 RECEIPT_MD = "RECEIPT.md"
 
@@ -60,13 +60,31 @@ def collect_python_versions(packages: Sequence[str] = _PY_PACKAGES) -> dict:
     return out
 
 
-def file_entry(path) -> dict:
+# これより大きいファイルは sha256 を取らない（RDS は GB 級になり得るため、
+# 解析完了表示が checksum 計算で何分も止まるのを防ぐ）。パスとサイズは残す。
+_HASH_LIMIT_BYTES = 512 * 1024 * 1024
+
+
+def file_entry(path, hash_limit_bytes: Optional[int] = _HASH_LIMIT_BYTES) -> dict:
     p = Path(path)
     ent = {"path": str(path)}
     if p.is_file():
-        ent["bytes"] = p.stat().st_size
-        ent["sha256"] = sha256_file(p)
+        size = p.stat().st_size
+        ent["bytes"] = size
+        if hash_limit_bytes is None or size <= hash_limit_bytes:
+            ent["sha256"] = sha256_file(p)
+        else:
+            ent["sha256"] = None
+            ent["sha256_skipped"] = "file too large"
     return ent
+
+
+def _first(*values):
+    """最初の「意味のある」値を返す（None/空文字/空リストは飛ばす）。"""
+    for v in values:
+        if v not in (None, "", [], {}):
+            return v
+    return None
 
 
 def build_receipt(params: dict,
@@ -104,11 +122,18 @@ def build_receipt(params: dict,
     }
 
     preprocessing = {
-        "input_normalized": r_sidecar.get("input_normalized"),
-        "norm_mode": r_sidecar.get("norm_mode"),
-        "batch_correction": r_sidecar.get("batch_correction"),
+        # ver47.0: R サイドカーが無い場合でも analysis_params.json 側の値で埋まるようにした
+        # （従来はサイドカー欠落＝正規化条件が丸ごと不明になっていた）。
+        "input_normalized": _first(r_sidecar.get("input_normalized"),
+                                   params.get("input_normalized")),
+        "norm_mode": _first(r_sidecar.get("norm_mode"), params.get("norm_mode")),
+        "batch_correction": _first(r_sidecar.get("batch_correction"),
+                                   params.get("batch_var")),
+        "mz_align_ppm": params.get("mz_align_ppm"),
         "calibration_enable": params.get("calibration_enable"),
         "calibration_regression_mode": params.get("calibration_regression_mode"),
+        "calibration_coefficients": params.get("calibration_coefficients"),
+        "calibration_r_squared": params.get("calibration_r_squared"),
     }
     umap = {
         "seed": r_sidecar.get("seed", params.get("umap_seed")),
@@ -130,6 +155,24 @@ def build_receipt(params: dict,
         "tolerance_mz": params.get("tolerance_mz"),
         "adduct_filter": params.get("adduct_filter") or [],
     }
+    # ver47.0: どの R テンプレ版で走ったか（v14/v15/v16 で結果が変わりうる）と、
+    # 実際に実行された（全定数が焼き込まれた）スクリプトの所在。
+    pipeline = {
+        "template_path": params.get("template_path"),
+        "template_sha256": params.get("template_sha256"),
+        "pipeline_stage": params.get("pipeline_stage"),
+        "batch_var": params.get("batch_var"),
+        "tims_scenario": params.get("tims_scenario"),
+        "cluster_source": params.get("cluster_source"),
+    }
+    # ver47.0: どのサンプル / ROI / セクションを解析に入れたか。
+    # これが無いと「n=何を解析したのか」が Methods に書けない。
+    sample_selection = {
+        "sample_names": params.get("sample_names"),
+        "roi_filter": params.get("roi_filter"),
+        "annotation_filter": params.get("annotation_filter"),
+        "use_roi_as_sample": params.get("use_roi_as_sample"),
+    }
 
     return {
         "receipt_version": RECEIPT_VERSION,
@@ -143,6 +186,8 @@ def build_receipt(params: dict,
             "analysis_type": params.get("analysis_type"),
             "data_folder": params.get("data_folder"),
             "inputs": [file_entry(p) for p in (inputs or [])],
+            "pipeline": pipeline,
+            "sample_selection": sample_selection,
             "preprocessing": preprocessing,
             "umap": umap,
             "clustering": clustering,
@@ -188,6 +233,8 @@ def render_receipt_markdown(receipt: dict) -> str:
         "r_version": instr.get("r_version"),
         "python": (instr.get("packages", {}).get("python") or {}).get("python"),
     }))
+    lines.append(_md_kv("解析スクリプト / パイプライン", obj.get("pipeline", {})))
+    lines.append(_md_kv("対象サンプル / ROI / セクション", obj.get("sample_selection", {})))
     lines.append(_md_kv("UMAP 設定", obj.get("umap", {})))
     lines.append(_md_kv("クラスタリング設定", obj.get("clustering", {})))
     lines.append(_md_kv("前処理 / 正規化 / 補正", obj.get("preprocessing", {})))
@@ -262,10 +309,27 @@ def finalize_receipt(output_dir, app_version: Optional[str] = None,
         return None
     if ended_at and not params.get("execution_end_time"):
         params["execution_end_time"] = ended_at
-    # 入力 checksum は既定で annotation_csv のみ（大きい raw のハッシュは避ける）
+    # 入力 checksum は既定で annotation_csv と、実際に走った R スクリプト。
+    # 大きい raw データのハッシュは避ける（時間がかかりすぎる）。
+    # ver47.0: log/v8_runtime_*.R は全定数が焼き込まれた「実行されたスクリプト
+    # そのもの」で、analysis_params.json に無い条件もここには残っている。
+    # レシートから辿れないと再現性の証拠として使えないので必ず含める。
     if inputs is None:
         acsv = params.get("annotation_csv") or params.get("annotation_path")
         inputs = [acsv] if acsv else []
+        runtime_scripts = sorted((out / "log").glob("v8_runtime_*.R")) \
+            if (out / "log").is_dir() else []
+        if runtime_scripts:
+            inputs.append(str(runtime_scripts[-1]))
+        tmpl = params.get("template_path")
+        if tmpl:
+            inputs.append(str(tmpl))
+    # ver47.0: 出力一覧が常に空だったのを、主要成果物の列挙で埋める。
+    # 「どの図表がこの条件から出たか」が辿れないと再現性の主張ができない。
+    if outputs is None:
+        outputs = [str(p) for p in _collect_outputs(out)]
+    if annotation_sources is None:
+        annotation_sources = params.get("annotation_sources") or []
     receipt = build_receipt(
         params,
         r_sidecar=load_r_sidecar(output_dir),
@@ -277,3 +341,24 @@ def finalize_receipt(output_dir, app_version: Optional[str] = None,
     )
     write_receipt(output_dir, receipt)
     return receipt
+
+
+# 結果フォルダから成果物として記録する対象（再帰、上限あり）。
+_OUTPUT_GLOBS = ("RDS_Files/*.rds", "*/markers_annotated.csv", "markers_annotated.csv",
+                 "*/deg_index.json", "preflight/diagnostics.json")
+_OUTPUT_LIMIT = 200
+
+
+def _collect_outputs(out: Path) -> list:
+    """主要成果物のパスを列挙する（件数上限つき、失敗しても空リスト）。"""
+    found: list = []
+    for pattern in _OUTPUT_GLOBS:
+        try:
+            for p in sorted(out.glob(pattern)):
+                if p.is_file():
+                    found.append(p)
+                    if len(found) >= _OUTPUT_LIMIT:
+                        return found
+        except OSError:
+            continue
+    return found
