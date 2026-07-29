@@ -43,6 +43,51 @@ def get_or_create_lock(file_path: Union[str, Path], timeout: float = 30) -> File
         return _LOCK_REGISTRY[key]
 
 
+def atomic_write_json(
+    data,
+    file_path: Union[str, Path],
+    *,
+    indent: int = 2,
+    encoding: str = "utf-8",
+    timeout: float = 30,
+) -> None:
+    """JSON を atomic に保存。atomic_write_csv と同じ 2 段構え。
+
+    1. FileLock で排他制御 (同一プロセス内 + 別プロセス間)
+    2. 同ディレクトリに tempfile 書込 → os.replace で原子的に差し替え
+
+    書込中に落ちても元ファイルは無傷なので、解析レシートのように
+    「壊れていたら再現性の証拠が失われる」ファイルはこちらを使う。
+
+    Args:
+        data: json.dumps 可能なオブジェクト
+        file_path: 出力先 JSON パス
+        indent / encoding: json.dumps / open の引数
+        timeout: FileLock 取得タイムアウト秒
+    """
+    import json
+    import os
+    import tempfile
+
+    path = Path(file_path).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = get_or_create_lock(path, timeout=timeout)
+    with lock:
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.stem}_", suffix=".json.tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding=encoding) as f:
+                json.dump(data, f, indent=indent, ensure_ascii=False, default=str)
+            os.replace(tmp_path, str(path))
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+
 def atomic_write_csv(
     df,
     file_path: Union[str, Path],

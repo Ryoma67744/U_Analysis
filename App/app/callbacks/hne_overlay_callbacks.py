@@ -909,6 +909,31 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
                     preps.append(prep)
                 if assay_used:
                     assays.append(assay_used)
+
+            # 解析条件を同梱する。強度表現 (linear/counts/data) と単位
+            # (compound/m/z) は MetaboAnalyst に渡る濃度そのものを変えるため、
+            # ZIP を失うと復元できなかった。サーバ側にも 1 件残す。
+            try:
+                from app.services.provenance import (collect_conditions,
+                                                     conditions_json_bytes,
+                                                     results_dir_for_rds,
+                                                     write_export_record)
+                _cond = collect_conditions(
+                    rds_path=rds_path, integration_method=current_method,
+                    extra={"exported_file": zip_fname,
+                           "hne_export_methods": exported,
+                           "hne_export_skipped": skipped,
+                           "intensity_repr": repr_label,
+                           "unit": unit_label,
+                           "include_qea": bool(want_qea),
+                           "preprocessing_method": preps[0] if preps else None,
+                           "assay_used": list(dict.fromkeys(assays)) or None})
+                zf.writestr("analysis_conditions.json",
+                            conditions_json_bytes(_cond))
+                write_export_record(results_dir_for_rds(rds_path),
+                                    "hne_metaboanalyst_zip", _cond)
+            except Exception as e_c:
+                logger.warning("H&E エクスポートの条件記録に失敗: %s", e_c)
         if not exported:
             return fail("出力できる手法がありませんでした"
                         "（ROI/対応点3点以上/RDS を確認してください）。")

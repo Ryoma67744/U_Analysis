@@ -12,6 +12,89 @@
 
 ---
 
+## 2026-07-29_ver47.0
+
+### 追加: 解析条件を必ず記録する（論文の Methods 用）
+
+#### 何が問題だったか
+
+GUI 上で設定を変えながら解析・作図しているのに、**その設定の大半がどこにも残っていなかった**。
+論文の Methods を書くとき、また査読で再現性を問われたときに条件を復元できない。
+
+切り分けると、バッチ解析（設定タブ→実行）は `analysis_params.json` /
+`analysis_receipt_r.json` / `receipt.json` / `log/v8_runtime_*.R` でほぼ記録されていた。
+一方 **Interactive タブは事実上ノーレコード**で、論文の図はそこから出てくる。
+特に次の 3 つは「見た目の設定」ではなく数値そのものを変えるのに、まったく残っていなかった。
+
+| 設定 | 何が変わるか |
+|---|---|
+| `heatmap_scale` (Z-score / Raw) | プロットしている値そのもの（データ変換） |
+| `feature_intensity_min/max` | 色スケールのクリップ（cmin/cmax）。強度画像の解釈が変わる |
+| `hne_export_intensity` (linear/counts/data) | MetaboAnalyst に渡る濃度そのもの |
+
+さらに on-the-fly DE は **GUI に出ていない固定値**（Wilcoxon, `min.pct=0.05`,
+`logfc.threshold=0.25`, BH）で走っており、Methods に書きようがなかった。
+Volcano/Heatmap の閾値が表示専用で、統計判定は `p_thresh`/`logfc_thresh` である点も
+取り違えやすい。
+
+#### 記録の土台は「サーバ側記録」、同梱は補助
+
+エクスポートのたびに `<result-dir>/provenance/export_<ts>_<kind>.json` を必ず書く。
+ダウンロード形式に依存しないので、生 CSV でもクライアント側 PNG でも記録が残る。
+その上で、形式が許すものには manifest を同梱する。
+
+| 出力 | 同梱 |
+|---|---|
+| PPTX | 「解析条件」スライド + スピーカーノートに JSON 全量 |
+| バッチ ZIP (UMAP/Spatial/Feature/DEG) | `analysis_conditions.json` |
+| H&E MetaboAnalyst ZIP | `analysis_conditions.json` |
+| データ出力 xlsx | `Conditions` シート |
+| データ出力 csv/parquet、各種 CSV | サーバ側記録のみ（**CSV の列は変更しない**） |
+
+CSV の列を変えなかったのは、そのまま Supplementary Table として使えるようにするため。
+代わりに、表のエクスポートは `derived_virtual_data`（画面の並び替え・絞り込み後）を
+書き出しているので、**`sort_by` / `filter_query` を記録に含めた**。これが無いと同じ表を
+再現できない。
+
+PPTX の条件は**クリック時点でスナップショット**する。生成に数分かかることがあり、
+その間に設定を変えられると出力と記録がずれるため。
+
+#### 日英の Methods 下書きを自動生成（表示は Master Password）
+
+`methods_text.render_methods(conditions, lang)` が同じ conditions から日英を生成するので、
+2 言語間で値がずれない。守っている原則:
+
+- **値を捏造しない。** 取れなかった項目は「未記録 / not recorded」と明示し、
+  末尾の「⚠ 未記録の項目」に列挙する。もっともらしい既定値で埋めると論文に嘘が載る。
+- Volcano/Heatmap の閾値が表示専用であることを本文に明記する。
+- GUI に出ていない on-the-fly DE の固定値を明記する。
+- `PCA (uncorrected)` の埋め込みは `SEURAT_CACHE_DIR` にしか無く LRU で消えうる旨を警告に出す。
+
+表示には Master Password（ログインと同じもの）が要る。パスワードは検証にだけ使い、
+Store にも Output にも残さない。解錠は memory Store なのでリロードで失効する。
+
+#### バッチ側レシートの穴も塞いだ
+
+- `analysis_params.json` に従来欠落していた項目を追加:
+  `template_path` とその sha256（v14/v15/v16 のどれで走ったか）、`operator`、
+  `input_normalized`/`norm_mode`、`mz_align_ppm`、対象サンプル/ROI/セクション、`tims_scenario`。
+  値は UI の State ではなく `params`（R へ実際に注入された dict）から取る。
+- **バグ修正**: 再解析で「前回の係数を流用」したとき、`calibration_enable: true` なのに
+  `calibration_coefficients: null` になっていた（その経路は `calibration_result` を作らない）。
+- **バグ修正**: 再解析なのに full-analysis 側の UI 値（ion_mode / p_thresh 等）を記録していた。
+- receipt を v2 に: `pipeline` / `sample_selection` ブロックを追加、常に空だった `outputs` を
+  主要成果物で埋め、`inputs` に実行スクリプト `log/v8_runtime_*.R` を sha256 付きで含める
+  （大きいファイルは hash を省いてパスとサイズのみ）。
+- `analysis_params.json` の書き込みを atomic 化。
+
+#### 対象外
+
+クライアント側 modebar の PNG ダウンロード（Plotly カメラボタン）には manifest を
+付けられない。サーバ側記録と「解析条件をまとめて出力」で担保する。
+操作履歴の時系列ログは取らない（最終状態のみ記録）。
+
+---
+
 ## 2026-07-28_ver46.3
 
 ### 変更: 本番 WSGI サーバ化 + heartbeat の扇形抑制 / plotly 6 は見送り

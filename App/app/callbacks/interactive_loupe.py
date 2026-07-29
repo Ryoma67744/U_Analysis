@@ -334,10 +334,17 @@ def populate_marker_table(deg_data, cluster_filter):
     Output("dl_marker_table_csv", "data"),
     Input("btn_export_marker_table", "n_clicks"),
     [State("deg_markers_table", "derived_virtual_data"),
-     State("marker_table_top_n", "value")],
+     State("marker_table_top_n", "value"),
+     State("deg_markers_table", "sort_by"),
+     State("deg_markers_table", "filter_query"),
+     State("deg_markers_cluster_filter", "value"),
+     State("seurat_rds_path_store", "data"),
+     State("interactive_result_folder", "value"),
+     State("interactive_integration_method", "value")],
     prevent_initial_call=True,
 )
-def export_marker_table(n_clicks, virtual_data, top_n):
+def export_marker_table(n_clicks, virtual_data, top_n, sort_by, filter_query,
+                        cluster_filter, rds_path, result_folder, method):
     """現在の並び替え/絞り込み (derived_virtual_data) を反映して Top-N を CSV 出力。"""
     if not n_clicks or not virtual_data:
         raise PreventUpdate
@@ -345,4 +352,14 @@ def export_marker_table(n_clicks, virtual_data, top_n):
     if top_n and int(top_n) > 0:
         recs = recs[:int(top_n)]
     df = pd.DataFrame(recs)
+    # CSV の列はそのままに、再現に要る条件（並び替え・絞り込み・Top-N）を
+    # サーバ側へ記録する。
+    from app.services.provenance import record_csv_export
+    record_csv_export("markers_topN.csv", rds_path, result_folder, method, extra={
+        "rows_exported": len(recs),
+        "top_n": top_n,
+        "sort_by": sort_by,
+        "filter_query": filter_query,
+        "cluster_filter": cluster_filter,
+    })
     return dcc.send_data_frame(df.to_csv, "markers_topN.csv", index=False)

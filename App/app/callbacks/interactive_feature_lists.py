@@ -281,12 +281,21 @@ def run_coexpression(n_clicks, lid_a, lid_b, agg, state, rds_path, cache_dir_str
 @callback(
     Output("dl_feature_lists_csv", "data"),
     Input("btn_export_feature_lists", "n_clicks"),
-    State("feature_lists_store", "data"),
+    [State("feature_lists_store", "data"),
+     State("seurat_rds_path_store", "data"),
+     State("interactive_result_folder", "value"),
+     State("interactive_integration_method", "value")],
     prevent_initial_call=True,
 )
-def export_feature_lists(n_clicks, state):
+def export_feature_lists(n_clicks, state, rds_path, result_folder, method):
     if not n_clicks:
         raise PreventUpdate
-    if not (state or {}).get("lists"):
+    lists = (state or {}).get("lists")
+    if not lists:
         raise PreventUpdate
+    from app.services.provenance import record_csv_export
+    record_csv_export("feature_lists.csv", rds_path, result_folder, method,
+                      extra={"lists": [{"name": ls.get("name"),
+                                        "n_features": len(ls.get("features") or [])}
+                                       for ls in lists]})
     return dict(content=fl.lists_to_csv(state), filename="feature_lists.csv")

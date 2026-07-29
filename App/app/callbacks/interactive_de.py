@@ -184,14 +184,38 @@ def render_onthefly_de(records, fc_th, p_th):
     Output("dl_onthefly_de_csv", "data"),
     Input("btn_export_onthefly_de", "n_clicks"),
     [State("onthefly_de_table", "derived_virtual_data"),
-     State("onthefly_de_top_n", "value")],
+     State("onthefly_de_top_n", "value"),
+     State("onthefly_de_table", "sort_by"),
+     State("onthefly_de_table", "filter_query"),
+     State("onthefly_de_mode", "value"),
+     State("onthefly_de_target", "value"),
+     State("selected_cell_ids_store", "data"),
+     State("seurat_rds_path_store", "data"),
+     State("interactive_result_folder", "value"),
+     State("interactive_integration_method", "value")],
     prevent_initial_call=True,
 )
-def export_onthefly_de(n_clicks, virtual_data, top_n):
+def export_onthefly_de(n_clicks, virtual_data, top_n, sort_by, filter_query,
+                       mode, target_clusters, selected_ids, rds_path,
+                       result_folder, method):
     if not n_clicks or not virtual_data:
         raise PreventUpdate
     recs = virtual_data
     if top_n and int(top_n) > 0:
         recs = recs[:int(top_n)]
     df = pd.DataFrame(recs)
+    # CSV の中身は変えずに、条件だけサーバ側へ残す。
+    # この表は derived_virtual_data（画面の並び替え・絞り込み後）を出力するので、
+    # sort_by / filter_query を記録しないと同じ表を再現できない。
+    from app.services.provenance import record_csv_export
+    record_csv_export("onthefly_DE.csv", rds_path, result_folder, method, extra={
+        "rows_exported": len(recs),
+        "top_n": top_n,
+        "sort_by": sort_by,
+        "filter_query": filter_query,
+        "de_mode": mode,
+        "de_target_clusters": target_clusters,
+        "n_selected_pixels": len(selected_ids or []),
+    })
     return dcc.send_data_frame(df.to_csv, "onthefly_DE.csv", index=False)
+

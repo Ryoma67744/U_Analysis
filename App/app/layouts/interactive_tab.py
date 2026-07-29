@@ -703,6 +703,38 @@ def create_interactive_tab():
                                     ),
                                 ]),
                             ]),
+
+                            # --- 解析条件 / Methods ---
+                            # 論文を書くときに条件が抜け落ちないための出口。
+                            # エクスポートのたびに条件は自動記録されるが、執筆時に
+                            # まとめて 1 つ取り出せるようにここへボタンを置く。
+                            html.Hr(className="my-2"),
+                            dbc.Row(className="g-2 align-items-center", children=[
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button(
+                                        "📋 解析条件をまとめて出力",
+                                        id="btn_export_conditions",
+                                        color="secondary", size="sm", n_clicks=0,
+                                    ),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button(
+                                        "📝 Methods 文を表示",
+                                        id="btn_show_methods",
+                                        color="secondary", outline=True,
+                                        size="sm", n_clicks=0,
+                                    ),
+                                ]),
+                                dbc.Col(width="auto", children=[
+                                    html.Span(
+                                        "条件 JSON と日英 Methods 下書きを書き出します",
+                                        className="small text-muted",
+                                    ),
+                                ]),
+                            ]),
+                            html.Div(id="div_conditions_status",
+                                     className="mt-1 text-muted",
+                                     style={"fontSize": "0.85rem"}),
                         ]),
 
                         # --- クラスタ情報 ---
@@ -1856,6 +1888,13 @@ def create_interactive_tab():
         dcc.Store(id="umap_display_save_trigger", data=None),
         # Spatial表示設定の自動保存トリガー（ダミー出力先）
         dcc.Store(id="spatial_display_save_trigger", data=None),
+        # 解析条件 collector の共通ダミー出力先 (provenance_callbacks.py)
+        dcc.Store(id="provenance_save_trigger", data=None),
+        # Methods 表示の解錠状態。**パスワードそのものは絶対に入れない。**
+        # storage_type="memory" なのでリロードで解錠は失効する。
+        dcc.Store(id="methods_unlock_store", storage_type="memory", data=None),
+        # まとめ出力 (解析条件 + 日英 Methods) の ZIP ダウンロード
+        dcc.Download(id="dl_conditions_bundle"),
         # 再解析キャリブレーション回帰データ（analysis_params.jsonから読込）
         dcc.Store(id="reanalysis_calibration_data", data=None),
         # エクスポート Top N 値ブリッジ用
@@ -1908,7 +1947,62 @@ def create_interactive_tab():
 
         # プロジェクトとして保存モーダル
         _create_save_as_project_modal(),
+        # Methods 文モーダル (Master Password で解錠)
+        _create_methods_modal(),
     ])
+
+
+def _create_methods_modal():
+    """Methods 下書き（日英）を表示するモーダル。
+
+    表示には Master Password（アプリのログインと同じもの）が要る。
+    パスワードは検証にだけ使い、Store にも Dash の state にも残さない。
+    """
+    return dbc.Modal(
+        id="methods_modal", size="xl", scrollable=True, is_open=False,
+        children=[
+            dbc.ModalHeader(dbc.ModalTitle("解析条件 / Methods 下書き")),
+            dbc.ModalBody([
+                # --- 未解錠: パスワード入力 ---
+                html.Div(id="methods_lock_panel", children=[
+                    html.P("表示には Master Password が必要です。",
+                           className="text-muted"),
+                    dbc.InputGroup([
+                        dbc.Input(id="methods_password", type="password",
+                                  placeholder="Master Password",
+                                  debounce=True, autoComplete="off"),
+                        dbc.Button("表示", id="btn_methods_unlock",
+                                   color="primary", n_clicks=0),
+                    ]),
+                    html.Div(id="methods_unlock_error",
+                             className="small text-danger mt-2"),
+                ]),
+                # --- 解錠後: 日英タブ ---
+                html.Div(id="methods_content_panel", style={"display": "none"},
+                         children=[
+                    dbc.Tabs([
+                        dbc.Tab(label="日本語", tab_id="methods_tab_ja", children=[
+                            dcc.Markdown(id="methods_body_ja",
+                                         className="mt-3",
+                                         style={"fontSize": "0.9rem"}),
+                        ]),
+                        dbc.Tab(label="English", tab_id="methods_tab_en", children=[
+                            dcc.Markdown(id="methods_body_en",
+                                         className="mt-3",
+                                         style={"fontSize": "0.9rem"}),
+                        ]),
+                    ], id="methods_tabs", active_tab="methods_tab_ja"),
+                ]),
+            ]),
+            dbc.ModalFooter([
+                dbc.Button("Methods をダウンロード", id="btn_download_methods",
+                           color="success", size="sm", n_clicks=0,
+                           disabled=True),
+                dbc.Button("閉じる", id="btn_methods_close",
+                           color="secondary", outline=True, size="sm", n_clicks=0),
+            ]),
+        ],
+    )
 
 
 def _create_save_as_project_modal():
