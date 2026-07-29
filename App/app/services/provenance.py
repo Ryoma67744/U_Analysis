@@ -379,6 +379,43 @@ def write_export_record(result_dir, kind: str, conditions: dict) -> Optional[Pat
         return None
 
 
+def record_export(kind: str, rds_path=None, result_folder=None,
+                  integration_method=None, extra=None) -> Optional[Path]:
+    """収集 → 記録をまとめて行う入口（エクスポート callback から 1 行で呼ぶ）。
+
+    生 CSV のように manifest を同梱できない出力でも、これだけは残る。
+    例外は投げない（エクスポート本体を止めないため）。
+    """
+    try:
+        conditions = collect_conditions(rds_path=rds_path,
+                                        result_folder=result_folder,
+                                        integration_method=integration_method,
+                                        extra=extra)
+        return write_export_record(results_dir_for_rds(rds_path, result_folder),
+                                   kind, conditions)
+    except Exception as e:
+        logger.warning("エクスポート条件の記録に失敗 (kind=%s): %s", kind, e)
+        return None
+
+
+def record_csv_export(filename: str, rds_path=None, result_folder=None,
+                      integration_method=None, extra=None) -> Optional[Path]:
+    """CSV エクスポート 1 回分の条件を残す。
+
+    表のエクスポートは derived_virtual_data（画面上の並び替え・絞り込み後）を
+    書き出すため、sort_by / filter_query を残さないと同じ表を再現できない。
+    呼び出し側は extra にそれらを入れること。
+
+    CSV 本体の列は変更しない（Supplementary Table としてそのまま使えるように）。
+    """
+    payload = {"exported_file": filename}
+    payload.update(extra or {})
+    stem = Path(filename).stem
+    return record_export(f"csv_{stem}", rds_path=rds_path,
+                         result_folder=result_folder,
+                         integration_method=integration_method, extra=payload)
+
+
 def conditions_json_bytes(conditions: dict) -> bytes:
     """ZIP へ同梱する analysis_conditions.json のバイト列。"""
     return json.dumps(conditions or {}, indent=2,

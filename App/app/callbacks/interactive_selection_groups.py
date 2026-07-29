@@ -174,13 +174,21 @@ def load_group_to_selection(n_clicks, gid, state):
 @callback(
     Output("dl_selection_groups_csv", "data"),
     Input("btn_export_groups", "n_clicks"),
-    State("selection_groups_store", "data"),
+    [State("selection_groups_store", "data"),
+     State("seurat_rds_path_store", "data"),
+     State("interactive_result_folder", "value"),
+     State("interactive_integration_method", "value")],
     prevent_initial_call=True,
 )
-def export_selection_groups(n_clicks, state):
+def export_selection_groups(n_clicks, state, rds_path, result_folder, method):
     if not n_clicks:
         raise PreventUpdate
     groups = (state or {}).get("groups", [])
     if not groups:
         raise PreventUpdate
+    from app.services.provenance import record_csv_export
+    record_csv_export("selection_groups.csv", rds_path, result_folder, method,
+                      extra={"groups": [{"name": g.get("name"),
+                                         "n_cells": len(g.get("cell_ids") or [])}
+                                        for g in groups]})
     return dict(content=sg.groups_to_csv(state), filename="selection_groups.csv")

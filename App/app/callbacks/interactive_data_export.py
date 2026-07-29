@@ -373,9 +373,25 @@ def _build_all_method_lookups(
 # DESI エクスポート
 # ---------------------------------------------------------------------------
 
+def _conditions_sheet_df(conditions: dict):
+    """解析条件を xlsx の "Conditions" シート用に 2 列へ平坦化する。
+
+    xlsx は 1 ファイル完結で人手に渡ることが多いので、表と同じブックに
+    条件を入れておくと「この表はどの設定か」が失われない。
+    csv / parquet は同梱できないため、サーバ側 provenance/ の記録で担保する。
+    """
+    from app.services.methods_text import render_conditions_rows
+    rows = render_conditions_rows(conditions, lang="ja")
+    missing = conditions.get("_missing") or []
+    if missing:
+        rows = rows + [("未記録の項目", ", ".join(missing))]
+    return pd.DataFrame(rows, columns=["項目", "値"])
+
+
+
 def _export_desi(
     data_folder: str, method_lookups: OrderedDict, region_lookup: dict | None = None,
-    progress_cb=None, base: int = 0, span: int = 0,
+    progress_cb=None, base: int = 0, span: int = 0, conditions: dict | None = None,
 ) -> tuple[bytes, str]:
     """DESI .txt → Excel バイト列（サンプル別シート + 手法別クラスター列）。
 
@@ -481,6 +497,14 @@ def _export_desi(
                 writer, sheet_name=sheet_name, header=False, index=False
             )
 
+        # 解析条件シート（論文の Methods 用）
+        if conditions is not None:
+            try:
+                _conditions_sheet_df(conditions).to_excel(
+                    writer, sheet_name="Conditions", index=False)
+            except Exception:
+                logger.warning("Conditions シートの追加に失敗", exc_info=True)
+
     buf.seek(0)
     return buf.getvalue(), "UMAP_cluster_DESI.xlsx"
 
@@ -555,7 +579,7 @@ def _apply_feature_annotation_columns(df: pd.DataFrame, data_folder: str) -> pd.
 def _export_tims(
     data_folder: str, method_lookups: OrderedDict, fmt: str,
     region_lookup: dict | None = None,
-    progress_cb=None, base: int = 0, span: int = 0,
+    progress_cb=None, base: int = 0, span: int = 0, conditions: dict | None = None,
 ) -> tuple[bytes, str]:
     """TIMS 入力ファイルに手法別クラスター列を追加してエクスポート。
 
@@ -606,6 +630,13 @@ def _export_tims(
     if fmt == "xlsx":
         with pd.ExcelWriter(buf, engine="openpyxl") as writer:
             df_all.to_excel(writer, index=False, sheet_name="Data")
+            # 解析条件シート（論文の Methods 用）
+            if conditions is not None:
+                try:
+                    _conditions_sheet_df(conditions).to_excel(
+                        writer, sheet_name="Conditions", index=False)
+                except Exception:
+                    logger.warning("Conditions シートの追加に失敗", exc_info=True)
         filename = "UMAP_cluster_TIMS.xlsx"
     elif fmt == "csv":
         buf.write(df_all.to_csv(index=False).encode("utf-8"))
@@ -695,16 +726,36 @@ def _do_export(
 
         is_desi = (ms_instrument or "").upper() == "DESI"
 
+        # 解析条件を収集し、サーバ側にも記録する。
+        # xlsx なら "Conditions" シートとして同梱、csv/parquet は同梱できないので
+        # <result-dir>/provenance/ の記録だけが頼りになる。
+        conditions = None
+        try:
+            from app.services.provenance import (collect_conditions,
+                                                 results_dir_for_rds,
+                                                 write_export_record)
+            conditions = collect_conditions(
+                rds_path=loaded_rds, result_folder=result_folder,
+                integration_method=current_method,
+                extra={"export_format": export_format,
+                       "exported_methods": list(method_lookups.keys()),
+                       "ms_instrument": ms_instrument,
+                       "data_folder": data_folder})
+            write_export_record(results_dir_for_rds(loaded_rds, result_folder),
+                                "data_export", conditions)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[DataExport] 条件記録に失敗: %s", e)
+
         # ファイル書き込み: 進捗 58→98%
         if is_desi:
             file_bytes, filename = _export_desi(
                 data_folder, method_lookups, region_lookup,
-                progress_cb=progress_cb, base=58, span=40)
+                progress_cb=progress_cb, base=58, span=40, conditions=conditions)
         else:
             fmt = export_format or "xlsx"
             file_bytes, filename = _export_tims(
                 data_folder, method_lookups, fmt, region_lookup,
-                progress_cb=progress_cb, base=58, span=40)
+                progress_cb=progress_cb, base=58, span=40, conditions=conditions)
         _p(99, "仕上げ中…")
 
         # ステータスメッセージ
@@ -803,15 +854,31 @@ def build_interactive_export_for_project(
                 logger.warning("[APIExport] ROI 割当をスキップ: %s", e)
 
         is_desi = (ms_instrument or "").upper() == "DESI"
+        # API 経由でも条件記録は同じ扱いにする（GUI と API で記録に差を作らない）
+        conditions = None
+        try:
+            from app.services.provenance import (collect_conditions,
+                                                 results_dir_for_rds,
+                                                 write_export_record)
+            conditions = collect_conditions(
+                rds_path=primary_rds, result_folder=result_folder,
+                extra={"export_format": export_format,
+                       "exported_methods": list(method_lookups.keys()),
+                       "ms_instrument": ms_instrument,
+                       "driver": "api"})
+            write_export_record(results_dir_for_rds(primary_rds, result_folder),
+                                "data_export_api", conditions)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[APIExport] 条件記録に失敗: %s", e)
         if is_desi:
             file_bytes, filename = _export_desi(
                 data_folder, method_lookups, region_lookup,
-                progress_cb=progress_cb, base=58, span=40)
+                progress_cb=progress_cb, base=58, span=40, conditions=conditions)
         else:
             fmt = export_format or "parquet"
             file_bytes, filename = _export_tims(
                 data_folder, method_lookups, fmt, region_lookup,
-                progress_cb=progress_cb, base=58, span=40)
+                progress_cb=progress_cb, base=58, span=40, conditions=conditions)
         _p(99, "仕上げ中…")
 
         msg = f"✅ {filename} を生成しました"

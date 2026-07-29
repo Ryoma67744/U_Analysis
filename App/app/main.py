@@ -353,6 +353,7 @@ from app.callbacks import edit_lock_callbacks  # noqa: E402, F401
 from app.callbacks import auth_callbacks  # noqa: E402, F401
 from app.callbacks import data_management_callbacks  # noqa: E402, F401
 from app.callbacks import tab_url_routing  # noqa: E402, F401
+from app.callbacks import provenance_callbacks  # noqa: E402, F401
 from app.callbacks import preflight_callbacks  # noqa: E402, F401
 
 if __name__ == "__main__":

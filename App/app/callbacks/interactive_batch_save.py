@@ -129,10 +129,34 @@ def _concat_pngs_horizontal(png_bytes_list, gap=20, bg_color=(255, 255, 255)):
     return buf.getvalue()
 
 
-def _create_zip_from_figures(figures_list, width, height, scale, section_name=""):
+def _conditions_for(rds_path, kind, result_folder=None, method=None, extra=None):
+    """エクスポート時点の解析条件を集め、サーバ側にも記録して返す。
+
+    論文に条件が抜け落ちないよう、ZIP へ同梱する分とは別に
+    <result-dir>/provenance/ にも必ず 1 件残す（ZIP を失っても辿れる）。
+    失敗しても None を返すだけで、エクスポート本体は止めない。
+    """
+    try:
+        from app.services.provenance import (collect_conditions,
+                                             results_dir_for_rds,
+                                             write_export_record)
+        conditions = collect_conditions(rds_path=rds_path,
+                                        result_folder=result_folder,
+                                        integration_method=method, extra=extra)
+        write_export_record(results_dir_for_rds(rds_path, result_folder),
+                            kind, conditions)
+        return conditions
+    except Exception as e:
+        logger.warning("解析条件の収集に失敗 (%s): %s", kind, e)
+        return None
+
+
+def _create_zip_from_figures(figures_list, width, height, scale, section_name="",
+                             conditions=None):
     """[(name, fig_dict), ...] → ZIP bytes を返す。
 
     個別 PNG に加え、2枚以上の場合は横一列結合画像も同梱する。
+    conditions を渡すと analysis_conditions.json も同梱する（論文用の条件記録）。
 
     Parameters
     ----------
@@ -144,6 +168,8 @@ def _create_zip_from_figures(figures_list, width, height, scale, section_name=""
         解像度倍率（実PNG = width*scale × height*scale）
     section_name : str
         セクション名（結合画像のファイル名に使用）
+    conditions : dict | None
+        provenance.collect_conditions() の戻り値
     """
     if not figures_list:
         return None
@@ -183,6 +209,16 @@ def _create_zip_from_figures(figures_list, width, height, scale, section_name=""
                     zf.writestr(f"{combined_name}.png", combined)
             except Exception:
                 logger.warning("Combined image creation failed", exc_info=True)
+
+        # 解析条件（論文の Methods 用）。図と同じ ZIP に入れておくことで、
+        # 後から「この図はどの設定で出したのか」が必ず辿れる。
+        if conditions is not None:
+            try:
+                from app.services.provenance import conditions_json_bytes
+                zf.writestr("analysis_conditions.json",
+                            conditions_json_bytes(conditions))
+            except Exception:
+                logger.warning("条件 JSON の同梱に失敗", exc_info=True)
 
     buf.seek(0)
     data = buf.getvalue()
@@ -227,8 +263,10 @@ def cb_batch_save_umap(n_clicks, umap_fig, display_mode, session_id, rds_path):
     if not figures:
         raise PreventUpdate
 
+    conditions = _conditions_for(rds_path, "batch_zip_umap")
     zip_bytes = _create_zip_from_figures(figures, width=w, height=h, scale=s,
-                                         section_name="UMAP")
+                                         section_name="UMAP",
+                                         conditions=conditions)
     if zip_bytes is None:
         raise PreventUpdate
 
@@ -267,6 +305,7 @@ def cb_batch_save_spatial(n_clicks, session_id, rds_path, marker_size,
         spatial_figs,
         width=_PANEL_W, height=_PANEL_H_SPATIAL, scale=_PANEL_SCALE,
         section_name="SpatialMapping",
+        conditions=_conditions_for(rds_path, "batch_zip_spatial"),
     )
     if zip_bytes is None:
         raise PreventUpdate
@@ -297,6 +336,7 @@ def cb_batch_save_feature(n_clicks, session_id, rds_path):
         feature_figs,
         width=_PANEL_W, height=_PANEL_H_FEATURE, scale=_PANEL_SCALE,
         section_name="FeaturePlot",
+        conditions=_conditions_for(rds_path, "batch_zip_feature"),
     )
     if zip_bytes is None:
         raise PreventUpdate
@@ -313,10 +353,12 @@ def cb_batch_save_feature(n_clicks, session_id, rds_path):
     Input("btn_batch_save_deg", "n_clicks"),
     [State("volcano_plot", "figure"),
      State("heatmap_plot", "figure"),
-     State("volcano_cluster_select", "value")],
+     State("volcano_cluster_select", "value"),
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def cb_batch_save_deg(n_clicks, volcano_fig, heatmap_fig, cluster_select):
+def cb_batch_save_deg(n_clicks, volcano_fig, heatmap_fig, cluster_select,
+                      rds_path):
     if not n_clicks:
         raise PreventUpdate
 
@@ -333,6 +375,7 @@ def cb_batch_save_deg(n_clicks, volcano_fig, heatmap_fig, cluster_select):
     zip_bytes = _create_zip_from_figures(
         figures, width=_DEG_W, height=_DEG_H, scale=_DEG_SCALE,
         section_name="DEG",
+        conditions=_conditions_for(rds_path, "batch_zip_deg"),
     )
     if zip_bytes is None:
         raise PreventUpdate

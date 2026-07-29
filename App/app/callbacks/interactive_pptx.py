@@ -722,6 +722,85 @@ def _build_cluster_spatial_panel_fig(df_s, cl_mask, cl_color, transform,
     return fig
 
 
+def _add_conditions_slide(prs, conditions, rows_per_slide=16):
+    """「解析条件」スライドを追加する（論文の Methods 用）。
+
+    図と条件が同じファイルに入るので、後から「この図はどの設定か」が
+    辿れなくなることがない。機械可読な全量はスピーカーノートに JSON で入れる
+    （見た目を変えずに済み、python-pptx / PowerPoint から取り出せる）。
+    """
+    import json
+
+    from pptx.dml.color import RGBColor
+    from pptx.util import Inches, Pt
+
+    if not conditions:
+        return
+    try:
+        from app.services.methods_text import render_conditions_rows
+        rows = render_conditions_rows(conditions, lang="ja")
+    except Exception:
+        logger.warning("解析条件スライドの行生成に失敗", exc_info=True)
+        return
+
+    missing = conditions.get("_missing") or []
+    warnings = conditions.get("warnings") or []
+    col_w = [Inches(3.6), Inches(8.8)]
+    n_pages = max(1, (len(rows) + rows_per_slide - 1) // rows_per_slide)
+    first_slide = None
+    for pi in range(n_pages):
+        chunk = rows[pi * rows_per_slide:(pi + 1) * rows_per_slide]
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        if first_slide is None:
+            first_slide = slide
+        title = "解析条件 (Analysis Conditions)"
+        if n_pages > 1:
+            title += f"  {pi + 1}/{n_pages}"
+        _pptx_add_title_bar(slide, title)
+        n_rows = len(chunk) + 1
+        tbl = slide.shapes.add_table(
+            n_rows, 2, Inches(0.3), Inches(0.9),
+            sum(int(w) for w in col_w),
+            Inches(min(6.0, 0.32 * n_rows + 0.3))).table
+        for j, w in enumerate(col_w):
+            tbl.columns[j].width = w
+        for j, h in enumerate(("項目", "値")):
+            c = tbl.cell(0, j)
+            c.text = h
+            pr = c.text_frame.paragraphs[0]
+            pr.font.size = Pt(11)
+            pr.font.bold = True
+        for i, (label, value) in enumerate(chunk):
+            for j, val in enumerate((label, value)):
+                c = tbl.cell(i + 1, j)
+                c.text = str(val)
+                c.text_frame.paragraphs[0].font.size = Pt(9)
+
+    # 未記録・警告は最後のスライドの下部に明示する（黙って欠けさせない）
+    if first_slide is not None and (missing or warnings):
+        box = prs.slides[-1].shapes.add_textbox(
+            Inches(0.3), Inches(6.4), Inches(12.4), Inches(0.9))
+        tf = box.text_frame
+        tf.word_wrap = True
+        para = tf.paragraphs[0]
+        notes = []
+        if missing:
+            notes.append(f"未記録の項目 {len(missing)} 件: " + ", ".join(missing[:6])
+                         + ("…" if len(missing) > 6 else ""))
+        notes.extend(warnings)
+        para.text = " / ".join(notes)
+        para.font.size = Pt(9)
+        para.font.color.rgb = RGBColor(0xCC, 0x44, 0x00)
+
+    # 機械可読な全量をスピーカーノートへ
+    if first_slide is not None:
+        try:
+            first_slide.notes_slide.notes_text_frame.text = json.dumps(
+                conditions, ensure_ascii=False, indent=2, default=str)
+        except Exception:
+            logger.warning("スピーカーノートへの条件埋め込みに失敗", exc_info=True)
+
+
 def _add_marker_table_slide(prs, title, headers, rows, rows_per_slide=18):
     """headers/rows を python-pptx のテーブルとしてスライドへ描画する（再利用ヘルパー）。
 
@@ -771,7 +850,7 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                  set_progress=None, mrm_path=None,
                  existing_prs=None, progress_offset=0, progress_total=None,
                  saved_positions=None, cluster_name_map=None,
-                 include_deg=True, deadline=None):
+                 include_deg=True, deadline=None, conditions=None):
     """グローバル概要 + クラスターごとの詳細スライドを含む PPTX を生成し bytes を返す。
 
     グローバルセクション:
@@ -887,6 +966,11 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
         p4.alignment = PP_ALIGN.CENTER
 
     _progress("タイトルスライド")
+
+    # --- 解析条件スライド ---
+    # 複数手法パスでは呼び出し元が先頭に 1 回だけ入れるため、ここでは単一手法時のみ。
+    if conditions is not None and existing_prs is None:
+        _add_conditions_slide(prs, conditions)
 
     # --- スライド 2: UMAP + Spatial 統合 (サンプル別) ---
     if df is not None and not df.empty and "SpatialX" in df.columns:
@@ -1594,6 +1678,25 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
         top_n = top_n or 5
         saved_positions = _get_merged_label_positions(accumulated_positions)
 
+        # 解析条件は **クリック時点** で確定させる。PPTX 生成は数分かかることが
+        # あり、その間にユーザーが設定を変えると、出力と条件がずれてしまう。
+        conditions = None
+        try:
+            from app.services.provenance import (collect_conditions,
+                                                 results_dir_for_rds,
+                                                 write_export_record)
+            conditions = collect_conditions(
+                rds_path=rds_path, result_folder=result_folder,
+                integration_method=current_method,
+                extra={"exported_file": filename,
+                       "report_top_n": top_n,
+                       "report_methods": export_method_selection,
+                       "report_include_deg": bool(include_deg)})
+            write_export_record(results_dir_for_rds(rds_path, result_folder),
+                                "pptx_report", conditions)
+        except Exception as _e:
+            logger.warning("PPTX の条件記録に失敗: %s", _e)
+
         # 全体 watchdog の期限（既定 45 分, PPTX_EXPORT_TIMEOUT_SEC で調整, 0 で無効）。
         # 1 枚単位のタイムアウトだけでは、多数がタイムアウトすると総時間が伸び得るため。
         import os as _os
@@ -1665,6 +1768,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 cluster_name_map=cluster_name_map,
                 include_deg=include_deg,
                 deadline=_deadline,
+                conditions=conditions,
             )
 
             return (
@@ -1678,6 +1782,10 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
         prs = Presentation()
         prs.slide_width = Inches(13.333)
         prs.slide_height = Inches(7.5)
+
+        # 解析条件は手法ごとではなく資料の先頭に 1 回だけ置く
+        if conditions is not None:
+            _add_conditions_slide(prs, conditions)
 
         is_multi = len(methods_to_export) > 1
 
