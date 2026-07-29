@@ -149,3 +149,106 @@ TIMS インタラクティブ出力の元になる変換済み parquet（`<BASE>
 - `id/x/y/annotation` 以外が m/z 特徴量列。スキーマメタデータ `mz_sorted` に全桁 m/z 一覧を保持。
 - 特徴量注釈は別ファイル `<BASE>_feature_annotations.parquet`（1行=1 m/z、列: `mz, compound, lipid_class,
   database, adduct, ppm, formula, smiles, adduct_image, adduct_family, raw, display_name`）。
+
+---
+
+## 付録: 解析条件の記録（`analysis_conditions.json` / `provenance/`）— ver47.0
+
+論文の Methods を書くとき、また再現性を問われたときに条件が抜け落ちないよう、
+**エクスポートのたびに解析条件が自動記録される**。記録は 2 系統ある。
+
+### (a) サーバ側記録 `<結果フォルダ>/provenance/export_<日時>_<種別>.json`
+
+**全エクスポート経路で必ず 1 件書かれる。** ダウンロードした ZIP や CSV を失っても、
+結果フォルダを見れば「いつ・どの設定で・何を出したか」が辿れる。
+
+`<種別>` は `pptx_report` / `batch_zip_umap` / `batch_zip_spatial` / `batch_zip_feature` /
+`batch_zip_deg` / `hne_metaboanalyst_zip` / `data_export` / `data_export_api` /
+`csv_markers_topN` / `csv_onthefly_DE` / `csv_selection_groups` / `csv_feature_lists`。
+
+### (b) 出力への同梱
+
+| 出力 | 同梱される形 |
+|---|---|
+| PPTX レポート | 「解析条件」スライド + スピーカーノートに JSON 全量 |
+| 一括保存 ZIP（UMAP / Spatial / Feature / DEG） | `analysis_conditions.json` |
+| H&E MetaboAnalyst ZIP | `analysis_conditions.json` |
+| データ出力 `.xlsx` | `Conditions` シート |
+| データ出力 `.csv` / `.parquet`、各種 CSV | 同梱なし（(a) のサーバ側記録で担保） |
+
+CSV の列は一切変更していない（そのまま Supplementary Table として使えるように）。
+その代わり、表の**並び替え `sort_by` と絞り込み `filter_query`** を (a) に記録している。
+マーカー表・on-the-fly DE の CSV は画面上の並び替え・絞り込み後の内容を書き出すため、
+これが無いと同じ表を再現できない。
+
+### `analysis_conditions.json` の構造
+
+```text
+conditions_version : スキーマ版（現在 "1"）
+generated_at       : 収集日時
+generated_by       : 解析者名（ログインセッションから）
+integration_method : Harmony / RPCA / PCA など、その図に使った統合手法
+rds_path           : 参照した RDS
+result_dir         : 結果フォルダ（キャッシュ上の埋め込みでは null）
+
+analysis           : バッチ解析側の条件（receipt.json / analysis_params.json 由来）
+  .analysis_type / .data_folder / .started_at / .ended_at / .operator
+  .preprocessing   : input_normalized, norm_mode, batch_correction,
+                     calibration_enable, calibration_regression_mode ほか
+  .umap            : n_neighbors, min_dist, metric, dims, seed
+  .clustering      : algorithm, resolution, k_param
+  .annotation      : ion_mode, tolerance_mz, adduct_filter, annotation_csv, sources
+  .thresholds      : p, logfc  ← **統計判定に使われた閾値はこちら**
+  .sample_selection: sample_names, roi_filter, annotation_filter, tims_scenario
+  .mz_align_ppm
+
+software           : app_version, r_version, packages{r, python}
+pipeline           : template_path / template_sha256（どの R テンプレ版で走ったか）、
+                     runtime_script / runtime_script_sha256（全定数が焼き込まれた
+                     log/v8_runtime_*.R = 実際に実行されたスクリプト）、pipeline_stage
+
+interactive        : Interactive タブの設定（interactive_settings.json 由来）
+  .volcano_display : **表示・ラベル付け専用の閾値**。検定には使われていない
+  .heatmap_display : top_n, scale（zscore/raw = データ変換）
+  .feature_display : colorscale, intensity_min/max（色スケールのクリップ）ほか
+  .onthefly_de     : ユーザーが選んだ mode / 対象クラスタ / 表示閾値
+  .umap_display / .umap_view / .spatial_display / .spatial_view
+  .hne_export_options : intensity_repr（linear/counts/data）, unit（compound/mz）
+  .cluster_name_map::<手法> / .custom_color_map / .sample_name_map
+  .selection_groups / .feature_lists : 名前と件数のみ（cell_ids 全体は入れない）
+
+onthefly_de_fixed_params : GUI に出ていない固定値。
+                           test=wilcox, min_pct=0.05, logfc_threshold=0.25,
+                           p_adjust_method=BH
+extra              : そのエクスポート固有の情報（出力ファイル名、Top-N、
+                     sort_by / filter_query、選択ピクセル数 など）
+warnings           : 再現性に関する警告（キャッシュのみの埋め込み等）
+_missing           : **取得できなかった必須項目のパス一覧**
+```
+
+> **`_missing` について**: 値が取れなかった項目は既定値で埋めず `null` のまま残し、
+> ここにパスを列挙する。もっともらしい値を補うと論文に誤った条件が載るため。
+> Methods 下書きの末尾にも「⚠ 未記録の項目」として同じ一覧が出るので、
+> そこだけ手で埋めればよい。
+
+### Methods 下書き（`METHODS_ja.md` / `METHODS_en.md`）
+
+Interactive タブ「エクスポート」の **「📋 解析条件をまとめて出力」** で、
+`<結果フォルダ>/provenance/` に `analysis_conditions.json` と日英の Methods 下書きが書かれる。
+**「📝 Methods 文を表示」** は画面表示・ダウンロード用で、表示には Master Password
+（アプリのログインと同じもの）が必要。ダウンロード ZIP には
+`receipt.json` / `RECEIPT.md` / `analysis_params.json` / `log/v8_runtime_*.R` も同梱されるので、
+その ZIP 単体で第三者が条件を検証できる。
+
+下書きが明示している点（Methods の誤記が起きやすいところ）:
+
+- Volcano / Heatmap の閾値は**表示専用**であり、統計判定に使われたのは
+  `analysis.thresholds.p` / `.logfc`（解析設定タブの p 値・log2FC 閾値）である。
+- on-the-fly DE は Wilcoxon + BH、`min.pct=0.05`、`logfc.threshold=0.25` で走っている。
+- pixel 単位の検定は探索的ランキングであり、群間の統計推論ではない（空間自己相関は未補正）。
+
+### 記録されないもの
+
+Plotly のカメラボタン（modebar）でブラウザ側に保存する単体 PNG には条件を添付できない。
+その図の条件は (a) のサーバ側記録か「解析条件をまとめて出力」で確認すること。
+また記録するのは**最終状態**であり、操作の時系列ログは残さない。

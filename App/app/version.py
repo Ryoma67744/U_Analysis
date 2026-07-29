@@ -7,8 +7,8 @@
 - 更新時は CHANGELOG.md とコミットメッセージ末尾 `[verX.Y]` も同期する。
 """
 
-APP_VERSION = "46.3"
-RELEASE_DATE = "2026-07-28"
+APP_VERSION = "47.0"
+RELEASE_DATE = "2026-07-29"
 
 
 def version_label() -> str:
