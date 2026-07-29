@@ -25,7 +25,8 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from dash import Input, Output, State, callback, dcc, no_update
+from dash import (Input, Output, State, callback, clientside_callback,
+                  dcc, no_update)
 from dash.exceptions import PreventUpdate
 
 logger = logging.getLogger("msi.provenance_callbacks")
@@ -360,9 +361,9 @@ def toggle_methods_modal(show_clicks, close_clicks, is_open):
      Output("methods_unlock_error", "children"),
      Output("methods_lock_panel", "style"),
      Output("methods_content_panel", "style"),
-     Output("methods_body_ja", "children"),
-     Output("methods_body_en", "children"),
+     Output("methods_rendered_store", "data"),
      Output("btn_download_methods", "disabled"),
+     Output("btn_methods_copy", "disabled"),
      Output("methods_password", "value")],
     Input("btn_methods_unlock", "n_clicks"),
     [State("methods_password", "value"),
@@ -372,18 +373,21 @@ def toggle_methods_modal(show_clicks, close_clicks, is_open):
     prevent_initial_call=True,
 )
 def unlock_methods(n_clicks, password, rds_path, result_folder, method):
-    """Master Password を検証し、通ったときだけ Methods 本文を返す。
+    """Master Password を検証し、通ったときだけ本文を組み立てて返す。
 
     パスワードは検証に使うだけで、Store にも Output にも残さない
     （最後に methods_password の値を空文字で上書きして入力欄を消す）。
+    本文は 4 種（日英 × 平文/表）まとめて 1 つの Store に入れ、表示の切替は
+    別コールバックで行う。ロック時は Store を None にするので、
+    未解錠のまま本文がブラウザへ渡ることはない。
     """
     if not n_clicks:
         raise PreventUpdate
 
     def _locked(msg):
-        """未解錠のまま返す。本文は空のままにして、外へ出さない。"""
+        """未解錠のまま返す。本文は一切外へ出さない。"""
         return (None, msg, {"display": "block"}, {"display": "none"},
-                "", "", True, "")
+                None, True, True, "")
 
     if not password:
         return _locked("パスワードを入力してください。")
@@ -406,13 +410,97 @@ def unlock_methods(n_clicks, password, rds_path, result_folder, method):
     if not rds_path:
         return _locked("データを読み込んでから実行してください。")
 
-    from app.services.methods_text import render_methods
+    from app.services.methods_text import build_methods_prose, render_methods
     conditions = _collect(rds_path, result_folder, method)
-    ja = render_methods(conditions, "ja")
-    en = render_methods(conditions, "en")
+    rendered = {
+        "prose": {lang: build_methods_prose(conditions, lang) for lang in ("ja", "en")},
+        "table": {lang: render_methods(conditions, lang) for lang in ("ja", "en")},
+    }
     access_logger.info("Methods 表示: 解錠 (rds=%s)", rds_path)
     return ({"ok": True, "at": datetime.now().isoformat(timespec="seconds")},
-            "", {"display": "none"}, {"display": "block"}, ja, en, False, "")
+            "", {"display": "none"}, {"display": "block"},
+            rendered, False, False, "")
+
+
+# ---- Methods モーダル: 表示形式の切替 -------------------------------------
+
+@callback(
+    [Output("methods_body_ja", "children"),
+     Output("methods_body_en", "children"),
+     Output("methods_legend", "style")],
+    [Input("methods_format", "value"),
+     Input("methods_rendered_store", "data")],
+    prevent_initial_call=True,
+)
+def switch_methods_format(fmt, rendered):
+    """「論文用（平文）」と「表形式」を切替える。
+
+    平文は Dash コンポーネントで組む（HTML 文字列を作らないので、クラスタ名などの
+    ユーザー入力が入っても Dash 側でエスケープされる）。色は CSS クラスで当たる。
+    """
+    from dash import html as _html
+
+    if not rendered:
+        return "", "", {"display": "none"}
+    if fmt == "table":
+        from dash import dcc as _dcc
+        table = rendered.get("table") or {}
+        return (_dcc.Markdown(table.get("ja", "")),
+                _dcc.Markdown(table.get("en", "")),
+                {"display": "none"})
+
+    from app.services.methods_text import prose_to_dash
+    prose = rendered.get("prose") or {}
+    return (prose_to_dash(prose.get("ja") or [], "ja"),
+            prose_to_dash(prose.get("en") or [], "en"),
+            {"display": "block"})
+
+
+# ---- Methods モーダル: 書式つきコピー -------------------------------------
+# 画面の DOM をそのままクリップボードへ載せるので、赤／青が Word や Google Docs に
+# 貼り付けたときも残る。HTTPS 配信なので navigator.clipboard が使えるが、
+# 非セキュアコンテキスト用に execCommand('copy') へフォールバックする。
+
+clientside_callback(
+    """
+    function(n_clicks, activeTab) {
+        if (!n_clicks) { return window.dash_clientside.no_update; }
+        const id = (activeTab === "methods_tab_en") ? "methods_body_en" : "methods_body_ja";
+        const el = document.getElementById(id);
+        if (!el) { return "コピーする本文が見つかりません。"; }
+        const html = el.innerHTML;
+        const text = el.innerText;
+        const fallback = function () {
+            // 選択範囲からコピーすると書式が保たれる（HTTP でも動く）
+            const sel = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            sel.removeAllRanges();
+            sel.addRange(range);
+            let ok = false;
+            try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+            sel.removeAllRanges();
+            return ok;
+        };
+        if (navigator.clipboard && window.ClipboardItem && window.isSecureContext) {
+            try {
+                navigator.clipboard.write([new ClipboardItem({
+                    "text/html": new Blob([html], {type: "text/html"}),
+                    "text/plain": new Blob([text], {type: "text/plain"})
+                })]);
+                return "コピーしました（書式つき）。Word 等に貼り付けてください。";
+            } catch (e) { /* 下のフォールバックへ */ }
+        }
+        return fallback()
+            ? "コピーしました（書式つき）。Word 等に貼り付けてください。"
+            : "コピーできませんでした。本文を選択して Ctrl+C を使ってください。";
+    }
+    """,
+    Output("methods_copy_status", "children"),
+    Input("btn_methods_copy", "n_clicks"),
+    State("methods_tabs", "active_tab"),
+    prevent_initial_call=True,
+)
 
 
 # ---- Methods モーダル: ダウンロード ----------------------------------------
@@ -436,7 +524,8 @@ def download_methods_bundle(n_clicks, unlock, rds_path, result_folder, method):
     if not rds_path:
         raise PreventUpdate
 
-    from app.services.methods_text import render_methods
+    from app.services.methods_text import (render_methods, render_methods_prose,
+                                           render_methods_prose_html)
     from app.services.provenance import (conditions_json_bytes, CONDITIONS_JSON,
                                          results_dir_for_rds, latest_runtime_script)
 
@@ -446,6 +535,14 @@ def download_methods_bundle(n_clicks, unlock, rds_path, result_folder, method):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(CONDITIONS_JSON, conditions_json_bytes(conditions))
+        # 論文用の平文。HTML 版は赤（未記録）と青（復元・要確認）の色が残るので、
+        # ブラウザで開いてコピーすれば書式つきで Word へ貼れる。
+        for lang in ("ja", "en"):
+            zf.writestr(f"METHODS_prose_{lang}.html",
+                        render_methods_prose_html(conditions, lang))
+            zf.writestr(f"METHODS_prose_{lang}.md",
+                        render_methods_prose(conditions, lang))
+        # 条件一覧（表形式）。点検用。
         zf.writestr("METHODS_ja.md", render_methods(conditions, "ja"))
         zf.writestr("METHODS_en.md", render_methods(conditions, "en"))
         # 裏付けとなる既存ファイルも同梱する（レシートと実行スクリプト）。

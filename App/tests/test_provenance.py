@@ -137,8 +137,10 @@ def test_collect_conditions_warns_for_cache_only_embedding(tmp_path, monkeypatch
     monkeypatch.setattr("app.config.SEURAT_CACHE_DIR", cache, raising=False)
     c = pv.collect_conditions(rds_path=str(rds), integration_method="PCA")
     assert c["result_dir"] is None
-    assert any("キャッシュ" in w for w in c["warnings"])
-    assert any("PCA" in w for w in c["warnings"])
+    # ver48.0: 警告はコードで持つ（英語 Methods に日本語が出ないように）
+    codes = {w["code"] for w in c["warnings"]}
+    assert "cache_only_embedding" in codes
+    assert "derived_pca_not_persisted" in codes
 
 
 def test_collect_conditions_includes_fixed_onthefly_params(tmp_path):

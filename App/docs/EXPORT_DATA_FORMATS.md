@@ -252,3 +252,62 @@ Interactive タブ「エクスポート」の **「📋 解析条件をまとめ
 Plotly のカメラボタン（modebar）でブラウザ側に保存する単体 PNG には条件を添付できない。
 その図の条件は (a) のサーバ側記録か「解析条件をまとめて出力」で確認すること。
 また記録するのは**最終状態**であり、操作の時系列ログは残さない。
+
+### 論文用の平文 Methods（ver48.0）
+
+「📝 Methods 文を表示」のモーダル上部で **「論文用（平文）」／「表形式（条件一覧）」** を切替える。
+平文は論文の Methods にそのまま貼れる連続した文章で、日英とも同じ conditions から生成するので
+2 言語で値がずれない。
+
+**3 色で値の出どころを示す。**
+
+| 色 | 意味 |
+|---|---|
+| 黒 | `receipt.json` / `analysis_params.json` に直接記録されていた値 |
+| 青 | `log/v8_runtime_*.R`（実際に実行されたスクリプト）から復元した値。**要確認** |
+| 赤 | 未記録。`〔要記入: …〕` / `[TO BE FILLED: …]` として手で埋める |
+
+赤の目印は色だけでなく**文字としても入っている**ので、書式を落として貼り直しても
+埋め残しが消えない。本文を選択してコピーするか「📋 書式つきでコピー」を押せば、
+色のまま Word / Google Docs に貼れる。どの項目が赤かは本文末尾の「補うべき項目」にも一覧される。
+
+`_sources` に各項目の出どころ（`recorded` / `runtime_script`）が入るので、
+青い値が本当に実行スクリプト由来かは `analysis_conditions.json` で検証できる。
+
+**ver47.0 より前の結果フォルダについて**: 当時は `analysis_params.json` の新キーも
+R サイドカーも無いため多くが未記録になるが、`log/v8_runtime_*.R` には UI の値が定数として
+焼き込まれているので、UMAP パラメータ・正規化モード・クラスタリング設定・seed は
+そこから復元される（青で表示）。
+
+**事実でないことは書かない。** 記録が無い、あるいは無効だった処理について断定しないよう
+分岐している。主なもの:
+
+- キャリブレーションが無効なら、回帰モードの記録が残っていてもその段落を出さない
+- 再解析（`*_cluster_filter`）は「新規測定」ではなく「一次解析のクラスタを絞り込んだ再解析」と書く
+- `reduction_only` の実行ではクラスタリングと DEG の段落を出さない（回していないため）
+- 投げ縄 DE / MetaboAnalyst 出力は、実際に行ったときだけ段落を出す
+- `mz_align_ppm` が 0 のときは「アライメントを行わなかった」と書く（0 は記録された値）
+
+**GUI に出ていない検定条件も本文に書く。** バッチ側の DEG は
+`FindAllMarkers(only.pos=FALSE, min.pct=0.05, test.use="wilcox")` ＋ `p.adjust(method="BH")`
+（Seurat 既定の Bonferroni ではない）で走っており、投げ縄 DE は
+`FindMarkers`（wilcox, min.pct=0.05, logfc.threshold=0.25, BH）で走っている。
+またクラスタリングの近傍探索距離（既定 euclidean）は UMAP の距離尺度（既定 cosine）とは
+別物なので、本文では書き分けている。
+
+**Methods 本文に入れないもの**: チェックサム、絶対パス、実行者名、開始/終了時刻。
+これらは `analysis_conditions.json` に残っているので情報は失われない。
+代謝物データベースはファイル名だけを本文に出す（パスは出さない）。
+
+「Methods をダウンロード」の ZIP には以下が入る。
+
+```
+analysis_conditions.json     機械可読な全条件
+METHODS_prose_ja.html        論文用平文（色つき。ブラウザで開いてコピーすると赤青が残る）
+METHODS_prose_en.html
+METHODS_prose_ja.md          論文用平文（色なし。赤の位置は〔要記入: …〕で残る）
+METHODS_prose_en.md
+METHODS_ja.md / METHODS_en.md   条件一覧（表形式）
+receipt.json / RECEIPT.md / analysis_params.json / analysis_receipt_r.json
+log/v8_runtime_<日時>.R      実際に実行されたスクリプト
+```

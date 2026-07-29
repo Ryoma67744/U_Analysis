@@ -420,3 +420,14 @@
                                border: 1px solid #00000022; }
 /* クリック可能な共有凡例グラフ (ver29.0): クラスタ番号クリックで表示切替 */
 .facet-legend-graph { margin-bottom: 4px; }
+
+/* 論文用 Methods 下書き (ver48.0)
+   骨格は黒、実行スクリプトから復元した値は青（要確認）、未記録は赤。
+   画面から選択してコピーすると、この色のまま Word 等へ貼れる。
+   #d32f2f / #1565c0 は Bootstrap の .text-danger / .text-primary とは別に定義する
+   （モーダル内のエラー表示と紛れないように、かつ印刷しても判別できる濃さにする）。 */
+.methods-prose { line-height: 1.9; }
+.methods-prose h5 { font-size: 1.05rem; font-weight: 600; }
+.methods-prose p { text-align: justify; }
+.methods-fill { color: #d32f2f; font-weight: 600; }
+.methods-recovered { color: #1565c0; }

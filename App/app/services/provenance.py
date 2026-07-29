@@ -30,6 +30,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from app.services import runtime_script as _rs
 from app.utils.file_locks import atomic_write_json
 
 logger = logging.getLogger("msi.provenance")
@@ -46,6 +47,19 @@ ONTHEFLY_DE_FIXED_PARAMS = {
     "min_pct": 0.05,
     "logfc_threshold": 0.25,
     "p_adjust_method": "BH",
+}
+
+# バッチ解析側の DEG も GUI に出ていない固定条件で走っている。
+# R テンプレ (260623_DBSCAN_With_cluster_ver6_no-png_slim.R:1860, :1867):
+#   FindAllMarkers(only.pos=FALSE, min.pct=DEG_MIN_PCT_VAL, logfc.threshold=DEG_LOGFC_TH_VAL,
+#                  test.use="wilcox")
+#   deg$p_val_adj <- p.adjust(deg$p_val, method="BH")   ← Seurat 既定の Bonferroni を置換
+# min_pct は実行スクリプトから復元できれば上書きされる（DEG_MIN_PCT_VAL）。
+BATCH_DE_FIXED_PARAMS = {
+    "test": "wilcox",
+    "min_pct": 0.05,
+    "p_adjust_method": "BH",
+    "only_positive": False,
 }
 
 # conditions に必ず入っていてほしいキー（欠けていれば _missing に載せる）。
@@ -68,6 +82,23 @@ _REQUIRED_PATHS = (
     "software.r_version",
     "software.app_version",
     "pipeline.template_path",
+)
+
+# 必須ではないが実行スクリプトから復元しうる項目。出典の印を付ける対象に含める。
+_RECOVERABLE_EXTRA_PATHS = (
+    "analysis.clustering.k_param",
+    "analysis.mz_align_ppm",
+    "analysis.filter_mode",
+    "analysis.target_clusters",
+    "analysis.sample_selection.sample_names",
+    "analysis.sample_selection.roi_filter",
+    "analysis.sample_selection.use_roi_as_sample",
+    "analysis.sample_selection.tims_scenario",
+    "analysis.annotation.adduct_filter",
+    "analysis.annotation.annotation_csv",
+    "analysis.preprocessing.calibration_enable",
+    "analysis.preprocessing.calibration_regression_mode",
+    "analysis.analysis_type",
 )
 
 
@@ -168,6 +199,15 @@ def latest_runtime_script(result_dir) -> Optional[Path]:
 # 収集
 # ---------------------------------------------------------------------------
 
+def _merge_prefer_first(primary: Optional[dict], fallback: dict) -> dict:
+    """primary の値を優先しつつ、空いているキーだけ fallback で埋める。"""
+    out = dict(fallback or {})
+    for k, v in (primary or {}).items():
+        if v not in (None, "", [], {}):
+            out[k] = v
+    return out
+
+
 def _analysis_block(receipt: dict, params: dict) -> dict:
     """receipt.json（優先）と analysis_params.json からバッチ解析側の条件を組む。"""
     obj = receipt.get("object") or {}
@@ -195,24 +235,38 @@ def _analysis_block(receipt: dict, params: dict) -> dict:
             "dims": params.get("umap_dims_n"),
             "seed": params.get("umap_seed"),
         },
-        "clustering": obj.get("clustering") or {},
+        # ver48.0: receipt.json が無い（＝R サイドカーが出る前の古い解析）ときに
+        # クラスタリングが丸ごと空になっていたので params 側のフォールバックを足した。
+        "clustering": obj.get("clustering") or {
+            "algorithm": params.get("clustering_algorithm"),
+            "resolution": params.get("clustering_resolution"),
+            "k_param": params.get("clustering_k"),
+        },
         "annotation": obj.get("annotation") or {
             "ion_mode": params.get("ion_mode"),
             "tolerance_mz": params.get("tolerance_mz"),
             "adduct_filter": params.get("adduct_filter"),
             "annotation_csv": params.get("annotation_csv"),
+            "sources": params.get("annotation_sources"),
         },
         "thresholds": obj.get("thresholds") or {
             "p": params.get("p_thresh"),
             "logfc": params.get("logfc_thresh"),
         },
-        "sample_selection": {
-            "sample_names": params.get("sample_names"),
-            "roi_filter": params.get("roi_filter"),
-            "annotation_filter": params.get("annotation_filter"),
-            "use_roi_as_sample": params.get("use_roi_as_sample"),
-            "tims_scenario": params.get("tims_scenario"),
-        },
+        # ver48.0: receipt.py:190 が object.sample_selection を書いているのに
+        # params しか見ておらず、レシート側の記録を捨てていた。両方を統合する
+        # （レシート優先。tims_scenario はレシートでは pipeline 側にある）。
+        "sample_selection": _merge_prefer_first(
+            obj.get("sample_selection"),
+            {
+                "sample_names": params.get("sample_names"),
+                "roi_filter": params.get("roi_filter"),
+                "annotation_filter": params.get("annotation_filter"),
+                "use_roi_as_sample": params.get("use_roi_as_sample"),
+                "tims_scenario": (_dig(receipt, "object.pipeline.tims_scenario")
+                                  or params.get("tims_scenario")),
+            },
+        ),
         "filter_mode": obj.get("filter_mode") or params.get("filter_mode"),
         "target_clusters": obj.get("target_clusters") or params.get("target_clusters"),
         "mz_align_ppm": params.get("mz_align_ppm"),
@@ -282,22 +336,34 @@ def collect_conditions(rds_path=None, result_folder=None, integration_method=Non
         },
         "interactive": _interactive_block(interactive, rds_path),
         "onthefly_de_fixed_params": dict(ONTHEFLY_DE_FIXED_PARAMS),
+        "batch_de_fixed_params": dict(BATCH_DE_FIXED_PARAMS),
         "extra": dict(extra or {}),
     }
 
+    # ver48.0: 復元より前に「直接記録されていた」項目に印を付ける。
+    # 以後に埋まったものは実行スクリプト由来と判別でき、Methods 本文で色を分けられる。
+    _rs.mark_recorded_sources(conditions, _REQUIRED_PATHS + _RECOVERABLE_EXTRA_PATHS)
+
+    # ver48.0: 古い結果フォルダは analysis_params.json の新キーも R サイドカーも
+    # 無く大半が未記録になる。実行スクリプト（UI 値が定数として焼き込まれている）
+    # から空欄だけを埋める。既存の記録は上書きしない。
+    try:
+        _rs.recover_conditions(conditions, runtime_script, integration_method)
+    except Exception as e:  # noqa: BLE001 - 復元失敗で収集全体を壊さない
+        logger.warning("実行スクリプトからの復元に失敗: %s", e)
+
     # derived_pca（キャッシュ上の埋め込み）は結果フォルダを持たない。黙って
     # 「条件不明」にならないよう、警告として明示する。
+    # ver48.0: 英語の Methods に日本語が出ないよう、コード＋パラメータで持つ。
     warnings = []
     if rds_path and result_dir is None:
-        warnings.append(
-            "この埋め込みは一時キャッシュ（SEURAT_CACHE_DIR）にのみ存在し、"
-            "結果フォルダに紐づいていません。LRU で削除されると再現できません。"
-        )
-    if integration_method and str(integration_method).upper().startswith("PCA"):
-        warnings.append(
-            "PCA (uncorrected) の UMAP 埋め込みは実行時に派生生成され、"
-            "結果フォルダには保存されません。"
-        )
+        warnings.append({"code": "cache_only_embedding", "params": {}})
+    if (integration_method and str(integration_method).upper().startswith("PCA")
+            and result_dir is None):
+        # 名前が PCA というだけでは派生生成とは限らない（結果フォルダに
+        # 永続化された PCA の RDS があることもある）。結果フォルダを持たない
+        # ときだけ「キャッシュ上の派生埋め込み」と断定する。
+        warnings.append({"code": "derived_pca_not_persisted", "params": {}})
     conditions["warnings"] = warnings
     conditions["_missing"] = _missing_paths(conditions)
     return conditions
@@ -427,11 +493,15 @@ def write_conditions_bundle(result_dir, conditions: dict) -> dict:
 
     Returns: {"conditions": Path|None, "methods_ja": Path|None, "methods_en": Path|None}
     """
-    out = {"conditions": None, "methods_ja": None, "methods_en": None}
+    out = {"conditions": None, "methods_ja": None, "methods_en": None,
+           "prose_ja_md": None, "prose_ja_html": None,
+           "prose_en_md": None, "prose_en_html": None}
     pdir = provenance_dir(result_dir)
     if pdir is None:
         return out
-    from app.services.methods_text import render_methods
+    from app.services.methods_text import (render_methods, render_methods_prose,
+                                           render_methods_prose_html)
+    from app.services.receipt import _atomic_write
     try:
         cpath = pdir / CONDITIONS_JSON
         atomic_write_json(conditions, cpath)
@@ -441,9 +511,18 @@ def write_conditions_bundle(result_dir, conditions: dict) -> dict:
     for lang, key in (("ja", "methods_ja"), ("en", "methods_en")):
         try:
             mpath = pdir / f"METHODS_{lang}.md"
-            from app.services.receipt import _atomic_write
             _atomic_write(mpath, render_methods(conditions, lang=lang))
             out[key] = mpath
         except Exception as e:
             logger.warning("METHODS_%s.md の書き出しに失敗: %s", lang, e)
+        # 論文用の平文。HTML 版は未記録（赤）と復元値（青）の色が残る。
+        for suffix, render in ((".md", render_methods_prose),
+                               (".html", render_methods_prose_html)):
+            try:
+                ppath = pdir / f"METHODS_prose_{lang}{suffix}"
+                _atomic_write(ppath, render(conditions, lang=lang))
+                out[f"prose_{lang}{suffix.replace('.', '_')}"] = ppath
+            except Exception as e:
+                logger.warning("METHODS_prose_%s%s の書き出しに失敗: %s",
+                               lang, suffix, e)
     return out

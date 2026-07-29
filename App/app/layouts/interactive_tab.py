@@ -1893,6 +1893,9 @@ def create_interactive_tab():
         # Methods 表示の解錠状態。**パスワードそのものは絶対に入れない。**
         # storage_type="memory" なのでリロードで解錠は失効する。
         dcc.Store(id="methods_unlock_store", storage_type="memory", data=None),
+        # 解錠時に組み立てた本文 4 種（日英 × 平文/表）。表示切替はここから引く。
+        # 解錠前は空。Store はコンポーネントを持てないのでセグメントの生データを置く。
+        dcc.Store(id="methods_rendered_store", storage_type="memory", data=None),
         # まとめ出力 (解析条件 + 日英 Methods) の ZIP ダウンロード
         dcc.Download(id="dl_conditions_bundle"),
         # 再解析キャリブレーション回帰データ（analysis_params.jsonから読込）
@@ -1977,24 +1980,47 @@ def _create_methods_modal():
                     html.Div(id="methods_unlock_error",
                              className="small text-danger mt-2"),
                 ]),
-                # --- 解錠後: 日英タブ ---
+                # --- 解錠後: 形式切替 + 日英タブ ---
                 html.Div(id="methods_content_panel", style={"display": "none"},
                          children=[
+                    dbc.RadioItems(
+                        id="methods_format",
+                        options=[
+                            {"label": "論文用（平文）", "value": "prose"},
+                            {"label": "表形式（条件一覧）", "value": "table"},
+                        ],
+                        value="prose", inline=True, className="mb-2",
+                    ),
+                    html.Div(
+                        id="methods_legend",
+                        className="small text-muted mb-2",
+                        children=[
+                            "凡例: ",
+                            html.Span("黒 = 記録済み", className="me-3"),
+                            html.Span("青 = 実行スクリプトから復元（要確認）",
+                                      className="methods-recovered me-3"),
+                            html.Span("赤 = 未記録（手で埋める）",
+                                      className="methods-fill"),
+                        ],
+                    ),
                     dbc.Tabs([
                         dbc.Tab(label="日本語", tab_id="methods_tab_ja", children=[
-                            dcc.Markdown(id="methods_body_ja",
-                                         className="mt-3",
-                                         style={"fontSize": "0.9rem"}),
+                            html.Div(id="methods_body_ja", className="mt-3",
+                                     style={"fontSize": "0.9rem"}),
                         ]),
                         dbc.Tab(label="English", tab_id="methods_tab_en", children=[
-                            dcc.Markdown(id="methods_body_en",
-                                         className="mt-3",
-                                         style={"fontSize": "0.9rem"}),
+                            html.Div(id="methods_body_en", className="mt-3",
+                                     style={"fontSize": "0.9rem"}),
                         ]),
                     ], id="methods_tabs", active_tab="methods_tab_ja"),
                 ]),
             ]),
             dbc.ModalFooter([
+                html.Div(id="methods_copy_status",
+                         className="small text-muted me-auto"),
+                dbc.Button("📋 書式つきでコピー", id="btn_methods_copy",
+                           color="primary", outline=True, size="sm", n_clicks=0,
+                           disabled=True),
                 dbc.Button("Methods をダウンロード", id="btn_download_methods",
                            color="success", size="sm", n_clicks=0,
                            disabled=True),
