@@ -273,15 +273,16 @@ def test_methods_locked_with_wrong_password(result_dir, monkeypatch):
     monkeypatch.setattr("app.services.auth_service.verify_master",
                         lambda p: False)
     (unlock, err, lock_style, content_style,
-     ja, en, dl_disabled, pw) = pc.unlock_methods(
+     rendered, dl_disabled, copy_disabled, pw) = pc.unlock_methods(
         1, "wrong", str(rds), None, "Harmony")
 
     assert unlock is None
     assert "Master Password" in err
     assert lock_style == {"display": "block"}
     assert content_style == {"display": "none"}
-    assert ja == "" and en == ""       # 本文は一切出さない
+    assert rendered is None            # 本文は一切ブラウザへ渡さない
     assert dl_disabled is True
+    assert copy_disabled is True
     assert pw == ""                    # 入力欄をクリアする
 
 
@@ -292,15 +293,20 @@ def test_methods_unlocked_with_correct_password(result_dir, monkeypatch):
     monkeypatch.setattr("app.services.auth_service.verify_master",
                         lambda p: p == "secret")
     (unlock, err, lock_style, content_style,
-     ja, en, dl_disabled, pw) = pc.unlock_methods(
+     rendered, dl_disabled, copy_disabled, pw) = pc.unlock_methods(
         1, "secret", str(rds), None, "Harmony")
 
     assert unlock["ok"] is True
     assert err == ""
     assert content_style == {"display": "block"}
-    assert "解析条件" in ja
-    assert "Methods draft" in en
+    # 平文（論文用）と表形式の両方が、日英そろって返る
+    assert set(rendered) == {"prose", "table"}
+    assert set(rendered["prose"]) == {"ja", "en"}
+    assert "解析条件" in rendered["table"]["ja"]
+    assert "Methods draft" in rendered["table"]["en"]
+    assert rendered["prose"]["ja"][0]["heading"]
     assert dl_disabled is False
+    assert copy_disabled is False
     # パスワードは解錠情報にも入力欄にも残さない
     assert "secret" not in json.dumps(unlock)
     assert pw == ""
@@ -312,7 +318,7 @@ def test_methods_requires_password(result_dir):
     out, rds = result_dir
     result = pc.unlock_methods(1, "", str(rds), None, "Harmony")
     assert result[0] is None
-    assert result[4] == ""
+    assert result[4] is None       # 本文 Store は空のまま
 
 
 def test_methods_download_blocked_when_locked(result_dir):
@@ -341,8 +347,14 @@ def test_methods_download_bundle_when_unlocked(result_dir):
         assert "analysis_conditions.json" in names
         assert "METHODS_ja.md" in names
         assert "METHODS_en.md" in names
+        # 論文用の平文（色つき HTML を含む）
+        assert "METHODS_prose_ja.html" in names
+        assert "METHODS_prose_en.html" in names
+        assert "METHODS_prose_ja.md" in names
         assert "analysis_params.json" in names   # 裏付けも同梱
         assert "解析条件" in zf.read("METHODS_ja.md").decode("utf-8")
+        html = zf.read("METHODS_prose_ja.html").decode("utf-8")
+        assert "methods" not in html or "color:#d32f2f" in html
 
 
 def test_conditions_bundle_button_writes_files(result_dir):
