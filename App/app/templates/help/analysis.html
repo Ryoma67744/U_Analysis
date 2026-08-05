@@ -1230,7 +1230,12 @@ ZIP名: metaboanalyst_&lt;強度種別&gt;_&lt;単位&gt;[_qea].zip
   <li><strong>入力フォルダ</strong>: SCiLS 出力フォルダ</li>
   <li><strong>出力先フォルダ</strong>: 既定は <code>TIMS_DATA_DIR</code>（変換後すぐ解析タブの候補に出る）</li>
   <li><strong>サンプル名</strong>: 出力ファイル名（拡張子は自動付与）</li>
-  <li>詳細設定: 変換後に元 CSV を <code>&lt;BASE&gt;_Transform/</code> へ移動 / Parquet を float32 で保存（容量半減）/ spot ブロックサイズ（既定 200）</li>
+  <li>詳細設定: 変換後に元 CSV を <code>&lt;BASE&gt;_Transform/</code> へ移動 / Parquet を float32 で保存（容量半減）/
+    spot ブロックサイズ＝<strong>読み込み単位</strong>（既定 200。出力の row group サイズとは無関係）</li>
+  <li><strong>出力の row group</strong>: 全行が 1 つの row group になります。1 列（1 化合物）がファイル上で
+    連続するため、ファイルを開く時間とメモリが桁違いに小さくなります（フッタ 約 736MB → 約 2MB）。
+    メモリが足りない場合のみ自動で分割し、変換結果に警告が出ます。
+    <strong>以前に変換した parquet（200 行/row group）もそのまま読めます</strong>ので再変換は不要です</li>
 </ul>
 
 <h3 class="subsection-heading">📌 プロジェクトサムネの登録</h3>

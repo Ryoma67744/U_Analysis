@@ -101,7 +101,7 @@ def create_scils_converter_modal():
                                     className="small mt-2",
                                 ),
                                 dbc.Label(
-                                    "spot ブロックサイズ (チャンク処理単位)",
+                                    "spot ブロックサイズ (読み込み単位)",
                                     className="small fw-bold mt-3",
                                 ),
                                 dbc.Input(
@@ -114,7 +114,10 @@ def create_scils_converter_modal():
                                     size="sm",
                                 ),
                                 html.Small(
-                                    "大ファイルではメモリ使用量に影響します。既定 200。",
+                                    "1 回に読み込む spot 列数。大ファイルではメモリ使用量に"
+                                    "影響します（出力の row group サイズとは無関係）。既定 200。"
+                                    "出力の row group は常に全行 1 つです"
+                                    "（メモリが足りない場合のみ自動分割）。",
                                     className="text-muted",
                                 ),
                             ],

@@ -150,6 +150,28 @@ TIMS インタラクティブ出力の元になる変換済み parquet（`<BASE>
 - 特徴量注釈は別ファイル `<BASE>_feature_annotations.parquet`（1行=1 m/z、列: `mz, compound, lipid_class,
   database, adduct, ppm, formula, smiles, adduct_image, adduct_family, raw, display_name`）。
 
+### row group レイアウト
+
+**全行が 1 row group**（既定）。1 列（= 1 化合物）がファイル上で連続するため、特定の m/z を
+読むときに 1 回の連続読みで済む。
+
+| | 旧レイアウト（200 行/row group） | 現行（全行 1 つ） |
+|---|---|---|
+| row group 数（203,078 spot の例） | 1,016 | 1 |
+| フッタ | 約 736 MB | 約 2 MB |
+| `pq.ParquetFile()` で開く時間 | 約 3.3 秒 | 約 15 ms |
+
+フッタは `row group 数 × 列数` 個の column chunk メタデータからなり、列名（peak-list 由来だと
+長い化合物名）が chunk ごとに繰り返し格納されるため、row group を細かく刻むと肥大する。
+
+**旧レイアウトのファイルもそのまま読める。再変換は不要。** Python（pyarrow / pandas）も
+R（arrow）も列指定・全表読みのみで row group 単位の API を使っていないため、両レイアウトで
+同じ結果が得られる。ただし旧ファイルは開くたびにフッタ解析のコストがかかる。
+
+メモリが不足する場合（`spot 数 × m/z 数 × 4 バイト` のバッファが載らない場合）に限り、
+変換器が自動的に複数 row group へ分割し、変換結果パネルに警告を表示する。
+なお変換モーダルの「spot ブロックサイズ」は**読み込み単位**であり、row group サイズとは無関係。
+
 ---
 
 ## 付録: 解析条件の記録（`analysis_conditions.json` / `provenance/`）— ver47.0

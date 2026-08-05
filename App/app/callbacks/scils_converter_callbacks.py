@@ -131,6 +131,14 @@ def _render_success(result) -> html.Div:
         (html.Dt("annotation ラベル"), html.Dd(ann_labels)),
         (html.Dt("所要時間"), html.Dd(f"{result.duration_sec:.1f} 秒")),
     ]
+    if result.n_row_groups:
+        layout_text = (
+            f"{result.n_row_groups:,} 個 × {result.row_group_rows:,} 行"
+            f"（フッタ {result.footer_bytes / (1024 ** 2):.2f} MB）"
+        )
+        if result.n_row_groups == 1:
+            layout_text += " — 全行 1 row group"
+        details.append((html.Dt("row group"), html.Dd(layout_text)))
     if result.organized:
         details.append((html.Dt("整理モード"), html.Dd("ON (元 CSV をサブフォルダに移動)")))
 

@@ -455,3 +455,244 @@ class TestReadPeaklist:
         mz, names = sc._read_peaklist(p)
         assert np.allclose(mz, [419.2572])
         assert names[0] == "ADP | [M-H]- | adducts=[M-H]-,[M]-"
+
+
+# ---------------------------------------------------------------------------
+# 出力 row group レイアウト (全行 1 row group)
+# ---------------------------------------------------------------------------
+
+def _row_group_sizes(path) -> list[int]:
+    md = pq.ParquetFile(str(path)).metadata
+    return [md.row_group(i).num_rows for i in range(md.num_row_groups)]
+
+
+class TestRowGroupLayout:
+    def test_default_is_single_row_group(self, tmp_path):
+        data_dir = tmp_path / "scils"
+        _make_basic_pair(data_dir)
+        result = sc.convert_scils_to_parquet(
+            str(data_dir), str(tmp_path / "out" / "sample.parquet"), organize=False,
+        )
+        assert _row_group_sizes(result.output_path) == [5]
+
+    def test_row_group_rows_explicit(self, tmp_path):
+        """row_group_rows=2 → 端数を避けて等分割し、値は既定実行と完全一致する。"""
+        base_dir = tmp_path / "base"
+        split_dir = tmp_path / "split"
+        _make_basic_pair(base_dir)
+        _make_basic_pair(split_dir)
+
+        base = sc.convert_scils_to_parquet(
+            str(base_dir), str(tmp_path / "o1" / "s.parquet"), organize=False)
+        split = sc.convert_scils_to_parquet(
+            str(split_dir), str(tmp_path / "o2" / "s.parquet"),
+            organize=False, row_group_rows=2)
+
+        sizes = _row_group_sizes(split.output_path)
+        assert len(sizes) > 1 and sum(sizes) == 5
+        assert max(sizes) <= 2
+        pd.testing.assert_frame_equal(
+            pd.read_parquet(base.output_path), pd.read_parquet(split.output_path))
+
+    def test_spot_block_independent_of_row_group(self, tmp_path):
+        """spot_block は読み取り粒度のみ。row group 数にも内容にも影響しない。"""
+        frames = {}
+        for i, block in enumerate((1, 1000)):
+            d = tmp_path / f"in{i}"
+            _make_basic_pair(d)
+            r = sc.convert_scils_to_parquet(
+                str(d), str(tmp_path / f"out{i}" / "s.parquet"),
+                organize=False, spot_block=block)
+            assert _row_group_sizes(r.output_path) == [5]
+            frames[block] = pd.read_parquet(r.output_path)
+        pd.testing.assert_frame_equal(frames[1], frames[1000])
+
+    def test_result_records_layout(self, tmp_path):
+        data_dir = tmp_path / "scils"
+        _make_basic_pair(data_dir)
+        result = sc.convert_scils_to_parquet(
+            str(data_dir), str(tmp_path / "out" / "sample.parquet"), organize=False)
+        md = pq.ParquetFile(result.output_path).metadata
+        assert result.n_row_groups == md.num_row_groups == 1
+        assert result.row_group_rows == 5
+        assert result.footer_bytes == md.serialized_size > 0
+        assert result.row_group_policy == "single"
+
+    def test_fallback_splits_and_warns(self, tmp_path, monkeypatch):
+        """予算不足なら分割して警告を出し、値は変えない。
+
+        3 m/z × 5 spot・float32 なので、全行 1 つ = 3*5*4 + meta*1 = 61 バイト、
+        1 行/group = 3*1*4 + meta*5 = 17 バイト（meta を 1 バイトに縮めた場合）。
+        予算を 30 バイトに固定すると必ず前者だけが弾かれる。
+        """
+        monkeypatch.setattr(sc, "_PHASE_A_FOOTER_MARGIN_GB", 0.0)
+        monkeypatch.setattr(sc, "_RG_AVAIL_FRACTION", 1.0)
+        monkeypatch.setattr(sc, "_RG_METADATA_BYTES", 1.0)
+        monkeypatch.setattr(sc, "_available_memory_gb", lambda: 30 / 1024 ** 3)
+        data_dir = tmp_path / "scils"
+        _make_basic_pair(data_dir)
+        result = sc.convert_scils_to_parquet(
+            str(data_dir), str(tmp_path / "out" / "sample.parquet"), organize=False)
+        assert result.row_group_policy == "single-fallback"
+        assert any("row group" in w for w in result.warnings)
+        assert sum(_row_group_sizes(result.output_path)) == 5
+        # 分割されても値は不変
+        assert list(pd.read_parquet(result.output_path)["y"]) == [1.0, 2.0, 3.0, 4.0, 5.0]
+
+    def test_guard_raises_when_hopeless(self, monkeypatch):
+        """どう分割しても載らない場合は明示エラー（フォールバックで誤魔化さない）。"""
+        monkeypatch.setattr(sc, "_available_memory_gb", lambda: 2.0)   # 予算 0.3 GB
+        with pytest.raises(RuntimeError, match="メモリが不足"):
+            sc._plan_row_groups(n_spots=1_000_000, n_mz=100_000, itemsize=8, requested=None)
+
+    def test_plan_prefers_single_when_it_fits(self, monkeypatch):
+        monkeypatch.setattr(sc, "_available_memory_gb", lambda: 8.0)
+        rg, policy, warns = sc._plan_row_groups(
+            n_spots=5_000, n_mz=100, itemsize=4, requested=None)
+        assert (rg, policy, warns) == (5_000, "single", [])
+
+    def test_plan_minimizes_u_shaped_cost_on_fallback(self, monkeypatch):
+        """フォールバックは「小さくする」のではなく総コストを最小化する。
+
+        row group を細かくすると ParquetWriter が抱えるメタデータが増えるため、
+        単調に減らすと逆に悪化する。理論最小 rg* = sqrt(meta * n_spots / (itemsize * n_mz))
+        の近傍が選ばれること、かつ結果が予算内であることを確認する。
+        """
+        monkeypatch.setattr(sc, "_available_memory_gb", lambda: 12.0)  # 予算 6.3 GB
+        n_spots, n_mz, itemsize = 1_000_000, 100_000, 8
+        rg, policy, warns = sc._plan_row_groups(
+            n_spots=n_spots, n_mz=n_mz, itemsize=itemsize, requested=None)
+        assert policy == "single-fallback" and warns
+        ideal = (sc._RG_METADATA_BYTES * n_spots / (itemsize * n_mz)) ** 0.5
+        assert 0.5 * ideal <= rg <= 2 * ideal
+        # 全行 1 つより明確に軽く、かつ両端より軽い
+        cost = sc._row_group_cost_bytes(rg, n_spots=n_spots, n_mz=n_mz, itemsize=itemsize)
+        for other in (1, n_spots):
+            assert cost < sc._row_group_cost_bytes(
+                other, n_spots=n_spots, n_mz=n_mz, itemsize=itemsize)
+
+    def test_buffer_row_is_zero_copy(self):
+        """軸順 (n_mz, rg_rows) を反転すると pa.array が黙ってコピーする。その回帰ガード。"""
+        import pyarrow as pa
+        buf = np.empty((4, 8), dtype=np.float32)
+        arr = pa.array(buf[1, :5])
+        assert arr.buffers()[0] is None                       # validity buffer 無し
+        assert arr.buffers()[1].address == buf[1, :5].__array_interface__["data"][0]
+
+    def test_failure_before_write_does_not_clobber_existing_output(self, tmp_path, monkeypatch):
+        """書き込み開始前に落ちても既存の出力ファイルは無傷のまま残る。"""
+        data_dir = tmp_path / "scils"
+        out = tmp_path / "out" / "sample.parquet"
+        _make_basic_pair(data_dir)
+        good = sc.convert_scils_to_parquet(str(data_dir), str(out), organize=False)
+        good_bytes = Path(good.output_path).read_bytes()
+
+        def _boom(*a, **k):
+            raise RuntimeError("injected failure")
+
+        monkeypatch.setattr(sc, "_plan_row_groups", _boom)
+        with pytest.raises(RuntimeError, match="injected failure"):
+            sc.convert_scils_to_parquet(str(data_dir), str(out), organize=False)
+
+        assert Path(good.output_path).read_bytes() == good_bytes
+        assert not list(out.parent.glob("*.writing.parquet"))
+
+    def test_failure_mid_write_does_not_clobber_existing_output(self, tmp_path, monkeypatch):
+        """row group を 1 つ書いた後に落ちても、既存の出力は上書きされない。
+
+        原子化前はここで「有効だが行数が足りない parquet」が正常ファイルを潰していた。
+        下流の Python・R いずれもそれを正常なファイルとして受け入れてしまうため、
+        この経路こそが本命のガード対象。
+        """
+        data_dir = tmp_path / "scils"
+        out = tmp_path / "out" / "sample.parquet"
+        _make_basic_pair(data_dir)
+        good = sc.convert_scils_to_parquet(str(data_dir), str(out), organize=False)
+        good_bytes = Path(good.output_path).read_bytes()
+        assert pq.ParquetFile(out).metadata.num_rows == 5
+
+        # row_group_rows=2 なら内側ループは row group ごとに 1 回。2 回目で落とすと
+        # 「1 つ目の row group だけ書けた一時ファイル」が残る状態を再現できる。
+        real_column_stack = np.column_stack
+        calls = {"n": 0}
+
+        def _flaky(*a, **k):
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                raise RuntimeError("injected mid-write failure")
+            return real_column_stack(*a, **k)
+
+        monkeypatch.setattr(sc.np, "column_stack", _flaky)
+        with pytest.raises(RuntimeError, match="injected mid-write failure"):
+            sc.convert_scils_to_parquet(
+                str(data_dir), str(out), organize=False, row_group_rows=2)
+
+        assert calls["n"] >= 2, "書き込みループに入る前に落ちてしまい経路を検証できていない"
+        # 既存ファイルは 1 バイトも変わっていない
+        assert Path(good.output_path).read_bytes() == good_bytes
+        assert pq.ParquetFile(out).metadata.num_rows == 5
+        # 中途半端な一時ファイルも残っていない
+        assert sorted(p.name for p in out.parent.iterdir()) == ["sample.parquet"]
+
+
+class TestLegacyLayoutCompat:
+    """旧レイアウト (200 行/row group 相当 = 複数 row group) も読めることを固定する。
+
+    row group 単位の API を使う reader はリポジトリに無いので本来壊れないが、
+    将来 row group 数に依存するコードが混入した場合に気づけるようにしておく。
+    """
+
+    @staticmethod
+    def _pair(tmp_path):
+        """同一内容を「全行 1 row group」と「複数 row group」で出力して返す。"""
+        new_dir, old_dir = tmp_path / "new_in", tmp_path / "old_in"
+        _make_basic_pair(new_dir, add_annotation=True)
+        _make_basic_pair(old_dir, add_annotation=True)
+        new = sc.convert_scils_to_parquet(
+            str(new_dir), str(tmp_path / "new" / "s.parquet"), organize=False)
+        old = sc.convert_scils_to_parquet(
+            str(old_dir), str(tmp_path / "old" / "s.parquet"),
+            organize=False, row_group_rows=2)
+        assert len(_row_group_sizes(new.output_path)) == 1
+        assert len(_row_group_sizes(old.output_path)) > 1
+        return Path(new.output_path), Path(old.output_path)
+
+    def test_content_identical_across_layouts(self, tmp_path):
+        new_p, old_p = self._pair(tmp_path)
+        pd.testing.assert_frame_equal(pd.read_parquet(new_p), pd.read_parquet(old_p))
+        # スキーマメタデータ (mz_sorted / annotation_files) も同一
+        assert (pq.ParquetFile(new_p).schema_arrow.metadata
+                == pq.ParquetFile(old_p).schema_arrow.metadata)
+
+    def test_column_selection_identical(self, tmp_path):
+        new_p, old_p = self._pair(tmp_path)
+        cols = ["id", "100.500000", "annotation"]
+        pd.testing.assert_frame_equal(
+            pd.read_parquet(new_p, columns=cols), pd.read_parquet(old_p, columns=cols))
+
+    def test_read_parquet_annotations_identical(self, tmp_path):
+        from app.services.data_manager import read_parquet_annotations
+        new_p, old_p = self._pair(tmp_path)
+        got = read_parquet_annotations(str(old_p))
+        assert got == read_parquet_annotations(str(new_p))
+        assert got == ["Brain", "Heart"]
+
+    def test_mz_sorted_metadata_identical(self, tmp_path):
+        from app.services.data_manager import _read_mz_sorted_metadata
+        new_p, old_p = self._pair(tmp_path)
+        old_mz = _read_mz_sorted_metadata(pq.ParquetFile(old_p))
+        new_mz = _read_mz_sorted_metadata(pq.ParquetFile(new_p))
+        assert old_mz is not None
+        assert np.allclose(old_mz, new_mz)
+        assert np.allclose(old_mz, [100.5, 200.1, 300.25])
+
+    def test_mixed_folder_lists_both(self, tmp_path):
+        """新旧が同じフォルダに混在しても候補列挙は両方を返す。"""
+        from app.services.data_manager import _filter_tims_candidates
+        new_p, old_p = self._pair(tmp_path)
+        mixed = tmp_path / "mixed"
+        mixed.mkdir()
+        for src, name in ((new_p, "new.parquet"), (old_p, "old.parquet")):
+            (mixed / name).write_bytes(src.read_bytes())
+        names = {p.name for p in _filter_tims_candidates(mixed)}
+        assert names == {"new.parquet", "old.parquet"}
