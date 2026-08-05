@@ -150,6 +150,67 @@ TIMS インタラクティブ出力の元になる変換済み parquet（`<BASE>
 - 特徴量注釈は別ファイル `<BASE>_feature_annotations.parquet`（1行=1 m/z、列: `mz, compound, lipid_class,
   database, adduct, ppm, formula, smiles, adduct_image, adduct_family, raw, display_name`）。
 
+### 何を何に変換しているか
+
+#### 入力: SCiLS Lab から Export した CSV 群（同一フォルダに同居）
+
+| ファイル | 必須 | 形 | 中身 |
+|---|---|---|---|
+| `<BASE>_Intensity.csv` | 必須 | **m/z 行 × spot 列** | 先頭列 = m/z 値、2 列目以降 = `Spot NNNNN` |
+| `<BASE>_Spot.csv` | 必須 | spot 行 | `SpotIndex, X, Y`（マスター座標） |
+| `<LABEL>_Annotation.csv` | 任意・複数可 | spot 行 | `SpotIndex, X, Y`。ファイル名の `<LABEL>` が組織ラベルになる |
+| peak list CSV | 任意 | m/z 行 | `m/z, Name, …`。列名に化合物名を埋め込むために使う |
+
+役割は**ファイル名ではなくヘッダの中身で自動判定**する（`classify_csv_role`）。
+`Spot NNNNN` 形式の列が 5 個以上あれば intensity、`SpotIndex`/`X`/`Y` を持てば spot_like
+（そのうち最大サイズが Spot、残りが Annotation）、`Name` と `m/z` を持てば peak_list。
+
+#### 出力: 1 つの Parquet ファイル
+
+**最も大きな形の変化は転置。** SCiLS の Intensity CSV は「1 行 = 1 化合物」だが、
+解析は spot 単位で行うため「1 行 = 1 spot」に入れ替える。
+
+| | 入力 Intensity CSV | 出力 Parquet |
+|---|---|---|
+| 1 行 | 1 つの m/z | **1 つの spot** |
+| 1 列 | 1 つの spot | **1 つの m/z** |
+| 値の型 | 文字列（CSV） | float32（既定）/ float64 |
+| 座標 | 別ファイル（`_Spot.csv`） | `x` / `y` 列として同居 |
+| 組織ラベル | 別ファイル（`_Annotation.csv`） | `annotation` 列として同居 |
+
+スキーマ（この順で固定）:
+
+| 列 | 型 | 内容 |
+|---|---|---|
+| `id` | int64 | spot 番号 |
+| `x` | float64 | マスター座標 X |
+| `y` | float64 | マスター座標 Y |
+| `<m/z 列>` × n | float32（既定）/ float64 | 強度。**m/z 昇順** |
+| `annotation` | string | 組織ラベル。該当なしは空文字 |
+
+- **行の並び**: `(y, x)` の昇順（`np.lexsort((x, y))`）。画像の走査順に対応する。
+- **列名**: peak list があれば `化合物名_<m/z 4桁> | データベース | アダクト`、
+  無ければ m/z を小数 6 桁で文字列化した `419.257200` 形式。
+  重複した場合は末尾に ` #2`, ` #3` … を付けて一意化する。
+- **圧縮**: zstd（pyarrow の他オプションは既定のまま）
+- **row group**: 全行 1 つ（下記「row group レイアウト」参照）
+
+スキーマ key-value メタデータ（3 キー。いずれもキー・値とも bytes）:
+
+| キー | 内容 | 常に存在するか |
+|---|---|---|
+| `mz_sorted` | 全 m/z をフル桁（`%.10g`）でカンマ区切り。**列名が化合物名になっても m/z を確実に復元できる正** | 常に |
+| `annotation_files` | 使った Annotation CSV のファイル名をセミコロン区切り | 常に（空のことはある） |
+| `peak_list` | 使った peak list CSV のファイル名 | peak list があるときだけ |
+
+#### 中間ファイルと副産物
+
+- **Phase A の一時ファイル** `<BASE>_temp.parquet`（snappy、512 行/row group、全列 float64）。
+  CSV をストリーミングで一旦 parquet 化し、Phase B で転置しながら最終ファイルへ書く。
+  変換成功後に削除される。
+- **注釈サイドカー** `<BASE>_feature_annotations.parquet`（1 行 = 1 m/z）。
+  上記のとおり本体とは別ファイル。**再パックの対象外**。
+
 ### row group レイアウト
 
 **全行が 1 row group**（既定）。1 列（= 1 化合物）がファイル上で連続するため、特定の m/z を
@@ -177,6 +238,19 @@ R（arrow）も列指定・全表読みのみで row group 単位の API を使�
 旧レイアウトのファイルは**再変換せずレイアウトだけ作り直せる**。
 GUI の「📦 Parquet 再パック」、または
 `python -u App/tools/repack_parquet_rowgroups.py <フォルダ> [--dry-run] [--no-backup]`。
+
+これは **Parquet → Parquet** の変換で、**論理的な内容は一切変えない**。
+変えるのは同じデータのファイル上の並べ方（物理レイアウト）だけ。
+
+| | 変わらない | 変わる |
+|---|---|---|
+| 行 | 行数・行の並び順 | — |
+| 列 | 列数・列順・列名・型 | — |
+| 値 | **ビットパターン**（NaN のペイロード・`±0.0` の符号を含む） | — |
+| スキーマ | key-value メタデータ 3 キー | — |
+| 圧縮 | コーデック（zstd なら zstd のまま） | 物理エンコーディング（辞書 ⇄ PLAIN） |
+| 物理配置 | — | row group 数（1,016 → 1）、フッタ（735MB → 約 2MB） |
+| ファイル | — | 全体のバイト列、サイズ（**小さくなる**）、mtime |
 
 - **値は 1 ビットも変わらない。** 全列を整数ビュー（`uint32`/`uint64`）で突き合わせてから
   置換する。`pa.Array.equals()` は `NaN == NaN` を False、`+0.0 == -0.0` を True と
