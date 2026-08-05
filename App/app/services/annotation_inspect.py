@@ -90,7 +90,9 @@ _PEAKLIST_SCAN_CAP = 50
 def _main_parquet_peaklist(dirs) -> Optional[str]:
     """本体 parquet のフッタ schema メタに `b"peak_list"` があればその値（ファイル名）を返す。
 
-    フッタ（数 KB）のみ読む。サイドカーが欠けているが本体には peak-list メタがある場合の保険。
+    フッタのみ読む。サイドカーが欠けているが本体には peak-list メタがある場合の保険。
+    なお旧レイアウト（200 行/row group）の parquet ではフッタが数百 MB になり、1 ファイル
+    あたり数秒かかる。全行 1 row group で変換したファイルでは数 ms で済む。
     結果フォルダに parquet が大量にある/ディスクが遅いと待ちが伸びるため、走査は
     `_PEAKLIST_SCAN_CAP` 件で打ち切る（初ヒットで即 return する挙動は維持）。
     """

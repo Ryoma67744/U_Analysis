@@ -14,6 +14,9 @@
 #   カラム: id (int64), x (float64), y (float64),
 #           <mz を小数 6 桁で文字列化した列名> (float32/64), annotation (string)
 #   行: (y, x) ソート順の spot, m/z 列は昇順
+#   row group: 既定で「全行 1 つ」。1 列 (= 1 化合物) がファイル上で連続し、フッタが
+#              桁違いに小さくなる (実データ規模で 735MB -> 約 2MB、open 3.3s -> 15ms)。
+#              旧レイアウト (200 行/row group) のファイルもそのまま読める。
 # =============================================================================
 
 from __future__ import annotations
@@ -56,6 +59,11 @@ class ConversionResult:
     moved_files: list[str] = field(default_factory=list)
     duration_sec: float = 0.0
     warnings: list[str] = field(default_factory=list)
+    # --- 出力 Parquet のレイアウト（書き込み後に実ファイルから読み取って記録）---
+    row_group_rows: int = 0        # 実際に採用した 1 row group あたりの行数
+    n_row_groups: int = 0
+    footer_bytes: int = 0          # metadata.serialized_size（フッタ実サイズ）
+    row_group_policy: str = ""     # "single" / "explicit" / "single-fallback"
 
 
 # ---------------------------------------------------------------------------
@@ -577,28 +585,56 @@ def _ensure_unique_colnames(names: list[str]) -> list[str]:
     return out
 
 
-def _check_conversion_memory(intensity_path: Path) -> None:
+def _check_conversion_memory(
+    intensity_path: Path,
+    *,
+    n_spots_hint: int = 0,
+    itemsize: int = 4,
+) -> None:
     """変換前の簡易メモリチェック。空きメモリが Intensity CSV に対して著しく不足する
     場合は明示的に RuntimeError を送出し、無言の OOM（途中終了＋0byte 一時ファイル
-    残留）を避ける。psutil 不在環境ではスキップ。"""
+    残留）を避ける。psutil 不在環境ではスキップ。
+
+    Phase A は数分かかるため、全行 1 row group の出力バッファが明らかに載らない場合も
+    ここで落とす。ただし n_mz は Phase A 後まで確定しないので CSV サイズからの粗い概算に
+    留め、「絶望的な場合の早期却下」にのみ使う（レイアウト決定には使わない）。
+
+    Parameters
+    ----------
+    n_spots_hint : int
+        spot 数の上限見積り（`len(int_headers) - 1`）。0 なら出力バッファの概算をスキップ。
+    itemsize : int
+        出力 m/z 列 1 要素のバイト数（float32 なら 4）。
+    """
     try:
-        import psutil
+        csv_bytes = intensity_path.stat().st_size
     except Exception:
         return
-    try:
-        csv_gb = intensity_path.stat().st_size / (1024 ** 3)
-    except Exception:
-        return
+    csv_gb = csv_bytes / (1024 ** 3)
     if csv_gb < 0.5:
         return  # 小さいデータはメモリチェック不要
-    try:
-        avail_gb = psutil.virtual_memory().available / (1024 ** 3)
-    except Exception:
+
+    avail_gb = _available_memory_gb()
+    if avail_gb is None:
         return
+
     need_gb = csv_gb * 1.5 + 1.0
+
+    # 全行 1 row group の出力バッファ概算。n_mz は Phase A 後まで不明なので
+    # 「CSV 1 セルあたり平均バイト数」から逆算する（誤差は大きい）。
+    buf_gb = 0.0
+    if n_spots_hint > 0:
+        n_cols = n_spots_hint + 1                       # m/z 列 + spot 列
+        n_mz_est = max(1, int(csv_bytes / (n_cols * _AVG_CSV_CELL_BYTES)))
+        buf_gb = n_mz_est * n_spots_hint * itemsize / (1024 ** 3)
+        # Phase A / Phase B は同時に走らないので、必要量は両者の最大値
+        need_gb = max(need_gb, buf_gb + _PHASE_A_FOOTER_MARGIN_GB)
+
     logger.info(
-        "変換メモリ確認: Intensity CSV %.2f GB / 空き %.2f GB（目安 %.1f GB 以上）",
+        "変換メモリ確認: Intensity CSV %.2f GB / 空き %.2f GB（目安 %.1f GB 以上"
+        "%s）",
         csv_gb, avail_gb, need_gb,
+        f" / 出力バッファ概算 {buf_gb:.1f} GB" if buf_gb else "",
     )
     if avail_gb < need_gb:
         raise RuntimeError(
@@ -608,11 +644,143 @@ def _check_conversion_memory(intensity_path: Path) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# 出力 row group のサイズ決定
+# ---------------------------------------------------------------------------
+#
+# ParquetWriter は「1 回の write_table = 1 row group」で、row group ごとの column chunk
+# メタデータを close() まで RAM に保持しフッタをまとめて Thrift 直列化する。実測で
+# 約 6.4MB/row group（2,700 列・注釈付き列名）。したがってメモリコストは
+#
+#     total(rg) = n_mz * rg * itemsize            # 出力バッファ
+#               + _RG_METADATA_BYTES * ceil(n_spots / rg)   # ライタが抱えるメタデータ
+#
+# という U 字になり、rg を小さくすれば安全とは限らない（むしろ悪化する）。
+# 実データ規模（203,078 spot × 2,700 m/z）では 200 行/row group が約 3.8GB、
+# 全行 1 つが約 2.2GB で、全行 1 つのほうが軽い。
+_RG_METADATA_BYTES = 6.4 * 1024 ** 2
+# Phase A の一時 parquet のフッタは Phase B の間ずっと常駐する（pf を保持するため）。
+# n_mz 行 × n_spots 列 ÷ row_group_size=512 で column chunk が百万単位になり、
+# 実データ規模で約 1.15GB。計上しないと 1GB 以上見積りを外す。
+_PHASE_A_FOOTER_MARGIN_GB = 1.5
+# 空きメモリのうち変換に使ってよい割合（残りは他ユーザーの解析・アプリ本体のため）
+_RG_AVAIL_FRACTION = 0.6
+# これ以上小さく割っても意味がない下限（メタデータ側が支配的になる）
+_RG_MIN_ROWS = 1024
+# CSV 1 セルあたりの平均バイト数（早期チェックの粗い概算用）
+_AVG_CSV_CELL_BYTES = 11
+
+
+def _available_memory_gb() -> Optional[float]:
+    """変換に使える空きメモリ (GB)。cgroup 上限を優先し、無ければ psutil にフォールバック。
+
+    psutil.virtual_memory().available はホストの /proc/meminfo をそのまま返し cgroup を
+    見ないため、大きなホスト上のコンテナでは「コンテナはほぼ満杯なのにチェックを通る」。
+    analysis_runner に既にある cgroup 読み取りを再利用する。
+    """
+    limit_gb = None
+    try:
+        from app.services.analysis_runner import _container_memory_limit_gb
+        limit_gb = _container_memory_limit_gb()
+    except Exception:
+        limit_gb = None
+
+    if limit_gb is not None:
+        # cgroup v2 の現在使用量が読めれば「上限 - 使用中」を空きとする
+        for path in ("/sys/fs/cgroup/memory.current",
+                     "/sys/fs/cgroup/memory/memory.usage_in_bytes"):
+            try:
+                used_gb = int(Path(path).read_text(encoding="utf-8").strip()) / (1024 ** 3)
+            except (OSError, ValueError):
+                continue
+            return max(0.0, limit_gb - used_gb)
+
+    try:
+        import psutil
+        return psutil.virtual_memory().available / (1024 ** 3)
+    except Exception:
+        return None
+
+
+def _row_group_cost_bytes(rg_rows: int, *, n_spots: int, n_mz: int, itemsize: int) -> float:
+    """1 row group を rg_rows 行にしたときの Phase B ピークメモリ概算 (bytes)"""
+    n_groups = -(-n_spots // max(1, rg_rows))
+    return n_mz * rg_rows * itemsize + _RG_METADATA_BYTES * n_groups
+
+
+def _plan_row_groups(
+    *,
+    n_spots: int,
+    n_mz: int,
+    itemsize: int,
+    requested: Optional[int] = None,
+) -> tuple[int, str, list[str]]:
+    """出力 row group の行数を決める。戻り値 = (rg_rows, policy, warnings)
+
+    既定 (requested=None) は「全行 1 row group」。予算に収まらない場合のみ、
+    U 字コストを最小化する行数へ落として警告を返す（単純に小さくすると row group 数が
+    増えてメタデータが膨らみ、かえって悪化するため）。
+    """
+    warns: list[str] = []
+    n_spots = max(1, int(n_spots))
+    n_mz = max(1, int(n_mz))
+
+    if requested is None:
+        want, policy = n_spots, "single"
+    else:
+        want, policy = max(1, int(requested)), "explicit"
+    want = min(want, n_spots)
+
+    avail_gb = _available_memory_gb()
+    if avail_gb is None:
+        logger.info("row group 計画: 空きメモリ不明のため %s (%d 行) をそのまま採用", policy, want)
+        return want, policy, warns
+
+    budget = max(0.0, (avail_gb - _PHASE_A_FOOTER_MARGIN_GB)) * _RG_AVAIL_FRACTION * 1024 ** 3
+    want_cost = _row_group_cost_bytes(want, n_spots=n_spots, n_mz=n_mz, itemsize=itemsize)
+
+    if want_cost <= budget:
+        logger.info(
+            "row group 計画: %s → %d 行 × %d group（想定 %.2f GB / 予算 %.2f GB）",
+            policy, want, -(-n_spots // want), want_cost / 1024 ** 3, budget / 1024 ** 3,
+        )
+        return want, policy, warns
+
+    # 予算超過 → U 字の最小点を探す。理論最小は rg* = sqrt(meta * n_spots / (itemsize * n_mz))
+    ideal = int((_RG_METADATA_BYTES * n_spots / (itemsize * n_mz)) ** 0.5) or 1
+    candidates = {1, n_spots, ideal, max(1, ideal // 2), min(n_spots, ideal * 2), _RG_MIN_ROWS}
+    candidates = {min(n_spots, max(1, c)) for c in candidates}
+    best = min(candidates, key=lambda c: _row_group_cost_bytes(
+        c, n_spots=n_spots, n_mz=n_mz, itemsize=itemsize))
+    best_cost = _row_group_cost_bytes(best, n_spots=n_spots, n_mz=n_mz, itemsize=itemsize)
+
+    if best_cost > budget:
+        raise RuntimeError(
+            f"メモリが不足しています（{n_spots:,} spot × {n_mz:,} m/z）。"
+            f"row group をどう分割しても約 {best_cost / 1024 ** 3:.1f} GB 必要ですが、"
+            f"変換に使える空きは約 {budget / 1024 ** 3:.1f} GB です。"
+            "float32 保存を有効にするか、他の解析の完了を待つか、サーバのメモリを増やしてください。"
+        )
+
+    # 端数 row group を避けて等分割する（最後だけ極端に小さい group を作らない）
+    n_groups = max(1, -(-n_spots // best))
+    rg_rows = -(-n_spots // n_groups)
+    warns.append(
+        f"全行 1 row group には約 {want_cost / 1024 ** 3:.1f} GB 必要ですが空きが "
+        f"約 {budget / 1024 ** 3:.1f} GB のため、{rg_rows:,} 行 × {n_groups} row group に"
+        f"分割しました（想定 {best_cost / 1024 ** 3:.1f} GB）。"
+        "出力内容は同一で、Parquet のフッタが少し大きくなるだけです。"
+    )
+    logger.warning("row group 計画: 予算超過のため %d 行 × %d group へ分割", rg_rows, n_groups)
+    return rg_rows, policy + "-fallback", warns
+
+
 def convert_scils_to_parquet(
     input_folder: str,
     output_path: str,
     *,
     spot_block: int = 200,
+    row_group_rows: Optional[int] = None,
     store_float32: bool = True,
     organize: bool = True,
     annotation_tol: float = 1e-6,
@@ -627,7 +795,12 @@ def convert_scils_to_parquet(
     output_path : str
         書き出す .parquet のフルパス
     spot_block : int
-        Phase B で 1 回に読み込む spot 列数 (既定 200)
+        Phase B で 1 回に一時 Parquet から読み込む spot 列数 (既定 200)。
+        **読み取り粒度のみを決める**。出力の row group サイズとは無関係。
+    row_group_rows : int | None
+        出力 Parquet の 1 row group あたりの行数。
+        None (既定) なら **全行を 1 row group** にする。正の整数ならその行数で分割する。
+        いずれの場合も、メモリ予算に収まらなければ自動的に分割し `warnings` に記録する。
     store_float32 : bool
         Parquet の m/z 列を float32 で格納 (容量半減)
     organize : bool
@@ -695,7 +868,12 @@ def convert_scils_to_parquet(
     int_headers, delim, skip = first_header_and_skipcount(intensity_path)
     # 大規模データのメモリ事前チェック（巨大／超ワイドな Intensity CSV による OOM で
     # 「途中終了＋0byte 一時ファイル残留」になるのを避け、不足時は明示エラーにする）。
-    _check_conversion_memory(intensity_path)
+    # Phase A は数分かかるので、出力バッファが明らかに載らない場合もここで落とす。
+    _check_conversion_memory(
+        intensity_path,
+        n_spots_hint=max(0, len(int_headers) - 1),
+        itemsize=4 if store_float32 else 8,
+    )
 
     logger.info("Phase A 開始: CSV→一時 Parquet (%s)", temp_parquet.name)
     phase_a_start = time.perf_counter()
@@ -794,33 +972,95 @@ def convert_scils_to_parquet(
         )
         intensity_dtype = np.float32 if store_float32 else np.float64
 
-        with pq.ParquetWriter(str(out_path), schema, compression="zstd") as pq_writer:
-            for start in range(0, n_spots, spot_block):
-                end = min(n_spots, start + spot_block)
-                spot_cols_block = spot_labels_sorted[start:end]
-                table_block = pf.read(columns=spot_cols_block)
-                vals = np.column_stack([
-                    table_block.column(c).to_numpy(zero_copy_only=False) for c in spot_cols_block
-                ])
-                if vals.shape[0] != n_mz:
-                    raise RuntimeError(f"行数不一致: 期待 {n_mz}, 実際 {vals.shape[0]}")
-                # m/z 並べ替え＋目的 dtype へ「ブロックごとに 1 回だけ」キャスト。
-                # 結果は C 連続なので vals_T[:, j]（= vals の行 j）は連続ビューとなり、
-                # pa.array がゼロコピー化する（従来の列ごと astype × n_mz 回を撤廃）。
-                vals = vals[order_mz, :].astype(intensity_dtype, copy=False)
-                vals_T = vals.T  # (n_block_spots, n_mz)
+        rg_rows, rg_policy, rg_warns = _plan_row_groups(
+            n_spots=n_spots,
+            n_mz=n_mz,
+            itemsize=np.dtype(intensity_dtype).itemsize,
+            requested=row_group_rows,
+        )
+        result.warnings.extend(rg_warns)
+        rg_rows = max(1, min(rg_rows, n_spots))
 
-                arrays = [
-                    pa.array(np.arange(start + 1, end + 1, dtype=np.int64)),
-                    pa.array(x_sorted[start:end].astype(np.float64, copy=False)),
-                    pa.array(y_sorted[start:end].astype(np.float64, copy=False)),
-                ]
-                arrays.extend(pa.array(vals_T[:, j]) for j in range(n_mz))
-                arrays.append(pa.array(annotation_sorted[start:end], type=pa.string()))
-                table = pa.Table.from_arrays(arrays, schema=schema)
-                pq_writer.write_table(table)
-                _report(15 + int(80 * end / n_spots), f"書き込み中… {end:,}/{n_spots:,} spot")
+        # 出力バッファ: 形状 (n_mz, rg_rows) の C 連続配列。
+        #   buf[j, :k] は連続ビューになるため pa.array がゼロコピーで包む（= 列 1 本ぶん）。
+        #   軸を逆順 (rg_rows, n_mz) にすると buf[:, j] が非連続になり pyarrow が黙って
+        #   コピーし、ピークメモリが 2 倍になる。**軸順は絶対に変えないこと。**
+        buf = np.empty((n_mz, rg_rows), dtype=intensity_dtype)
 
+        # 失敗時に壊れた出力を残さないよう、いったん同じフォルダの一時パスへ書いてから
+        # 検証して os.replace で差し替える。ParquetWriter は close() 時に「完了した
+        # row group だけで有効なフッタ」を書いてしまうため、直接 out_path に書くと
+        # 途中終了で「有効だが行数が足りない parquet」が既存の正常ファイルを上書きする。
+        tmp_out = _unique_path(out_path.parent / f"{out_path.stem}.writing{out_path.suffix}")
+        try:
+            with pq.ParquetWriter(str(tmp_out), schema, compression="zstd") as pq_writer:
+                for rg_start in range(0, n_spots, rg_rows):
+                    rg_end = min(n_spots, rg_start + rg_rows)
+                    n_this = rg_end - rg_start
+
+                    # --- 読み取り: spot_block 単位でバッファを埋める ---
+                    for start in range(rg_start, rg_end, spot_block):
+                        end = min(rg_end, start + spot_block)
+                        spot_cols_block = spot_labels_sorted[start:end]
+                        table_block = pf.read(columns=spot_cols_block)
+                        vals = np.column_stack([
+                            table_block.column(c).to_numpy(zero_copy_only=False)
+                            for c in spot_cols_block
+                        ])
+                        if vals.shape[0] != n_mz:
+                            raise RuntimeError(f"行数不一致: 期待 {n_mz}, 実際 {vals.shape[0]}")
+                        # m/z 並べ替えと目的 dtype へのキャストを「代入 1 回」で同時に行う。
+                        # numpy の代入キャストは casting='unsafe'（= astype の既定）と同一
+                        # 挙動なので、オーバーフローが inf になる点まで従来と一致する。
+                        buf[:, start - rg_start:end - rg_start] = vals[order_mz, :]
+                        del vals, table_block
+                        _report(15 + int(78 * end / n_spots),
+                                f"読込中… {end:,}/{n_spots:,} spot")
+
+                    # --- 書き込み: この row group を 1 回で書く ---
+                    # 全行 1 row group だとここが数十秒止まるので、別ラベルで通知する。
+                    _report(15 + int(78 * rg_end / n_spots),
+                            f"row group 書き込み中… {rg_end:,}/{n_spots:,} spot")
+                    arrays = [
+                        pa.array(np.arange(rg_start + 1, rg_end + 1, dtype=np.int64)),
+                        pa.array(x_sorted[rg_start:rg_end].astype(np.float64, copy=False)),
+                        pa.array(y_sorted[rg_start:rg_end].astype(np.float64, copy=False)),
+                    ]
+                    arrays.extend(pa.array(buf[j, :n_this]) for j in range(n_mz))
+                    arrays.append(
+                        pa.array(annotation_sorted[rg_start:rg_end], type=pa.string()))
+                    table = pa.Table.from_arrays(arrays, schema=schema)
+                    # row_group_size は必ず明示する。None 既定は 1,048,576 行で無言分割する。
+                    pq_writer.write_table(table, row_group_size=n_this)
+                    del arrays, table
+
+            # 書き切れたことを行数で検証してから差し替える
+            written = pq.ParquetFile(str(tmp_out)).metadata
+            if written.num_rows != n_spots:
+                raise RuntimeError(
+                    f"書き込み行数が一致しません（期待 {n_spots:,} / 実際 {written.num_rows:,}）。"
+                    "出力は破棄しました。"
+                )
+            result.row_group_rows = rg_rows
+            result.n_row_groups = written.num_row_groups
+            result.footer_bytes = written.serialized_size
+            result.row_group_policy = rg_policy
+            del written
+            os.replace(str(tmp_out), str(out_path))
+        finally:
+            # 例外時にトレースバックが巨大バッファを掴んだままにしない
+            buf = None
+            if tmp_out.exists():
+                try:
+                    tmp_out.unlink()
+                except Exception as e:
+                    logger.warning("書き込み中の一時ファイル削除に失敗: %s", e)
+
+        logger.info(
+            "Parquet レイアウト: %d row group × %d 行 / フッタ %.2f MB (%s)",
+            result.n_row_groups, result.row_group_rows,
+            result.footer_bytes / (1024 ** 2), result.row_group_policy,
+        )
         logger.info("Phase B 完了: %.1f 秒", time.perf_counter() - phase_b_start)
         _report(96, "サイドカー出力・ファイル整理中…")
 

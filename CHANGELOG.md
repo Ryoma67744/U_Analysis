@@ -12,6 +12,108 @@
 
 ---
 
+## 2026-08-05_ver49.0
+
+### 変更: SCiLS 変換の出力 Parquet を「全行 1 row group」にした
+
+#### なぜ必要だったか
+
+`convert_scils_to_parquet` の Phase B は `spot_block`（既定 200）ブロックごとに
+`pq_writer.write_table()` を 1 回呼んでいた。ParquetWriter は **1 回の `write_table` = 1 row group**
+なので、出力は **200 行 = 1 row group** になっていた。`spot_block` は「1 回に読み込む spot 列数」という
+メモリ用のつまみとして書かれた引数で、row group サイズを決めている自覚はコードにも UI にも無かった。
+**独立した 2 つの関心事が 1 つの引数に癒着していた。**
+
+実データ規模（203,078 spot × 約 2,700 m/z、ver4.32 参照）だと 1,016 row group になり、
+column chunk は約 275 万個。peak-list 由来の長い列名が chunk ごとに `path_in_schema` として
+繰り返し格納されるため、**フッタだけで 735 MB** に達していた。
+
+実測（pyarrow 25.0.0）:
+
+| | 200 行 = 1,016 row group | 全行 1 row group |
+|---|---|---|
+| フッタ | **735.6 MB** | **約 2 MB** |
+| `close()` だけの所要 | **49.0 秒** | 数秒 |
+| ファイルを開く | **約 3.3 秒** | **約 15 ms** |
+| 書き込みピーク | **3.83 GB** | 2.19 GB |
+
+**全行 1 row group のほうがメモリも少ない。** ParquetWriter は row group ごとの column chunk
+メタデータを `close()` まで RAM に保持するため（実測 約 6.4 MB/row group）、細かく刻むほど重くなる。
+コストは「バッファ＋メタデータ」の U 字で、単調ではない。
+
+読み側の実害も大きかった。`260623_DBSCAN_With_cluster_ver6_no-png_slim.R` は 1 回の取り込みで
+同じファイルを約 20 回開き直しており（`ParquetFileReader$create` ＋ メタ列読み ＋ 列ブロックループ
+約 18 回）、**約 65 秒がフッタ解析だけに消えていた**。`data_manager.py` も 1 回の読み取りで
+フッタを 2 回解析しており、`file_handlers.py` はそれをサンプル数だけループしていた。
+
+#### 変更点
+
+- **`row_group_rows` 引数を新設**（`app/services/scils_converter.py`）。既定 `None` = 全行 1 row group。
+  `spot_block` は**名前も既定値も意味も変えず**「読み取り粒度」専用にした（UI・callback・既存テストは無変更）。
+- **Phase B を二重ループ化**。外側が row group、内側が `spot_block` 単位の読み取りで、
+  形状 `(n_mz, rg_rows)` の C 連続バッファへ書き込む。`buf[j, :n]` が連続ビューになるので
+  `pa.array()` がゼロコピーで包み、要素あたり 32 バイト → 4 バイトに落ちる。
+  **軸順を反転すると pyarrow が黙ってコピーしてピークが 2 倍になる**ため、
+  ポインタ同一性を検査する回帰テストを入れた。
+- **`_plan_row_groups()` を新設**。メモリ予算に収まらない場合のみ自動分割する。
+  単純に行数を減らすと row group 数が増えてメタデータが膨らみ**かえって悪化する**ので、
+  U 字コストを最小化する行数を選ぶ。どう分割しても載らない場合だけ明示エラー。
+- **予算判定を cgroup ベースに**。`psutil.virtual_memory().available` はホストの `/proc/meminfo` を
+  そのまま返し cgroup を見ないため、大きなホスト上のコンテナで「ほぼ満杯なのにチェックを通る」。
+  `analysis_runner._container_memory_limit_gb()` を再利用するようにした。
+  Phase A の一時 parquet のフッタが Phase B の間ずっと常駐する分（実データ規模で約 1.15 GB）も
+  定数項として計上している。
+- **出力を原子的にした**（既存バグの修正）。従来は `out_path` に直接書いており、Phase B が失敗すると
+  `close()` が「完了した row group だけで有効なフッタ」を書くため、**「id が連番で `mz_sorted` も
+  揃っているのに spot が途中までしかない有効な parquet」が直前の正常ファイルを上書き破壊**していた。
+  下流の Python・R いずれもこれを正常なファイルとして受け入れるため誰も気づけない。
+  一時パスへ書き、行数を検証してから `os.replace` するようにした。
+- `ConversionResult` に `n_row_groups` / `row_group_rows` / `footer_bytes` / `row_group_policy` を追加し、
+  変換結果パネルとログにレイアウトを表示するようにした。
+
+#### 旧 .parquet（200 行/row group）はそのまま読める。再変換は不要
+
+Parquet 読み側を Python・R 両方で監査した結果、**row group 単位の API を使っている reader は 1 つも無い**
+（`num_row_groups` / `read_row_group` / `iter_batches` / `ReadRowGroup` / `pre_buffer` の検索結果 0 件）。
+すべてフッタ・スキーマのみか列単位・全表読みで、`mz_sorted` 等はスキーマレベルのメタデータなので
+行グループ分割と無関係。ver45.5 の列ブロック取り込みも「行グループ構成に依存しない」と明記している。
+
+回帰防止として `TestLegacyLayoutCompat` を追加し、複数 row group と全行 1 つで
+`read_parquet_annotations` / `_read_mz_sorted_metadata` / 列指定読み / 新旧混在フォルダの候補列挙が
+同一結果になることを固定した。
+
+#### 検証
+
+実際の変換器を通した end-to-end（5,000 spot × 800 m/z、NaN・±inf を含む）:
+
+| | row group | フッタ | ファイル | ピーク RSS | 変換 | open |
+|---|---|---|---|---|---|---|
+| 旧（200 行） | 25 | 2.02 MB | 13.0 MB | 164.9 MB | 6.2 s | 28.2 ms |
+| 新（全行 1） | **1** | **0.17 MB** | **9.0 MB** | **148.9 MB** | **3.3 s** | **4.3 ms** |
+
+804 列すべてを 1 本ずつストリーム比較（`np.array_equal(..., equal_nan=True)`）して**完全一致**を確認。
+`Table.equals` は IEEE 比較のため NaN を含むと必ず False になるので使っていない。
+テストは 15 件追加し、既存テストは無変更で通る。
+
+#### 付随して直したもの
+
+- `260623_DBSCAN_ver18_Cluster_Filter_ReUMAP.R` のコメント訂正。「単一行グループだと下流で
+  行グループ単位の分割読みができなくなる」と書かれていたが事実に反する（ver6 の取り込みは列ブロック方式）。
+  放置すると次の担当者がこの変更を差し戻すため訂正した。`chunk_size` の指定自体は書き込み時の
+  メモリ抑制として維持。
+- `annotation_inspect.py` の docstring「フッタ（数 KB）のみ読む」— 旧レイアウトでは数百 MB になる。
+
+#### 既知の課題（今回は対象外）
+
+- Phase A の一時 parquet のフッタが約 1.15 GB 常駐し、開くのに約 13 秒かかる。
+  一時ファイルを parquet ではなく生の memmap にすれば解消するが、`_csv_to_temp_parquet` の
+  書き換えが必要で別課題。一時 parquet の `row_group_size` を上げる手は使えない
+  （行数が n_mz しかないため単一 row group ＝全データのバッファリングになり polars のストリーミングが壊れる）。
+- 変換に同時実行ガードが無い（R 解析側には `analysis_runner` にある）。1 変換あたり数 GB のため、
+  複数ユーザーが同時に実行すると 12 GB コンテナを圧迫する。
+
+---
+
 ## 2026-07-29_ver48.0
 
 ### 追加: 論文にそのまま貼れる Methods 平文（骨格は黒・復元値は青・未記録は赤）

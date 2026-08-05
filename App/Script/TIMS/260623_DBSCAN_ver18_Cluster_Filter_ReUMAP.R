@@ -632,8 +632,13 @@ export_filtered_input <- function(in_path, out_path, id_keep, debug_tsv_path = N
            call. = FALSE)
     }
 
-    # 行グループを明示的に分割して書く。既定（単一行グループ）だと下流で行グループ単位の
-    # 分割読みができなくなるため、1 行グループが概ね 64MB 以内に収まる行数を指定する。
+    # 行グループが概ね 64MB 以内に収まる行数を指定して書く。
+    # 注: かつて「単一行グループだと下流で行グループ単位の分割読みができなくなる」と
+    # 書いていたが誤りだった。ver6 の取り込みは m/z 列をブロック単位で読む列ブロック方式で、
+    # ブロック幅は行グループではなく総行数から決まるため行グループ構成に依存しない
+    # （ver45.5 の CHANGELOG 参照）。本体 parquet も全行 1 行グループで出力している。
+    # ここで chunk_size を指定するのは書き込み時のメモリを抑えるためであり、
+    # 下流の読み取り互換性のためではない。
     .ncol_out <- length(names(df2))
     .chunk <- max(1024L, as.integer(floor(64 * 1024^2 / max(1, .ncol_out * 4))))
     arrow::write_parquet(df2, out_path, chunk_size = .chunk)
