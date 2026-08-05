@@ -23,12 +23,28 @@
 # =============================================================================
 
 # ---- qs パッケージの可用性チェック (一度だけ) -----------------------------
+# [ver50.1] qs が使えないことを必ずログに残す。
+#   これまで requireNamespace が FALSE でも無言で圧縮フォールバックへ落ちていたため、
+#   「R 4.6.1 へ上がって qs.so が undefined symbol: SET_CLOENV で読めなくなり、
+#   全結果が最も展開の遅い xz で保存されていた」ことに数か月気づけなかった。
+#   実測: 1.00GB の Step2 RDS を開くのに 118.7 秒（約 8.6 MB/s）。
 .rds_io_has_qs <- function() {
   # メモ化 (同一セッション内で複数回問い合わせる場合)
   cached <- getOption("msi.rds_io.has_qs", default = NA)
   if (!is.na(cached)) return(isTRUE(cached))
   has_qs <- requireNamespace("qs", quietly = TRUE)
   options(msi.rds_io.has_qs = has_qs)
+  if (!has_qs) {
+    reason <- tryCatch({
+      loadNamespace("qs"); ""
+    }, error = function(e) paste0(" (", conditionMessage(e), ")"))
+    cat(sprintf(
+      "[rds_io] 警告: qs パッケージが使えないため %s 圧縮で保存します%s\n",
+      .RDS_IO_FALLBACK_COMPRESS, reason))
+    cat("[rds_io]   qs (zstd) に比べて読み込みが数倍〜十数倍遅くなります。",
+        "R のバージョンと qs の再インストールを確認してください。\n")
+    flush(stdout())
+  }
   has_qs
 }
 
@@ -58,6 +74,23 @@
   is_plain_rds <- (b1 %in% c(0x58, 0x42, 0x41) && b2 == 0x0A)
   is_legacy <- is_gzip || is_bzip || is_xz || is_plain_rds
   !is_legacy
+}
+
+# ---- 旧形式の圧縮方式を名前で返す (ログ用) --------------------------------
+# [ver50.1] 「実際にどの形式で保存されているか」をログに出すため。
+#   xz が無言で使われ続けていたことに気づけなかった反省から追加。
+.rds_io_legacy_format <- function(path) {
+  fmt <- tryCatch({
+    con <- file(path, "rb")
+    on.exit(close(con), add = TRUE)
+    b <- as.integer(readBin(con, what = "raw", n = 4))
+    if (b[1] == 0x1F && b[2] == 0x8B) "gzip"
+    else if (b[1] == 0x42 && b[2] == 0x5A) "bzip2"
+    else if (b[1] == 0xFD && b[2] == 0x37 && b[3] == 0x7A && b[4] == 0x58) "xz"
+    else if (b[1] %in% c(0x58, 0x42, 0x41) && b[2] == 0x0A) "無圧縮"
+    else "不明"
+  }, error = function(e) "不明")
+  fmt
 }
 
 # ---- Seurat を安全に Diet する ---------------------------------------------
@@ -116,10 +149,28 @@ pick_measurement_assay <- function(obj, assay_arg = NULL) {
   tryCatch(Seurat::DefaultAssay(obj), error = function(e) "Spatial")  # 最後の手段
 }
 
+# ---- フォールバック時の圧縮方式 ---------------------------------------------
+# [ver50.1] xz から gzip へ変更。
+#   saveRDS が使えるのは gzip / bzip2 / xz / 無圧縮のみで zstd は無く、この 4 択なら
+#   gzip が最良。xz は圧縮率は高いが**展開が常用形式で最も遅い**。
+#   実測（1.00GB / 1,536 feature x 203,078 cell）: xz の展開に 118.7 秒 = 抽出全体の 51%。
+#   環境変数 RDS_FALLBACK_COMPRESS で上書き可 ("gzip" / "bzip2" / "xz" / "none")。
+.RDS_IO_FALLBACK_COMPRESS <- local({
+  v <- tolower(trimws(Sys.getenv("RDS_FALLBACK_COMPRESS", unset = "gzip")))
+  if (v %in% c("gzip", "bzip2", "xz", "none")) v else "gzip"
+})
+
+# saveRDS の compress 引数へ渡す値（"none" は論理値 FALSE）
+.rds_io_compress_arg <- function() {
+  if (identical(.RDS_IO_FALLBACK_COMPRESS, "none")) FALSE else .RDS_IO_FALLBACK_COMPRESS
+}
+
 # ---- 圧縮保存 ---------------------------------------------------------------
 #  path の拡張子は .rds のまま使う (qs バイナリでも名称は .rds)。
-#  qs が使える環境では qs::qsave、使えない/失敗時は xz 圧縮 saveRDS に
+#  qs が使える環境では qs::qsave、使えない/失敗時は gzip 圧縮 saveRDS に
 #  自動フォールバック。
+#  読み込み側 (load_rds_compact) はマジックバイト判定なので、
+#  過去に xz で保存したファイルもそのまま読める。
 save_rds_compact <- function(obj, path,
                              diet = TRUE,
                              keep_scale = FALSE,
@@ -162,9 +213,17 @@ save_rds_compact <- function(obj, path,
       if (file.exists(tmp_path)) try(file.remove(tmp_path), silent = TRUE)
     })
   }
-  # フォールバック: saveRDS + xz
-  saveRDS(obj, tmp_path, compress = "xz")
+  # フォールバック: saveRDS (既定 gzip)。qs 分岐と同様に開始/完了を必ず残す。
+  cat(sprintf("[rds_io] 保存開始: %s (saveRDS, compress=%s)\n",
+              basename(path), .RDS_IO_FALLBACK_COMPRESS))
+  flush(stdout())
+  .t0 <- Sys.time()
+  saveRDS(obj, tmp_path, compress = .rds_io_compress_arg())
   file.rename(tmp_path, path)
+  cat(sprintf("[rds_io] 保存完了: %s (%.2f GB, %.1f 秒)\n", basename(path),
+              file.size(path) / 1024^3,
+              as.numeric(difftime(Sys.time(), .t0, units = "secs"))))
+  flush(stdout())
   invisible(path)
 }
 
@@ -176,6 +235,10 @@ load_rds_compact <- function(path, ensure_scale = FALSE) {
     stop("[rds_io] file not found: ", path)
   }
   is_qs <- .rds_io_is_qs_file(path)
+  # [ver50.1] 読み込みの形式と所要時間を必ず残す。
+  #   これが無かったため「抽出が遅い」の内訳を手作業で測るまで特定できなかった。
+  .t0 <- Sys.time()
+  .fmt <- if (is_qs) "qs" else .rds_io_legacy_format(path)
   if (is_qs) {
     if (!.rds_io_has_qs()) {
       stop("[rds_io] ", path,
@@ -188,6 +251,14 @@ load_rds_compact <- function(path, ensure_scale = FALSE) {
     # 旧 saveRDS 形式 (gzip / xz / bzip2 / 無圧縮) は readRDS がそのまま読む
     obj <- readRDS(path)
   }
+  .dt <- as.numeric(difftime(Sys.time(), .t0, units = "secs"))
+  cat(sprintf("[rds_io] 読込完了: %s (%s, %.2f GB, %.1f 秒)\n",
+              basename(path), .fmt, file.size(path) / 1024^3, .dt))
+  if (identical(.fmt, "xz") && .dt > 30) {
+    cat("[rds_io] 注意: xz は展開が遅い形式です。この RDS を保存し直すと",
+        "読み込みが数倍速くなります（RDS 軽量化ツール）。\n")
+  }
+  flush(stdout())
   if (isTRUE(ensure_scale)) {
     obj <- .rds_io_ensure_scale(obj)
   }
