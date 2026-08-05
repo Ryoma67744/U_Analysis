@@ -4,10 +4,36 @@
 #
 # Usage: Rscript extract_seurat_data.R <rds_path> <output_dir> [--with-expression]
 #
-# --with-expression: expression_matrix.parquet を生成（dense 100k×18k で 14GB 級になり
-#                    20-60 秒かかる）。Feature plot / m/z キャリブレーション時のみ
-#                    必要なので、初回データロードでは省略するのが推奨。
+# --with-expression: expression_matrix.parquet を生成。Feature plot / m/z キャリブ
+#                    レーション時のみ必要なので、初回データロードでは省略するのが推奨。
+#
+# 所要時間の実測 (ver50.1 時点 / 203,078 cell x 1,536 feature / コンテナ 12GB):
+#   RDS 展開      118.7 秒 (xz。qs が使えれば 5〜15 秒の見込み)
+#   JoinLayers     12.6 秒
+#   発現行列生成   87.4 秒 → ver50.1 で密行列コピー削減により短縮
+#   合計          233.7 秒
+# ※ 旧コメントは「20-60 秒」としていたが実測と 4〜11 倍乖離していた。
+#   各段の秒数は下の [extract] 行として標準出力に出る。
 # =============================================================================
+
+# ---- 段階ごとの所要時間と常駐メモリを必ず残す -------------------------------
+# [ver50.1] これが無かったため「抽出が遅い」の内訳を手作業で測るまで特定できず、
+#   結果として xz フォールバックに数か月気づけなかった。
+.rss_gb <- function() {
+  tryCatch({
+    v <- grep("^VmRSS:", readLines(sprintf("/proc/%d/status", Sys.getpid())),
+              value = TRUE)
+    as.numeric(gsub("[^0-9]", "", v)) / 1024^2
+  }, error = function(e) NA_real_)
+}
+.step <- function(label, expr) {
+  t0 <- Sys.time()
+  v <- force(expr)
+  cat(sprintf("[extract] %-22s %7.1f 秒  RSS %5.2f GB\n", label,
+              as.numeric(difftime(Sys.time(), t0, units = "secs")), .rss_gb()))
+  flush(stdout())
+  invisible(v)
+}
 
 args <- commandArgs(trailingOnly = TRUE)
 if (length(args) < 2) {
@@ -32,7 +58,7 @@ source(file.path(dirname(normalizePath(sub("^--file=", "",
         grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)[1]),
         mustWork = FALSE)), "rds_io.R"))
 
-obj <- load_rds_compact(rds_path)
+obj <- .step("RDS 展開", load_rds_compact(rds_path))
 
 # TIMS ver13 互換: list(obj=seu, ...) 形式の場合、Seuratオブジェクトを取り出す
 if (is.list(obj) && !inherits(obj, "Seurat") && "obj" %in% names(obj)) {
@@ -129,14 +155,16 @@ if (exists("pick_measurement_assay", mode = "function")) {
 
 # --- Features list ---
 # Seurat v5 では JoinLayers() が必要（複数レイヤー対応）
-tryCatch({
+# 注: .step の第 2 引数は promise なので、評価はこの呼び出し元 (global) の
+#     環境で行われる。したがって通常どおり `<-` で obj を更新できる。
+.step("JoinLayers", tryCatch({
   obj <- JoinLayers(obj)
 }, error = function(e) {
   # v4 以前では JoinLayers が存在しないため無視
   NULL
-})
+}))
 # v5: LayerData()、v4 fallback: GetAssayData(layer=...)
-expr_data <- tryCatch({
+expr_data <- .step("LayerData(data)", tryCatch({
   LayerData(obj, layer = "data")
 }, error = function(e) {
   tryCatch({
@@ -144,8 +172,11 @@ expr_data <- tryCatch({
   }, error = function(e2) {
     GetAssayData(obj, slot = "data")
   })
-})
+}))
 features <- rownames(expr_data)
+cat(sprintf("[extract] %s feature x %s cell / %s\n",
+            format(nrow(expr_data), big.mark = ","),
+            format(ncol(expr_data), big.mark = ","), class(expr_data)[1]))
 writeLines(features, file.path(output_dir, "features_list.txt"))
 cat("Wrote features_list.txt (", length(features), " features)\n")
 
@@ -155,13 +186,35 @@ if (with_expression) {
   tryCatch({
     suppressPackageStartupMessages(library(arrow))
     cat("Exporting expression matrix to Parquet...\n")
-    expr_dense <- as.matrix(expr_data)
-    expr_df <- as.data.frame(t(expr_dense), check.names = FALSE)
-    expr_df$CellID <- cell_ids
-    # CellID を先頭カラムに
-    expr_df <- expr_df[, c("CellID", setdiff(names(expr_df), "CellID"))]
-    arrow::write_parquet(expr_df, file.path(output_dir, "expression_matrix.parquet"))
-    cat("Wrote expression_matrix.parquet (", ncol(expr_df) - 1, " features)\n")
+    .t0 <- Sys.time()
+    # [ver50.1] 密行列のコピーを 4 回から 1 回に削減。
+    #   旧実装は as.matrix -> t() -> as.data.frame -> 列並べ替え と 4 回コピーしており、
+    #   実測 (203,078 cell x 1,536 feature) で 1 コピー 2.32GB x 4 = 9.3GB。
+    #   各段で rm+gc を挟んだ計測ですら RSS 11.17GB に達し、コンテナ上限 12GB を
+    #   超える見込みだった（今 OOM していないのは運）。時間も t() 26.0 秒 +
+    #   as.data.frame 25.5 秒を要していた。
+    #   Matrix::t() はスパースのまま転置するので、密になるのは Arrow 配列だけになる。
+    #   R のベクタは 1 列ぶん (約 1.6MB) しか同時に持たない。
+    #   ※ 型は float64 のまま維持する。出力を旧実装とビット単位で一致させるため。
+    #      float32 化は seurat_bridge.get_feature_expression_fast の型前提を
+    #      確認してから別途。
+    expr_t <- Matrix::t(expr_data)          # cell x feature（スパースのまま）
+    acols <- vector("list", length(features) + 1L)
+    names(acols) <- c("CellID", features)
+    acols[[1L]] <- arrow::Array$create(cell_ids)
+    for (j in seq_along(features)) {
+      acols[[j + 1L]] <- arrow::Array$create(as.numeric(expr_t[, j]))
+    }
+    rm(expr_t); invisible(gc(FALSE))
+    tbl <- do.call(arrow::Table$create, acols)
+    rm(acols); invisible(gc(FALSE))
+    # row_group_size は明示する（既定 None は 1,048,576 行で無言分割する）
+    arrow::write_parquet(tbl, file.path(output_dir, "expression_matrix.parquet"),
+                         chunk_size = max(1L, tbl$num_rows))
+    cat("Wrote expression_matrix.parquet (", length(features), " features, ",
+        sprintf("%.1f", as.numeric(difftime(Sys.time(), .t0, units = "secs"))),
+        " sec)\n", sep = "")
+    rm(tbl); invisible(gc(FALSE))
   }, error = function(e) {
     cat("Warning: expression matrix export failed:", conditionMessage(e), "\n")
     cat("Feature queries will fall back to R subprocess.\n")

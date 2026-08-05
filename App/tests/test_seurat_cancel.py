@@ -15,17 +15,32 @@ from app.services.seurat_bridge import _popen_with_cancel, ExtractionCancelled
 
 
 def test_popen_completes_normally():
-    rc, err = _popen_with_cancel(
+    rc, out, err = _popen_with_cancel(
         [sys.executable, "-c", "print('ok')"], threading.Event()
     )
     assert rc == 0
+    # [ver50.1] stdout も返す。R 側の [extract] 行（各段の所要時間）を
+    # 捨てるとキャンセル可能パスだけ内訳が追えなくなるため。
+    assert out.decode().strip() == "ok"
 
 
 def test_popen_nonzero_returncode():
-    rc, err = _popen_with_cancel(
+    rc, out, err = _popen_with_cancel(
         [sys.executable, "-c", "import sys; sys.exit(3)"], threading.Event()
     )
     assert rc == 3
+
+
+def test_popen_returns_stderr_separately():
+    """stdout と stderr が混ざらないこと"""
+    rc, out, err = _popen_with_cancel(
+        [sys.executable, "-c",
+         "import sys; print('OUT'); print('ERR', file=sys.stderr); sys.exit(0)"],
+        threading.Event(),
+    )
+    assert rc == 0
+    assert out.decode().strip() == "OUT"
+    assert err.decode().strip() == "ERR"
 
 
 def test_popen_cancel_kills_process_quickly():

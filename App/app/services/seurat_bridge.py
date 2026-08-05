@@ -52,7 +52,10 @@ def _popen_with_cancel(cmd, cancel_event, timeout=600, creationflags=0):
 
     cancel_event がセットされたらサブプロセスを kill し ExtractionCancelled を
     送出する。timeout 超過時は RuntimeError("__TIMEOUT__") を送出。
-    Returns: (returncode, stderr_bytes)
+    Returns: (returncode, stdout_bytes, stderr_bytes)
+
+    [ver50.1] stdout も返すようにした。R 側が各段の所要時間を [extract] 行として
+    stdout に出すため、捨てているとキャンセル可能パスだけ内訳が追えなくなる。
     """
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -61,8 +64,8 @@ def _popen_with_cancel(cmd, cancel_event, timeout=600, creationflags=0):
     start = time.monotonic()
     while True:
         try:
-            _out, stderr_bytes = proc.communicate(timeout=0.3)
-            return proc.returncode, stderr_bytes
+            stdout_bytes, stderr_bytes = proc.communicate(timeout=0.3)
+            return proc.returncode, stdout_bytes, stderr_bytes
         except subprocess.TimeoutExpired:
             if cancel_event is not None and cancel_event.is_set():
                 proc.kill()
@@ -170,8 +173,13 @@ class SeuratBridge:
         Args:
             rds_path: RDSファイルパス
             with_expression: True なら expression_matrix.parquet も生成
-                （dense 100k×18k で 14GB 級になり 20-60 秒追加。
-                初回データロードでは省略推奨、Feature plot/m/z キャリブで必要時のみ True）
+                （初回データロードでは省略推奨、Feature plot/m/z キャリブで必要時のみ True）
+
+                [ver50.1] 実測 (203,078 cell x 1,536 feature / コンテナ 12GB):
+                抽出全体で 233.7 秒。内訳は RDS 展開 118.7 秒（xz。qs が使えれば
+                5〜15 秒の見込み）、発現行列の生成 87.4 秒、その他 27.6 秒。
+                旧コメントの「20-60 秒」は実測と 4〜11 倍乖離していた。
+                各段の秒数は `[extract]` 行としてアプリログに出る。
 
         Returns:
             {
@@ -227,12 +235,18 @@ class SeuratBridge:
         cache_dir = self._get_cache_dir(rds_path)
         parquet_path = cache_dir / "expression_matrix.parquet"
         if parquet_path.exists():
+            logger.debug("expression_matrix キャッシュヒット: %s", cache_dir.name)
             return parquet_path
         # 不在 → 排他取得して生成（R 抽出最大 10 分 → timeout=900）
+        logger.info(
+            "expression_matrix 不在のため生成します: %s (数分かかります)",
+            Path(rds_path).name,
+        )
         lock = get_or_create_lock(parquet_path, timeout=900)
         with lock:
             # ロック取得後に再チェック（先行プロセスが既に生成完了している可能性）
             if parquet_path.exists():
+                logger.info("他プロセスが生成を完了していました: %s", cache_dir.name)
                 return parquet_path
             self._run_extraction(rds_path, cache_dir, with_expression=True)
         if not parquet_path.exists():
@@ -349,7 +363,17 @@ class SeuratBridge:
         """R ヘルパースクリプトで Seurat データを抽出
 
         with_expression=True で expression_matrix.parquet も生成（重い処理）。
+
+        [ver50.1] 所要時間を必ずログに残す。これが無かったため「抽出が遅い」の
+        内訳を手作業で測るまで特定できず、RDS が最も展開の遅い xz で保存されて
+        いたことに数か月気づけなかった。R 側の各段は `[extract]` 行として
+        この関数のログの後に stdout へ出る。
         """
+        _t0 = time.monotonic()
+        logger.info(
+            "Seurat 抽出開始: %s (with_expression=%s) → %s",
+            Path(rds_path).name, with_expression, output_dir.name,
+        )
         script = R_HELPERS_DIR / "extract_seurat_data.R"
         rscript = str(RSCRIPT_PATH)
         if not Path(rscript).exists():
@@ -376,11 +400,12 @@ class SeuratBridge:
                 raise RuntimeError(
                     f"Seurat extraction timed out (10min): rds={rds_path}"
                 ) from e
-            returncode, stderr_bytes = result.returncode, result.stderr
+            returncode, stdout_bytes, stderr_bytes = (
+                result.returncode, result.stdout, result.stderr)
         else:
             # キャンセル可能パス: Popen + cancel_event 監視。kill 時は部分キャッシュを掃除。
             try:
-                returncode, stderr_bytes = _popen_with_cancel(
+                returncode, stdout_bytes, stderr_bytes = _popen_with_cancel(
                     cmd, cancel_event, timeout=600,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
@@ -401,9 +426,27 @@ class SeuratBridge:
             if output_dir.exists():
                 shutil.rmtree(output_dir, ignore_errors=True)
             stderr_text = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+            logger.warning(
+                "Seurat 抽出失敗: %s (%.1f 秒, rc=%s)",
+                Path(rds_path).name, time.monotonic() - _t0, returncode,
+            )
             raise RuntimeError(
                 f"Seurat extraction failed:\n{stderr_text[:2000]}"
             )
+
+        # R 側が出した [extract] 行（各段の秒数）をアプリのログにも残す。
+        # 個別に測り直さなくても内訳が追えるようにするのが狙い。
+        try:
+            for line in (stdout_bytes or b"").decode("utf-8", errors="replace").splitlines():
+                if line.startswith("[extract]") or line.startswith("[rds_io]"):
+                    logger.info("R %s", line)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("R 出力のログ転記に失敗（非重大）: %s", e)
+
+        logger.info(
+            "Seurat 抽出完了: %s (with_expression=%s) %.1f 秒",
+            Path(rds_path).name, with_expression, time.monotonic() - _t0,
+        )
 
     def derive_uncorrected_pca(self, src_rds_path: str, out_rds_path: str,
                                cancel_event=None) -> str:
@@ -437,7 +480,7 @@ class SeuratBridge:
             returncode, stderr_bytes = result.returncode, result.stderr
         else:
             try:
-                returncode, stderr_bytes = _popen_with_cancel(
+                returncode, _stdout_bytes, stderr_bytes = _popen_with_cancel(
                     cmd, cancel_event, timeout=600,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
@@ -624,7 +667,7 @@ class SeuratBridge:
                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                     returncode, stderr_bytes = result.returncode, result.stderr
                 else:
-                    returncode, stderr_bytes = _popen_with_cancel(
+                    returncode, _stdout_bytes, stderr_bytes = _popen_with_cancel(
                         cmd, cancel_event, timeout=timeout,
                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             except subprocess.TimeoutExpired as e:

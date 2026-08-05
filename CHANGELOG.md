@@ -12,6 +12,101 @@
 
 ---
 
+## 2026-08-05_ver50.1
+
+### 修正: 結果の読み込みが遅い原因を特定して除去（qs 破損の無言フォールバックと密行列 4 コピー）
+
+#### 何が問題だったか
+
+「解析結果の読み込みが遅い」を本番サーバで段階計測した。対象は
+`251203_kizu_Embryo_E14P0_WithAnnotation/PreFlight1/Step2_HarmonyPCA_Result.rds`
+（1.00GB、1,536 feature × 203,078 cell、非ゼロ 57.4%、コンテナ 12GB / 8 コア）。
+
+**そもそも計測の仕組みが無かった。** `seurat_bridge._run_extraction` にも
+`extract_seurat_data.R` にも所要時間のログが 1 行も無く、内訳を切り分ける手段が
+存在しなかった。これが「原因が分からない」ことの直接の理由だった。
+
+外から測った実測（合計 233.7 秒）:
+
+                          秒      到達 RSS
+  R 起動 + library      8.3        0.41 GB
+  RDS 展開            118.7        2.55 GB   ← 51%
+  JoinLayers           12.6        6.68 GB
+  LayerData             3.8        4.69 GB
+  as.matrix             2.9        7.02 GB
+  t() 転置             26.0        9.34 GB
+  as.data.frame        25.5       11.17 GB   ← 上限 12GB に肉薄
+  列並べ替え            0.0        8.84 GB
+  write_parquet        35.9        8.93 GB
+
+#### 原因 1: qs が壊れ、無言で xz にフォールバックしていた
+
+    R: R version 4.6.1 (2026-06-24)
+    qs 0.27.3 → requireNamespace: FALSE
+      unable to load shared object '…/qs/libs/qs.so': undefined symbol: SET_CLOENV
+
+`.rds` の先頭 4 バイトは全て `fd 37 7a 58` = **xz**。`.rds_io_has_qs()` が FALSE を
+返すため qs 分岐に入らず、`saveRDS(compress = "xz")` に落ちていた。**xz は常用圧縮
+形式で展開が最も遅い部類**で、1.00GB に 118.7 秒（約 8.6 MB/s）は xz の実性能そのもの。
+
+**このフォールバックが無言だったことが本質的な問題。** 保存ログは qs 分岐の中にしか
+無く、ログを見ても気づけなかった。ver3.8（2026-05-23）には qs 形式を読む修正がある
+ので、R が 4.6.1（2026-06-24 リリース）へ上がった時点で壊れたと推定される。
+
+全 `.rds` をスキャンし、**現在読めない qs 形式のファイルは 0 件**であることを確認済み。
+
+#### 原因 2: 発現行列の書き出しが密行列を 4 回コピーしていた
+
+`extract_seurat_data.R` は `as.matrix` → `t()` → `as.data.frame` → 列並べ替えと
+4 回コピーしていた。1 コピー = 203,078 × 1,536 × 8 バイト = **2.32GB**。
+**各段で `rm` + `gc` を挟んだ計測ですら RSS 11.17GB に到達**し、解放を挟まない実際の
+コードでは 13.99GB の見込み ＝ **上限 12GB を超える**。OOM していないのは運だった。
+
+#### 変更点
+
+- **`rds_io.R`: フォールバックを xz → gzip に**（`RDS_FALLBACK_COMPRESS` で上書き可）。
+  `saveRDS` が扱えるのは gzip / bzip2 / xz / 無圧縮のみで zstd は無く、この 4 択なら
+  gzip が最良。**読み込み側はマジックバイト判定なので既存の xz ファイルもそのまま読める**
+- **`rds_io.R`: qs が使えないとき警告を出す**。無言フォールバックをやめた
+- **`rds_io.R`: 読み込みの形式と所要時間をログに出す**。xz を 30 秒以上かけて読んだ場合は
+  保存し直しを促す。旧形式の判別に `.rds_io_legacy_format()` を追加
+- **`extract_seurat_data.R`: 密行列コピーを 4 回 → 1 回**。`Matrix::t()` でスパースのまま
+  転置し、Arrow 配列を 1 列ずつ生成する。R のベクタは 1 列ぶん（約 1.6MB）しか同時に持たない。
+  **型は float64 のまま維持**し、出力が旧実装とビット単位で一致するようにした
+- **`extract_seurat_data.R` / `seurat_bridge.py`: 段階ごとの所要時間と RSS をログに出す**。
+  R 側の `[extract]` 行は Python 側がアプリログへ転記する
+- `_popen_with_cancel` が stdout も返すようにした。捨てているとキャンセル可能パスだけ
+  内訳が追えなくなるため
+
+#### 付随して直したもの
+
+コメントの「dense 100k×18k で 14GB 級になり 20-60 秒」は実測 233.7 秒で **4〜11 倍の
+過小申告**だった。実測値に置き換えた（`extract_seurat_data.R`, `seurat_bridge.py`）。
+
+#### 検証
+
+`pytest -m "not e2e"` は **718 件全通過**（ver50.0 の 717 件 + 新規 1 件）。
+`_popen_with_cancel` の戻り値変更に伴い `test_seurat_cancel.py` の 2 件を更新し、
+stdout と stderr が混ざらないことを確かめるテストを追加した。
+
+R は検証環境に無いため、括弧・引用符の対応と定義順序（`.rds_io_legacy_format` と
+`.step` が使用箇所より前にあること）を機械的に確認した。**実機での効果測定は未実施。**
+
+#### 既知の課題（今回は対象外）
+
+- **qs 自体の修復**（イメージ再ビルド / ソースビルド / `qs2` へ移行）。戻れば RDS 展開が
+  5〜15 秒とさらに速い。`Dockerfile` の変更を伴うため分離した。本版を入れておけば
+  qs が直らなくても gzip で動く
+- **既存 xz ファイルの一括変換**。`slim_existing_rds.R` が read → `save_rds_compact` で
+  再保存する作りなので、本版の後に流せば gzip へ変換される。対象は 1〜3GB × 多数
+- **gzip の実効果は未実測**。xz の 5〜15 倍という一般論からの推定で、20〜30 秒を見込む
+- 密行列を避けても `write_parquet` の 35.9 秒は残る。float32 化で半減する見込みだが、
+  `get_feature_expression_fast` の型前提を確認するまで保留
+- Seurat キャッシュがほぼ 2 重で約 5GB。キャッシュキーが `extract_seurat_data.R` の
+  mtime を含むため、**本版の適用で全キャッシュが無効化される**
+
+---
+
 ## 2026-08-05_ver50.0
 
 ### 追加: 既存 Parquet を再変換せず「全行 1 row group」へ作り直すツール
