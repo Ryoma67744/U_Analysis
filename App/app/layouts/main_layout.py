@@ -16,6 +16,7 @@ from app.layouts.annotation_preview_modal import create_annotation_preview_modal
 from app.layouts.add_molinfo_modal import create_add_molinfo_modal
 from app.layouts.env_settings_modal import create_env_settings_modal
 from app.layouts.rds_maintenance_modal import create_rds_maintenance_modal
+from app.layouts.parquet_maintenance_modal import create_parquet_maintenance_modal
 from app.layouts.landing_page import create_landing_page
 from app.layouts.action_page import create_action_page
 from app.layouts.shared_view import create_shared_view_layout
@@ -375,6 +376,9 @@ def create_main_layout():
 
                         # RDS 軽量化モーダル
                         create_rds_maintenance_modal(),
+
+                        # Parquet 再パックモーダル
+                        create_parquet_maintenance_modal(),
 
                         # ファイルブラウザの状態
                         dcc.Store(id="fb_state", data={

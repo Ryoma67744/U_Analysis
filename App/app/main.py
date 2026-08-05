@@ -349,6 +349,7 @@ from app.callbacks import hne_overlay_callbacks  # noqa: E402, F401
 from app.callbacks import env_settings_callbacks  # noqa: E402, F401
 from app.callbacks import lite_view_callbacks  # noqa: E402, F401
 from app.callbacks import rds_maintenance_callbacks  # noqa: E402, F401
+from app.callbacks import parquet_maintenance_callbacks  # noqa: E402, F401
 from app.callbacks import edit_lock_callbacks  # noqa: E402, F401
 from app.callbacks import auth_callbacks  # noqa: E402, F401
 from app.callbacks import data_management_callbacks  # noqa: E402, F401

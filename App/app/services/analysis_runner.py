@@ -724,6 +724,7 @@ def start_analysis_process(
     output_dir: str,
     extra_args=None,
     env_extra: dict | None = None,
+    interpreter: list[str] | None = None,
 ) -> dict:
     """Rスクリプトを外部プロセスで非同期実行
     R版: start_analysis_process() in analysis_runner.R
@@ -739,6 +740,13 @@ def start_analysis_process(
         output_dir:  ログや進捗ファイルを書き出すディレクトリ
         extra_args:  R スクリプトに渡す追加コマンドライン引数 (list[str] | None)
                      例: ["/path/to/folder", "--dry-run", "--backup"]
+        interpreter: 起動コマンドの先頭部分を差し替える (list[str] | None)。
+                     None (既定) なら従来どおり [Rscript, "--vanilla"]。
+                     Python 製の保守ツールを同じ枠組み（同時実行ブロック・
+                     空きメモリ/ディスクチェック・ログ退避・watchdog）で
+                     走らせるための口。例: [sys.executable, "-u"]
+                     ※ -u は必須。Python は stdout がファイルだとブロック
+                        バッファになり、進捗ログがプロセス終了まで出ない。
     """
     if not Path(script_path).exists():
         return {
@@ -914,7 +922,8 @@ def start_analysis_process(
         if log_notes:
             log_fh.write("\n".join(log_notes) + "\n")
             log_fh.flush()
-        cmd = [rscript, "--vanilla", script_path] + [
+        launcher = list(interpreter) if interpreter else [rscript, "--vanilla"]
+        cmd = launcher + [script_path] + [
             str(a) for a in (extra_args or [])
         ]
         process = subprocess.Popen(

@@ -41,7 +41,7 @@
     <li><a href="#errors">🛟 よくあるエラー</a></li>
     <li><a href="#faq">❓ FAQ</a></li>
     <li><a href="#changelog">📝 バージョン履歴</a></li>
-    <li><a href="#maintenance">🧰 保守・ツール（RDS軽量化 / 環境設定 / SCiLS）</a></li>
+    <li><a href="#maintenance">🧰 保守・ツール（RDS軽量化 / Parquet 再パック / 環境設定 / SCiLS）</a></li>
   </ol>
 </div>
 
@@ -1176,12 +1176,13 @@ ZIP名: metaboanalyst_&lt;強度種別&gt;_&lt;単位&gt;[_qea].zip
 </table>
 
 <!-- ============================================ -->
-<h2 class="section-heading" id="maintenance">🧰 11. 保守・ツール（RDS軽量化 / 環境設定 / SCiLS 変換）</h2>
+<h2 class="section-heading" id="maintenance">🧰 11. 保守・ツール（RDS軽量化 / Parquet 再パック / 環境設定 / SCiLS 変換）</h2>
 
 <p>
-  日常解析以外の保守系ツールです。<strong>RDS軽量化</strong>と<strong>環境設定</strong>は
-  ランディングページ（プロジェクト一覧）右上のボタンから、<strong>SCiLS 変換</strong>は
-  解析設定タブのサイドバーの「🔄 SCiLS 変換」ボタンから開きます。
+  日常解析以外の保守系ツールです。<strong>RDS軽量化</strong>・<strong>Parquet 再パック</strong>・
+  <strong>環境設定</strong>はランディングページ（プロジェクト一覧）右上のボタンから、
+  <strong>SCiLS 変換</strong>は解析設定タブのサイドバーの「🔄 SCiLS 変換」ボタンから開きます。
+  RDS軽量化と Parquet 再パックは解析設定タブのサイドバーからも開けます。
 </p>
 
 <h3 class="subsection-heading" id="rds-slim">🧹 RDS 軽量化</h3>
@@ -1237,6 +1238,38 @@ ZIP名: metaboanalyst_&lt;強度種別&gt;_&lt;単位&gt;[_qea].zip
     メモリが足りない場合のみ自動で分割し、変換結果に警告が出ます。
     <strong>以前に変換した parquet（200 行/row group）もそのまま読めます</strong>ので再変換は不要です</li>
 </ul>
+
+<h3 class="subsection-heading" id="parquet-repack">🆕 📦 Parquet 再パック（row group）</h3>
+<p>
+  ver49.0 より前に変換した <code>.parquet</code> は 200 行ごとに区切られており、開くたびに
+  管理情報（フッタ）の解析へ時間がかかります。実データ規模では 1 回開くのに約 3.3 秒、
+  R の取り込みは同じファイルを約 20 回開くため<strong>取り込みごとに約 65 秒</strong>が
+  ここだけに消えていました。このツールは<strong>中身を変えずにレイアウトだけ作り直して</strong>
+  「全行 1 つ」にまとめます。<strong>CSV からの再変換は不要です。</strong>
+</p>
+<ul>
+  <li><strong>対象フォルダ</strong>: 指定フォルダ以下を再帰スキャン。既に 1 row group のファイル、
+    SCiLS 変換以外の parquet、注釈サイドカーは自動スキップ（何度実行しても安全です）</li>
+  <li><strong>Dry-run</strong>（既定 ON）: 書き込まずに対象と必要メモリだけ表示</li>
+  <li><strong>バックアップ</strong>（既定 ON）: <code>&lt;file&gt;.parquet.bak</code> を残す
+    （ハードリンクなのでディスクは増えません）</li>
+  <li>詳細設定: <code>--allow-split</code>（メモリ不足時に分割を許可）/
+    <code>--skip-verify</code>（照合の省略。非推奨）</li>
+</ul>
+<div class="help-alert tip">
+  <div class="alert-title">💡 解析結果は変わりません</div>
+  値は 1 ビットも変わりません。書き込んだ内容を<strong>全列突き合わせて確認してから</strong>
+  元のファイルと置き換えます。<strong>ファイルサイズはむしろ小さくなります</strong>
+  （実測でゼロの多いデータなら約 4 割減）。再現性の記録にファイルのハッシュや
+  サイズは含まれていないため、過去の記録とも矛盾しません。
+</div>
+<div class="help-alert warn">
+  <div class="alert-title">⚠ 解析と同時に実行しないでください</div>
+  実データ規模では一時的に約 8GB のメモリを使います。解析が動いている間は起動できないよう
+  ガードが入っていますが、逆（再パック中の解析開始）は防げません。
+  また再パック後の<strong>初回だけ</strong>取り込みキャッシュが効かず読み直しになります
+  （結果は同じで、2 回目以降はむしろ速くなります）。
+</div>
 
 <h3 class="subsection-heading">📌 プロジェクトサムネの登録</h3>
 <p>
