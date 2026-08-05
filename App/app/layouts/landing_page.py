@@ -141,6 +141,13 @@ def create_landing_page():
                                         className="me-1",
                                     ),
                                     dbc.Button(
+                                        "📦 Parquet 再パック",
+                                        id="open_parquet_maintenance_modal_landing",
+                                        color="primary",
+                                        outline=True,
+                                        className="me-1",
+                                    ),
+                                    dbc.Button(
                                         "⚙ 環境設定",
                                         id="open_env_settings_modal_landing",
                                         color="dark",
