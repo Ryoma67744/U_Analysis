@@ -1099,6 +1099,15 @@ def check_process_completion(
     exit_code = process.returncode
     status = "finished" if exit_code == 0 else "error"
 
+    # [ver51.1] 利用者が停止した場合は "error" で上書きしない。
+    #   stop_analysis_process が先に "stopped" を書いてから SIGTERM を送るため、
+    #   ここでは負の終了コードになり、無条件に error として扱われていた。
+    #   その結果「自分で止めたのに『解析でエラーが発生しました』」と出ていた。
+    #   job_watcher._resolve_status は既に stopped を尊重しており、
+    #   放置すると台帳は stopped・画面は error という食い違いになる。
+    if status == "error" and get_analysis_status(status_file) == "stopped":
+        status = "stopped"
+
     # [ver45.8] 終了コード/シグナルを必ず記録する。
     # R がエラーメッセージを出さずにログが途切れるケースでは、この値だけが原因を分ける:
     #   負値 = シグナルによる強制終了 (-9 SIGKILL: OOM killer や外部 kill /

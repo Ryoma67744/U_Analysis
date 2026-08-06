@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import pytest
+from dash import no_update
 
 from app.services import analysis_finalizer, job_registry, job_watcher
 
@@ -118,6 +119,28 @@ class TestJobRegistry:
 
     def test_missing_root_is_tolerated(self, tmp_path):
         assert job_registry.find_running_job([str(tmp_path / "nope")]) is None
+
+    @pytest.mark.parametrize("depth", [0, 1, 2, 3])
+    def test_found_at_various_depths(self, tmp_path, depth):
+        """出力先の階層は UI で自由に決まる。
+
+        ver51.0 は 2 階層固定 glob だったため、深さがずれると再接続が
+        無言で起きなかった。
+        """
+        root = tmp_path / "data"
+        out = root.joinpath(*[f"lv{i}" for i in range(depth)])
+        job_registry.write_job(out, pid=os.getpid())
+
+        running = job_registry.find_running_job([str(root)])
+
+        assert running is not None
+        assert Path(running["output_dir"]) == out
+
+    def test_no_duplicates_across_depths(self, tmp_path):
+        """複数の深さ glob で同じ台帳を二重に拾わないこと"""
+        root = tmp_path / "data"
+        job_registry.write_job(root / "p" / "run", pid=os.getpid())
+        assert len(job_registry.find_jobs([str(root)])) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -434,3 +457,107 @@ class TestWatcher:
 
         assert t1 is t2
         self._wait(t1)
+
+
+# ---------------------------------------------------------------------------
+# 再接続コールバック (ver51.1 の回帰修正)
+# ---------------------------------------------------------------------------
+
+class TestRestoreCallback:
+    """restore_running_analysis の分岐。
+
+    ver51.0 は「同一タブで F5」の経路で no_update を返しており、
+    Interval が disabled のまま復帰せず進捗を永久に見失っていた。
+    """
+
+    @staticmethod
+    def _restore(app_state):
+        from app.callbacks.analysis_callbacks import restore_running_analysis
+        return restore_running_analysis("/app/settings", app_state)
+
+    def _state(self, tmp_path, pid, status=None):
+        out = tmp_path / "result"
+        sf = out / "log" / "analysis_status.txt"
+        if status is not None:
+            sf.parent.mkdir(parents=True, exist_ok=True)
+            sf.write_text(status, encoding="utf-8")
+        return {
+            "is_running": True,
+            "process_pid": pid,
+            "status_file": str(sf),
+            "full_output_dir": str(out),
+        }
+
+    def test_same_tab_reload_rearms_polling(self, tmp_path):
+        """F5 リロード: Store は残るがコンポーネントは既定値に戻っている。
+
+        ここで Interval を有効化し直さないと進捗が二度と出ない。
+        """
+        out = self._restore(self._state(tmp_path, os.getpid()))
+
+        assert out[1] is False, "Interval が無効のままでは進捗が出ない"
+        assert out[2] != {"display": "none"}   # 停止ボタン
+        assert out[3] != {"display": "none"}   # 進捗バー
+        assert out[4] != {"display": "none"}   # ログ
+
+    def test_dead_pid_with_finished_status_lets_progress_render(self, tmp_path):
+        """閉じている間に完了していた場合、完了表示のためにポーリングを回す"""
+        out = self._restore(self._state(tmp_path, 999_999_999, status="finished"))
+        assert out[1] is False
+
+    def test_dead_pid_without_status_folds_and_tells_user(self, tmp_path):
+        """中断された場合は実行中を畳み、黙って消えないこと"""
+        out = self._restore(self._state(tmp_path, 999_999_999, status="running"))
+
+        assert out[0]["is_running"] is False
+        assert out[1] is True
+        assert out[6] is True, "利用者に何も知らせないまま消えてはいけない"
+
+    def test_no_running_job_is_silent(self, tmp_path, monkeypatch):
+        from app.callbacks import analysis_callbacks as ac
+        monkeypatch.setattr(ac, "_analysis_search_roots", lambda: [str(tmp_path)])
+        out = self._restore({"is_running": False})
+        assert out[0] is no_update
+
+    def test_reconnects_from_registry(self, tmp_path, monkeypatch):
+        """別ブラウザ: 台帳から組み立て直す"""
+        from app.callbacks import analysis_callbacks as ac
+        root = tmp_path / "data"
+        out_dir = root / "projA" / "run1"
+        job_registry.write_job(out_dir, pid=os.getpid(), analysis_type="tims_v8",
+                               project_id="P", sub_project_id="S")
+        monkeypatch.setattr(ac, "_analysis_search_roots", lambda: [str(root)])
+
+        res = self._restore({"is_running": False})
+
+        assert res[0]["is_running"] is True
+        assert res[0]["full_output_dir"] == str(out_dir)
+        assert res[0]["analysis_type"] == "tims_v8"
+        assert res[0]["start_time"]
+        assert res[1] is False
+
+
+class TestStoppedStatus:
+    """停止は「エラー」にしない (ver51.1)"""
+
+    def test_stopped_is_not_overwritten_as_error(self, tmp_path):
+        from app.services.analysis_runner import check_process_completion
+
+        sf = tmp_path / "analysis_status.txt"
+        sf.write_text("stopped", encoding="utf-8")
+
+        proc = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(1)"])
+        proc.wait()
+
+        assert check_process_completion(proc, str(sf)) == "stopped"
+
+    def test_genuine_error_is_still_error(self, tmp_path):
+        from app.services.analysis_runner import check_process_completion
+
+        sf = tmp_path / "analysis_status.txt"
+        sf.write_text("running", encoding="utf-8")
+
+        proc = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(1)"])
+        proc.wait()
+
+        assert check_process_completion(proc, str(sf)) == "error"

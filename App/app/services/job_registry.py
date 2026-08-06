@@ -136,23 +136,37 @@ def is_pid_alive(pid) -> bool:
         return False
 
 
-def find_jobs(search_roots, *, max_depth_glob: str = "*/*/log/" + JOB_FILE_NAME) -> list:
+# 台帳を探す深さ。結果フォルダは通常
+#   <データルート>/<プロジェクト>/<出力>/log/  （＝深さ 2）
+# だが、出力先はUIで自由に決められるため 2 階層固定だと取りこぼす。
+# [ver51.1] 深さ 2 だけを見ていたため、出力先の置き方によっては再接続が
+#   無言で起きなかった。0〜3 階層を見る。rglob は大きなデータツリーで
+#   遅いので、深さを区切った glob を並べる方式は維持する。
+_DEPTH_GLOBS = tuple("*/" * d + "log/" + JOB_FILE_NAME for d in range(0, 4))
+
+
+def find_jobs(search_roots, *, depth_globs=None) -> list:
     """探索ルート配下からジョブ台帳を集める。
 
-    結果フォルダは <データルート>/<プロジェクト>/<出力>/log/ の階層にあるため、
-    既定は 2 階層下を見る。取りこぼしを避けたい場合は rglob を使うが、
-    大きなデータツリーでは遅いのでここでは固定深さにしている。
+    同じ output_dir を複数の深さで拾わないよう重複を除く。
     """
     found = []
+    seen = set()
     for root in search_roots or []:
         try:
             base = Path(root)
             if not base.is_dir():
                 continue
-            for p in base.glob(max_depth_glob):
-                data = read_job(p.parent.parent)
-                if data:
-                    found.append(data)
+            for pattern in (depth_globs or _DEPTH_GLOBS):
+                for p in base.glob(pattern):
+                    out_dir = p.parent.parent
+                    key = str(out_dir.resolve())
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    data = read_job(out_dir)
+                    if data:
+                        found.append(data)
         except Exception as e:  # noqa: BLE001
             logger.debug("ジョブ台帳の探索に失敗: %s (%s)", root, e)
     return found

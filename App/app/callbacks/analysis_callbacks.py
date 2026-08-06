@@ -1042,7 +1042,13 @@ def update_progress(n_intervals, app_state, log_search, log_level, log_lines_cou
     analysis_type = app_state.get("analysis_type", "desi_v8")
 
     # ログ取得（フィルタ用の行数設定）
-    n_lines = log_lines_count if log_lines_count else 50
+    # [ver51.1] 0 は「全行」を意味する有効な選択肢。falsy 判定で 50 に潰していたため
+    #   直後の全行分岐が到達不能で、「全行」を選んでも末尾 50 行しか出なかった。
+    #   閉じていた間のログを遡る用途で特に困る。
+    try:
+        n_lines = 50 if log_lines_count is None else int(log_lines_count)
+    except (TypeError, ValueError):
+        n_lines = 50
     if n_lines == 0 and log_file:
         raw_log = get_analysis_log_full(log_file)
     elif log_file:
@@ -1247,14 +1253,32 @@ def restore_running_analysis(pathname, app_state):
     """
     state = dict(app_state or {})
     if state.get("is_running"):
-        # 同一タブで storage_type="session" により保持されていた場合。
-        # プロセスがもう居ないなら実行中フラグを畳む。
         pid = state.get("process_pid")
-        if pid and not _job_registry.is_pid_alive(pid):
-            state["is_running"] = False
-            return (state, True, {"display": "none"}, {"display": "none"},
-                    no_update, no_update, no_update)
-        return (no_update,) * 7
+        if pid and _job_registry.is_pid_alive(pid):
+            # [ver51.1] 同一タブのリロード。app_state は storage_type="session" で
+            #   sessionStorage に残るが、**コンポーネントの prop は残らない**。
+            #   Interval は disabled=True、各コンテナは display:none という
+            #   レイアウト既定値に戻っている。ここで表示を組み直さないと
+            #   ポーリングが二度と始まらない。
+            #   ver51.0 はここで no_update を返しており、F5 を押しただけで
+            #   実行中の解析を画面から見失っていた（台帳経路にも入らない）。
+            return (no_update, False,
+                    {"flex": "0 0 auto"}, {"flex": "1"}, {"marginTop": "20px"},
+                    no_update, no_update)
+
+        # プロセスはもう居ない。終了状態が書かれていればポーリングを 1 周だけ
+        # 回して update_progress に完了/エラー表示をさせる（そこで is_running が
+        # 畳まれる）。ver51.0 は黙ってフラグを畳むだけで、閉じている間に
+        # 終わった解析の結末を利用者に一切見せていなかった。
+        if _has_terminal_status(state.get("status_file")):
+            return (no_update, False,
+                    {"flex": "0 0 auto"}, {"flex": "1"}, {"marginTop": "20px"},
+                    no_update, no_update)
+
+        state["is_running"] = False
+        return (state, True, {"display": "none"}, {"display": "none"},
+                {"marginTop": "20px"},
+                "解析プロセスが見つかりませんでした（中断された可能性があります）", True)
 
     try:
         job = _job_registry.find_running_job(_analysis_search_roots())
@@ -1287,6 +1311,17 @@ def restore_running_analysis(pathname, app_state):
         {"marginTop": "20px"},    # ログ表示
         "実行中の解析に再接続しました", True,
     )
+
+
+def _has_terminal_status(status_file) -> bool:
+    """analysis_status.txt に終了状態が書かれているか。"""
+    if not status_file:
+        return False
+    try:
+        return (Path(status_file).read_text(encoding="utf-8").strip()
+                in ("finished", "error", "stopped"))
+    except OSError:
+        return False
 
 
 def _analysis_search_roots() -> list:
