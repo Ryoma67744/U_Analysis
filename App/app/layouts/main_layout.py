@@ -389,7 +389,12 @@ def create_main_layout():
                         }),
 
                         # アプリ全体の状態を保持する Store
-                        dcc.Store(id="app_state", data={
+                        # [ver51.0] storage_type="session" にした。既定の "memory" だと
+                        #   リロードやタブを閉じるだけで is_running が消え、
+                        #   実行中の解析を画面から見失っていた（進捗も停止ボタンも出ない）。
+                        #   session なら同じタブを開き直せば復帰する。別ブラウザ・
+                        #   別端末からの復帰はジョブ台帳を読む restore コールバックが担う。
+                        dcc.Store(id="app_state", storage_type="session", data={
                             "is_running": False,
                             "process_pid": None,
                             "progress_file": None,

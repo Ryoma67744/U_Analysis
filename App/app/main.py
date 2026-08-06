@@ -357,6 +357,34 @@ from app.callbacks import tab_url_routing  # noqa: E402, F401
 from app.callbacks import provenance_callbacks  # noqa: E402, F401
 from app.callbacks import preflight_callbacks  # noqa: E402, F401
 
+# ---------------------------------------------------------------------------
+# 起動時の後始末
+# ---------------------------------------------------------------------------
+# [ver51.0] 「実行中の記録が残っているのにプロセスが居ない」解析を締める。
+#   コンテナ再起動や再ビルドをすると、Dash アプリはコンテナの PID 1 なので
+#   カーネルが R プロセスごと SIGKILL する。これを拾わないと
+#   analysis_status.txt が running のまま永久に残り、後から何が起きたのか
+#   分からなくなる（実際にその状態のログが報告された）。
+def _reconcile_interrupted_analyses() -> None:
+    import logging as _logging
+    _log = _logging.getLogger("msi.main")
+    try:
+        from app.config import DESI_DATA_DIR, OUTPUT_DATA_DIR, TIMS_DATA_DIR
+        from app.services.analysis_finalizer import reconcile_stale_jobs
+        roots = [str(d) for d in (TIMS_DATA_DIR, DESI_DATA_DIR, OUTPUT_DATA_DIR)
+                 if d and Path(d).is_dir()]
+        closed = reconcile_stale_jobs(roots)
+        if closed:
+            _log.warning(
+                "中断されていた解析 %d 件を error として記録しました: %s",
+                len(closed), ", ".join(Path(c).name for c in closed),
+            )
+    except Exception as e:  # noqa: BLE001
+        _log.warning("起動時の解析後始末に失敗（起動は継続）: %s", e)
+
+
+_reconcile_interrupted_analyses()
+
 if __name__ == "__main__":
     # Docker CMD は run_app.py 経由。ここは bare-metal 開発用のフォールバック。
     # 本番環境でもブラウザに stack trace を漏らさないよう debug=False で固定。

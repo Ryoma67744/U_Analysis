@@ -725,6 +725,7 @@ def start_analysis_process(
     extra_args=None,
     env_extra: dict | None = None,
     interpreter: list[str] | None = None,
+    job_meta: dict | None = None,
 ) -> dict:
     """Rスクリプトを外部プロセスで非同期実行
     R版: start_analysis_process() in analysis_runner.R
@@ -747,6 +748,13 @@ def start_analysis_process(
                      走らせるための口。例: [sys.executable, "-u"]
                      ※ -u は必須。Python は stdout がファイルだとブロック
                         バッファになり、進捗ログがプロセス終了まで出ない。
+        job_meta:    ジョブ台帳に残す付帯情報 (dict | None)。
+                     analysis_type / project_id / sub_project_id / data_folder。
+                     [ver51.0] これを渡すと <output_dir>/log/analysis_job.json に
+                     記録され、サーバ側ウォッチャーが終了を待って完了処理を行う。
+                     ブラウザを閉じても結果がプロジェクトに登録される。
+                     None（保守ツールなど）なら台帳もウォッチャーも作らず、
+                     従来どおり呼び出し側のポーリングに委ねる。
     """
     if not Path(script_path).exists():
         return {
@@ -938,6 +946,44 @@ def start_analysis_process(
         # PR-H3 C2: wallclock timeout 監視を開始
         # ver45.8: kill 理由を解析ログにも書けるようログハンドルを渡す
         _schedule_watchdog(process, log_fh)
+
+        # [ver51.0] ジョブ台帳とサーバ側ウォッチャー。
+        #   これが無いと、ブラウザを閉じた瞬間に完了処理の実行者がいなくなり、
+        #   計算は完走するのに「実行中のまま・結果がプロジェクトに紐づかない・
+        #   子プロセスがゾンビになる」状態になる。
+        #   job_meta が None の保守ツール（RDS 軽量化 / Parquet 再パック）は
+        #   従来どおり呼び出し側のポーリングに委ねる。
+        if job_meta is not None:
+            try:
+                from app.services import job_registry, job_watcher
+                job = {
+                    "pid": process.pid,
+                    "output_dir": str(output_dir),
+                    "analysis_type": job_meta.get("analysis_type", ""),
+                    "project_id": job_meta.get("project_id", ""),
+                    "sub_project_id": job_meta.get("sub_project_id", ""),
+                    "data_folder": job_meta.get("data_folder", ""),
+                    "script_path": str(script_path),
+                    "analyst": job_meta.get("analyst", ""),
+                }
+                job_registry.write_job(
+                    output_dir, pid=process.pid,
+                    analysis_type=job["analysis_type"],
+                    project_id=job["project_id"],
+                    sub_project_id=job["sub_project_id"],
+                    data_folder=job["data_folder"],
+                    script_path=job["script_path"],
+                    analyst=job["analyst"],
+                )
+                job_watcher.watch(
+                    process, output_dir,
+                    status_file=str(status_file),
+                    log_file_handle=log_fh,
+                    job=job,
+                )
+            except Exception as e:  # noqa: BLE001
+                # 監視が付かないだけで解析自体は従来どおり動く
+                logger.warning("ジョブ監視の設定に失敗（解析は続行）: %s", e)
     except Exception as e:
         if log_fh:
             log_fh.close()
@@ -1054,6 +1100,15 @@ def check_process_completion(
 
     exit_code = process.returncode
     status = "finished" if exit_code == 0 else "error"
+
+    # [ver51.1] 利用者が停止した場合は "error" で上書きしない。
+    #   stop_analysis_process が先に "stopped" を書いてから SIGTERM を送るため、
+    #   ここでは負の終了コードになり、無条件に error として扱われていた。
+    #   その結果「自分で止めたのに『解析でエラーが発生しました』」と出ていた。
+    #   job_watcher._resolve_status は既に stopped を尊重しており、
+    #   放置すると台帳は stopped・画面は error という食い違いになる。
+    if status == "error" and get_analysis_status(status_file) == "stopped":
+        status = "stopped"
 
     # [ver45.8] 終了コード/シグナルを必ず記録する。
     # R がエラーメッセージを出さずにログが途切れるケースでは、この値だけが原因を分ける:
