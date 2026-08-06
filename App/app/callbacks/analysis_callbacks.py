@@ -3,6 +3,7 @@
 # 解析実行・進捗監視 コールバック
 # =============================================================================
 
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +14,7 @@ from app.config import (
     DESI_V8_TEMPLATE_PATH, DESI_CLUSTER_FILTER_PATH,
     TIMS_V8_TEMPLATE_PATH, TIMS_CLUSTER_FILTER_PATH,
     MERGE_CLUSTERS_SCRIPT_PATH,
+    DESI_DATA_DIR, TIMS_DATA_DIR, OUTPUT_DATA_DIR,
 )
 from app.services.analysis_runner import (
     generate_v8_config,
@@ -30,7 +32,11 @@ from app.services.session_manager import save_last_settings
 from app.services.project_manager import save_sub_project_settings, save_sub_project_result_dir, update_sub_project
 from app.services.notify import warn_user
 from app.services import receipt as _receipt
+from app.services import analysis_finalizer as _finalizer
+from app.services import job_registry as _job_registry
 from app.version import version_label
+
+logger = logging.getLogger("msi.analysis_callbacks")
 
 
 def _analyst_name():
@@ -731,7 +737,21 @@ def run_analysis(
         _env_extra = None
         if analysis_type == "tims_cluster_filter" and params.get("adduct_patterns"):
             _env_extra = {"ANNOT_ADDUCTS": ",".join(params["adduct_patterns"])}
-        result = start_analysis_process(config_path, full_output_dir, env_extra=_env_extra)
+        # [ver51.0] job_meta を渡すとジョブ台帳が作られ、サーバ側ウォッチャーが
+        #   終了を待って完了処理を行う。ブラウザを閉じても結果がプロジェクトに
+        #   登録され、ステータスも finished になる。
+        #   data_folder はここでしか分からない（完了時の callback には渡らない）ため、
+        #   この時点で台帳に残しておくのが要点。
+        _job_meta = {
+            "analysis_type": analysis_type or "",
+            "project_id": selected_project.get("id", "") if selected_project else "",
+            "sub_project_id": current_sub_project_id or "",
+            "data_folder": data_folder or "",
+        }
+        result = start_analysis_process(
+            config_path, full_output_dir,
+            env_extra=_env_extra, job_meta=_job_meta,
+        )
 
         if not result["success"]:
             return (
@@ -1080,30 +1100,21 @@ def update_progress(n_intervals, app_state, log_search, log_level, log_lines_cou
             section_text = f"出力: {file_count} ファイル | ✅ 完了 ({step_total}/{step_total}) | {elapsed_text}"
             log_header = "✅ 解析完了"
 
-            # 解析結果ディレクトリをサブプロジェクトに保存
-            try:
-                proj_id = app_state.get("project_id")
-                sub_id = app_state.get("sub_project_id")
-                if proj_id and sub_id and output_dir:
-                    save_sub_project_result_dir(proj_id, sub_id, output_dir)
-                # 解析に使った生データフォルダもサブプロジェクトに保存しておく
-                # （出力時の「MSIデータフォルダ」自動推定フォールバックを不要にする）
-                if proj_id and sub_id and data_folder:
-                    update_sub_project(proj_id, sub_id, {"data_folder": data_folder})
-            except Exception as e:
-                warn_user(f"結果ディレクトリの保存に失敗: {e}")
-
-            # 解析レシートを確定（analysis_params.json + R サイドカーを 1 つに集約）。
-            # 失敗しても解析完了表示は壊さない。
+            # [ver51.0] 完了処理は analysis_finalizer に一本化した。
+            #   同じ処理をサーバ側ウォッチャーも実行するため、先に済んでいれば
+            #   ここは skipped で何もしない（finalize は冪等）。
+            #   旧実装はこの中で未定義の `data_folder` を参照して毎回 NameError
+            #   を出しており、成功のたびに「結果ディレクトリの保存に失敗」という
+            #   トーストが表示され、data_folder の保存は一度も動いていなかった。
+            #   現在は起動時にジョブ台帳へ記録した値を使う。
             try:
                 if output_dir:
-                    _receipt.finalize_receipt(
-                        output_dir,
-                        app_version=version_label(),
-                        ended_at=datetime.now().isoformat(),
-                    )
+                    _fin = _finalizer.finalize(
+                        output_dir, status="finished", source="callback")
+                    for _err in _fin.get("errors", []):
+                        warn_user(_err)
             except Exception as e:
-                warn_user(f"解析レシートの作成に失敗: {e}")
+                warn_user(f"完了処理に失敗: {e}")
         else:
             msg = "解析でエラーが発生しました"
             section_text = f"出力: {file_count} ファイル | ❌ エラー ({step_current}/{step_total}) | {elapsed_text}"
@@ -1161,11 +1172,133 @@ def handle_stop(n_clicks, app_state):
 
     process = _process_state.get("process")
     log_fh = _process_state.get("log_file_handle")
-    output_dir = app_state.get("full_output_dir", "")
+    output_dir = (app_state or {}).get("full_output_dir", "")
+
+    # [ver51.0] 再接続後は _process_state に Popen が無い（別セッションが起動した、
+    #   あるいはリロードで参照を失った）。その場合はジョブ台帳の PID から
+    #   プロセスツリーを止める。output_dir が空のまま stop_analysis_process を
+    #   呼ぶと Path("")/"log"/... に迷子のファイルを作ってしまうので先に弾く。
+    if not output_dir:
+        return "停止対象の解析が特定できません（画面を再読み込みしてください）", True
+
+    if process is None:
+        job = _job_registry.read_job(output_dir) or {}
+        pid = job.get("pid")
+        if pid and _job_registry.is_pid_alive(pid):
+            _stop_by_pid(pid, output_dir)
+            return "停止リクエストを送信しました", True
+        return "解析プロセスが見つかりませんでした（既に終了している可能性があります）", True
 
     stop_analysis_process(process, output_dir, log_fh)
 
     return "停止リクエストを送信しました", True
+
+
+def _stop_by_pid(pid, output_dir) -> bool:
+    """Popen 参照が無いときに PID からプロセスツリーを停止する。"""
+    try:
+        status_file = Path(output_dir) / "log" / "analysis_status.txt"
+        status_file.parent.mkdir(parents=True, exist_ok=True)
+        status_file.write_text("stopped", encoding="utf-8")
+    except OSError as e:
+        warn_user(f"ステータスの更新に失敗: {e}")
+    try:
+        import psutil
+        parent = psutil.Process(int(pid))
+        children = parent.children(recursive=True)
+        for c in children:
+            c.terminate()
+        parent.terminate()
+        _, alive = psutil.wait_procs(children + [parent], timeout=5)
+        for p in alive:
+            p.kill()
+        return True
+    except Exception as e:  # noqa: BLE001
+        warn_user(f"プロセスの停止に失敗: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# 実行中の解析への再接続
+# ---------------------------------------------------------------------------
+
+@callback(
+    [Output("app_state", "data", allow_duplicate=True),
+     Output("progress_interval", "disabled", allow_duplicate=True),
+     Output("stop_button_container", "style", allow_duplicate=True),
+     Output("progress_container", "style", allow_duplicate=True),
+     Output("log_container", "style", allow_duplicate=True),
+     Output("notification_toast", "children", allow_duplicate=True),
+     Output("notification_toast", "is_open", allow_duplicate=True)],
+    Input("url_bar", "pathname"),
+    State("app_state", "data"),
+    prevent_initial_call="initial_duplicate",
+)
+def restore_running_analysis(pathname, app_state):
+    """ページを開いたとき、実行中の解析があれば画面を復帰させる。
+
+    [ver51.0] これが無いと、タブを閉じて開き直した利用者は
+    「解析が動いているのに画面には何も出ていない」状態になり、
+    進捗も見られず停止もできなかった。
+
+    ジョブ台帳（<output_dir>/log/analysis_job.json）を探し、PID が生きている
+    解析があれば app_state を組み立て直してポーリングを再開する。
+    別ブラウザ・別端末からでも復帰できる。
+    """
+    state = dict(app_state or {})
+    if state.get("is_running"):
+        # 同一タブで storage_type="session" により保持されていた場合。
+        # プロセスがもう居ないなら実行中フラグを畳む。
+        pid = state.get("process_pid")
+        if pid and not _job_registry.is_pid_alive(pid):
+            state["is_running"] = False
+            return (state, True, {"display": "none"}, {"display": "none"},
+                    no_update, no_update, no_update)
+        return (no_update,) * 7
+
+    try:
+        job = _job_registry.find_running_job(_analysis_search_roots())
+    except Exception as e:  # noqa: BLE001
+        logger.debug("実行中ジョブの探索に失敗: %s", e)
+        return (no_update,) * 7
+    if not job:
+        return (no_update,) * 7
+
+    output_dir = job.get("output_dir") or ""
+    log_dir = Path(output_dir) / "log"
+    restored = {
+        "is_running": True,
+        "process_pid": job.get("pid"),
+        "progress_file": str(log_dir / "analysis_progress.txt"),
+        "log_file": str(log_dir / "analysis_log.txt"),
+        "status_file": str(log_dir / "analysis_status.txt"),
+        "full_output_dir": output_dir,
+        "start_time": job.get("started_at"),
+        "analysis_type": job.get("analysis_type", ""),
+        "project_id": job.get("project_id", ""),
+        "sub_project_id": job.get("sub_project_id", ""),
+    }
+    logger.info("実行中の解析に再接続: pid=%s %s", job.get("pid"), output_dir)
+    return (
+        restored,
+        False,                    # Interval 有効化
+        {"flex": "0 0 auto"},     # 停止ボタン表示
+        {"flex": "1"},            # 進捗バー表示
+        {"marginTop": "20px"},    # ログ表示
+        "実行中の解析に再接続しました", True,
+    )
+
+
+def _analysis_search_roots() -> list:
+    """ジョブ台帳を探すルート。結果は TIMS/DESI のデータルート配下に出る。"""
+    roots = []
+    for d in (TIMS_DATA_DIR, DESI_DATA_DIR, OUTPUT_DATA_DIR):
+        try:
+            if d and Path(d).is_dir():
+                roots.append(str(d))
+        except Exception:  # noqa: BLE001
+            continue
+    return roots
 
 
 # ---------------------------------------------------------------------------
