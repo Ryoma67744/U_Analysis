@@ -1145,6 +1145,13 @@ def _create_run_button():
                             size="lg", color="danger",
                             style={"padding": "15px 30px", "fontSize": "1.2rem"},
                         ),
+                        # [ver51.2] 他人の解析に再接続したときの所有者表示。
+                        #   自分の解析なら空のまま。
+                        html.Div(
+                            id="analysis_owner_note", children="",
+                            style={"fontSize": "0.8rem", "color": "#6c757d",
+                                   "marginTop": "4px", "textAlign": "center"},
+                        ),
                     ],
                 ),
                 html.Div(

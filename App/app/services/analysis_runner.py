@@ -964,6 +964,7 @@ def start_analysis_process(
                     "sub_project_id": job_meta.get("sub_project_id", ""),
                     "data_folder": job_meta.get("data_folder", ""),
                     "script_path": str(script_path),
+                    "analyst": job_meta.get("analyst", ""),
                 }
                 job_registry.write_job(
                     output_dir, pid=process.pid,
@@ -972,6 +973,7 @@ def start_analysis_process(
                     sub_project_id=job["sub_project_id"],
                     data_folder=job["data_folder"],
                     script_path=job["script_path"],
+                    analyst=job["analyst"],
                 )
                 job_watcher.watch(
                     process, output_dir,

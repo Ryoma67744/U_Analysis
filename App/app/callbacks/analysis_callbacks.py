@@ -44,12 +44,42 @@ def _analyst_name():
 
     レシートの agent.operator を埋めるため。auth_callbacks.populate_current_analyst
     と同じく、Flask の request context 外で呼ばれても壊れないようにする。
+
+    所有権の判定には使わないこと。フォールバックが無いため未ログイン時に
+    None になり、プロジェクトの created_by と食い違う。所有者の記録・照合には
+    session_id.get_display_name() を使う（[ver51.2]）。
     """
     try:
         from flask import session
         return session.get("analyst_name") or None
     except Exception:
         return None
+
+
+def _owner_name() -> str:
+    """所有権の記録・照合に使う表示名。
+
+    [ver51.2] プロジェクトの created_by と同じ session_id.get_display_name()
+    を使い、台帳・プロジェクト・編集ロックで所有者表記を揃える。
+    """
+    from app.services.session_id import get_display_name
+    return get_display_name()
+
+
+def _is_tier_a() -> bool:
+    """サーバ側でのアクセス階層チェック（クライアントの Store を信用しない）。
+
+    Master でログインした利用者は tier A。request context 外（テスト等）では
+    True を返し、ゲート判定は verify_master 側に委ねる。
+    provenance_callbacks._is_tier_a と同じ規約。
+    """
+    try:
+        from flask import session, has_request_context
+        if not has_request_context():
+            return True
+        return session.get("access_tier") == "A"
+    except Exception:
+        return True
 
 
 # 解析シナリオ → 補正ポリシー (ANNOTATION_ROLE, BATCH_VAR, ALLOW_CONDITION_CORRECTION)。
@@ -220,7 +250,11 @@ def close_overwrite_modal(cancel_clicks, confirm_clicks):
      Output("log_container", "style"),
      Output("log_header", "children", allow_duplicate=True),
      Output("notification_toast", "children", allow_duplicate=True),
-     Output("notification_toast", "is_open", allow_duplicate=True)],
+     Output("notification_toast", "is_open", allow_duplicate=True),
+     # [ver51.2] 直前に他人の解析へ再接続していた場合、停止ボタンが無効の
+     #   まま残る。自分で起動したのだから必ず戻す。
+     Output("stop_analysis", "disabled", allow_duplicate=True),
+     Output("analysis_owner_note", "children", allow_duplicate=True)],
     Input("run_analysis", "n_clicks"),
     Input("btn_make_reduction", "n_clicks"),
     Input("btn_run_downstream", "n_clicks"),
@@ -338,7 +372,7 @@ def run_analysis(
     downstream_mode = (trig == "btn_run_downstream")
     if (not n_clicks and not reduction_clicks and not downstream_clicks
             and not confirm_overwrite_clicks):
-        return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+        return (no_update,) * 10
 
     # ── 上書き警告ゲート ──
     # 出力先に既存結果がある状態で「解析実行」/「reductionのみ」を押した場合は、
@@ -348,12 +382,12 @@ def run_analysis(
         reduction_only_mode = (overwrite_pending_mode == "reduction")
         downstream_mode = False
         if not confirm_overwrite_clicks:
-            return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+            return (no_update,) * 10
     elif trig in ("run_analysis", "btn_make_reduction") and output_dir:
         _target = str(Path(output_dir) / (output_subfolder or ""))
         if _output_has_existing_results(_target):
             # 実行は止める（モーダル表示は open_overwrite_modal が担当）
-            return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+            return (no_update,) * 10
 
     # 現在の設定を自動保存（次回起動時に復元される）
     try:
@@ -510,7 +544,7 @@ def run_analysis(
                         no_update,
                         "④を実行できません: ①の reduction RDS が見つかりません。"
                         "先に①「reduction のみ作成」を実行してください。",
-                        True,
+                        True, no_update, no_update,
                     )
                 params["resume_rds_paths"] = [str(p) for p in _rds_map.values()]
 
@@ -747,6 +781,8 @@ def run_analysis(
             "project_id": selected_project.get("id", "") if selected_project else "",
             "sub_project_id": current_sub_project_id or "",
             "data_folder": data_folder or "",
+            # [ver51.2] 停止を本人だけに許すための所有者。
+            "analyst": _owner_name(),
         }
         result = start_analysis_process(
             config_path, full_output_dir,
@@ -759,6 +795,7 @@ def run_analysis(
                 {"display": "none"}, {"display": "none"}, {"display": "none"},
                 no_update,
                 f"解析開始に失敗: {result['message']}", True,
+                no_update, no_update,
             )
 
         # 解析パラメータを結果フォルダに保存 (C1: パラメータ履歴)
@@ -864,6 +901,7 @@ def run_analysis(
             "⏳ 解析中...",        # ログヘッダーリセット
             ("解析を開始しました（出力: " + Path(full_output_dir).name + "）"
              if downstream_mode else "解析を開始しました"), True,
+            False, "",             # 自分の解析なので停止ボタンを戻す
         )
 
     except Exception as e:
@@ -872,6 +910,7 @@ def run_analysis(
             {"display": "none"}, {"display": "none"}, {"display": "none"},
             no_update,
             f"エラー: {e}", True,
+            no_update, no_update,
         )
 
 
@@ -1187,8 +1226,25 @@ def handle_stop(n_clicks, app_state):
     if not output_dir:
         return "停止対象の解析が特定できません（画面を再読み込みしてください）", True
 
+    # [ver51.2] 停止は起動した本人だけに許す。再接続では進捗とログを誰にでも
+    #   見せるので、ボタンを隠すだけでは不十分（callback は直接叩ける）。
+    #   台帳に解析者が記録されていない場合は従来どおり誰でも止められる。
+    #   管理者(tier A)は上書きできる。解析は施設全体で同時 1 件しか走れない
+    #   （analysis_runner の同時実行ガード）ので、実行者の不在中に暴走した
+    #   解析を誰も止められないとラボ全員が解析できなくなるため。
+    _job = _job_registry.read_job(output_dir) or {}
+    _me = _owner_name()
+    if not _job_registry.may_stop(_job, _me):
+        if not _is_tier_a():
+            return (f"この解析は {_job.get('analyst')} さんが実行中です。"
+                    "停止できるのは実行した本人か管理者だけです。"), True
+        logger.warning(
+            "管理者が他の解析者のジョブを停止: owner=%s stopped_by=%s output_dir=%s",
+            _job.get("analyst"), _me, output_dir,
+        )
+
     if process is None:
-        job = _job_registry.read_job(output_dir) or {}
+        job = _job
         pid = job.get("pid")
         if pid and _job_registry.is_pid_alive(pid):
             _stop_by_pid(pid, output_dir)
@@ -1228,6 +1284,25 @@ def _stop_by_pid(pid, output_dir) -> bool:
 # 実行中の解析への再接続
 # ---------------------------------------------------------------------------
 
+def _stop_permission(output_dir):
+    """再接続先の解析を停止してよいか。→ (ボタン disabled, 所有者の注記)
+
+    [ver51.2] 進捗とログは誰にでも見せるが、停止ボタンは所有者と管理者に
+    しか押させない。サーバ側は handle_stop でも弾いているので、これは
+    「押せるボタンを押してエラーになる」のを避けるための事前判定。
+    """
+    if not output_dir:
+        return False, ""
+    try:
+        job = _job_registry.read_job(output_dir) or {}
+    except Exception as e:  # noqa: BLE001
+        logger.debug("ジョブ台帳の読み込みに失敗: %s", e)
+        return False, ""
+    if _job_registry.may_stop(job, _owner_name()) or _is_tier_a():
+        return False, ""
+    return True, f"{job.get('analyst')} さんが実行中"
+
+
 @callback(
     [Output("app_state", "data", allow_duplicate=True),
      Output("progress_interval", "disabled", allow_duplicate=True),
@@ -1235,7 +1310,9 @@ def _stop_by_pid(pid, output_dir) -> bool:
      Output("progress_container", "style", allow_duplicate=True),
      Output("log_container", "style", allow_duplicate=True),
      Output("notification_toast", "children", allow_duplicate=True),
-     Output("notification_toast", "is_open", allow_duplicate=True)],
+     Output("notification_toast", "is_open", allow_duplicate=True),
+     Output("stop_analysis", "disabled", allow_duplicate=True),
+     Output("analysis_owner_note", "children", allow_duplicate=True)],
     Input("url_bar", "pathname"),
     State("app_state", "data"),
     prevent_initial_call="initial_duplicate",
@@ -1262,9 +1339,13 @@ def restore_running_analysis(pathname, app_state):
             #   ポーリングが二度と始まらない。
             #   ver51.0 はここで no_update を返しており、F5 を押しただけで
             #   実行中の解析を画面から見失っていた（台帳経路にも入らない）。
+            # [ver51.2] 他人の解析に再接続した利用者が F5 を押すとこの枝に
+            #   入る（sessionStorage には is_running が残っている）ので、
+            #   ここでも所有権を評価しないと停止ボタンが有効に戻ってしまう。
+            _disabled, _note = _stop_permission(state.get("full_output_dir"))
             return (no_update, False,
                     {"flex": "0 0 auto"}, {"flex": "1"}, {"marginTop": "20px"},
-                    no_update, no_update)
+                    no_update, no_update, _disabled, _note)
 
         # プロセスはもう居ない。終了状態が書かれていればポーリングを 1 周だけ
         # 回して update_progress に完了/エラー表示をさせる（そこで is_running が
@@ -1273,20 +1354,21 @@ def restore_running_analysis(pathname, app_state):
         if _has_terminal_status(state.get("status_file")):
             return (no_update, False,
                     {"flex": "0 0 auto"}, {"flex": "1"}, {"marginTop": "20px"},
-                    no_update, no_update)
+                    no_update, no_update, False, "")
 
         state["is_running"] = False
         return (state, True, {"display": "none"}, {"display": "none"},
                 {"marginTop": "20px"},
-                "解析プロセスが見つかりませんでした（中断された可能性があります）", True)
+                "解析プロセスが見つかりませんでした（中断された可能性があります）", True,
+                False, "")
 
     try:
         job = _job_registry.find_running_job(_analysis_search_roots())
     except Exception as e:  # noqa: BLE001
         logger.debug("実行中ジョブの探索に失敗: %s", e)
-        return (no_update,) * 7
+        return (no_update,) * 9
     if not job:
-        return (no_update,) * 7
+        return (no_update,) * 9
 
     output_dir = job.get("output_dir") or ""
     log_dir = Path(output_dir) / "log"
@@ -1303,13 +1385,21 @@ def restore_running_analysis(pathname, app_state):
         "sub_project_id": job.get("sub_project_id", ""),
     }
     logger.info("実行中の解析に再接続: pid=%s %s", job.get("pid"), output_dir)
+    # [ver51.2] 他人の解析なら停止ボタンを無効化し、誰の解析かを明示する。
+    #   ボタンを消すと理由が分からず「壊れている」と読まれるため、
+    #   無効化して所有者名を出す。
+    owner_disabled, owner_note = _stop_permission(output_dir)
+    toast = ("実行中の解析に再接続しました" if not owner_disabled
+             else f"{job.get('analyst')} さんの解析に再接続しました"
+                  "（停止できるのは本人のみ）")
     return (
         restored,
         False,                    # Interval 有効化
         {"flex": "0 0 auto"},     # 停止ボタン表示
         {"flex": "1"},            # 進捗バー表示
         {"marginTop": "20px"},    # ログ表示
-        "実行中の解析に再接続しました", True,
+        toast, True,
+        owner_disabled, owner_note,
     )
 
 

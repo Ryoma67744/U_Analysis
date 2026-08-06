@@ -41,8 +41,13 @@ def job_file_path(output_dir) -> Path:
 def write_job(output_dir, *, pid: int, analysis_type: str = "",
               project_id: str = "", sub_project_id: str = "",
               data_folder: str = "", script_path: str = "",
+              analyst: str = "",
               started_at: Optional[str] = None) -> Optional[Path]:
-    """解析の起動時にジョブ台帳を書く。失敗しても解析は止めない。"""
+    """解析の起動時にジョブ台帳を書く。失敗しても解析は止めない。
+
+    analyst は起動した解析者名。[ver51.2] 進捗は誰でも見られるが停止は
+    本人だけ、という判定に使う。未設定（単独運用・匿名）なら空文字。
+    """
     path = job_file_path(output_dir)
     payload = {
         "schema": JOB_SCHEMA_VERSION,
@@ -53,6 +58,7 @@ def write_job(output_dir, *, pid: int, analysis_type: str = "",
         "sub_project_id": sub_project_id or "",
         "data_folder": data_folder or "",
         "script_path": script_path or "",
+        "analyst": analyst or "",
         "started_at": started_at or datetime.now().isoformat(),
         "finalized": False,
     }
@@ -103,6 +109,33 @@ def mark_finalized(output_dir) -> bool:
     except Exception as e:  # noqa: BLE001
         logger.warning("ジョブ台帳の更新に失敗: %s", e)
         return False
+
+
+def may_stop(job: Optional[dict], analyst) -> bool:
+    """この解析者が停止してよいか。
+
+    [ver51.2] 進捗とログは誰でも見られるが、停止は起動した本人だけに許す。
+    多人数運用で他人の解析を止められてしまうのを防ぐ。
+
+    判定規則は project_manager.can_modify_project と同一に揃えてある:
+      - 台帳が無い / analyst が空 → 全員可（単独運用、解析者未設定、
+        ver51.1 以前に起動されたジョブ）
+      - analyst が "Unknown user"（匿名） → 全員可
+      - それ以外 → 表示名が一致した場合のみ可
+
+    ここで後方互換を塞ぐと、単独運用の利用者や旧ジョブの持ち主が自分の
+    解析を止められなくなる。
+
+    Note:
+        本関数はサーバ側ガード用。UI 側でも事前判定してボタンを無効化する
+        こと（callback は直接叩けるので UI だけでは守れない）。
+    """
+    if not job:
+        return True
+    owner = (job.get("analyst") or "").strip()
+    if not owner or owner == "Unknown user":
+        return True
+    return (analyst or "").strip() == owner
 
 
 def is_pid_alive(pid) -> bool:
