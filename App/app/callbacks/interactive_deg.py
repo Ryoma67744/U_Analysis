@@ -288,7 +288,8 @@ def update_feature_plot(feature_name, sample, marker_size,
     from app.callbacks.interactive_callbacks import (
         _interactive_data, _bridge, _set_active_key, set_export_figures)
     from app.callbacks.interactive_spatial import (
-        _transform_coords, _calc_zero_gap_marker_size, _round_for_display)
+        _transform_coords, _calc_zero_gap_marker_size, _round_for_display,
+        _round_values_for_display)
     _set_active_key(rds_path)
 
     def _finish(children, ph_min, ph_max, fig_dicts):
@@ -441,7 +442,10 @@ def update_feature_plot(feature_name, sample, marker_size,
                 fig.add_trace(go.Scattergl(
                     x=plot_x, y=plot_y, mode="markers",
                     marker=dict(size=m_size, symbol="square",
-                                color=df_s["TotalCount"].values,
+                                # ver51.3: 背景の TIC も同じ理由で丸める。
+                                # hoverinfo="skip" なので数値は画面に出ない。
+                                color=_round_values_for_display(
+                                    df_s["TotalCount"].values),
                                 colorscale="Greys", opacity=0.5,
                                 showscale=False),
                     hoverinfo="skip", showlegend=False,
@@ -464,7 +468,10 @@ def update_feature_plot(feature_name, sample, marker_size,
             fg_marker = dict(marker_opts)
             # 小数 3 桁で十分（描画差は視認不能）。float64 の全桁を JSON に出さない。
             fg_marker["opacity"] = np.round(alpha[visible_mask], 3)
-            fg_marker["color"] = np.asarray(marker_opts["color"])[visible_mask]
+            # ver51.3: 色も同じ理由で丸める。座標だけ丸めて色を丸めていなかったため、
+            # 強度が 17 桁表記のまま流れていた（50,000 点で gzip 後 0.45→0.13MB）。
+            fg_marker["color"] = _round_values_for_display(
+                np.asarray(marker_opts["color"])[visible_mask])
             fig.add_trace(go.Scattergl(
                 x=plot_x[visible_mask],
                 y=plot_y[visible_mask],

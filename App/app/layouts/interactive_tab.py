@@ -1352,13 +1352,17 @@ def create_interactive_tab():
                                 ]),
                                 dbc.Col(width=2, children=[
                                     dbc.Label("強度 最小値 (%)", className="small mb-0"),
+                                    # ver51.3: debounce。これが無いと「150」の
+                                    # 3 打鍵がそのまま全タイルのフル再構築 3 回に
+                                    # なる（1 回 = 4 サンプルで gzip 後 約 7MB）。
+                                    # 確定は Enter / フォーカスアウト。
                                     dbc.Input(id="feature_intensity_min", type="number",
-                                              placeholder="0", size="sm"),
+                                              placeholder="0", size="sm", debounce=True),
                                 ]),
                                 dbc.Col(width=2, children=[
                                     dbc.Label("強度 最大値 (%)", className="small mb-0"),
                                     dbc.Input(id="feature_intensity_max", type="number",
-                                              placeholder="100", size="sm"),
+                                              placeholder="100", size="sm", debounce=True),
                                 ]),
                             ]),
                             # --- カラースケール制御 (P1) ---

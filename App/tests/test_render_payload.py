@@ -104,6 +104,98 @@ def test_round_for_display_handles_degenerate_input():
 
 
 # ---------------------------------------------------------------------------
+# 1b. 強度 (marker.color) の丸め (表示専用、ver51.3)
+# ---------------------------------------------------------------------------
+# 座標だけ丸めて色を丸めていなかったため、強度が float64 の 17 桁表記のまま
+# 流れていた。強度は桁が大きく振れるので固定小数では丸められない。
+
+def test_round_values_is_scale_relative_and_hover_safe():
+    """量子化は範囲に対する相対量。hover 表示 (.4f) への影響は最小桁 1 つ以内。
+
+    ★ ここが要点。範囲だけで桁を決めると、強度が大きいデータ (範囲 2e4 なら
+      小数 1 桁) で hover が「1234.5000」のように**存在しない桁をゼロで捏造**
+      する。丸めを小数 4 桁より粗くしない下限を入れてこれを防いでいる。
+      実測では scale >= 1 で hover は完全一致、影響点 0%。
+
+    残る 1 ULP のズレは丸めに本質的なもの (表示境界ちょうどに乗った値が
+    二重丸めで最小桁 1 つ動く) で、これを消すには丸めをやめるしかない。
+    出るのは値が 1e-4 より十分小さく、.4f がそもそも 1 桁しか表示していない
+    領域だけ。
+    """
+    from app.callbacks.interactive_spatial import _round_values_for_display
+
+    rng = np.random.default_rng(0)
+    for scale in (1e-3, 1.0, 1e3, 1e6):
+        v = rng.lognormal(0, 1, 2000) * scale
+        r = _round_values_for_display(v)
+        span = float(v.max() - v.min())
+        diff = np.abs(np.round(v, 4) - np.round(r, 4))
+        # ① 値の誤差は範囲の 1/10000 未満
+        assert float(np.max(np.abs(r - v))) < span / 1e4, f"scale={scale}"
+        # ② hover 表示のズレは最小桁 1 つぶんを超えない
+        #    (下限が無いと scale=1e3 でここが 0.05 = 500 ULP になる)
+        assert float(diff.max()) <= 1e-4 + 1e-12, \
+            f"scale={scale}: hover が最小桁 1 つ以上ずれた ({diff.max()})"
+        # ③ ずれるのは表示境界に乗った点だけ (1% 未満)
+        assert float((diff > 0).mean()) < 0.01, \
+            f"scale={scale}: {100 * (diff > 0).mean():.1f}% の点で hover がずれた"
+        # ④ 通常の強度スケールでは完全一致
+        if scale >= 1.0:
+            assert float(diff.max()) == 0.0, \
+                f"scale={scale} では hover が完全一致すべき"
+
+
+def test_round_values_never_shifts_the_displayed_color():
+    """色は colorscale の 256 段階に落ちるので、丸めても 1 段も動かない。"""
+    from app.callbacks.interactive_spatial import _round_values_for_display
+
+    rng = np.random.default_rng(1)
+    for scale in (1e-3, 1.0, 1e6):
+        v = rng.lognormal(0, 1, 5000) * scale
+        r = _round_values_for_display(v)
+        lo, hi = float(v.min()), float(v.max())
+        step = np.floor(255 * (v - lo) / (hi - lo)).astype(int)
+        step_r = np.floor(255 * (r - lo) / (hi - lo)).astype(int)
+        assert int(np.max(np.abs(step - step_r))) <= 1, \
+            f"scale={scale} で色段階が 2 段以上動いた"
+
+
+def test_round_values_shrinks_json():
+    """生の float64 強度は丸めで実際に小さくなる。"""
+    from app.callbacks.interactive_spatial import _round_values_for_display
+
+    rng = np.random.default_rng(0)
+    v = rng.lognormal(0, 1, 20000)
+    raw = len(pio.to_json(go.Figure(go.Scattergl(y=v))))
+    rounded = len(pio.to_json(go.Figure(go.Scattergl(
+        y=_round_values_for_display(v)))))
+    assert rounded < raw * 0.7, f"raw={raw} rounded={rounded}"
+
+
+def test_round_values_keeps_integer_columns_intact():
+    """整数列 (TotalCount 等) は float 化しない。
+
+    12345 を 12345.0 にすると JSON では**むしろ長くなる**ので、
+    丸めが逆効果になる。
+    """
+    from app.callbacks.interactive_spatial import _round_values_for_display
+
+    ints = np.arange(1000, dtype=np.int64)
+    out = _round_values_for_display(ints)
+    assert out.dtype.kind == "i", f"整数列が {out.dtype} に変換された"
+    assert np.array_equal(out, ints)
+
+
+def test_round_values_handles_degenerate_input():
+    from app.callbacks.interactive_spatial import _round_values_for_display
+
+    for v in (np.array([]), np.array([1.0]), np.array([np.nan, np.nan]),
+              np.array([5.0, 5.0, 5.0]), np.array([np.inf, 1.0])):
+        out = _round_values_for_display(v)
+        assert out.shape == v.shape
+
+
+# ---------------------------------------------------------------------------
 # 2. クラスタ名の解決
 # ---------------------------------------------------------------------------
 
