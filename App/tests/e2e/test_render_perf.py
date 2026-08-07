@@ -387,3 +387,69 @@ def test_hover_hne_cluster_name_is_not_template_interpolated(page):
            "marker": {"size": 20}, "text": ["cell1", "cell2"],
            "hovertemplate": "Cluster: " + tricky + "<br>%{text}<extra></extra>"}
     assert tricky not in _hover_text_of(page, bad)
+
+
+# ---------------------------------------------------------------------------
+# 5. Plotly の前提の固定 (ver51.4 / A-0 調査)
+# ---------------------------------------------------------------------------
+
+def test_opacity_zero_points_still_respond_to_hover(page):
+    """★ marker.opacity=0 の点でも hover は発生する。
+
+    Feature Plot を「全点を静的に保持し、閾値未満は opacity=0」へ変える設計
+    (幾何を固定して転送量を 1/6 にする案) が、**そのままでは hover 挙動を
+    変えてしまう**根拠。現在は visible_mask で閾値未満の点をトレースから
+    除外しているため、その位置に tooltip は出ない。
+
+    Plotly には「トレース内の一部の点だけ hover 対象外にする」機能が無い
+    (hoverinfo はトレース単位)。したがって幾何の完全固定と hover 挙動の
+    厳密な維持は両立しない。
+
+    この前提が将来 Plotly 側で変われば、このテストが落ちて設計を簡略化できる。
+    """
+    pos = page.evaluate(
+        """async () => {
+            let host = document.getElementById('__op0');
+            if (!host) {
+                host = document.createElement('div');
+                host.id = '__op0';
+                host.style.position = 'fixed'; host.style.left = '0px';
+                host.style.top = '0px'; host.style.zIndex = '99999';
+                host.style.background = '#fff';
+                document.body.appendChild(host);
+            }
+            await window.Plotly.newPlot(host, [{
+                type: 'scattergl', x: [1, 2], y: [1, 1], mode: 'markers',
+                marker: {size: 30, opacity: [1, 0], color: ['#f00', '#00f']},
+                text: ['visible_pt', 'hidden_pt'],
+                hovertemplate: 'v=%{text}<extra></extra>'
+            }], {width: 400, height: 200, margin: {l: 0, r: 0, t: 0, b: 0}});
+            const bb = host.getBoundingClientRect();
+            const L = host._fullLayout;
+            return {
+                vis: {px: bb.left + L._size.l + L.xaxis.c2p(1),
+                      py: bb.top + L._size.t + L.yaxis.c2p(1)},
+                hid: {px: bb.left + L._size.l + L.xaxis.c2p(2),
+                      py: bb.top + L._size.t + L.yaxis.c2p(1)}
+            };
+        }"""
+    )
+
+    def _hover_at(p):
+        page.mouse.move(0, 0)
+        page.wait_for_timeout(80)
+        page.mouse.move(p["px"], p["py"])
+        page.wait_for_timeout(350)
+        return page.evaluate(
+            """() => {
+                const b = document.querySelectorAll('.hoverlayer .hovertext');
+                return b.length ? b[0].textContent : null;
+            }"""
+        )
+
+    assert "visible_pt" in (_hover_at(pos["vis"]) or ""), "可視点の hover が出ない"
+    hidden = _hover_at(pos["hid"]) or ""
+    assert "hidden_pt" in hidden, (
+        "opacity=0 の点が hover に反応しなくなった。"
+        "Feature の幾何を固定しても hover 挙動を維持できるので、"
+        "hovertext による「閾値未満」表示は不要にできる")
