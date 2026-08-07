@@ -58,11 +58,6 @@ _LITE_URL_RE = re.compile(r"^/lite/([^/]+)/([^/]+)/?$")
 # URL ルーティング
 # =============================================================================
 
-@callback(
-    Output("lite_target_store", "data"),
-    Input("url_bar", "pathname"),
-    prevent_initial_call=True,
-)
 def _lite_cache_key(project_id, sub_id, integration_method, rds_path):
     """lite ビューの _shared_data キー (ver51.5)。
 
@@ -84,6 +79,11 @@ def _lite_cache_key(project_id, sub_id, integration_method, rds_path):
     return f"lite::{project_id}::{sub_id}::{integration_method}{sig}"
 
 
+@callback(
+    Output("lite_target_store", "data"),
+    Input("url_bar", "pathname"),
+    prevent_initial_call=True,
+)
 def route_lite_url(pathname):
     """URL パスが /lite/<project_id>/<sub_project_id> なら lite_target_store に書く"""
     if not pathname:

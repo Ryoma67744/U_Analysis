@@ -276,3 +276,80 @@ def test_lite_cache_key_includes_rds_mtime(tmp_path):
     # stat できなくても落ちない
     assert _lite_cache_key("p", "s", "Harmony", None)
     assert _lite_cache_key("p", "s", "Harmony", str(tmp_path / "nope.rds"))
+
+
+# ---------------------------------------------------------------------------
+# analysis_callbacks.auto_detect_observed_peaks の窓内列読み (ver51.6)
+# ---------------------------------------------------------------------------
+# ver51.5 で interactive_calibration の 3 経路を窓内列読みにしたが、
+# **4 つ目**がここに残っていた (外部監査が指摘)。同じ手当てをする。
+
+def test_auto_detect_observed_peaks_reads_only_window_columns(tmp_path, monkeypatch):
+    """★ 窓の外に「より強い囮」があっても、窓内の最大ピークを選ぶこと。
+
+    全列読みを窓内読みへ変えるときに一番怖いのは「読む列を絞ったせいで
+    別のピークを選んでしまう」こと。囮を仕込み、誤って拾えば必ず落ちる形にする。
+    あわせて、実際に読まれた列が窓内だけであることも確認する。
+    """
+    import numpy as np
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    import app.callbacks.analysis_callbacks as AC
+    from app.callbacks.interactive_callbacks import _bridge
+
+    ref = 500.0
+    sw = 0.5
+    cols = {
+        "mz_499.8": 10.0,   # 窓内
+        "mz_500.2": 50.0,   # 窓内・最大 → これが選ばれるべき
+        "mz_510.0": 999.0,  # 窓の外にある「より強い囮」
+        "mz_490.0": 900.0,  # 同上
+    }
+    n = 8
+    table = pa.table({c: pa.array([v] * n, type=pa.float64())
+                      for c, v in cols.items()})
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    pq.write_table(table, cache / "expression_matrix.parquet")
+
+    read_cols = {}
+    real = _bridge.get_feature_means
+
+    def spy(cache_dir, feature_names, expr_path=None):
+        read_cols["cols"] = list(feature_names)
+        return real(cache_dir, feature_names, expr_path=expr_path)
+
+    monkeypatch.setattr(_bridge, "get_feature_means", spy)
+
+    data, status = AC.auto_detect_observed_peaks(
+        1, [{"ref_mz": ref}], sw, str(cache), None, "seurat", None, "__all__")
+
+    assert data[0]["obs_mz"] == pytest.approx(500.2), \
+        f"窓外の囮を拾っている: {data[0]}"
+    assert "1/1" in status
+
+    # ★ 読んだ列が窓内だけであること (これが無いと「全部読んでから絞った」でも通る)
+    assert set(read_cols["cols"]) == {"mz_499.8", "mz_500.2"}, read_cols["cols"]
+
+
+def test_auto_detect_prefers_sample_specific_parquet(tmp_path, monkeypatch):
+    """サンプル固有 parquet があればそちらを読むこと (従来の優先順位を維持)。"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    import app.callbacks.analysis_callbacks as AC
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    # 全体側と個別側で最大ピークをずらす
+    pq.write_table(pa.table({"mz_500.1": pa.array([1.0] * 4),
+                             "mz_500.3": pa.array([9.0] * 4)}),
+                   cache / "expression_matrix.parquet")
+    pq.write_table(pa.table({"mz_500.1": pa.array([9.0] * 4),
+                             "mz_500.3": pa.array([1.0] * 4)}),
+                   cache / "S1_expression.parquet")
+
+    data, _s = AC.auto_detect_observed_peaks(
+        1, [{"ref_mz": 500.0}], 0.5, str(cache), None, "seurat", None, "S1")
+    assert data[0]["obs_mz"] == pytest.approx(500.1), \
+        "サンプル固有 parquet が使われていない"
