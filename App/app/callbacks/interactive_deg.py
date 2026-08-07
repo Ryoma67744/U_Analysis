@@ -255,6 +255,47 @@ def update_feature_options_on_mz_filter(mz_filtered, rds_path=None):
 
 
 # ---------------------------------------------------------------------------
+# Feature プロットの強度スタイル (ver51.5)
+# ---------------------------------------------------------------------------
+# 従来は閾値未満の点を visible_mask でトレースから **除外** していた。そのため
+# 点の集合が m/z ごとに変わり、x/y/CellID を毎回送り直す必要があった
+# (1 タイル 1.12MB gzip のうち 0.44MB がこの再送)。
+#
+# 全点を常に保持し、閾値未満は opacity=0 で隠す形に変えると、幾何が m/z に
+# 依存しなくなり color/opacity/注記だけの差分更新にできる。
+#
+# ★ ただし **marker.opacity=0 の点でも hover は発生する** (実ブラウザで確認:
+#   tests/e2e/test_render_perf.py::test_opacity_zero_points_still_respond_to_hover)。
+#   Plotly には「トレース内の一部の点だけ hover 対象外にする」機能が無いので、
+#   除外していた頃と厳密に同じにはできない。黙って変えるのではなく、
+#   tooltip に「閾値未満」と明示する。
+_BELOW_THRESHOLD_NOTE = "（閾値未満）"
+
+
+def _feature_intensity_style(expr_raw, display_min, display_max):
+    """強度から (色, 不透明度, 閾値未満の注記) の 3 配列を作る。
+
+    いずれも点数と同じ長さで、**幾何とは独立**。m/z 切替で差し替えるのは
+    この 3 つだけで済む。
+
+    全点が閾値未満のときは従来どおり不透明度が全て 0 になる (カラーバーだけ残る)。
+    """
+    # 循環 import を避けるため関数内 import (呼び出し元の update_feature_plot と同じ流儀)
+    from app.callbacks.interactive_spatial import _round_values_for_display
+
+    expr_raw = np.asarray(expr_raw, dtype=float)
+    if display_max > display_min:
+        norm = np.clip((expr_raw - display_min) / (display_max - display_min), 0, 1)
+    else:
+        norm = np.zeros_like(expr_raw)
+    alpha = np.where(norm > 0.01, 0.3 + 0.7 * norm, 0.0)
+    below = np.where(alpha > 0.0, "", _BELOW_THRESHOLD_NOTE)
+    return (_round_values_for_display(expr_raw),
+            np.round(alpha, 3),
+            below)
+
+
+# ---------------------------------------------------------------------------
 # Feature プロット（Spatial表示、Parquet高速読み込み優先 -> R fallback）
 # ---------------------------------------------------------------------------
 
@@ -298,11 +339,38 @@ def update_feature_plot(feature_name, sample,
     from app.callbacks.interactive_spatial import (
         _transform_coords, _calc_zero_gap_marker_size, _round_for_display,
         _round_values_for_display)
+    from app.utils.perf_trace import perf_trace
     _set_active_key(rds_path)
+
+    # ver51.5: 改善効果を推測ではなく実測で語れるようにする。
+    # 無効時 (既定) は何もしない器が返るので、ホットパスに置いても実質ゼロコスト。
+    with perf_trace("update_feature_plot") as _pt:
+        return _update_feature_plot_inner(
+            _pt, feature_name, sample, intensity_min, intensity_max,
+            name_map, _fs_trigger, rows, show_compound_names,
+            marker_size, colorscale, rds_path, cache_dir_str, rotation_store,
+            deg_data, session_id,
+            _transform_coords, _calc_zero_gap_marker_size,
+            _round_for_display, _round_values_for_display,
+            _interactive_data, _bridge, set_export_figures)
+
+
+def _update_feature_plot_inner(
+        _pt, feature_name, sample, intensity_min, intensity_max,
+        name_map, _fs_trigger, rows, show_compound_names,
+        marker_size, colorscale, rds_path, cache_dir_str, rotation_store,
+        deg_data, session_id,
+        _transform_coords, _calc_zero_gap_marker_size,
+        _round_for_display, _round_values_for_display,
+        _interactive_data, _bridge, set_export_figures):
+    """update_feature_plot の本体 (perf_trace で包むために分離した)。"""
 
     def _finish(children, ph_min, ph_max, fig_dicts):
         """ver46.1: 一括保存用 figure はサーバ側に保持し、ブラウザへは送らない。"""
         set_export_figures("feature", session_id, rds_path, fig_dicts)
+        # ver51.5: PERF_TRACE=1 のときだけ転送量を測る (既定 OFF)。
+        _pt.note(tiles=len(fig_dicts))
+        _pt.measure_payload(children, "children")
         return children, ph_min, ph_max
     # 名前変更・フルスクリーン閉鎖トリガーだがFeature未選択 -> スキップ
     if ctx.triggered_id in ("sample_name_map_store", "fullscreen_closed_trigger") and not feature_name:
@@ -471,33 +539,27 @@ def update_feature_plot(feature_name, sample,
             # だけだったので、トレースから除外する（見た目は同一、点数と転送量が減る）。
             # 全点が対象外になる場合（Intensity Range 下限 100% 等）は、カラーバーを
             # 従来どおり表示するため全点を残す（＝従来と完全に同じ図）。
-            expr_raw = df_s["_expression"].values
-            if display_max > display_min:
-                norm = np.clip((expr_raw - display_min) / (display_max - display_min), 0, 1)
-            else:
-                norm = np.zeros_like(expr_raw)
-            alpha = np.where(norm > 0.01, 0.3 + 0.7 * norm, 0.0)
-            visible_mask = alpha > 0.0
-            if not visible_mask.any():
-                visible_mask = np.ones_like(alpha, dtype=bool)
+            # ver51.5: 全点を常に保持する (幾何を m/z 非依存にする)。
+            # 閾値未満は opacity=0 で隠し、tooltip に「閾値未満」と出す。
+            fg_color, fg_alpha, fg_below = _feature_intensity_style(
+                df_s["_expression"].values, display_min, display_max)
             fg_marker = dict(marker_opts)
-            # 小数 3 桁で十分（描画差は視認不能）。float64 の全桁を JSON に出さない。
-            fg_marker["opacity"] = np.round(alpha[visible_mask], 3)
-            # ver51.3: 色も同じ理由で丸める。座標だけ丸めて色を丸めていなかったため、
-            # 強度が 17 桁表記のまま流れていた（50,000 点で gzip 後 0.45→0.13MB）。
-            fg_marker["color"] = _round_values_for_display(
-                np.asarray(marker_opts["color"])[visible_mask])
+            fg_marker["opacity"] = fg_alpha
+            fg_marker["color"] = fg_color
             fig.add_trace(go.Scattergl(
-                x=plot_x[visible_mask],
-                y=plot_y[visible_mask],
+                x=plot_x,
+                y=plot_y,
                 mode="markers",
                 marker=fg_marker,
-                text=df_s["CellID"].values[visible_mask],
+                text=df_s["CellID"].values,
+                # ver51.5: 閾値未満の注記。ほぼ空文字なので gzip でほぼ消える。
+                customdata=fg_below,
                 # ver46.3: ラベル(化合物名)はユーザー提供のアノテーションファイル由来で、
                 # "%{x}" 等の Plotly テンプレート記法を含み得る。hovertemplate に
                 # 直接埋めると展開されてしまうため meta 経由で値として渡す。
                 meta=hover_label,
-                hovertemplate="%{meta}: %{marker.color:.4f}<br>%{text}<extra></extra>",
+                hovertemplate=("%{meta}: %{marker.color:.4f}%{customdata}"
+                               "<br>%{text}<extra></extra>"),
                 showlegend=False,
             ))
 
