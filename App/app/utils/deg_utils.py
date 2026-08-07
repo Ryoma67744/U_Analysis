@@ -69,36 +69,65 @@ def is_meaningful_annotation(ann: str, gene: str = "") -> bool:
 _MZ_TRAILING_RE = re.compile(r"_(\d+(?:\.\d+)?)\s*$")
 _MZ_PREFIX_RE = re.compile(r"^m/z\s+(\d+(?:\.\d+)?)\s*$", re.IGNORECASE)
 _MZ_BARE_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*$")
+# DESI の MRM トランジション名 "Q1-Q3" (例 "146.1-102.0")。
+# R が `paste(pre_masses, post_masses, sep="-")` で作り
+# (DESI テンプレート v16)、そのまま Seurat の rowname になる。
+# **プリカーサ (Q1) が m/z** なので先頭側を採る。
+_MZ_MRM_RE = re.compile(r"^(\d+(?:\.\d+)?)-\d+(?:\.\d+)?\s*$")
+# R の `make.unique()` が重複名に付ける ".1" ".2" … のサフィックス。
+_MAKE_UNIQUE_SUFFIX_RE = re.compile(r"\.\d+$")
 
 
-def extract_mz_numeric(f: str) -> float:
-    """フィーチャー名から m/z 値を抽出する。認識できなければ float("inf")。
-
-    対応する形式（この順に判定）:
-      1. `<化合物名>_<m/z> | <残り>` / `mz_<m/z>` … `|` より前の **末尾** の `_<数値>`
-      2. `m/z <m/z>`                            … R の非 annotated 経路が作る形
-      3. `<m/z>`                                 … 素の数値列名
-    """
-    s = str(f).strip()
-
-    # 1. パイプより前 (head) の末尾に付いた _<数値>。annotated 名と mz_ 形式の両方を拾う。
-    head = s.split("|", 1)[0].strip()
+def _parse_mz_head(head: str):
+    """パイプより前の部分から m/z を取り出す。取れなければ None。"""
+    # 1. 末尾の _<数値>。annotated 名 (`<化合物名>_<m/z>`) と `mz_<m/z>` の両方。
     m = _MZ_TRAILING_RE.search(head)
     if m:
         try:
             return float(m.group(1))
         except ValueError:
             pass
-
-    # 2. "m/z 760.58510"
+    # 2. "m/z 760.58510" (R の非 annotated 経路)
     m = _MZ_PREFIX_RE.match(head)
     if m:
         return float(m.group(1))
-
-    # 3. "419.257200"
+    # 3. "419.257200" (素の数値列名)
     m = _MZ_BARE_RE.match(head)
     if m:
         return float(m.group(1))
+    # 4. "146.1-102.0" (DESI の MRM トランジション)
+    m = _MZ_MRM_RE.match(head)
+    if m:
+        return float(m.group(1))
+    return None
+
+
+def extract_mz_numeric(f: str) -> float:
+    """フィーチャー名から m/z 値を抽出する。認識できなければ float("inf")。
+
+    対応する形式:
+      - `<化合物名>_<m/z> | <残り>` / `mz_<m/z>` … `|` より前の **末尾** の `_<数値>`
+      - `m/z <m/z>`                              … R の非 annotated 経路
+      - `<m/z>`                                   … 素の数値列名
+      - `<Q1>-<Q3>`                               … DESI の MRM トランジション → Q1
+      - 上記に R の `make.unique()` が付ける `.1` `.2` サフィックスが付いた形
+    """
+    s = str(f).strip()
+    head = s.split("|", 1)[0].strip()
+
+    v = _parse_mz_head(head)
+    if v is not None:
+        return v
+
+    # ★ 重複名に make.unique が付ける ".N" を落として再試行する。
+    #   例: "m/z 419.25720.1" / "Glucose_180.0634.1" / "146.1-102.0.1"。
+    #   先に素のまま試しているので、"419.2572" のような **本物の小数**を
+    #   誤って削ることはない (そちらは上の bare で既に拾えている)。
+    stripped = _MAKE_UNIQUE_SUFFIX_RE.sub("", head)
+    if stripped != head:
+        v = _parse_mz_head(stripped)
+        if v is not None:
+            return v
 
     return float("inf")
 

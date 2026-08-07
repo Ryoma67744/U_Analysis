@@ -27,7 +27,7 @@ from app.services.analysis_runner import (
     stop_analysis_process,
     compute_calibration_coefficients,
 )
-from app.services.session_manager import save_last_settings
+from app.services.session_manager import load_last_settings, save_last_settings
 from app.services.project_manager import save_sub_project_settings, save_sub_project_result_dir, update_sub_project
 from app.services.notify import warn_user
 from app.services import receipt as _receipt

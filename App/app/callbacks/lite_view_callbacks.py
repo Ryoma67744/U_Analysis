@@ -42,7 +42,9 @@ from app.callbacks.interactive_callbacks import (
     _get_cluster_color_map,
     _load_deg_results,
 )
-from app.callbacks.share_callbacks import _shared_data, _sv_bridge
+from app.callbacks.share_callbacks import (
+    _shared_data, _shared_data_get, _shared_data_put, _sv_bridge,
+)
 from app.callbacks.interactive_umap import _build_umap_integrated_fig
 from app.callbacks.interactive_spatial import _create_single_spatial_fig
 from app.utils.deg_utils import is_meaningful_annotation

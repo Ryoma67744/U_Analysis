@@ -152,3 +152,65 @@ class TestSidecarJoinSurvives:
         assert set(out) == set(features), f"取りこぼし: {set(features) - set(out)}"
         for feat, comp in zip(features, compounds):
             assert out[feat]["compound"] == comp
+
+
+# ---------------------------------------------------------------------------
+# ver51.8 の自己回帰: DESI の MRM 形式と make.unique サフィックス
+# ---------------------------------------------------------------------------
+# ★ ver51.8 で「認識できない形式は inf」に変えたとき、**DESI の feature 名を
+#   まるごと取りこぼしていた**。DESI は MRM の Q1-Q3 ペアを
+#       metabolite_names <- paste(pre_masses, post_masses, sep = "-")
+#   (DESI テンプレート v16) で作り、そのまま Seurat の rowname → features_list.txt
+#   になる。"146.1-102.0" は「認識できない名前」ではなく、先頭がプリカーサ m/z。
+#   旧実装は最初の数字を取るので偶然正しく 146.1 を返していた。
+#
+#   inf になると: feature ドロップダウンが空になる / 対話キャリブレーションが
+#   無言で何もしなくなる / 化合物名が付かなくなる。**DESI 全体が壊れる。**
+#
+# ★ R の make.unique() が重複名に付ける ".1" ".2" も同様に取りこぼしていた
+#   (TIMS/DESI 双方の rownames に適用される)。
+
+class TestDesiMrmNames:
+    @pytest.mark.parametrize("name,expected", [
+        ("146.1-102.0", 146.1),
+        ("146.1-102", 146.1),
+        ("180.0634-92.0", 180.0634),
+        ("419.257200-0.0", 419.2572),
+    ])
+    def test_mrm_transition_uses_precursor(self, name, expected):
+        """★ Q1-Q3 形式はプリカーサ (Q1) を m/z とすること。"""
+        assert extract_mz_numeric(name) == pytest.approx(expected)
+
+    def test_desi_features_are_not_all_dropped(self):
+        """★ DESI の feature 一覧が m/z フィルタで全滅しないこと。
+
+        inf だらけになると apply_mz_filter が空リストを返し、
+        feature ドロップダウンが無言で空になる。
+        """
+        names = [f"{q1}-{q3}" for q1, q3 in
+                 [("146.1", "102.0"), ("180.1", "92.0"), ("204.2", "60.1")]]
+        got = [extract_mz_numeric(n) for n in names]
+        assert all(g != float("inf") for g in got), got
+        assert got == pytest.approx([146.1, 180.1, 204.2])
+
+
+class TestMakeUniqueSuffix:
+    @pytest.mark.parametrize("name,expected", [
+        ("m/z 419.25720.1", 419.2572),
+        ("Glucose_180.0634.1", 180.0634),
+        ("146.1-102.0.1", 146.1),
+        ("PI 38:4 (PI 18:0/20:4)_760.5851.2", 760.5851),
+    ])
+    def test_duplicate_suffix_is_tolerated(self, name, expected):
+        """★ make.unique の ".N" が付いても m/z を取れること。"""
+        assert extract_mz_numeric(name) == pytest.approx(expected)
+
+    def test_real_decimals_are_not_truncated(self):
+        """★ 逆に、本物の小数を ".N" と誤認して削らないこと。
+
+        "419.2572" を素の数値として先に拾えているかの確認。
+        削ってしまうと 419 になり、まったく別のピークを指す。
+        """
+        assert extract_mz_numeric("419.2572") == pytest.approx(419.2572)
+        assert extract_mz_numeric("mz_123.456") == pytest.approx(123.456)
+        assert extract_mz_numeric("146.1-102.0") == pytest.approx(146.1)
