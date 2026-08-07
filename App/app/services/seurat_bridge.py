@@ -22,12 +22,150 @@ from app.config import R_HELPERS_DIR, RSCRIPT_PATH, SEURAT_CACHE_DIR
 
 logger = logging.getLogger("msi.seurat_bridge")
 
-# expression_matrix.parquet の列名キャッシュ (ver46.1)。
-# 約 18,000 列のフッタを Feature 切替のたびに何度もパースしないための小さな LRU。
-# キーは (path, mtime_ns, size) なのでファイル差し替えで自動的に無効化される。
+# =============================================================================
+# expression_matrix.parquet の読み出しキャッシュ (3 段)
+# =============================================================================
+# ① _PARQUET_SCHEMA_CACHE … 列名の set        (ver46.1)
+# ② _PARQUET_FILE_CACHE   … ParquetFile ハンドル = 解析済みフッタ
+# ③ _FEATURE_COL_CACHE    … 復号済みの feature 列そのもの
+#
+# ①だけでは足りなかった。列名の判定は速くなったが、その直後の
+# `pd.read_parquet` がファイルを開き直して **約 18,000 列のフッタを毎回
+# パースし直していた**。さらに 1 回の m/z 切替で update_feature_plot と
+# update_feature_violin が独立に同じ列を読むので、その固定費を 2 回払っていた。
+#
+# ②でフッタ解析をキーにつき 1 回に、③で「一度見た m/z に戻る」を無料にする。
+# ③には in-flight 共有を入れて、同時に走る複数コールバックが 1 回の読みを
+# 分け合うようにする (同じ列を 2 本同時に読んでも中身は同一で、片方は丸ごと無駄)。
+#
+# キーはいずれも (path, mtime_ns, size) なのでファイル差し替えで自動失効する。
 _PARQUET_SCHEMA_CACHE: "OrderedDict[tuple, set]" = OrderedDict()
 _PARQUET_SCHEMA_CACHE_MAX = int(os.environ.get("PARQUET_SCHEMA_CACHE_MAX", 8))
 _PARQUET_SCHEMA_LOCK = threading.Lock()
+
+# ParquetFile は解析済みフッタを抱えるので上限は小さく。実運用で同時に見るのは
+# 1 プロジェクト = 1 ファイル。
+_PARQUET_FILE_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
+_PARQUET_FILE_CACHE_MAX = int(os.environ.get("PARQUET_FILE_CACHE_MAX", 4))
+_PARQUET_FILE_LOCK = threading.Lock()
+
+# 1 列 = 203k 行 × float64 ≈ 1.6MB。既定 16 枚で約 26MB。
+# ワーカーは 1 プロセスなので (run_app.py:121-127)、ここは素直にプロセス内で持つ。
+_FEATURE_COL_CACHE: "OrderedDict[tuple, pd.Series]" = OrderedDict()
+_FEATURE_COL_CACHE_MAX = int(os.environ.get("FEATURE_COL_CACHE_MAX", 16))
+_FEATURE_COL_LOCK = threading.Lock()
+_FEATURE_COL_INFLIGHT: "dict[tuple, threading.Event]" = {}
+# 先行の列読みを待つ上限。超えたら自分で読みに行く (無言で None を返すと
+# 呼び出し元が R subprocess フォールバック 30〜300 秒に落ちてしまう)。
+_FEATURE_COL_WAIT_SEC = float(os.environ.get("FEATURE_COL_WAIT_SEC", 120))
+
+
+def _parquet_file_sig(path: Path) -> tuple:
+    """(path, mtime_ns, size)。stat に失敗したら OSError を投げる。"""
+    st = path.stat()
+    return (str(path), st.st_mtime_ns, st.st_size)
+
+
+def _get_parquet_handle(expr_path: Path, key: tuple) -> tuple:
+    """(ParquetFile, RLock) を返す。フッタ解析はキーにつき 1 回だけ。
+
+    pyarrow の ParquetFile は thread-safe を保証していないため、読み出しを
+    直列化するための lock を handle と一緒に持たせる。waitress は 8 スレッド
+    (run_app.py) なので、別々の列を同時に要求される経路が実在する。
+    """
+    with _PARQUET_FILE_LOCK:
+        hit = _PARQUET_FILE_CACHE.get(key)
+        if hit is not None:
+            _PARQUET_FILE_CACHE.move_to_end(key)
+            return hit
+
+    # フッタ解析は数百 ms〜秒かかりうるので、グローバルロックの外で行う。
+    # 競走して 2 本作られても、負けた方を捨てるだけで結果は変わらない。
+    import pyarrow.parquet as pq
+    entry = (pq.ParquetFile(str(expr_path)), threading.RLock())
+
+    with _PARQUET_FILE_LOCK:
+        exist = _PARQUET_FILE_CACHE.get(key)
+        if exist is not None:
+            _PARQUET_FILE_CACHE.move_to_end(key)
+            return exist
+        _PARQUET_FILE_CACHE[key] = entry
+        _PARQUET_FILE_CACHE.move_to_end(key)
+        while len(_PARQUET_FILE_CACHE) > _PARQUET_FILE_CACHE_MAX:
+            _PARQUET_FILE_CACHE.popitem(last=False)
+    return entry
+
+
+def _read_parquet_columns(entry: tuple, columns: list) -> pd.DataFrame:
+    """ハンドル経由で列を読む。`pd.read_parquet(path, columns=...)` と等価。
+
+    ParquetFile.read() は dataset API を通らないので、列名が重複していても
+    KeyError にならない (test_parquet_repack.py:82-85 が触れている pq.read_table
+    の弱点を踏まない)。
+    """
+    pf, lock = entry
+    with lock:
+        table = pf.read(columns=list(columns))
+    return table.to_pandas()
+
+
+def _get_feature_column(expr_path: Path, key: tuple, feature_name) -> pd.Series:
+    """feature 列を LRU + in-flight 共有つきで読む。呼び出し元には複製を返す。
+
+    複製を返すのは、呼び出し元が DataFrame に入れる前後で書き換えても
+    キャッシュが汚れないようにするため (1.6MB の memcpy は parquet の
+    復号に比べれば無視できる)。
+    """
+    ck = key + (feature_name,)
+
+    with _FEATURE_COL_LOCK:
+        hit = _FEATURE_COL_CACHE.get(ck)
+        if hit is not None:
+            _FEATURE_COL_CACHE.move_to_end(ck)
+            return hit.copy()
+        ev = _FEATURE_COL_INFLIGHT.get(ck)
+        leader = ev is None
+        if leader:
+            ev = threading.Event()
+            _FEATURE_COL_INFLIGHT[ck] = ev
+
+    if not leader:
+        # 同じ m/z 切替で走っている先行の読みに相乗りする。
+        ev.wait(timeout=_FEATURE_COL_WAIT_SEC)
+        with _FEATURE_COL_LOCK:
+            hit = _FEATURE_COL_CACHE.get(ck)
+            if hit is not None:
+                _FEATURE_COL_CACHE.move_to_end(ck)
+                return hit.copy()
+        # 先行が失敗した / 間に合わなかった場合は自分で読む (稀)。
+        return _read_parquet_columns(
+            _get_parquet_handle(expr_path, key), [feature_name])[feature_name]
+
+    try:
+        series = _read_parquet_columns(
+            _get_parquet_handle(expr_path, key), [feature_name])[feature_name]
+        # ★ 待っている側が起きる前に載せる。順序を逆にすると、
+        #   follower が空のキャッシュを見て全員で読み直すことになる。
+        with _FEATURE_COL_LOCK:
+            _FEATURE_COL_CACHE[ck] = series
+            _FEATURE_COL_CACHE.move_to_end(ck)
+            while len(_FEATURE_COL_CACHE) > _FEATURE_COL_CACHE_MAX:
+                _FEATURE_COL_CACHE.popitem(last=False)
+    finally:
+        with _FEATURE_COL_LOCK:
+            _FEATURE_COL_INFLIGHT.pop(ck, None)
+        ev.set()
+    return series.copy()
+
+
+def clear_expression_caches() -> None:
+    """expression_matrix.parquet 系のキャッシュを全部捨てる (テスト / 保守用)。"""
+    with _PARQUET_SCHEMA_LOCK:
+        _PARQUET_SCHEMA_CACHE.clear()
+    with _PARQUET_FILE_LOCK:
+        _PARQUET_FILE_CACHE.clear()
+    with _FEATURE_COL_LOCK:
+        _FEATURE_COL_CACHE.clear()
 
 
 class ExtractionCancelled(Exception):
@@ -278,8 +416,7 @@ class SeuratBridge:
         失敗時 None（呼び出し元は「判定不能」として通常経路を続ける）。
         """
         try:
-            st = expr_path.stat()
-            key = (str(expr_path), st.st_mtime_ns, st.st_size)
+            key = _parquet_file_sig(expr_path)
         except OSError:
             return None
         with _PARQUET_SCHEMA_LOCK:
@@ -288,8 +425,10 @@ class SeuratBridge:
                 _PARQUET_SCHEMA_CACHE.move_to_end(key)
                 return hit
         try:
-            import pyarrow.parquet as pq
-            names = set(pq.ParquetFile(str(expr_path)).schema.names)
+            # ver51.3: ここで開いたハンドルは列読みでも使い回す。従来は
+            # スキーマ用に 1 回、直後の read_parquet でもう 1 回フッタを
+            # パースしていた。
+            names = set(_get_parquet_handle(expr_path, key)[0].schema.names)
         except Exception as e:  # noqa: BLE001
             logger.debug("parquet スキーマ読取に失敗: %s", e)
             return None
@@ -313,6 +452,11 @@ class SeuratBridge:
         1 回の呼び出しごとに全列ぶんのフッタ (schema + column chunk metadata) を
         パースする。Feature を切り替えるたびに 3 つのコールバックが独立に
         読んでいたため、ここが数百 ms〜数秒の固定費になっていた。
+
+        ver51.3: そのフッタ再パースを ParquetFile ハンドルの保持で消し、
+        復号済みの列そのものも LRU に載せる。同じ m/z へ戻る操作が
+        ファイル I/O ゼロになり、同時に走る複数コールバックは in-flight
+        共有で 1 回の読みを分け合う。
         """
         expr_path = Path(cache_dir) / "expression_matrix.parquet"
         if not expr_path.exists():
@@ -329,8 +473,15 @@ class SeuratBridge:
             return None
 
         try:
-            df = pd.read_parquet(expr_path, columns=[feature_name])
-            return df[feature_name]
+            key = _parquet_file_sig(expr_path)
+        except OSError:
+            # stat できない = キャッシュキーを作れない。従来経路で読む。
+            key = None
+        try:
+            if key is None:
+                return pd.read_parquet(
+                    expr_path, columns=[feature_name])[feature_name]
+            return _get_feature_column(expr_path, key, feature_name)
         except Exception as e:  # noqa: BLE001
             logger.warning("Feature %r の parquet 読込に失敗 (R フォールバックへ): %s",
                            feature_name, e)
@@ -354,7 +505,10 @@ class SeuratBridge:
                        if str(f) in schema_names]
             if not present:
                 return None, []
-            return pd.read_parquet(expr_path, columns=present), present
+            # ver51.3: 保持済みハンドルで読む (フッタ再パースを挟まない)。
+            return _read_parquet_columns(
+                _get_parquet_handle(expr_path, _parquet_file_sig(expr_path)),
+                present), present
         except Exception:  # noqa: BLE001
             return None, []
 
