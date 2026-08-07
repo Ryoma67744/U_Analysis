@@ -265,7 +265,13 @@ def update_feature_violin(feature_name, group_by, active_items,
     if expr is None:
         return go.Figure()
 
-    arr = np.asarray(expr, dtype=float)
+    # ver51.4: violin も生の float64 を全点ぶん送っていた (実測 10 万点 / 30 クラスタで
+    # gzip 後 0.892MB)。points=False でも KDE の計算に値そのものが要るので配列は
+    # 必要だが、桁は要らない。
+    # ★ クラスタへ分ける **前** に 1 回だけ丸める。分けた後に各サブセットで丸めると
+    #   クラスタごとに量子化幅が変わり、分布の見え方に差が出る。
+    from app.callbacks.interactive_spatial import _round_values_for_display
+    arr = _round_values_for_display(np.asarray(expr, dtype=float))
     # ver46.1: violin はグループ列と発現量しか使わないので全列コピーは不要。
     gcol = group_by if group_by in df.columns else "Cluster"
     if len(arr) != len(df):

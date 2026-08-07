@@ -39,6 +39,32 @@ logger = logging.getLogger("msi.interactive.umap")
 # UMAP プロット — ヘルパー関数
 # ---------------------------------------------------------------------------
 
+def _rounded_umap(df):
+    """表示用に UMAP 座標の桁を落とした df を返す (ver51.4)。
+
+    Spatial / Feature は ver46.1 / ver51.3 で座標を丸めていたが、UMAP だけは
+    `_round_for_display` を import すらしておらず、埋め込み座標が float64 の
+    17 桁表記のまま流れていた (実測 5 万点で gzip 後 0.901MB → 0.308MB)。
+    とくに Split View は**タイルごとに全点を灰色背景として再送する**設計なので、
+    クラスタ数ぶん倍率がかかる。
+
+    ★ 図の組み立て前に **1 回だけ** 丸める。トレースごとに部分集合で丸めると
+      量子化幅がトレースごとに変わり、同じ図の中で点がずれる。
+
+    ★ 元の df は変更しない (`assign` は他の列を共有する浅いコピー)。
+      `interactive_loupe.umap_polygon_commit` は **生の** UMAP 座標で点内外判定を
+      しており、そちらに丸めが漏れてはいけない。量子化幅は範囲の 1/100000 で、
+      手でクリックする精度 (範囲の 1/500 程度) の約 200 倍細かいため、
+      表示座標との食い違いが選択結果を変えることは無い。
+    """
+    if df is None or len(df) == 0 or "UMAP_1" not in df.columns:
+        return df
+    from app.callbacks.interactive_spatial import _round_for_display
+    rx, ry = _round_for_display(df["UMAP_1"].to_numpy(dtype=float),
+                                df["UMAP_2"].to_numpy(dtype=float))
+    return df.assign(UMAP_1=rx, UMAP_2=ry)
+
+
 def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                                 show_legend, show_labels, title=None,
                                 marker_size=2, exclude_clusters=None,
@@ -62,6 +88,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                                xref="paper", yref="paper", x=0.5, y=0.5)
             return fig
 
+    df = _rounded_umap(df)   # ver51.4: 表示用に座標の桁を落とす
     color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
 
     if highlight_clusters and len(highlight_clusters) > 0:
@@ -200,6 +227,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
         df = df[~df["Cluster"].astype(str).isin(exclude_set)]
         if df.empty:
             return [html.Div("全クラスタが除外されています", className="text-muted small mt-2")]
+    df = _rounded_umap(df)   # ver51.4: 表示用に座標の桁を落とす
     # 灰色化クラスタ（色付き trace のみ非表示。灰色背景は残す）
     legend_hidden_set = {str(c) for c in (legend_hidden or [])}
 
@@ -363,6 +391,7 @@ def _build_umap_facet_graphs(df, facets, color_map, marker_size=2,
         return [html.Div("表示できるデータがありません", className="text-muted small mt-2")]
     legend_hidden_set = {str(c) for c in (legend_hidden or [])}
 
+    df = _rounded_umap(df)   # ver51.4: 表示用に座標の桁を落とす
     x_all, y_all = df["UMAP_1"], df["UMAP_2"]
     pad_x = (float(x_all.max()) - float(x_all.min())) * 0.03 or 1.0
     pad_y = (float(y_all.max()) - float(y_all.min())) * 0.03 or 1.0

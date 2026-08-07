@@ -240,7 +240,11 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
         if mask_bg.any():
             if "TotalCount" in df_sample.columns:
                 tc_values = df_sample["TotalCount"].values[mask_bg]
-                bg_marker = dict(size=marker_size, symbol="square", color=tc_values, colorscale="Greys",
+                bg_marker = dict(size=marker_size, symbol="square",
+                                 # ver51.4: TIC も丸める。hoverinfo="skip" なので
+                                 # 表示桁の心配は無い (Feature 側と違う点)。
+                                 color=_round_values_for_display(tc_values),
+                                 colorscale="Greys",
                                  opacity=0.5, showscale=False)
                 bg_name = "TIC"
             else:
@@ -270,7 +274,11 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
         if mask_bg.values.any():
             if "TotalCount" in df_sample.columns:
                 tc_values = df_sample["TotalCount"].values[mask_bg.values]
-                bg_marker = dict(size=marker_size, symbol="square", color=tc_values, colorscale="Greys",
+                bg_marker = dict(size=marker_size, symbol="square",
+                                 # ver51.4: TIC も丸める。hoverinfo="skip" なので
+                                 # 表示桁の心配は無い (Feature 側と違う点)。
+                                 color=_round_values_for_display(tc_values),
+                                 colorscale="Greys",
                                  opacity=0.5, showscale=False)
                 bg_name = "TIC"
             else:
@@ -311,7 +319,9 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
             if "TotalCount" in df_sample.columns:
                 bg_marker = dict(
                     size=marker_size, symbol="square",
-                    color=df_sample["TotalCount"].values,
+                    # ver51.4: 同上。ここが update_spatial_plots の本経路。
+                    color=_round_values_for_display(
+                        df_sample["TotalCount"].values),
                     colorscale="Greys", opacity=0.5, showscale=False,
                 )
             else:

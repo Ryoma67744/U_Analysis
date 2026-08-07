@@ -1145,3 +1145,173 @@ def test_feature_restyle_js_matches_python_contract():
     assert "apply_feature_display_overrides" in src
     for token in ('"feature"', '"auto_msz"', '"sz"', '"cs"', '"colorscale"'):
         assert token in src, f"display_helpers.py に {token} が無い"
+
+
+# ---------------------------------------------------------------------------
+# 12. UMAP / Spatial / violin の座標・色の丸め (ver51.4)
+# ---------------------------------------------------------------------------
+# ver46.1 が Spatial の座標、ver51.3 が Feature の色を丸めたが、
+#   - UMAP は `_round_for_display` を import すらしていなかった
+#   - Spatial の TIC 色は丸めていなかった
+#   - violin の発現値は丸めていなかった
+# の 3 つが残っていた。
+
+def test_rounded_umap_does_not_mutate_input():
+    """★ 元の df を書き換えないこと。
+
+    `interactive_loupe.umap_polygon_commit` は _interactive_data["plot_data"] の
+    **生の** 座標で点内外判定をする。丸めがそこへ漏れると、選択が表示座標基準に
+    静かに変わってしまう。
+    """
+    from app.callbacks.interactive_umap import _rounded_umap
+
+    df = _make_plot_data(n_side=20, samples=("S1",))
+    df["UMAP_1"] = df["UMAP_1"] * np.pi
+    before = df["UMAP_1"].to_numpy().copy()
+
+    out = _rounded_umap(df)
+
+    assert np.array_equal(df["UMAP_1"].to_numpy(), before), "入力の df が書き換えられた"
+    assert out is not df
+    assert not np.array_equal(out["UMAP_1"].to_numpy(), before), "丸めが効いていない"
+    # 他の列は共有 (浅いコピー) で、値は一致する
+    assert list(out["CellID"]) == list(df["CellID"])
+
+
+def test_rounded_umap_selection_is_unchanged():
+    """★ 丸めても投げ縄/ポリゴン選択の結果が 1 点も変わらないこと。
+
+    量子化幅は範囲の 1/100000。手でクリックする精度 (範囲の 1/500 程度) より
+    約 200 倍細かいので、表示座標と判定座標の食い違いが選択を変えることは無い
+    —— という主張を実際に確かめる。
+    """
+    from app.callbacks.interactive_umap import _rounded_umap
+    from app.services.hne_overlay import points_in_polygon
+
+    rng = np.random.default_rng(0)
+    df = _make_plot_data(n_side=40, samples=("S1",))
+    n = len(df)
+    df["UMAP_1"] = rng.normal(0, 3, n) * np.pi
+    df["UMAP_2"] = rng.normal(0, 3, n) * np.e
+
+    out = _rounded_umap(df)
+    xs_raw = df["UMAP_1"].to_numpy(float)
+    ys_raw = df["UMAP_2"].to_numpy(float)
+    xs_r = out["UMAP_1"].to_numpy(float)
+    ys_r = out["UMAP_2"].to_numpy(float)
+
+    # 中央付近を横切る多角形をいくつか試す
+    polys = [
+        [(-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)],
+        [(-5.0, 0.0), (0.0, -5.0), (5.0, 0.0), (0.0, 5.0)],
+        [(0.13, 0.27), (4.7, -1.1), (3.3, 4.9)],
+    ]
+    for poly in polys:
+        a = points_in_polygon(xs_raw, ys_raw, poly)
+        b = points_in_polygon(xs_r, ys_r, poly)
+        assert int((a != b).sum()) == 0, \
+            f"丸めで選択が {int((a != b).sum())} 点変わった (poly={poly})"
+
+
+def test_rounded_umap_shrinks_json():
+    """UMAP 座標の丸めで実際に転送量が減ること。"""
+    from app.callbacks.interactive_umap import _rounded_umap
+
+    rng = np.random.default_rng(0)
+    df = _make_plot_data(n_side=60, samples=("S1",))
+    df["UMAP_1"] = rng.normal(0, 3, len(df)) * np.pi
+    df["UMAP_2"] = rng.normal(0, 3, len(df)) * np.e
+
+    raw = len(pio.to_json(go.Figure(go.Scattergl(
+        x=df["UMAP_1"], y=df["UMAP_2"]))))
+    out = _rounded_umap(df)
+    rounded = len(pio.to_json(go.Figure(go.Scattergl(
+        x=out["UMAP_1"], y=out["UMAP_2"]))))
+    assert rounded < raw * 0.7, f"raw={raw} rounded={rounded}"
+
+
+def test_rounded_umap_handles_missing_columns():
+    """UMAP 列が無い / 空の df でも落ちないこと。"""
+    from app.callbacks.interactive_umap import _rounded_umap
+
+    assert _rounded_umap(None) is None
+    empty = pd.DataFrame({"UMAP_1": [], "UMAP_2": []})
+    assert len(_rounded_umap(empty)) == 0
+    no_cols = pd.DataFrame({"CellID": ["a", "b"]})
+    assert list(_rounded_umap(no_cols)["CellID"]) == ["a", "b"]
+
+
+def test_spatial_tic_color_is_rounded():
+    """Spatial の TIC 背景の色 (marker.color) が丸められていること。
+
+    3 経路とも hoverinfo="skip" なので、Feature 側で 4 桁下限を入れる原因に
+    なった hover 表示の問題はここでは起きない。
+
+    ★ 合成データの TotalCount は整数値なので、そのままでは丸めが no-op になり
+      テストが素通りする。無理数倍して桁を持たせてから確かめる。
+    """
+    from app.callbacks.interactive_spatial import (
+        _create_single_spatial_fig, _round_values_for_display)
+    from app.utils.color_utils import get_cluster_color_map, get_cluster_colorscale
+
+    df = _make_plot_data(n_side=30, samples=("S1",))
+    df["TotalCount"] = df["TotalCount"].to_numpy(dtype=float) * np.pi + 0.123456789
+    raw = df["TotalCount"].to_numpy(dtype=float)
+
+    cmap = get_cluster_color_map(df["Cluster"], None)
+    c2i, cscale = get_cluster_colorscale(df["Cluster"], None)
+    fig = _create_single_spatial_fig(
+        df, cmap, None, set(), embed_legend=True, cluster_to_idx=c2i,
+        discrete_cscale=cscale, marker_size=3)
+
+    tic = [t for t in fig.to_dict().get("data", [])
+           if t.get("name") == "_background_tic"]
+    assert tic, "TIC 背景トレースが見つからない"
+    arr = np.asarray(tic[0]["marker"]["color"], dtype=float)
+
+    # 生値がそのまま入っていない (= 丸めを通っている)
+    assert not np.array_equal(arr, raw), "marker.color が生の float64 のまま"
+    # 丸め関数の出力と一致する
+    assert np.array_equal(arr, _round_values_for_display(raw))
+    # 値としては同じもの (範囲の 1/10000 未満のずれ)
+    span = float(raw.max() - raw.min())
+    assert float(np.max(np.abs(arr - raw))) < span / 1e4
+    # JSON が実際に縮む
+    shrunk = len(pio.to_json(go.Figure(go.Scattergl(y=arr))))
+    full = len(pio.to_json(go.Figure(go.Scattergl(y=raw))))
+    assert shrunk < full * 0.8, f"full={full} shrunk={shrunk}"
+
+
+def test_violin_values_are_rounded_once_for_all_clusters():
+    """violin の発現値は **クラスタへ分ける前に 1 回だけ** 丸めること。
+
+    分けた後に各サブセットで丸めると、クラスタごとに量子化幅が変わる。
+    ★ クラスタ間で強度の桁が違うときに顕在化する (実データではふつうに起きる)。
+      値の幅が狭いクラスタだけ細かく丸められ、分布の見え方が揃わなくなる。
+    """
+    from app.callbacks.interactive_spatial import _round_values_for_display
+
+    rng = np.random.default_rng(3)
+    # 桁の違う 2 群: 狭い群は単独で丸めると細かい桁が残る
+    narrow = rng.uniform(1.0, 1.1, 2000) + 1e-7 * rng.random(2000)
+    wide = rng.uniform(1e6, 1e7, 2000)
+    vals = np.concatenate([narrow, wide])
+    groups = np.concatenate([np.zeros(2000, int), np.ones(2000, int)])
+
+    whole = _round_values_for_display(vals)
+    per_group = np.empty_like(vals)
+    for g in (0, 1):
+        m = groups == g
+        per_group[m] = _round_values_for_display(vals[m])
+
+    assert not np.array_equal(whole, per_group), \
+        "この合成データでは差が出ないのでテストとして無意味"
+
+    # 実装が「分ける前に 1 回」であること (呼び出し位置を固定する)
+    src = (APP_ROOT / "app" / "callbacks" / "interactive_loupe.py").read_text(
+        encoding="utf-8")
+    assert "_round_values_for_display(np.asarray(expr, dtype=float))" in src, \
+        "violin の丸めが「分ける前に 1 回」になっていない"
+    # 丸めた後にクラスタへ分けているので、dfp へ入るのは全体基準の値
+    assert src.index("_round_values_for_display(np.asarray") < src.index('dfp["_expr"] = arr'), \
+        "丸めがクラスタ分割より後に来ている"
