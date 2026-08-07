@@ -677,7 +677,7 @@ def test_feature_plot_renders_webgl_and_stores_figures_serverside(
         # States(7): marker_size, colorscale, rds_path, cache_dir,
         #            rotation_store, deg_data, session_id
         args=["mz_100", "S1", None, None, {}, 0, 0, False,
-              0, "Plasma", rds_path, "/tmp/cache", {}, None, session_id],
+              0, "Plasma", [], rds_path, "/tmp/cache", {}, None, session_id],
         triggered_prop="feature_select.value")
 
     figs = _graph_figures(resp["feature_plot_container"]["children"],
@@ -693,32 +693,80 @@ def test_feature_plot_renders_webgl_and_stores_figures_serverside(
     assert stored and stored[0][0].startswith("Feature_")
 
 
-def test_feature_plot_drops_invisible_points_but_keeps_colorbar(
+def test_feature_geometry_is_stable_across_intensity_range(
         dash_app, monkeypatch):
-    """しきい値未満の点は描かない。ただし全点が対象外なら従来どおり全点残す。"""
+    """★ ver51.5: 幾何は強度レンジで変わらず、可視性は opacity で表す。
+
+    従来は閾値未満の点を visible_mask で **トレースから除外** していたため、
+    点の集合が m/z・強度レンジごとに変わり、x/y/CellID を毎回送り直していた
+    (1 タイル 1.12MB gzip のうち 0.44MB がこの再送)。
+
+    全点を常に保持する形に変えたので、
+      - 点数は強度レンジによらず一定
+      - 閾値未満は marker.opacity == 0
+      - tooltip に「閾値未満」と出る (customdata)
+    を固定する。
+
+    ★ opacity=0 の点でも hover は発生する (Plotly の仕様。e2e で実測済み)。
+      だから注記が要る。除外していた頃と厳密に同じ挙動にはできない。
+    """
     df, rds_path = _install_synthetic_state(monkeypatch)
-    # 描画するのは 1 サンプル分のタイルなので、比較対象はそのサンプルの点数
     n_tile = int((df["Sample"] == "S1").sum())
 
-    def _feature_points(imin):
+    def _fg_trace(imin):
         resp = _call_callback(
             dash_app, "feature_plot_container",
             args=["mz_100", "S1", imin, None, {}, 0, 0, False,
-                  0, "Plasma", rds_path, "/tmp/cache", {}, None, "sess-mask"],
+                  0, "Plasma", [], rds_path, "/tmp/cache", {}, None, "sess-mask"],
             triggered_prop="feature_intensity_min.value")
         figs = _graph_figures(resp["feature_plot_container"]["children"],
                               id_type="feature_graph")
         # trace[0] は TIC 背景(全点)、trace[-1] が発現量オーバーレイ
-        return len(figs[0]["data"][-1]["x"])
+        return figs[0]["data"][-1]
 
-    # 下限 0% ならほぼ全点が可視（強度 0 近傍のごく一部だけが落ちる）
-    at_zero = _feature_points(0)
-    assert at_zero > n_tile * 0.9, f"{at_zero} / {n_tile}"
-    assert at_zero <= n_tile
-    # 下限 50% なら描画点数が明確に減る
-    assert _feature_points(50) < at_zero
-    # 下限 100% = 全点がしきい値未満 → カラーバーを残すため全点を描く（従来と同じ図）
-    assert _feature_points(100) == n_tile
+    t0 = _fg_trace(0)
+    t50 = _fg_trace(50)
+    t100 = _fg_trace(100)
+
+    # ① 点数は強度レンジによらず全点で一定
+    for label, t in (("0%", t0), ("50%", t50), ("100%", t100)):
+        assert len(t["x"]) == n_tile, f"{label}: {len(t['x'])} != {n_tile}"
+
+    # ② 座標と CellID は 1 バイトも変わらない (差分更新できる前提)
+    assert list(t50["x"]) == list(t0["x"])
+    assert list(t50["y"]) == list(t0["y"])
+    assert list(t50["text"]) == list(t0["text"])
+
+    # ③ 可視性は opacity で表現される。下限を上げれば隠れる点が増える
+    op0 = np.asarray(t0["marker"]["opacity"], dtype=float)
+    op50 = np.asarray(t50["marker"]["opacity"], dtype=float)
+    assert int((op50 == 0).sum()) > int((op0 == 0).sum()), \
+        "下限を上げても隠れる点が増えていない"
+
+    # ④ 隠れた点には「閾値未満」の注記が入る (hover が発生するため)
+    cd50 = np.asarray(t50["customdata"], dtype=object)
+    hidden = op50 == 0
+    assert hidden.any()
+    assert all(cd50[i] for i in np.flatnonzero(hidden)), \
+        "隠れた点に注記が無い"
+    assert not any(cd50[i] for i in np.flatnonzero(~hidden)), \
+        "見えている点に余計な注記が付いている"
+
+    # ⑤ 下限 100% = 全点が閾値未満。カラーバーを残すため全点は残る
+    op100 = np.asarray(t100["marker"]["opacity"], dtype=float)
+    assert len(t100["x"]) == n_tile
+    assert float(op100.max()) == 0.0
+
+
+def test_feature_hovertemplate_uses_customdata_for_note():
+    """注記は hovertemplate に直接埋めず customdata 経由であること。
+
+    ver46.3 と同じ理由: テンプレート記法を含む文字列を直接埋めると展開される。
+    """
+    src = (APP_ROOT / "app" / "callbacks" / "interactive_deg.py").read_text(
+        encoding="utf-8")
+    assert "%{customdata}" in src
+    assert "_BELOW_THRESHOLD_NOTE" in src
 
 
 def test_spatial_and_umap_callbacks_return_expected_output_counts(
@@ -1032,7 +1080,7 @@ def _feature_figs(dash_app, monkeypatch, marker_size, colorscale):
     resp = _call_callback(
         dash_app, "feature_plot_container",
         args=["mz_100", "S1", None, None, {}, 0, 0, False,
-              marker_size, colorscale, rds_path, "/tmp/cache", {}, None,
+              marker_size, colorscale, [], rds_path, "/tmp/cache", {}, None,
               "sess-ovr"],
         triggered_prop="feature_select.value")
     return _graph_figures(resp["feature_plot_container"]["children"],

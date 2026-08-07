@@ -235,6 +235,18 @@ def render_selection_summary(selected_ids, rds_path, cache_dir_str, feature_name
 )
 def update_feature_violin(feature_name, group_by, active_items,
                           rds_path, cache_dir_str, custom_colors):
+    """計測の器だけ被せる薄い外側。中身は _build_feature_violin。"""
+    from app.utils.perf_trace import perf_trace
+    with perf_trace("update_feature_violin") as _pt:
+        fig = _build_feature_violin(feature_name, group_by, active_items,
+                                    rds_path, cache_dir_str, custom_colors, _pt)
+        if fig is not no_update:
+            _pt.measure_payload(fig, "figure")
+        return fig
+
+
+def _build_feature_violin(feature_name, group_by, active_items,
+                          rds_path, cache_dir_str, custom_colors, _pt):
     if "acc_feature" not in _active_items_list(active_items):
         return no_update
     if not feature_name or not rds_path:
@@ -281,16 +293,29 @@ def update_feature_violin(feature_name, group_by, active_items,
     cats = sorted(dfp[gcol].astype(str).unique(), key=natural_cluster_key)
     color_map = _get_cluster_color_map(cats, custom_colors) if gcol == "Cluster" else {}
 
+    # ver51.6: 群ごとに等質量ビン平均へ落とす。KDE・箱ひげ・平均線はいずれも値の
+    # 順序に依存しないので、分布さえ保てば全点を送る必要が無い。
+    # bandwidth / span は plotly の既定が **点数に依存する**ため必ず明示する
+    # (詳細は display_helpers.violin_equal_mass_sample)。
+    from app.utils.display_helpers import violin_equal_mass_sample
     fig = go.Figure()
+    sent = 0
     for c in cats:
         vals = dfp.loc[dfp[gcol].astype(str) == c, "_expr"].values
-        kwargs = dict(y=vals, name=str(c), box_visible=True,
+        ys, bw, span = violin_equal_mass_sample(vals)
+        sent += len(ys)
+        kwargs = dict(y=ys, name=str(c), box_visible=True,
                       meanline_visible=True, points=False, opacity=0.75)
+        if bw is not None:
+            kwargs["bandwidth"] = bw
+            kwargs["span"] = span
+            kwargs["spanmode"] = "manual"
         col = color_map.get(str(c)) if color_map else None
         if col:
             kwargs["fillcolor"] = col
             kwargs["line"] = dict(color=col)
         fig.add_trace(go.Violin(**kwargs))
+    _pt.note(groups=len(cats), points_in=len(arr), points_sent=sent)
     fig.update_layout(
         showlegend=False, margin=dict(l=55, r=10, t=32, b=45),
         title=dict(text=f"{_label_from_active_state(feature_name, style='paren')} 分布 ({gcol})", x=0.5,

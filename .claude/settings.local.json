@@ -108,8 +108,8 @@
       "Bash(__NEW_LINE_6a9c9866b0de2a7f__ sed:*)",
       "Bash(2)",
       "Bash(python -c \":*)",
-      "Bash(/tmp/msi-venv/bin/python -m pytest tests/test_peak_annotation.py -q)"
-            "mcp__Dropbox__who_am_i",
+      "Bash(/tmp/msi-venv/bin/python -m pytest tests/test_peak_annotation.py -q)",
+      "mcp__Dropbox__who_am_i",
       "mcp__Dropbox__search",
       "mcp__Dropbox__list_folder",
       "mcp__Dropbox__get_file_metadata",

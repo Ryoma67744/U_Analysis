@@ -910,13 +910,20 @@ def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
                     except Exception:
                         expr_path = None
                     if expr_path and expr_path.exists():
-                        expr_df = pd.read_parquet(expr_path)
                         sw = float(cal_search_window or 0.5)
-                        cal_result = _calibrate_mz(
-                            state["features_list"], expr_df, ref_only_mz,
-                            search_window=sw, min_peaks=mp,
-                            regression_mode=reg_mode,
-                        )
+                        # ver51.5: 参照窓内の列だけ読む。ここは**プロジェクト
+                        # 読み込みの本経路**で、従来は列指定なしの全読み
+                        # (実データで 1 回 2.32GB) だった。
+                        from app.callbacks.interactive_calibration import (
+                            window_avg_spectrum as _window_avg_spectrum)
+                        avg_spectrum = _window_avg_spectrum(
+                            expr_path, state["features_list"], ref_only_mz, sw)
+                        if avg_spectrum is not None:
+                            cal_result = _calibrate_mz(
+                                state["features_list"], avg_spectrum, ref_only_mz,
+                                search_window=sw, min_peaks=mp,
+                                regression_mode=reg_mode,
+                            )
 
                 if cal_result and cal_result.get("calibrated"):
                     tol = float(tolerance_mz or 0.1)

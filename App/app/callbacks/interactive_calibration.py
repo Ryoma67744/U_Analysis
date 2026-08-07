@@ -274,13 +274,96 @@ def _build_feature_annotation_map(
 # m/z キャリブレーション
 # ---------------------------------------------------------------------------
 
-def _calibrate_mz(features_list, expression_df, reference_mz,
+def _linear_fit(x, y):
+    """最小二乗の直線当てはめ。(slope, intercept, r_squared) を返す (ver51.5)。
+
+    ★ `scipy.stats.linregress` の置き換え。**scipy は requirements.txt にも
+      Dockerfile にも無く、どの依存からも入らない**ため本番イメージに存在しない。
+      linear 回帰を選んだ瞬間 ModuleNotFoundError になり、読み込み経路では
+      `interactive_callbacks.py` の `except Exception` に拾われて
+      「m/zキャリブレーションに失敗したため未適用」と出るだけだった
+      (原因が分からない形で機能が無効化されていた)。
+
+      poly2 / poly3 の分岐は元から `np.polyfit` を使っており、linear だけが
+      scipy に依存していた。numpy に揃えれば依存を増やさずに機能が動く。
+
+    単回帰では linregress の r_value**2 と 1 - ss_res/ss_tot が一致するので、
+    poly 分岐と同じ式で R² を出す。
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    slope, intercept = np.polyfit(x, y, 1)
+    fitted = slope * x + intercept
+    ss_res = float(np.sum((y - fitted) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    r_squared = (1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+    return float(slope), float(intercept), float(r_squared)
+
+
+def _features_within_windows(feature_names, reference_mz, search_window):
+    """参照 m/z の ±search_window 内にある feature 名だけを返す (ver51.5)。
+
+    キャリブレーションが実際に参照するのはこの窓の中だけ。全 feature の平均を
+    作るために巨大な行列を読む必要は無い。
+
+    Returns: (窓内の feature 名リスト, {feature名: m/z} 全件)
+      2 つ目は呼び出し側が `_calibrate_mz` へ渡す features_list を作るのに使う
+      (候補探索には全 feature の m/z が要るが、**強度が要るのは窓内だけ**)。
+    """
+    mz_values = {}
+    for f in feature_names or []:
+        mz = _extract_mz_numeric(f)
+        if mz != float("inf"):
+            mz_values[str(f)] = mz
+    if not mz_values:
+        return [], {}
+
+    names = list(mz_values.keys())
+    arr = np.array([mz_values[n] for n in names], dtype=float)
+    order = np.argsort(arr)
+    arr_sorted = arr[order]
+
+    try:
+        sw = float(search_window)
+    except (TypeError, ValueError):
+        sw = 0.5
+
+    keep = set()
+    for ref in (reference_mz or []):
+        try:
+            r = float(ref)
+        except (TypeError, ValueError):
+            continue
+        lo = np.searchsorted(arr_sorted, r - sw, side="left")
+        hi = np.searchsorted(arr_sorted, r + sw, side="right")
+        for i in range(int(lo), int(hi)):
+            keep.add(names[int(order[i])])
+    return sorted(keep), mz_values
+
+
+def window_avg_spectrum(expr_path, features_list, reference_mz, search_window):
+    """参照窓内の列**だけ**読んで {feature名: 平均強度} を返す (ver51.5)。
+
+    読めなければ None (呼び出し側は従来どおりエラー表示へ倒す)。
+    """
+    from app.callbacks.interactive_callbacks import _bridge
+
+    wanted, _ = _features_within_windows(features_list, reference_mz, search_window)
+    if not wanted:
+        return {}
+    return _bridge.get_feature_means(Path(expr_path).parent, wanted)
+
+
+def _calibrate_mz(features_list, avg_spectrum, reference_mz,
                   search_window=0.5, min_peaks=2, regression_mode="linear"):
     """全ピクセル平均スペクトルから参照ピークのppmずれを計算し、回帰で補正値を返す。
 
     Args:
         features_list: Feature名リスト ("m/z 123.45678" 形式)
-        expression_df: DataFrame (cells×features, 列名=feature名)
+        avg_spectrum: {feature名: 平均強度}。ver51.5 で DataFrame から変更した。
+            **参照窓の外は入っていなくてよい** (窓内しか読まないため)。
+            DataFrame を渡していた頃は、この関数のためだけに 2.32GB を
+            materialize していた。
         reference_mz: list[float] — 参照m/z理論値
         search_window: float — 検索ウィンドウ(Da)
         min_peaks: int — 最低マッチ数
@@ -289,7 +372,6 @@ def _calibrate_mz(features_list, expression_df, reference_mz,
     Returns:
         dict: calibrated, corrected_mz_map, report, regression_mode, r_squared, ...
     """
-    from scipy.stats import linregress
 
     # Feature名 → m/z数値マッピング
     mz_values = {}
@@ -304,13 +386,8 @@ def _calibrate_mz(features_list, expression_df, reference_mz,
     mz_array = np.array(list(mz_values.values()))
     feature_names = list(mz_values.keys())
 
-    # 平均スペクトル算出
-    avg_spectrum = {}
-    for f in feature_names:
-        if f in expression_df.columns:
-            avg_spectrum[f] = expression_df[f].mean()
-        else:
-            avg_spectrum[f] = 0.0
+    # 平均強度は呼び出し側が窓内の列だけ読んで渡す (ver51.5)。
+    avg_spectrum = avg_spectrum or {}
 
     # 参照ピークとのマッチング
     matched = []
@@ -353,10 +430,9 @@ def _calibrate_mz(features_list, expression_df, reference_mz,
         ss_tot = np.sum((ppm_arr - np.mean(ppm_arr)) ** 2)
         r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
     else:
-        slope, intercept, r_value, _, _ = linregress(obs_arr, ppm_arr)
+        slope, intercept, r_squared = _linear_fit(obs_arr, ppm_arr)
         predicted_ppm = slope * mz_array + intercept
         coeffs = None
-        r_squared = float(r_value ** 2)
 
     # 全m/zに補正適用
     corrected_mz = mz_array / (1 + predicted_ppm / 1e6)
@@ -389,7 +465,6 @@ def _calibrate_mz_from_pairs(features_list, matched_pairs,
     Returns:
         dict: _calibrate_mz() と同一形式
     """
-    from scipy.stats import linregress
 
     if len(matched_pairs) < 2:
         return {"calibrated": False, "corrected_mz_map": {}, "report": matched_pairs}
@@ -407,9 +482,8 @@ def _calibrate_mz_from_pairs(features_list, matched_pairs,
         ss_tot = np.sum((ppm_arr - np.mean(ppm_arr)) ** 2)
         r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
     else:
-        slope, intercept, r_value, _, _ = linregress(obs_arr, ppm_arr)
+        slope, intercept, r_squared = _linear_fit(obs_arr, ppm_arr)
         coeffs = None
-        r_squared = float(r_value ** 2)
 
     # Feature名 → m/z数値マッピング
     mz_values = {}
@@ -620,35 +694,49 @@ def auto_detect_int_cal_peaks(n, table_data, search_window, cache_dir,
     # --- データ読み込み: 優先順位 1) cache_dir  2) data_folder 生データ ---
     from app.services.data_manager import read_raw_mz_spectrum
 
-    expr_df = None
+    sw = float(search_window or 0.5)
+    refs = []
+    for row in table_data:
+        try:
+            v = row.get("ref_mz")
+            if v not in (None, ""):
+                refs.append(float(v))
+        except (TypeError, ValueError):
+            continue
+
+    mz_values = {}
+    avg_spectrum = None
+
+    # ver51.5: parquet 経路は **参照窓内の列だけ** 読む。従来は列指定なしで
+    # 全列を materialize していた (実データで 1 回 2.32GB)。使うのは窓内の
+    # 最大強度ピークだけなので、窓の外は読む必要が無い。
     if cache_dir:
         expr_path = Path(cache_dir) / "expression_matrix.parquet"
         if expr_path.exists():
-            try:
-                expr_df = pd.read_parquet(expr_path)
-            except Exception:
-                expr_df = None
+            from app.callbacks.interactive_callbacks import _bridge
+            names = _bridge._parquet_column_names(expr_path)
+            if names:
+                wanted, mz_values = _features_within_windows(names, refs, sw)
+                avg_spectrum = _bridge.get_feature_means(cache_dir, wanted)
 
-    if expr_df is None:
+    if avg_spectrum is None:
+        # 生データ側は 1 行 (平均スペクトル) なので、そのまま全部読む。
         is_tims = bool(analysis_method_tims)
         expr_df = read_raw_mz_spectrum(data_folder, is_tims=is_tims)
+        if expr_df is None:
+            return no_update, "データが見つかりません。データフォルダを確認してください。"
+        mz_values = {}
+        for col in expr_df.columns:
+            match = re.search(r"(\d+\.?\d*)", col)
+            if match:
+                mz_values[col] = float(match.group(1))
+        avg_spectrum = {f: float(expr_df[f].mean()) for f in mz_values}
 
-    if expr_df is None:
-        return no_update, "データが見つかりません。データフォルダを確認してください。"
-
-    mz_values = {}
-    for col in expr_df.columns:
-        match = re.search(r"(\d+\.?\d*)", col)
-        if match:
-            mz_values[col] = float(match.group(1))
     if not mz_values:
         return no_update, "m/z値を含むフィーチャーが見つかりません。"
 
     mz_array = np.array(list(mz_values.values()))
     feature_names = list(mz_values.keys())
-    avg_spectrum = {f: float(expr_df[f].mean()) for f in feature_names}
-
-    sw = float(search_window or 0.5)
     matched_count = 0
     updated_data = []
     for row in table_data:
@@ -897,10 +985,14 @@ def _apply_int_calibration_inner(cal_enable, cal_table_data,
                 if fallback.exists():
                     expr_path = fallback
             if expr_path and expr_path.exists():
-                expr_df = pd.read_parquet(expr_path)
                 sw = float(cal_search_window or 0.5)
+                # ver51.5: 参照窓内の列だけ読む (従来は列指定なしで 2.32GB)
+                avg_spectrum = window_avg_spectrum(
+                    expr_path, features_list, ref_only_mz, sw)
+                if avg_spectrum is None:
+                    return no_update, "expression_matrix.parquet を読めませんでした。"
                 cal_result = _calibrate_mz(
-                    features_list, expr_df, ref_only_mz,
+                    features_list, avg_spectrum, ref_only_mz,
                     search_window=sw, min_peaks=mp,
                     regression_mode=reg_mode,
                 )

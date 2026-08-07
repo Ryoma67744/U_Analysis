@@ -1384,6 +1384,11 @@ def create_interactive_tab():
                                                title="配色・強度範囲を既定に戻す"),
                                 ]),
                             ]),
+                            # ver51.5: 見出しをコンテナの外へ出した。m/z を切り替えた
+                            # だけのときはコンテナ (グラフ本体) を作り直さず図だけを
+                            # 差分更新するので、見出しを中に入れたままだと
+                            # 「どの m/z を見ているか」の表示が古いまま残ってしまう。
+                            html.Div(id="feature_plot_heading"),
                             dcc.Loading(html.Div(id="feature_plot_container")),
                             # --- Feature 分布 (violin) パネル (P1) ---
                             html.Hr(className="my-2"),

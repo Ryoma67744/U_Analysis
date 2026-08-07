@@ -22,7 +22,10 @@ dependencies = [
     "polars-lts-cpu>=0.20",  # 古い CPU でのクラッシュ回避（import polars 互換）
     "psutil>=5.9",
     "python-pptx>=0.6.21",
-    "kaleido>=0.2.1",
+    # requirements.txt と同じピン。kaleido 1.x は plotly 6.1+ を要求するが、
+    # 本アプリは plotly 5.x に固定している（ver46.3 で 6 系は実測で逆効果と結論）。
+    # 上限なしにすると環境によって 1.x が入り、PNG 出力だけが壊れる。
+    "kaleido==0.2.1",
     "python-dotenv>=1.0",
     "Pillow>=10.0",
     "matplotlib>=3.7",

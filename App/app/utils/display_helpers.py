@@ -263,6 +263,111 @@ def apply_feature_display_overrides(fig_dict, *, marker_size=None,
 
 
 # ---------------------------------------------------------------------------
+# Violin の等質量ダウンサンプル (ver51.6)
+# ---------------------------------------------------------------------------
+# violin は m/z を変えるたびに全 spot の値をクラスタ数ぶん送っていた
+# (10 万点 / 30 群で gzip 後 0.286MB)。`points=False` なので個々の点は描かれず、
+# 使われるのは KDE 曲線・箱ひげ・平均線だけ。**これらはすべて値の順序に依存しない**
+# ので、分布さえ保てば点数は落とせる。
+#
+# ★ 等質量「分位点」ではなく等質量「ビン平均」を送る。
+#   分位点だと裾の重い分布 (MSI の発現量はまさにこれ) で平均が 7〜11% ずれる。
+#   各ビンの平均を送れば、全ビンが同質量なので **標本平均が真の平均と一致する**。
+#
+# ★ 帯域幅 (bandwidth) は必ず明示する。plotly.js の既定は
+#   `1.059 * min(sd, IQR/1.349) * n^-0.2` (Silverman) で **n に依存する**ため、
+#   点数を 10 万 → 256 に落とすと帯域幅が約 1.7 倍に広がり、分布が別物に見える。
+#   真の n で計算した値を渡して打ち消す。式は同梱の plotly.min.js から起こした。
+#
+# ★ 描画範囲 (span) も明示する。既定 "soft" は送った配列の min/max から
+#   [min-2bw, max+2bw] を作るので、ダウンサンプルすると violin の縦の広がりが
+#   縮む。真の min/max から同じ式で作って渡す。
+#
+# ★ 箱ひげの端は「フェンス内で最も外側の**実データ点**」なので、ビン平均では
+#   届かない。真の min/max を両端に入れれば直るが、裾の重い分布では平均が壊れる
+#   (実測 460〜500% ずれ)。そこで **入れても平均がほとんど動かないときだけ入れる**。
+#   これは「分布がコンパクトで、ひげ＝最大値になる」場合とちょうど一致する。
+#
+# 実測 (軸の高さに対する誤差): MSI 風の分布で平均・中央値・四分位・ひげとも
+# 0.001% 未満。最悪ケース (二峰性の中央値 = 谷の中) でも 2.3%。
+# 転送量は 1 群 347KiB → 1.0KiB。
+# ---------------------------------------------------------------------------
+
+VIOLIN_MAX_POINTS = 256
+
+# 真の min/max を端に入れることで生じる平均のずれの上限 (軸の高さ比)。
+_VIOLIN_MEAN_SHIFT_TOL = 1e-3
+
+
+def _plotly_violin_bandwidth(vals, mean, q1, q3, span):
+    """plotly.js が既定で選ぶ KDE 帯域幅を、同じ式で再現する。
+
+    plotly.min.js (violin/calc) より::
+
+        i = max - min
+        if (!i) return trace.bandwidth || 0
+        if (trace.bandwidth) return max(trace.bandwidth, i/1e4)
+        return max(1.059 * min(stdev, (q3-q1)/1.349) * n**-0.2, i/100)
+
+    ``stdev`` は ``Lib.stdev(arr, n-1, mean)``、つまり **分母 n-1 の標本標準偏差**。
+    """
+    n = vals.size
+    if n < 2 or span <= 0:
+        return None
+    sd = float(np.sqrt(float(((vals - mean) ** 2).sum()) / (n - 1)))
+    return max(1.059 * min(sd, (q3 - q1) / 1.349) * n ** -0.2, span / 100.0)
+
+
+def violin_equal_mass_sample(vals, max_points=VIOLIN_MAX_POINTS):
+    """violin 用に、分布を保ったまま点数を落とす。
+
+    戻り値 ``(ys, bandwidth, span)``。点数が少なく落とす意味が無いときは
+    ``(元の配列, None, None)`` を返す（この場合は plotly の既定に任せる）。
+    ``bandwidth`` / ``span`` は **両方まとめて** trace に渡すこと。
+    """
+    vals = np.asarray(vals, dtype=float)
+    finite = vals[np.isfinite(vals)]
+    # 落としても得が無い / 統計が不安定な規模ならそのまま返す
+    if finite.size <= max_points * 2:
+        return vals, None, None
+
+    s = np.sort(finite)
+    n = s.size
+    lo, hi = float(s[0]), float(s[-1])
+    span = hi - lo
+    mean = float(s.mean())
+    q1, q3 = (float(x) for x in np.percentile(s, [25, 75]))
+
+    # 等質量ビンの平均。
+    # ★ 単純に整数割りで区切ると n がビン数で割り切れないときビンの点数が
+    #   揃わず、「ビン平均の平均」が全体平均と一致しなくなる (平均線がずれる)。
+    #   そこで境界を **点の途中でも切れる**ものとして扱い、経験分位関数の積分から
+    #   求める。各点 s[i] は確率区間 [i/n,(i+1)/n] を占めるので、
+    #       G(p) = ∫₀^p F⁻¹  (区分線形)
+    #   を境界 p=k/m で評価し、ビン平均 = m*(G((k+1)/m) - G(k/m))。
+    #   総和が必ず全体平均になるので、割り切れなくても平均は厳密に保たれる。
+    csum = np.concatenate([[0.0], np.cumsum(s)])
+    x = np.arange(max_points + 1) / max_points * n
+    idx = np.minimum(x.astype(int), n - 1)
+    g = (csum[idx] + (x - idx) * s[idx]) / n
+    ys = max_points * np.diff(g)
+
+    bw = _plotly_violin_bandwidth(s, mean, q1, q3, span)
+    if bw is None:
+        # 全点が同じ値。plotly も帯域幅 0 になるので既定に任せる。
+        return ys, None, None
+
+    # ひげのために真の端を入れる。平均がほとんど動かないときだけ。
+    tol = _VIOLIN_MEAN_SHIFT_TOL * span
+    if (ys[0] - lo) / max_points <= tol:
+        ys[0] = lo
+    if (hi - ys[-1]) / max_points <= tol:
+        ys[-1] = hi
+
+    return ys, bw, [lo - 2 * bw, hi + 2 * bw]
+
+
+# ---------------------------------------------------------------------------
 # 表示名ヘルパー
 # ---------------------------------------------------------------------------
 
