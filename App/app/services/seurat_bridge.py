@@ -487,6 +487,40 @@ class SeuratBridge:
                            feature_name, e)
             return None
 
+    def get_feature_means(self, cache_dir, feature_names):
+        """指定した feature 列**だけ**を読んで列平均を返す (ver51.5)。
+
+        キャリブレーションは全 feature の平均スペクトルを作っていたが、実際に
+        参照するのは参照 m/z の ±search_window 内にある列だけだった
+        (`interactive_calibration._calibrate_mz` の `within_window` ループ)。
+        にもかかわらず `pd.read_parquet(expr_path)` を列指定なしで呼んでおり、
+        実データ規模 (203,078 行 × 1,536 列 float64) で **1 回 2.32GB**、
+        18,000 列なら 29.2GB で 12GB コンテナでは OOM していた。
+
+        窓内の数十列だけ読めば同じ答えが出る。列名は `_parquet_column_names` の
+        キャッシュから引けるので、どの列が窓内かの判定に I/O は要らない。
+
+        Returns: {feature_name: mean}。parquet 不在などで読めなければ None。
+        """
+        expr_path = Path(cache_dir) / "expression_matrix.parquet"
+        if not expr_path.exists():
+            return None
+        wanted = [str(f) for f in (feature_names or [])]
+        if not wanted:
+            return {}
+        try:
+            schema_names = self._parquet_column_names(expr_path)
+            if schema_names is not None:
+                wanted = [f for f in wanted if f in schema_names]
+            if not wanted:
+                return {}
+            df = _read_parquet_columns(
+                _get_parquet_handle(expr_path, _parquet_file_sig(expr_path)), wanted)
+            return {c: float(df[c].mean()) for c in wanted if c in df.columns}
+        except Exception as e:  # noqa: BLE001
+            logger.warning("列平均の取得に失敗 (%d 列): %s", len(wanted), e)
+            return None
+
     def get_features_matrix(self, cache_dir, feature_names):
         """expression_matrix.parquet から複数 feature 列をまとめて読む (共発現用)。
 
