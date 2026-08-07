@@ -116,6 +116,46 @@ def _round_for_display(x, y):
     return np.round(x, decimals), np.round(y, decimals)
 
 
+def _round_values_for_display(v):
+    """表示用に強度値の有効桁を落とす（JSON 転送量の削減、ver51.3）。
+
+    `_round_for_display` と同じ「範囲に対する相対量で丸める」考え方を
+    marker.color に適用する。座標だけ丸めて色を丸めていなかったため、
+    強度は float64 の 17 桁表記のまま送られていた（実測 50,000 点で
+    gzip 後 0.45MB。丸めると 0.13MB）。
+
+    画面上の色は colorscale の段階に落ちるので、範囲の 1/100000 まで丸めても
+    色は 1 段も動かない。
+
+    強度は桁が大きく振れる（1e-3 〜 1e6）ため、固定小数での丸めは使わない。
+    範囲基準にすることで単位にも強度スケールにも依存しなくなる。
+
+    ★ ただし **小数 4 桁より粗くはしない**。hover は `%{marker.color:.4f}` で
+      4 桁を出すので、範囲だけで決めると強度が大きいデータ（範囲 2e4 なら
+      小数 1 桁）で「1234.5000」のように**存在しない桁をゼロで捏造して表示する**
+      ことになる。値の誤差自体は範囲の 1/400000 で無視できるが、画面に出す数字が
+      実測値と違うのは別問題。転送量より表示の正しさを優先する。
+
+    注意: **統計・DEG・エクスポートの数値には使わないこと**。これは
+    「画面へ送る figure の色配列」専用。
+    """
+    arr = np.asarray(v)
+    # ★ 整数列（TotalCount など）はそのまま返す。float に上げて丸めると
+    #   12345 が 12345.0 になり、JSON では**むしろ長くなる**。
+    if arr.dtype.kind in ("i", "u", "b"):
+        return arr
+    arr = np.asarray(arr, dtype=float)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return arr
+    span = float(finite.max() - finite.min())
+    if not np.isfinite(span) or span <= 0:
+        return arr
+    # hover の表示桁 (.4f) を下限にする。詳細は docstring の ★。
+    decimals = int(np.clip(max(4.0, 5 - np.floor(np.log10(span))), 0, 12))
+    return np.round(arr, decimals)
+
+
 def _calc_zero_gap_marker_size(plot_x, plot_y, render_height=310, scale_factor=1.0):
     """点間距離ベースのマーカーサイズを計算。
 

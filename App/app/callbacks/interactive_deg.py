@@ -14,7 +14,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from dash import (Input, Output, State, callback, ctx, no_update, html, dcc)
+from dash import (Input, Output, State, callback, ctx, no_update, html, dcc,
+                  clientside_callback, ClientsideFunction)
 from dash.exceptions import PreventUpdate
 
 from app.utils.color_utils import (
@@ -263,32 +264,40 @@ def update_feature_options_on_mz_filter(mz_filtered, rds_path=None):
      Output("feature_intensity_max", "placeholder")],
     [Input("feature_select", "value"),
      Input("feature_sample_select", "value"),
-     Input("feature_marker_size", "value"),
      Input("feature_intensity_min", "value"),
      Input("feature_intensity_max", "value"),
      Input("sample_name_map_store", "data"),
      Input("fullscreen_closed_trigger", "data"),
      Input("feature_rows_per_view", "value"),
-     Input("feature_show_compound_names", "value"),
-     Input("feature_colorscale", "value")],
-    [State("seurat_rds_path_store", "data"),
+     Input("feature_show_compound_names", "value")],
+    # ver51.3: マーカーサイズと配色は figure のデータを変えないので Input から
+    # 外し、clientside の Plotly.restyle (assets/feature_restyle.js) で処理する。
+    # State に残すのは、他の理由で作り直すときに現在値でビルドするため。
+    #
+    # 強度レンジ (feature_intensity_min/max) は Input のまま。**見た目だけの
+    # パラメータではない** — しきい値未満の点はトレースから除外しており
+    # (visible_mask)、点の集合そのものが変わるので restyle では表現できない。
+    [State("feature_marker_size", "value"),
+     State("feature_colorscale", "value"),
+     State("seurat_rds_path_store", "data"),
      State("seurat_cache_dir_store", "data"),
      State("spatial_rotation_store", "data"),
      State("deg_data_store", "data"),
      State("session_id_store", "data")],
     prevent_initial_call=True,
 )
-def update_feature_plot(feature_name, sample, marker_size,
+def update_feature_plot(feature_name, sample,
                         intensity_min, intensity_max,
                         name_map, _fs_trigger, rows,
                         show_compound_names,
-                        colorscale,
+                        marker_size, colorscale,
                         rds_path, cache_dir_str, rotation_store,
                         deg_data, session_id=None):
     from app.callbacks.interactive_callbacks import (
         _interactive_data, _bridge, _set_active_key, set_export_figures)
     from app.callbacks.interactive_spatial import (
-        _transform_coords, _calc_zero_gap_marker_size, _round_for_display)
+        _transform_coords, _calc_zero_gap_marker_size, _round_for_display,
+        _round_values_for_display)
     _set_active_key(rds_path)
 
     def _finish(children, ph_min, ph_max, fig_dicts):
@@ -403,11 +412,11 @@ def update_feature_plot(feature_name, sample, marker_size,
             # ver46.1: 表示用に座標の有効桁を落とす（転送量 2〜3 倍削減、見た目同一）
             plot_x, plot_y = _round_for_display(plot_x, plot_y)
 
-            # マーカーサイズ: 自動モード(0)ならサンプル毎に計算
-            if auto_mode:
-                m_size = _calc_zero_gap_marker_size(plot_x, plot_y, render_height=280)
-            else:
-                m_size = marker_size
+            # マーカーサイズ: 自動モード(0)ならサンプル毎に計算。
+            # ver51.3: 自動値は常に計算して layout.meta.auto_msz に載せる。
+            # clientside restyle で「自動」に戻されたときの基準になる。
+            auto_msz = _calc_zero_gap_marker_size(plot_x, plot_y, render_height=280)
+            m_size = auto_msz if auto_mode else marker_size
 
             # 最後のサンプルのみカラーバーを表示
             is_last = (s == samples_to_show[-1])
@@ -433,6 +442,12 @@ def update_feature_plot(feature_name, sample, marker_size,
                 )
 
             fig = go.Figure()
+            # ver51.3: どのトレースがどのコントロールに従うかを layout.meta に
+            # 記録する。Spatial はトレースの meta を使っているが、Feature の
+            # 発現トレースは meta を **hover ラベルの値** に使っている
+            # (ver46.3: ユーザー提供の化合物名が "%{x}" を含みうるため)。
+            # 上書きすると hovertemplate が壊れるので、こちらは添字で持つ。
+            bg_idx = None
 
             # TIC 背景（Greys, opacity=0.5）
             # ver46.1: go.Scatter(SVG) -> go.Scattergl(WebGL)。SVG は 1 点 = 1 DOM ノードのため
@@ -441,11 +456,15 @@ def update_feature_plot(feature_name, sample, marker_size,
                 fig.add_trace(go.Scattergl(
                     x=plot_x, y=plot_y, mode="markers",
                     marker=dict(size=m_size, symbol="square",
-                                color=df_s["TotalCount"].values,
+                                # ver51.3: 背景の TIC も同じ理由で丸める。
+                                # hoverinfo="skip" なので数値は画面に出ない。
+                                color=_round_values_for_display(
+                                    df_s["TotalCount"].values),
                                 colorscale="Greys", opacity=0.5,
                                 showscale=False),
                     hoverinfo="skip", showlegend=False,
                 ))
+                bg_idx = len(fig.data) - 1
 
             # 発現量オーバーレイ
             # ver46.1: 強度しきい値未満の点は opacity=0 で「見えないのに転送・描画される」
@@ -464,7 +483,10 @@ def update_feature_plot(feature_name, sample, marker_size,
             fg_marker = dict(marker_opts)
             # 小数 3 桁で十分（描画差は視認不能）。float64 の全桁を JSON に出さない。
             fg_marker["opacity"] = np.round(alpha[visible_mask], 3)
-            fg_marker["color"] = np.asarray(marker_opts["color"])[visible_mask]
+            # ver51.3: 色も同じ理由で丸める。座標だけ丸めて色を丸めていなかったため、
+            # 強度が 17 桁表記のまま流れていた（50,000 点で gzip 後 0.45→0.13MB）。
+            fg_marker["color"] = _round_values_for_display(
+                np.asarray(marker_opts["color"])[visible_mask])
             fig.add_trace(go.Scattergl(
                 x=plot_x[visible_mask],
                 y=plot_y[visible_mask],
@@ -479,8 +501,17 @@ def update_feature_plot(feature_name, sample, marker_size,
                 showlegend=False,
             ))
 
+            fg_idx = len(fig.data) - 1
             r_margin = 80 if is_last else 10
             fig.update_layout(
+                # ver51.3: 見た目だけのコントロール (マーカーサイズ / 配色) を
+                # clientside restyle で処理するための索引。
+                #   sz … marker.size がサイズ入力に従うトレース
+                #   cs … marker.colorscale が配色プルダウンに従うトレース
+                #        (TIC 背景は常に Greys なので入れない)
+                meta=dict(kind="feature", auto_msz=float(auto_msz),
+                          sz=[i for i in (bg_idx, fg_idx) if i is not None],
+                          cs=[fg_idx]),
                 title=dict(text=display_s, font=dict(size=14), x=0.5),
                 xaxis=dict(showgrid=False, showline=False, zeroline=False,
                            showticklabels=False, title="", visible=False),
@@ -562,6 +593,30 @@ def update_feature_plot(feature_name, sample, marker_size,
     except Exception as e:
         return _finish(html.Div(f"\u30a8\u30e9\u30fc: {e}", className="text-danger p-3"),
                        no_update, no_update, [])
+
+
+# ---------------------------------------------------------------------------
+# 見た目だけのコントロール → clientside restyle (ver51.3)
+# ---------------------------------------------------------------------------
+# マーカーサイズと配色は figure のデータを変えないため、サーバで全タイルを
+# 作り直さずブラウザ側で Plotly.restyle する（assets/feature_restyle.js）。
+# ver46.1 で Spatial に入れた仕組み (spatial_restyle.js) の Feature 版。
+# Output はダミー Store。実際の更新は JS が DOM 上のグラフに直接行う。
+#
+# 一括保存はサーバ保持の figure を使うので、そちらには
+# display_helpers.apply_feature_display_overrides で同じ変換を掛ける
+# (interactive_batch_save.cb_batch_save_feature)。
+
+for _ctl_id, _fn in (
+    ("feature_marker_size", "marker_size"),
+    ("feature_colorscale", "colorscale"),
+):
+    clientside_callback(
+        ClientsideFunction(namespace="feature_restyle", function_name=_fn),
+        Output("feature_restyle_dummy", "data", allow_duplicate=True),
+        Input(_ctl_id, "value"),
+        prevent_initial_call=True,
+    )
 
 
 # ---------------------------------------------------------------------------

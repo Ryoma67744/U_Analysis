@@ -63,6 +63,33 @@ def _get_export_figures(kind, session_id, rds_path, *, marker_size=None,
         out.append((name, fig))
     return out
 
+
+def _get_feature_export_figures(session_id, rds_path, *, marker_size=None,
+                                colorscale=None):
+    """Feature Plot 用。clientside restyle した見た目をサーバ側にも掛ける (ver51.3)。
+
+    Spatial 版 (`_get_export_figures`) と役割は同じだが、対象トレースの見つけ方が
+    違うため別関数にしている（Feature は layout.meta に添字で持つ。理由は
+    display_helpers.apply_feature_display_overrides の説明を参照）。
+    """
+    import copy
+
+    from app.callbacks.interactive_callbacks import get_export_figures
+    from app.utils.display_helpers import apply_feature_display_overrides
+
+    figs = get_export_figures("feature", session_id, rds_path)
+    if not figs:
+        return figs
+    if marker_size is None and not colorscale:
+        return figs
+    out = []
+    for name, fig in figs:
+        fig = copy.deepcopy(fig)  # 保持中の figure は壊さない
+        apply_feature_display_overrides(fig, marker_size=marker_size,
+                                        colorscale=colorscale)
+        out.append((name, fig))
+    return out
+
 # ---------------------------------------------------------------------------
 # 表示サイズ定数（CSS で指定している値に合わせる）
 # ---------------------------------------------------------------------------
@@ -321,13 +348,19 @@ def cb_batch_save_spatial(n_clicks, session_id, rds_path, marker_size,
     Output("dl_batch_zip", "data", allow_duplicate=True),
     Input("btn_batch_save_feature", "n_clicks"),
     [State("session_id_store", "data"),
-     State("seurat_rds_path_store", "data")],
+     State("seurat_rds_path_store", "data"),
+     # ver51.3: この 2 つは clientside restyle で画面だけ変わっているため、
+     # サーバ保持の figure は操作前の値のまま。保存直前に同じ変換を掛ける。
+     State("feature_marker_size", "value"),
+     State("feature_colorscale", "value")],
     prevent_initial_call=True,
 )
-def cb_batch_save_feature(n_clicks, session_id, rds_path):
+def cb_batch_save_feature(n_clicks, session_id, rds_path,
+                          marker_size=None, colorscale=None):
     if not n_clicks:
         raise PreventUpdate
-    feature_figs = _get_export_figures("feature", session_id, rds_path)
+    feature_figs = _get_feature_export_figures(
+        session_id, rds_path, marker_size=marker_size, colorscale=colorscale)
 
     if not feature_figs:
         raise PreventUpdate
