@@ -737,18 +737,22 @@ def _build_overview_section(df_plot, df_stats, color_map,
                    "gap": "12px", "fontSize": "0.85rem"},
             children=[
                 html.Span("ラベル", className="text-muted small"),
+                # ver51.4: debounce。ラベルサイズ/パネル高はどちらも見た目だけの
+                # 値だが、図のコールバックの直 Input なので 1 打鍵ごとに
+                # **全サンプルのタイル**が作り直されていた ("340" で 3 回)。
+                # 確定は Enter / フォーカスアウト。
                 dbc.Input(
                     id=label_id, type="number",
                     min=label_range[0], max=label_range[1], step=1,
                     value=int(init_label),
-                    style={"width": "70px"}, size="sm",
+                    style={"width": "70px"}, size="sm", debounce=True,
                 ),
                 html.Span("パネル高", className="text-muted small"),
                 dbc.Input(
                     id=panel_id, type="number",
                     min=panel_range[0], max=panel_range[1], step=20,
                     value=int(init_panel),
-                    style={"width": "80px"}, size="sm",
+                    style={"width": "80px"}, size="sm", debounce=True,
                 ),
                 html.Span("px", className="text-muted small"),
             ],

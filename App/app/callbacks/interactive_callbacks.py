@@ -37,7 +37,6 @@ from app.utils.color_utils import (
     get_merged_cluster_color_map as _get_merged_cluster_color_map,
     cluster_display_name as _cluster_display_name,
     get_sample_color_map as _get_sample_color_map,
-    get_cluster_colorscale as _get_cluster_colorscale,
 )
 from app.utils.display_helpers import (
     display_name as _display_name,

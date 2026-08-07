@@ -176,6 +176,87 @@ def test_spatial_restyle_updates_only_tagged_traces(page):
 
 
 # ---------------------------------------------------------------------------
+# 2b. Feature Plot の clientside restyle (ver51.3)
+# ---------------------------------------------------------------------------
+# Spatial と同じ「サーバ側に戻ると無音で元の重さに逆戻りする」性質があるので、
+# 同じ番人を置く。対象トレースの探し方だけが違う (Spatial はトレースの meta、
+# Feature は layout.meta の添字。発現トレースの meta は hover ラベルの値に
+# 使っているため上書きできない)。
+
+def test_feature_restyle_is_loaded(page):
+    fns = page.evaluate(
+        """() => {
+            const ns = window.dash_clientside && window.dash_clientside.feature_restyle;
+            return ns ? Object.keys(ns).sort() : null;
+        }"""
+    )
+    assert fns == ["colorscale", "marker_size"]
+
+
+def test_feature_restyle_updates_only_indexed_traces(page):
+    """layout.meta の添字どおりに、対象トレースだけを更新すること。
+
+    ★ TIC 背景は常に Greys。配色プルダウンで塗り替わってはいけない
+      (cs に入れていないこと) を実ブラウザで固定する。
+    """
+    result = page.evaluate(
+        """async () => {
+            const host = document.querySelector('#feature_plot_container');
+            if (!host || !window.Plotly) { return {error: 'no host/plotly'}; }
+            const div = document.createElement('div');
+            host.appendChild(div);
+            await window.Plotly.newPlot(div, [
+                {type: 'scattergl', x: [1,2], y: [1,2], mode: 'markers',
+                 marker: {size: 3, colorscale: 'Greys'}},      // 0: TIC 背景
+                {type: 'scattergl', x: [1,2], y: [1,2], mode: 'markers',
+                 marker: {size: 3, colorscale: 'Plasma'}},     // 1: 発現量
+            ], {meta: {kind: 'feature', auto_msz: 4.5, sz: [0, 1], cs: [1]}});
+
+            // 別種別の図。Feature 用の操作で触ってはいけない。
+            const other = document.createElement('div');
+            host.appendChild(other);
+            await window.Plotly.newPlot(other, [
+                {type: 'scattergl', x: [1,2], y: [1,2], mode: 'markers',
+                 marker: {size: 3, colorscale: 'Greys'}, meta: {dsz: 0, op: false}},
+            ], {meta: {kind: 'msi', auto_msz: 9}});
+
+            window.dash_clientside.feature_restyle.marker_size(8);
+            window.dash_clientside.feature_restyle.colorscale('Viridis');
+            const sizes = div.data.map(t => t.marker.size);
+            // ★ plotly.py は組み立て時に名前を停止点配列へ展開するが、
+            //   plotly.js は gd.data に名前のまま保持する (展開は _fullData 側)。
+            //   両方の形を受けられるように正規化する。
+            const first = div.data.map(t => {
+                const cs = t.marker.colorscale;
+                return Array.isArray(cs) ? String(cs[0][1]).toLowerCase()
+                                         : String(cs).toLowerCase();
+            });
+
+            // 「自動」(0) に戻すと layout.meta.auto_msz が使われる
+            window.dash_clientside.feature_restyle.marker_size(0);
+            const autoSizes = div.data.map(t => t.marker.size);
+
+            const otherSize = other.data.map(t => t.marker.size);
+
+            host.removeChild(div); host.removeChild(other);
+            return {sizes, first, autoSizes, otherSize};
+        }"""
+    )
+    assert "error" not in result, result
+    # sz:[0,1] なので両方 8
+    assert result["sizes"] == [8, 8]
+    # cs:[1] だけ Viridis 化。TIC 背景 (index 0) は Greys のまま
+    # (名前のままなら "viridis"、展開済みなら Viridis の先頭色 #440154)
+    assert result["first"][1] in ("viridis", "#440154"), result["first"]
+    assert result["first"][0] not in ("viridis", "#440154"), \
+        f"TIC 背景まで配色が変わっている: {result['first']}"
+    # 自動 → auto_msz(4.5)
+    assert result["autoSizes"] == [4.5, 4.5]
+    # kind='msi' の図は Feature 用の操作では変わらない
+    assert result["otherSize"] == [3]
+
+
+# ---------------------------------------------------------------------------
 # 3. HTTP 圧縮
 # ---------------------------------------------------------------------------
 

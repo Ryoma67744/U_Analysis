@@ -21,7 +21,6 @@ from app.utils.color_utils import (
     cluster_sort_key as _cluster_sort_key,
     get_cluster_color_map as _get_cluster_color_map,
     cluster_display_name as _cluster_display_name,
-    get_cluster_colorscale as _get_cluster_colorscale,
 )
 from app.utils.display_helpers import (
     display_name as _display_name,
@@ -208,7 +207,11 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
         clusters = sorted(df["Cluster"].unique(), key=_cluster_sort_key)
         cluster_opts = [{"label": _cluster_display_name(c, cluster_name_map), "value": str(c)} for c in clusters]
         color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
-        cluster_to_idx, discrete_cscale = _get_cluster_colorscale(df["Cluster"], custom_colors)
+        # ver51.4: 削除。この呼び出しは embed_legend=True で、
+        # _create_single_spatial_fig の cluster_to_idx / discrete_cscale 分岐
+        # (:368 の elif) は embed_legend=False のときしか通らない。
+        # get_cluster_colorscale は全行を走査する (実測 15.9ms / 20 万行) ので、
+        # 毎回作っては捨てていた。実際に使うのは PPTX 経路 (embed_legend=False)。
 
         # 初期グラフ（全サンプル、rotation_store適用）
         if not rotation_store:
@@ -226,8 +229,6 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                                              flip_h=transform.get("flip_h", False),
                                              flip_v=transform.get("flip_v", False),
                                              title=display_s, embed_legend=True,
-                                             cluster_to_idx=cluster_to_idx,
-                                             discrete_cscale=discrete_cscale,
                                              cluster_name_map=cluster_name_map,
                                              spot_opacity=(hne_opacity if hne_opacity is not None else 100) / 100.0)
             if spatial_rows:
@@ -565,7 +566,11 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
     if df is None or "SpatialX" not in df.columns:
         return ""
     color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
-    cluster_to_idx, discrete_cscale = _get_cluster_colorscale(df["Cluster"], custom_colors)
+    # ver51.4: 削除。この呼び出しは embed_legend=True で、
+    # _create_single_spatial_fig の cluster_to_idx / discrete_cscale 分岐
+    # (:368 の elif) は embed_legend=False のときしか通らない。
+    # get_cluster_colorscale は全行を走査する (実測 15.9ms / 20 万行) ので、
+    # 毎回作っては捨てていた。実際に使うのは PPTX 経路 (embed_legend=False)。
     all_pos = _get_merged_label_positions(accumulated_positions)
     spatial_pos = all_pos.get("spatial", {})
     if not rotation_store:
@@ -593,8 +598,6 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                                          flip_h=transform.get("flip_h", False),
                                          flip_v=transform.get("flip_v", False),
                                          title=display_s, embed_legend=True,
-                                         cluster_to_idx=cluster_to_idx,
-                                         discrete_cscale=discrete_cscale,
                                          marker_size=marker_size or 0,
                                          exclude_clusters=exclude_clusters,
                                          label_size=label_size or 10,

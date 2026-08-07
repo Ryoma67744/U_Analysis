@@ -31,7 +31,6 @@ from app.services.results_viewer import (
 from app.callbacks.interactive_callbacks import (
     _cluster_sort_key,
     _get_cluster_color_map,
-    _get_cluster_colorscale,
     _load_deg_results,
 )
 from app.callbacks.interactive_umap import _build_umap_integrated_fig
@@ -537,7 +536,11 @@ def sv_update_spatial(highlight_clusters, sample_filter, token):
         return html.Div("Spatial データなし", className="text-muted")
 
     color_map = _get_cluster_color_map(df["Cluster"])
-    cluster_to_idx, discrete_cscale = _get_cluster_colorscale(df["Cluster"])
+    # ver51.4: 削除。この呼び出しは embed_legend=True で、
+    # _create_single_spatial_fig の cluster_to_idx / discrete_cscale 分岐
+    # (:368 の elif) は embed_legend=False のときしか通らない。
+    # get_cluster_colorscale は全行を走査する (実測 15.9ms / 20 万行) ので、
+    # 毎回作っては捨てていた。実際に使うのは PPTX 経路 (embed_legend=False)。
 
     if sample_filter:
         samples = [sample_filter]
@@ -553,8 +556,6 @@ def sv_update_spatial(highlight_clusters, sample_filter, token):
             df_s, color_map, highlight_clusters or [],
             selected_cell_ids=None,
             title=s, embed_legend=True,
-            cluster_to_idx=cluster_to_idx,
-            discrete_cscale=discrete_cscale,
         )
         graphs.append(
             html.Div(

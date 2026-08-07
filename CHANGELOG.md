@@ -12,6 +12,102 @@
 
 ---
 
+## 2026-08-07_ver51.4
+
+### 修正: ver51.3 の取りこぼしを全スクリプト調査で拾い、他の描画にも同じ手当てをした
+
+ver51.3 は Feature Plot だけを直した。「他に直せる部分は無いか」を全スクリプト
+対象に調べ、**同じ型の問題が他の描画にも残っていた**ことが分かったので同じ手当てを
+した。あわせて ver51.3 自身の検証の穴も閉じた。
+
+#### 何が問題だったか
+
+**① 丸めの取りこぼし 3 件**
+
+ver46.1 が Spatial の座標を、ver51.3 が Feature の色を丸めたが、抜けがあった。
+
+| 箇所 | 状態 |
+|---|---|
+| UMAP の座標 | `_round_for_display` を **import すらしていなかった** |
+| Spatial の TIC 色 | 座標は丸めていたのに色は生 float64 |
+| violin の発現値 | 生 float64 |
+
+**② 図に直結した入力の debounce 抜け 10 件**
+
+ver51.3 で `feature_intensity_min/max` に入れたが、同じ形が 10 箇所残っていた。
+とくに `volcano_highlight_mz` は 13 打鍵ぶん、1 打鍵ごとに全行 Python 正規表現と
+`apply(axis=1)` が走る。`heatmap_top_n` は打鍵ごとに parquet 読み + merge +
+groupby まで走る。
+
+**③ 毎回捨てられる計算 4 件**
+
+`_create_single_spatial_fig` の `cluster_to_idx` / `discrete_cscale` 分岐は
+`embed_legend=False` のときしか通らないのに、`embed_legend=True` の呼び出し元
+4 箇所が毎回 `get_cluster_colorscale`（全行走査、実測 15.9ms / 20 万行）を
+計算して渡していた。
+
+**④ ver51.3 の検証の穴**
+
+`spatial_restyle` には E2E の番人があるのに、ver51.3 で足した `feature_restyle`
+には無かった。ver46.1 は「clientside として登録されていること（サーバ側に戻ると
+**無音で**元の重さに逆戻りするため）」を検証項目に挙げている。
+
+#### 変更点
+
+- **UMAP に `_rounded_umap()` を通す**（統合 / サンプル別 / Split View の 3 ビルダー）。
+  Split View はタイルごとに全点を灰色背景として再送する設計なので、クラスタ数ぶん
+  倍率がかかる。
+  - ★ 図の組み立て前に **1 回だけ**丸める。トレースごとに部分集合で丸めると
+    量子化幅が変わり、同じ図の中で点がずれる。
+  - ★ **元の df は書き換えない**。`interactive_loupe.umap_polygon_commit` は
+    **生の**座標で点内外判定をしており、丸めが漏れると選択が静かに表示座標基準へ
+    変わる。量子化幅は範囲の 1/100000 で手クリック精度の約 200 倍細かい。
+    「選択は 1 点も変わらない」ことはテストで実際に確かめた。
+- **Spatial の TIC 色 / violin の値も丸める**。TIC は 3 経路とも `hoverinfo="skip"`
+  なので、Feature 側で 4 桁下限を入れる原因になった hover 表示の問題は起きない。
+  violin はクラスタへ分ける**前**に 1 回だけ丸める。
+- **debounce を 10 箇所に追加**。確定は Enter / フォーカスアウト。
+- **死んだ colorscale 計算 4 箇所と、それに伴う未使用 import 4 つを削除**。
+- **`feature_restyle` の E2E 番人を追加**。
+
+#### 効果
+
+実測（gzip 後、50,000 点 / violin は 100,000 点）:
+
+```
+UMAP 座標   0.926 → 0.329 MB  (64% 減)
+TIC 色      0.454 → 0.161 MB  (65% 減)
+violin 値   0.921 → 0.290 MB  (68% 減)
+```
+
+#### 操作感の変更
+
+**強度・閾値などの数値入力は Enter / フォーカスアウトで確定するようになった。**
+打ちながら反映される挙動を期待している場合は `debounce` を外せば戻せる。
+
+#### 調査で分かったが対応していないもの
+
+- **`expression_matrix.parquet` を列指定なしで丸ごと読む箇所が 4 つある**。
+  実データで 1 回 2.32GB（18,000 列なら 29.2GB で 12GB コンテナでは OOM）。
+  うち `interactive_callbacks.py:914` は**プロジェクト読み込みの本経路**。
+  しかも上 3 つが使うのは `expression_df[f].mean()` だけ — **2.32GB を載せて
+  1,536 個のスカラーを作っている**。`iter_batches` で流せばバッチ 1 本ぶんで済む。
+- **R フォールバックが壊れている**。`extract_features.R:78` は
+  `write.csv(..., col.names=FALSE)` だが R の `write.csv` は `col.names` を
+  **無視する仕様**でヘッダ行が書かれる。Python は `header=None` で読むため
+  先頭に文字列 `"expression"` が入り、`np.asarray(..., dtype=float)` で落ちる。
+  RDS 全展開（20〜120 秒）を払ったうえで必ず失敗する。修正は Python 側 `header=0`
+  の 1 箇所だが、**R が検証環境に無いため実機確認とセットで行う**。
+- ver51.3 の `_PARQUET_FILE_CACHE` の効果を過大に見積もっていた。
+  `expression_matrix.parquet` は単一 row group なのでフッタは約 2MB・
+  オープンは 15〜50ms。CHANGELOG の「3.3 秒」は SCiLS TIMS parquet
+  （1,016 row group）の数字。効き目の大半は復号済み列の LRU の方だった。
+- **未調査**: 約 60 個の `dcc.Store` の全数、コールバックの連鎖、スレッド安全性、
+  `except Exception: pass` の全数。3 系統で調べたうちの 1 系統が
+  API 上限で途中終了したため。
+
+---
+
 ## 2026-08-07_ver51.3
 
 ### 修正: Feature Plot の m/z 切り替えを軽くした
