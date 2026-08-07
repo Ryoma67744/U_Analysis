@@ -453,3 +453,136 @@ def test_opacity_zero_points_still_respond_to_hover(page):
         "opacity=0 の点が hover に反応しなくなった。"
         "Feature の幾何を固定しても hover 挙動を維持できるので、"
         "hovertext による「閾値未満」表示は不要にできる")
+
+
+# ---------------------------------------------------------------------------
+# 5. Violin の等質量ダウンサンプル (ver51.6)
+# ---------------------------------------------------------------------------
+# 全 spot 値ではなく等質量ビン平均 256 点を送るようにした。単体テストでは
+# 「元データの統計」と「送る配列の統計」を比べているが、実際に描かれる曲線を
+# 決めるのは **plotly.js 側の KDE 計算**なので、そこは実ブラウザでしか確認できない。
+#
+# ★ とくに帯域幅は plotly の既定が点数に依存する (n^-0.2)。渡し忘れても
+#   Python 側は何も言わないが、ブラウザでは分布が目に見えてなまる。
+#   ここでは plotly.js が実際に算出した密度曲線と箱ひげ統計を取り出して比べる。
+
+def _violin_calc(page, trace):
+    """violin を 1 つ描き、plotly.js が計算した密度と箱ひげ統計を返す。"""
+    return page.evaluate(
+        """async (t) => {
+            let host = document.getElementById('__violintest');
+            if (!host) {
+                host = document.createElement('div');
+                host.id = '__violintest';
+                host.style.position = 'fixed';
+                host.style.left = '0px'; host.style.top = '0px';
+                host.style.zIndex = '99999'; host.style.background = '#fff';
+                document.body.appendChild(host);
+            }
+            await window.Plotly.newPlot(host, [t], {width: 400, height: 300});
+            const cd = host.calcdata[0][0];
+            // lf/uf は実際に描かれるひげの端、span は KDE を評価する範囲
+            // (= violin の縦の広がり)。min/max は送った配列の端であって
+            // 描画位置ではないので比べない。
+            return {
+                mean: cd.mean, med: cd.med, q1: cd.q1, q3: cd.q3,
+                lf: cd.lf, uf: cd.uf, bandwidth: cd.bandwidth,
+                span: Array.from(cd.span || []),
+                density: (cd.density || []).map(p => [p.t, p.v]),
+            };
+        }""", trace)
+
+
+def _violin_fixture():
+    """MSI 風 (大量のゼロ + 重い右裾) の 1 群ぶんと、その縮約版を作る。"""
+    import numpy as np
+    import sys
+    sys.path.insert(0, "app") if "app" not in sys.path else None
+    from app.utils.display_helpers import violin_equal_mass_sample
+
+    rng = np.random.default_rng(0)
+    v = np.concatenate([np.zeros(12000), rng.lognormal(3, 1.6, 8000)])
+    v = np.round(v, 4)
+    ys, bw, span = violin_equal_mass_sample(v)
+    base = dict(type="violin", box_visible=True, meanline_visible=True,
+                points=False)
+    full = dict(base, y=v.tolist())
+    small = dict(base, y=[float(x) for x in ys], bandwidth=float(bw),
+                 span=[float(span[0]), float(span[1])], spanmode="manual")
+    return full, small, v
+
+
+def test_violin_downsample_keeps_the_rendered_distribution(page):
+    """★ 実ブラウザで、縮約前後の KDE 曲線と箱ひげ統計が一致すること。"""
+    full_tr, small_tr, v = _violin_fixture()
+    axis = float(v.max() - v.min())
+
+    full = _violin_calc(page, full_tr)
+    small = _violin_calc(page, small_tr)
+
+    assert len(small_tr["y"]) == 256, "縮約されていない"
+
+    # 帯域幅が引き継がれていること（既定に任せると約 1.7 倍に広がる）
+    assert abs(small["bandwidth"] - full["bandwidth"]) / full["bandwidth"] < 1e-6, \
+        f"帯域幅が違う: {full['bandwidth']} -> {small['bandwidth']}"
+
+    # 実際に描かれる線の位置（平均線・中央値・箱・ひげ）を軸の高さ比で見る
+    for k in ("mean", "med", "q1", "q3", "lf", "uf"):
+        d = abs(small[k] - full[k]) / axis
+        assert d < 0.005, f"{k} が軸の {d:.2%} ずれた ({full[k]} -> {small[k]})"
+
+    # violin の縦の広がり。span を渡し忘れると縮約後の配列の端から作られて縮む。
+    for i, edge in enumerate(("下端", "上端")):
+        d = abs(small["span"][i] - full["span"][i]) / axis
+        assert d < 0.005, f"span の{edge}が軸の {d:.2%} ずれた"
+
+    # 密度曲線そのもの。plotly が返す (座標, 密度) を共通格子へ寄せて比べる。
+    import numpy as np
+    fa, sa = np.asarray(full["density"]), np.asarray(small["density"])
+    assert fa.size and sa.size, "密度が取れていない"
+    grid = np.linspace(max(fa[:, 0].min(), sa[:, 0].min()),
+                       min(fa[:, 0].max(), sa[:, 0].max()), 400)
+    fd = np.interp(grid, fa[:, 0], fa[:, 1])
+    sd = np.interp(grid, sa[:, 0], sa[:, 1])
+    worst = float(np.max(np.abs(fd - sd)) / fd.max())
+    assert worst < 0.02, f"密度曲線が最大 {worst:.2%} ずれた"
+
+
+def test_violin_downsample_without_bandwidth_visibly_differs(page):
+    """★ 上のテストが空振りでないことの番人。
+
+    bandwidth / span を渡さずに 256 点だけ送ると、plotly の既定は点数から
+    帯域幅を決める (n^-0.2) ため KDE がなまり、縦の広がりも縮む。
+    「同じになる」テストは、こうして **壊した版がちゃんと落ちる**ことまで
+    示さないと、実は何も検証していない可能性が残る。
+    """
+    import numpy as np
+    full_tr, small_tr, v = _violin_fixture()
+    axis = float(v.max() - v.min())
+
+    naive = {k: val for k, val in small_tr.items()
+             if k not in ("bandwidth", "span", "spanmode")}
+    full = _violin_calc(page, full_tr)
+    bad = _violin_calc(page, naive)
+
+    # 帯域幅がはっきり変わる。
+    # ★ 向きは分布による。plotly の既定は
+    #     max(1.059*min(sd, IQR/1.349)*n^-0.2,  span/100)
+    #   で、裾の重い分布では **span/100 の下限側が効く**。縮約すると配列の
+    #   span が縮むので、この場合は逆に帯域幅が狭くなる (実測 36.8 -> 13.9)。
+    #   どちらへ転んでも「既定任せでは別物になる」ことが示せればよい。
+    rel = abs(bad["bandwidth"] - full["bandwidth"]) / full["bandwidth"]
+    assert rel > 0.5, \
+        f"既定の帯域幅が変わらない: {full['bandwidth']} -> {bad['bandwidth']}"
+
+    # 縦の広がりも縮む
+    assert abs(bad["span"][1] - full["span"][1]) / axis > 0.005, \
+        "span を渡さなくても縦の広がりが変わらない"
+
+    # 密度曲線もはっきりずれる
+    fa, ba = np.asarray(full["density"]), np.asarray(bad["density"])
+    grid = np.linspace(max(fa[:, 0].min(), ba[:, 0].min()),
+                       min(fa[:, 0].max(), ba[:, 0].max()), 400)
+    worst = float(np.max(np.abs(np.interp(grid, fa[:, 0], fa[:, 1])
+                                - np.interp(grid, ba[:, 0], ba[:, 1]))) / fa[:, 1].max())
+    assert worst > 0.02, f"壊した版が許容内に収まってしまった ({worst:.2%})"
