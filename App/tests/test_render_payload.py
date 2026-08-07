@@ -677,7 +677,7 @@ def test_feature_plot_renders_webgl_and_stores_figures_serverside(
         # States(7): marker_size, colorscale, rds_path, cache_dir,
         #            rotation_store, deg_data, session_id
         args=["mz_100", "S1", None, None, {}, 0, 0, False,
-              0, "Plasma", rds_path, "/tmp/cache", {}, None, session_id],
+              0, "Plasma", [], rds_path, "/tmp/cache", {}, None, session_id],
         triggered_prop="feature_select.value")
 
     figs = _graph_figures(resp["feature_plot_container"]["children"],
@@ -717,7 +717,7 @@ def test_feature_geometry_is_stable_across_intensity_range(
         resp = _call_callback(
             dash_app, "feature_plot_container",
             args=["mz_100", "S1", imin, None, {}, 0, 0, False,
-                  0, "Plasma", rds_path, "/tmp/cache", {}, None, "sess-mask"],
+                  0, "Plasma", [], rds_path, "/tmp/cache", {}, None, "sess-mask"],
             triggered_prop="feature_intensity_min.value")
         figs = _graph_figures(resp["feature_plot_container"]["children"],
                               id_type="feature_graph")
@@ -1080,7 +1080,7 @@ def _feature_figs(dash_app, monkeypatch, marker_size, colorscale):
     resp = _call_callback(
         dash_app, "feature_plot_container",
         args=["mz_100", "S1", None, None, {}, 0, 0, False,
-              marker_size, colorscale, rds_path, "/tmp/cache", {}, None,
+              marker_size, colorscale, [], rds_path, "/tmp/cache", {}, None,
               "sess-ovr"],
         triggered_prop="feature_select.value")
     return _graph_figures(resp["feature_plot_container"]["children"],

@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from dash import (Input, Output, State, callback, ctx, no_update, html, dcc,
-                  clientside_callback, ClientsideFunction)
+                  clientside_callback, ClientsideFunction, Patch, ALL)
 from dash.exceptions import PreventUpdate
 
 from app.utils.color_utils import (
@@ -271,6 +271,13 @@ def update_feature_options_on_mz_filter(mz_filtered, rds_path=None):
 #   tooltip に「閾値未満」と明示する。
 _BELOW_THRESHOLD_NOTE = "（閾値未満）"
 
+# 殻 (グラフの枠・座標・TIC 背景) を作り直さなくてよいトリガ。
+# これ以外 (サンプル・行数・回転・表示名など) は幾何が変わるので作り直す。
+_FEATURE_DATA_ONLY_TRIGGERS = {
+    "feature_select", "feature_intensity_min", "feature_intensity_max",
+    "feature_show_compound_names",
+}
+
 
 def _feature_intensity_style(expr_raw, display_min, display_max):
     """強度から (色, 不透明度, 閾値未満の注記) の 3 配列を作る。
@@ -295,12 +302,82 @@ def _feature_intensity_style(expr_raw, display_min, display_max):
             below)
 
 
+def _feature_display_range(expr_vals, intensity_min, intensity_max):
+    """強度レンジ (%) から表示下限/上限の実値を出す。None なら描くものが無い。
+
+    CB1 (殻の構築) と CB2 (差分更新) の両方が使う。片方だけ直すと
+    「画面と一括保存で色域が違う」形で壊れるので 1 か所にまとめる。
+    """
+    if len(expr_vals) == 0 or np.all(np.isnan(expr_vals)):
+        return None
+    global_min = float(np.nanmin(expr_vals))
+    global_max = float(np.nanmax(expr_vals))
+    if global_min == global_max:
+        global_max = global_min + 1.0
+    val_range = global_max - global_min
+    display_min = (global_min + (intensity_min / 100.0) * val_range
+                   if intensity_min is not None else global_min)
+    display_max = (global_min + (intensity_max / 100.0) * val_range
+                   if intensity_max is not None else global_max)
+    return display_min, display_max
+
+
+def _feature_colorbar_ticktext(intensity_min, intensity_max):
+    return [f"{int(intensity_min)}%" if intensity_min is not None else "0%",
+            f"{int(intensity_max)}%" if intensity_max is not None else "100%"]
+
+
+def _feature_graph_config(file_label, display_s):
+    """PNG ダウンロード時のファイル名を含む Graph の config。
+
+    ★ ファイル名は m/z に依存するので、図だけを差分更新するときも一緒に
+      更新しないと、**古い m/z の名前で保存される**。config は数百バイトなので
+      毎回送っても問題にならない。
+    """
+    cfg = dict(_FEATURE_IMG_CONFIG)
+    cfg["toImageButtonOptions"] = dict(
+        cfg["toImageButtonOptions"], filename=f"Feature_{file_label}_{display_s}")
+    return cfg
+
+
+def _feature_heading(feature_name, deg_data, show_compound_names, interactive_data):
+    """「いまどの m/z を見ているか」の見出し。
+
+    ver51.5 でコンテナの外に出した。m/z 切替でコンテナを作り直さなくなったため、
+    中に入れたままだと表示が古いまま残る。
+    """
+    ext_ann = interactive_data.get("feature_annotations") or {}
+    rec = ext_ann.get(feature_name)
+    annotation = ""
+    if deg_data:
+        for r in deg_data:
+            if r.get("gene") == feature_name:
+                ann = r.get("annotation", "")
+                if _is_meaningful_annotation(ann, feature_name):
+                    annotation = ann
+                break
+    if not annotation:
+        amap = interactive_data.get("annotation_map") or {}
+        cand = amap.get(feature_name)
+        if _is_meaningful_annotation(cand or "", feature_name):
+            annotation = cand
+    if show_compound_names and rec and rec.get("display_name"):
+        title_text = rec["display_name"]
+    elif annotation:
+        title_text = f"{feature_name}  ({annotation})"
+    else:
+        title_text = feature_name
+    return html.H6(title_text, className="text-center mt-2 mb-1",
+                   style={"color": "#333", "fontSize": "0.95rem"})
+
+
 # ---------------------------------------------------------------------------
 # Feature プロット（Spatial表示、Parquet高速読み込み優先 -> R fallback）
 # ---------------------------------------------------------------------------
 
 @callback(
     [Output("feature_plot_container", "children"),
+     Output("feature_plot_heading", "children"),
      Output("feature_intensity_min", "placeholder"),
      Output("feature_intensity_max", "placeholder")],
     [Input("feature_select", "value"),
@@ -320,6 +397,11 @@ def _feature_intensity_style(expr_raw, display_min, display_max):
     # (visible_mask)、点の集合そのものが変わるので restyle では表現できない。
     [State("feature_marker_size", "value"),
      State("feature_colorscale", "value"),
+     # ver51.5: いまブラウザに実在するグラフの id。サーバ側にメモを置く代わりに
+     # これで「殻を作り直す必要があるか」を判断する。ページを再読み込みすると
+     # 空になるので、**リロード後に自動で復帰する** (メモ方式だと画面が白いまま
+     # 残りうる)。
+     State({"type": "feature_graph", "index": ALL}, "id"),
      State("seurat_rds_path_store", "data"),
      State("seurat_cache_dir_store", "data"),
      State("spatial_rotation_store", "data"),
@@ -331,7 +413,7 @@ def update_feature_plot(feature_name, sample,
                         intensity_min, intensity_max,
                         name_map, _fs_trigger, rows,
                         show_compound_names,
-                        marker_size, colorscale,
+                        marker_size, colorscale, existing_graph_ids,
                         rds_path, cache_dir_str, rotation_store,
                         deg_data, session_id=None):
     from app.callbacks.interactive_callbacks import (
@@ -348,7 +430,8 @@ def update_feature_plot(feature_name, sample,
         return _update_feature_plot_inner(
             _pt, feature_name, sample, intensity_min, intensity_max,
             name_map, _fs_trigger, rows, show_compound_names,
-            marker_size, colorscale, rds_path, cache_dir_str, rotation_store,
+            marker_size, colorscale, existing_graph_ids,
+            rds_path, cache_dir_str, rotation_store,
             deg_data, session_id,
             _transform_coords, _calc_zero_gap_marker_size,
             _round_for_display, _round_values_for_display,
@@ -358,20 +441,21 @@ def update_feature_plot(feature_name, sample,
 def _update_feature_plot_inner(
         _pt, feature_name, sample, intensity_min, intensity_max,
         name_map, _fs_trigger, rows, show_compound_names,
-        marker_size, colorscale, rds_path, cache_dir_str, rotation_store,
+        marker_size, colorscale, existing_graph_ids,
+        rds_path, cache_dir_str, rotation_store,
         deg_data, session_id,
         _transform_coords, _calc_zero_gap_marker_size,
         _round_for_display, _round_values_for_display,
         _interactive_data, _bridge, set_export_figures):
     """update_feature_plot の本体 (perf_trace で包むために分離した)。"""
 
-    def _finish(children, ph_min, ph_max, fig_dicts):
+    def _finish(children, ph_min, ph_max, fig_dicts, heading=no_update):
         """ver46.1: 一括保存用 figure はサーバ側に保持し、ブラウザへは送らない。"""
         set_export_figures("feature", session_id, rds_path, fig_dicts)
         # ver51.5: PERF_TRACE=1 のときだけ転送量を測る (既定 OFF)。
         _pt.note(tiles=len(fig_dicts))
         _pt.measure_payload(children, "children")
-        return children, ph_min, ph_max
+        return children, heading, ph_min, ph_max
     # 名前変更・フルスクリーン閉鎖トリガーだがFeature未選択 -> スキップ
     if ctx.triggered_id in ("sample_name_map_store", "fullscreen_closed_trigger") and not feature_name:
         return no_update, no_update, no_update
@@ -393,6 +477,23 @@ def _update_feature_plot_inner(
         rotation_store = {}
     if not name_map:
         name_map = {}
+
+    # ver51.5: 殻 (グラフの枠・座標・TIC 背景) を作り直す必要があるかを判断する。
+    # m/z や強度レンジを変えただけなら幾何は一切変わらないので、殻は据え置いて
+    # patch_feature_intensity が figure だけを差分更新する。
+    #
+    # ★ 判断材料は **ブラウザに実在するグラフの id**。サーバ側にメモを持つと、
+    #   ページ再読み込みでブラウザ側だけ空になったときに「作り直し不要」と
+    #   誤判断して画面が白いまま残る。実在 id を見れば自動で復帰する。
+    samples_to_show = [sample] if sample else sorted(df["Sample"].unique())
+    heading = _feature_heading(feature_name, deg_data, show_compound_names,
+                               _interactive_data)
+    have = [str(d.get("index")) for d in (existing_graph_ids or []) if d]
+    if (ctx.triggered_id in _FEATURE_DATA_ONLY_TRIGGERS
+            and have == [str(s) for s in samples_to_show]):
+        _pt.note(patched=1)
+        # 見出しだけ更新して抜ける。図は CB2 が差分更新する。
+        return no_update, heading, no_update, no_update
 
     try:
         # 必要時に expression_matrix.parquet を生成（初回 feature plot で 20-60 秒、以降は即座）
@@ -420,34 +521,17 @@ def _update_feature_plot_inner(
         df_plot = df[_cols].copy()
         df_plot["_expression"] = np.asarray(expression)
 
-        # 表示対象サンプル
-        if sample:
-            samples_to_show = [sample]
-        else:
-            samples_to_show = sorted(df_plot["Sample"].unique())
+        # 表示対象サンプル (早期判定で既に決めてある)
 
         # 全サンプル共通のカラースケール範囲を計算
         expr_vals = df_plot.loc[
             df_plot["Sample"].isin(samples_to_show), "_expression"
         ].values
-        if len(expr_vals) == 0 or np.all(np.isnan(expr_vals)):
+        rng = _feature_display_range(expr_vals, intensity_min, intensity_max)
+        if rng is None:
             return _finish(html.Div("発現データがありません", className="text-muted p-3"),
-                           no_update, no_update, [])
-        global_min = float(np.nanmin(expr_vals))
-        global_max = float(np.nanmax(expr_vals))
-        if global_min == global_max:
-            global_max = global_min + 1.0
-
-        # ユーザー指定の Intensity Range（パーセント値）を強度値に変換
-        val_range = global_max - global_min
-        if intensity_min is not None:
-            display_min = global_min + (intensity_min / 100.0) * val_range
-        else:
-            display_min = global_min
-        if intensity_max is not None:
-            display_max = global_min + (intensity_max / 100.0) * val_range
-        else:
-            display_max = global_max
+                           no_update, no_update, [], heading=heading)
+        display_min, display_max = rng
 
         auto_mode = (marker_size is None or marker_size <= 0)
 
@@ -501,10 +585,8 @@ def _update_feature_plot_inner(
                 marker_opts["colorbar"] = dict(
                     title=dict(text="Intensity", side="right"),
                     tickvals=[display_min, display_max],
-                    ticktext=[
-                        f"{int(intensity_min)}%" if intensity_min is not None else "0%",
-                        f"{int(intensity_max)}%" if intensity_max is not None else "100%",
-                    ],
+                    ticktext=_feature_colorbar_ticktext(intensity_min,
+                                                       intensity_max),
                     len=0.8,
                     thickness=15,
                 )
@@ -588,9 +670,7 @@ def _update_feature_plot_inner(
 
             export_figs.append((f"Feature_{file_label}_{display_s}", fig.to_dict()))
 
-            cfg = dict(_FEATURE_IMG_CONFIG)
-            cfg["toImageButtonOptions"] = dict(cfg["toImageButtonOptions"],
-                                               filename=f"Feature_{file_label}_{display_s}")
+            cfg = _feature_graph_config(file_label, display_s)
             if rows:
                 # 行数指定: 1 行あたりの列数 = ceil(サンプル数 / 行数)。
                 # 結果として最大 rows 行に折り返す（サンプル数 < rows なら 1 行）。
@@ -621,40 +701,167 @@ def _update_feature_plot_inner(
             children=graphs,
         )
 
-        # --- 見出し（表示トグルで 化合物名 ⇄ m/z を切替）---
-        ext_ann = _interactive_data.get("feature_annotations") or {}
-        rec = ext_ann.get(feature_name)
-        annotation = ""
-        if deg_data:
-            for r in deg_data:
-                if r.get("gene") == feature_name:
-                    ann = r.get("annotation", "")
-                    if _is_meaningful_annotation(ann, feature_name):
-                        annotation = ann
-                    break
-        # deg に無ければ annotation_map（SCiLS/CSV 由来）から補完（見出しの m/z 残存を解消）
-        if not annotation:
-            amap = _interactive_data.get("annotation_map") or {}
-            cand = amap.get(feature_name)
-            if _is_meaningful_annotation(cand or "", feature_name):
-                annotation = cand
-        if show_compound_names and rec and rec.get("display_name"):
-            title_text = rec["display_name"]
-        elif annotation:
-            title_text = f"{feature_name}  ({annotation})"
-        else:
-            title_text = feature_name
-        heading = html.H6(
-            title_text,
-            className="text-center mt-2 mb-1",
-            style={"color": "#333", "fontSize": "0.95rem"},
-        )
-
-        return _finish(html.Div([heading, container]), "0", "100", export_figs)
+        return _finish(container, "0", "100", export_figs, heading=heading)
 
     except Exception as e:
         return _finish(html.Div(f"\u30a8\u30e9\u30fc: {e}", className="text-danger p-3"),
                        no_update, no_update, [])
+
+
+# ---------------------------------------------------------------------------
+# m/z 切替の差分更新 (ver51.5)
+# ---------------------------------------------------------------------------
+# 幾何 (座標・CellID・TIC 背景) は m/z に依存しないので、殻は据え置いて
+# 発現トレースの color / opacity / 注記だけを差し替える。
+#
+# 実測 (50,000 点 / タイル、gzip 後):
+#     殻ごと送る 1.12MB → 差分 0.180MB (color 0.135 + opacity 0.033 + 注記 0.012)
+#
+# 前例は interactive_loupe.umap_polygon_overlay (末尾トレースを Patch で更新)。
+#
+# ★ config も一緒に返す。PNG ダウンロードのファイル名が m/z を含むので、
+#   図だけ更新すると**古い m/z の名前で保存される**。config は数百バイト。
+#
+# ★ 一括保存はサーバ保持の figure を使うので、そちらにも同じ差分を当てる。
+#   でないと「画面と保存 PNG で m/z が違う」ことになる。
+
+@callback(
+    [Output({"type": "feature_graph", "index": ALL}, "figure"),
+     Output({"type": "feature_graph", "index": ALL}, "config")],
+    [Input("feature_select", "value"),
+     Input("feature_intensity_min", "value"),
+     Input("feature_intensity_max", "value"),
+     Input("feature_show_compound_names", "value")],
+    [State("feature_sample_select", "value"),
+     State("sample_name_map_store", "data"),
+     State("seurat_rds_path_store", "data"),
+     State("seurat_cache_dir_store", "data"),
+     State("session_id_store", "data")],
+    prevent_initial_call=True,
+)
+def patch_feature_intensity(feature_name, intensity_min, intensity_max,
+                            show_compound_names, sample, name_map, rds_path,
+                            cache_dir_str, session_id=None):
+    """m/z / 強度レンジの変更を figure の差分更新で反映する。"""
+    from app.callbacks.interactive_callbacks import (
+        _interactive_data, _bridge, _set_active_key,
+        get_export_figures, set_export_figures)
+    from app.utils.perf_trace import perf_trace
+
+    out_ids = [o["id"] for o in (ctx.outputs_list[0] or [])]
+    n = len(out_ids)
+    if not n:
+        # 殻がまだ無い (初回描画中など)。update_feature_plot が作る。
+        return [], []
+    if not feature_name or not rds_path:
+        return [no_update] * n, [no_update] * n
+
+    with perf_trace("patch_feature_intensity", tiles=n) as _pt:
+        _set_active_key(rds_path)
+        df = _interactive_data.get("plot_data")
+        if df is None or "SpatialX" not in df.columns:
+            return [no_update] * n, [no_update] * n
+
+        with _pt.phase("read"):
+            expression = None
+            if cache_dir_str:
+                expression = _bridge.get_feature_expression_fast(
+                    Path(cache_dir_str), feature_name)
+            if expression is None:
+                expression = _bridge.get_feature_expression(rds_path, feature_name)
+
+        samples_to_show = [sample] if sample else sorted(df["Sample"].unique())
+        _cols = [c for c in ("Sample", "TotalCount") if c in df.columns]
+        df_plot = df[_cols].copy()
+        df_plot["_expression"] = np.asarray(expression)
+
+        expr_vals = df_plot.loc[
+            df_plot["Sample"].isin(samples_to_show), "_expression"].values
+        rng = _feature_display_range(expr_vals, intensity_min, intensity_max)
+        if rng is None:
+            return [no_update] * n, [no_update] * n
+        display_min, display_max = rng
+
+        hover_label = _label_from_active_state(
+            feature_name, style="paren", show_compound=bool(show_compound_names))
+        file_label = _label_from_active_state(feature_name, style="filename")
+        ticktext = _feature_colorbar_ticktext(intensity_min, intensity_max)
+
+        # 一括保存用にサーバが保持している figure にも同じ差分を当てる
+        # ★ 保存用 figure の名前は **表示名** (name_map 適用後) で作られている。
+        #   グラフ id は生のサンプル名なので、同じ変換を通してから対応付ける。
+        stored = list(get_export_figures("feature", session_id, rds_path) or [])
+        stored_by_name = {name: idx for idx, (name, _fd) in enumerate(stored)}
+
+        figures, configs = [], []
+        measured = {"color": [], "opacity": [], "note": []}
+        with _pt.phase("build"):
+            for oid in out_ids:
+                s_key = str(oid.get("index"))
+                df_s = df_plot[df_plot["Sample"].astype(str) == s_key]
+                if df_s.empty:
+                    figures.append(no_update)
+                    configs.append(no_update)
+                    continue
+                color, alpha, below = _feature_intensity_style(
+                    df_s["_expression"].values, display_min, display_max)
+
+                patched = Patch()
+                # 発現トレースは常に最後。TIC 背景 (あれば) は触らない。
+                patched["data"][-1]["marker"]["color"] = color
+                patched["data"][-1]["marker"]["opacity"] = alpha
+                patched["data"][-1]["marker"]["cmin"] = display_min
+                patched["data"][-1]["marker"]["cmax"] = display_max
+                patched["data"][-1]["customdata"] = below
+                patched["data"][-1]["meta"] = hover_label
+                figures.append(patched)
+                configs.append(_feature_graph_config(
+                    file_label, _display_name(s_key, name_map or {})))
+
+                display_s = _display_name(s_key, name_map or {})
+                new_name = f"Feature_{file_label}_{display_s}"
+                si = next((stored_by_name[k] for k in stored_by_name
+                           if k.endswith(f"_{display_s}")), None)
+                if si is not None:
+                    stored[si] = _apply_feature_data_to_stored(
+                        stored[si], color, alpha, below, display_min,
+                        display_max, hover_label, ticktext, new_name)
+                measured["color"].append(color)
+                measured["opacity"].append(alpha)
+                measured["note"].append(below)
+
+        if stored:
+            set_export_figures("feature", session_id, rds_path, stored)
+        # Patch オブジェクトは JSON 化できないので、実際に流れる配列そのものを測る
+        _pt.measure_payload(measured, "patch")
+        return figures, configs
+
+
+def _apply_feature_data_to_stored(entry, color, alpha, below, cmin, cmax,
+                                  hover_label, ticktext, new_name):
+    """サーバ保持の一括保存用 figure に、画面と同じ差分を当てる。
+
+    ここを忘れると「画面は新しい m/z、保存 PNG は古い m/z」になる。
+    """
+    try:
+        name, fig_d = entry
+        tr = (fig_d.get("data") or [])[-1]
+        marker = tr.setdefault("marker", {})
+        marker["color"] = color
+        marker["opacity"] = alpha
+        marker["cmin"] = cmin
+        marker["cmax"] = cmax
+        if isinstance(marker.get("colorbar"), dict):
+            marker["colorbar"]["ticktext"] = ticktext
+        tr["customdata"] = below
+        tr["meta"] = hover_label
+        entry_list = list(entry)
+        entry_list[0] = new_name
+        # tuple は書き換えられないので呼び出し側のリスト要素を差し替える
+        return tuple(entry_list)
+    except Exception as e:  # noqa: BLE001 - 保存用の同期失敗で画面を壊さない
+        logger.debug("一括保存用 figure の同期に失敗: %s", e)
+        return entry
 
 
 # ---------------------------------------------------------------------------
