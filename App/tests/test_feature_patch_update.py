@@ -235,3 +235,119 @@ def test_shell_is_reused_only_for_data_only_triggers(synthetic, monkeypatch):
         0, "Plasma", [], rds, "/tmp/cache", {}, None, "sess")
     assert children2 is not _NU, "グラフが無いのに作り直していない"
     assert calls["built"] > 0
+
+
+# ---------------------------------------------------------------------------
+# カラーバーの同期 (ver51.6)
+# ---------------------------------------------------------------------------
+# 外部監査が拾った取りこぼし。差分更新は色域 (cmin/cmax) を動かすのに、
+# カラーバーの目盛りを一緒に動かしていなかった。ラベル ("0%"〜"100%") は
+# 強度レンジに、目盛り位置は cmin/cmax に対応するので、放置すると
+# **カラーバーの読み方が狂う**。しかも保存用 figure 側だけは ticktext を
+# 直していたので、画面と PNG で食い違う状態だった。
+
+def test_colorbar_ticks_follow_the_intensity_range(synthetic, monkeypatch):
+    """★ 強度レンジを変えると目盛りの位置とラベルの両方が追従すること。"""
+    _df, rds = synthetic
+    _set_outputs(monkeypatch, ["S1"])
+    figs, _c = ID.patch_feature_intensity(
+        "mz_100", 20, 80, False, None, {}, rds, "/tmp/cache", "sess")
+    loc = _ops(figs[0])
+
+    tickvals = loc[("data", -1, "marker", "colorbar", "tickvals")]
+    ticktext = loc[("data", -1, "marker", "colorbar", "ticktext")]
+    assert ticktext == ["20%", "80%"]
+    # 目盛りの位置は色域そのもの。ずれるとバーの読み方が狂う。
+    assert tickvals == [loc[("data", -1, "marker", "cmin")],
+                        loc[("data", -1, "marker", "cmax")]]
+
+
+def test_colorbar_is_only_touched_on_the_tile_that_has_one(synthetic, monkeypatch):
+    """★ カラーバーを持たないタイルには書かないこと。
+
+    殻は最後のタイルにだけカラーバーを付けている。全タイルに書くと、
+    Patch がそこに **新しいカラーバーを生やす**。
+    """
+    _df, rds = synthetic
+    _set_outputs(monkeypatch, ["S1", "S2"])
+    figs, _c = ID.patch_feature_intensity(
+        "mz_100", None, None, False, None, {}, rds, "/tmp/cache", "sess")
+
+    def has_colorbar(f):
+        return any("colorbar" in k for k in _ops(f))
+
+    assert not has_colorbar(figs[0]), "先頭タイルにカラーバーを書いている"
+    assert has_colorbar(figs[-1]), "最後のタイルのカラーバーが更新されていない"
+
+
+def test_stored_export_colorbar_matches_the_screen(synthetic, monkeypatch):
+    """★ 保存用 figure のカラーバーも画面と一致すること。"""
+    from app.callbacks.interactive_callbacks import (
+        get_export_figures, set_export_figures)
+    _df, rds = synthetic
+    n = 144
+    stored = [("Feature_mz_OLD_S1", {"data": [
+        {"marker": {"color": [0.0] * n, "opacity": [1.0] * n,
+                    "colorbar": {"tickvals": [0, 1],
+                                 "ticktext": ["0%", "100%"]}},
+         "customdata": [""] * n, "meta": "old"}]})]
+    set_export_figures("feature", "sess", rds, stored)
+
+    _set_outputs(monkeypatch, ["S1"])
+    figs, _c = ID.patch_feature_intensity(
+        "mz_NEW", 20, 80, False, None, {}, rds, "/tmp/cache", "sess")
+
+    screen = _ops(figs[0])
+    cb = get_export_figures("feature", "sess", rds)[0][1]["data"][-1]["marker"]["colorbar"]
+    assert cb["ticktext"] == screen[("data", -1, "marker", "colorbar", "ticktext")]
+    assert cb["tickvals"] == screen[("data", -1, "marker", "colorbar", "tickvals")]
+
+
+# ---------------------------------------------------------------------------
+# 発現量が壊れているときの番人 (ver51.6)
+# ---------------------------------------------------------------------------
+# 外部監査の指摘。差分更新は発現量を検証せずに np.asarray して DataFrame へ
+# 代入していた。None や長さ不一致だと pandas が例外を投げ、**m/z を変える
+# たびにコールバックが落ちる**。R フォールバックはヘッダ 1 行ぶん長い Series を
+# 返しうるので、長さのずれは実際に起こる。
+
+@pytest.mark.parametrize("broken", ["none", "too_long", "too_short"])
+def test_patch_does_nothing_when_expression_is_unusable(synthetic, monkeypatch,
+                                                        broken):
+    """★ 落ちずに no_update を返すこと (画面は前の m/z のまま残る)。"""
+    import app.callbacks.interactive_callbacks as IC
+    df, rds = synthetic
+    _set_outputs(monkeypatch, ["S1", "S2"])
+
+    bad = {"none": None,
+           "too_long": pd.Series(np.zeros(len(df) + 1)),
+           "too_short": pd.Series(np.zeros(len(df) - 1))}[broken]
+    monkeypatch.setattr(IC._bridge, "get_feature_expression_fast",
+                        lambda c, f: bad, raising=False)
+    monkeypatch.setattr(IC._bridge, "get_feature_expression",
+                        lambda p, f: bad, raising=False)
+
+    figs, cfgs = ID.patch_feature_intensity(
+        "mz_100", None, None, False, None, {}, rds, "/tmp/cache", "sess")
+    from dash import no_update as _NU
+    assert figs == [_NU, _NU] and cfgs == [_NU, _NU]
+
+
+def test_shell_shows_a_message_when_expression_is_unusable(synthetic, monkeypatch):
+    """殻の側も同じ条件で落ちず、理由を表示すること。"""
+    import app.callbacks.interactive_callbacks as IC
+    _df, rds = synthetic
+
+    class _Ctx:
+        triggered_id = "feature_select"
+        outputs_list = []
+    monkeypatch.setattr(ID, "ctx", _Ctx)
+    monkeypatch.setattr(IC._bridge, "get_feature_expression_fast",
+                        lambda c, f: None, raising=False)
+    monkeypatch.setattr(IC._bridge, "get_feature_expression",
+                        lambda p, f: None, raising=False)
+
+    children, _h, _p1, _p2 = ID.update_feature_plot(
+        "mz_100", None, None, None, {}, 0, 0, False,
+        0, "Plasma", [], rds, "/tmp/cache", {}, None, "sess")
+    assert "発現量" in str(children)

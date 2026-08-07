@@ -1719,50 +1719,75 @@ def auto_detect_observed_peaks(n, table_data, search_window, cache_dir,
     # サンプル指定: __all__ 以外ならそのサンプルのみ読込
     target_sample = cal_sample_value if cal_sample_value and cal_sample_value != "__all__" else None
 
-    # --- データ読み込み: 優先順位 1) cache_dir  2) data_folder 生データ ---
-    expr_df = None
-    if cache_dir:
-        # サンプル固有のキャッシュがあればそちらを優先
-        if target_sample:
-            sample_expr_path = Path(cache_dir) / f"{target_sample}_expression.parquet"
-            if sample_expr_path.exists():
-                try:
-                    expr_df = pd.read_parquet(sample_expr_path)
-                except Exception:
-                    expr_df = None
-        # サンプル固有キャッシュがなければ全サンプル結合データ
-        if expr_df is None:
-            expr_path = Path(cache_dir) / "expression_matrix.parquet"
-            if expr_path.exists():
-                try:
-                    expr_df = pd.read_parquet(expr_path)
-                except Exception:
-                    expr_df = None
+    sw = float(search_window or 0.5)
 
-    if expr_df is None:
-        # data_folder から生データを読み込むフォールバック
+    def _mz_map(columns):
+        """Feature名 → m/z数値マッピング"""
+        out = {}
+        for col in columns:
+            match = re.search(r"(\d+\.?\d*)", str(col))
+            if match:
+                out[str(col)] = float(match.group(1))
+        return out
+
+    # --- データ読み込み: 優先順位 1) cache_dir  2) data_folder 生データ ---
+    # ★ ver51.6: ここも列指定なしの read_parquet だった (監査指摘)。実際に参照
+    #   するのは参照 m/z の ±search_window 内の列だけなので、**列名だけ先に
+    #   スキーマから取り、窓内の列だけ読む**。実データ規模で 1 回 2.32GB を
+    #   数十列ぶんに落とせる。interactive_calibration の 3 経路と同じ手当て。
+    #   m/z の抽出は従来どおりこの関数自身の正規表現を使う (共通ヘルパーの
+    #   抽出規則と混ぜると、選ばれるピークが変わりうるため)。
+    from app.callbacks.interactive_callbacks import _bridge
+
+    expr_path = None
+    if cache_dir:
+        if target_sample:
+            p = Path(cache_dir) / f"{target_sample}_expression.parquet"
+            if p.exists():
+                expr_path = p
+        if expr_path is None:
+            p = Path(cache_dir) / "expression_matrix.parquet"
+            if p.exists():
+                expr_path = p
+
+    mz_values, avg_spectrum = {}, None
+    if expr_path is not None:
+        try:
+            names = _bridge._parquet_column_names(expr_path)
+            if names:
+                mz_values = _mz_map(names)
+                mz_arr = np.array(list(mz_values.values()))
+                cols = list(mz_values.keys())
+                refs = []
+                for row in table_data:
+                    try:
+                        refs.append(float(row.get("ref_mz")))
+                    except (TypeError, ValueError):
+                        continue
+                wanted = sorted({
+                    cols[i] for r in refs
+                    for i in np.where(np.abs(mz_arr - r) <= sw)[0]})
+                avg_spectrum = _bridge.get_feature_means(
+                    Path(cache_dir), wanted, expr_path=expr_path)
+        except Exception:
+            avg_spectrum = None
+
+    if avg_spectrum is None:
+        # data_folder から生データを読み込むフォールバック (1 行の平均スペクトル)
         is_tims = bool(analysis_method_tims)
         expr_df = read_raw_mz_spectrum(data_folder, is_tims=is_tims,
                                        sample_name=target_sample)
-
-    if expr_df is None:
-        return no_update, "⚠ データが見つかりません。データフォルダを確認してください。"
-
-    # Feature名 → m/z数値マッピング
-    mz_values = {}
-    for col in expr_df.columns:
-        match = re.search(r"(\d+\.?\d*)", col)
-        if match:
-            mz_values[col] = float(match.group(1))
+        if expr_df is None:
+            return no_update, "⚠ データが見つかりません。データフォルダを確認してください。"
+        mz_values = _mz_map(expr_df.columns)
+        avg_spectrum = {f: float(expr_df[f].mean()) for f in mz_values}
 
     if not mz_values:
         return no_update, "⚠ m/z値を含むフィーチャーが見つかりません。"
 
     mz_array = np.array(list(mz_values.values()))
     feature_names = list(mz_values.keys())
-    avg_spectrum = {f: float(expr_df[f].mean()) for f in feature_names}
 
-    sw = float(search_window or 0.5)
     matched_count = 0
     updated_data = []
 

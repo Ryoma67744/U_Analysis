@@ -504,7 +504,7 @@ class SeuratBridge:
                            feature_name, e)
             return None
 
-    def get_feature_means(self, cache_dir, feature_names):
+    def get_feature_means(self, cache_dir, feature_names, expr_path=None):
         """指定した feature 列**だけ**を読んで列平均を返す (ver51.5)。
 
         キャリブレーションは全 feature の平均スペクトルを作っていたが、実際に
@@ -517,9 +517,13 @@ class SeuratBridge:
         窓内の数十列だけ読めば同じ答えが出る。列名は `_parquet_column_names` の
         キャッシュから引けるので、どの列が窓内かの判定に I/O は要らない。
 
+        expr_path: 既定は cache_dir の expression_matrix.parquet。サンプル固有の
+            `<sample>_expression.parquet` を読みたいときだけ明示する (ver51.6)。
+
         Returns: {feature_name: mean}。parquet 不在などで読めなければ None。
         """
-        expr_path = Path(cache_dir) / "expression_matrix.parquet"
+        expr_path = (Path(expr_path) if expr_path is not None
+                     else Path(cache_dir) / "expression_matrix.parquet")
         if not expr_path.exists():
             return None
         wanted = [str(f) for f in (feature_names or [])]

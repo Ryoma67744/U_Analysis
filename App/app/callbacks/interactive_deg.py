@@ -458,7 +458,9 @@ def _update_feature_plot_inner(
         return children, heading, ph_min, ph_max
     # 名前変更・フルスクリーン閉鎖トリガーだがFeature未選択 -> スキップ
     if ctx.triggered_id in ("sample_name_map_store", "fullscreen_closed_trigger") and not feature_name:
-        return no_update, no_update, no_update
+        # ver51.6: Output は 4 つ (children / heading / 下限 / 上限)。
+        # 見出しの Output を足したときにこの分岐だけ 3 値のままだった。
+        return no_update, no_update, no_update, no_update
 
     if not feature_name or not rds_path:
         return _finish(html.Div("m/z Feature を選択してください", className="text-muted p-3"),
@@ -512,6 +514,14 @@ def _update_feature_plot_inner(
         # Parquet にない場合は R subprocess で取得
         if expression is None:
             expression = _bridge.get_feature_expression(rds_path, feature_name)
+
+        # ver51.6: 差分更新側と同じ番人。取れない/長さが合わないまま
+        # np.asarray して代入すると pandas が例外を投げ、画面が固まる。
+        if expression is None or len(np.asarray(expression)) != len(df):
+            logger.warning("発現量を取得できません (feature=%s)", feature_name)
+            return _finish(
+                html.Div("発現量を取得できませんでした", className="text-muted p-3"),
+                no_update, no_update, [])
 
         # expression を df に結合（CellID順で対応）
         # ver46.1: 発現量 1 列を足すためだけに 10 万行の全列コピーをしていた。
@@ -770,6 +780,14 @@ def patch_feature_intensity(feature_name, intensity_min, intensity_max,
             if expression is None:
                 expression = _bridge.get_feature_expression(rds_path, feature_name)
 
+        # ver51.6: 発現量が取れない / 行数が合わないときは何も差し替えない。
+        # ★ ここを素通りさせると np.asarray(None) や長さ不一致で pandas が
+        #   例外を投げ、m/z を変えるたびにコールバックが落ちる。R フォールバック
+        #   がヘッダ 1 行ぶん長い Series を返しうるので、長さは実際にずれうる。
+        if expression is None or len(np.asarray(expression)) != len(df):
+            logger.warning("発現量を差分更新に使えません (feature=%s)", feature_name)
+            return [no_update] * n, [no_update] * n
+
         samples_to_show = [sample] if sample else sorted(df["Sample"].unique())
         _cols = [c for c in ("Sample", "TotalCount") if c in df.columns]
         df_plot = df[_cols].copy()
@@ -795,6 +813,11 @@ def patch_feature_intensity(feature_name, intensity_min, intensity_max,
 
         figures, configs = [], []
         measured = {"color": [], "opacity": [], "note": []}
+        # カラーバーは殻を作るとき最後のタイルにだけ付けている
+        # (`is_last = (s == samples_to_show[-1])`)。差分でも同じタイルだけを
+        # 触る。持っていないタイルに colorbar を書くと、そこに新しく
+        # カラーバーが生えてしまう。
+        colorbar_index = str(out_ids[-1].get("index")) if out_ids else None
         with _pt.phase("build"):
             for oid in out_ids:
                 s_key = str(oid.get("index"))
@@ -814,6 +837,13 @@ def patch_feature_intensity(feature_name, intensity_min, intensity_max,
                 patched["data"][-1]["marker"]["cmax"] = display_max
                 patched["data"][-1]["customdata"] = below
                 patched["data"][-1]["meta"] = hover_label
+                if s_key == colorbar_index:
+                    # ★ 目盛りの位置とラベルの両方。位置は cmin/cmax に、
+                    #   ラベルは強度レンジ(%)に対応する。片方だけ直すと
+                    #   カラーバーの読み方が狂う。
+                    patched["data"][-1]["marker"]["colorbar"]["tickvals"] = [
+                        display_min, display_max]
+                    patched["data"][-1]["marker"]["colorbar"]["ticktext"] = ticktext
                 figures.append(patched)
                 configs.append(_feature_graph_config(
                     file_label, _display_name(s_key, name_map or {})))
@@ -852,6 +882,10 @@ def _apply_feature_data_to_stored(entry, color, alpha, below, cmin, cmax,
         marker["cmin"] = cmin
         marker["cmax"] = cmax
         if isinstance(marker.get("colorbar"), dict):
+            # ver51.6: 目盛りの **位置** も cmin/cmax に追従させる。
+            # ticktext だけ直すと、ラベルは新しいのに目盛り線が古い位置に
+            # 残り、カラーバーの読み方が狂う。
+            marker["colorbar"]["tickvals"] = [cmin, cmax]
             marker["colorbar"]["ticktext"] = ticktext
         tr["customdata"] = below
         tr["meta"] = hover_label
