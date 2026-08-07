@@ -13,6 +13,7 @@ from app.config import (
     DEFAULT_CALIBRATION_ENABLE, DEFAULT_CALIBRATION_MATRIX,
     DEFAULT_CALIBRATION_SEARCH_WINDOW, DEFAULT_CALIBRATION_MIN_PEAKS,
     DEFAULT_CALIBRATION_REGRESSION,
+    ANALYSIS_BUSY_POLL_INTERVAL_SEC,
 )
 from app.services.session_manager import load_last_settings
 from app.services.calibration_preset_manager import list_calibration_presets
@@ -1133,6 +1134,20 @@ def _create_run_button():
                             ["▶ 解析実行"], id="run_analysis",
                             size="lg", color="primary",
                             style={"padding": "15px 50px", "fontSize": "1.2rem"},
+                        ),
+                        # [ver51.5] 他の解析が実行中のときに理由を出す。
+                        #   停止ボタン側の analysis_owner_note と対になる。
+                        html.Div(
+                            id="analysis_busy_note", children="",
+                            style={"fontSize": "0.8rem", "color": "#b8860b",
+                                   "marginTop": "4px", "maxWidth": "320px"},
+                        ),
+                        # 実行中かどうかを定期確認する。編集ロックの
+                        # edit_lock_heartbeat と同じく常時動かす（disabled にしない）
+                        # ので、開いたままの画面にも他人の解析開始が伝わる。
+                        dcc.Interval(
+                            id="analysis_busy_poll",
+                            interval=ANALYSIS_BUSY_POLL_INTERVAL_SEC * 1000,
                         ),
                     ],
                 ),

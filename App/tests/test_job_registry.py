@@ -6,6 +6,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -386,12 +387,12 @@ class TestWatcher:
         ブラウザ（dcc.Interval の callback）を一切呼ばずに、
         analysis_status.txt が finished になり結果が登録されること。
         """
-        import psutil as _psutil
         from app.services import analysis_runner
 
-        # 事前ゲート（他の Rscript 実行中か）は本題ではないので無効化する。
-        # analysis_runner は関数内で psutil を import するため、モジュール側を差し替える。
-        monkeypatch.setattr(_psutil, "process_iter", lambda *a, **k: [])
+        # 事前ゲート（他の解析が実行中か）は本題ではないので無効化する。
+        # [ver51.5] ガードはプロセス名走査からジョブ台帳に変わったので、
+        #   探索ルートを空にして「実行中は無い」状態を作る。
+        monkeypatch.setattr(job_registry, "default_search_roots", lambda: [])
         out = tmp_path / "result"
         script = tmp_path / "fake_analysis.py"
         script.write_text("print('All Done')\n", encoding="utf-8")
@@ -765,6 +766,302 @@ class TestStopCallbackGuard:
         ac.handle_stop(1, state)
 
         assert killed
+
+
+# ---------------------------------------------------------------------------
+# 同時実行ガード (ver51.5)
+# ---------------------------------------------------------------------------
+
+class TestConcurrencyGuard:
+    """2 個目の解析を起動させないこと。
+
+    ver51.4 まではプロセス名に "rscript" が含まれるかで判定していたため、
+    Unix では一度も発動していなかった（Rscript は exec 後に "R" になる）。
+    ver51.5 でジョブ台帳ベースに変え、プラットフォームに依存しなくした。
+    """
+
+    @staticmethod
+    def _fake_script(tmp_path, seconds=5):
+        script = tmp_path / "fake_analysis.py"
+        script.write_text(f"import time; time.sleep({seconds})\n", encoding="utf-8")
+        return str(script)
+
+    @staticmethod
+    def _start(script, out, **kw):
+        from app.services import analysis_runner
+        kw.setdefault("interpreter", [sys.executable, "-u"])
+        kw.setdefault("job_meta", {"analysis_type": "tims_v8", "analyst": "田中"})
+        return analysis_runner.start_analysis_process(script, str(out), **kw)
+
+    @staticmethod
+    def _reap(res):
+        proc = (res or {}).get("process")
+        if proc is not None:
+            proc.terminate()
+            proc.wait(timeout=10)
+
+    def test_second_start_is_refused(self, tmp_path, monkeypatch):
+        """本命: 1 個目が走っている間、2 個目は起動できない。"""
+        root = tmp_path / "data"
+        monkeypatch.setattr(job_registry, "default_search_roots", lambda: [str(root)])
+        script = self._fake_script(tmp_path)
+
+        first = self._start(script, root / "run1")
+        try:
+            assert first["success"], first.get("message")
+
+            second = self._start(script, root / "run2")
+
+            assert second["success"] is False
+            assert second["process"] is None
+            assert "田中" in second["message"], "誰の解析か伝わらない"
+        finally:
+            self._reap(first)
+
+    def test_start_allowed_when_nothing_running(self, tmp_path, monkeypatch):
+        root = tmp_path / "data"
+        monkeypatch.setattr(job_registry, "default_search_roots", lambda: [str(root)])
+
+        res = self._start(self._fake_script(tmp_path, 1), root / "run1")
+        try:
+            assert res["success"], res.get("message")
+        finally:
+            self._reap(res)
+
+    def test_finished_job_does_not_block(self, tmp_path, monkeypatch):
+        """死んだ PID の台帳が残っていても起動を妨げないこと。"""
+        root = tmp_path / "data"
+        monkeypatch.setattr(job_registry, "default_search_roots", lambda: [str(root)])
+        job_registry.write_job(root / "old", pid=999999, analyst="田中")
+
+        res = self._start(self._fake_script(tmp_path, 1), root / "run1")
+        try:
+            assert res["success"], res.get("message")
+        finally:
+            self._reap(res)
+
+    def test_maintenance_tool_is_blocked_during_analysis(self, tmp_path, monkeypatch):
+        """解析中は保守ツール・事前診断を起動できないこと。
+
+        preflight_callbacks.py の「解析中は診断を起動できない＝想定どおり」を保つ。
+        """
+        root = tmp_path / "data"
+        monkeypatch.setattr(job_registry, "default_search_roots", lambda: [str(root)])
+        script = self._fake_script(tmp_path)
+
+        first = self._start(script, root / "run1")
+        try:
+            assert first["success"], first.get("message")
+
+            # 保守ツールは job_meta を渡さない
+            tool = self._start(script, root / "tool", job_meta=None)
+
+            assert tool["success"] is False
+        finally:
+            self._reap(first)
+
+    def test_scan_failure_refuses_start(self, tmp_path, monkeypatch):
+        """台帳を確認できないときは安全側に倒して起動しない（fail-closed）。
+
+        ver51.4 までの psutil 版は例外時に running_r=[] として素通りしていた。
+        """
+        from app.services import analysis_runner
+
+        def _boom(*a, **k):
+            raise OSError("scan failed")
+
+        monkeypatch.setattr(job_registry, "default_search_roots", lambda: ["/x"])
+        monkeypatch.setattr(job_registry, "find_running_job", _boom)
+
+        res = analysis_runner.start_analysis_process(
+            self._fake_script(tmp_path, 1), str(tmp_path / "out"),
+            interpreter=[sys.executable, "-u"], job_meta={"analyst": "田中"},
+        )
+
+        assert res["success"] is False
+        assert res["process"] is None
+
+    def test_simultaneous_starts_only_one_wins(self, tmp_path, monkeypatch):
+        """2 人が同時に実行ボタンを押しても 1 つしか起動しないこと。
+
+        確認と Popen の間にロックが無いと両方すり抜ける（waitress は
+        既定 8 スレッド / 1 プロセス）。
+        """
+        import threading
+
+        root = tmp_path / "data"
+        monkeypatch.setattr(job_registry, "default_search_roots", lambda: [str(root)])
+        script = self._fake_script(tmp_path)
+
+        results = {}
+        barrier = threading.Barrier(2)
+
+        def _go(name):
+            barrier.wait()          # 同時に叩く
+            results[name] = self._start(script, root / name)
+
+        threads = [threading.Thread(target=_go, args=(n,)) for n in ("a", "b")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+
+        try:
+            wins = [r for r in results.values() if r["success"]]
+            assert len(wins) == 1, (
+                "同時起動がすり抜けた: "
+                + str({k: v["success"] for k, v in results.items()})
+            )
+        finally:
+            for r in results.values():
+                self._reap(r)
+
+    @pytest.mark.skipif(shutil.which("Rscript") is None,
+                        reason="Rscript が無い環境")
+    def test_detects_real_rscript_despite_process_name(self, tmp_path, monkeypatch):
+        """今回の核心: プロセス名が "R" でもガードが効くこと。
+
+        Unix の Rscript は $R_HOME/bin/exec/R へ exec するので psutil が返す
+        名前は "R" になる。ver51.4 までの `"rscript" in name` はここで
+        必ず False になり、Linux 本番で一度も発動していなかった。
+        """
+        import psutil
+
+        root = tmp_path / "data"
+        monkeypatch.setattr(job_registry, "default_search_roots", lambda: [str(root)])
+
+        r = subprocess.Popen(["Rscript", "-e", "Sys.sleep(20)"])
+        try:
+            time.sleep(3)
+            assert r.poll() is None, "Rscript が即終了した"
+
+            # 旧ガードが取りこぼす条件が実際に成立していることを固定する
+            assert psutil.Process(r.pid).name() == "R"
+            old_style = [p for p in psutil.process_iter(["name"])
+                         if "rscript" in (p.info.get("name") or "").lower()]
+            assert old_style == [], "旧ガードの前提が変わった（この検証は無意味）"
+
+            # その Rscript を台帳に登録 = 解析が走っている状態
+            job_registry.write_job(root / "run1", pid=r.pid, analyst="田中")
+
+            res = ConcurrencyGuardHelpers.start_simple(tmp_path, root / "run2")
+
+            assert res["success"] is False, "名前が R の解析を取りこぼしている"
+            assert "田中" in res["message"]
+        finally:
+            r.terminate()
+            r.wait(timeout=10)
+
+
+class ConcurrencyGuardHelpers:
+    @staticmethod
+    def start_simple(tmp_path, out):
+        from app.services import analysis_runner
+        script = tmp_path / "noop.py"
+        script.write_text("pass\n", encoding="utf-8")
+        return analysis_runner.start_analysis_process(
+            str(script), str(out),
+            interpreter=[sys.executable, "-u"],
+            job_meta={"analyst": "佐藤"},
+        )
+
+
+class TestBusyScanCache:
+    """UI ポーリング用キャッシュ (ver51.5)"""
+
+    def test_repeated_calls_scan_once_within_ttl(self, tmp_path, monkeypatch):
+        job_registry.invalidate_scan_cache()
+        calls = []
+        monkeypatch.setattr(job_registry, "find_running_job",
+                            lambda roots: calls.append(1) or None)
+
+        for _ in range(5):
+            job_registry.find_running_job_cached([str(tmp_path)], ttl_sec=60)
+
+        assert len(calls) == 1, "ブラウザ台数ぶんディスクを走査してしまう"
+
+    def test_rescans_after_ttl(self, tmp_path, monkeypatch):
+        job_registry.invalidate_scan_cache()
+        calls = []
+        monkeypatch.setattr(job_registry, "find_running_job",
+                            lambda roots: calls.append(1) or None)
+
+        job_registry.find_running_job_cached([str(tmp_path)], ttl_sec=0.0)
+        job_registry.find_running_job_cached([str(tmp_path)], ttl_sec=0.0)
+
+        assert len(calls) == 2
+
+    def test_invalidate_forces_rescan(self, tmp_path, monkeypatch):
+        job_registry.invalidate_scan_cache()
+        calls = []
+        monkeypatch.setattr(job_registry, "find_running_job",
+                            lambda roots: calls.append(1) or None)
+
+        job_registry.find_running_job_cached([str(tmp_path)], ttl_sec=60)
+        job_registry.invalidate_scan_cache()
+        job_registry.find_running_job_cached([str(tmp_path)], ttl_sec=60)
+
+        assert len(calls) == 2, "起動直後に表示が最大 TTL 秒ぶん遅れる"
+
+    def test_different_roots_are_not_shared(self, tmp_path, monkeypatch):
+        job_registry.invalidate_scan_cache()
+        calls = []
+        monkeypatch.setattr(job_registry, "find_running_job",
+                            lambda roots: calls.append(roots) or None)
+
+        job_registry.find_running_job_cached(["/a"], ttl_sec=60)
+        job_registry.find_running_job_cached(["/b"], ttl_sec=60)
+
+        assert len(calls) == 2
+
+
+class TestReflectAnalysisBusy:
+    """実行中は開始ボタンを押せなくする (ver51.5)"""
+
+    def _setup(self, tmp_path, monkeypatch, *, analyst, me):
+        from app.callbacks import analysis_callbacks as ac
+        root = tmp_path / "data"
+        if analyst is not None:
+            job_registry.write_job(root / "run1", pid=os.getpid(),
+                                   analysis_type="tims_v8", analyst=analyst)
+        monkeypatch.setattr(ac, "_analysis_search_roots", lambda: [str(root)])
+        monkeypatch.setattr(ac, "_owner_name", lambda: me)
+        job_registry.invalidate_scan_cache()
+        return ac
+
+    def test_idle_leaves_every_button_enabled(self, tmp_path, monkeypatch):
+        ac = self._setup(tmp_path, monkeypatch, analyst=None, me="佐藤")
+
+        res = ac.reflect_analysis_busy(1, {})
+
+        assert res[:-1] == (False,) * len(ac._START_BUTTON_IDS)
+        assert res[-1] == ""
+
+    def test_other_analyst_disables_every_start_button(self, tmp_path, monkeypatch):
+        ac = self._setup(tmp_path, monkeypatch, analyst="田中", me="佐藤")
+
+        res = ac.reflect_analysis_busy(1, {})
+
+        assert res[:-1] == (True,) * len(ac._START_BUTTON_IDS)
+        assert "田中" in res[-1]
+        assert "tims_v8" in res[-1]
+
+    def test_own_analysis_says_yours(self, tmp_path, monkeypatch):
+        ac = self._setup(tmp_path, monkeypatch, analyst="田中", me="田中")
+
+        res = ac.reflect_analysis_busy(1, {})
+
+        assert res[:-1] == (True,) * len(ac._START_BUTTON_IDS)
+        assert "あなた" in res[-1]
+        assert "田中" not in res[-1]
+
+    def test_all_four_start_buttons_are_covered(self, tmp_path, monkeypatch):
+        """解析を起動するボタンを取りこぼしていないこと。"""
+        from app.callbacks import analysis_callbacks as ac
+        assert set(ac._START_BUTTON_IDS) == {
+            "run_analysis", "btn_make_reduction",
+            "btn_run_downstream", "confirm_overwrite_results",
+        }
 
 
 class TestStoppedStatus:

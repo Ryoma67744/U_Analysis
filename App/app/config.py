@@ -241,6 +241,15 @@ EDIT_LOCK_HEARTBEAT_INTERVAL_SEC = int(
     os.environ.get("EDIT_LOCK_HEARTBEAT_INTERVAL_SEC", "10")
 )
 
+# ANALYSIS_BUSY_POLL_INTERVAL_SEC: 解析が実行中かをブラウザが確認する間隔。
+#   [ver51.5] 実行中は解析の開始ボタンを無効化して理由を出すために使う。
+#   他人が解析を開始してから、開いたままの画面へ反映されるまでの最大遅れが
+#   この秒数になる。押してしまってもサーバ側のガードが拒否するので、
+#   ここは体験の良し悪しだけの設定（編集ロックの heartbeat と同じ既定 10 秒）。
+ANALYSIS_BUSY_POLL_INTERVAL_SEC = int(
+    os.environ.get("ANALYSIS_BUSY_POLL_INTERVAL_SEC", "10")
+)
+
 # =============================================================================
 # ChatGPT 連携 API (受付窓口 /api/gpt/*) 用の設定  (ver41.0)
 # =============================================================================

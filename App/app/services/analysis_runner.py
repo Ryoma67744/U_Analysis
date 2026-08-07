@@ -719,7 +719,51 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
 # サブプロセス管理
 # ---------------------------------------------------------------------------
 
+# [ver51.5] 起動処理そのものを直列化する。
+#   同時実行の確認から Popen・ジョブ台帳の書き込みまでの間にロックが無いと、
+#   2 人が同時に実行ボタンを押したとき両方とも「実行中の解析は無い」と判定して
+#   すり抜ける（run_app.py の waitress は既定 8 スレッド／1 プロセス）。
+#   本関数は Popen したら待たずに返るので、保持時間は起動準備の間だけ。
+_start_lock = threading.Lock()
+
+
+def _find_running_job_for_guard():
+    """起動ガード用に、生きている解析を 1 件返す。無ければ None。
+
+    [ver51.5] 探索に失敗した場合は「実行中は無い」ではなく `_scan_failed` を
+    立てた dict を返し、呼び出し側に起動を拒否させる（fail-closed）。
+    ver51.4 までの psutil 版は例外時に running_r=[] として素通りしていた。
+    """
+    from app.services import job_registry
+    try:
+        return job_registry.find_running_job(job_registry.default_search_roots())
+    except Exception as e:  # noqa: BLE001
+        logger.warning("ジョブ台帳の探索に失敗、安全側に倒して起動を拒否: %s", e)
+        return {"_scan_failed": True}
+
+
 def start_analysis_process(
+    script_path: str,
+    output_dir: str,
+    extra_args=None,
+    env_extra: dict | None = None,
+    interpreter: list[str] | None = None,
+    job_meta: dict | None = None,
+) -> dict:
+    """解析プロセスを起動する（同時起動を直列化する薄い外皮）。
+
+    実体は _start_analysis_process_locked。確認と起動の間に他スレッドが
+    割り込めないよう、全体を 1 つのロックで囲む。
+    """
+    with _start_lock:
+        return _start_analysis_process_locked(
+            script_path, output_dir,
+            extra_args=extra_args, env_extra=env_extra,
+            interpreter=interpreter, job_meta=job_meta,
+        )
+
+
+def _start_analysis_process_locked(
     script_path: str,
     output_dir: str,
     extra_args=None,
@@ -729,6 +773,8 @@ def start_analysis_process(
 ) -> dict:
     """Rスクリプトを外部プロセスで非同期実行
     R版: start_analysis_process() in analysis_runner.R
+
+    呼び出し元は start_analysis_process のみ（_start_lock 保持が前提）。
 
     改善点:
     - .batファイルを経由せず subprocess.Popen で直接起動
@@ -765,20 +811,33 @@ def start_analysis_process(
 
     # --- 同時解析ブロック・空きメモリチェック（クラウド多人数運用対策） ---
     import psutil
-    try:
-        running_r = [
-            p for p in psutil.process_iter(["name"])
-            if "rscript" in (p.info.get("name") or "").lower()
-        ]
-    except Exception as e:
-        logger.warning(f"psutil による R プロセス列挙失敗: {e}")
-        running_r = []
-    if len(running_r) >= 1:
+
+    # [ver51.5] 判定源をプロセス名からジョブ台帳に変えた。
+    #   ver51.4 まではここで psutil の名前に "rscript" が含まれるかを見ていたが、
+    #   Unix の Rscript は最終的に $R_HOME/bin/exec/R へ exec するのでプロセス名は
+    #   "R" になり、**Linux では一度も発動していなかった**（Windows の
+    #   Rscript.exe でだけ効いていた）。台帳なら PID の生死で判定するので
+    #   プラットフォームに依存せず、しかも誰が実行中かを利用者に伝えられる。
+    #   保守ツール（job_meta is None）もここで弾く。preflight_callbacks.py の
+    #   「解析中は診断を起動できない＝想定どおり」を保つため。逆向き（保守ツールが
+    #   解析を弾く）は台帳に載らないので効かない。既知の穴。
+    busy = _find_running_job_for_guard()
+    if busy is not None:
+        if busy.get("_scan_failed"):
+            return {
+                "success": False,
+                "message": (
+                    "実行中の解析を確認できませんでした。安全のため起動を見送ります。"
+                    "しばらく待ってから再実行してください。"
+                ),
+                "process": None,
+            }
+        owner = (busy.get("analyst") or "").strip()
+        who = f"{owner} さんの解析" if owner else "別の解析"
         return {
             "success": False,
             "message": (
-                f"別の解析が実行中です（{len(running_r)} 件）。"
-                "完了してから再実行してください。"
+                f"{who}が実行中です。完了してから再実行してください。"
             ),
             "process": None,
         }
@@ -981,6 +1040,8 @@ def start_analysis_process(
                     log_file_handle=log_fh,
                     job=job,
                 )
+                # [ver51.5] 実行ボタンの無効化表示が最大 TTL 秒ぶん遅れるのを防ぐ。
+                job_registry.invalidate_scan_cache()
             except Exception as e:  # noqa: BLE001
                 # 監視が付かないだけで解析自体は従来どおり動く
                 logger.warning("ジョブ監視の設定に失敗（解析は続行）: %s", e)

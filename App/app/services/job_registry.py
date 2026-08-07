@@ -21,6 +21,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -178,6 +180,23 @@ def is_pid_alive(pid) -> bool:
 _DEPTH_GLOBS = tuple("*/" * d + "log/" + JOB_FILE_NAME for d in range(0, 4))
 
 
+def default_search_roots() -> list:
+    """ジョブ台帳を探す既定のルート。結果は TIMS/DESI のデータルート配下に出る。
+
+    [ver51.5] 起動ガードと UI の双方が同じルートを見る必要があるため、
+    analysis_callbacks にあった定義をここへ移して 1 か所にまとめた。
+    """
+    from app.config import TIMS_DATA_DIR, DESI_DATA_DIR, OUTPUT_DATA_DIR
+    roots = []
+    for d in (TIMS_DATA_DIR, DESI_DATA_DIR, OUTPUT_DATA_DIR):
+        try:
+            if d and Path(d).is_dir():
+                roots.append(str(d))
+        except Exception:  # noqa: BLE001
+            continue
+    return roots
+
+
 def find_jobs(search_roots, *, depth_globs=None) -> list:
     """探索ルート配下からジョブ台帳を集める。
 
@@ -210,6 +229,11 @@ def find_running_job(search_roots) -> Optional[dict]:
 
     同時実行は 1 本に制限されている（analysis_runner の同時実行ガード）ので、
     最も新しいものを 1 件返せば足りる。
+
+    [ver51.5] その制限は ver51.4 まで Linux で機能していなかった（ガードが
+    プロセス名 "rscript" を探していたが、Unix の Rscript は exec 後に "R" に
+    なる）。ver51.5 でこの関数自体がガードの判定源になったので、以後は
+    本当に 1 本しか走らない。
     """
     alive = [j for j in find_jobs(search_roots)
              if not j.get("finalized") and is_pid_alive(j.get("pid"))]
@@ -217,6 +241,42 @@ def find_running_job(search_roots) -> Optional[dict]:
         return None
     alive.sort(key=lambda j: str(j.get("started_at") or ""), reverse=True)
     return alive[0]
+
+
+# UI ポーリング用の短時間キャッシュ。find_jobs は探索ルート配下を深さ 0〜3 で
+# glob するので、ブラウザ台数 × ポーリング間隔だけ走らせると共有ストレージに
+# 効く。複数ブラウザで 1 回の走査を共有する。
+_scan_cache: dict = {"at": 0.0, "key": None, "job": None}
+_scan_lock = threading.Lock()
+
+
+def find_running_job_cached(search_roots, ttl_sec: float = 5.0) -> Optional[dict]:
+    """find_running_job の結果を短時間キャッシュして返す（UI ポーリング用）。
+
+    [ver51.5] 実行ボタンの無効化表示だけがこれを使う。
+
+    起動ガードと停止判定には使わないこと。あちらは 5 秒古い情報で可否を
+    決めてはいけないので、必ず生の find_running_job / read_job を読む。
+    """
+    key = tuple(sorted(str(r) for r in (search_roots or [])))
+    now = time.monotonic()
+    with _scan_lock:
+        if _scan_cache["key"] == key and (now - _scan_cache["at"]) < ttl_sec:
+            return _scan_cache["job"]
+    job = find_running_job(search_roots)
+    with _scan_lock:
+        _scan_cache["at"] = time.monotonic()
+        _scan_cache["key"] = key
+        _scan_cache["job"] = job
+    return job
+
+
+def invalidate_scan_cache() -> None:
+    """キャッシュを捨てる。解析の起動・停止直後に呼び、表示の遅れを消す。"""
+    with _scan_lock:
+        _scan_cache["at"] = 0.0
+        _scan_cache["key"] = None
+        _scan_cache["job"] = None
 
 
 def find_stale_jobs(search_roots) -> list:

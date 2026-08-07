@@ -14,7 +14,6 @@ from app.config import (
     DESI_V8_TEMPLATE_PATH, DESI_CLUSTER_FILTER_PATH,
     TIMS_V8_TEMPLATE_PATH, TIMS_CLUSTER_FILTER_PATH,
     MERGE_CLUSTERS_SCRIPT_PATH,
-    DESI_DATA_DIR, TIMS_DATA_DIR, OUTPUT_DATA_DIR,
 )
 from app.services.analysis_runner import (
     generate_v8_config,
@@ -1403,6 +1402,76 @@ def restore_running_analysis(pathname, app_state):
     )
 
 
+# ---------------------------------------------------------------------------
+# 実行中は解析を開始させない（ボタン無効化 + 理由表示）
+# ---------------------------------------------------------------------------
+
+# 解析を起動するボタン。すべて start_analysis_process を通るので、
+# 実行中は一律で無効化する。
+_START_BUTTON_IDS = (
+    "run_analysis",              # ▶ 解析実行
+    "btn_make_reduction",        # ① reduction のみ作成
+    "btn_run_downstream",        # ④ 続きを実行
+    "confirm_overwrite_results",  # 上書き確認モーダルの「実行する」
+)
+
+
+@callback(
+    [Output(_bid, "disabled", allow_duplicate=True) for _bid in _START_BUTTON_IDS]
+    + [Output("analysis_busy_note", "children", allow_duplicate=True)],
+    [Input("analysis_busy_poll", "n_intervals"),
+     Input("app_state", "data")],
+    prevent_initial_call="initial_duplicate",
+)
+def reflect_analysis_busy(_n, app_state):
+    """解析が実行中なら開始ボタンを無効化し、誰の解析かを表示する。
+
+    [ver51.5] サーバ側（analysis_runner の同時実行ガード）だけでは、押せる
+    ボタンを押してエラーが出るという体験になる。編集ロックの
+    edit_lock_callbacks.reflect_calibration_panel_lock と同じ作りで、
+    押す前に理由を見せる。
+
+    Input が 2 つあるのは意図的:
+      - analysis_busy_poll : 他人が開始した場合に、開いたままの画面へ反映する
+      - app_state          : 自分が開始した瞬間に即座に無効化する
+                             （ポーリング待ちの間に二度押しできる隙を消す）
+    """
+    try:
+        job = _job_registry.find_running_job_cached(_analysis_search_roots())
+    except Exception as e:  # noqa: BLE001
+        # 表示の都合で落ちるより、有効のままにしてサーバ側ガードに委ねる。
+        logger.debug("実行中ジョブの確認に失敗: %s", e)
+        return (False,) * len(_START_BUTTON_IDS) + ("",)
+
+    if job is None:
+        return (False,) * len(_START_BUTTON_IDS) + ("",)
+
+    owner = (job.get("analyst") or "").strip()
+    mine = bool(owner) and owner == _owner_name()
+    who = "あなたの解析" if mine else (f"{owner} さんの解析" if owner else "別の解析")
+
+    detail = []
+    if job.get("analysis_type"):
+        detail.append(str(job["analysis_type"]))
+    started = _format_started_at(job.get("started_at"))
+    if started:
+        detail.append(f"{started} 開始")
+    suffix = f"（{' / '.join(detail)}）" if detail else ""
+
+    note = f"⚠ {who}が実行中です{suffix}。完了までお待ちください。"
+    return (True,) * len(_START_BUTTON_IDS) + (note,)
+
+
+def _format_started_at(value) -> str:
+    """台帳の started_at を 'HH:MM' に。読めなければ空文字。"""
+    if not value:
+        return ""
+    try:
+        return datetime.fromisoformat(str(value)).strftime("%H:%M")
+    except (ValueError, TypeError):
+        return ""
+
+
 def _has_terminal_status(status_file) -> bool:
     """analysis_status.txt に終了状態が書かれているか。"""
     if not status_file:
@@ -1415,15 +1484,12 @@ def _has_terminal_status(status_file) -> bool:
 
 
 def _analysis_search_roots() -> list:
-    """ジョブ台帳を探すルート。結果は TIMS/DESI のデータルート配下に出る。"""
-    roots = []
-    for d in (TIMS_DATA_DIR, DESI_DATA_DIR, OUTPUT_DATA_DIR):
-        try:
-            if d and Path(d).is_dir():
-                roots.append(str(d))
-        except Exception:  # noqa: BLE001
-            continue
-    return roots
+    """ジョブ台帳を探すルート。結果は TIMS/DESI のデータルート配下に出る。
+
+    [ver51.5] 実体は job_registry.default_search_roots。起動ガードと UI が
+    同じルートを見る必要があるため定義を 1 か所に寄せた。
+    """
+    return _job_registry.default_search_roots()
 
 
 # ---------------------------------------------------------------------------
