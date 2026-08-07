@@ -63,6 +63,27 @@ _LITE_URL_RE = re.compile(r"^/lite/([^/]+)/([^/]+)/?$")
     Input("url_bar", "pathname"),
     prevent_initial_call=True,
 )
+def _lite_cache_key(project_id, sub_id, integration_method, rds_path):
+    """lite ビューの _shared_data キー (ver51.5)。
+
+    ★ 従来は (project, sub, method) だけで、**RDS の mtime が入っていなかった**。
+      再解析して同じパスへ上書きしても、プロセスを再起動するまで古い plot_data を
+      返し続ける。ページを再読み込みしても同じキーに当たるので、利用者側から
+      直す手段が無かった。
+
+      repo 内の他のキャッシュ (seurat_bridge._PARQUET_SCHEMA_CACHE,
+      label_persistence._POSITIONS_CACHE) は (path, mtime_ns, size) を鍵にして
+      いるので、それに揃える。
+    """
+    sig = ""
+    try:
+        st = Path(rds_path).stat()
+        sig = f"::{st.st_mtime_ns}::{st.st_size}"
+    except (OSError, TypeError):
+        sig = "::nostat"
+    return f"lite::{project_id}::{sub_id}::{integration_method}{sig}"
+
+
 def route_lite_url(pathname):
     """URL パスが /lite/<project_id>/<sub_project_id> なら lite_target_store に書く"""
     if not pathname:
@@ -138,7 +159,7 @@ def initialize_lite_view(target, method_data):
     rds_path = rds_map[integration_method]
 
     # データロード（lite 専用 cache key で _shared_data を流用）
-    cache_key = f"lite::{project_id}::{sub_id}::{integration_method}"
+    cache_key = _lite_cache_key(project_id, sub_id, integration_method, rds_path)
     if cache_key not in _shared_data:
         try:
             extracted = _sv_bridge.extract_data(rds_path)
@@ -292,7 +313,7 @@ def _resolve_lite_data_for_target(target, method_data):
         )
     rds_path = rds_map[integration_method]
 
-    cache_key = f"lite::{project_id}::{sub_id}::{integration_method}"
+    cache_key = _lite_cache_key(project_id, sub_id, integration_method, rds_path)
     cached = _shared_data.get(cache_key)
     if cached and "_lite_bundle" in cached:
         return cached["_lite_bundle"]

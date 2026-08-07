@@ -403,8 +403,25 @@ class SeuratBridge:
         if not feature_file.exists():
             self._run_feature_extraction(rds_path, feature_name, feature_file)
 
+        # ★ R の write.csv は col.names=FALSE を **無視する** 仕様
+        #   ("attempts to change append, col.names, sep, dec and qmethod are
+        #    ignored, with a warning")。extract_features.R:78 は col.names=FALSE を
+        #   渡しているがヘッダ行 "expression" が書かれる。従来はここを
+        #   header=None で読んでいたため、先頭に文字列が入った長さ N+1 の
+        #   Series が返り、呼び出し元が
+        #     interactive_deg.py     → 長さ不一致で ValueError
+        #     interactive_loupe.py   → could not convert string to float
+        #   で必ず落ちていた。RDS 全展開 (20〜120 秒) を払ったうえで失敗する、
+        #   生きているように見えて死んでいる経路だった (ver51.5 で判明)。
+        #
+        #   R の実機確認ができていないので header=0 と決め打ちにはせず、
+        #   **先頭が数値として読めなければ 1 行落とす**形にして両方に耐えさせる。
         df = pd.read_csv(feature_file, header=None)
-        return df.iloc[:, 0]
+        col = df.iloc[:, 0]
+        if len(col) and pd.to_numeric(pd.Series([col.iloc[0]]),
+                                      errors="coerce").isna().iloc[0]:
+            col = col.iloc[1:].reset_index(drop=True)
+        return pd.to_numeric(col, errors="coerce")
 
     @staticmethod
     def _parquet_column_names(expr_path: Path):

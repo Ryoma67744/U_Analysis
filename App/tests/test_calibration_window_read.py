@@ -221,3 +221,58 @@ def test_calibration_works_without_scipy(tmp_path, monkeypatch):
                         regression_mode="linear")
     assert out["calibrated"] is True, "scipy 不在で linear 回帰が失敗している"
     assert out["r_squared"] is not None
+
+
+# ---------------------------------------------------------------------------
+# R フォールバックの CSV ヘッダ行 / lite キャッシュキー (ver51.5)
+# ---------------------------------------------------------------------------
+
+def test_r_fallback_csv_tolerates_header_row(tmp_path, monkeypatch):
+    """★ R の write.csv が書くヘッダ行 "expression" を取り除いて読むこと。
+
+    extract_features.R:78 は col.names=FALSE を渡しているが、R の write.csv は
+    **その指定を無視する**仕様なのでヘッダ行が書かれる。従来は header=None で
+    読んでいたため、先頭に文字列が入った長さ N+1 の Series が返り、
+    呼び出し元 (interactive_deg / interactive_loupe) で必ず落ちていた。
+    """
+    from app.services.seurat_bridge import SeuratBridge
+
+    bridge = SeuratBridge()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setattr(bridge, "_get_cache_dir", lambda _p: cache)
+
+    # R が実際に書く形 (ヘッダ付き)
+    (cache / "feature_mz_100.csv").write_text(
+        "expression\n1.5\n2.5\n3.5\n", encoding="utf-8")
+    got = bridge.get_feature_expression("/rds/x.rds", "mz_100")
+    assert list(got) == [1.5, 2.5, 3.5], f"ヘッダ行が残っている: {list(got)}"
+    assert got.dtype.kind == "f"
+
+    # ヘッダ無しでも従来どおり読めること (別経路/旧ファイルへの保険)
+    (cache / "feature_mz_200.csv").write_text("4.0\n5.0\n", encoding="utf-8")
+    got2 = bridge.get_feature_expression("/rds/x.rds", "mz_200")
+    assert list(got2) == [4.0, 5.0]
+
+
+def test_lite_cache_key_includes_rds_mtime(tmp_path):
+    """★ 再解析で RDS が差し替わったらキャッシュキーが変わること。
+
+    従来は (project, sub, method) だけだったので、同じパスへ上書きすると
+    プロセス再起動までずっと古い plot_data を返し続けた。
+    """
+    import time as _t
+    from app.callbacks.lite_view_callbacks import _lite_cache_key
+
+    rds = tmp_path / "x.rds"
+    rds.write_bytes(b"a" * 10)
+    k1 = _lite_cache_key("p", "s", "Harmony", str(rds))
+
+    _t.sleep(0.01)
+    rds.write_bytes(b"b" * 20)          # 再解析で上書き
+    k2 = _lite_cache_key("p", "s", "Harmony", str(rds))
+    assert k1 != k2, "RDS を差し替えてもキャッシュキーが変わらない"
+
+    # stat できなくても落ちない
+    assert _lite_cache_key("p", "s", "Harmony", None)
+    assert _lite_cache_key("p", "s", "Harmony", str(tmp_path / "nope.rds"))
