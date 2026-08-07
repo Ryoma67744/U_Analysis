@@ -22,7 +22,6 @@ from app.utils.color_utils import (
     get_cluster_color_map as _get_cluster_color_map,
     get_merged_cluster_color_map as _get_merged_cluster_color_map,
     cluster_display_name as _cluster_display_name,
-    get_cluster_colorscale as _get_cluster_colorscale,
 )
 from app.utils.display_helpers import (
     display_name as _display_name,
@@ -1141,7 +1140,11 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
         )
 
     color_map = _get_cluster_color_map(plot_df["Cluster"], effective_custom_colors)
-    cluster_to_idx, discrete_cscale = _get_cluster_colorscale(plot_df["Cluster"], effective_custom_colors)
+    # ver51.4: 削除。この呼び出しは embed_legend=True で、
+    # _create_single_spatial_fig の cluster_to_idx / discrete_cscale 分岐
+    # (:368 の elif) は embed_legend=False のときしか通らない。
+    # get_cluster_colorscale は全行を走査する (実測 15.9ms / 20 万行) ので、
+    # 毎回作っては捨てていた。実際に使うのは PPTX 経路 (embed_legend=False)。
     # rds_path / method を引数で明示し _interactive_data 未初期化 race を回避
     method = _interactive_data.get("method")
     all_pos = _get_merged_label_positions(accumulated_positions,
@@ -1196,8 +1199,6 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
                                          show_labels=show_labels,
                                          flip_h=flip_h, flip_v=flip_v,
                                          title=display_s, embed_legend=True,
-                                         cluster_to_idx=cluster_to_idx,
-                                         discrete_cscale=discrete_cscale,
                                          marker_size=marker_size or 0,
                                          exclude_clusters=exclude_clusters,
                                          label_size=label_size or 10,

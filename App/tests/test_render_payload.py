@@ -1315,3 +1315,70 @@ def test_violin_values_are_rounded_once_for_all_clusters():
     # 丸めた後にクラスタへ分けているので、dfp へ入るのは全体基準の値
     assert src.index("_round_values_for_display(np.asarray") < src.index('dfp["_expr"] = arr'), \
         "丸めがクラスタ分割より後に来ている"
+
+
+# ---------------------------------------------------------------------------
+# 13. 図に直結した入力の debounce / 死んだ計算 (ver51.4)
+# ---------------------------------------------------------------------------
+# ver46.1 の E2E が「見た目スライダーが Input に戻っていないこと」を見張っている
+# のと同じ趣旨。ここは静的に見張る。
+
+def _layout_sources():
+    out = {}
+    for rel in ("app/layouts/interactive_tab.py",
+                "app/callbacks/lite_view_callbacks.py"):
+        out[rel] = (APP_ROOT / rel).read_text(encoding="utf-8")
+    return out
+
+
+def test_figure_bound_numeric_inputs_have_debounce():
+    """図のコールバックに直結した入力は debounce 付きであること。
+
+    無いと 1 打鍵ごとにフル再構築が走る。とくに
+      volcano_highlight_mz … 打鍵ごとに全行 Python 正規表現 + apply(axis=1)
+      heatmap_top_n        … 打鍵ごとに parquet 読み + merge + groupby
+      lv_*_panel_size      … 打鍵ごとに全サンプルのタイル再構築
+    """
+    import re
+
+    srcs = _layout_sources()
+    required = [
+        "feature_intensity_min", "feature_intensity_max",   # ver51.3
+        "volcano_fc_threshold", "volcano_p_threshold", "volcano_y_max",
+        "volcano_label_top_n", "volcano_highlight_mz",
+        "heatmap_top_n", "onthefly_de_fc", "onthefly_de_p",
+    ]
+    joined = "\n".join(srcs.values())
+    missing = []
+    for cid in required:
+        # id=... から次の閉じ括弧までの間に debounce=True があるか
+        m = re.search(r'id="%s"(.{0,400}?)\)' % re.escape(cid), joined, re.S)
+        if not m or "debounce=True" not in m.group(1):
+            missing.append(cid)
+    assert not missing, f"debounce が付いていない入力: {missing}"
+
+
+def test_lite_view_size_inputs_have_debounce():
+    """lite viewer のラベル/パネル高もパネル全体を作り直すので debounce 必須。"""
+    src = (APP_ROOT / "app" / "callbacks" / "lite_view_callbacks.py").read_text(
+        encoding="utf-8")
+    # _size_toolbar が作る 2 つの Input (id は引数で渡されるので構造で見る)
+    block = src[src.index("def _size_toolbar"):]
+    block = block[:block.index("\ndef ")] if "\ndef " in block[10:] else block
+    assert block.count("debounce=True") >= 2, \
+        "lite viewer の 2 つのサイズ入力に debounce が付いていない"
+
+
+def test_no_dead_cluster_colorscale_computation():
+    """embed_legend=True の経路で get_cluster_colorscale を呼ばないこと。
+
+    _create_single_spatial_fig の cluster_to_idx / discrete_cscale 分岐は
+    embed_legend=False のときしか通らないので、embed_legend=True の呼び出し元で
+    計算しても捨てるだけ (実測 15.9ms / 20 万行を毎回)。
+    """
+    for rel in ("app/callbacks/interactive_spatial.py",
+                "app/callbacks/interactive_fullscreen.py",
+                "app/callbacks/share_callbacks.py"):
+        src = (APP_ROOT / rel).read_text(encoding="utf-8")
+        assert "_get_cluster_colorscale(" not in src, \
+            f"{rel} に死んだ colorscale 計算が復活している"

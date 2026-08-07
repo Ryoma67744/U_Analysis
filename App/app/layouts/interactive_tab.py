@@ -1563,17 +1563,20 @@ def create_interactive_tab():
                                                 dbc.Col(width=2, children=[
                                                     dbc.Label(["FC 閾値", help_badge("volcano_fc_threshold")], className="small mb-0"),
                                                     dbc.Input(id="volcano_fc_threshold", type="number",
-                                                              value=0.5, step=0.1, size="sm"),
+                                                              value=0.5, step=0.1, size="sm",
+                                                              debounce=True),
                                                 ]),
                                                 dbc.Col(width=2, children=[
                                                     dbc.Label(["-log10(p) 閾値", help_badge("volcano_p_threshold")], className="small mb-0"),
                                                     dbc.Input(id="volcano_p_threshold", type="number",
-                                                              value=1.3, step=0.1, size="sm"),
+                                                              value=1.3, step=0.1, size="sm",
+                                                              debounce=True),
                                                 ]),
                                                 dbc.Col(width=2, children=[
                                                     dbc.Label("Y軸上限", className="small mb-0"),
                                                     dbc.Input(id="volcano_y_max", type="number",
-                                                              placeholder="auto", step=1, size="sm"),
+                                                              placeholder="auto", step=1, size="sm",
+                                                              debounce=True),
                                                 ]),
                                                 dbc.Col(width=3, children=[
                                                     dbc.Label("点サイズ", className="small mb-0"),
@@ -1590,7 +1593,7 @@ def create_interactive_tab():
                                                         id="volcano_label_top_n",
                                                         type="number",
                                                         value=5, min=0, max=50, step=1,
-                                                        size="sm",
+                                                        size="sm", debounce=True,
                                                     ),
                                                     dbc.FormText("UP/DOWN各N個"),
                                                 ]),
@@ -1614,7 +1617,7 @@ def create_interactive_tab():
                                                     dbc.Input(
                                                         id="volcano_highlight_mz",
                                                         placeholder="例: 785.55, 810.60",
-                                                        size="sm",
+                                                        size="sm", debounce=True,
                                                     ),
                                                 ]),
                                                 dbc.Col(width=8, children=[
@@ -1647,7 +1650,8 @@ def create_interactive_tab():
                                                 dbc.Col(width=2, children=[
                                                     dbc.Label("Top N", className="small mb-0"),
                                                     dbc.Input(id="heatmap_top_n", type="number",
-                                                              value=5, min=1, max=20, step=1, size="sm"),
+                                                              value=5, min=1, max=20, step=1, size="sm",
+                                                              debounce=True),
                                                 ]),
                                                 dbc.Col(width=3, children=[
                                                     dbc.Label(["スケール", help_badge("heatmap_scale")], className="small mb-0"),
@@ -1769,12 +1773,14 @@ def create_interactive_tab():
                                                 dbc.Col(width=2, children=[
                                                     dbc.Label("FC 閾値", className="small mb-0"),
                                                     dbc.Input(id="onthefly_de_fc", type="number",
-                                                              value=0.5, step=0.1, size="sm"),
+                                                              value=0.5, step=0.1, size="sm",
+                                                              debounce=True),
                                                 ]),
                                                 dbc.Col(width=2, children=[
                                                     dbc.Label("-log10(p) 閾値", className="small mb-0"),
                                                     dbc.Input(id="onthefly_de_p", type="number",
-                                                              value=1.3, step=0.1, size="sm"),
+                                                              value=1.3, step=0.1, size="sm",
+                                                              debounce=True),
                                                 ]),
                                                 dbc.Col(width=2, children=[
                                                     dbc.Label("Top N 出力", className="small mb-0"),
