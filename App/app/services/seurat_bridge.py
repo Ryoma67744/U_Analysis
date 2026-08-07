@@ -4,6 +4,7 @@
 # =============================================================================
 
 import hashlib
+import itertools
 import json
 import logging
 import os
@@ -21,6 +22,10 @@ import pandas as pd
 from app.config import R_HELPERS_DIR, RSCRIPT_PATH, SEURAT_CACHE_DIR
 
 logger = logging.getLogger("msi.seurat_bridge")
+
+# 一時ファイル名をユニークにするための連番 (ver51.8)。
+# itertools.count はスレッドセーフ (next() は GIL 下の単一バイトコード)。
+_TMP_COUNTER = itertools.count()
 
 # =============================================================================
 # expression_matrix.parquet の読み出しキャッシュ (3 段)
@@ -674,8 +679,37 @@ class SeuratBridge:
         rscript = str(RSCRIPT_PATH)
         if not Path(rscript).exists():
             rscript = "Rscript"
-        cmd = [rscript, "--vanilla", str(script), str(src_rds_path), str(out_path)]
 
+        # ★ ver51.8: 「ファイルが存在する = 完成」で判定しているのに、R は
+        #   最終パスへ直接書いていた。後始末は returncode != 0 の分岐にしか無く、
+        #   timeout / cancel / __TIMEOUT__ の 3 経路では R を kill した時点の
+        #   **書きかけファイルが残る**。以後この関数は先頭の存在チェックで
+        #   即 return するため、壊れた RDS を永久に返し続けていた
+        #   （手で消すまで「PCA（未補正）」比較が直らない）。
+        #
+        #   そこで **一時ファイルへ書かせ、成功したときだけ os.replace** する。
+        #   途中で死んでも最終パスには何も現れない。同時実行でも衝突しないよう
+        #   一時名は PID + 連番でユニークにする（file_locks.atomic_write_* と同じ方針）。
+        tmp_path = out_path.with_name(
+            f".{out_path.stem}.{os.getpid()}.{next(_TMP_COUNTER)}.tmp")
+        cmd = [rscript, "--vanilla", str(script), str(src_rds_path), str(tmp_path)]
+
+        try:
+            self._invoke_derive_pca(cmd, tmp_path, src_rds_path, cancel_event)
+            os.replace(str(tmp_path), str(out_path))
+            return str(out_path)
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                    logger.warning(
+                        "派生 RDS の生成に失敗したため書きかけを削除しました: %s",
+                        tmp_path.name)
+                except OSError:
+                    pass
+
+    def _invoke_derive_pca(self, cmd, out_path, src_rds_path, cancel_event):
+        """derive_uncorrected_pca の R 呼び出し本体（後始末は呼び出し側の finally）。"""
         if cancel_event is None:
             try:
                 result = subprocess.run(
@@ -702,14 +736,12 @@ class SeuratBridge:
                     ) from e
                 raise
         if returncode != 0:
-            if out_path.exists():
-                try:
-                    out_path.unlink()
-                except OSError:
-                    pass
+            # 書きかけの削除は呼び出し側の finally が行う（全経路で共通）
             stderr_text = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
             raise RuntimeError(f"PCA derivation failed:\n{stderr_text[:2000]}")
-        return str(out_path)
+        if not out_path.exists():
+            raise RuntimeError(
+                f"PCA derivation produced no output: rds={src_rds_path}")
 
     def _run_feature_extraction(
         self, rds_path: str, feature_name: str, output_path: Path
@@ -937,7 +969,20 @@ class SeuratBridge:
 
     # --- 外部アノテーション（SCiLS peak Name 由来）のサイドカー結合 (Q2) ---
     def _find_feature_annotation_sidecar(self, rds_path) -> Optional[Path]:
-        """rds_path 近傍から `*_feature_annotations.parquet` を探す。"""
+        """rds_path 近傍から `*_feature_annotations.parquet` を探す。
+
+        ★ ver51.8: 候補が複数あるとき **英数字順の先頭** を無条件で返していた。
+          `analysis_runner._copy_feature_annotation_sidecars` は入力フォルダの
+          サイドカーを **全部** output_dir へコピーするので、多サンプルの
+          プロジェクトでは複数併存が通常状態。結果として
+          **サンプル A の化合物名がサンプル B の feature に付く**（m/z 0.005 Da
+          一致なので、空欄ではなく「それらしい別名」が出る = 気づけない）。
+
+          サイドカーは m/z が一致すれば内容は等価なので候補が 1 つなら従来どおり。
+          複数あるときは **警告を残す**（どれを使ったか追えるようにする）。
+          本質的な解決はサンプル単位で持つことだが、それは R 側の出力契約に
+          関わるためここでは可視化にとどめる。
+        """
         p = Path(rds_path).resolve()
         bases = [p.parent, p.parent.parent, p.parent.parent.parent]
         seen = set()
@@ -945,12 +990,18 @@ class SeuratBridge:
             if base is None or str(base) in seen or not base.is_dir():
                 continue
             seen.add(str(base))
-            hits = sorted(base.glob("*_feature_annotations.parquet"))
-            if hits:
+            for pattern in ("*_feature_annotations.parquet",
+                            "*/*_feature_annotations.parquet"):
+                hits = sorted(base.glob(pattern))
+                if not hits:
+                    continue
+                if len(hits) > 1:
+                    logger.warning(
+                        "注釈サイドカーが %d 個見つかりました。先頭 (%s) を使います。"
+                        "サンプルごとに内容が異なる場合、別サンプルの化合物名が"
+                        "付く可能性があります: %s",
+                        len(hits), hits[0].name, [h.name for h in hits])
                 return hits[0]
-            sub_hits = sorted(base.glob("*/*_feature_annotations.parquet"))
-            if sub_hits:
-                return sub_hits[0]
         return None
 
     def _load_feature_annotations(self, cache_dir: Path, rds_path,

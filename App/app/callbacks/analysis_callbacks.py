@@ -637,13 +637,23 @@ def run_analysis(
                         params["calibration_by_sample"] = cal_by_sample
                         if global_result:
                             params["calibration_coefficients"] = global_result["coefficients"]
+                            params["calibration_result"] = global_result
                         else:
-                            params["calibration_coefficients"] = list(
-                                cal_by_sample.values())[0]
-                        params["calibration_result"] = global_result or {
-                            "coefficients": params["calibration_coefficients"],
-                            "degree": len(params["calibration_coefficients"]) - 1,
-                        }
+                            # ★ ver51.8: 以前はここで `list(cal_by_sample.values())[0]` と
+                            #   していた。全サンプル共通 (__all__) が未設定のとき、
+                            #   **UI のクリック順で決まる任意の 1 サンプルの補正曲線を
+                            #   他の全サンプルへ適用** していた。フォールバックではなく
+                            #   コイン投げなので、個別設定のあるサンプルだけを補正し、
+                            #   未設定サンプルは **補正しない**。
+                            #   0 次のゼロ多項式 = どの m/z でも補正量 0 = 無補正。
+                            #   （R 側は係数ベクトルを評価するだけなので、これが
+                            #     「共通補正なし」の安全な表現になる）
+                            params["calibration_coefficients"] = [0.0]
+                            params["calibration_result"] = None
+                            logger.warning(
+                                "全サンプル共通のキャリブレーションが未設定です。"
+                                "個別設定のある %d サンプルのみ補正し、"
+                                "残りは補正しません。", len(cal_by_sample))
                 else:
                     # 従来動作: 全サンプル共通
                     cal_result = compute_calibration_coefficients(
@@ -1702,12 +1712,17 @@ def delete_calibration_rows(n, selected, data):
      State("data_folder", "value"),
      State("analysis_method", "value"),
      State("analysis_method_tims", "value"),
-     State("cal_sample_selector", "value")],
+     State("cal_sample_selector", "value"),
+     # ★ ver51.8: サンプル選択肢は [data_folder] + extra_folders から作られる
+     #   (file_handlers.update_sample_selector) のに、ここは data_folder しか
+     #   見ていなかった。追加フォルダのサンプルは構造上どうやっても一致せず、
+     #   常に「先頭ファイルへの黙ったフォールバック」に落ちていた。
+     State("extra_data_folders_store", "data")],
     prevent_initial_call=True,
 )
 def auto_detect_observed_peaks(n, table_data, search_window, cache_dir,
                                data_folder, analysis_method, analysis_method_tims,
-                               cal_sample_value):
+                               cal_sample_value, extra_folders=None):
     """リファレンスm/z値に対応する実測ピークを自動検出"""
     import numpy as np
     import pandas as pd
@@ -1722,12 +1737,19 @@ def auto_detect_observed_peaks(n, table_data, search_window, cache_dir,
     sw = float(search_window or 0.5)
 
     def _mz_map(columns):
-        """Feature名 → m/z数値マッピング"""
+        """Feature名 → m/z数値マッピング。
+
+        ★ ver51.8: ver51.7 ではここに独自の正規表現を置き「挙動維持のため」と
+          書いていたが、**その規則自体が誤りだった**（annotated 名の化合物名側の
+          数字を拾う）。共通窓口へ統一する。m/z を読めない列は載せない
+          （inf のまま窓判定に入れると m/z 0 付近の窓へ紛れ込む）。
+        """
+        from app.utils.deg_utils import extract_mz_numeric
         out = {}
         for col in columns:
-            match = re.search(r"(\d+\.?\d*)", str(col))
-            if match:
-                out[str(col)] = float(match.group(1))
+            mz = extract_mz_numeric(str(col))
+            if mz != float("inf"):
+                out[str(col)] = mz
         return out
 
     # --- データ読み込み: 優先順位 1) cache_dir  2) data_folder 生データ ---
@@ -1769,15 +1791,34 @@ def auto_detect_observed_peaks(n, table_data, search_window, cache_dir,
                     for i in np.where(np.abs(mz_arr - r) <= sw)[0]})
                 avg_spectrum = _bridge.get_feature_means(
                     Path(cache_dir), wanted, expr_path=expr_path)
-        except Exception:
+        except Exception as e:
+            # ★ ver51.8: parquet の読み取り失敗を黙って「生データから自動検出」へ
+            #   すり替えていた。データ源が変われば観測 m/z も変わるので理由を残す。
+            logger.warning("expression parquet からの列平均取得に失敗: %s", e)
             avg_spectrum = None
 
     if avg_spectrum is None:
-        # data_folder から生データを読み込むフォールバック (1 行の平均スペクトル)
+        # 生データを読み込むフォールバック (1 行の平均スペクトル)
+        # ★ ver51.8: 追加フォルダも探索対象に含める。サンプル選択肢は
+        #   [data_folder] + extra_folders から作られるため、data_folder だけを
+        #   見ていると追加フォルダのサンプルは決して一致しない。
         is_tims = bool(analysis_method_tims)
-        expr_df = read_raw_mz_spectrum(data_folder, is_tims=is_tims,
-                                       sample_name=target_sample)
+        folders = [data_folder] + list(extra_folders or [])
+        expr_df = None
+        for folder in folders:
+            if not folder:
+                continue
+            expr_df = read_raw_mz_spectrum(folder, is_tims=is_tims,
+                                           sample_name=target_sample)
+            if expr_df is not None:
+                break
         if expr_df is None:
+            # ★ 指定サンプルが見つからないときは、別サンプルで代用せず理由を出す
+            if target_sample:
+                return no_update, (
+                    f"⚠ サンプル '{target_sample}' の生データが見つかりません。"
+                    "データフォルダ（追加フォルダを含む）を確認してください。"
+                    "他のサンプルで代用はしません。")
             return no_update, "⚠ データが見つかりません。データフォルダを確認してください。"
         mz_values = _mz_map(expr_df.columns)
         avg_spectrum = {f: float(expr_df[f].mean()) for f in mz_values}
@@ -2342,12 +2383,26 @@ def load_calibration_from_first_analysis(rds_folder):
     r2 = cal_data.get("r_squared", "?")
     n_pts = cal_data.get("n_points", "?")
 
+    # ★ ver51.8: 自由度が足りないと R² は構造的に 1.0 になる。「完璧な当てはまり」に
+    #   見えてしまうので、評価できないときは数値を出さず理由を書く。
+    requested = cal_data.get("requested_degree")
+    r2_text = "評価不能 (点数が次数に対して不足)" if r2 is None else f"{r2}"
+    model_text = f"回帰モデル: {mode} (次数: {degree})"
+    if requested is not None and requested != degree:
+        model_text += f" ← 指定 {requested} 次を点数に合わせて下げた"
+
     detail_children = [
         html.Div("✅ 前回の解析から回帰式を検出:",
                  style={"fontWeight": "bold", "marginBottom": "5px"}),
-        html.Div(f"回帰モデル: {mode} (次数: {degree})"),
-        html.Div(f"R²: {r2}  |  マッチピーク数: {n_pts}"),
+        html.Div(model_text),
+        html.Div(f"R²: {r2_text}  |  マッチピーク数: {n_pts}"),
     ]
+    _lo, _hi = cal_data.get("ref_mz_min"), cal_data.get("ref_mz_max")
+    if _lo is not None and _hi is not None:
+        detail_children.append(html.Div(
+            f"⚠ 参照ピークの範囲: m/z {_lo:.1f}–{_hi:.1f}。"
+            "この範囲の外は外挿になるため、補正値の信頼性は下がります。",
+            style={"fontSize": "0.85em", "color": "#856404"}))
 
     # 使用ピーク一覧を表示
     cal_table = params_data.get("calibration_table", [])

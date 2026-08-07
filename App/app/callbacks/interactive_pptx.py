@@ -1636,6 +1636,14 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
 
     set_progress((0, 100, "準備中..."))
 
+    # ★ ver51.8: この回のエクスポートで何枚の図が描画に失敗したかを数えるため、
+    #   開始時にカウンタを空にする（完了メッセージで枚数を伝える）。
+    try:
+        from app.utils.pptx_helpers import reset_render_failures
+        reset_render_failures()
+    except Exception:
+        pass
+
     try:
         from pptx import Presentation
         from pptx.util import Inches, Pt
@@ -2173,6 +2181,20 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 f"（スキップ: {', '.join(dict.fromkeys(skipped_methods))}"
                 f" — RDS が見つからない/抽出失敗）"
             )
+        # ★ ver51.8: 図の PNG 変換に失敗した枚数を必ず伝える。
+        #   従来は失敗が無言で握りつぶされ、**図の無いスライドがそのまま出力**
+        #   されていた（ログにも残らなかった）。kaleido の不整合などで全滅しても
+        #   「✓ 出力しました」としか表示されない状態だった。
+        try:
+            from app.utils.pptx_helpers import render_failure_count
+            _n_failed = render_failure_count()
+            if _n_failed:
+                status_msg += (
+                    f"　⚠ {_n_failed} 枚の図を描画できずスライドから省きました"
+                    "（ログに理由を記録しています）"
+                )
+        except Exception:
+            pass
         return (
             dcc.send_bytes(output.getvalue(), filename=filename),
             status_msg,

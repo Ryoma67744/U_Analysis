@@ -103,13 +103,39 @@ _project_states: "OrderedDict[str, dict]" = OrderedDict()
 _state_access_time: dict[str, float] = {}
 _state_lock = threading.RLock()
 _DEFAULT_KEY = "__default__"
-# 各リクエストスレッド / background_callback subprocess で独立した値を保持。
+# 現在のリクエストが見ているプロジェクト。
+#
 # 旧実装は _project_states["__active_key__"] という共有エントリを使っていたため、
 # User A と User B が異なるプロジェクトを開くと衝突して片方のデータがもう片方に
-# 漏れていた。ContextVar で per-request isolation を実現する。
+# 漏れていた。そこで ContextVar にしたが——
+#
+# ★ ver51.8 の訂正: **ContextVar だけでは per-request 分離にならない。**
+#   本番は waitress の **スレッドプール (既定 8 本)** で、リクエストを
+#   `contextvars.Context.run()` で包まない。ContextVar はスレッドごとに 1 つの
+#   コンテキストを持つだけなので、`set()` した値は **同じスレッドが次に処理する
+#   無関係なリクエストへそのまま残る**。実測:
+#       req1 (projectA を set) -> projectA
+#       req2 (何も set しない) -> projectA   ← 漏れている
+#   従来のコメントは「per-request isolation を実現する」と書いていたが、
+#   **コードが持っていない安全性を主張していた**。
+#
+#   そこで reset_active_key() をリクエスト境界 (Flask before_request) で呼び、
+#   前のリクエストの値を持ち越さないようにする (main.py で登録)。
+#   これにより「_set_active_key を呼び忘れたコールバック」は
+#   **別プロジェクトのデータを読む代わりに、何も読めない** ようになる。
+#   静かに間違うより、動かない方が安全。
 _active_key_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "active_project_key", default=None
 )
+
+
+def reset_active_key() -> None:
+    """リクエスト境界で active key を捨てる (ver51.8)。
+
+    waitress はスレッドを使い回すので、これを呼ばないと前のリクエストの
+    プロジェクトが次のリクエストへ漏れる。main.py の before_request から呼ぶ。
+    """
+    _active_key_var.set(None)
 
 
 def _state_template() -> dict:

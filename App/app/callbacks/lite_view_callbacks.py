@@ -163,14 +163,14 @@ def initialize_lite_view(target, method_data):
     if cache_key not in _shared_data:
         try:
             extracted = _sv_bridge.extract_data(rds_path)
-            _shared_data[cache_key] = {
+            _shared_data_put(cache_key, {
                 "plot_data": extracted["plot_data"],
                 "cluster_stats": extracted["cluster_stats"],
                 "features_list": extracted["features_list"],
                 "meta": extracted["meta"],
                 "rds_path": rds_path,
                 "cache_dir": str(extracted["cache_dir"]),
-            }
+            })
         except Exception as e:
             return html.Div(), True, f"RDS 読込エラー: {e}"
 
@@ -323,14 +323,14 @@ def _resolve_lite_data_for_target(target, method_data):
     try:
         if not cached:
             extracted = _sv_bridge.extract_data(rds_path)
-            _shared_data[cache_key] = {
+            _shared_data_put(cache_key, {
                 "plot_data": extracted["plot_data"],
                 "cluster_stats": extracted["cluster_stats"],
                 "features_list": extracted["features_list"],
                 "meta": extracted["meta"],
                 "rds_path": rds_path,
                 "cache_dir": str(extracted["cache_dir"]),
-            }
+            })
             cached = _shared_data[cache_key]
     except Exception as e:
         # ver3.7: lite_view の bundle 再構築失敗を silent から logger.error に

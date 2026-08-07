@@ -746,7 +746,12 @@ def save_umap_display_settings(marker_size, label_size, show_labels,
     """
     if not rds_path:
         raise PreventUpdate
-    from app.callbacks.interactive_callbacks import _save_interactive_settings
+    # ★ ver51.8: 対になる Spatial 版 (interactive_spatial.save_spatial_display_settings)
+    #   は _set_active_key を呼んでいるのに、こちらだけ抜けていた。
+    #   無いと別プロジェクトの interactive_settings.json へ書くか、黙って捨てられる。
+    from app.callbacks.interactive_callbacks import (
+        _save_interactive_settings, _set_active_key)
+    _set_active_key(rds_path)
     _save_interactive_settings("umap_display", {
         "marker_size": marker_size if marker_size is not None else 2,
         "label_size": label_size if label_size is not None else 14,

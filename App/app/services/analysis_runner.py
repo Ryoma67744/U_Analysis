@@ -276,20 +276,55 @@ def compute_calibration_coefficients(
     obs = np.array([p[1] for p in pairs])
     errors = obs - refs
 
-    degree = {"linear": 1, "poly2": 2, "poly3": 3}.get(regression_mode, 3)
+    requested_degree = {"linear": 1, "poly2": 2, "poly3": 3}.get(regression_mode, 3)
+
+    # ★ ver51.8: 次数を点数で抑える。
+    #
+    #   対話側 (interactive_calibration._calibrate_mz) には
+    #   `degree = min(degree, len(obs_arr) - 1)  # 過学習防止` が元からあったが、
+    #   こちらは抜けていた。ただし **n-1 では全く足りない**。n-1 は「ちょうど
+    #   完全内挿できる」次数で、自由度ゼロ＝誤差を一切吸収しない。
+    #
+    #   実測 (DHB Positive の 4 点、真のドリフトは一定 +3 ppm、
+    #   ピーク検出のばらつき ±0.5 mDa)。m/z 1000 での補正:
+    #       次数 3 (自由度 0) : -20,807 ppm   ← 従来
+    #       次数 2 (自由度 1) :   +114 ppm
+    #       次数 1 (自由度 2) :   +0.2 ppm    ← 真値に一致
+    #   高次項がピーク検出のばらつきを拾い、参照範囲 (m/z 136-379) の外へ
+    #   外挿した瞬間に発散する。
+    #
+    #   そこで「パラメータ数の 2 倍以上の観測点を要求する」(n >= 2*(degree+1))。
+    #   次数 1 なら 4 点、2 なら 6 点、3 なら 8 点。同梱リファレンスは 2〜4 点なので
+    #   実質 linear に落ちる — これが m/z ドリフトの物理的にも妥当な既定。
+    degree = max(1, min(requested_degree, len(pairs) // 2 - 1))
+
     coefficients = np.polyfit(refs, errors, degree)  # 降順 [c_n, ..., c_0]
 
-    predicted = np.polyval(coefficients, refs)
-    ss_res = np.sum((errors - predicted) ** 2)
-    ss_tot = np.sum((errors - np.mean(errors)) ** 2)
-    r_squared = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 1.0
+    # ★ R² は自由度が足りないと **構造的に 1.0** になる (残差が定義上ゼロ)。
+    #   従来はそれを「当てはまり完璧」として画面に出していたため、
+    #   外挿で桁違いにずれていても利用者には気づく手段が無かった。
+    #   評価できないときは None を返し、呼び出し側で「評価不能」と出す。
+    #   ss_tot == 0 の既定も 1.0 ではなく 0.0 にする (対話側と同じ)。
+    if len(pairs) <= degree + 1:
+        r_squared = None
+    else:
+        predicted = np.polyval(coefficients, refs)
+        ss_res = float(np.sum((errors - predicted) ** 2))
+        ss_tot = float(np.sum((errors - np.mean(errors)) ** 2))
+        r_squared = round(1.0 - (ss_res / ss_tot), 6) if ss_tot > 0 else 0.0
 
     return {
         "coefficients": coefficients.tolist(),
         "degree": degree,
-        "r_squared": round(r_squared, 6),
+        "requested_degree": requested_degree,
+        "r_squared": r_squared,
         "n_points": len(pairs),
         "regression_mode": regression_mode,
+        # ★ 補正が保証されるのは参照ピークが張る範囲だけ。同梱リファレンスは
+        #   m/z 136-379 しか無いのに補正対象は 1000 超まであり、外側は外挿になる。
+        #   呼び出し側が警告を出せるよう範囲を返す。
+        "ref_mz_min": float(np.min(refs)),
+        "ref_mz_max": float(np.max(refs)),
     }
 
 
@@ -317,7 +352,19 @@ def _copy_feature_annotation_sidecars(data_folders, output_dir) -> None:
             for sc in sorted(d.glob("*_feature_annotations.parquet")):
                 dst = out / sc.name
                 try:
-                    if not dst.exists():
+                    # ★ ver51.8: 以前は `if not dst.exists()` で、同名が既にあると
+                    #   **永久に更新されなかった**。ピークリストを直して再変換したり
+                    #   molinfo_attach で化合物情報を付け直しても、結果フォルダ側は
+                    #   古いサイドカーのまま。annotation_inspect は data_folder を
+                    #   先に見るのに seurat_bridge は RDS 近傍（＝結果フォルダ）を
+                    #   見るため、**プレビュー画面と本画面で違う化合物名が出る**。
+                    src_st = sc.stat()
+                    need_copy = True
+                    if dst.exists():
+                        dst_st = dst.stat()
+                        need_copy = (src_st.st_mtime_ns > dst_st.st_mtime_ns
+                                     or src_st.st_size != dst_st.st_size)
+                    if need_copy:
                         shutil.copy2(str(sc), str(dst))
                         logger.info("注釈サイドカーをコピー: %s → %s", sc.name, out)
                 except Exception as e:

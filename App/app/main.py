@@ -82,6 +82,25 @@ app = dash.Dash(
 # Flask サーバーへの参照（画像配信用 / 認証ミドルウェア用）
 server = app.server
 
+
+# ---------------------------------------------------------------------------
+# ★ ver51.8: リクエスト境界でアクティブプロジェクトを捨てる
+# ---------------------------------------------------------------------------
+# 本番は waitress の **スレッドプール (既定 8 本)** で動く。waitress はリクエストを
+# `contextvars.Context.run()` で包まないため、ContextVar に set した値は
+# **同じスレッドが次に処理する無関係なリクエストへ残る**（実測確認済み）。
+#
+# その結果、`_set_active_key` を呼び忘れたコールバックが「たまたま前のリクエストが
+# 見ていたプロジェクト」のデータを読んでしまう。利用者が 1 人でも
+# 「前に開いていたプロジェクト」を読む形で表面化し、2 人いれば他人のデータになる。
+#
+# ここで毎リクエスト冒頭に捨てることで、呼び忘れは
+# **別プロジェクトを読む → 何も読めない** に変わる。静かに間違うより安全。
+@server.before_request
+def _reset_active_project_key():
+    from app.callbacks.interactive_callbacks import reset_active_key
+    reset_active_key()
+
 # Flask セッション設定 (Tier A/B 認証用)
 # SECRET_KEY は環境変数必須 (未設定なら起動失敗 = フェイルファースト)
 _secret_key = os.environ.get("FLASK_SECRET_KEY", "").strip()

@@ -136,20 +136,37 @@ def _match_sample_name(file_stem: str, sample_names: list[str]) -> str | None:
 
     1. 完全一致
     2. safe_prefix 変換後一致
-    3. 部分一致（file_stem が Sample に含まれる or 逆）
+    3. 部分一致（file_stem が Sample に含まれる or 逆）— **一意のときだけ**
+
+    ★ ver51.8: 部分一致で「最初に見つかったもの」を返していた。
+      サンプルが ["brain_A", "brain_B"] で生ファイルが brain.txt のとき、
+      並び順だけの理由で brain_A が選ばれる。返り値は
+      `key = (matched_sample, x, y)` の第 1 要素として使われ、TIMS のように
+      サンプル間で座標グリッドが共通だと **別サンプルのクラスタ名・ROI 名が
+      エクスポートに書き出される**（行ごとに、無言で）。
+      曖昧なら選ばない = None を返し、クラスタ列を空にする方が安全。
     """
     # 完全一致
     if file_stem in sample_names:
         return file_stem
     # safe_prefix 変換後一致
     safe = _safe_prefix(file_stem)
-    for sn in sample_names:
-        if _safe_prefix(sn) == safe:
-            return sn
-    # 部分一致
-    for sn in sample_names:
-        if file_stem in sn or sn in file_stem:
-            return sn
+    safe_hits = [sn for sn in sample_names if _safe_prefix(sn) == safe]
+    if len(safe_hits) == 1:
+        return safe_hits[0]
+    if len(safe_hits) > 1:
+        logger.warning(
+            "サンプル名の safe_prefix 一致が曖昧です (%s -> %s)。対応付けません。",
+            file_stem, safe_hits)
+        return None
+    # 部分一致（候補が 1 つに定まるときだけ採用）
+    partial = [sn for sn in sample_names if file_stem in sn or sn in file_stem]
+    if len(partial) == 1:
+        return partial[0]
+    if len(partial) > 1:
+        logger.warning(
+            "サンプル名の部分一致が曖昧です (%s -> %s)。対応付けません。",
+            file_stem, partial)
     return None
 
 

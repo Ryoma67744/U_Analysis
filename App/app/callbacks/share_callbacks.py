@@ -5,6 +5,10 @@
 
 import base64
 import logging
+import os
+import threading
+import time
+from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
@@ -43,7 +47,52 @@ from app.utils.annotation_label import feature_display_label as _feature_display
 _sv_bridge = SeuratBridge()
 
 # 共有データキャッシュ: { token: { plot_data, cluster_stats, features_list, meta, ... } }
-_shared_data: dict[str, dict] = {}
+#
+# ★ ver51.8: 上限も TTL も無い**無制限**の辞書だった。兄弟の
+#   `interactive_callbacks._project_states` / `_export_figures` には LRU + TTL が
+#   入っているのに、ここだけ無い。しかも ver51.7 でキーへ RDS の mtime を足した
+#   結果、**再解析のたびに新しいエントリが増え続ける**（古い版は誰も消さない）。
+#   1 エントリは plot_data (全 spot × 全列) + cluster_stats + features_list なので
+#   数十〜数百 MB になり、run_app.py が明記しているとおり本番は 1 プロセスなので
+#   再起動するまで解放されない。
+#
+#   LRU + TTL に変える。実装は _project_states と同じ方針
+#   （OrderedDict + 最終アクセス時刻）。
+_SHARED_DATA_MAX = int(os.environ.get("MSI_SHARED_DATA_MAX", "8"))
+_SHARED_DATA_TTL_SEC = float(os.environ.get("MSI_SHARED_DATA_TTL_SEC", "1800"))
+_shared_data: "OrderedDict[str, dict]" = OrderedDict()
+_shared_data_atime: dict[str, float] = {}
+_shared_data_lock = threading.RLock()
+
+
+def _shared_data_put(key: str, value: dict) -> None:
+    """共有データを登録し、上限/TTL を超えた古いエントリを捨てる (ver51.8)。"""
+    with _shared_data_lock:
+        now = time.monotonic()
+        _shared_data[key] = value
+        _shared_data.move_to_end(key)
+        _shared_data_atime[key] = now
+
+        # TTL 超過を先に落とす
+        for k in [k for k, t in _shared_data_atime.items()
+                  if k != key and now - t > _SHARED_DATA_TTL_SEC]:
+            _shared_data.pop(k, None)
+            _shared_data_atime.pop(k, None)
+        # まだ多ければ LRU で落とす
+        while len(_shared_data) > _SHARED_DATA_MAX:
+            old, _ = _shared_data.popitem(last=False)
+            _shared_data_atime.pop(old, None)
+            logger.info("共有データキャッシュを LRU で解放: %s", old)
+
+
+def _shared_data_get(key: str):
+    """共有データを取り出す（取得時に LRU の順序を更新する）。"""
+    with _shared_data_lock:
+        v = _shared_data.get(key)
+        if v is not None:
+            _shared_data.move_to_end(key)
+            _shared_data_atime[key] = time.monotonic()
+        return v
 
 
 # =========================================================================
@@ -284,8 +333,8 @@ def initialize_shared_view(token):
             ann_map = {feat: rec.get("compound")
                        for feat, rec in feat_ann.items() if rec.get("compound")}
 
-            # キャッシュに保存
-            _shared_data[token] = {
+            # キャッシュに保存 (ver51.8: LRU+TTL 付きヘルパー経由)
+            _shared_data_put(token, {
                 "plot_data": df_plot,
                 "cluster_stats": df_stats,
                 "features_list": features,
@@ -294,7 +343,7 @@ def initialize_shared_view(token):
                 "cache_dir": str(extracted["cache_dir"]),
                 "feature_annotations": feat_ann,
                 "annotation_map": ann_map,
-            }
+            })
 
             # クラスタオプション
             if df_plot is not None and "Cluster" in df_plot.columns:

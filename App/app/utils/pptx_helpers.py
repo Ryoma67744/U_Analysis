@@ -109,8 +109,32 @@ def fig_to_png_bytes(fig_dict, width=1200, height=800, scale=2):
         fig = go.Figure(d)
         fig.update_layout(paper_bgcolor="white", plot_bgcolor="white")
         return pio.to_image(fig, format="png", width=width, height=height, scale=scale)
-    except Exception:
+    except Exception as e:
+        # ★ ver51.8: ここは **ログを 1 行も出していなかった**。呼び出し側は
+        #   `if not png: continue` / `if png_bytes:` でスライドを黙って飛ばすため、
+        #   描画が壊れると **図の無い PPTX が警告ゼロで出力** されていた。
+        #   典型例が kaleido の不整合 (pyproject 経由で 1.x が入ると plotly 5.x と
+        #   噛み合わず pio.to_image が全滅する) で、利用者にも運用者にも
+        #   「なぜ図が無いのか」の手がかりが残らない。
+        logger.warning("[PPTX] 図の PNG 変換に失敗しました (この図はスキップ): %s", e)
+        _RENDER_FAILURES.append(str(e))
         return None
+
+
+# 直近の描画失敗を数えるためのバッファ (ver51.8)。
+# エクスポート開始時に reset_render_failures() で空にし、終了時に
+# render_failure_count() で「何枚落ちたか」を利用者へ伝える。
+_RENDER_FAILURES: list = []
+
+
+def reset_render_failures() -> None:
+    """エクスポート開始時に描画失敗の記録を空にする。"""
+    _RENDER_FAILURES.clear()
+
+
+def render_failure_count() -> int:
+    """直近のエクスポートで PNG 変換に失敗した図の枚数。"""
+    return len(_RENDER_FAILURES)
 
 
 # ---------------------------------------------------------------------------
@@ -232,21 +256,32 @@ def render_png(fig_dict, width=1200, height=800, scale=2, timeout=None):
         if _shared_pool is None:
             _shared_pool = ProcessPoolExecutor(max_workers=1)
         pool = _shared_pool
+    # ★ ver51.8: 失敗はここ (親プロセス) で数える。実際の描画は worker プロセスで
+    #   走るため、fig_to_png_bytes 側のカウンタは親からは見えない。
     try:
         fut = pool.submit(fig_to_png_bytes, fig_dict, width, height, scale)
     except Exception as e:
         logger.warning("[PPTX] 描画プールへの投入に失敗、作り直します: %s", e)
+        _RENDER_FAILURES.append(f"submit: {e}")
         _recycle_shared_pool()
         return None
     try:
-        return fut.result(timeout=t)
+        png = fut.result(timeout=t)
+        if png is None:
+            # worker 側で例外 → None。従来はここも無言だったため、
+            # 図の無い PPTX が警告ゼロで出ていた。
+            logger.warning("[PPTX] 画像描画に失敗しました (この図をスキップ)")
+            _RENDER_FAILURES.append("render returned None")
+        return png
     except FuturesTimeout:
         logger.warning(
             "[PPTX] 画像描画が %.0fs を超過。この図をスキップし描画プロセスを回収します。", t)
+        _RENDER_FAILURES.append(f"timeout {t}s")
         _recycle_shared_pool()
         return None
     except Exception as e:
         logger.warning("[PPTX] 画像描画に失敗、この図をスキップ: %s", e)
+        _RENDER_FAILURES.append(str(e))
         return None
 
 

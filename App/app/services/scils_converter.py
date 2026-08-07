@@ -542,7 +542,17 @@ def _read_peaklist(path: Path):
     headers, delim, skip = first_header_and_skipcount(path)
     norm = [str(h).strip().lower().replace(" ", "") for h in headers]
     ncol = len(headers)
-    mz_idx = next((i for i, c in enumerate(norm) if c in ("m/z", "mz", "m_z")), 0)
+    # ★ ver51.8: m/z 列が見つからないとき **黙って列 0 にフォールバック**していた。
+    #   Name 列は同じ状況で例外を投げるのに非対称で、正当化できない。
+    #   ヘッダが認識できない書式（"Center m/z" / "Mass" / 先頭に Index 列がある等）
+    #   だと `float(tok[0])` がインデックス値を読んで成功してしまうため、
+    #   例外も出ずに **全行の m/z が行番号**になり、以降の近傍マッチが
+    #   「全部 No DB hit」か「低 m/z だけ無関係な化合物に一致」になる。
+    #   気づける手段が無いので、ここで止める。
+    mz_idx = next((i for i, c in enumerate(norm) if c in ("m/z", "mz", "m_z")), None)
+    if mz_idx is None:
+        raise ValueError(
+            f"peak-list に m/z 列がありません: {path.name} (ヘッダ: {headers})")
     name_idx = next((i for i, c in enumerate(norm) if c == "name"), None)
     if name_idx is None:
         raise ValueError(f"peak-list に Name 列がありません: {path.name}")
@@ -906,7 +916,15 @@ def convert_scils_to_parquet(
                 feat_ann_df = _pann.build_feature_annotation_table(
                     mz_sorted, pk_mz, pk_names, tol_da=_PEAKLIST_MZ_TOL_DA
                 )
-                result.n_annotated = int((feat_ann_df["compound"].astype(str) != "").sum())
+                # ★ ver51.8: 以前は `compound != ""` で数えていたが、
+                #   `parse_scils_name` は DB 未ヒットでも compound に
+                #   **"No DB hit" という文字列**を入れる（is_db_hit=False にするだけ）。
+                #   そのため未同定ピークまで「付与済み」に数えられ、変換画面が
+                #   「2,700 / 2,700 に付与」、注釈プレビューが「60 / 2,700」と
+                #   矛盾した数字を出していた。プレビュー側と同じ判定に揃える。
+                from app.services.annotation_inspect import _is_real_compound
+                result.n_annotated = int(
+                    feat_ann_df["compound"].map(_is_real_compound).sum())
                 logger.info("Peak-list 注釈: %d / %d feature にマッチ", result.n_annotated, n_mz)
             except Exception as e:
                 logger.warning("peak-list 解析に失敗（注釈なしで継続）: %s", e)

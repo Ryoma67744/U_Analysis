@@ -421,7 +421,12 @@ def _calibrate_mz(features_list, avg_spectrum, reference_mz,
 
     if regression_mode in ("poly2", "poly3"):
         degree = 2 if regression_mode == "poly2" else 3
-        degree = min(degree, len(obs_arr) - 1)  # 過学習防止
+        # ★ ver51.8: n-1 は「ちょうど完全内挿できる」次数で自由度ゼロ。
+        #   誤差を一切吸収せず、参照範囲の外へ外挿すると発散する
+        #   (実測: 4 点 + 3 次で m/z 1000 の補正が -20,807 ppm)。
+        #   パラメータ数の 2 倍以上の観測点を要求する。
+        #   analysis_runner.compute_calibration_coefficients と同じ規則。
+        degree = max(1, min(degree, len(obs_arr) // 2 - 1))  # 過学習防止
         coeffs = np.polyfit(obs_arr, ppm_arr, degree)
         predicted_ppm = np.polyval(coeffs, mz_array)
         # R² 算出
@@ -474,7 +479,12 @@ def _calibrate_mz_from_pairs(features_list, matched_pairs,
 
     if regression_mode in ("poly2", "poly3"):
         degree = 2 if regression_mode == "poly2" else 3
-        degree = min(degree, len(obs_arr) - 1)  # 過学習防止
+        # ★ ver51.8: n-1 は「ちょうど完全内挿できる」次数で自由度ゼロ。
+        #   誤差を一切吸収せず、参照範囲の外へ外挿すると発散する
+        #   (実測: 4 点 + 3 次で m/z 1000 の補正が -20,807 ppm)。
+        #   パラメータ数の 2 倍以上の観測点を要求する。
+        #   analysis_runner.compute_calibration_coefficients と同じ規則。
+        degree = max(1, min(degree, len(obs_arr) // 2 - 1))  # 過学習防止
         coeffs = np.polyfit(obs_arr, ppm_arr, degree)
         # R² 算出
         fitted_ppm = np.polyval(coeffs, obs_arr)
@@ -721,15 +731,27 @@ def auto_detect_int_cal_peaks(n, table_data, search_window, cache_dir,
 
     if avg_spectrum is None:
         # 生データ側は 1 行 (平均スペクトル) なので、そのまま全部読む。
+        #
+        # ★ ver51.8 の既知の限界: このコールバックには**サンプル選択の入力が無い**。
+        #   そのため sample_name を渡せず、フォルダ内の先頭ファイルの平均スペクトルで
+        #   参照ピークを探すことになる。複数サンプルのプロジェクトでは、
+        #   「どのサンプルから求めた補正か」が利用者に見えない。
+        #   設定画面側 (analysis_callbacks.auto_detect_observed_peaks) には
+        #   cal_sample_selector があり、そちらは ver51.8 で厳密一致にした。
+        #   ここに選択 UI を足すのは別途 (挙動変更を伴うため)。ログには残す。
         is_tims = bool(analysis_method_tims)
         expr_df = read_raw_mz_spectrum(data_folder, is_tims=is_tims)
         if expr_df is None:
             return no_update, "データが見つかりません。データフォルダを確認してください。"
+        logger.info(
+            "対話キャリブレーション: サンプル未指定のため %s 内の先頭ファイルの"
+            "平均スペクトルで参照ピークを探索します", data_folder)
+        # ver51.8: 独自の正規表現をやめ共通窓口へ統一（4 つ目の重複だった）。
         mz_values = {}
         for col in expr_df.columns:
-            match = re.search(r"(\d+\.?\d*)", col)
-            if match:
-                mz_values[col] = float(match.group(1))
+            mz = _extract_mz_numeric(str(col))
+            if mz != float("inf"):
+                mz_values[col] = mz
         avg_spectrum = {f: float(expr_df[f].mean()) for f in mz_values}
 
     if not mz_values:
@@ -817,12 +839,19 @@ def recalculate_int_cal_ppm(ts, table_data):
      Input("int_cal_min_peaks", "value"),
      Input("int_cal_regression_mode", "value"),
      Input("int_cal_annotation_path", "value")],
+    # ★ ver51.8: 保存先を決めるため rds_path を受け取る（元は無かった）
+    State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
 def auto_save_int_cal(enable, ion_mode, adduct_filter, matrix, table_data,
                       search_window, min_peaks, regression_mode,
-                      mrm_path):
-    from app.callbacks.interactive_callbacks import _save_interactive_settings
+                      mrm_path, rds_path):
+    # ★ ver51.8: active key を立てないと別プロジェクトへ書くか黙って捨てられる
+    if not rds_path:
+        raise PreventUpdate
+    from app.callbacks.interactive_callbacks import (
+        _save_interactive_settings, _set_active_key)
+    _set_active_key(rds_path)
     _save_interactive_settings("int_calibration", {
         "enable": enable or False,
         "ion_mode": ion_mode or "Positive",
@@ -849,15 +878,21 @@ def auto_save_int_cal(enable, ion_mode, adduct_filter, matrix, table_data,
      State("int_cal_search_window", "value"),
      State("int_cal_min_peaks", "value"),
      State("int_cal_regression_mode", "value"),
-     State("int_cal_annotation_path", "value")],
+     State("int_cal_annotation_path", "value"),
+     # ★ ver51.8: 保存先を決めるため rds_path を受け取る（元は無かった）
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
 def save_int_cal_list(n, enable, ion_mode, adduct_filter, matrix, table_data,
                       search_window, min_peaks, regression_mode,
-                      mrm_path):
+                      mrm_path, rds_path):
     if not n:
         return no_update
-    from app.callbacks.interactive_callbacks import _save_interactive_settings
+    if not rds_path:
+        raise PreventUpdate
+    from app.callbacks.interactive_callbacks import (
+        _save_interactive_settings, _set_active_key)
+    _set_active_key(rds_path)
     _save_interactive_settings("int_calibration", {
         "enable": enable or False,
         "ion_mode": ion_mode or "Positive",

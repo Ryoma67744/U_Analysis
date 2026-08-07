@@ -214,16 +214,20 @@ def apply_mz_filter(n_clicks, mz_min, mz_max, rds_path=None):
     if mz_min is None and mz_max is None:
         return None  # フィルタなし -> 全件に戻す
 
+    # ver51.8: 独自の正規表現をやめ共通窓口に統一した。
+    # ★ 従来は「最初の数字」だったので annotated 名 (`PI 38:4 (...)_760.5851`) を
+    #   38 と読み、m/z 範囲で絞ると脂質が丸ごと消えていた。
+    # ★ さらに m/z を持たない feature を `filtered.append(f)` へ素通りさせており、
+    #   範囲外でも残っていた。inf は「m/z 無し」なので範囲指定時は除外する。
     filtered = []
     for f in features:
-        # feature名から数値部分を抽出（例: "mz_123.456" -> 123.456）
-        match = re.search(r"(\d+\.?\d*)", f)
-        if match:
-            val = float(match.group(1))
-            if mz_min is not None and val < mz_min:
-                continue
-            if mz_max is not None and val > mz_max:
-                continue
+        val = _extract_mz_numeric(f)
+        if val == float("inf"):
+            continue  # m/z が読めない feature は範囲指定時に含めない
+        if mz_min is not None and val < mz_min:
+            continue
+        if mz_max is not None and val > mz_max:
+            continue
         filtered.append(f)
     return filtered
 
@@ -930,14 +934,19 @@ for _ctl_id, _fn in (
     Output("feature_history_store", "data"),
     Input("add_feature_bookmark_btn", "n_clicks"),
     [State("feature_select", "value"),
-     State("feature_history_store", "data")],
+     State("feature_history_store", "data"),
+     # ★ ver51.8: 保存先を決めるため rds_path を受け取る（元は無かった）
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def add_feature_bookmark(n_clicks, feature_name, current_bookmarks):
+def add_feature_bookmark(n_clicks, feature_name, current_bookmarks, rds_path):
     """ブックマーク追加ボタン -> 現在の Feature をブックマークストアに保存"""
-    from app.callbacks.interactive_callbacks import _save_interactive_settings
-    if not n_clicks or not feature_name:
+    from app.callbacks.interactive_callbacks import (
+        _save_interactive_settings, _set_active_key)
+    if not n_clicks or not feature_name or not rds_path:
         return no_update
+    # ★ active key を立てないと別プロジェクトのブックマークを書き換える
+    _set_active_key(rds_path)
     bookmarks = list(current_bookmarks) if current_bookmarks else []
     if feature_name in bookmarks:
         bookmarks.remove(feature_name)
@@ -952,14 +961,18 @@ def add_feature_bookmark(n_clicks, feature_name, current_bookmarks):
      Output("feature_history_select", "value")],
     Input("remove_feature_bookmark_btn", "n_clicks"),
     [State("feature_history_select", "value"),
-     State("feature_history_store", "data")],
+     State("feature_history_store", "data"),
+     # ★ ver51.8: 保存先を決めるため rds_path を受け取る（元は無かった）
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def remove_feature_bookmark(n_clicks, selected, current_bookmarks):
+def remove_feature_bookmark(n_clicks, selected, current_bookmarks, rds_path):
     """選択中のブックマークを削除"""
-    from app.callbacks.interactive_callbacks import _save_interactive_settings
-    if not n_clicks or not selected or not current_bookmarks:
+    from app.callbacks.interactive_callbacks import (
+        _save_interactive_settings, _set_active_key)
+    if not n_clicks or not selected or not current_bookmarks or not rds_path:
         return no_update, no_update
+    _set_active_key(rds_path)
     bookmarks = list(current_bookmarks)
     if selected in bookmarks:
         bookmarks.remove(selected)

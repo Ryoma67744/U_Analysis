@@ -41,10 +41,66 @@ def is_meaningful_annotation(ann: str, gene: str = "") -> bool:
     return True
 
 
+# feature 名から m/z を取り出す規則 (ver51.8)
+# ---------------------------------------------------------------------------
+# ★ 従来は「文字列中の最初の数字」を m/z としていた。annotated な feature 名は
+#   `<化合物名>_<m/z> | <DB> | <アダクト>` 形式（peak_annotation.make_column_name が
+#   作り、scils_converter が **列名として** 使い、R がそれを Seurat の rowname に
+#   採用する）なので、化合物名に数字があると化合物名側を拾ってしまう:
+#       "PI 38:4 (PI 18:0/20:4)_760.5851" -> 38.0
+#       "2-Hydroxybutyric acid_105.0546 | HMDB | M+H" -> 2.0
+#   同梱 DB (App/DB/TIMS/4500_endogenous_metabolites_mod.csv) は 4,546 化合物中
+#   2,409 件 (53%) が名前に数字を含む。
+#
+#   これは calibration の窓判定だけでなく、サイドカーとの突き合わせ
+#   (seurat_bridge._load_feature_annotations) も壊しており、**化合物名アノテーションを
+#   持つデータセットに限って化合物名表示が丸ごと死ぬ** 状態になっていた。
+#
+# ★ R 側は同じバグを `.feature_mz()` で既に直している (CHANGELOG ver46 系)。
+#   ここはその規則を Python へ揃えるもの。正しい実装は Python にも
+#   data_manager._mz_from_embedded_name として既にあったが、生入力 parquet に
+#   しか使われていなかった。
+#
+# ★ 認識できない形式は inf を返す (「m/z が無い」を意味する)。
+#   従来の「最初の数字」だと DESI の 1 行ヘッダ形式 ("Vitamin B12" など純粋な
+#   化合物名) が 12.0 になり、**m/z 12 の calibration 窓に紛れ込む**。
+#   意味のない数値より「m/z 無し」の方が安全で、呼び出し側は既に inf を
+#   扱える (seurat_bridge.py の `mz == float("inf"): continue` など)。
+_MZ_TRAILING_RE = re.compile(r"_(\d+(?:\.\d+)?)\s*$")
+_MZ_PREFIX_RE = re.compile(r"^m/z\s+(\d+(?:\.\d+)?)\s*$", re.IGNORECASE)
+_MZ_BARE_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*$")
+
+
 def extract_mz_numeric(f: str) -> float:
-    """フィーチャー名から数値部分(m/z値)を抽出してソート用floatを返す"""
-    match = re.search(r"(\d+\.?\d*)", f)
-    return float(match.group(1)) if match else float("inf")
+    """フィーチャー名から m/z 値を抽出する。認識できなければ float("inf")。
+
+    対応する形式（この順に判定）:
+      1. `<化合物名>_<m/z> | <残り>` / `mz_<m/z>` … `|` より前の **末尾** の `_<数値>`
+      2. `m/z <m/z>`                            … R の非 annotated 経路が作る形
+      3. `<m/z>`                                 … 素の数値列名
+    """
+    s = str(f).strip()
+
+    # 1. パイプより前 (head) の末尾に付いた _<数値>。annotated 名と mz_ 形式の両方を拾う。
+    head = s.split("|", 1)[0].strip()
+    m = _MZ_TRAILING_RE.search(head)
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
+
+    # 2. "m/z 760.58510"
+    m = _MZ_PREFIX_RE.match(head)
+    if m:
+        return float(m.group(1))
+
+    # 3. "419.257200"
+    m = _MZ_BARE_RE.match(head)
+    if m:
+        return float(m.group(1))
+
+    return float("inf")
 
 
 def backfill_annotations(deg_data, annotation_map):
@@ -185,7 +241,24 @@ def _write_deg_index(
     結果フォルダ直下に deg_index.json を作成 / 更新し、次回ロード時に
     glob 22 パターンを走査せず直接ファイルを開けるようにする。
     書き込み失敗（read-only フォルダ等）時は silent skip。
+
+    ★ ver51.8: **別の統合手法のフォルダにあるファイルは絶対に記録しない**。
+      以前は要求した手法に DEG が無いと別手法のファイルへフォールバックし、
+      その対応をここに書き込んでいた。一度書かれると高速パスが先に読むので
+      間違いが固着し、再起動しても消えなかった。探索側でも弾いているが、
+      「間違いをディスクに焼き付ける」のは被害が桁違いなので二重に守る。
     """
+    _other = {"harmony", "rpca", "pca", "pca_uncorrected"} - {str(method).lower()}
+    try:
+        _parts = [p.lower() for p in Path(file_path).relative_to(result_base).parts[:-1]]
+    except ValueError:
+        _parts = [p.lower() for p in Path(file_path).parts[:-1]]
+    if any(p in _other for p in _parts):
+        logger.warning(
+            "deg_index.json への記録を拒否: method=%s に対し別手法のファイル %s",
+            method, file_path)
+        return
+
     meta_path = result_base / "deg_index.json"
     try:
         if meta_path.exists():
@@ -298,18 +371,31 @@ def load_deg_results(
         except Exception as e:
             logger.warning(f"deg_index.json パース失敗、glob fallback: {e}")
 
+    # 既知の統合手法フォルダ名。要求された手法**以外**のフォルダにあるファイルは
+    # 採用してはいけない (ver51.8)。
+    _ALL_METHOD_DIRS = {"harmony", "rpca", "pca", "pca_uncorrected"}
+    _other_method_dirs = _ALL_METHOD_DIRS - {method_dir.lower()}
+
+    def _is_other_method(path) -> bool:
+        """path が **別の統合手法** のフォルダの中にあるか。"""
+        try:
+            parts = [p.lower() for p in Path(path).relative_to(result_base).parts[:-1]]
+        except ValueError:
+            parts = [p.lower() for p in Path(path).parts[:-1]]
+        return any(p in _other_method_dirs for p in parts)
+
     # --- 1. CSV ファイル検索 ---
+    # ★ ver51.8: 以前はここに `Harmony/*` `RPCA/*` `PCA/*` が **無条件で** 並んでいた。
+    #   要求した手法の DEG ファイルが無いと別手法の結果へ黙ってフォールバックし、
+    #   しかも `_write_deg_index` でその対応を **ディスクに記録** していたため、
+    #   間違いが固着して再起動しても消えなかった (RPCA を要求 → Harmony の表)。
+    #   手法を比較しているつもりで同じ表を見ることになるので、パターンを削除した。
+    #   直下 (手法フォルダを作らない単一手法の出力) は従来どおり許容する。
     csv_patterns = [
         f"{method_dir}/*deg*markers*.csv",
         f"{method_dir}/*top*markers*.csv",
         f"{method_dir}/markers_annotated*.csv",
         f"{method_dir}/markers_mz_only*.csv",
-        "Harmony/*deg*markers*.csv",
-        "Harmony/*top*markers*.csv",
-        "RPCA/*deg*markers*.csv",
-        "RPCA/*top*markers*.csv",
-        "PCA/*deg*markers*.csv",
-        "PCA/*top*markers*.csv",
         "*deg*markers*.csv",
         "*top*markers*.csv",
         "markers_annotated*.csv",
@@ -355,6 +441,10 @@ def load_deg_results(
     ]
     for name_pattern in rglob_csv_names:
         matches = sorted(result_base.rglob(name_pattern))
+        # ★ ver51.8: 別手法のフォルダにあるものは候補から外す。
+        #   従来は `prioritized + 残り全部` だったので、要求した手法に無ければ
+        #   結局よその手法のファイルを掴んでいた。
+        matches = [m for m in matches if not _is_other_method(m)]
         if matches:
             # 選択した統合手法のフォルダ内を優先
             method_lower = method_dir.lower()
@@ -373,6 +463,8 @@ def load_deg_results(
     ]
     for pattern in rds_patterns:
         matches = sorted(result_base.glob(pattern))
+        # ver51.8: CSV 段と同じく別手法フォルダのものは採らない
+        matches = [m for m in matches if not _is_other_method(m)]
         if matches:
             try:
                 logger.info(f"RDS発見: {matches[0]}")
