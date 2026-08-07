@@ -7,7 +7,7 @@
 - 更新時は CHANGELOG.md とコミットメッセージ末尾 `[verX.Y]` も同期する。
 """
 
-APP_VERSION = "51.3"
+APP_VERSION = "51.4"
 RELEASE_DATE = "2026-08-07"
 
 
