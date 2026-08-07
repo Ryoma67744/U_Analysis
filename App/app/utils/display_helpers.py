@@ -213,6 +213,56 @@ def apply_display_overrides(fig_dict, *, marker_size=None, label_size=None,
 
 
 # ---------------------------------------------------------------------------
+# Feature Plot 用の見た目パラメータ後付け適用 (ver51.3)
+# ---------------------------------------------------------------------------
+# Spatial と同じ狙い（マーカーサイズ・配色をサーバで作り直さず restyle する）だが、
+# 対象トレースの見つけ方が違う。Spatial はトレースの `meta` に {"dsz":..} を
+# 入れているのに対し、Feature の発現トレースは `meta` を **hover ラベルの値**
+# として使っている（ver46.3: ユーザー提供の化合物名が "%{x}" 等の Plotly
+# テンプレート記法を含みうるため、値として渡す必要がある）。上書きすると
+# hovertemplate が壊れるので、Feature は layout.meta に添字で持たせる。
+#
+# **JS 側 (assets/feature_restyle.js の applyFeature) と本関数は同じ規則を
+# 実装している**。食い違うと「画面と一括保存 PNG が違う」という最悪の壊れ方を
+# するため、tests/test_render_payload.py で「最初からその値でビルドした図」と
+# 一致することを検証している。
+# ---------------------------------------------------------------------------
+
+def apply_feature_display_overrides(fig_dict, *, marker_size=None,
+                                    colorscale=None):
+    """Feature Plot の figure dict にマーカーサイズ / 配色を適用する。
+
+    fig_dict は破壊的に更新して返す（呼び出し側が必要なら事前にコピーすること）。
+
+    marker_size: None なら変更しない。0 以下なら layout.meta.auto_msz（自動値）。
+    colorscale: None / 空なら変更しない。
+    """
+    if not isinstance(fig_dict, dict):
+        return fig_dict
+    layout = fig_dict.get("layout") or {}
+    meta = layout.get("meta") or {}
+    if meta.get("kind") != "feature":
+        return fig_dict
+    data = fig_dict.get("data") or []
+
+    if marker_size is not None:
+        base = float(marker_size) if float(marker_size) > 0 else None
+        if base is None:
+            base = meta.get("auto_msz")
+        if base:
+            for i in meta.get("sz") or []:
+                if 0 <= int(i) < len(data):
+                    data[int(i)].setdefault("marker", {})["size"] = float(base)
+
+    if colorscale:
+        for i in meta.get("cs") or []:
+            if 0 <= int(i) < len(data):
+                data[int(i)].setdefault("marker", {})["colorscale"] = colorscale
+
+    return fig_dict
+
+
+# ---------------------------------------------------------------------------
 # 表示名ヘルパー
 # ---------------------------------------------------------------------------
 

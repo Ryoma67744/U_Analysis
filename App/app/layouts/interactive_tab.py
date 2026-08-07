@@ -1876,6 +1876,9 @@ def create_interactive_tab():
         # ver46.1: 見た目スライダーの clientside restyle 用ダミー Output。
         # 実際の更新は assets/spatial_restyle.js が DOM のグラフへ直接行う。
         dcc.Store(id="spatial_restyle_dummy", data=None),
+        # ver51.3: Feature の見た目コントロール (マーカーサイズ / 配色) を
+        # clientside restyle するための出力先ダミー (assets/feature_restyle.js)。
+        dcc.Store(id="feature_restyle_dummy", data=None),
         # 軽量ビューア「開く」前の設定 flush 完了シグナル（タイムスタンプ）
         # clientside_callback はこの Store の data 変化で window.open を発火する
         dcc.Store(id="lite_viewer_open_signal", data=0),

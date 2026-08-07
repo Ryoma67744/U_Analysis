@@ -670,11 +670,14 @@ def test_feature_plot_renders_webgl_and_stores_figures_serverside(
 
     resp = _call_callback(
         dash_app, "feature_plot_container",
-        # Inputs(10): feature, sample, marker_size, imin, imax, name_map,
-        #             fs_trigger, rows, show_compound, colorscale
-        # States(5): rds_path, cache_dir, rotation_store, deg_data, session_id
-        args=["mz_100", "S1", 0, None, None, {}, 0, 0, False, "Plasma",
-              rds_path, "/tmp/cache", {}, None, session_id],
+        # ver51.3: marker_size / colorscale は clientside restyle へ移したので
+        # Input(10) → Input(8) + State に移動した。
+        # Inputs(8): feature, sample, imin, imax, name_map, fs_trigger,
+        #            rows, show_compound
+        # States(7): marker_size, colorscale, rds_path, cache_dir,
+        #            rotation_store, deg_data, session_id
+        args=["mz_100", "S1", None, None, {}, 0, 0, False,
+              0, "Plasma", rds_path, "/tmp/cache", {}, None, session_id],
         triggered_prop="feature_select.value")
 
     figs = _graph_figures(resp["feature_plot_container"]["children"],
@@ -700,8 +703,8 @@ def test_feature_plot_drops_invisible_points_but_keeps_colorbar(
     def _feature_points(imin):
         resp = _call_callback(
             dash_app, "feature_plot_container",
-            args=["mz_100", "S1", 0, imin, None, {}, 0, 0, False, "Plasma",
-                  rds_path, "/tmp/cache", {}, None, "sess-mask"],
+            args=["mz_100", "S1", imin, None, {}, 0, 0, False,
+                  0, "Plasma", rds_path, "/tmp/cache", {}, None, "sess-mask"],
             triggered_prop="feature_intensity_min.value")
         figs = _graph_figures(resp["feature_plot_container"]["children"],
                               id_type="feature_graph")
@@ -1013,3 +1016,132 @@ def test_no_hovertemplate_embeds_dynamic_text():
     assert not offenders, (
         "hovertemplate に動的文字列を埋め込んでいる箇所がある "
         "(meta 経由にすること):\n" + "\n".join(offenders))
+
+
+# ---------------------------------------------------------------------------
+# 11. Feature Plot の見た目パラメータ後付け適用 (ver51.3)
+# ---------------------------------------------------------------------------
+# マーカーサイズと配色を clientside restyle へ移したので、サーバが一括保存用に
+# 保持している figure は操作前の値のままになる。保存直前に同じ変換を掛けて
+# 「画面と保存 PNG が一致する」ことを担保するのがここのテスト。
+# 食い違うと、画面では Viridis なのに保存 PNG は Plasma、という最悪の壊れ方をする。
+
+def _feature_figs(dash_app, monkeypatch, marker_size, colorscale):
+    """実コールバックを回して Feature タイルの figure dict 群を返す。"""
+    _df, rds_path = _install_synthetic_state(monkeypatch)
+    resp = _call_callback(
+        dash_app, "feature_plot_container",
+        args=["mz_100", "S1", None, None, {}, 0, 0, False,
+              marker_size, colorscale, rds_path, "/tmp/cache", {}, None,
+              "sess-ovr"],
+        triggered_prop="feature_select.value")
+    return _graph_figures(resp["feature_plot_container"]["children"],
+                          id_type="feature_graph")
+
+
+def _feature_marker_sizes(fig_dict):
+    meta = (fig_dict.get("layout") or {}).get("meta") or {}
+    data = fig_dict.get("data") or []
+    return [data[i].get("marker", {}).get("size") for i in meta.get("sz") or []]
+
+
+def _feature_colorscales(fig_dict):
+    """配色を **正規化して** 取り出す。
+
+    plotly は figure を組み立てる時点で "Viridis" のような名前を色停止点の配列へ
+    展開する。一方 apply_feature_display_overrides / Plotly.restyle は名前の
+    文字列を入れる（plotly も plotly.js も名前を受け付ける）。素の dict のまま
+    比べると「名前 vs 展開済み配列」で必ず食い違うので、両者を go.Figure に
+    通してから比較する。名前が fresh と同じ配列に解決されることまで確認できる。
+    """
+    fig = go.Figure(fig_dict)
+    d = fig.to_dict()
+    meta = (d.get("layout") or {}).get("meta") or {}
+    data = d.get("data") or []
+    return [data[i].get("marker", {}).get("colorscale")
+            for i in meta.get("cs") or []]
+
+
+def test_feature_figure_carries_restyle_meta(dash_app, monkeypatch):
+    """clientside restyle が必要とする layout.meta が載っていること。"""
+    figs = _feature_figs(dash_app, monkeypatch, 5, "Plasma")
+    assert figs, "Feature タイルが生成されていない"
+    for f in figs:
+        meta = (f.get("layout") or {}).get("meta") or {}
+        assert meta.get("kind") == "feature", f"kind が違う: {meta.get('kind')}"
+        assert meta.get("auto_msz", 0) > 0, "auto_msz が無い（自動モードに戻せない）"
+        assert meta.get("sz"), "サイズ対象トレースの索引が無い"
+        assert meta.get("cs"), "配色対象トレースの索引が無い"
+        n = len(f.get("data") or [])
+        assert all(0 <= i < n for i in meta["sz"] + meta["cs"]), "索引が範囲外"
+        # ★ 背景 TIC は常に Greys。配色プルダウンの対象に入れてはいけない。
+        assert set(meta["cs"]).isdisjoint(
+            {i for i in meta["sz"] if f["data"][i].get("marker", {})
+             .get("colorscale") == "Greys"}), "TIC 背景が配色対象に入っている"
+
+
+@pytest.mark.parametrize("marker_size", [3, 9, 0])
+def test_feature_display_overrides_match_fresh_build(dash_app, monkeypatch,
+                                                     marker_size):
+    """後付け適用 == 最初からその値でビルド（マーカーサイズ）。"""
+    import copy
+
+    from app.utils.display_helpers import apply_feature_display_overrides
+
+    fresh = _feature_figs(dash_app, monkeypatch, marker_size, "Plasma")
+    built = _feature_figs(dash_app, monkeypatch, 1, "Plasma")
+    assert fresh and len(fresh) == len(built)
+
+    for f_fresh, f_built in zip(fresh, built):
+        patched = apply_feature_display_overrides(
+            copy.deepcopy(f_built), marker_size=marker_size)
+        assert _feature_marker_sizes(patched) == _feature_marker_sizes(f_fresh)
+        assert _feature_marker_sizes(patched), "サイズ対象トレースが無い"
+
+
+def test_feature_display_overrides_match_fresh_build_colorscale(dash_app,
+                                                                monkeypatch):
+    """後付け適用 == 最初からその値でビルド（配色）。"""
+    import copy
+
+    from app.utils.display_helpers import apply_feature_display_overrides
+
+    fresh = _feature_figs(dash_app, monkeypatch, 4, "Viridis")
+    built = _feature_figs(dash_app, monkeypatch, 4, "Plasma")
+
+    for f_fresh, f_built in zip(fresh, built):
+        assert _feature_colorscales(f_built) != _feature_colorscales(f_fresh), \
+            "配色を変えても figure が変わっていない（テストが無意味）"
+        patched = apply_feature_display_overrides(
+            copy.deepcopy(f_built), colorscale="Viridis")
+        assert _feature_colorscales(patched) == _feature_colorscales(f_fresh)
+
+
+def test_feature_overrides_ignore_other_tile_kinds():
+    """kind が feature でない図は一切変更しない。"""
+    from app.utils.display_helpers import apply_feature_display_overrides
+
+    fig, _ = _spatial_fig(marker_size=4)
+    d = fig.to_dict()
+    before = _marker_sizes(d)
+    apply_feature_display_overrides(d, marker_size=20, colorscale="Viridis")
+    assert _marker_sizes(d) == before
+
+
+def test_feature_restyle_js_matches_python_contract():
+    """JS 側が Python と同じ layout.meta のキーを見ていること。
+
+    両者は同じ規則の二重実装なので、片方でキー名を変えたら気付ける必要がある。
+    ブラウザ上の実挙動は e2e に譲り、ここは契約（キー名）だけを固定する。
+    """
+    js = (APP_ROOT / "app" / "assets" / "feature_restyle.js").read_text(
+        encoding="utf-8")
+    for token in ('meta.kind !== "feature"', "meta.auto_msz", "meta.sz",
+                  "meta.cs", "marker.size", "marker.colorscale"):
+        assert token in js, f"feature_restyle.js に {token!r} が無い"
+    # Python 側の実装が同じキーを使っていること
+    src = (APP_ROOT / "app" / "utils" / "display_helpers.py").read_text(
+        encoding="utf-8")
+    assert "apply_feature_display_overrides" in src
+    for token in ('"feature"', '"auto_msz"', '"sz"', '"cs"', '"colorscale"'):
+        assert token in src, f"display_helpers.py に {token} が無い"
