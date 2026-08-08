@@ -91,6 +91,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
+from app.utils.validation import coerce_count, coerce_number
 
 # LRU 設定 (環境変数で調整可、デフォルトは 8 件 / 30 分)
 _MAX_PROJECT_STATES = int(os.environ.get("MAX_PROJECT_STATES", 8))
@@ -921,7 +922,7 @@ def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
                     elif ref and str(ref).strip():
                         ref_only_mz.append(float(ref))
 
-                mp = int(cal_min_peaks or 2)
+                mp = int(coerce_count(cal_min_peaks, "calibration_min_peaks"))
                 reg_mode = cal_regression_mode or "linear"
                 cal_result = None
 
@@ -936,7 +937,7 @@ def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
                     except Exception:
                         expr_path = None
                     if expr_path and expr_path.exists():
-                        sw = float(cal_search_window or 0.5)
+                        sw = float(coerce_number(cal_search_window, "calibration_search_window"))
                         # ver51.5: 参照窓内の列だけ読む。ここは**プロジェクト
                         # 読み込みの本経路**で、従来は列指定なしの全読み
                         # (実データで 1 回 2.32GB) だった。
@@ -952,7 +953,7 @@ def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
                             )
 
                 if cal_result and cal_result.get("calibrated"):
-                    tol = float(tolerance_mz or 0.1)
+                    tol = float(coerce_number(tolerance_mz, "tolerance_mz"))
                     deg_data = _reannotate_with_calibration(
                         deg_data, cal_result["corrected_mz_map"],
                         mrm_path, tolerance=tol,
@@ -1116,7 +1117,7 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
                     annotation_csv_path=annotation_csv or "",
                     ion_mode=ion_mode or "Positive",
                     adduct_patterns=adduct_filter,
-                    tolerance=float(tolerance_mz or 0.01),
+                    tolerance=float(coerce_number(tolerance_mz, "tolerance_mz")),
                     deg_data=deg_data,
                     return_skipped=True,
                 )
@@ -1191,8 +1192,8 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
             r_adduct = int_cal.get("adduct_filter",
                                    adduct_filter or DEFAULT_ADDUCT_POSITIVE)
             r_mrm = int_cal.get("mrm_path", mrm_path or "")
-            r_sw = int_cal.get("search_window", cal_search_window or 0.5)
-            r_mp = int_cal.get("min_peaks", cal_min_peaks or 2)
+            r_sw = int_cal.get("search_window", coerce_number(cal_search_window, "calibration_search_window"))
+            r_mp = int_cal.get("min_peaks", coerce_count(cal_min_peaks, "calibration_min_peaks"))
             r_reg = int_cal.get("regression_mode", cal_regression_mode or "poly3")
         else:
             # フォールバック: 解析設定タブの値
@@ -1202,8 +1203,8 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
             r_matrix = cal_matrix or "DHB"
             r_adduct = adduct_filter or DEFAULT_ADDUCT_POSITIVE
             r_mrm = mrm_path or ""
-            r_sw = cal_search_window or 0.5
-            r_mp = cal_min_peaks or 2
+            r_sw = coerce_number(cal_search_window, "calibration_search_window")
+            r_mp = coerce_count(cal_min_peaks, "calibration_min_peaks")
             r_reg = cal_regression_mode or "poly3"
 
         # ms_instrument をサブプロジェクトから取得

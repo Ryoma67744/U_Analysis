@@ -34,6 +34,7 @@ from app.services import receipt as _receipt
 from app.services import analysis_finalizer as _finalizer
 from app.services import job_registry as _job_registry
 from app.version import version_label
+from app.utils.validation import coerce_count, coerce_number, validate_param
 
 logger = logging.getLogger("msi.analysis_callbacks")
 
@@ -628,7 +629,7 @@ def run_analysis(
                     per_store[cal_sample_selector_prev] = calibration_table_data
 
                 reg_mode = calibration_regression_mode or "poly3"
-                min_pk = int(calibration_min_peaks or 2)
+                min_pk = int(coerce_count(calibration_min_peaks, "calibration_min_peaks"))
 
                 # サンプル固有エントリの抽出
                 sample_specific = {
@@ -1761,7 +1762,7 @@ def auto_detect_observed_peaks(n, table_data, search_window, cache_dir,
     # サンプル指定: __all__ 以外ならそのサンプルのみ読込
     target_sample = cal_sample_value if cal_sample_value and cal_sample_value != "__all__" else None
 
-    sw = float(search_window or 0.5)
+    sw = float(coerce_number(search_window, "calibration_search_window"))
 
     def _mz_map(columns):
         """Feature名 → m/z数値マッピング。
@@ -2218,7 +2219,7 @@ def delete_cal_preset(n, preset_name):
 
 from app.services.data_manager import (
     validate_data_folder, validate_rds_folder,
-    validate_output_dir, validate_numeric_param,
+    validate_output_dir,
     validate_msi_file, list_msi_files,
 )
 
@@ -2348,15 +2349,19 @@ def preflight_validation(
         errors.append(f"出力先: {r['msg']}")
 
     # 数値パラメータ
-    for val, name, lo, hi in [
-        (p_thresh, "p値閾値", 0, 1),
-        (logfc_thresh, "log2FC閾値", 0, None),
-        (tolerance_mz, "m/z許容誤差", 0, None),
+    # ★ ver52.3 ⑤: 範囲をここに直接書いていたので、`PARAM_BOUNDS`・レイアウトの
+    #   `min=`/`max=`・この一覧の **3 つが独立した出典**になっていた。ずれると
+    #   「入力欄は赤いのに実行は通る」「欄は白いのに実行が弾かれる」が起きる
+    #   （それ自体が T7 表示≠計算）。`PARAM_BOUNDS` から引いて出典を 1 つにする。
+    #   レイアウトとの一致は番人 `test_bounds_agree_with_the_layout` が見る。
+    for val, param_id in [
+        (p_thresh, "p_thresh"),
+        (logfc_thresh, "logfc_thresh"),
+        (tolerance_mz, "tolerance_mz"),
     ]:
-        if val is not None and val != "":
-            r = validate_numeric_param(val, name, min_val=lo, max_val=hi)
-            if not r["ok"]:
-                errors.append(r["msg"])
+        ok, msg = validate_param(param_id, val)
+        if not ok:
+            errors.append(msg)
 
     if not errors:
         return "", {"display": "none"}

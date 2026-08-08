@@ -52,7 +52,8 @@ from test_callback_wiring import _is_callback_decorator          # noqa: E402
 
 APP = Path(__file__).resolve().parent.parent / "app"
 
-from app.utils.validation import PARAM_BOUNDS                      # noqa: E402
+from app.utils.validation import (                                 # noqa: E402
+    PARAM_BOUNDS, BOUNDS_INTENTIONALLY_ABSENT)
 from app.callbacks.interactive_validation import _VALIDATED_INPUTS  # noqa: E402
 
 
@@ -61,32 +62,18 @@ from app.callbacks.interactive_validation import _VALIDATED_INPUTS  # noqa: E402
 #   ver52.2 は「番人だけを入れて母数を測る版」で、直すのは ver52.3（計画どおり）。
 #   隠さず記録し、(a) これ以上増えないこと (b) 直ったら気付けること を担保する。
 # --------------------------------------------------------------------------
+# ver52.3 ⑤ で 20 件中 18 件を結線し、残り 2 件になった。
+# 残した 2 件は「まだ手を付けていない」ではなく **意図的に範囲を作らない**もので、
+# 理由は実装側 `app/utils/validation.BOUNDS_INTENTIONALLY_ABSENT` に書いてある。
+# ★ 理由をテスト側だけに書くと、実装を読む人には「ただの未対応」に見える。
+#   ここでは「実装側の宣言と一致していること」を検査する（下の
+#   `test_unbounded_reasons_are_declared_in_the_app`）。
 KNOWN_UNBOUNDED = {
-    # --- 科学的な意味が重いもの（ver52.3 で最優先） ---
-    "p_thresh": "DEG の統計閾値。異常値で誤った有意判定",
-    "logfc_thresh": "DEG の統計閾値",
-    "reanalysis_p_thresh": "再解析の統計閾値",
-    "reanalysis_logfc_thresh": "再解析の統計閾値",
-    "tolerance_mz": "m/z 照合許容差。誤った化合物同定につながる",
-    "reanalysis_tolerance_mz": "同上（再解析）",
-    "reann_tolerance": "同上（再アノテーション）",
-    "mz_align_ppm": "m/z アライメント幅",
-    "calibration_search_window": "キャリブレーションの探索窓",
-    "calibration_min_peaks": "キャリブレーションの最小点数",
-    "int_cal_search_window": "対話キャリブレーションの探索窓",
-    "int_cal_min_peaks": "対話キャリブレーションの最小点数",
-    # --- 表示件数（API 側で直した `top` と同じ型が画面に残っている） ---
-    "volcano_label_top_n": "ラベル件数。API の `top` と同型",
-    "input_export_top_n": "エクスポート件数。API の `top` と同型",
-    # --- UMAP 条件（PARAM_BOUNDS に定義はあるが id が違って死んでいる） ---
-    "umap_n_neighbors_input": "PARAM_BOUNDS の umap_n_neighbors と id が不一致",
-    "umap_min_dist_input": "PARAM_BOUNDS の umap_min_dist と id が不一致",
-    "umap_dims_input": "PARAM_BOUNDS の pca_dims と id が不一致",
-    # --- m/z 範囲フィルタ ---
-    "feature_mz_min": "表示 m/z 範囲の下限",
-    "feature_mz_max": "表示 m/z 範囲の上限",
-    # --- 変換設定 ---
-    "scils_spot_block": "SCiLS 変換のスポットブロック数",
+    "feature_mz_min":
+        "レイアウトに value / min / max がどれも無く、クランプも定数も"
+        "リポジトリに存在しない。空欄＝「m/z で絞らない」が正当な状態なので、"
+        "根拠の無い範囲を発明しない（実装側 BOUNDS_INTENTIONALLY_ABSENT 参照）",
+    "feature_mz_max": "同上",
 }
 
 # ★ `PARAM_BOUNDS` にあるのに画面の id と一致しない定義（＝一度も効いていない）。
@@ -162,6 +149,35 @@ def _numeric_input_props():
                         and not isinstance(v.value, bool)):
                     props[prop] = v.value
             found[i.value] = props
+    return found
+
+
+def _numeric_input_component_kinds():
+    """数値入力 id → 部品の呼び出し名 (`dbc.Input` / `dcc.Input` 等) を返す。
+
+    `_register` が `Output(id, "invalid")` を出すので、結線先が
+    `invalid` を持つ部品かどうかをここで判定できるようにする。
+    """
+    def _qual(f):
+        if isinstance(f, ast.Attribute):
+            return f"{_qual(f.value)}.{f.attr}"
+        if isinstance(f, ast.Name):
+            return f.id
+        return "?"
+
+    found = {}
+    for path in sorted(APP.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            kw = {k.arg: k.value for k in node.keywords if k.arg}
+            t = kw.get("type")
+            if not (isinstance(t, ast.Constant) and t.value == "number"):
+                continue
+            i = kw.get("id")
+            if isinstance(i, ast.Constant) and isinstance(i.value, str):
+                found[i.value] = _qual(node.func)
     return found
 
 
@@ -273,6 +289,46 @@ class TestEveryNumericInputIsAccountedFor:
             "KNOWN_UNBOUNDED に載っているが実際には検証されている。"
             "直ったのは良いことなので登録から外すこと:\n  " + "\n  ".join(fixed))
 
+    def test_unbounded_reasons_are_declared_in_the_app(self):
+        """★ ver52.3 ⑤: 「範囲を作らない」判断は **実装側にも** 書いてあること。
+
+        理由がテストにしか無いと、`validation.py` を読む人には
+        「まだ手を付けていないだけ」に見え、次の人が根拠の無い範囲を
+        足してしまう（そして何も弾かない定義が増える＝ver52.3 ② で消した形）。
+        """
+        assert set(KNOWN_UNBOUNDED) == set(BOUNDS_INTENTIONALLY_ABSENT), (
+            "テスト側の KNOWN_UNBOUNDED と実装側の "
+            "BOUNDS_INTENTIONALLY_ABSENT が食い違っている。\n"
+            f"  テストのみ: {sorted(set(KNOWN_UNBOUNDED) - set(BOUNDS_INTENTIONALLY_ABSENT))}\n"
+            f"  実装のみ:   {sorted(set(BOUNDS_INTENTIONALLY_ABSENT) - set(KNOWN_UNBOUNDED))}")
+
+    def test_validated_inputs_are_all_dbc_inputs(self):
+        """★ ver52.3 ⑤: 結線先は `invalid` を持つ `dbc.Input` に限ること。
+
+        `_register` は `Output(id, "invalid")` を出す。`dcc.Input` には
+        `invalid` プロパティが無いので、結線した瞬間に実行時エラーになる
+        （テストはコールバック本体を呼ばないので、これを見ないと気付けない）。
+        """
+        kinds = _numeric_input_component_kinds()
+        bad = sorted(i for i in _VALIDATED_INPUTS
+                     if kinds.get(i) not in (None, "dbc.Input"))
+        assert not bad, (
+            "`invalid` プロパティを持たない部品を検証に結線している:\n  "
+            + "\n  ".join(f"{i} → {kinds[i]}" for i in bad))
+
+    def test_every_validated_input_has_bounds(self):
+        """★ 結線したのに `PARAM_BOUNDS` に定義が無いと、何も弾かない。
+
+        `validate_param` は未知 id を常に ok で返すので、
+        「結線した」だけでは検証していることにならない
+        （ver52.2 の『宣言はあるが述語が常に偽』T8 と同じ形）。
+        """
+        missing = sorted(set(_VALIDATED_INPUTS) - set(PARAM_BOUNDS))
+        assert not missing, (
+            "`_VALIDATED_INPUTS` に載っているが `PARAM_BOUNDS` に定義が無い。"
+            "コールバックは登録されるが常に ok を返すので、"
+            "**検証しているように見えて何も弾かない**:\n  " + "\n  ".join(missing))
+
 
 class TestDeclaredBoundsActuallyApply:
     """★ 「宣言した対象が実在する」型（監査 R-01 と同じ）。
@@ -370,49 +426,17 @@ class TestZeroIsNotSilentlyReplaced:
     「閾値 0 で全部見たい」が「閾値 0.5 で描画」に変わり、しかも無警告。
     """
 
-    # ★ 母数 21 件すべてを分類する。ver52.3 ⑤ で直す（本コミットでは直さない）。
-    #   検出を式ベースへ広げた結果 3 → 21 になった。従来は代入の形で
-    #   近似していたので 1/7 しか見えていなかった。
-    KNOWN = {
-        # --- 重: 0 が正当な入力なのに既定値へ化ける ---
-        ("interactive_deg.py", "fc_thresh"):
-            "H-2 (重): volcano_fc_threshold に min= が無く 0 を入力できる。"
-            "入力欄も赤くならないので、0 が 0.5 に化けたことに気付く手段が無い",
-        ("interactive_deg.py", "p_thresh"):
-            "H-2 (重): volcano_p_threshold も同様",
-        ("interactive_deg.py", "label_top_n"):
-            "★ 画面と資料が 0 を逆に解釈する。"
-            "interactive_deg.py:1163 は `int(label_top_n or 5)` で 0 → 5 (ラベルが出る)、"
-            "interactive_pptx.py:438 は `max(0, int(...))` で 0 → 0 (ラベルが出ない)。"
-            "レイアウトは min=0 なので 0 は正当な入力（＝ラベル無し）。"
-            "ver51.9 B-2 で PPTX だけ正しくした取りこぼし",
-        # --- 軽: 0 は範囲外だが、欄が赤いまま図/処理は既定値で進む ---
-        ("interactive_deg.py", "top_n"):
-            "H-9 (軽): update_heatmap。heatmap_top_n は PARAM_BOUNDS(1,20,5) で"
-            "検証済みなので 0 だと欄が赤くなるが、図は既定 5 で描かれ続ける",
-        ("interactive_pptx.py", "value"):
-            "軽: sync_export_top_n。input_export_top_n は min=1 なので 0 は範囲外。"
-            "ただし 0 を入れると黙って 5 になる",
-        # --- 探索窓・許容差・点数: 0 は物理的に無意味だが、
-        #     「不正な入力を黙って既定値にする」形は同じ ---
-        ("analysis_callbacks.py", "calibration_min_peaks"):
-            "run_analysis。0 は無意味だが黙って 2 になる",
-        ("analysis_callbacks.py", "search_window"):
-            "auto_detect_observed_peaks。0 窓は何も一致しないが黙って 0.5 になる",
-        ("interactive_calibration.py", "search_window"):
-            "auto_detect_int_cal_peaks / auto_save_int_cal / save_int_cal_list",
-        ("interactive_calibration.py", "min_peaks"):
-            "auto_save_int_cal / save_int_cal_list",
-        ("interactive_calibration.py", "tolerance"):
-            "execute_reannotation。0 許容差は完全一致しか通さない",
-        ("interactive_callbacks.py", "cal_min_peaks"):
-            "load_stage_c_deg / load_stage_d_finish",
-        ("interactive_callbacks.py", "cal_search_window"):
-            "load_stage_c_deg / load_stage_d_finish",
-        ("interactive_callbacks.py", "tolerance_mz"):
-            "load_stage_c_deg (既定 0.1) / load_stage_d_finish (既定 0.01)。"
-            "★ 同じ入力に対し既定値が 2 種類ある点も要確認",
-    }
+    # ★ ver52.3 ⑤ で母数 21 件（13 分類）を **全部** 直したので空。
+    #   直し方は「`or` を `is not None` に置き換える」ではなく、
+    #   **既定値の出典を `PARAM_BOUNDS` 1 つにする**（`coerce_number` /
+    #   `coerce_count`）。理由は 2 つ:
+    #     1. `or` を消すだけでは `volcano_label_top_n` の食い違いが直らない。
+    #        画面 `int(v or 5)` と PPTX `5 if v is None else max(0,int(v))` は
+    #        **同じ設定で違う図**を出していた。式を 1 つにしないと再発する
+    #     2. 既定値をコールバック側に書くと、同じ入力に別々の既定値が生まれる。
+    #        実際 `tolerance_mz` は 0.1 と 0.01 の 2 通りがあり、
+    #        画面の宣言（0.01）ともずれていた
+    KNOWN: dict = {}
 
     def _key(self, loc, param):
         return (loc.split(":")[0].split("/")[-1], param)

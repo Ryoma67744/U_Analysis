@@ -37,6 +37,7 @@ from app.utils.annotation_label import (
 from app.utils.label_persistence import (
     compute_annotation_offsets as _compute_annotation_offsets,
 )
+from app.utils.validation import coerce_count, coerce_number
 
 logger = logging.getLogger("msi.interactive.deg")
 
@@ -1124,9 +1125,13 @@ def update_volcano_plot(cluster, fc_thresh, p_thresh, y_max, marker_size,
     if cluster:
         df = df[df["cluster"].astype(str) == str(cluster)]
 
-    fc_thresh = fc_thresh or 0.5
-    p_thresh = p_thresh or 1.3
-    marker_size = marker_size or 8
+    # ★ ver52.3 ⑤ (H-2): `x or DEFAULT` は 0 を既定値に化けさせる。
+    #   利用者が「FC 閾値 0 で全部見たい」と入れると黙って 0.5 で描かれ、
+    #   0〜0.5 の feature が "Not significant" の灰色になる——
+    #   **利用者がしていない科学的主張が図に出る**。既定は PARAM_BOUNDS 由来。
+    fc_thresh = coerce_number(fc_thresh, "volcano_fc_threshold")
+    p_thresh = coerce_number(p_thresh, "volcano_p_threshold")
+    marker_size = marker_size or 8   # 見た目のみ。0 に意味は無い
 
     fig = go.Figure()
     for reg, color, label in [
@@ -1160,7 +1165,10 @@ def update_volcano_plot(cluster, fc_thresh, p_thresh, y_max, marker_size,
             ))
 
     # --- 自動ラベル: Top N UP + Top N DOWN ---
-    _top_n = int(label_top_n or 5)
+    # ★ ver52.3 ⑤: 0 は「ラベルを出さない」という正当な指定（レイアウト min=0）。
+    #   従来ここだけ `or 5` で 0 を 5 に化けさせており、**同じ設定で画面には
+    #   ラベルが出て資料には出ない**状態だった。判断は 1 箇所に集約済み。
+    _top_n = coerce_count(label_top_n, "volcano_label_top_n")
     if _top_n > 0 and annotation_on:
         sig_mask = (df["neg_log10_p"] >= p_thresh) & (df["avg_log2FC"].abs() >= fc_thresh)
         sig_df = df[sig_mask]
@@ -1292,7 +1300,9 @@ def update_heatmap(top_n, scale, annotation_on, merge_toggle, selected_cluster,
     if not deg_data or not cache_dir_str:
         return go.Figure()
 
-    top_n = top_n or 5
+    # ★ ver52.3 ⑤: heatmap_top_n は PARAM_BOUNDS(1,20,5) で検証済みなので
+    #   0 だと欄が赤くなるが、図は既定 5 で描かれ続けていた。既定の出典を揃える。
+    top_n = coerce_count(top_n, "heatmap_top_n")
     df_deg = pd.DataFrame(deg_data)
     df_deg["p_num"] = pd.to_numeric(df_deg["p_val_adj"], errors="coerce")
 

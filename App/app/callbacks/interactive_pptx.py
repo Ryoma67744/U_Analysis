@@ -70,6 +70,7 @@ from app.callbacks.interactive_calibration import (
     _build_mz_to_compound_map,
     _annotate_gene_labels,
 )
+from app.utils.validation import coerce_count
 
 logger = logging.getLogger("msi.interactive.pptx")
 
@@ -435,7 +436,8 @@ def _build_volcano_fig_for_cluster(deg_data, cluster, fc_thresh=0.5, p_thresh=1.
     # --- Top N アノテーション（PPTX用） ---
     sig_mask = (df["neg_log10_p"] >= p_thresh) & (df["avg_log2FC"].abs() >= fc_thresh)
     sig_df = df[sig_mask]
-    _n_label = 5 if label_top_n is None else max(0, int(label_top_n))
+    # ★ ver52.3 ⑤: 画面側と**同じ関数**で解決する（式を 2 箇所に書かない）。
+    _n_label = coerce_count(label_top_n, "volcano_label_top_n")
     if not sig_df.empty and _n_label > 0:
         _top_up = sig_df[sig_df["avg_log2FC"] > 0].nlargest(_n_label, "avg_log2FC")
         _top_down = sig_df[sig_df["avg_log2FC"] < 0].nsmallest(_n_label, "avg_log2FC")
@@ -1728,7 +1730,10 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
 )
 def sync_export_top_n(value):
     """dbc.Input → dcc.Store ブリッジ (Top N)"""
-    return value or 5
+    # ★ ver52.3 ⑤: 既定値をここに直接書くと、同じ入力の既定が 2 箇所になる。
+    #   `input_export_top_n` は min=1 なので 0 は範囲外だが、
+    #   「不正な入力を黙って既定値にする」形は同じなので出典を 1 つにする。
+    return coerce_count(value, "input_export_top_n")
 
 
 @callback(

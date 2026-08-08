@@ -21,6 +21,7 @@ from app.utils.deg_utils import (
     is_meaningful_annotation as _is_meaningful_annotation,
     extract_mz_numeric as _extract_mz_numeric,
 )
+from app.utils.validation import coerce_count, coerce_number
 
 # 共有状態・ヘルパーは interactive_callbacks に定義されているが、
 # 循環importを避けるため各コールバック関数内で遅延importする。
@@ -893,7 +894,7 @@ def auto_detect_int_cal_peaks(n, table_data, search_window, cache_dir,
     # --- データ読み込み: 優先順位 1) cache_dir  2) data_folder 生データ ---
     from app.services.data_manager import read_raw_mz_spectrum
 
-    sw = float(search_window or 0.5)
+    sw = float(coerce_number(search_window, "int_cal_search_window"))
     refs = []
     for row in table_data:
         try:
@@ -1080,8 +1081,8 @@ def auto_save_int_cal(enable, ion_mode, adduct_filter, matrix, table_data,
         "adduct_filter": adduct_filter or DEFAULT_ADDUCT_POSITIVE,
         "matrix": matrix or "DHB",
         "table_data": table_data or [],
-        "search_window": search_window or 0.5,
-        "min_peaks": min_peaks or 2,
+        "search_window": coerce_number(search_window, "int_cal_search_window"),
+        "min_peaks": coerce_count(min_peaks, "int_cal_min_peaks"),
         "regression_mode": regression_mode or "poly3",
         "mrm_path": mrm_path or "",
     })
@@ -1121,8 +1122,8 @@ def save_int_cal_list(n, enable, ion_mode, adduct_filter, matrix, table_data,
         "adduct_filter": adduct_filter or DEFAULT_ADDUCT_POSITIVE,
         "matrix": matrix or "DHB",
         "table_data": table_data or [],
-        "search_window": search_window or 0.5,
-        "min_peaks": min_peaks or 2,
+        "search_window": coerce_number(search_window, "int_cal_search_window"),
+        "min_peaks": coerce_count(min_peaks, "int_cal_min_peaks"),
         "regression_mode": regression_mode or "poly3",
         "mrm_path": mrm_path or "",
     })
@@ -1217,7 +1218,7 @@ def _apply_int_calibration_inner(cal_enable, cal_table_data,
     if not features_list:
         return no_update, "フィーチャーリストが読み込まれていません。"
 
-    mp = int(cal_min_peaks or 2)
+    mp = int(coerce_count(cal_min_peaks, "int_cal_min_peaks"))
     reg_mode = cal_regression_mode or "poly3"
     cal_result = None
 
@@ -1242,7 +1243,7 @@ def _apply_int_calibration_inner(cal_enable, cal_table_data,
                 if fallback.exists():
                     expr_path = fallback
             if expr_path and expr_path.exists():
-                sw = float(cal_search_window or 0.5)
+                sw = float(coerce_number(cal_search_window, "int_cal_search_window"))
                 # ver51.5: 参照窓内の列だけ読む (従来は列指定なしで 2.32GB)
                 avg_spectrum = window_avg_spectrum(
                     expr_path, features_list, ref_only_mz, sw)
@@ -1419,7 +1420,7 @@ def execute_reannotation(n_clicks,
             color="warning", className="small py-1 px-2 mb-0",
         )
 
-    tol = float(tolerance or 0.01)
+    tol = float(coerce_number(tolerance, "reann_tolerance"))
 
     # --- 3. ファイル形式に応じてアノテーションマップを構築 ---
     try:

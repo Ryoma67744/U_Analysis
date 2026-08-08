@@ -10,6 +10,7 @@ from app.config import EDIT_LOCK_HEARTBEAT_INTERVAL_SEC
 from app.layouts.tooltips import help_badge
 from app.services.session_manager import load_last_settings
 from app.services.caveats import banner_text as _caveat_banner
+from app.utils.validation import param_default
 
 
 
@@ -250,15 +251,21 @@ def create_interactive_tab():
                                                 dbc.Row(className="mb-1", children=[
                                                     dbc.Col(width=4, children=[
                                                         dbc.Label("検索ウィンドウ (Da)", className="small"),
+                                                        # ★ ver52.3 ⑤: 設定タブの双子
+                                                        #   `calibration_search_window` は min=0.01,max=2.0 なのに
+                                                        #   こちらは上限が無かった。両者は
+                                                        #   `analysis_runner:299` / `interactive_calibration:318` の
+                                                        #   **同じ次数クランプ式**を通るので、境界も揃える。
                                                         dbc.Input(id="int_cal_search_window",
                                                                   type="number", value=0.5,
-                                                                  min=0.01, step=0.1, size="sm"),
+                                                                  min=0.01, max=2.0, step=0.1, size="sm"),
                                                     ]),
                                                     dbc.Col(width=4, children=[
                                                         dbc.Label("最低マッチピーク数", className="small"),
+                                                        # ★ ver52.3 ⑤: 双子 `calibration_min_peaks` は max=10。同上。
                                                         dbc.Input(id="int_cal_min_peaks",
                                                                   type="number", value=2,
-                                                                  min=1, step=1, size="sm"),
+                                                                  min=1, max=10, step=1, size="sm"),
                                                     ]),
                                                     dbc.Col(width=4, children=[
                                                         dbc.Label("回帰モデル", className="small"),
@@ -1919,7 +1926,10 @@ def create_interactive_tab():
         # 再解析キャリブレーション回帰データ（analysis_params.jsonから読込）
         dcc.Store(id="reanalysis_calibration_data", data=None),
         # エクスポート Top N 値ブリッジ用
-        dcc.Store(id="export_top_n_store", data=5),
+        # ★ ver52.3 ⑤: 既定 5 を直接書くと、この Store・入力欄の `value=`・
+        #   `sync_export_top_n` の 3 箇所に同じ既定値が散る（`tolerance_mz` で
+        #   実際に 2 種類に割れていた）。宣言 1 箇所から引く。
+        dcc.Store(id="export_top_n_store", data=param_default("input_export_top_n")),
         # PPTXダウンロード用
         dcc.Download(id="dl_report_pptx"),
         # 一括保存用 Download
