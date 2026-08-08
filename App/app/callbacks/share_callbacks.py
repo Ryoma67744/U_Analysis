@@ -547,7 +547,9 @@ def sv_update_umap(color_by, highlight_clusters, show_legend, show_labels,
     empty = go.Figure()
     # ver3.7: token check と dict アクセスを 1 段階化し競合状態 (token 削除
     # との race) で KeyError が出ないように修正
-    data = _shared_data.get(token) if token else None
+    # ★ ver51.9: 素の `.get()` は OrderedDict の順序を動かさないため、
+    #   閲覧中の共有セッションが「ずっと未使用」に見えて LRU で真っ先に捨てられる。
+    data = _shared_data_get(token) if token else None
     if data is None:
         empty.add_annotation(text="データなし", showarrow=False,
                              xref="paper", yref="paper", x=0.5, y=0.5)
@@ -575,8 +577,8 @@ def sv_update_umap(color_by, highlight_clusters, show_legend, show_labels,
     State("share_token", "data"),
 )
 def sv_update_spatial(highlight_clusters, sample_filter, token):
-    # ver3.7: race 防止のため .get() で 1 段階化
-    data = _shared_data.get(token) if token else None
+    # ver3.7: race 防止のため 1 段階化 / ver51.9: LRU の順序も更新する
+    data = _shared_data_get(token) if token else None
     if data is None:
         return html.Div("データなし", className="text-muted")
 
@@ -638,8 +640,8 @@ def sv_update_spatial(highlight_clusters, sample_filter, token):
 )
 def sv_update_feature_plot(feature, token):
     empty = go.Figure()
-    # ver3.7: race 防止のため .get() で 1 段階化
-    data = _shared_data.get(token) if (feature and token) else None
+    # ver3.7: race 防止のため 1 段階化 / ver51.9: LRU の順序も更新する
+    data = _shared_data_get(token) if (feature and token) else None
     if data is None:
         empty.add_annotation(text="Feature を選択してください", showarrow=False,
                              xref="paper", yref="paper", x=0.5, y=0.5)
@@ -710,7 +712,7 @@ def sv_update_feature_plot(feature, token):
 def sv_filter_features(search_value, token):
     if not search_value or len(search_value) < 2 or not token:
         return no_update
-    data = _shared_data.get(token, {})
+    data = _shared_data_get(token) or {}      # ver51.9: LRU の順序も更新する
     features = data.get("features_list", [])
     if not features:
         return no_update

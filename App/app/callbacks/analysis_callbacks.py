@@ -877,6 +877,15 @@ def run_analysis(
             )
             _params_to_save["calibration_r_squared"] = cal_r.get("r_squared")
             _params_to_save["calibration_n_points"] = cal_r.get("n_points")
+            # ★ ver51.9: 「指定した次数」と「参照ピークが張る m/z 範囲」。
+            #   ver51.8 で compute_calibration_coefficients が返すようにしたのに
+            #   **保存していなかった**ため、再解析画面の外挿警告・次数クランプの
+            #   表示が復元経路で必ず欠落していた (= 分岐が到達不能)。
+            #   旧データには存在しないので、無いときは None のままにして
+            #   「無い情報をでっち上げない」。
+            _params_to_save["calibration_requested_degree"] = cal_r.get("requested_degree")
+            _params_to_save["calibration_ref_mz_min"] = cal_r.get("ref_mz_min")
+            _params_to_save["calibration_ref_mz_max"] = cal_r.get("ref_mz_max")
             _params_to_save["calibration_regression_mode"] = calibration_regression_mode
             _params_to_save["calibration_table"] = calibration_table_data
             _params_to_save["calibration_by_sample"] = params.get("calibration_by_sample")
@@ -2375,6 +2384,13 @@ def load_calibration_from_first_analysis(rds_folder):
         "r_squared": params_data.get("calibration_r_squared"),
         "n_points": params_data.get("calibration_n_points"),
         "regression_mode": params_data.get("calibration_regression_mode"),
+        # ★ ver51.9: 下の表示ロジックが参照する 3 キー。ここで拾わないと
+        #   dict に存在し得ず、外挿警告・次数クランプの表示が **到達不能**になる。
+        #   ver51.8 以前の analysis_params.json には無いので None が入る
+        #   (= 何も主張しない)。
+        "requested_degree": params_data.get("calibration_requested_degree"),
+        "ref_mz_min": params_data.get("calibration_ref_mz_min"),
+        "ref_mz_max": params_data.get("calibration_ref_mz_max"),
     }
 
     # 表示用テキスト

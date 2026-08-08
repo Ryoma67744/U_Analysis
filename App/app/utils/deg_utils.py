@@ -358,10 +358,26 @@ def load_deg_results(
         "PCA": "PCA",
         "PCA (uncorrected)": "pca_uncorrected",
     }
-    if integration_method and integration_method in _METHOD_DIR_MAP:
-        method_dir = _METHOD_DIR_MAP[integration_method]
-    else:
-        method_dir = "Harmony"
+    # ★ ver51.9: 大文字小文字を無視して引く。
+    #   呼び出し側は表記が揃っていない:
+    #     - gpt_api.py は URL クエリをそのまま渡す (`?method=rpca` は小文字)
+    #     - interactive_calibration.py は `integration_method or ""` を渡す
+    #   ver51.8 で「別手法フォルダを候補から外す」ようにしたため、表記が一致しないと
+    #   `method_dir="Harmony"` に落ちたうえで RPCA フォルダが除外され、
+    #   **RPCA しか無いプロジェクトで DEG が見つからなくなっていた**
+    #   (従来は無条件パターンで拾えていた = 別の意味で間違っていた)。
+    _norm = {k.lower(): v for k, v in _METHOD_DIR_MAP.items()}
+    method_dir = _norm.get(str(integration_method or "").strip().lower())
+
+    # 手法を特定できない場合。「黙って Harmony 扱い」にすると別手法の表を返しうるので
+    # しない。まず直下だけを見て、それでも無ければ **一致する手法フォルダが 1 つに
+    # 定まるときだけ** 採用する (複数あるなら曖昧なので返さない)。
+    method_unknown = method_dir is None
+    if method_unknown:
+        method_dir = ""      # 直下パターンだけが有効になる
+        logger.info(
+            "統合手法を特定できません (%r)。結果フォルダ直下を探し、"
+            "手法フォルダは一意に定まるときだけ採用します。", integration_method)
 
     def _cache_and_return(data):
         """DEG結果をキャッシュして返す（meta.json 経路 / glob fallback 共通）"""
@@ -420,16 +436,16 @@ def load_deg_results(
     #   間違いが固着して再起動しても消えなかった (RPCA を要求 → Harmony の表)。
     #   手法を比較しているつもりで同じ表を見ることになるので、パターンを削除した。
     #   直下 (手法フォルダを作らない単一手法の出力) は従来どおり許容する。
-    csv_patterns = [
-        f"{method_dir}/*deg*markers*.csv",
-        f"{method_dir}/*top*markers*.csv",
-        f"{method_dir}/markers_annotated*.csv",
-        f"{method_dir}/markers_mz_only*.csv",
+    _CSV_NAMES = [
         "*deg*markers*.csv",
         "*top*markers*.csv",
         "markers_annotated*.csv",
         "markers_mz_only*.csv",
     ]
+    # 手法が特定できているときだけ、その手法のフォルダを優先して見る。
+    # 特定できないときは直下だけ (method_dir == "")。
+    csv_patterns = ([f"{method_dir}/{n}" for n in _CSV_NAMES] if method_dir else [])
+    csv_patterns += _CSV_NAMES
 
     def _try_load_csv(matches):
         """マッチしたCSVファイルの読み込みを試行。成功時は (result, csv_path) を返す。"""
@@ -485,8 +501,8 @@ def load_deg_results(
                 return _cache_and_return(result)
 
     # --- 2. DEG RDS ファイル検索（TIMS ver13 が出力する deg_FindAllMarkers_raw_*.rds） ---
-    rds_patterns = [
-        f"{method_dir}/deg_FindAllMarkers_raw_*.rds",
+    rds_patterns = ([f"{method_dir}/deg_FindAllMarkers_raw_*.rds"] if method_dir else [])
+    rds_patterns += [
         "RDS_Files/deg_FindAllMarkers_raw_*.rds",
         "deg_FindAllMarkers_raw_*.rds",
     ]
@@ -511,7 +527,14 @@ def load_deg_results(
                 continue
 
     # 第2段階(RDS): rglob でサブフォルダも再帰検索
-    rds_rglob_matches = sorted(result_base.rglob("deg_FindAllMarkers_raw_*.rds"))
+    # ★ ver51.9: ここだけ _is_other_method の適用が漏れていた。CSV の rglob 段と
+    #   RDS の glob 段は ver51.8 で塞いだのに最後のこの経路が素通りで、
+    #   要求した手法に DEG が無いと **今も別手法の表を返していた**
+    #   (deg_index.json への記録は拒否されるので固着はしないが、返る値は間違い)。
+    rds_rglob_matches = [
+        m for m in sorted(result_base.rglob("deg_FindAllMarkers_raw_*.rds"))
+        if not _is_other_method(m)
+    ]
     if rds_rglob_matches:
         try:
             logger.info(f"RDS発見(rglob): {rds_rglob_matches[0]}")
@@ -524,6 +547,38 @@ def load_deg_results(
             logger.error(
                 f"RDS読み込みエラー(rglob): {rds_rglob_matches[0]} -- {e}"
             )
+
+    # ★ ver51.9: 手法を特定できなかった場合の最後の手段。
+    #   ここまでは直下しか見ていないので、手法フォルダに DEG があっても見つからない。
+    #   ただし「黙って先頭の手法」を採ると ver51.8 で潰した不具合に逆戻りするので、
+    #   **候補が 1 つの手法フォルダに定まるときだけ**採用する。複数あるなら
+    #   どれが正しいか決められないので返さない (曖昧なら選ばない)。
+    if method_unknown:
+        by_dir: dict = {}
+        for name_pattern in rglob_csv_names:
+            for m in sorted(result_base.rglob(name_pattern)):
+                try:
+                    parts = [p.lower() for p in m.relative_to(result_base).parts[:-1]]
+                except ValueError:
+                    continue
+                for p in parts:
+                    if p in _ALL_METHOD_DIRS:
+                        by_dir.setdefault(p, []).append(m)
+                        break
+        if len(by_dir) == 1:
+            only_dir, matches = next(iter(by_dir.items()))
+            result, found = _try_load_csv(matches)
+            if result:
+                logger.info(
+                    "統合手法は不明でしたが、DEG を持つ手法フォルダが %s の 1 つに"
+                    "定まったので採用します: %s", only_dir, found)
+                # ★ 手法名を特定できていないので deg_index.json には記録しない
+                #   (間違った対応をディスクに焼き付けない)
+                return _cache_and_return(result)
+        elif len(by_dir) > 1:
+            logger.warning(
+                "統合手法が不明で、DEG を持つ手法フォルダが複数あります (%s)。"
+                "どれを返すべきか決められないため返しません。", sorted(by_dir))
 
     logger.info(
         f"result_base={result_base}, method_dir={method_dir} -- DEGファイル見つからず"

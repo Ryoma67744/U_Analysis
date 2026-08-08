@@ -130,3 +130,92 @@ def test_no_method_ever_sees_another_methods_file(tmp_path, method):
                 "PCA": "PCA_FEATURE", "PCA (uncorrected)": "UNC_FEATURE"}[method]
     got = load_deg_results(tmp_path, method)
     assert got and got[0]["gene"] == expected, f"{method} -> {got and got[0]['gene']}"
+
+
+# ---------------------------------------------------------------------------
+# ver51.9: 手法名の表記ゆれと「手法不明」の扱い
+# ---------------------------------------------------------------------------
+# ★ ver51.8 で「別手法フォルダを候補から外す」ようにしたとき、**表記が一致しない
+#   呼び出し側を壊した**。_METHOD_DIR_MAP は完全一致のみで、
+#     - gpt_api は URL クエリをそのまま渡す (`?method=rpca` は小文字)
+#     - interactive_calibration は `integration_method or ""` を渡す
+#   どちらも method_dir="Harmony" に落ち、そのうえで RPCA フォルダが除外され、
+#   **RPCA しか無いプロジェクトで DEG が見つからなくなった**。
+#   (従来は無条件パターンで拾えていた = 別の意味で間違っていた)
+
+class TestMethodNameNormalisation:
+    @pytest.mark.parametrize("given", ["RPCA", "rpca", "RPca", " rpca "])
+    def test_case_and_space_insensitive(self, tmp_path, given):
+        """★ 表記ゆれがあっても正しい手法の表を返すこと。"""
+        _write(tmp_path, "Harmony/deg_markers.csv", "HARMONY")
+        _write(tmp_path, "RPCA/deg_markers.csv", "RPCA")
+        got = load_deg_results(tmp_path, given)
+        assert got and got[0]["gene"] == "RPCA_FEATURE", f"{given!r} -> {got}"
+
+    def test_pca_uncorrected_alias_still_works(self, tmp_path):
+        _write(tmp_path, "pca_uncorrected/deg_markers.csv", "UNC")
+        got = load_deg_results(tmp_path, "pca (uncorrected)")
+        assert got and got[0]["gene"] == "UNC_FEATURE"
+
+
+class TestUnknownMethod:
+    """手法を特定できないときの振る舞い。
+
+    ★ 「黙って Harmony 扱い」にすると ver51.8 で潰した不具合に逆戻りする。
+      かといって常に None だと、単一手法のプロジェクトで読めなくなる
+      (これが ver51.8 の作り込み)。**一意に定まるときだけ**採る。
+    """
+
+    @pytest.mark.parametrize("given", ["", None, "unknown-method"])
+    def test_unique_method_folder_is_accepted(self, tmp_path, given):
+        """★ DEG を持つ手法フォルダが 1 つだけなら採用する。"""
+        _write(tmp_path, "RPCA/deg_markers.csv", "RPCA")
+        got = load_deg_results(tmp_path, given)
+        assert got and got[0]["gene"] == "RPCA_FEATURE", f"{given!r} -> {got}"
+
+    @pytest.mark.parametrize("given", ["", None, "unknown-method"])
+    def test_ambiguous_method_folders_return_none(self, tmp_path, given):
+        """★ 複数あるならどれか 1 つを黙って選ばない。"""
+        _write(tmp_path, "Harmony/deg_markers.csv", "HARMONY")
+        _write(tmp_path, "RPCA/deg_markers.csv", "RPCA")
+        assert load_deg_results(tmp_path, given) is None, \
+            "曖昧なのに 1 つ選んでいる"
+
+    def test_unknown_method_does_not_poison_deg_index(self, tmp_path):
+        """★ 手法名が分からない以上、対応をディスクに記録してはいけない。"""
+        _write(tmp_path, "RPCA/deg_markers.csv", "RPCA")
+        load_deg_results(tmp_path, "")
+        idx = tmp_path / "deg_index.json"
+        if idx.exists():
+            meta = json.loads(idx.read_text(encoding="utf-8"))
+            assert not (meta.get("deg_results") or {}), meta
+
+    def test_root_level_still_preferred(self, tmp_path):
+        """直下に結果があるなら手法フォルダを探しに行かない。"""
+        _write(tmp_path, "markers_annotated.csv", "ROOT")
+        _write(tmp_path, "RPCA/deg_markers.csv", "RPCA")
+        got = load_deg_results(tmp_path, "")
+        assert got and got[0]["gene"] == "ROOT_FEATURE"
+
+
+class TestRdsRecursiveStageIsScoped:
+    """★ 最後の RDS 再帰探索段にもスコープが効くこと。
+
+    ver51.8 では CSV rglob 段と RDS glob 段だけを塞ぎ、**この経路が素通り**だった。
+    RDS しか無いプロジェクト (TIMS ver13 系) では今も別手法の表が返っていた。
+    """
+
+    def test_rds_rglob_does_not_cross_methods(self, tmp_path, monkeypatch):
+        import app.utils.deg_utils as DU
+
+        (tmp_path / "Harmony").mkdir()
+        (tmp_path / "Harmony" / "deg_FindAllMarkers_raw_1.rds").write_bytes(b"x")
+        (tmp_path / "RPCA").mkdir()      # RPCA には RDS 無し
+
+        monkeypatch.setattr(
+            DU, "read_deg_rds",
+            lambda p: [{"gene": "HARMONY_RDS", "cluster": "0",
+                        "avg_log2FC": 1.0, "p_val_adj": 0.01}])
+
+        assert load_deg_results(tmp_path, "RPCA") is None, \
+            "RDS の再帰探索で別手法を掴んでいる"

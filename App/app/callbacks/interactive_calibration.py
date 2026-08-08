@@ -300,6 +300,63 @@ def _linear_fit(x, y):
     return float(slope), float(intercept), float(r_squared)
 
 
+_REQUESTED_DEGREE = {"linear": 1, "poly2": 2, "poly3": 3}
+
+
+def _effective_degree(regression_mode, n_points):
+    """指定次数と、点数で抑えた実効次数を返す (ver51.9)。
+
+    ★ ver51.8 で `degree = max(1, min(degree, n // 2 - 1))` を 2 箇所へ
+      コピーしたが、**どちらも「実際に当てた次数」を戻り値に載せなかった**。
+      画面には利用者が選んだ `regression_mode` がそのまま出るため、
+      「poly3 を選んだのに 1 次で当てられている」ことが一切分からない。
+
+      規則は `analysis_runner.compute_calibration_coefficients` と同一
+      (パラメータ数の 2 倍以上の観測点を要求する)。
+    """
+    requested = _REQUESTED_DEGREE.get(regression_mode, 3)
+    return requested, max(1, min(requested, int(n_points) // 2 - 1))
+
+
+def _r_squared_or_none(y, fitted, degree):
+    """自由度が無いときは R² を返さない (ver51.9)。
+
+    ★ 残差は定義上ゼロなので R² は **構造的に 1.0** になる。それを
+      「当てはまり完璧」として出すと、外挿で桁違いにずれていても
+      利用者に気づく手段が無い。`analysis_runner` は ver51.8 で
+      None を返すようにしたが、対話側だけ 1.0 を出し続けていた。
+    """
+    y = np.asarray(y, dtype=float)
+    if len(y) <= degree + 1:
+        return None
+    ss_res = float(np.sum((y - np.asarray(fitted, dtype=float)) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    return float(1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+
+
+def format_calibration_status(cal_result):
+    """適用結果を 1 行の状態文言にする (ver51.9)。
+
+    ★ 文言を 1 箇所に集めるのが要点。従来は callback の中で
+      `f"... (R²={r2:.4f}, {mode})"` と組んでいたため、
+        - 実効次数を出す口が無い
+        - R² が None だと **書式化で例外**（`except Exception` に拾われて
+          「キャリブレーションエラー」になる）
+      の両方を抱えていた。
+    """
+    mode = cal_result.get("regression_mode") or ""
+    r2 = cal_result.get("r_squared")
+    requested = cal_result.get("requested_degree")
+    degree = cal_result.get("degree")
+
+    r2_text = "評価不能 (点数が次数に対して不足)" if r2 is None else f"{r2:.4f}"
+    parts = [f"R²={r2_text}", mode] if mode else [f"R²={r2_text}"]
+    if (requested is not None and degree is not None and requested != degree):
+        parts.append(f"指定 {requested} 次 → 実効 {degree} 次に下げた"
+                     " (点数不足のため)")
+    return "キャリブレーション適用完了 (" + ", ".join(parts) + ")"
+
+
 def _features_within_windows(feature_names, reference_mz, search_window):
     """参照 m/z の ±search_window 内にある feature 名だけを返す (ver51.5)。
 
@@ -419,24 +476,23 @@ def _calibrate_mz(features_list, avg_spectrum, reference_mz,
     obs_arr = np.array([m["obs_mz"] for m in matched])
     ppm_arr = np.array([m["ppm_drift"] for m in matched])
 
+    # ★ ver51.8: n-1 は「ちょうど完全内挿できる」次数で自由度ゼロ。
+    #   誤差を一切吸収せず、参照範囲の外へ外挿すると発散する
+    #   (実測: 4 点 + 3 次で m/z 1000 の補正が -20,807 ppm)。
+    #   パラメータ数の 2 倍以上の観測点を要求する。
+    #   ★ ver51.9: 実効次数を戻り値に載せる（従来は表示が指定次数のままだった）。
+    requested_degree, degree = _effective_degree(regression_mode, len(obs_arr))
+
     if regression_mode in ("poly2", "poly3"):
-        degree = 2 if regression_mode == "poly2" else 3
-        # ★ ver51.8: n-1 は「ちょうど完全内挿できる」次数で自由度ゼロ。
-        #   誤差を一切吸収せず、参照範囲の外へ外挿すると発散する
-        #   (実測: 4 点 + 3 次で m/z 1000 の補正が -20,807 ppm)。
-        #   パラメータ数の 2 倍以上の観測点を要求する。
-        #   analysis_runner.compute_calibration_coefficients と同じ規則。
-        degree = max(1, min(degree, len(obs_arr) // 2 - 1))  # 過学習防止
         coeffs = np.polyfit(obs_arr, ppm_arr, degree)
         predicted_ppm = np.polyval(coeffs, mz_array)
-        # R² 算出
-        fitted_ppm = np.polyval(coeffs, obs_arr)
-        ss_res = np.sum((ppm_arr - fitted_ppm) ** 2)
-        ss_tot = np.sum((ppm_arr - np.mean(ppm_arr)) ** 2)
-        r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+        r_squared = _r_squared_or_none(
+            ppm_arr, np.polyval(coeffs, obs_arr), degree)
     else:
         slope, intercept, r_squared = _linear_fit(obs_arr, ppm_arr)
         predicted_ppm = slope * mz_array + intercept
+        r_squared = _r_squared_or_none(
+            ppm_arr, slope * obs_arr + intercept, degree)
         coeffs = None
 
     # 全m/zに補正適用
@@ -449,6 +505,8 @@ def _calibrate_mz(features_list, avg_spectrum, reference_mz,
         "report": matched,
         "regression_mode": regression_mode,
         "r_squared": r_squared,
+        "degree": degree,
+        "requested_degree": requested_degree,
     }
     if coeffs is not None:
         result["poly_coeffs"] = [float(c) for c in coeffs]
@@ -477,22 +535,17 @@ def _calibrate_mz_from_pairs(features_list, matched_pairs,
     obs_arr = np.array([p["obs_mz"] for p in matched_pairs])
     ppm_arr = np.array([p["ppm_drift"] for p in matched_pairs])
 
+    # ver51.8 の次数クランプ + ver51.9 の実効次数報告（上の _calibrate_mz と同じ）。
+    requested_degree, degree = _effective_degree(regression_mode, len(obs_arr))
+
     if regression_mode in ("poly2", "poly3"):
-        degree = 2 if regression_mode == "poly2" else 3
-        # ★ ver51.8: n-1 は「ちょうど完全内挿できる」次数で自由度ゼロ。
-        #   誤差を一切吸収せず、参照範囲の外へ外挿すると発散する
-        #   (実測: 4 点 + 3 次で m/z 1000 の補正が -20,807 ppm)。
-        #   パラメータ数の 2 倍以上の観測点を要求する。
-        #   analysis_runner.compute_calibration_coefficients と同じ規則。
-        degree = max(1, min(degree, len(obs_arr) // 2 - 1))  # 過学習防止
         coeffs = np.polyfit(obs_arr, ppm_arr, degree)
-        # R² 算出
-        fitted_ppm = np.polyval(coeffs, obs_arr)
-        ss_res = np.sum((ppm_arr - fitted_ppm) ** 2)
-        ss_tot = np.sum((ppm_arr - np.mean(ppm_arr)) ** 2)
-        r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+        r_squared = _r_squared_or_none(
+            ppm_arr, np.polyval(coeffs, obs_arr), degree)
     else:
         slope, intercept, r_squared = _linear_fit(obs_arr, ppm_arr)
+        r_squared = _r_squared_or_none(
+            ppm_arr, slope * obs_arr + intercept, degree)
         coeffs = None
 
     # Feature名 → m/z数値マッピング
@@ -522,6 +575,8 @@ def _calibrate_mz_from_pairs(features_list, matched_pairs,
         "report": matched_pairs,
         "regression_mode": regression_mode,
         "r_squared": r_squared,
+        "degree": degree,
+        "requested_degree": requested_degree,
     }
     if coeffs is not None:
         result["poly_coeffs"] = [float(c) for c in coeffs]
@@ -1046,9 +1101,7 @@ def _apply_int_calibration_inner(cal_enable, cal_table_data,
                 adduct_patterns=adduct_filter,
             )
             _interactive_data["_calibration_result"] = cal_result
-            r2 = cal_result.get("r_squared", 0)
-            mode = cal_result.get("regression_mode", "")
-            status = f"キャリブレーション適用完了 (R²={r2:.4f}, {mode})"
+            status = format_calibration_status(cal_result)
             # 設定を永続化
             _save_interactive_settings("int_calibration", {
                 "enable": cal_enable,

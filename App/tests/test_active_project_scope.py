@@ -120,3 +120,74 @@ class TestSettingsWritersScopeTheirProject:
         assert "_set_active_key" in calls, (
             f"{module}:{func} が _set_active_key を呼んでいない。"
             "別プロジェクトへ書くか、記録が黙って捨てられる")
+
+
+class TestReadersAlsoScopeTheirProject:
+    """★ ver51.9: **読み出し側**も active key を立てること。
+
+    ver51.8 でリクエスト境界に active key のリセットを入れたとき、
+    「書き込み側 7 つ」だけを直して **読み出し側を見ていなかった**。
+    その結果、`_set_active_key` を呼ばずに `_interactive_data` を読む
+    コールバックが 2 つ、**常に None を読む**ようになった:
+
+      - `interactive_cluster.update_cluster_dropdown_labels`
+        → クラスタを改名してもドロップダウンのラベルが更新されない
+      - `interactive_spatial.update_swatch_disabled_state`
+        → 使用済み色がグレーアウトされない
+
+    リセット前は「前のリクエストが見ていたプロジェクト」が残っていたので
+    たまたま動いていただけで、元から正しくなかった。
+
+    ここでは repo 全体を走査し、**@callback の中で `_interactive_data` /
+    `_get_state()` を読むのに `_set_active_key` を呼ばないものが無いこと**を見る。
+    ホワイトリスト方式（既知の 7 つを列挙）だと今回と同じ取りこぼしが起きる。
+    """
+
+    @staticmethod
+    def _offenders():
+        import ast
+        from pathlib import Path
+
+        cb_dir = Path(__file__).resolve().parent.parent / "app" / "callbacks"
+        out = []
+        for path in sorted(cb_dir.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.FunctionDef):
+                    continue
+                decorated = any(
+                    (isinstance(d, ast.Call)
+                     and ((isinstance(d.func, ast.Name) and d.func.id == "callback")
+                          or (isinstance(d.func, ast.Attribute) and d.func.attr == "callback")))
+                    for d in node.decorator_list)
+                if not decorated:
+                    continue
+
+                names, attrs, calls = set(), set(), set()
+                for n in ast.walk(node):
+                    if isinstance(n, ast.Name):
+                        names.add(n.id)
+                    elif isinstance(n, ast.Attribute):
+                        attrs.add(n.attr)
+                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
+                        calls.add(n.func.id)
+
+                reads_state = ("_interactive_data" in names) or ("_get_state" in calls)
+                if not reads_state:
+                    continue
+                # _get_state(rds_path) のように明示的にキーを渡している形は安全
+                explicit = any(
+                    isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                    and n.func.id == "_get_state" and n.args
+                    for n in ast.walk(node))
+                if "_set_active_key" in calls or explicit:
+                    continue
+                out.append(f"{path.name}:{node.lineno} {node.name}()")
+        return out
+
+    def test_no_callback_reads_state_without_setting_the_key(self):
+        offenders = self._offenders()
+        assert not offenders, (
+            "active key を立てずに _interactive_data を読むコールバックがある。"
+            "リクエスト境界でリセットされるため **常に空** を読む:\n  "
+            + "\n  ".join(offenders))
