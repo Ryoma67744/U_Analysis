@@ -90,12 +90,19 @@ def preview_add_molinfo(contents, filename, target):
     finally:
         _safe_unlink(csv_path)
 
+    # ★ ver52.3 (T5): 読めずに捨てた行を必ず併記する。従来は「N ピーク」としか
+    #   出ないので、N が壊れ行のぶん少ないことに気づけなかった。マッチ 0 件の
+    #   分岐にも出す（原因が「別データセット」ではなく「読めなかった」ことがある）。
+    skip_msg = r.get("peaklist_skip_message") or ""
+    skip_note = [html.Div(f"⚠ {skip_msg}", className="small text-warning")] if skip_msg else []
+
     if r["n_matched"] == 0:
         return dbc.Alert(
             [html.B("マッチ 0 件です。"),
              html.Div("CSV の m/z とデータセットの特徴量 m/z が一致しません"
                       "（別データセットの feature list の可能性）。ファイルをご確認ください。",
-                      className="small")],
+                      className="small"),
+             *skip_note],
             color="warning", className="mb-0 py-2"), True
 
     body = dbc.Alert([
@@ -103,6 +110,7 @@ def preview_add_molinfo(contents, filename, target):
         html.Div([html.B(f"{r['n_matched']:,} 件"),
                   " の特徴量に化合物名がマッチします。"
                   "「この内容で登録」で確定してください。"]),
+        *skip_note,
     ], color="info", className="mb-0 py-2")
     return body, False
 

@@ -34,6 +34,7 @@ from app.services import receipt as _receipt
 from app.services import analysis_finalizer as _finalizer
 from app.services import job_registry as _job_registry
 from app.version import version_label
+from app.utils.validation import coerce_count, coerce_number, validate_param
 
 logger = logging.getLogger("msi.analysis_callbacks")
 
@@ -172,6 +173,15 @@ def _output_has_existing_results(full_output_dir: str) -> bool:
 
     reduction RDS（_detect_integration_methods が非空）/ analysis_params.json /
     RDS_Files/*.rds のいずれかがあれば True。フォルダ非存在は False。
+
+    ★ ver52.3: **判定できないときは True を返す**（fail-closed）。
+      従来は `_detect_integration_methods` が例外を投げると握りつぶして
+      次の判定へ落ち、他の 2 つも空なら `False` ＝「既存結果なし」と答えていた。
+      呼び出し側 2 箇所 (`open_overwrite_modal` / 実行本体) はどちらも
+      True を「止めて確認」として扱うので、**判定不能なら確認モーダルを出す**
+      のが安全側になる。誤って確認が 1 回増えるのと、
+      **確認なしで前の解析結果を上書きする**のとでは、後者の損害が桁違いに大きい。
+      本関数は T5 の中で唯一「間違った結果を出す」ではなく **データを壊す**。
     """
     try:
         p = Path(full_output_dir)
@@ -185,11 +195,20 @@ def _output_has_existing_results(full_output_dir: str) -> bool:
         if _detect_integration_methods(str(p)):
             return True
     except Exception:
-        pass
+        logger.warning(
+            "上書き判定: 既存結果の検出に失敗したため『既存あり』として扱う "
+            "(確認モーダルを表示する): %s", full_output_dir, exc_info=True)
+        return True
     if (p / "analysis_params.json").exists():
         return True
     rds_dir = p / "RDS_Files"
-    if rds_dir.is_dir() and any(rds_dir.glob("*.rds")):
+    try:
+        if rds_dir.is_dir() and any(rds_dir.glob("*.rds")):
+            return True
+    except OSError:
+        logger.warning(
+            "上書き判定: RDS_Files を読めないため『既存あり』として扱う: %s",
+            rds_dir, exc_info=True)
         return True
     return False
 
@@ -610,7 +629,7 @@ def run_analysis(
                     per_store[cal_sample_selector_prev] = calibration_table_data
 
                 reg_mode = calibration_regression_mode or "poly3"
-                min_pk = int(calibration_min_peaks or 2)
+                min_pk = int(coerce_count(calibration_min_peaks, "calibration_min_peaks"))
 
                 # サンプル固有エントリの抽出
                 sample_specific = {
@@ -1743,7 +1762,7 @@ def auto_detect_observed_peaks(n, table_data, search_window, cache_dir,
     # サンプル指定: __all__ 以外ならそのサンプルのみ読込
     target_sample = cal_sample_value if cal_sample_value and cal_sample_value != "__all__" else None
 
-    sw = float(search_window or 0.5)
+    sw = float(coerce_number(search_window, "calibration_search_window"))
 
     def _mz_map(columns):
         """Feature名 → m/z数値マッピング。
@@ -1839,6 +1858,8 @@ def auto_detect_observed_peaks(n, table_data, search_window, cache_dir,
     feature_names = list(mz_values.keys())
 
     matched_count = 0
+    unreadable_refs = 0        # ref_mz を数値化できなかった行
+    unknown_intensity = 0      # 窓内に強度既知の feature が無かった行
     updated_data = []
 
     for row in table_data:
@@ -1850,6 +1871,14 @@ def auto_detect_observed_peaks(n, table_data, search_window, cache_dir,
         try:
             ref_f = float(ref)
         except (ValueError, TypeError):
+            # ★ ver52.3: 従来は行を **そのまま** 追加していたので、
+            #   前回実行時の obs_mz / Δppm が残ったまま use=Yes で表示され、
+            #   **一致済みの行に見えていた**（「7/8 マッチ」と出るのに
+            #   どの行が外れたのか分からない）。すぐ下の「窓内にピーク無し」
+            #   分岐は正しく空にしているので、そちらに揃える。
+            row["obs_mz"] = ""
+            row["ppm_drift"] = "--"
+            unreadable_refs += 1
             updated_data.append(row)
             continue
 
@@ -1860,8 +1889,20 @@ def auto_detect_observed_peaks(n, table_data, search_window, cache_dir,
             updated_data.append(row)
             continue
 
-        # ウィンドウ内で最大強度のピークを選択
-        best_idx = max(within, key=lambda i: avg_spectrum.get(feature_names[i], 0))
+        # ウィンドウ内で最大強度のピークを選択。
+        # ★ ver52.3: `avg_spectrum.get(..., 0)` は「強度不明」を「強度 0」と
+        #   同一視するため、窓内の強度が 1 つも分からないと `max` が
+        #   **最初の要素（≒最小 m/z）**を返す。強度を見ずに選んだ観測値が
+        #   Δppm として表示され、そのまま較正に使われる。
+        #   対話側 `_calibrate_mz` と同じ直し方で、強度が分かるものだけを候補にする。
+        known = [i for i in within if feature_names[i] in avg_spectrum]
+        if not known:
+            row["obs_mz"] = ""
+            row["ppm_drift"] = "--"
+            unknown_intensity += 1
+            updated_data.append(row)
+            continue
+        best_idx = max(known, key=lambda i: avg_spectrum[feature_names[i]])
         obs = float(mz_array[best_idx])
         ppm = (obs - ref_f) / ref_f * 1e6
         row["obs_mz"] = round(obs, 5)
@@ -1871,6 +1912,16 @@ def auto_detect_observed_peaks(n, table_data, search_window, cache_dir,
 
     sample_label = target_sample or "全サンプル"
     status = f"✓ 検出完了 [{sample_label}]: {matched_count}/{len(table_data)} ピークがマッチしました"
+    # ★ ver52.3: 外れた理由を伝える。従来は「7/8」とだけ出るので、
+    #   利用者はどの行がなぜ外れたのかテーブルから読み取れなかった
+    #   （しかも数値化できなかった行は前回値が残って一致済みに見えていた）。
+    notes = []
+    if unreadable_refs:
+        notes.append(f"参照 m/z を数値として読めない行 {unreadable_refs} 件")
+    if unknown_intensity:
+        notes.append(f"窓内の強度が不明な行 {unknown_intensity} 件")
+    if notes:
+        status += "（" + " / ".join(notes) + " は空欄にしました）"
     return updated_data, status
 
 
@@ -2168,7 +2219,7 @@ def delete_cal_preset(n, preset_name):
 
 from app.services.data_manager import (
     validate_data_folder, validate_rds_folder,
-    validate_output_dir, validate_numeric_param,
+    validate_output_dir,
     validate_msi_file, list_msi_files,
 )
 
@@ -2298,15 +2349,19 @@ def preflight_validation(
         errors.append(f"出力先: {r['msg']}")
 
     # 数値パラメータ
-    for val, name, lo, hi in [
-        (p_thresh, "p値閾値", 0, 1),
-        (logfc_thresh, "log2FC閾値", 0, None),
-        (tolerance_mz, "m/z許容誤差", 0, None),
+    # ★ ver52.3 ⑤: 範囲をここに直接書いていたので、`PARAM_BOUNDS`・レイアウトの
+    #   `min=`/`max=`・この一覧の **3 つが独立した出典**になっていた。ずれると
+    #   「入力欄は赤いのに実行は通る」「欄は白いのに実行が弾かれる」が起きる
+    #   （それ自体が T7 表示≠計算）。`PARAM_BOUNDS` から引いて出典を 1 つにする。
+    #   レイアウトとの一致は番人 `test_bounds_agree_with_the_layout` が見る。
+    for val, param_id in [
+        (p_thresh, "p_thresh"),
+        (logfc_thresh, "logfc_thresh"),
+        (tolerance_mz, "tolerance_mz"),
     ]:
-        if val is not None and val != "":
-            r = validate_numeric_param(val, name, min_val=lo, max_val=hi)
-            if not r["ok"]:
-                errors.append(r["msg"])
+        ok, msg = validate_param(param_id, val)
+        if not ok:
+            errors.append(msg)
 
     if not errors:
         return "", {"display": "none"}

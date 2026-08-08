@@ -257,17 +257,36 @@ def compute_calibration_coefficients(
     """
     import numpy as np
 
+    # ★ ver52.3: 使うと指定された行のうち、数値化できずに捨てた数を数える。
+    #   従来は黙って捨てていたので、利用者がテーブルで 8 点を「使う」に
+    #   していても、実際には 7 点で回帰されうる。点数が減ると下の
+    #   `len(pairs) // 2 - 1` で **次数まで下がる**（poly3 → poly2）。
+    #   利用者はテーブルを見て 8 点あると思っているので、
+    #   なぜ次数が落ちたのかを知る手がかりが無かった。
     pairs = []
+    unusable = 0
     for row in (table_data or []):
         if not row.get("use"):
             continue
         try:
             ref = float(row["ref_mz"])
             obs = float(row["obs_mz"])
-            if ref > 0 and obs > 0:
-                pairs.append((ref, obs))
         except (ValueError, TypeError, KeyError):
+            unusable += 1
             continue
+        if ref != ref or obs != obs:          # NaN も使えない
+            unusable += 1
+            continue
+        if ref > 0 and obs > 0:
+            pairs.append((ref, obs))
+        else:
+            unusable += 1
+
+    if unusable:
+        logger.warning(
+            "キャリブレーション: 「使う」指定の %d 行を数値化できず除外した "
+            "(有効 %d 点)。点数が減ると当てはめ次数も下がる",
+            unusable, len(pairs))
 
     if len(pairs) < min_peaks:
         return None
@@ -319,6 +338,11 @@ def compute_calibration_coefficients(
         "requested_degree": requested_degree,
         "r_squared": r_squared,
         "n_points": len(pairs),
+        # ★ ver52.3: 「使う」指定なのに数値化できず捨てた行数。
+        #   利用者はテーブルの行数＝点数だと思っているので、食い違いを伝える。
+        #   点数が減ると当てはめ次数も下がる (`len(pairs) // 2 - 1`) ため、
+        #   「poly3 を選んだのに linear で当たっている」の理由がこれになりうる。
+        "n_unusable": unusable,
         "regression_mode": regression_mode,
         # ★ 補正が保証されるのは参照ピークが張る範囲だけ。同梱リファレンスは
         #   m/z 136-379 しか無いのに補正対象は 1000 超まであり、外側は外挿になる。

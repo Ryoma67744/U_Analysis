@@ -70,6 +70,8 @@ from app.callbacks.interactive_calibration import (
     _build_mz_to_compound_map,
     _annotate_gene_labels,
 )
+from app.utils.validation import coerce_count
+from app.utils.display_settings import read_display_settings
 
 logger = logging.getLogger("msi.interactive.pptx")
 
@@ -272,61 +274,20 @@ def _build_feature_plot_fig(df, feature_name, cache_dir_path, rds_path,
 
 # 記録が無い/壊れているときの既定値。**従来の図と同じになる値**にする
 # （条件を一度も触っていないプロジェクトで見た目を変えないため）。
-_DISPLAY_DEFAULTS = {
-    "volcano_fc": 0.5,
-    "volcano_p": 1.3,
-    "volcano_top_n": None,          # None = ラベル件数は従来どおり
-    "heatmap_scale": None,          # None = 従来の自動判定 (アプリ図の zmid を見る)
-    "feature_intensity_min": None,  # None = データ全域
-    "feature_intensity_max": None,
-}
-
-
-def _num(value, default):
-    """数値として読めるときだけ採る。読めなければ既定へ落とす。
-
-    設定ファイルが壊れていても長時間のエクスポートを落とさない。
-    """
-    try:
-        if value is None:
-            return default
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
+# ★ ver52.3 ⑥: 表示設定の取り出しは `app/utils/display_settings.py` へ移した。
+#   同じ `interactive_settings.json` を出典にしている 3 系統
+#   （画面 / PPTX / Lite ビュー）が、それぞれ別の読み出しコードを持っていたのが
+#   「PPTX だけ直して Lite は 0.5/1.3 のまま」（ver51.9 B-2）の原因だった。
+#   ここは中立モジュールへの薄い委譲だけを残す。
+# ★ 旧 `_DISPLAY_DEFAULTS` / `_num` は消した。呼び出しが 0 件の別名を残すのは、
+#   この版で潰している「宣言はあるが誰も使わない」(T8) を自分で作ること。
 def _display_settings(conditions) -> dict:
-    """「解析条件」スライドが出すのと同じ表示設定を、図の生成用に取り出す。"""
-    inter = ((conditions or {}).get("interactive") or {})
-    vol = inter.get("volcano_display") or {}
-    hm = inter.get("heatmap_display") or {}
-    feat = inter.get("feature_display") or {}
+    """「解析条件」スライドが出すのと同じ表示設定を、図の生成用に取り出す。
 
-    top_n = vol.get("label_top_n")
-    try:
-        top_n = int(top_n) if top_n is not None else None
-    except (TypeError, ValueError):
-        top_n = None
-
-    scale = hm.get("scale")
-    if scale is not None and not isinstance(scale, str):
-        scale = None
-
-    umap_view = inter.get("umap_view") or {}
-    return {
-        "volcano_fc": _num(vol.get("fc_threshold"),
-                           _DISPLAY_DEFAULTS["volcano_fc"]),
-        "volcano_p": _num(vol.get("p_threshold"),
-                          _DISPLAY_DEFAULTS["volcano_p"]),
-        "volcano_top_n": top_n,
-        "heatmap_scale": scale,
-        "feature_intensity_min": _num(feat.get("intensity_min"), None),
-        "feature_intensity_max": _num(feat.get("intensity_max"), None),
-        # ver51.9 / B-7: マージ表示。画面は Cluster_merged で描くのに
-        # PPTX には参照が 1 つも無く、**別のクラスタリングの資料**が出ていた。
-        "merge_toggle": umap_view.get("merge_toggle"),
-        "merge_color_mode": umap_view.get("merge_color_mode") or "shade",
-    }
+    PPTX は `provenance.collect_conditions()` を通すので 1 段深い。
+    その 1 段を剥がすのがこの関数の役割で、中身の解釈は共通側に置く。
+    """
+    return read_display_settings((conditions or {}).get("interactive"))
 
 
 def _apply_merge_view(df, display_settings, custom_colors):
@@ -435,7 +396,8 @@ def _build_volcano_fig_for_cluster(deg_data, cluster, fc_thresh=0.5, p_thresh=1.
     # --- Top N アノテーション（PPTX用） ---
     sig_mask = (df["neg_log10_p"] >= p_thresh) & (df["avg_log2FC"].abs() >= fc_thresh)
     sig_df = df[sig_mask]
-    _n_label = 5 if label_top_n is None else max(0, int(label_top_n))
+    # ★ ver52.3 ⑤: 画面側と**同じ関数**で解決する（式を 2 箇所に書かない）。
+    _n_label = coerce_count(label_top_n, "volcano_label_top_n")
     if not sig_df.empty and _n_label > 0:
         _top_up = sig_df[sig_df["avg_log2FC"] > 0].nlargest(_n_label, "avg_log2FC")
         _top_down = sig_df[sig_df["avg_log2FC"] < 0].nsmallest(_n_label, "avg_log2FC")
@@ -1728,7 +1690,10 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
 )
 def sync_export_top_n(value):
     """dbc.Input → dcc.Store ブリッジ (Top N)"""
-    return value or 5
+    # ★ ver52.3 ⑤: 既定値をここに直接書くと、同じ入力の既定が 2 箇所になる。
+    #   `input_export_top_n` は min=1 なので 0 は範囲外だが、
+    #   「不正な入力を黙って既定値にする」形は同じなので出典を 1 つにする。
+    return coerce_count(value, "input_export_top_n")
 
 
 @callback(

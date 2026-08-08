@@ -97,19 +97,23 @@ def _sort_items(items, sort_order):
     [Output("page_landing", "style"),
      Output("page_action", "style"),
      Output("page_analysis", "style"),
-     Output("page_shared", "style"),
      Output("page_lite", "style")],
     Input("current_page", "data"),
 )
 def toggle_pages(current_page):
-    """current_page Store の値に応じてページの表示/非表示を切り替え"""
+    """current_page Store の値に応じてページの表示/非表示を切り替え
+
+    ★ ver52.3: "shared" の行を削除した。旧 read-only 共有ページ (page_shared)
+      を削除したため。`current_page` に "shared" が入ることは無く
+      （共有リンクは "analysis" を返し "shared" は `interactive_entry_mode` 側）、
+      この行は一度も選ばれていなかった。
+    """
     hide = {"display": "none"}
     pages = {
-        "landing":  [{},   hide, hide, hide, hide],
-        "action":   [hide, {},   hide, hide, hide],
-        "analysis": [hide, hide, {},   hide, hide],
-        "shared":   [hide, hide, hide, {},   hide],
-        "lite":     [hide, hide, hide, hide, {}],
+        "landing":  [{},   hide, hide, hide],
+        "action":   [hide, {},   hide, hide],
+        "analysis": [hide, hide, {},   hide],
+        "lite":     [hide, hide, hide, {}],
     }
     return pages.get(current_page, pages["landing"])
 
@@ -740,11 +744,20 @@ def sub_action_interactive(clicks, project):
     result_dir = sub.get("last_result_dir") or sub.get("output_dir", "")
     # MSIデータフォルダもサブプロジェクトから自動セット
     data_folder = sub.get("data_folder", "")
+    # ★ ver52.3: `x or no_update` をやめ、常に明示的な値を入れる。
+    #   `no_update` は「変更しない」なので、**切り替える前のサブプロジェクトの
+    #   結果フォルダ / MSI データフォルダがそのまま残る**。
+    #   project_id と sub_id は必ず更新されるので、
+    #     見出し・サブプロジェクト ID → 新しいもの
+    #     結果 / MSI データフォルダ    → 前のサブプロジェクトのもの
+    #   という食い違いになる。共有リンク (share_callbacks.route_share_url) と
+    #   同じ形で、しかもこちらは通常操作なので踏む頻度が高い。
+    #   未設定なら空にして「未設定」として下流に扱わせる。
     return (
         "analysis",
         "interactive",
-        result_dir or no_update,
-        data_folder or no_update,
+        result_dir,
+        data_folder,
         project_id,
         sub_id,
         "sub_project",      # interactive_entry_mode

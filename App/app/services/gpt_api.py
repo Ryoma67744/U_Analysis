@@ -144,6 +144,142 @@ def parse_clusters(raw):
     return out, None
 
 
+LIMIT_DEFAULT = 50
+LIMIT_MIN = 1
+LIMIT_MAX = 200
+TOL_DEFAULT = 0.01
+TOL_MAX = 100.0
+
+
+def parse_limit(raw):
+    """`limit` を検証する (ver52.1 / API-03)。
+
+    ★ ver52.0 で `top` に上下限を付けたのに、**まったく同じ穴を `limit` に
+      残した**（`filter_compounds` の `if limit and limit > 0` により
+      `limit=0` と負値が「無制限」になっていた）。
+    """
+    if raw is None or raw == "":
+        return LIMIT_DEFAULT, None
+    try:
+        val = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None, ApiError(
+            "INVALID_LIMIT",
+            f"limit は整数で指定してください（{LIMIT_MIN}〜{LIMIT_MAX}）。"
+            f"受け取った値: {raw!r}")
+    if val < LIMIT_MIN or val > LIMIT_MAX:
+        return None, ApiError(
+            "INVALID_LIMIT",
+            f"limit は {LIMIT_MIN} 以上 {LIMIT_MAX} 以下で指定してください。"
+            f"受け取った値: {val}")
+    return val, None
+
+
+def _finite(raw):
+    """有限の float として読めれば返す。`nan` / `inf` は None。"""
+    import math
+    try:
+        v = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
+
+
+def parse_mz(raw):
+    """`mz` を検証する (ver52.1 / API-04)。
+
+    ★ 従来は例外時に **None にして m/z 絞り込み自体を消して**いた。
+      利用者は m/z 検索を頼んだのに、名前検索でも全件検索でもない
+      「m/z 指定なしの全件」がそれらしく返っていた。
+
+    ★ さらに `float("nan")` は例外を出さないので、`mz=nan` は try を通過し、
+      `abs(x - nan) > tol` → `nan > tol` → False となって
+      **全件が絞り込みを素通り**していた（監査の記述より悪い）。
+    """
+    if raw is None or raw == "":
+        return None, None
+    v = _finite(raw)
+    if v is None:
+        return None, ApiError(
+            "INVALID_MZ",
+            f"mz は有限の数値で指定してください。受け取った値: {raw!r}")
+    return v, None
+
+
+def parse_tol(raw):
+    """`tol` を検証する (ver52.1 / API-05)。
+
+    ★ 負の tol は `abs(...) > tol` が常に真になり、**成功扱いの空結果**を返す。
+      「入力が不正」と「本当に該当なし」が区別できなかった。
+    """
+    if raw is None or raw == "":
+        return TOL_DEFAULT, None
+    v = _finite(raw)
+    if v is None or v <= 0 or v > TOL_MAX:
+        return None, ApiError(
+            "INVALID_TOL",
+            f"tol は 0 より大きく {TOL_MAX} 以下の数値で指定してください。"
+            f"受け取った値: {raw!r}")
+    return v, None
+
+
+def parse_export_format(raw):
+    """`format` を検証する (ver52.1 / API-06)。
+
+    ★ 従来は未知の値を**黙って parquet に差し替え**、応答に `fmt` を
+      返しもしなかったので、利用者は別形式の成果物を受け取ったことに
+      気づけなかった。
+    """
+    if raw is None or raw == "":
+        return _EXPORT_FORMATS[0], None
+    val = str(raw).strip().lower()
+    if val not in _EXPORT_FORMATS:
+        return None, ApiError(
+            "INVALID_FORMAT",
+            f"format は {' / '.join(_EXPORT_FORMATS)} のいずれかです。"
+            f"受け取った値: {raw!r}")
+    return val, None
+
+
+def resolve_export_methods(raw, rds_map):
+    """export の `methods` を検証する (ver52.1 / API-07)。
+
+    ★ 従来は `interactive_data_export` 側の `if not sel: sel = 全手法` により、
+      **指定が全部無効だと全手法へ膨らんで**いた。重い R 抽出を指定外の手法にも
+      走らせ、成果物の由来を誤らせる。
+    ★ さらに `resolve_method` は大小文字を吸収するのに export 経路だけ完全一致
+      だったため、`methods=harmony` でも全手法に膨らんでいた（ver52.0 で
+      私が作った不整合）。ここで同じ正規化を通す。
+
+    Returns (選択リスト|None, ApiError|None)。None は「全手法」。
+    """
+    available = [m for m in _METHOD_ORDER if m in (rds_map or {})]
+    available += [m for m in (rds_map or {}) if m not in _METHOD_ORDER]
+    if raw is None or str(raw).strip() == "":
+        return None, None
+
+    wanted = [m.strip() for m in str(raw).split(",") if m.strip()]
+    if not wanted:
+        return None, ApiError(
+            "INVALID_METHODS", f"methods の書式が不正です: {raw!r}")
+
+    lookup = {m.lower(): m for m in available}
+    sel, bad = [], []
+    for m in wanted:
+        canon = lookup.get(m.lower())
+        if canon is None:
+            bad.append(m)
+        elif canon not in sel:
+            sel.append(canon)
+    if bad:
+        return None, ApiError(
+            "METHOD_NOT_AVAILABLE",
+            f"この解析結果に無い手法が含まれています: {', '.join(bad)}。"
+            "別の手法で代用はしません（成果物の由来が分からなくなるため）。",
+            409, {"available_methods": available})
+    return sel, None
+
+
 def parse_direction(raw):
     """`direction` を検証して (値, ApiError|None) を返す (ver52.0 / 監査 17.1)。"""
     if raw is None or raw == "":
@@ -200,27 +336,71 @@ def resolve_method(requested, rds_map):
     return canonical, None
 
 
+def _fc_or_none(rec):
+    """`avg_log2FC` を float で返す。読めなければ None (ver52.3)。
+
+    ★ 0.0 と「読めなかった」を区別することが要点。従来はどちらも 0.0 に
+      落としていたので、読めない record が Up/Down の**両方から消えて**いた。
+    """
+    raw = rec.get("avg_log2FC", None)
+    if raw is None or raw == "":
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return None if v != v else v          # NaN も「読めなかった」扱い
+
+
+def count_unreadable_fc(records) -> int:
+    """`avg_log2FC` を数値化できない record の件数を数える (ver52.3)。
+
+    `marker_outcome` と同じ「dict を返して payload に merge する」形で
+    応答へ載せるための純関数。
+    """
+    return sum(1 for r in (records or []) if _fc_or_none(r) is None)
+
+
 def marker_outcome(shaped, requested_clusters, available_clusters):
-    """マーカーが空のとき、その理由コードを返す (ver52.0 / F-09)。
+    """マーカーの結果に添える注意書きを返す（無ければ None）(ver52.1 / F-09)。
 
-    ★ 「クラスタが存在しない」と「クラスタは在るがマーカーが無い」は
-      利用者にとって全く違う意味。前者は**指定ミス**（直せる）、
-      後者は**生物学的な結果**（直しようがない）。従来はどちらも
-      `ok:true` + 空配列で、GPT はどちらも「該当なし」と要約していた。
+    ★ ver52.0 では「要求したクラスタが 1 つも実在しないときだけ指定ミス」と
+      判定していた。**この設計判断が誤り**で、`cluster=1,999` のように
+      **一部だけ存在しない**場合に 999 について何も言わなかった:
+        - データが返る   → `code` すら付かず完全な成功に見える
+        - データが空     → 「クラスタは存在します」と**断言**する
+      どちらでも GPT は「999 にはマーカーが無い」と要約するが、実際は存在しない。
+      要求と実在の**差集合**を必ず返す形に改める。
 
-    shaped: 整形後のマーカー（空かどうかだけ見る）
+    shaped: 整形後のマーカー
     requested_clusters: 要求されたクラスタのリスト（None = 全クラスタ）
     available_clusters: この結果に実在するクラスタの集合
     """
-    if shaped:
-        return None
-    if requested_clusters:
-        avail = {str(c) for c in (available_clusters or ())}
-        # 要求したクラスタが **1 つも実在しない** ときだけ指定ミスと判定する。
-        # 一部でも実在するなら「そのクラスタにマーカーが無い」が正しい。
-        if avail and not any(str(c) in avail for c in requested_clusters):
-            return "CLUSTER_NOT_FOUND"
-    return "NO_MARKERS"
+    avail = {str(c) for c in (available_clusters or ())}
+    missing = []
+    if requested_clusters and avail:
+        missing = [str(c) for c in requested_clusters if str(c) not in avail]
+
+    if shaped and not missing:
+        return None                       # 何も問題なし
+    out = {}
+    if missing:
+        out["missing_clusters"] = missing
+        out["available_clusters"] = sorted(avail, key=str)
+    if missing and len(missing) == len(requested_clusters or []):
+        out["code"] = "CLUSTER_NOT_FOUND"
+        out["message"] = ("指定したクラスタはこの結果に存在しません: "
+                          + ", ".join(missing))
+    elif missing:
+        out["code"] = "PARTIAL_CLUSTERS"
+        out["partial"] = True
+        out["message"] = ("一部のクラスタはこの結果に存在しません: "
+                          + ", ".join(missing)
+                          + "。残りのクラスタの結果のみ返しています。")
+    else:
+        out["code"] = "NO_MARKERS"
+        out["message"] = "条件に合うマーカーがありませんでした（クラスタは存在します）。"
+    return out
 
 
 def limit_response_size(payload: dict, list_key: str):
@@ -412,8 +592,11 @@ def filter_compounds(records, query=None, mz=None, tol=0.01,
         out.sort(key=lambda r: abs((r["mz"] if r["mz"] is not None else 1e18) - float(mz)))
     else:
         out.sort(key=lambda r: (r["mz"] is None, r["mz"] if r["mz"] is not None else 0))
-    if limit and limit > 0:
-        out = out[:int(limit)]
+    # ★ ver52.1: `if limit and limit > 0` だと **limit=0 と負値が無制限**になる
+    #   （`top=0` と同じ穴を残していた）。境界は parse_limit が保証するが、
+    #   純関数として直接呼ばれても破綻しないようにここでも素直に切る。
+    if limit is not None:
+        out = out[:max(0, int(limit))]
     return out
 
 
@@ -477,14 +660,20 @@ def shape_markers(records, cluster=None, top=None, direction=DIRECTION_DEFAULT):
         recs = [r for r in recs if str(r.get("cluster", "")) in wanted]
 
     if direction in ("up", "down"):
-        def _fc(r):
-            try:
-                v = float(r.get("avg_log2FC", 0) or 0)
-                return 0.0 if v != v else v
-            except (TypeError, ValueError):
-                return 0.0
-        recs = [r for r in recs
-                if (_fc(r) > 0 if direction == "up" else _fc(r) < 0)]
+        # ★ ver52.3: 以前は読めない `avg_log2FC` を 0.0 に落としていたため、
+        #   その record は `> 0` にも `< 0` にも入らず **両方向から消えて**いた。
+        #   件数の報告も無いので、切り詰められた一覧が「上位マーカーの全部」として
+        #   GPT に渡っていた。入口 (`parse_top` 等) を 2 版続けて硬くした
+        #   同じファイルの中で、絞り込み側だけ見ていなかった。
+        #   0.0 は「変動なし」という正当な値なので、読めなかったものと区別する。
+        keep = []
+        for r in recs:
+            v = _fc_or_none(r)
+            if v is None:
+                continue                  # 読めない → 件数は下で別途数える
+            if (v > 0) if direction == "up" else (v < 0):
+                keep.append(r)
+        recs = keep
 
     recs.sort(key=_marker_sort_key)
     if top:
@@ -569,7 +758,8 @@ def build_openapi_spec(base_url: str = "") -> dict:
     server_url = (base_url or "https://YOUR-DOMAIN").rstrip("/")
 
     def _p(name, where="query", typ="string", required=False, desc="",
-           enum=None, default=None, minimum=None, maximum=None):
+           enum=None, default=None, minimum=None, maximum=None,
+           exclusive_minimum=None):
         """パラメータ定義。
 
         ★ ver52.0: `enum` / `default` / `minimum` / `maximum` を書けるようにした。
@@ -586,6 +776,8 @@ def build_openapi_spec(base_url: str = "") -> dict:
             schema["minimum"] = minimum
         if maximum is not None:
             schema["maximum"] = maximum
+        if exclusive_minimum is not None:
+            schema["exclusiveMinimum"] = exclusive_minimum
         return {"name": name, "in": where, "required": required,
                 "schema": schema, "description": desc}
 
@@ -664,10 +856,19 @@ def build_openapi_spec(base_url: str = "") -> dict:
                                _p("sid", "path", required=True),
                                _method_p,
                                _p("query", desc="名前部分一致"),
-                               _p("mz", "query", "number", desc="m/z 中心"),
-                               _p("tol", "query", "number", desc="m/z 許容差(Da) 既定0.01"),
+                               _p("mz", "query", "number",
+                                  desc="m/z 中心。有限の数値のみ（nan / inf は 422）。"),
+                               _p("tol", "query", "number",
+                                  default=TOL_DEFAULT, exclusive_minimum=0,
+                                  maximum=TOL_MAX,
+                                  desc=(f"m/z 許容差(Da)。0 より大きく {TOL_MAX} 以下"
+                                        f"（既定 {TOL_DEFAULT}）。範囲外は 422。")),
                                _p("lipid_class", desc="脂質クラス部分一致"),
-                               _p("limit", "query", "integer", desc="最大件数 既定50")],
+                               _p("limit", "query", "integer",
+                                  default=LIMIT_DEFAULT, minimum=LIMIT_MIN,
+                                  maximum=LIMIT_MAX,
+                                  desc=(f"最大件数（{LIMIT_MIN}〜{LIMIT_MAX}、"
+                                        f"既定 {LIMIT_DEFAULT}）。範囲外は 422。"))],
                 "responses": {"200": {"description": "検索結果",
                                       "content": {"application/json": {"schema": obj}}}}}},
             # ★ ver52.0: ファイル本体を返す 2 つの operation
@@ -698,13 +899,19 @@ def build_openapi_spec(base_url: str = "") -> dict:
                             "（非同期。job_id を返す。重い処理）"),
                 "parameters": [_p("pid", "path", required=True),
                                _p("sid", "path", required=True),
-                               _p("format", desc="parquet / csv / xlsx（TIMSのみ有効）"),
-                               _p("methods", desc="カンマ区切り手法名。省略で全手法")],
+                               _p("format", enum=_EXPORT_FORMATS,
+                                  default=_EXPORT_FORMATS[0],
+                                  desc="TIMS のみ有効。範囲外は 422。"),
+                               _p("methods",
+                                  desc=("カンマ区切り手法名。省略で全手法。"
+                                        "この結果に無い手法を含めると 409"
+                                        "（別手法で代用はしない）。"))],
                 "responses": {"200": {"description": "生成ジョブを開始（job_id/status_url）",
                                       "content": {"application/json": {"schema": obj}}}}}},
             "/api/gpt/exports/jobs/{job_id}": {"get": {
                 "operationId": "getExportJob",
-                "summary": "生成ジョブの状態（done なら download_url を返す）",
+                "summary": ("生成ジョブの状態。done ならファイルの保存先を返すが、"
+                            "Action からは取得できない（ブラウザ / アプリで開く）。"),
                 "parameters": [_p("job_id", "path", required=True)],
                 "responses": {"200": {"description": "状態",
                                       "content": {"application/json": {"schema": obj}}},
@@ -982,12 +1189,9 @@ def _run_interactive_export(job_id: str, resolved: dict, methods, fmt: str):
     同時実行は _GPT_EXPORT_SEM で制限（過負荷防止）。
     """
     from app.services import export_progress as ep
-    acquired = False
+    # ver52.1: 許可はハンドラが **thread 生成前** に取得済み。ここでは解放だけ担う。
+    acquired = True
     try:
-        acquired = _GPT_EXPORT_SEM.acquire(timeout=3600)
-        if not acquired:
-            ep.fail_job(job_id, "❌ 混雑のため生成できませんでした。時間をおいて再試行してください。")
-            return
         from app.callbacks.interactive_data_export import (
             build_interactive_export_for_project,
         )
@@ -1167,14 +1371,22 @@ def register_gpt_api(server) -> None:
             "sort": MARKER_SORT_DESC,
             "markers": shaped,
         }
-        code = marker_outcome(shaped, clusters, available)
-        if code:
-            payload["code"] = code
-            payload["available_clusters"] = sorted(available, key=str)
-            payload["message"] = (
-                "指定したクラスタはこの結果に存在しません。"
-                if code == "CLUSTER_NOT_FOUND" else
-                "条件に合うマーカーがありませんでした（クラスタは存在します）。")
+        notice = marker_outcome(shaped, clusters, available)
+        if notice:
+            # ★ ver52.1: 一部だけ存在しないクラスタも必ず伝える
+            #   （従来は 999 について何も言わなかった）。
+            payload.update(notice)
+        # ★ ver52.3: `direction` 指定で読めない avg_log2FC の record が
+        #   両方向から落ちていた。落とした件数を必ず伝える
+        #   （黙って切り詰めた一覧を「上位マーカーの全部」として渡さない）。
+        if direction in ("up", "down"):
+            unreadable = count_unreadable_fc(recs)
+            if unreadable:
+                payload["dropped_unreadable_log2fc"] = unreadable
+                payload["message"] = (
+                    (payload.get("message", "") + " ").strip()
+                    + f"avg_log2FC を数値化できない {unreadable} 件は "
+                      "up/down のどちらにも分類できないため除外しました。").strip()
         payload, truncated = limit_response_size(payload, "markers")
         if truncated:
             payload["truncated"] = True
@@ -1201,19 +1413,18 @@ def register_gpt_api(server) -> None:
                         "message": ("化合物検索は抽出キャッシュが必要です"
                                     "（アプリで一度開くと生成されます）。")})
         recs = _read_annotations(cache_dir)
-        mz = request.args.get("mz")
-        try:
-            mz = float(mz) if mz not in (None, "") else None
-        except ValueError:
-            mz = None
-        try:
-            tol = float(request.args.get("tol") or 0.01)
-        except ValueError:
-            tol = 0.01
-        try:
-            limit = int(request.args.get("limit") or 50)
-        except ValueError:
-            limit = 50
+        # ★ ver52.1: 従来は不正値を黙って既定へ差し替えていた。
+        #   `mz` を None にすると **m/z 絞り込み自体が消えて**、
+        #   「m/z 検索の結果」として全件が返っていた。
+        mz, err = parse_mz(request.args.get("mz"))
+        if err is not None:
+            return _fail_api(err)
+        tol, err = parse_tol(request.args.get("tol"))
+        if err is not None:
+            return _fail_api(err)
+        limit, err = parse_limit(request.args.get("limit"))
+        if err is not None:
+            return _fail_api(err)
         result = filter_compounds(
             recs, query=request.args.get("query"), mz=mz, tol=tol,
             lipid_class=request.args.get("lipid_class"), limit=limit,
@@ -1293,12 +1504,25 @@ def register_gpt_api(server) -> None:
             return _fail("project/sub not found", 404)
         if not r["rds_map"]:
             return _fail("この結果には解析済み RDS が見つかりません。", 404)
-        fmt = (request.args.get("format") or "parquet").strip().lower()
-        if fmt not in _EXPORT_FORMATS:
-            fmt = "parquet"
-        methods_arg = request.args.get("methods")
-        methods = ([m.strip() for m in methods_arg.split(",") if m.strip()]
-                   if methods_arg else None)
+        fmt, err = parse_export_format(request.args.get("format"))
+        if err is not None:
+            return _fail_api(err)
+        methods, err = resolve_export_methods(
+            request.args.get("methods"), r["rds_map"])
+        if err is not None:
+            return _fail_api(err)
+
+        # ★ ver52.1: admission を **thread 生成前**に行う。従来は必ず thread を
+        #   作ってから semaphore を最大 3600 秒待っており、待機中の job は
+        #   `status:"running", pct:0` で実行中と区別が付かなかった。
+        if not _GPT_EXPORT_SEM.acquire(blocking=False):
+            return _json({
+                "ok": False, "code": "BUSY",
+                "error": ("生成中のエクスポートが上限に達しています"
+                          f"（同時 {_GPT_EXPORT_MAX_CONCURRENCY} 件）。"
+                          "時間をおいて再試行してください。"),
+                "retry_after_sec": 60,
+            }, 429)
         from app.services import export_progress as ep
         job_id = ep.new_job()
         threading.Thread(
@@ -1309,7 +1533,9 @@ def register_gpt_api(server) -> None:
             "job_id": job_id,
             "status_url": f"/api/gpt/exports/jobs/{job_id}",
             "message": ("エクスポート生成を開始しました。status_url を数秒おきに"
-                        "ポーリングし、status=done になったら download_url を取得してください。"),
+                        "ポーリングしてください。status=done で download_url が"
+                        "返りますが、**この URL は Action からは取得できません**"
+                        "（ブラウザ / アプリで開いてください）。"),
         })
 
     def _export_job_status(job_id):

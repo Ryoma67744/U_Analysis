@@ -47,13 +47,36 @@ class TestValidateParam:
         ok, _ = validate_param("onthefly_de_fc", -0.5)
         assert ok is False
 
+    # ★ ver52.3: 旧テストは "umap_min_dist" / "pca_dims" という **画面に存在しない
+    #   id** を渡していた。`validate_param` は未知 id を常に ok として通すので、
+    #   このテストは「一度も適用されない定義」を固定していただけだった
+    #   （ver52.0 で marker_outcome の誤った設計をテストに固定したのと同じ形）。
+    #   実際の画面 id に直し、範囲もレイアウトに合わせた。
     def test_min_dist_bounds(self):
-        assert validate_param("umap_min_dist", 0.1)[0] is True
-        assert validate_param("umap_min_dist", 1.5)[0] is False
+        assert validate_param("umap_min_dist_input", 0.3)[0] is True
+        assert validate_param("umap_min_dist_input", 1.5)[0] is False
 
-    def test_pca_dims_bounds(self):
-        assert validate_param("pca_dims", 5)[0] is False   # <10
-        assert validate_param("pca_dims", 30)[0] is True
+    def test_umap_dims_bounds(self):
+        assert validate_param("umap_dims_input", 1)[0] is False    # <2
+        assert validate_param("umap_dims_input", 30)[0] is True
+        assert validate_param("umap_dims_input", 60)[0] is False   # >50
+
+    def test_n_neighbors_bounds(self):
+        assert validate_param("umap_n_neighbors_input", 30)[0] is True
+        assert validate_param("umap_n_neighbors_input", 1)[0] is False    # <2
+        assert validate_param("umap_n_neighbors_input", 200)[0] is False  # >100
+
+    def test_dead_ids_are_gone(self):
+        """★ 旧キーが復活していないこと。
+
+        未知 id は常に ok なので、キーが消えても `validate_param` は
+        黙って True を返す。「効いていない検証」を再び作らないよう固定する。
+        """
+        from app.utils.validation import PARAM_BOUNDS as _PB
+        for dead in ("umap_min_dist", "umap_n_neighbors", "pca_dims", "perplexity"):
+            assert dead not in _PB, (
+                f"画面に存在しない id '{dead}' の定義が復活している。"
+                "validate_param は未知 id を常に ok にするので無言で効かない")
 
     def test_blank_is_ok_for_all_bounds(self):
         for pid in PARAM_BOUNDS:

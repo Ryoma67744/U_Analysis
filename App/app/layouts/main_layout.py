@@ -19,7 +19,6 @@ from app.layouts.rds_maintenance_modal import create_rds_maintenance_modal
 from app.layouts.parquet_maintenance_modal import create_parquet_maintenance_modal
 from app.layouts.landing_page import create_landing_page
 from app.layouts.action_page import create_action_page
-from app.layouts.shared_view import create_shared_view_layout
 from app.layouts.lite_view import create_lite_view_layout
 from app.layouts.tooltips import (
     get_sidebar_tooltips, get_settings_tooltips,
@@ -430,21 +429,12 @@ def create_main_layout():
             ],
         ),
 
-        # ========== Page 4: Shared View (共有専用・読み取り専用) ==========
-        html.Div(
-            id="page_shared",
-            style={"display": "none"},
-            children=[
-                dbc.Container(
-                    fluid=True,
-                    className="main-container",
-                    style={"maxWidth": "1400px", "padding": "20px"},
-                    children=[create_shared_view_layout()],
-                ),
-            ],
-        ),
+        # ★ ver52.3: 旧 Page 4 (Shared View / 読み取り専用) を削除した。
+        #   ver4.0 で「共有時はインタラクティブタブ全機能を共有モードで開く」
+        #   方式に置き換わって以降、到達不能だった（詳細は share_callbacks.py）。
+        #   共有リンク自体は /share/<token> ・ /view/<token> で引き続き動く。
 
-        # ========== Page 5: Lite View (軽量ビューア・認証なし) ==========
+        # ========== Page 4: Lite View (軽量ビューア・認証なし) ==========
         html.Div(
             id="page_lite",
             style={"display": "none"},

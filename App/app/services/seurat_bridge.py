@@ -1023,7 +1023,17 @@ class SeuratBridge:
                 ):
                     cache_fresh = False
             except OSError:
-                cache_fresh = True
+                # ★ ver52.3: 従来はここで `cache_fresh = True`、つまり
+                #   **判定できないときに「新鮮」と結論**していた。
+                #   このブロックの目的は「古くなっていないか」の判定なので、
+                #   その不確実ケースが「古くない」に倒れるのは向きが逆。
+                #   分子情報を後から付与しても mtime を読めなければ
+                #   キャッシュが再利用され続け、**古い化合物名が出たまま**になる。
+                #   作り直すのは遅くなるだけで間違わない。安全側に倒す。
+                logger.warning(
+                    "注釈キャッシュの鮮度を判定できないため作り直す: %s",
+                    cache_file, exc_info=True)
+                cache_fresh = False
             if cache_fresh:
                 try:
                     with open(cache_file, "r", encoding="utf-8") as f:

@@ -41,13 +41,20 @@ class TestRegionLookupDistinguishesUnused:
             "SpatialY": [1.0, 2.0],
         })
 
+    # ★ ver52.3 ④: 戻り値を (lookup, 割当に失敗したサンプル名) に変えた。
+    #   失敗を呼び出し側へ伝えないと「ROI 未使用」と「割当に失敗」を
+    #   利用者が区別できない（後者は解析の見落としを意味する）。
+
     def test_no_rds_returns_none(self):
         from app.callbacks.interactive_data_export import _build_region_lookup
-        assert _build_region_lookup(self._plot_data(), None) is None
+        lookup, failed = _build_region_lookup(self._plot_data(), None)
+        assert lookup is None and failed == []
 
     def test_missing_columns_returns_none(self):
         from app.callbacks.interactive_data_export import _build_region_lookup
-        assert _build_region_lookup(pd.DataFrame({"Sample": ["S1"]}), "/x.rds") is None
+        lookup, failed = _build_region_lookup(
+            pd.DataFrame({"Sample": ["S1"]}), "/x.rds")
+        assert lookup is None and failed == []
 
     def test_no_roi_assigned_returns_none(self, tmp_path, monkeypatch):
         """★ H&E は設定済みでも ROI に 1 つも入らなければ None。
@@ -63,7 +70,10 @@ class TestRegionLookupDistinguishesUnused:
             DE.hn, "regions_from_overlay",
             lambda sub, entry: pd.Series([None] * len(sub)))
 
-        assert DE._build_region_lookup(self._plot_data(), str(tmp_path / "a.rds")) is None
+        lookup, failed = DE._build_region_lookup(
+            self._plot_data(), str(tmp_path / "a.rds"))
+        assert lookup is None
+        assert failed == [], "割当は成功しているので失敗リストは空"
 
     def test_assigned_roi_still_returns_a_mapping(self, tmp_path, monkeypatch):
         """過剰修正の番人: 実際に ROI があるときは従来どおり dict。"""
@@ -74,8 +84,30 @@ class TestRegionLookupDistinguishesUnused:
             DE.hn, "regions_from_overlay",
             lambda sub, entry: pd.Series(["腫瘍"] * len(sub)))
 
-        got = DE._build_region_lookup(self._plot_data(), str(tmp_path / "a.rds"))
+        got, failed = DE._build_region_lookup(
+            self._plot_data(), str(tmp_path / "a.rds"))
         assert got == {("S1", 1.0, 1.0): "腫瘍", ("S1", 2.0, 2.0): "腫瘍"}
+        assert failed == []
+
+    def test_failed_assignment_is_reported_not_silent(self, tmp_path, monkeypatch):
+        """★ ver52.3 ④ の本丸: 割当に失敗したサンプル名を返すこと。
+
+        従来はログだけで飛ばしていたので、そのスライスの「領域名」が
+        空欄になり、利用者には **「どの ROI にも入らなかった」
+        （＝実データ上の所見）** と読めた。
+        """
+        import app.callbacks.interactive_data_export as DE
+
+        def _boom(*a, **k):
+            raise OSError("overlay state unreadable")
+
+        monkeypatch.setattr(DE.hp, "load_hne_sample", _boom)
+        lookup, failed = DE._build_region_lookup(
+            self._plot_data(), str(tmp_path / "a.rds"))
+        assert failed == ["S1"], (
+            "ROI 割当に失敗したサンプルが報告されていない。"
+            "領域名が空欄になった理由を利用者が知る手立てが無い")
+        assert lookup is None
 
 
 # ---------------------------------------------------------------------------

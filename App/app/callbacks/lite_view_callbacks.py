@@ -52,6 +52,8 @@ from app.utils.label_persistence import (
     load_interactive_settings,
     load_label_positions,
 )
+from app.utils.display_settings import (
+    DISPLAY_DEFAULTS, read_display_settings)
 
 _LITE_URL_RE = re.compile(r"^/lite/([^/]+)/([^/]+)/?$")
 
@@ -192,8 +194,13 @@ def initialize_lite_view(target, method_data):
         len(deg_records), integration_method, result_dir,
     )
 
-    # メイン解析で永続化されたインタラクティブ設定 + ラベル位置を読み込む
-    settings = load_interactive_settings(rds_path) or {}
+    # メイン解析で永続化されたインタラクティブ設定 + ラベル位置を読み込む。
+    # per-cluster カード遅延展開時に再利用するため bundle をキャッシュ。
+    # ★ ver52.3 ⑥: 設定の読み出しと bundle 組み立ては
+    #   `_resolve_lite_data_for_target` と**完全に同じブロック**だった。
+    #   共通ヘルパへ抽出したので、以後は片方だけ直すことができない。
+    bundle = _read_lite_display_bundle(
+        rds_path, integration_method, df_plot, deg_records)
     settings_mtime = "n/a"
     try:
         sp = Path(rds_path).parent / "interactive_settings.json" if rds_path else None
@@ -204,31 +211,11 @@ def initialize_lite_view(target, method_data):
         # ver3.7: 暗黙の握り潰しを debug ログに格上げ
         logger.debug("interactive_settings mtime check failed: %s", e)
     logger.info("lite_view settings loaded: mtime=%s keys=%s",
-                settings_mtime, list(settings.keys()))
-    cluster_name_map = settings.get("cluster_name_map") or {}
-    sample_name_map = settings.get("sample_name_map") or {}
-    spatial_rotation = settings.get("spatial_rotation") or {}
-    custom_color_map = settings.get("custom_color_map") or None
-    umap_display = settings.get("umap_display") or {}
-    spatial_display = settings.get("spatial_display") or {}
-    saved_positions_all = load_label_positions(rds_path, integration_method) or {}
-
-    # per-cluster カード遅延展開時に再利用するため bundle をキャッシュ
-    color_map = _get_cluster_color_map(df_plot["Cluster"], custom_color_map)
+                settings_mtime, list(bundle["_settings"].keys()))
     # ★ ver51.8: 添字ではなくローカル参照へ書く。
     #   data はキャッシュに入っているのと同じ dict オブジェクトなので、
     #   まだ残っていれば更新され、evict 済みなら何も壊さずに済む。
-    data["_lite_bundle"] = {
-        "df_plot": df_plot,
-        "color_map": color_map,
-        "deg_records": deg_records,
-        "cluster_name_map": cluster_name_map,
-        "sample_name_map": sample_name_map,
-        "spatial_rotation": spatial_rotation,
-        "saved_positions_all": saved_positions_all,
-        "umap_display": umap_display,
-        "spatial_display": spatial_display,
-    }
+    data["_lite_bundle"] = bundle
 
     # レポート組み立て
     body = _build_report_body(
@@ -239,13 +226,14 @@ def initialize_lite_view(target, method_data):
         df_plot=df_plot,
         df_stats=df_stats,
         deg_records=deg_records,
-        cluster_name_map=cluster_name_map,
-        sample_name_map=sample_name_map,
-        spatial_rotation=spatial_rotation,
-        custom_color_map=custom_color_map,
-        saved_positions_all=saved_positions_all,
-        umap_display=umap_display,
-        spatial_display=spatial_display,
+        cluster_name_map=bundle["cluster_name_map"],
+        sample_name_map=bundle["sample_name_map"],
+        spatial_rotation=bundle["spatial_rotation"],
+        custom_color_map=bundle["custom_color_map"],
+        saved_positions_all=bundle["saved_positions_all"],
+        umap_display=bundle["umap_display"],
+        spatial_display=bundle["spatial_display"],
+        display=bundle["display"],
     )
     return body, False, ""
 
@@ -284,6 +272,42 @@ def toggle_volcano_section(n_clicks, is_open):
 # =============================================================================
 # クラスタカード遅延展開
 # =============================================================================
+
+def _read_lite_display_bundle(rds_path, integration_method, df_plot, deg_records):
+    """Lite が使う表示設定を **1 箇所で** 読んで bundle を組む (ver52.3 ⑥)。
+
+    ★ なぜ抽出したか: 初回表示 (`initialize_lite_view`) と カード遅延展開
+      (`_resolve_lite_data_for_target`) に **完全に同じブロックが 2 つ**あった。
+      ここへ「2 行ずつ足す」のは T3（経路の重複）を自分の手で 1 つ増やすこと。
+      ver51.9 B-8 / A-3 はまさに「片方だけ直した」で生まれている。
+      抽出しておけば、設定項目が増えても直す場所は 1 つで済む。
+
+    ★ 表示設定の**解釈**は `app/utils/display_settings.read_display_settings`
+      に置いてある。画面 / PPTX / Lite は同じ `interactive_settings.json` を
+      見ているので、読み出し口も 1 つにする。
+    """
+    settings = load_interactive_settings(rds_path) or {}
+    custom_color_map = settings.get("custom_color_map") or None
+    return {
+        "df_plot": df_plot,
+        "color_map": _get_cluster_color_map(df_plot["Cluster"], custom_color_map),
+        "deg_records": deg_records,
+        "cluster_name_map": settings.get("cluster_name_map") or {},
+        "sample_name_map": settings.get("sample_name_map") or {},
+        "spatial_rotation": settings.get("spatial_rotation") or {},
+        "custom_color_map": custom_color_map,
+        "saved_positions_all": load_label_positions(
+            rds_path, integration_method) or {},
+        "umap_display": settings.get("umap_display") or {},
+        "spatial_display": settings.get("spatial_display") or {},
+        # ★ ver52.3 ⑥: 従来 Lite だけがこの 2 つを読んでいなかった。
+        #   その結果、利用者が閾値を変えて Lite のリンクを配ると
+        #   **受け取った側には既定値 (0.5 / 1.3) の Volcano が出る**。
+        #   画面と資料は正しいので、送った側は気づけない。
+        "display": read_display_settings(settings),
+        "_settings": settings,
+    }
+
 
 def _resolve_lite_data_for_target(target, method_data):
     """target/method から per-cluster カードの展開に必要な bundle を返す。
@@ -354,27 +378,8 @@ def _resolve_lite_data_for_target(target, method_data):
     if result_dir and Path(result_dir).is_dir():
         deg_records = _load_deg_results(Path(result_dir), integration_method) or []
 
-    settings = load_interactive_settings(rds_path) or {}
-    cluster_name_map = settings.get("cluster_name_map") or {}
-    sample_name_map = settings.get("sample_name_map") or {}
-    spatial_rotation = settings.get("spatial_rotation") or {}
-    custom_color_map = settings.get("custom_color_map") or None
-    umap_display = settings.get("umap_display") or {}
-    spatial_display = settings.get("spatial_display") or {}
-    saved_positions_all = load_label_positions(rds_path, integration_method) or {}
-    color_map = _get_cluster_color_map(df_plot["Cluster"], custom_color_map)
-
-    bundle = {
-        "df_plot": df_plot,
-        "color_map": color_map,
-        "deg_records": deg_records,
-        "cluster_name_map": cluster_name_map,
-        "sample_name_map": sample_name_map,
-        "spatial_rotation": spatial_rotation,
-        "saved_positions_all": saved_positions_all,
-        "umap_display": umap_display,
-        "spatial_display": spatial_display,
-    }
+    bundle = _read_lite_display_bundle(
+        rds_path, integration_method, df_plot, deg_records)
     cached["_lite_bundle"] = bundle
     return bundle
 
@@ -424,6 +429,9 @@ def toggle_cluster_card(n_clicks, is_open, btn_id, current_body,
             spatial_rotation=bundle["spatial_rotation"],
             saved_positions_all=bundle["saved_positions_all"],
             umap_display=bundle.get("umap_display") or {},
+            # ★ ver52.3 ⑥: 遅延展開でも初回表示と同じ閾値で描く。
+            #   ここを渡し忘れると「最初は正しく、開き直すと既定値」になる。
+            display=bundle.get("display") or {},
         )
         return True, contents, "▼ 詳細を閉じる"
     return False, no_update, "▶ 詳細を表示 (UMAP / Spatial / Volcano)"
@@ -532,11 +540,17 @@ def _build_spot_filtering_section(result_dir):
         return None
 
     cards = []
+    unreadable = []          # 読めなかった QC 画像のファイル名
     for p in pngs:
         try:
             with open(p, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode()
-        except Exception:
+        except Exception as e:
+            # ★ ver52.3 (T5): 読めない画像は無言で落ちていた。全部落ちると
+            #   節ごと消えるので、閲覧者からは「Otsu 除去をしていない解析」と
+            #   区別が付かない（この節の有無が唯一の手がかりなので実害がある）。
+            logger.warning("スポット除去 QC 画像を読めません (%s): %s", p.name, e)
+            unreadable.append(p.name)
             continue
         cards.append(
             html.Div(
@@ -549,6 +563,17 @@ def _build_spot_filtering_section(result_dir):
                     ),
                 ],
                 className="mb-4",
+            )
+        )
+    if unreadable:
+        # 1 枚も出せなくても節は出す。「QC 画像はあるが読めなかった」と
+        # 「そもそも Otsu 除去をしていない」は、閲覧者にとって全く別の意味。
+        cards.append(
+            dbc.Alert(
+                f"⚠ QC 画像 {len(unreadable)} 件を読み込めませんでした: "
+                + ", ".join(unreadable[:5])
+                + ("…" if len(unreadable) > 5 else ""),
+                color="warning", className="small py-1 px-2 mb-0",
             )
         )
     if not cards:
@@ -568,8 +593,14 @@ def _build_report_body(project, sub, integration_method, available_methods,
                        cluster_name_map=None, sample_name_map=None,
                        spatial_rotation=None, custom_color_map=None,
                        saved_positions_all=None, umap_display=None,
-                       spatial_display=None):
-    """全体レポートを html.Div の children リストとして返す。"""
+                       spatial_display=None, display=None):
+    """全体レポートを html.Div の children リストとして返す。
+
+    Args:
+        display: `read_display_settings()` の戻り値 (ver52.3 ⑥)。
+            画面 / PPTX と同じ `interactive_settings.json` 由来の閾値・件数。
+    """
+    display = display or {}
     color_map = _get_cluster_color_map(df_plot["Cluster"], custom_color_map)
     sections = [
         _build_header(project, sub, integration_method, available_methods,
@@ -587,7 +618,11 @@ def _build_report_body(project, sub, integration_method, available_methods,
             df_plot, deg_records, color_map,
             cluster_name_map=cluster_name_map,
         ),
-        _build_heatmap_section(deg_records, cluster_name_map=cluster_name_map),
+        # ★ ver52.3 ⑥: 従来は既定 3 のままで、画面の既定 5 とも
+        #   利用者の設定とも食い違っていた。
+        _build_heatmap_section(
+            deg_records, cluster_name_map=cluster_name_map,
+            top_n_per_cluster=display.get("heatmap_top_n")),  # noqa: E501
     ]
     # スポット除去 (Otsu) の QC 画像があれば末尾に追加（R 解析が生成した PNG を埋め込み）
     result_dir = (sub or {}).get("last_result_dir") or (sub or {}).get("output_dir", "")
@@ -1254,7 +1289,7 @@ def _build_cluster_card_expand_contents(cluster_id, df_plot, color_map,
                                          sample_name_map=None,
                                          spatial_rotation=None,
                                          saved_positions_all=None,
-                                         umap_display=None):
+                                         umap_display=None, display=None):
     """カード展開時に lv_card_body に差し込む重量パート。
 
     Per-sample Highlighted UMAP グリッド / Per-sample Spatial /
@@ -1294,7 +1329,10 @@ def _build_cluster_card_expand_contents(cluster_id, df_plot, color_map,
     ]
 
     if deg_records:
-        volcano_fig = _build_volcano_fig(deg_records, cluster_id)
+        volcano_fig = _build_volcano_fig(
+            deg_records, cluster_id,
+            fc_thresh=display.get("volcano_fc"),
+            p_thresh=display.get("volcano_p"))
         cluster_key = str(cluster_id)
         children.extend([
             dbc.Button(
@@ -1379,8 +1417,18 @@ def _build_top_markers_table(deg_records, top_n=5):
     )
 
 
-def _build_volcano_fig(deg_records, cluster_id):
-    """シンプルな Volcano Plot（このクラスタ分のみ）"""
+def _build_volcano_fig(deg_records, cluster_id,
+                       fc_thresh=None, p_thresh=None):
+    """シンプルな Volcano Plot（このクラスタ分のみ）。
+
+    Args:
+        fc_thresh / p_thresh: 利用者が画面で設定した閾値 (ver52.3 ⑥)。
+            None なら宣言された既定。
+
+    ★ 設定 dict をそのまま受けず、**個々の設定を名前付き引数で受ける**。
+      束ねて渡すと、番人 `test_render_path_symmetry` から見て
+      「どの設定が届いているか」が判定できなくなり、
+      引数を 1 つ足しただけで全設定が届いたことにできてしまう。"""
     if not deg_records:
         return None
     df = pd.DataFrame(deg_records)
@@ -1403,8 +1451,14 @@ def _build_volcano_fig(deg_records, cluster_id):
     min_pos = df.loc[df["p_num"] > 0, "p_num"].min() if (df["p_num"] > 0).any() else 5e-324
     df["neg_log10_p"] = -np.log10(df["p_num"].clip(lower=min_pos))
 
-    fc_thresh = 0.5
-    p_thresh = 1.3  # -log10(0.05)
+    # ★ ver52.3 ⑥: ここが 0.5 / 1.3 の直書きだった。利用者が閾値を変えて
+    #   Lite のリンクを配ると、**受け取った側には既定値の Volcano が出る**。
+    #   破線の位置も凡例の Up/Down 判定も既定のままで、画面と資料は正しいので
+    #   送った側は気づけない。ver51.9 B-2 で PPTX だけ直した取りこぼし。
+    if fc_thresh is None:
+        fc_thresh = DISPLAY_DEFAULTS["volcano_fc"]
+    if p_thresh is None:
+        p_thresh = DISPLAY_DEFAULTS["volcano_p"]
 
     df["category"] = "NS"
     df.loc[
@@ -1475,9 +1529,18 @@ def _build_volcano_fig(deg_records, cluster_id):
     return fig
 
 
-def _build_heatmap_section(deg_records, top_n_per_cluster=3,
+def _build_heatmap_section(deg_records, top_n_per_cluster=None,
                             cluster_name_map=None):
-    """全クラスタ × 各クラスタ Top N markers の Z-score ヒートマップ"""
+    """全クラスタ × 各クラスタ Top N markers のヒートマップ。
+
+    ★ ver52.3 ⑥: 既定を 3 で直書きしていたので、**画面の既定 5 とも
+      利用者の設定とも**食い違っていた。既定は宣言 1 箇所から引く。
+    ★ 表題の「Z-score」は誤りだったので外した。ここが描くのは
+      **DEG 表の avg_log2FC を pivot したもの**で、Z-score 変換はしていない
+      （画面 / PPTX は expression_matrix.parquet を読む別のデータ）。
+    """
+    if top_n_per_cluster is None:
+        top_n_per_cluster = DISPLAY_DEFAULTS["heatmap_top_n"]
     if not deg_records:
         return html.Div(
             className="heatmap-section mb-5",

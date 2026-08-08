@@ -91,6 +91,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
+from app.utils.validation import coerce_count, coerce_number
 
 # LRU 設定 (環境変数で調整可、デフォルトは 8 件 / 30 分)
 _MAX_PROJECT_STATES = int(os.environ.get("MAX_PROJECT_STATES", 8))
@@ -921,7 +922,7 @@ def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
                     elif ref and str(ref).strip():
                         ref_only_mz.append(float(ref))
 
-                mp = int(cal_min_peaks or 2)
+                mp = int(coerce_count(cal_min_peaks, "calibration_min_peaks"))
                 reg_mode = cal_regression_mode or "linear"
                 cal_result = None
 
@@ -936,7 +937,7 @@ def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
                     except Exception:
                         expr_path = None
                     if expr_path and expr_path.exists():
-                        sw = float(cal_search_window or 0.5)
+                        sw = float(coerce_number(cal_search_window, "calibration_search_window"))
                         # ver51.5: 参照窓内の列だけ読む。ここは**プロジェクト
                         # 読み込みの本経路**で、従来は列指定なしの全読み
                         # (実データで 1 回 2.32GB) だった。
@@ -952,7 +953,7 @@ def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
                             )
 
                 if cal_result and cal_result.get("calibrated"):
-                    tol = float(tolerance_mz or 0.1)
+                    tol = float(coerce_number(tolerance_mz, "tolerance_mz"))
                     deg_data = _reannotate_with_calibration(
                         deg_data, cal_result["corrected_mz_map"],
                         mrm_path, tolerance=tol,
@@ -1082,8 +1083,11 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
             f"{meta.get('n_clusters', '?')} clusters, "
             f"samples: {', '.join(meta.get('samples', []))}"
         )
-        if calib_warning:
-            info_text = info_text + " " + calib_warning
+        # ★ ver52.3 ④: 注記は **info_text を組み立てた後** にも増えうる
+        #   （アノテーション対応表の構築はこの下）。ここで文字列に焼くと、
+        #   後から足した注記が黙って消える。注記は 1 つのリストに集めて、
+        #   全部出そろってから最後に連結する。
+        info_notes = [calib_warning] if calib_warning else []
 
         # クラスタ選択肢
         clusters = sorted(_interactive_data["plot_data"]["Cluster"].unique(), key=_cluster_sort_key)
@@ -1108,16 +1112,38 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
             }
         else:
             try:
-                _interactive_data["annotation_map"] = _build_feature_annotation_map(
+                ann_map, n_unreadable = _build_feature_annotation_map(
                     state["features_list"],
                     annotation_csv_path=annotation_csv or "",
                     ion_mode=ion_mode or "Positive",
                     adduct_patterns=adduct_filter,
-                    tolerance=float(tolerance_mz or 0.01),
+                    tolerance=float(coerce_number(tolerance_mz, "tolerance_mz")),
                     deg_data=deg_data,
+                    return_skipped=True,
                 )
-            except Exception:
+                _interactive_data["annotation_map"] = ann_map
+                # ★ ver52.3 ④: 読めなかった質量セルを **読み込み時点で** 出す。
+                #   ここで落ちた化合物名は backfill_annotations 経由で
+                #   PPTX / export にも欠けたまま出るので、再アノテーション画面を
+                #   一度も開かない利用者には気づく機会が無かった。
+                #   既存の `_calib_warning`（読み込み完了行に連結される）に載せる
+                #   ——新しい Output を足すと、同じ役割の通知経路が 2 本になる。
+                if n_unreadable:
+                    info_notes.append(
+                        f"（注: アノテーション CSV の質量セル {n_unreadable} 件を"
+                        "数値として読めず、その化合物は注釈されていません）")
+            except Exception as e:
+                # ★ ver52.3 ④: 従来はここが**完全に無言**だった。
+                #   注釈が 1 件も付かないまま「読み込み完了」と出るので、
+                #   利用者は「この装置データには化合物名が無い」と読む。
+                #   実際この except は、本スライスで戻り値の形を変えたときの
+                #   アンパック失敗まで飲み込んでいた（テストが検出）。
+                #   fail-soft は維持しつつ、起きたことは必ず残す。
+                logger.warning("アノテーション対応表の構築に失敗しました: %s", e)
                 _interactive_data["annotation_map"] = {}
+                info_notes.append(
+                    "（注: アノテーション対応表を構築できませんでした。"
+                    "化合物名は表示されません）")
 
         # DEG レコードの空 annotation を annotation_map から補完しておくと、
         # Volcano/Heatmap/クラスタTop5/マーカー表/PPTX が化合物名を一括参照できる。
@@ -1166,8 +1192,8 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
             r_adduct = int_cal.get("adduct_filter",
                                    adduct_filter or DEFAULT_ADDUCT_POSITIVE)
             r_mrm = int_cal.get("mrm_path", mrm_path or "")
-            r_sw = int_cal.get("search_window", cal_search_window or 0.5)
-            r_mp = int_cal.get("min_peaks", cal_min_peaks or 2)
+            r_sw = int_cal.get("search_window", coerce_number(cal_search_window, "calibration_search_window"))
+            r_mp = int_cal.get("min_peaks", coerce_count(cal_min_peaks, "calibration_min_peaks"))
             r_reg = int_cal.get("regression_mode", cal_regression_mode or "poly3")
         else:
             # フォールバック: 解析設定タブの値
@@ -1177,8 +1203,8 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
             r_matrix = cal_matrix or "DHB"
             r_adduct = adduct_filter or DEFAULT_ADDUCT_POSITIVE
             r_mrm = mrm_path or ""
-            r_sw = cal_search_window or 0.5
-            r_mp = cal_min_peaks or 2
+            r_sw = coerce_number(cal_search_window, "calibration_search_window")
+            r_mp = coerce_count(cal_min_peaks, "calibration_min_peaks")
             r_reg = cal_regression_mode or "poly3"
 
         # ms_instrument をサブプロジェクトから取得
@@ -1198,6 +1224,10 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
             ensure_sub_project_data_folder(project_id, sub_project_id, result_folder, r_instrument)
         except Exception:
             pass
+
+        # ★ ver52.3 ④: 集めた注記をここで初めて連結する（上の info_notes 参照）。
+        if info_notes:
+            info_text = info_text + " " + " ".join(info_notes)
 
         return (
             info_text,

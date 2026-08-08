@@ -303,18 +303,24 @@ class TestErrorContract:
 
         利用者にとって意味が全く違う。前者は指定ミス（直せる）、
         後者は生物学的な結果（直しようがない）。
+
+        ★ ver52.1: このテストは元々 **私の誤った設計判断を固定していた**。
+          「一部だけ存在しない場合は指定ミスを優先しない」と書いて
+          `["1","999"]` → NO_MARKERS を正解にしていたが、それでは
+          999 が存在しないことを誰にも伝えられない。判断ごと改めた。
         """
         available = {"0", "1", "2"}
-        # 結果があるなら理由コードは要らない
+        # 結果があるなら注意書きは要らない
         assert g.marker_outcome([{"gene": "a"}], ["1"], available) is None
-        # ★ 存在しないクラスタを指定した → 指定ミス
-        assert g.marker_outcome([], ["999"], available) == "CLUSTER_NOT_FOUND"
-        # ★ クラスタは在るが 0 件（direction で絞った等）→ 本当に無い
-        assert g.marker_outcome([], ["1"], available) == "NO_MARKERS"
-        # 一部だけ存在しない場合は「無い」ではなく指定ミスを優先しない
-        assert g.marker_outcome([], ["1", "999"], available) == "NO_MARKERS"
+        # 全部存在しない → 指定ミス
+        assert g.marker_outcome([], ["999"], available)["code"] == "CLUSTER_NOT_FOUND"
+        # クラスタは在るが 0 件（direction で絞った等）→ 本当に無い
+        assert g.marker_outcome([], ["1"], available)["code"] == "NO_MARKERS"
+        # ★ 一部だけ存在しない → 部分的であることを必ず伝える
+        part = g.marker_outcome([], ["1", "999"], available)
+        assert part["code"] == "PARTIAL_CLUSTERS" and part["missing_clusters"] == ["999"]
         # クラスタ未指定で 0 件 → DEG 自体が空
-        assert g.marker_outcome([], None, available) == "NO_MARKERS"
+        assert g.marker_outcome([], None, available)["code"] == "NO_MARKERS"
 
 
 # ---------------------------------------------------------------------------
@@ -575,3 +581,320 @@ class TestHandlersAreWired:
         assert r.status_code == 200
         assert len(_json.dumps(r.get_json(), ensure_ascii=False)) \
             <= g.MAX_RESPONSE_CHARS
+
+
+# ===========================================================================
+# ver52.1 — 外部監査が ver52.0 に見つけた境界の残り
+# ===========================================================================
+# ★ どれも ver52.0 で私が **半端に直した**結果。`top` は直したのに `limit` を
+#   直していない、`_markers` は検証するのに `_compounds` /
+#   `_export_interactive` は素通り、という形になっていた。
+#   監査の gpt_api_boundary_reproduction.csv の 9 行をそのままケースにする。
+
+
+class TestMissingClustersAreReported:
+    """★ API-01/02: 一部だけ存在しないクラスタを黙って無視しない。
+
+    `cluster=1,999` で 1 が実在すれば、999 は
+      - shaped が空でない → `code` すら付かず成功扱い
+      - shaped が空       → NO_MARKERS（「クラスタは存在します」と断言）
+    となり、**利用者が問い合わせた 999 について何も言わない**。
+    GPT は「999 にはマーカーが無い」と要約するが、実際には存在しない。
+
+    ★ ver52.0 で私は「一部でも実在するなら NO_MARKERS が正しい」と
+      コメントに書き、**その誤った設計判断ごとテストに固定した**。
+      判断が誤りだったのでテストも直す。
+    """
+
+    AVAIL = {"0", "1", "2"}
+
+    def test_partial_miss_is_reported_even_when_data_exists(self):
+        out = g.marker_outcome([{"gene": "a"}], ["1", "999"], self.AVAIL)
+        assert out is not None, (
+            "データが返るときも欠けたクラスタを通知していない。"
+            "利用者は 999 も確認済みだと誤解する")
+        assert out["missing_clusters"] == ["999"], out
+        assert out["partial"] is True, out
+
+    def test_partial_miss_is_reported_when_empty(self):
+        out = g.marker_outcome([], ["1", "999"], self.AVAIL)
+        assert out["missing_clusters"] == ["999"], out
+
+    def test_all_missing_is_cluster_not_found(self):
+        out = g.marker_outcome([], ["998", "999"], self.AVAIL)
+        assert out["code"] == "CLUSTER_NOT_FOUND", out
+        assert out["missing_clusters"] == ["998", "999"], out
+
+    def test_no_markers_when_all_requested_exist(self):
+        """★ 過剰修正の番人: 全部実在して 0 件なら「本当に無い」。"""
+        out = g.marker_outcome([], ["1"], self.AVAIL)
+        assert out["code"] == "NO_MARKERS", out
+        assert not out.get("missing_clusters"), out
+
+    def test_nothing_reported_on_the_clean_path(self):
+        """★ 過剰修正の番人: 何も問題が無ければ余計なキーを足さない。"""
+        assert g.marker_outcome([{"gene": "a"}], ["1"], self.AVAIL) is None
+
+    def test_all_clusters_requested_is_untouched(self):
+        assert g.marker_outcome([{"gene": "a"}], None, self.AVAIL) is None
+        assert g.marker_outcome([], None, self.AVAIL)["code"] == "NO_MARKERS"
+
+
+class TestNumericQueryValidation:
+    """★ API-03/04/05: 数値クエリを黙って既定へ差し替えない。"""
+
+    def test_limit_zero_is_rejected(self):
+        """★ `top=0` と同じ穴を `limit` に残していた。"""
+        val, err = g.parse_limit("0")
+        assert err is not None, "limit=0 が通っている（従来は無制限だった）"
+        assert err.status == 422 and err.code == "INVALID_LIMIT"
+
+    def test_limit_defaults_and_bounds(self):
+        assert g.parse_limit(None)[0] == 50
+        assert g.parse_limit("200")[0] == 200
+        assert g.parse_limit("201")[1] is not None
+        assert g.parse_limit("-5")[1] is not None
+        assert g.parse_limit("abc")[1] is not None
+
+    def test_mz_must_be_finite(self):
+        """★ 監査より悪い: `float('nan')` は例外を出さない。
+
+        実測では `mz=nan` が `abs(x-nan) > tol` → `nan > tol` → False で
+        **全件を絞り込み素通りさせ、「m/z 検索の結果」として返っていた**。
+        """
+        for bad in ("nan", "inf", "-inf", "NaN", "Infinity"):
+            val, err = g.parse_mz(bad)
+            assert err is not None, f"mz={bad!r} が通っている"
+            assert err.code == "INVALID_MZ"
+
+    def test_mz_rejects_non_numeric_instead_of_dropping_the_filter(self):
+        """★ 従来は None にして **m/z 絞り込み自体を消して**いた。"""
+        val, err = g.parse_mz("abc")
+        assert err is not None and err.status == 422
+
+    def test_mz_omitted_means_no_filter(self):
+        """過剰修正の番人: 省略は従来どおり「m/z 指定なし」。"""
+        assert g.parse_mz(None) == (None, None)
+        assert g.parse_mz("") == (None, None)
+
+    def test_tol_must_be_positive(self):
+        """★ 負の tol は「成功した空結果」になり、真の該当なしと区別できない。"""
+        for bad in ("-0.1", "0", "nan", "inf"):
+            val, err = g.parse_tol(bad)
+            assert err is not None, f"tol={bad!r} が通っている"
+            assert err.code == "INVALID_TOL"
+
+    def test_tol_default_and_valid(self):
+        assert g.parse_tol(None)[0] == 0.01
+        assert g.parse_tol("0.5")[0] == 0.5
+
+    def test_filter_compounds_no_longer_treats_zero_as_unlimited(self):
+        recs = [{"feature": str(m), "compound": f"C{i}", "mz": float(m)}
+                for i, m in enumerate((100, 200, 300, 400, 500))]
+        assert len(g.filter_compounds(recs, limit=0)) == 0, \
+            "limit=0 がまだ無制限になっている"
+        assert len(g.filter_compounds(recs, limit=2)) == 2
+        assert len(g.filter_compounds(recs)) == 5     # 既定 50
+
+
+class TestExportContract:
+    """★ API-06/07: 指定と違うものを黙って作らない。"""
+
+    def test_invalid_format_is_rejected(self):
+        val, err = g.parse_export_format("tsv")
+        assert err is not None and err.code == "INVALID_FORMAT"
+        assert err.status == 422
+
+    def test_valid_formats_pass_and_default_is_parquet(self):
+        assert g.parse_export_format(None)[0] == "parquet"
+        for fmt in g._EXPORT_FORMATS:
+            assert g.parse_export_format(fmt)[0] == fmt
+        assert g.parse_export_format(" CSV ")[0] == "csv"
+
+    def test_unavailable_methods_are_rejected_not_expanded(self):
+        """★ 従来は指定が全部無効だと **全手法** に膨らんでいた。"""
+        sel, err = g.resolve_export_methods("PCA", {"Harmony": "/h", "RPCA": "/r"})
+        assert err is not None, "無効な methods が通っている"
+        assert err.code == "METHOD_NOT_AVAILABLE"
+        assert err.detail["available_methods"] == ["Harmony", "RPCA"]
+
+    def test_case_is_folded_like_resolve_method(self):
+        """★ ver52.0 で私が作った不整合。
+
+        `resolve_method` は大小文字を吸収するのに、export 経路だけ完全一致
+        だったため `methods=harmony` が「無効」→ 全手法に膨らんでいた。
+        """
+        sel, err = g.resolve_export_methods("harmony", {"Harmony": "/h"})
+        assert err is None and sel == ["Harmony"], (sel, err)
+
+    def test_omitted_means_all_methods(self):
+        """過剰修正の番人: 省略は従来どおり全手法。"""
+        sel, err = g.resolve_export_methods(None, {"Harmony": "/h", "RPCA": "/r"})
+        assert err is None and sel is None
+
+    def test_partial_valid_is_rejected_too(self):
+        """一部だけ有効でも、指定外を混ぜて出さない。"""
+        sel, err = g.resolve_export_methods("Harmony,PCA", {"Harmony": "/h"})
+        assert err is not None and err.code == "METHOD_NOT_AVAILABLE"
+
+
+class TestDownloadUrlIsHonest:
+    """★ API-08: Action が取得できない URL を「取得してください」と言わない。"""
+
+    def test_spec_summary_does_not_promise_download(self):
+        spec = g.build_openapi_spec("https://x")
+        blob = json.dumps(spec, ensure_ascii=False)
+        assert "download_url を返す" not in blob, (
+            "Action が呼べない download_url の取得を仕様書が示唆している")
+
+    def test_openapi_declares_the_tightened_params(self):
+        spec = g.build_openapi_spec("https://x")
+
+        def _param(path, name, method="get"):
+            op = spec["paths"][path][method]
+            return next((p for p in op["parameters"] if p["name"] == name), None)
+
+        cpath = "/api/gpt/projects/{pid}/sub/{sid}/compounds"
+        lim = _param(cpath, "limit")
+        assert lim["schema"].get("default") == 50, lim
+        assert lim["schema"].get("minimum") == 1, lim
+        assert lim["schema"].get("maximum") == 200, lim
+        tol = _param(cpath, "tol")
+        assert tol["schema"].get("default") == 0.01, tol
+        assert tol["schema"].get("exclusiveMinimum") == 0, tol
+
+        epath = "/api/gpt/projects/{pid}/sub/{sid}/exports/interactive"
+        fmt = _param(epath, "format", "post")
+        assert set(fmt["schema"]["enum"]) == set(g._EXPORT_FORMATS), fmt
+
+
+# ===========================================================================
+# ver52.3 ④: direction 指定で読めない avg_log2FC が両方向から消える
+# ===========================================================================
+# `_fc` は読めない値も NaN も 0.0 に落としていたため、その record は
+# `> 0` にも `< 0` にも入らず **up でも down でも返らなかった**。
+# 件数の報告も無いので、切り詰められた一覧が「上位マーカーの全部」として
+# GPT に渡っていた。入口 (parse_top / parse_limit / parse_direction) を
+# 2 版続けて硬くした同じファイルの中で、絞り込み側だけ見ていなかった。
+
+def _recs_with_unreadable():
+    return [
+        {"cluster": "1", "gene": "mz_100.0", "avg_log2FC": 2.0,
+         "p_val_adj": 1e-5},
+        {"cluster": "1", "gene": "mz_200.0", "avg_log2FC": "n.d.",
+         "p_val_adj": 1e-5},
+        {"cluster": "1", "gene": "mz_300.0", "avg_log2FC": float("nan"),
+         "p_val_adj": 1e-5},
+        {"cluster": "1", "gene": "mz_400.0", "avg_log2FC": -1.5,
+         "p_val_adj": 1e-4},
+    ]
+
+
+class TestUnreadableFoldChangeIsCounted:
+
+    def test_counts_both_unparseable_and_nan(self):
+        from app.services.gpt_api import count_unreadable_fc
+        assert count_unreadable_fc(_recs_with_unreadable()) == 2
+
+    def test_zero_is_readable(self):
+        """★ 0.0 は「変動なし」という正当な値。読めなかったのとは違う。"""
+        from app.services.gpt_api import count_unreadable_fc
+        assert count_unreadable_fc([{"avg_log2FC": 0.0}]) == 0
+
+    # ▼ 以下 2 件は **修正前後で結果が変わらない**（症状そのものの記録）。
+    #   除外する挙動自体は従来どおり正しい。変わったのは「件数を伝えるか」なので、
+    #   直ったことを突くのは上の count_unreadable_fc と下の応答テスト。
+    #   弱いテストを「効いている」と誤解しないよう、ここに明記しておく。
+    def test_symptom_direction_filter_excludes_unreadable(self):
+        from app.services.gpt_api import shape_markers
+        up = shape_markers(_recs_with_unreadable(), cluster="1",
+                           direction="up")
+        down = shape_markers(_recs_with_unreadable(), cluster="1",
+                             direction="down")
+        assert [r["gene"] for r in up] == ["mz_100.0"]
+        assert [r["gene"] for r in down] == ["mz_400.0"]
+
+    def test_symptom_both_directions_together_miss_them(self):
+        """up と down を足しても読めない 2 件は出てこない（＝黙って消える）。"""
+        from app.services.gpt_api import shape_markers
+        recs = _recs_with_unreadable()
+        genes = {r["gene"] for r in shape_markers(recs, cluster="1", direction="up")}
+        genes |= {r["gene"] for r in shape_markers(recs, cluster="1", direction="down")}
+        assert genes == {"mz_100.0", "mz_400.0"}
+
+    def test_direction_both_is_unaffected(self):
+        """★ 過剰修正の番人: direction 未指定は従来どおり全件返すこと。"""
+        from app.services.gpt_api import shape_markers
+        got = shape_markers(_recs_with_unreadable(), cluster="1", direction="both")
+        assert len(got) == 4, f"direction=both で件数が変わっている: {len(got)}"
+
+
+class TestResponseReportsDroppedRecords:
+    """★ 本命: 落とした件数が **実際の HTTP 応答** に載ること。
+
+    純関数だけ直しても応答に出なければ利用者（GPT）には届かない。
+    ver51.8 A-7（ヘルパを作ったのに呼び替え漏れ）と同じ形を避けるため、
+    このファイルの既存の client fixture と同じやり方で応答を見る。
+    """
+
+    @pytest.fixture
+    def client(self, tmp_path, monkeypatch):
+        flask = pytest.importorskip("flask")
+        import pandas as pd
+
+        result_dir = tmp_path / "result"
+        rds_dir = result_dir / "RDS_Files"
+        rds_dir.mkdir(parents=True)
+        p = rds_dir / "seu_harmony.rds"
+        p.write_bytes(b"x")
+        rds_map = {"Harmony": str(p)}
+        d = result_dir / "Harmony"
+        d.mkdir()
+        pd.DataFrame([
+            {"gene": "mz_100.0", "cluster": "1", "avg_log2FC": 2.0,
+             "p_val_adj": 1e-5},
+            {"gene": "mz_200.0", "cluster": "1", "avg_log2FC": "n.d.",
+             "p_val_adj": 1e-5},
+            {"gene": "mz_300.0", "cluster": "1", "avg_log2FC": -1.5,
+             "p_val_adj": 1e-4},
+        ]).to_csv(d / "deg_markers.csv", index=False)
+
+        monkeypatch.setattr(
+            g, "_resolve_sub",
+            lambda pid, sid: {"project": {}, "sub": {},
+                              "result_dir": str(result_dir),
+                              "data_folder": None, "ms_instrument": "TIMS",
+                              "rds_map": rds_map})
+        monkeypatch.setattr(g, "_warm_cache_dir", lambda rds: None)
+
+        app = flask.Flask(__name__)
+        monkeypatch.setattr("app.config.GPT_API_KEY", "k", raising=False)
+        g.register_gpt_api(app)
+        c = app.test_client()
+        c.environ_base["HTTP_X_API_KEY"] = "k"
+        return c
+
+    @staticmethod
+    def _markers(client, **params):
+        from urllib.parse import urlencode
+        r = client.get("/api/gpt/projects/p/sub/s/markers?" + urlencode(params),
+                       headers={"X-API-Key": "k"})
+        assert r.status_code == 200, f"{r.status_code}: {r.data[:200]}"
+        return r.get_json()
+
+    def test_dropped_count_is_in_the_response(self, client):
+        body = self._markers(client, cluster="1", direction="up")
+        assert body.get("dropped_unreadable_log2fc") == 1, (
+            "avg_log2FC を読めない record を除外したのに、応答が件数を伝えていない。"
+            "GPT には切り詰められた一覧が『上位マーカーの全部』として渡る: "
+            f"{ {k: v for k, v in body.items() if k != 'markers'} }")
+
+    def test_message_explains_it(self, client):
+        body = self._markers(client, cluster="1", direction="up")
+        assert "avg_log2FC" in (body.get("message") or ""), \
+            f"説明文が無い: {body.get('message')!r}"
+
+    def test_no_noise_when_everything_is_readable(self, client):
+        """★ 過剰修正の番人: 落とすものが無ければ余計なキーを足さないこと。"""
+        body = self._markers(client, cluster="1", direction="both")
+        assert "dropped_unreadable_log2fc" not in body
