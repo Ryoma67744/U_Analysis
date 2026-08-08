@@ -185,7 +185,19 @@ def _callback_param_to_input_id(fn, dec):
 
 
 def _or_default_violations():
-    """`p = p or <数値>` で p が数値入力に束縛されている箇所を列挙する。"""
+    """`<数値入力の引数> or <数値リテラル>` を **式の形を問わず** 列挙する。
+
+    ★ ver52.3: 当初は `p = p or 5` という **代入の形** だけを見ていた。
+      そのせいで母数 21 件のうち 3 件しか拾えていなかった:
+
+          _top_n = int(label_top_n or 5)     ← 代入先が違い int() に包まれている
+          params["x"] = tolerance or 0.01    ← 代入先が添字
+
+      「0 が既定値に化ける」という型は **or 式そのもの**であって、
+      その結果をどこへ入れるかとは関係ない。形で近似すると別の現れ方を通す
+      （ver51.6 の scipy 番人が `setuptools.backends` を通したのと同じ）。
+      束縛の判定だけ残し、代入の形は問わないようにした。
+    """
     numeric = set(_numeric_input_ids())
     out = []
     for path in sorted(APP.rglob("*.py")):
@@ -198,28 +210,24 @@ def _or_default_violations():
                 continue
             bound = _callback_param_to_input_id(fn, decs[0])
             for node in ast.walk(fn):
-                if not (isinstance(node, ast.Assign)
-                        and len(node.targets) == 1
-                        and isinstance(node.targets[0], ast.Name)
-                        and isinstance(node.value, ast.BoolOp)
-                        and isinstance(node.value.op, ast.Or)
-                        and len(node.value.values) == 2):
+                if not (isinstance(node, ast.BoolOp)
+                        and isinstance(node.op, ast.Or)
+                        and len(node.values) == 2):
                     continue
-                name = node.targets[0].id
-                left, right = node.value.values
-                if not (isinstance(left, ast.Name) and left.id == name):
+                left, right = node.values
+                if not isinstance(left, ast.Name):
                     continue
                 if not (isinstance(right, ast.Constant)
                         and isinstance(right.value, (int, float))
                         and not isinstance(right.value, bool)):
                     continue
-                if name in COSMETIC_OR_DEFAULTS:
+                if left.id in COSMETIC_OR_DEFAULTS:
                     continue
-                cid = bound.get(name)
+                cid = bound.get(left.id)
                 if cid in numeric:
                     out.append((
                         f"{path.relative_to(APP.parent)}:{node.lineno}",
-                        fn.name, name, cid, right.value))
+                        fn.name, left.id, cid, right.value))
     return out
 
 
@@ -362,20 +370,48 @@ class TestZeroIsNotSilentlyReplaced:
     「閾値 0 で全部見たい」が「閾値 0.5 で描画」に変わり、しかも無警告。
     """
 
-    # ★ 実害を確認済みだが ver52.2 では直さない（ver52.3 の対象）。
+    # ★ 母数 21 件すべてを分類する。ver52.3 ⑤ で直す（本コミットでは直さない）。
+    #   検出を式ベースへ広げた結果 3 → 21 になった。従来は代入の形で
+    #   近似していたので 1/7 しか見えていなかった。
     KNOWN = {
+        # --- 重: 0 が正当な入力なのに既定値へ化ける ---
         ("interactive_deg.py", "fc_thresh"):
             "H-2 (重): volcano_fc_threshold に min= が無く 0 を入力できる。"
             "入力欄も赤くならないので、0 が 0.5 に化けたことに気付く手段が無い",
         ("interactive_deg.py", "p_thresh"):
             "H-2 (重): volcano_p_threshold も同様",
-        # ★ この 1 件は本番人が導入時に**新たに見つけた**もの。
-        #   手作業の調査では fc_thresh / p_thresh の 2 件しか拾えていなかった。
+        ("interactive_deg.py", "label_top_n"):
+            "★ 画面と資料が 0 を逆に解釈する。"
+            "interactive_deg.py:1163 は `int(label_top_n or 5)` で 0 → 5 (ラベルが出る)、"
+            "interactive_pptx.py:438 は `max(0, int(...))` で 0 → 0 (ラベルが出ない)。"
+            "レイアウトは min=0 なので 0 は正当な入力（＝ラベル無し）。"
+            "ver51.9 B-2 で PPTX だけ正しくした取りこぼし",
+        # --- 軽: 0 は範囲外だが、欄が赤いまま図/処理は既定値で進む ---
         ("interactive_deg.py", "top_n"):
-            "H-9 (軽): update_heatmap の `top_n = top_n or 5`。"
-            "heatmap_top_n は PARAM_BOUNDS(1,20,5) で検証済みなので 0 だと入力欄が"
-            "赤くなる。ただし図は既定 5 で描かれ続けるため、"
-            "「欄は不正なのに図は出ている」という表示と計算の食い違いが残る",
+            "H-9 (軽): update_heatmap。heatmap_top_n は PARAM_BOUNDS(1,20,5) で"
+            "検証済みなので 0 だと欄が赤くなるが、図は既定 5 で描かれ続ける",
+        ("interactive_pptx.py", "value"):
+            "軽: sync_export_top_n。input_export_top_n は min=1 なので 0 は範囲外。"
+            "ただし 0 を入れると黙って 5 になる",
+        # --- 探索窓・許容差・点数: 0 は物理的に無意味だが、
+        #     「不正な入力を黙って既定値にする」形は同じ ---
+        ("analysis_callbacks.py", "calibration_min_peaks"):
+            "run_analysis。0 は無意味だが黙って 2 になる",
+        ("analysis_callbacks.py", "search_window"):
+            "auto_detect_observed_peaks。0 窓は何も一致しないが黙って 0.5 になる",
+        ("interactive_calibration.py", "search_window"):
+            "auto_detect_int_cal_peaks / auto_save_int_cal / save_int_cal_list",
+        ("interactive_calibration.py", "min_peaks"):
+            "auto_save_int_cal / save_int_cal_list",
+        ("interactive_calibration.py", "tolerance"):
+            "execute_reannotation。0 許容差は完全一致しか通さない",
+        ("interactive_callbacks.py", "cal_min_peaks"):
+            "load_stage_c_deg / load_stage_d_finish",
+        ("interactive_callbacks.py", "cal_search_window"):
+            "load_stage_c_deg / load_stage_d_finish",
+        ("interactive_callbacks.py", "tolerance_mz"):
+            "load_stage_c_deg (既定 0.1) / load_stage_d_finish (既定 0.01)。"
+            "★ 同じ入力に対し既定値が 2 種類ある点も要確認",
     }
 
     def _key(self, loc, param):
