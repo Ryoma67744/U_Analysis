@@ -90,14 +90,16 @@ KNOWN_UNBOUNDED = {
 }
 
 # ★ `PARAM_BOUNDS` にあるのに画面の id と一致しない定義（＝一度も効いていない）。
-#   `validation.py` のコメントは「将来の再解析UIで使用」だが、その UI は既に在り、
-#   id が `*_input` なので**繋がらないまま**になっている。
-KNOWN_DEAD_BOUNDS = {
-    "umap_n_neighbors": "実際の画面 id は umap_n_neighbors_input",
-    "umap_min_dist": "実際の画面 id は umap_min_dist_input",
-    "pca_dims": "実際の画面 id は umap_dims_input",
-    "perplexity": "対応する入力が画面に存在しない",
-}
+#   `validate_param` は未知 id を常に ok として通すので、書いても何も起きない。
+#
+#   ver52.3 ② で 4 件すべて解消したので現在は空:
+#     umap_n_neighbors → umap_n_neighbors_input  (既定 15 → 30、上限 なし → 100)
+#     umap_min_dist    → umap_min_dist_input     (既定 0.1 → 0.3)
+#     pca_dims         → umap_dims_input         (範囲 10-100 → 2-50、既定 30)
+#     perplexity       → 削除（対応する入力が画面に無い）
+#   ★ キー名だけでなく範囲・既定値もレイアウトと食い違っていた。名前だけ
+#     直すと今度は正当な入力を弾くので、中身も実際の画面/R に合わせた。
+KNOWN_DEAD_BOUNDS: dict[str, str] = {}
 
 # ★ `x or DEFAULT` のうち、0 に意味が無く既定値で正しいもの（見た目の設定）。
 #   科学的な閾値・件数は**ここに入れてはいけない**。
@@ -130,6 +132,36 @@ def _numeric_input_ids():
                 found[i.value] = f"{path.relative_to(APP.parent)}:{node.lineno}"
             # pattern-matching id ({"type": ..., "index": ...}) は対象外。
             # id が動的なので静的には結線を判定できない。
+    return found
+
+
+def _numeric_input_props():
+    """数値入力の `min` / `max` / `value` のうち **リテラル** を {id: {...}} で返す。
+
+    レイアウトを正とするための材料。定数参照 (`DEFAULT_...`) や
+    `ls.get(...)` はここでは拾えないので比較対象から外れる。
+    """
+    found = {}
+    for path in sorted(APP.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            kw = {k.arg: k.value for k in node.keywords if k.arg}
+            t = kw.get("type")
+            if not (isinstance(t, ast.Constant) and t.value == "number"):
+                continue
+            i = kw.get("id")
+            if not (isinstance(i, ast.Constant) and isinstance(i.value, str)):
+                continue
+            props = {}
+            for prop in ("min", "max", "value"):
+                v = kw.get(prop)
+                if (isinstance(v, ast.Constant)
+                        and isinstance(v.value, (int, float))
+                        and not isinstance(v.value, bool)):
+                    props[prop] = v.value
+            found[i.value] = props
     return found
 
 
@@ -261,6 +293,18 @@ class TestDeclaredBoundsActuallyApply:
             "KNOWN_DEAD_BOUNDS の定義が画面 id と一致するようになった。"
             "登録から外すこと（穴が塞がったのは良いこと）:\n  " + "\n  ".join(revived))
 
+    def test_known_dead_bounds_entries_are_still_declared(self):
+        """★ 登録簿の陳腐化を防ぐ。
+
+        死んだ定義を **キー名ごと直した**場合、旧キーは `PARAM_BOUNDS` から
+        消えるので上の 2 つはどちらも素通りしてしまう（実際に ver52.3 ② で
+        素通りした）。「登録したキーが今も宣言されている」ことを別に見る。
+        """
+        stale = sorted(set(KNOWN_DEAD_BOUNDS) - set(PARAM_BOUNDS))
+        assert not stale, (
+            "KNOWN_DEAD_BOUNDS に、もう PARAM_BOUNDS に無いキーが残っている。"
+            "定義を直した／消したなら登録からも外すこと:\n  " + "\n  ".join(stale))
+
     def test_validated_inputs_all_have_bounds(self):
         """`_VALIDATED_INPUTS` に載せたのに範囲定義が無いと、検証は素通りになる。"""
         missing = sorted(set(_VALIDATED_INPUTS) - set(PARAM_BOUNDS))
@@ -268,6 +312,39 @@ class TestDeclaredBoundsActuallyApply:
             "`_VALIDATED_INPUTS` にあるが `PARAM_BOUNDS` に定義が無い。"
             "`validate_param` が常に ok を返すので検証は効いていない:\n  "
             + "\n  ".join(missing))
+
+    def test_bounds_agree_with_the_layout(self):
+        """★★ レイアウトを正として、`PARAM_BOUNDS` がそれと矛盾しないこと。
+
+        ver52.3 ② で分かったのは、死んだ 4 定義が **キー名だけでなく
+        範囲・既定値もレイアウトと食い違っていた**こと:
+
+            umap_n_neighbors  (2, None, 15)  ↔ 画面 min=2, max=100, value=30
+            umap_min_dist     (0.0, 1.0, 0.1)↔ 画面 value=0.3 (R も PreFlight も 0.3)
+            pca_dims          (10, 100, None)↔ 画面 min=2, max=50, value=30
+
+        キー名だけ直すと、今度は**正当な入力を弾く**検証が動き出す。
+        画面に書いてある境界が唯一の正なので、それとの一致を固定する。
+        """
+        props = _numeric_input_props()
+        bad = []
+        for pid, spec in PARAM_BOUNDS.items():
+            lo, hi, default, _label = spec
+            p = props.get(pid)
+            if not p:
+                continue                      # 画面に無い id は別テストが見る
+            if "min" in p and lo is not None and float(lo) != float(p["min"]):
+                bad.append(f"{pid}: 下限 PARAM_BOUNDS={lo} ↔ 画面 min={p['min']}")
+            if "max" in p and hi is not None and float(hi) != float(p["max"]):
+                bad.append(f"{pid}: 上限 PARAM_BOUNDS={hi} ↔ 画面 max={p['max']}")
+            if ("value" in p and default is not None
+                    and float(default) != float(p["value"])):
+                bad.append(
+                    f"{pid}: 既定 PARAM_BOUNDS={default} ↔ 画面 value={p['value']}")
+        assert not bad, (
+            "`PARAM_BOUNDS` が画面の min/max/value と食い違っている。\n"
+            "検証が正当な入力を弾くか、逆に不正な入力を通す:\n  "
+            + "\n  ".join(bad))
 
     def test_validated_inputs_exist_on_screen(self):
         ids = set(_numeric_input_ids())
@@ -296,7 +373,7 @@ class TestZeroIsNotSilentlyReplaced:
         #   手作業の調査では fc_thresh / p_thresh の 2 件しか拾えていなかった。
         ("interactive_deg.py", "top_n"):
             "H-9 (軽): update_heatmap の `top_n = top_n or 5`。"
-            "heatmap_top_n は PARAM_BOUNDS(1,100,5) で検証済みなので 0 だと入力欄が"
+            "heatmap_top_n は PARAM_BOUNDS(1,20,5) で検証済みなので 0 だと入力欄が"
             "赤くなる。ただし図は既定 5 で描かれ続けるため、"
             "「欄は不正なのに図は出ている」という表示と計算の食い違いが残る",
     }

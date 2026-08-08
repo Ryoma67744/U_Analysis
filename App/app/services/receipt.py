@@ -317,10 +317,15 @@ def finalize_receipt(output_dir, app_version: Optional[str] = None,
     if inputs is None:
         acsv = params.get("annotation_csv") or params.get("annotation_path")
         inputs = [acsv] if acsv else []
-        runtime_scripts = sorted((out / "log").glob("v8_runtime_*.R")) \
-            if (out / "log").is_dir() else []
-        if runtime_scripts:
-            inputs.append(str(runtime_scripts[-1]))
+        # ★ ver52.3: 同じ探索を 2 箇所に持たない。provenance 側の
+        #   `latest_runtime_script` を再利用する（従来はここにも
+        #   `sorted(glob("v8_runtime_*.R"))[-1]` の写しがあり、再解析の
+        #   `cluster_filter_runtime_*.R` を **2 箇所とも** 拾えていなかった）。
+        #   循環 import 回避のためローカル import（既存コードの踏襲）。
+        from app.services.provenance import latest_runtime_script
+        rs = latest_runtime_script(out)
+        if rs:
+            inputs.append(str(rs))
         tmpl = params.get("template_path")
         if tmpl:
             inputs.append(str(tmpl))

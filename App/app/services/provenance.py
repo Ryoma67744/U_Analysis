@@ -179,20 +179,55 @@ def _current_operator() -> Optional[str]:
         return None
 
 
+# 実行スクリプトのファイル名パターン。
+# ★ ver52.3: `analysis_runner` が書きうる名前を **すべて** ここに書く。
+#   従来は `v8_runtime_*.R` しか見ておらず、再解析が書く
+#   `cluster_filter_runtime_*.R` (analysis_runner.py:754) を拾えていなかった。
+#   その結果 **再解析の結果だけ実行スクリプトの証跡が 1 件も付かず**、
+#   Methods の「実際に走った条件」の裏付けが丸ごと欠けていた。
+#   新しい名前を足すときは必ずここへ追加すること
+#   (`tests/test_declared_targets_exist.py` が書き出しとの全数照合をしている)。
+RUNTIME_SCRIPT_GLOBS = (
+    "v8_runtime_*.R",              # 通常解析 (generate_v8_config)
+    "cluster_filter_runtime_*.R",  # 再解析   (generate_cluster_filter_config)
+)
+
+
 def latest_runtime_script(result_dir) -> Optional[Path]:
-    """<result-dir>/log/v8_runtime_*.R のうち最新のものを返す。
+    """<result-dir>/log/ の実行スクリプトのうち **最後に書かれたもの** を返す。
 
     UI の値がすべて定数として焼き込まれた「実際に走ったスクリプト」で、
     サンプル絞り込みや ROI フィルタなど analysis_params.json に無い条件も
     ここには残っている。Methods の裏付けとして最も強い。
+
+    ★ ver52.3: **名前順で選ばない**。パターンが 2 種になったため、
+      `sorted(...)[-1]` だと接頭辞が順序を決めてしまう:
+
+          sorted(['cluster_filter_runtime_20260808_180000.R',
+                  'v8_runtime_20260101_090000.R'])[-1]
+            → 'v8_runtime_20260101_090000.R'   ← 7 か月古いほうが勝つ
+
+      `c` < `v` なので常に通常解析が選ばれ、「新しい再解析の証跡があるのに
+      古い通常解析の条件を Methods に書く」ことになる。これは
+      *証跡が無い*（従来）より悪い *間違った証跡を出す* への格下げなので、
+      **mtime で選ぶ**。ファイル名に埋め込まれた時刻には頼らない
+      （生成時刻とファイル名の時刻がずれても正しく選べるように）。
     """
     if not result_dir:
         return None
     log_dir = Path(result_dir) / "log"
     if not log_dir.is_dir():
         return None
-    cands = sorted(log_dir.glob("v8_runtime_*.R"))
-    return cands[-1] if cands else None
+    cands = [p for pattern in RUNTIME_SCRIPT_GLOBS for p in log_dir.glob(pattern)]
+    best, best_mtime = None, None
+    for p in cands:
+        try:
+            m = p.stat().st_mtime
+        except OSError:
+            continue          # 読めないものは候補から外す（残りから選ぶ）
+        if best_mtime is None or m > best_mtime:
+            best, best_mtime = p, m
+    return best
 
 
 # ---------------------------------------------------------------------------

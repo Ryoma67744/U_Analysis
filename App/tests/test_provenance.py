@@ -203,3 +203,84 @@ def test_latest_runtime_script_picks_newest(tmp_path):
 
 def test_latest_runtime_script_missing_dir(tmp_path):
     assert pv.latest_runtime_script(tmp_path / "nope") is None
+
+
+# ---------------------------------------------------------------------------
+# ver52.3 ②: 再解析の実行スクリプトを証跡として拾う
+# ---------------------------------------------------------------------------
+# 従来は `v8_runtime_*.R` しか見ておらず、再解析が書く
+# `cluster_filter_runtime_*.R` (analysis_runner.py:754) を **収集側 2 箇所とも**
+# 取りこぼしていた。その結果、再解析の結果だけ Methods の
+# 「実際に走った条件」の裏付けが丸ごと欠けていた。
+
+def test_latest_runtime_script_finds_reanalysis_script(tmp_path):
+    """★ 再解析だけが走った結果でも証跡が付くこと（修正前は None）。"""
+    out = tmp_path / "rerun"
+    (out / "log").mkdir(parents=True)
+    (out / "log" / "cluster_filter_runtime_20260808_120000.R").write_text(
+        "x", encoding="utf-8")
+    got = pv.latest_runtime_script(out)
+    assert got is not None, "再解析の実行スクリプトが証跡として拾われていない"
+    assert got.name == "cluster_filter_runtime_20260808_120000.R"
+
+
+def test_latest_runtime_script_prefers_newest_across_prefixes(tmp_path):
+    """★★ 名前順で選ぶ実装だと、古い通常解析が新しい再解析に勝ってしまう。
+
+    `sorted()` は文字列順なので `c` < `v`、つまり `cluster_filter_…` は
+    どれだけ新しくても常に `v8_…` に負ける。これを踏むと
+    「証跡が無い」が「**間違った証跡を出す**」へ格下げされる
+    （＝直そうとした型を新たに作る）。mtime で選べば起きない。
+    """
+    import os
+
+    out = tmp_path / "mixed"
+    (out / "log").mkdir(parents=True)
+    old = out / "log" / "v8_runtime_20260101_090000.R"
+    new = out / "log" / "cluster_filter_runtime_20260808_180000.R"
+    old.write_text("old", encoding="utf-8")
+    new.write_text("new", encoding="utf-8")
+
+    # 名前順では old が最後に来る（= 誤って選ばれる側）
+    assert sorted(p.name for p in (out / "log").iterdir())[-1] == old.name
+
+    # mtime は new のほうが後
+    os.utime(old, (1_700_000_000, 1_700_000_000))
+    os.utime(new, (1_800_000_000, 1_800_000_000))
+
+    got = pv.latest_runtime_script(out)
+    assert got is not None and got.name == new.name, (
+        f"名前順で選んでいる（{got.name if got else None} が選ばれた）。"
+        "接頭辞が順序を決めるので、古い通常解析が新しい再解析に勝ってしまう")
+
+
+def test_receipt_reuses_the_same_resolver(tmp_path):
+    """★ 収集ロジックの写しを 2 つ持たないこと。
+
+    従来は receipt.py にも `sorted(glob("v8_runtime_*.R"))[-1]` の写しがあり、
+    **両方とも**再解析を取りこぼしていた。写しを持つと必ず片方が古くなる。
+    """
+    import ast
+    import inspect
+
+    from app.services import receipt as rc
+
+    src = inspect.getsource(rc)
+    assert "latest_runtime_script" in src, \
+        "receipt が provenance の解決関数を再利用していない"
+
+    # ★ ベタ書きの検出は **AST** で見る。ソースの文字列一致だと
+    #   「なぜ写しを持ってはいけないか」を説明したコメント自身に当たる
+    #   （実際そうなって落ちた）。型を文字列で近似しない。
+    hardcoded = [
+        node.args[0].value
+        for node in ast.walk(ast.parse(src))
+        if (isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "glob"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+            and "runtime" in node.args[0].value)
+    ]
+    assert not hardcoded, f"receipt にベタ書きの glob が残っている: {hardcoded}"

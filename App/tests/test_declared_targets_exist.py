@@ -85,8 +85,22 @@ def _written_runtime_scripts():
     return out
 
 
-def _runtime_script_globs():
-    """実行スクリプトを拾う glob パターンを (パス, 行, パターン) で返す。"""
+def _declared_runtime_globs():
+    """`provenance.RUNTIME_SCRIPT_GLOBS` を唯一の出典として読む。
+
+    ★ ver52.3: パターンは 1 つの名前付き定数に集約した。2 箇所に写しを
+      置くと片方だけ更新される（実際、収集側は provenance と receipt の
+      2 箇所とも `v8_runtime_*.R` のままだった）。
+    """
+    from app.services.provenance import RUNTIME_SCRIPT_GLOBS
+    return list(RUNTIME_SCRIPT_GLOBS)
+
+
+def _hardcoded_runtime_globs():
+    """定数を使わずベタ書きされた実行スクリプトの glob を (パス, 行, 値) で返す。
+
+    ★ 集約した意味を保つための検査。新しい写しが増えたらここで落ちる。
+    """
     out = []
     for rel, tree in _trees():
         for node in ast.walk(tree):
@@ -101,19 +115,12 @@ def _runtime_script_globs():
     return out
 
 
-# ★ 収集されないと分かっているが ver52.2 では直さない（ver52.3 の対象）。
-#   ver52.2 は「番人だけを入れて母数を測る版」。
-KNOWN_UNCOLLECTED = {
-    "cluster_filter_runtime_*.R": (
-        "再解析 (analysis_runner.py:754) が書くファイル名。"
-        "収集側は provenance.py:194 と receipt.py:320 の **2 箇所とも** "
-        "`v8_runtime_*.R` しか見ないので、再解析の結果には実行スクリプトの"
-        "証跡が 1 件も付かない。"
-        "★ 「黙って間違った値を報告する」ではなく「値を報告できない」。"
-        "  `recover_conditions` は復元値に `_sources=runtime_script` の印を付け、"
-        "  Methods は 黒(記録済)/青(復元)/赤(未記録) で塗り分けるので、"
-        "  証跡が無ければ赤になる。誤報ではないぶん 1 段軽い"),
-}
+# ★ 収集されない書き出しが在るなら、理由付きでここに登録する。
+#   ver52.3 ② で `cluster_filter_runtime_*.R` を解消したので現在は空。
+#   （再解析の結果に実行スクリプトの証跡が 1 件も付いていなかった。
+#    収集側は provenance と receipt の 2 箇所とも `v8_runtime_*.R` しか
+#    見ておらず、**両方とも**取りこぼしていた。）
+KNOWN_UNCOLLECTED: dict[str, str] = {}
 
 
 class TestRuntimeScriptEvidenceIsComplete:
@@ -125,30 +132,61 @@ class TestRuntimeScriptEvidenceIsComplete:
     """
 
     def test_the_guard_is_not_inert(self):
-        written = _written_runtime_scripts()
-        globs = _runtime_script_globs()
-        assert written, "analysis_runner が書く実行スクリプト名を拾えない"
-        assert globs, "実行スクリプトを拾う glob が見つからない"
+        assert _written_runtime_scripts(), \
+            "analysis_runner が書く実行スクリプト名を拾えない"
+        assert _declared_runtime_globs(), \
+            "provenance.RUNTIME_SCRIPT_GLOBS が空。収集側の宣言が消えている"
 
     @staticmethod
     def _uncollected():
-        globs = _runtime_script_globs()
+        globs = _declared_runtime_globs()
         out = set()
         for pat in _written_runtime_scripts():
             sample = pat.replace("*", "20260808_120000")
-            if not any(fnmatch.fnmatch(sample, g) for _f, _l, g in globs):
+            if not any(fnmatch.fnmatch(sample, g) for g in globs):
                 out.add(pat)
         return out
 
     def test_every_written_script_is_collected_by_some_glob(self):
         written = _written_runtime_scripts()
-        globs = sorted({g for _f, _l, g in _runtime_script_globs()})
+        globs = _declared_runtime_globs()
         new = sorted(self._uncollected() - set(KNOWN_UNCOLLECTED))
         assert not new, (
             "書き出しているのに証跡として収集されない実行スクリプトが**新たに**増えた。\n"
-            "その解析の Methods は「実際に走った条件」の裏付けを持てない:\n  "
+            "その解析の Methods は「実際に走った条件」の裏付けを持てない。\n"
+            "`provenance.RUNTIME_SCRIPT_GLOBS` に追加すること:\n  "
             + "\n  ".join(f"{written[p]}  {p}" for p in new)
-            + f"\n  収集側の glob: {', '.join(globs)}")
+            + f"\n  現在の宣言: {', '.join(globs)}")
+
+    def test_nobody_hardcodes_a_runtime_glob(self):
+        """★ パターンが 1 つの定数に集約されたままであること。
+
+        ver52.3 以前は provenance と receipt の **2 箇所**に
+        `glob("v8_runtime_*.R")` の写しがあり、**両方とも**再解析の
+        ファイル名を取りこぼしていた。写しが増えれば必ず片方が古くなる。
+        """
+        bad = _hardcoded_runtime_globs()
+        assert not bad, (
+            "実行スクリプトの glob をベタ書きしている箇所がある。"
+            "`provenance.RUNTIME_SCRIPT_GLOBS` を使うこと"
+            "（写しを持つと片方だけ更新される）:\n  "
+            + "\n  ".join(f"{f}:{ln}  glob({g!r})" for f, ln, g in bad))
+
+    def test_selection_is_by_mtime_not_by_name(self):
+        """★★ 名前順で選ぶと、古い通常解析が新しい再解析に勝ってしまう。
+
+        接頭辞が 2 種類になったので `sorted(...)[-1]` は時刻順にならない
+        （`c` < `v` なので `cluster_filter_…` は常に負ける）。
+        これを踏むと「証跡が無い」が「間違った証跡を出す」に格下げされる。
+        """
+        import inspect
+        from app.services import provenance as prov
+        src = inspect.getsource(prov.latest_runtime_script)
+        assert "st_mtime" in src, (
+            "`latest_runtime_script` が mtime で選んでいない。"
+            "名前順だと接頭辞が順序を決めてしまう")
+        assert "sorted(" not in src or "st_mtime" in src, \
+            "名前順の選択が残っている"
 
     def test_known_uncollected_does_not_shrink_silently(self):
         """★ 直ったら登録から外させる（記録が次の欠陥を隠す棚にならないように）。"""
@@ -165,15 +203,13 @@ class TestRuntimeScriptEvidenceIsComplete:
             "登録から外すこと:\n  " + "\n  ".join(gone))
 
     def test_every_glob_matches_something_we_write(self):
-        """逆向き: 誰も書かないファイルを探し続けている glob が無いこと。"""
+        """逆向き: 誰も書かないファイルを探し続けている宣言が無いこと。"""
         written = _written_runtime_scripts()
-        dead = []
-        for f, ln, g in _runtime_script_globs():
-            if not any(fnmatch.fnmatch(p.replace("*", "X"), g)
-                       for p in written):
-                dead.append(f"{f}:{ln}  glob({g!r})")
+        dead = [g for g in _declared_runtime_globs()
+                if not any(fnmatch.fnmatch(p.replace("*", "X"), g)
+                           for p in written)]
         assert not dead, (
-            "どの書き出しにも一致しない glob がある。"
+            "どの書き出しにも一致しない宣言が `RUNTIME_SCRIPT_GLOBS` にある。"
             "ファイル名を変えたときに収集側を直し忘れた可能性:\n  "
             + "\n  ".join(dead))
 

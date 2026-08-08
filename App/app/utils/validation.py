@@ -14,18 +14,34 @@ PARAM_BOUNDS = {
     "volcano_fc_threshold": (0.0, None, 0.5, "FC 閾値"),
     "volcano_p_threshold": (0.0, None, 1.3, "-log10(p) 閾値"),
     "volcano_y_max": (0.0, None, None, "Y軸上限"),
-    "heatmap_top_n": (1, 100, 5, "Top N"),
+    # ★ ver52.3: 上限が画面 (interactive_tab.py:1658 の max=20) と食い違って
+    #   100 になっていた。検証が画面より緩いので、21〜100 を入れても欄は
+    #   赤くならないのに画面の宣言には反する。レイアウトを正として揃えた。
+    "heatmap_top_n": (1, 20, 5, "Top N"),
     # アプリ内 DE（選択DE）表示閾値
     "onthefly_de_fc": (0.0, None, 0.5, "FC 閾値"),
     "onthefly_de_p": (0.0, None, 1.3, "-log10(p) 閾値"),
     # Feature 強度レンジ (%)
     "feature_intensity_min": (0.0, 100.0, None, "強度 最小値(%)"),
     "feature_intensity_max": (0.0, 100.0, None, "強度 最大値(%)"),
-    # 埋め込み/再解析パラメータ (Loupe 既定参照。将来の再解析UIで使用)
-    "umap_min_dist": (0.0, 1.0, 0.1, "UMAP 最小距離"),
-    "umap_n_neighbors": (2, None, 15, "近傍数"),
-    "perplexity": (1, None, 30, "perplexity"),
-    "pca_dims": (10, 100, None, "主成分数"),
+    # 埋め込みパラメータ (設定タブの「UMAP 条件」)。
+    # ★ ver52.3: キー名が画面の id と違い、**一度も適用されていなかった**。
+    #   `validate_param` は未知の id を常に ok として通すので、書いたのに
+    #   何も起きず、エラーも出ない（監査 R-01 と同じ「宣言した対象が実在しない」型）。
+    #     旧 "umap_min_dist"     → 実 id "umap_min_dist_input"
+    #     旧 "umap_n_neighbors"  → 実 id "umap_n_neighbors_input"
+    #     旧 "pca_dims"          → 実 id "umap_dims_input"
+    #     旧 "perplexity"        → 対応する入力が画面に無いので削除
+    #
+    #   ★ 範囲も既定値もレイアウト（および R テンプレ）と食い違っていたので、
+    #     キー名だけ直すと今度は正当な入力を弾く。中身も実際に合わせた:
+    #       min_dist    旧既定 0.1  → 0.3   (settings_tab:1014 / R の UMAP_MIN_DIST)
+    #       n_neighbors 旧既定 15   → 30    (settings_tab:1004 / R の UMAP_N_NEIGHBORS <- 30L)
+    #                   旧上限 なし → 100   (settings_tab:1004 の max)
+    #       dims        旧範囲 10-100 → 2-50 (settings_tab:1035。lo=10 の根拠は無かった)
+    "umap_min_dist_input": (0.0, 1.0, 0.3, "UMAP 最小距離"),
+    "umap_n_neighbors_input": (2, 100, 30, "近傍数"),
+    "umap_dims_input": (2, 50, 30, "次元数"),
 }
 
 
