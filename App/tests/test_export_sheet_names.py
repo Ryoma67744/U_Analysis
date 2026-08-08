@@ -209,4 +209,14 @@ class TestDesiExportDoesNotMixSamples:
         import io
         data, _ = _export_desi(str(folder), lookups)
         wb = openpyxl.load_workbook(io.BytesIO(data))
-        assert len(wb.sheetnames) == 2, wb.sheetnames
+        # ★ ver52.5: 検査対象は「両方のサンプルがシートとして出ること」。
+        #   従来は `len(sheetnames) == 2` と書いていたが、これは総数を
+        #   数えているだけで、このテストの名前が言っている性質ではない。
+        #   ver52.5 ③ で「解析のサンプル名と照合できなかったサンプル」を
+        #   Skipped シートに報告するようにしたため総数が 3 になった
+        #   （この lookup には "normal" が無いので、そのシートのクラスタ列は
+        #   全行空になる ——報告されるのが正しい）。
+        data_sheets = [s for s in wb.sheetnames if s not in ("Skipped", "Conditions")]
+        assert len(data_sheets) == 2, wb.sheetnames
+        assert "normal" in data_sheets
+        assert any(s.startswith("run") for s in data_sheets), data_sheets

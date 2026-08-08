@@ -511,6 +511,9 @@ def _export_desi(
             "[DataExport] %s.txt が無いためスキップ "
             "(解析を実行して .txt へ変換してください)", _s)
 
+    # ★ ver52.5: 解析のサンプル名と照合できなかった stem（下のループで集める）。
+    unmatched_stems: list[str] = []
+
     n_files = max(1, len(file_stems))
     buf = io.BytesIO()
     # "Conditions" は最後に必ず 1 枚追加するので、先に予約して奪われないようにする
@@ -534,6 +537,22 @@ def _export_desi(
             rows = [line.rstrip("\r\n").split("\t") for line in raw_lines]
             max_cols = max(len(r) for r in rows)
             matched_sample = _match_sample_name(stem, sample_names)
+            # ★ ver52.5: 一致しないと下の座標引きが丸ごと飛ばされ、
+            #   **そのシートの全行でクラスタ列と領域名列が空**になる。
+            #   従来はどこにも報告されず、出力された Excel は一見完全なので、
+            #   「クラスタに属さない」のか「照合できなかった」のか区別できなかった。
+            #   実測: 大文字小文字違い ('wt_liver_01') や区切り違い
+            #   ('WT-liver-01') で `_match_sample_name` は None を返す。
+            #   ★ 解析サンプルが 1 つも無いときは報告しない。
+            #     「一致しなかった」と言っても情報量が無いうえ、
+            #     既存の番人 (test_no_skipped_sheet_when_nothing_was_skipped) が
+            #     空の lookup で「Skipped シートを出さないこと」を検査している。
+            if matched_sample is None and sample_names:
+                unmatched_stems.append(stem)
+                logger.warning(
+                    "[DataExport] %s は解析のサンプル名と一致しません "
+                    "(クラスタ列は空欄になります): 候補 %s",
+                    stem, sample_names[:5])
 
             output_rows: list[list[str]] = []
 
@@ -613,9 +632,17 @@ def _export_desi(
         for _s in (roi_failed or []):
             _skip_names.append(_s)
             _skip_reasons.append("ROI(領域名)の割当に失敗 — 領域名は空欄")
+        # ★ ver52.5: 解析のサンプル名と照合できなかったシート。
+        #   ROI 失敗と同じく「出力はされたが列が空」なので、同じ表に載せる。
+        for _s in unmatched_stems:
+            _skip_names.append(_s)
+            _skip_reasons.append(
+                "解析のサンプル名と一致せず — クラスタ列・領域名は空欄")
         if _skip_names:
             try:
-                pd.DataFrame({"未出力のサンプル": _skip_names,
+                # 見出しは「未出力」ではなく「注意」。出力はされたが列が空、
+                # という行がここに並ぶようになったため。
+                pd.DataFrame({"サンプル": _skip_names,
                               "理由": _skip_reasons}
                              ).to_excel(writer, sheet_name="Skipped", index=False)
             except Exception:

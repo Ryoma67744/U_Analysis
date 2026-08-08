@@ -54,6 +54,13 @@ _PARQUET_FILE_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
 _PARQUET_FILE_CACHE_MAX = int(os.environ.get("PARQUET_FILE_CACHE_MAX", 4))
 _PARQUET_FILE_LOCK = threading.Lock()
 
+# ver52.5: 「parquet の行順が plot_data と一致するか」の判定結果。
+# 真偽値なので小さいが、判定には 20 万行の CellID 読みが要る。
+# feature 切替のたびに読み直すと ver51.3 で消した固定費が戻るのでメモ化する。
+_ROW_ORDER_CACHE: "OrderedDict[tuple, bool]" = OrderedDict()
+_ROW_ORDER_CACHE_MAX = int(os.environ.get("ROW_ORDER_CACHE_MAX", 8))
+_ROW_ORDER_LOCK = threading.Lock()
+
 # 1 列 = 203k 行 × float64 ≈ 1.6MB。既定 16 枚で約 26MB。
 # ワーカーは 1 プロセスなので (run_app.py:121-127)、ここは素直にプロセス内で持つ。
 _FEATURE_COL_CACHE: "OrderedDict[tuple, pd.Series]" = OrderedDict()
@@ -427,6 +434,68 @@ class SeuratBridge:
                                       errors="coerce").isna().iloc[0]:
             col = col.iloc[1:].reset_index(drop=True)
         return pd.to_numeric(col, errors="coerce")
+
+    @staticmethod
+    def expression_row_order_matches(cache_dir, cell_ids):
+        """expression_matrix.parquet の行順が plot_data と一致するか。
+
+        Returns: True=一致 / False=不一致 / None=判定不能。
+
+        ★ ver52.5: Feature plot は parquet の 1 列を `plot_data` の行順へ
+          **位置で** 代入しており、検査は長さだけだった
+          (`interactive_deg.py` の `df_plot["_expression"] = np.asarray(...)`)。
+          ずれると **全ピクセルに別の場所の強度が出る**ため、症状が
+          「もっともらしい別の画像」になり気づけない。
+
+          同じ parquet には `CellID` 列があり、Heatmap 側は
+          `merge(on="CellID")` で正しく突合している。
+          **照合できる材料があるのに使っていなかった**。
+
+        ★ メモ化するのは **parquet 側の CellID 列** で、キーは
+          `(path, mtime_ns, size)`。feature を切り替えるたびに 20 万行を
+          読み直すと ver51.3 で消した固定費が戻る。
+          ファイルが差し替われば mtime/size が変わって自動失効する。
+
+        ★★ **判定結果そのものをキャッシュしてはいけない。** 最初の実装は
+          `(ファイル署名, 行数)` をキーに結果を持っており、
+          **並びが違うだけで長さが同じ入力に前回の True を返していた**
+          （実測で発覚。まさにこの関数が防ごうとしている「長さだけ見る」を
+          キャッシュ側でやってしまっていた）。比較は毎回行う。
+        """
+        expr_path = Path(cache_dir) / "expression_matrix.parquet"
+        if not expr_path.exists() or cell_ids is None:
+            return None
+        try:
+            key = _parquet_file_sig(expr_path)
+        except OSError:
+            return None
+
+        with _ROW_ORDER_LOCK:
+            cached = _ROW_ORDER_CACHE.get(key)
+            if cached is not None:
+                _ROW_ORDER_CACHE.move_to_end(key)
+
+        if cached is None:
+            names = SeuratBridge._parquet_column_names(expr_path)
+            if names is not None and "CellID" not in names:
+                # 旧い抽出には CellID が無い。従来どおり位置対応に委ねる。
+                logger.debug("expression_matrix に CellID 列が無い: %s", expr_path)
+                return None
+            try:
+                got = _read_parquet_columns(
+                    _get_parquet_handle(expr_path, key), ["CellID"])["CellID"]
+                cached = tuple(map(str, got))
+            except Exception as e:  # noqa: BLE001
+                logger.debug("CellID 照合に失敗（判定不能として続行）: %s", e)
+                return None
+            with _ROW_ORDER_LOCK:
+                _ROW_ORDER_CACHE[key] = cached
+                _ROW_ORDER_CACHE.move_to_end(key)
+                while len(_ROW_ORDER_CACHE) > _ROW_ORDER_CACHE_MAX:
+                    _ROW_ORDER_CACHE.popitem(last=False)
+
+        return len(cached) == len(cell_ids) and all(
+            a == str(b) for a, b in zip(cached, cell_ids))
 
     @staticmethod
     def _parquet_column_names(expr_path: Path):

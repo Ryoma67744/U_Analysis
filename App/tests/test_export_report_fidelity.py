@@ -494,3 +494,95 @@ class TestMergedClusterView:
         assert sorted(seen[0]["Cluster"].unique()) == ["0-a", "0-b", "1"], (
             "資料が元のクラスタリングのまま。画面はマージ統合を表示している: "
             f"{sorted(seen[0]['Cluster'].unique())}")
+
+
+class TestUnmatchedSampleNamesAreVisible:
+    """ver52.5 ③: サンプル名が照合できないと、クラスタ列が無言で全行空欄になった。
+
+    `_match_sample_name` が None を返すと、そのシートの座標引きが丸ごと飛ばされ、
+    **クラスタ列と領域名列が全行空**になる。既存の Skipped 報告は
+    `.txt` が無い場合しか拾わないので、どこにも出なかった。
+
+    出力された Excel は一見完全で、クラスタ列が空なのが
+    「クラスタに属さない」のか「照合できなかった」のか区別できない。
+
+    実測した一致挙動:
+        'WT_liver_01_neg' → 'WT_liver_01'   ✓
+        'wt_liver_01'     → None            ← 大文字小文字の違い
+        'WT-liver-01'     → None            ← 区切り文字の違い
+    """
+
+    @staticmethod
+    def _folder(tmp_path, stem):
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        (tmp_path / f"{stem}.txt").write_text(
+            "name\tx\ty\tv\n" * 5 + f"{stem}_p1\t1.0\t1.0\t1\n", encoding="utf-8")
+        return tmp_path
+
+    @staticmethod
+    def _lookup(sample):
+        """解析側のクラスタ辞書。キーは (sample, round(x,4), round(y,4))。"""
+        from collections import OrderedDict
+        return OrderedDict({"Harmony": {(sample, 1.0, 1.0): "C1"}})
+
+    def _run(self, folder):
+        import io
+
+        import openpyxl
+
+        from app.callbacks.interactive_data_export import _export_desi
+        data, _ = _export_desi(str(folder), self._lookup("WT_liver_01"))
+        return openpyxl.load_workbook(io.BytesIO(data))
+
+    def test_the_matching_case_produces_no_sheet(self):
+        """★ 前提の固定: 一致するときは Skipped シートを出さない。
+
+        ここが落ちるなら、下の検査は「常に出る」で通ってしまう。
+        """
+        pytest.importorskip("openpyxl")
+        import pathlib
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            folder = self._folder(pathlib.Path(d) / "x", "WT_liver_01")
+            wb = self._run(folder)
+            assert "Skipped" not in wb.sheetnames, wb.sheetnames
+
+    @pytest.mark.parametrize("stem", ["wt_liver_01", "WT-liver-01", "Sample_A"])
+    def test_unmatched_stem_is_reported(self, stem):
+        """★ 本丸: 照合できなかったサンプルが資料の中に残ること。"""
+        pytest.importorskip("openpyxl")
+        import pathlib
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            folder = self._folder(pathlib.Path(d) / "x", stem)
+            wb = self._run(folder)
+            assert "Skipped" in wb.sheetnames, (
+                f"{stem} のクラスタ列が全行空になるのに、資料に何も残っていない: "
+                f"{wb.sheetnames}")
+            rows = list(wb["Skipped"].iter_rows(min_row=2, values_only=True))
+            hit = [r for r in rows if stem in str(r[0])]
+            assert hit, rows
+            assert "一致せず" in str(hit[0][1]), (
+                f"理由が「クラスタ列が空になる」と読めない: {hit[0]}")
+
+    def test_no_report_when_there_are_no_analysis_samples(self):
+        """★ 過剰報告の番人: 解析サンプルが 1 つも無いときは報告しない。
+
+        「一致しなかった」と言っても情報量が無い。
+        既存の `test_no_skipped_sheet_when_nothing_was_skipped` も
+        この条件（空の lookup）で Skipped シートが出ないことを検査している。
+        """
+        pytest.importorskip("openpyxl")
+        import io
+        import pathlib
+        import tempfile
+        from collections import OrderedDict
+
+        import openpyxl
+
+        from app.callbacks.interactive_data_export import _export_desi
+        with tempfile.TemporaryDirectory() as d:
+            folder = self._folder(pathlib.Path(d) / "x", "anything")
+            data, _ = _export_desi(str(folder), OrderedDict({"Harmony": {}}))
+            wb = openpyxl.load_workbook(io.BytesIO(data))
+            assert "Skipped" not in wb.sheetnames, wb.sheetnames

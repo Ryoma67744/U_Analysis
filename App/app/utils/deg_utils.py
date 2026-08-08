@@ -165,31 +165,113 @@ def backfill_annotations(deg_data, annotation_map):
 # DEG DataFrame 標準化・読み込み
 # ---------------------------------------------------------------------------
 
+# この関数が **自分で足す** 派生列。入力に同じ名前があっても標準名へは
+# マップしない（画面用であって、解析成果物の一部ではない）。
+#   p_val_adj_raw … 表示用に文字列化する前の数値（Volcano / ソート用）
+#   p_num         … 各所で to_numeric した一時列
+_DERIVED_COLUMNS = {"p_val_adj_raw", "p_num"}
+
+
+def drop_derived_columns(df: "pd.DataFrame") -> "pd.DataFrame":
+    """DEG 表を **ファイルへ書き出す前** に、画面用の派生列を落とす。
+
+    書き出すと次回の読み込みで列名が衝突する
+    （ver52.5 で「保存すると DEG が消える」原因になっていた）。
+
+    ★ 判定は `_DERIVED_COLUMNS` を単一の出典にする。ここに列名を
+      書き写すと、派生列が増えたとき片方だけ直すことになる。
+    """
+    drop = [c for c in df.columns if str(c).lower().strip() in _DERIVED_COLUMNS]
+    return df.drop(columns=drop) if drop else df
+
+
+def _standard_name(cl: str) -> str | None:
+    """小文字化した列名 → 標準名。該当しなければ None。
+
+    ★ 判定順は「厳しいものから」。部分一致 (`in`) を先に置くと、
+      別の意味の列を巻き込む。
+    """
+    if cl in ("gene", "row.names", "x", "...1"):
+        return "gene"
+    if cl == "pct.1":
+        return "pct.1"
+    if cl == "pct.2":
+        return "pct.2"
+    if "avg_log2fc" in cl or "avg_logfc" in cl:
+        return "avg_log2FC"
+    if "p_val_adj" in cl:
+        return "p_val_adj"
+    if "cluster" in cl:
+        return "cluster"
+    return None
+
+
 def standardize_deg_df(df: pd.DataFrame) -> list[dict] | None:
     """DEG DataFrame の列名を標準化し、dict のリストとして返す。
-    CSV / RDS 両方の読み込みから共通で使用する。"""
+    CSV / RDS 両方の読み込みから共通で使用する。
+
+    ★ ver52.5: 列名の判定が部分一致なので、この関数が自分で足す
+      `p_val_adj_raw` が次回の読み込みで `p_val_adj` にもマッチし、
+      **同名の列が 2 本**できていた。`pd.to_numeric` が DataFrame を受け取って
+      TypeError になり、本関数が None を返す → 画面は「DEG が見つかりません」。
+
+      再アノテーションの「markers_annotated.csv を上書き保存」で
+      この列が CSV に書かれるため、**保存した次の読み込みで DEG が丸ごと消える**
+      （マーカー表・Volcano・Heatmap・クラスタ Top5 がすべて空になる）。
+
+      直し方は 2 段構え:
+        (a) ここ（読み側）— 派生列を除外し、標準名の二重割り当てを禁じる。
+            これだけで **既に壊れている手元の CSV も読めるようになる**（復旧経路）
+        (b) 書き側 (`interactive_calibration.execute_reannotation`) —
+            そもそも派生列を CSV に出さない (`drop_derived_columns`)
+    """
     try:
-        # 列名を標準化
+        # 列名を標準化。
+        # ★ 先に来た列が勝つ。同じ標準名に 2 つ目をマップすると
+        #   `df.rename` が重複列を作り、以降の演算が DataFrame 相手になる。
         col_map = {}
+        taken: set[str] = set()
+        # ★ 生の数値列があるなら、丸めた文字列より **そちらを数値の出典にする**。
+        #   往復した CSV の `p_val_adj` は `f"{x:.2e}"` なので
+        #   1.234e-10 が 1.23e-10 に落ちている。
+        raw_p = next((c for c in df.columns
+                      if str(c).lower().strip() == "p_val_adj_raw"), None)
+        if raw_p is not None:
+            # ★ 丸めた側を **先に落とす**。読み飛ばすだけだと元の名前のまま残り、
+            #   rename 後に `p_val_adj` が 2 本になる（最初の実装がこれで、
+            #   下の安全網が発火し、しかも先頭＝丸めた側が採られて精度が落ちた）。
+            drop = [c for c in df.columns
+                    if c != raw_p
+                    and _standard_name(str(c).lower().strip()) == "p_val_adj"]
+            if drop:
+                logger.info(
+                    "p_val_adj_raw を数値の出典に採用し、丸めた列を捨てる: %s", drop)
+                df = df.drop(columns=drop)
+            col_map[raw_p] = "p_val_adj"
+            taken.add("p_val_adj")
+
         for col in df.columns:
-            cl = col.lower().strip()
-            if cl in ("gene", "row.names", "x", "...1"):
-                col_map[col] = "gene"
-            elif "cluster" in cl:
-                col_map[col] = "cluster"
-            elif "avg_log2fc" in cl or "avg_logfc" in cl:
-                col_map[col] = "avg_log2FC"
-            elif "p_val_adj" in cl:
-                col_map[col] = "p_val_adj"
-            elif cl == "pct.1":
-                col_map[col] = "pct.1"
-            elif cl == "pct.2":
-                col_map[col] = "pct.2"
+            cl = str(col).lower().strip()
+            if col in col_map or cl in _DERIVED_COLUMNS:
+                continue
+            std = _standard_name(cl)
+            if std is None or std in taken:
+                continue
+            col_map[col] = std
+            taken.add(std)
 
         df = df.rename(columns=col_map)
         # gene列がない場合、最初の列をgeneとする
         if "gene" not in df.columns and len(df.columns) > 0:
             df = df.rename(columns={df.columns[0]: "gene"})
+
+        # ★ 最後の安全網。ここまでで重複は起きないはずだが、起きたら
+        #   静かに壊れるより先頭を採って記録する（None を返して
+        #   「DEG が見つかりません」になるより、読めるほうが良い）。
+        if df.columns.duplicated().any():
+            dup = sorted(set(df.columns[df.columns.duplicated()]))
+            logger.warning("DEG 表に重複した列名がある。先頭を採用する: %s", dup)
+            df = df.loc[:, ~df.columns.duplicated()]
 
         # 必要な列のみ抽出
         # FUTURE(annot-provenance): 将来「由来表示」を足す場合、この keep に "source" を
@@ -217,6 +299,108 @@ def standardize_deg_df(df: pd.DataFrame) -> list[dict] | None:
     except Exception as e:
         logger.error(f"standardize_deg_df エラー: {e}", exc_info=True)
         return None
+
+
+# ---------------------------------------------------------------------------
+# 注釈の重ね合わせ (ver52.5)
+# ---------------------------------------------------------------------------
+# ★ 問題: DESI テンプレは `analysis_deg_all_markers_*.csv` を出すが、これは
+#   **annotation 列を持たない**。一方アプリの再アノテーションは同じフォルダへ
+#   `markers_annotated.csv` を書く。`_CSV_NAMES` の優先順位では前者が勝つため、
+#   **利用者が保存した化合物名は二度と読まれなかった**（DESI のみ。TIMS は
+#   `markers_annotated.csv` が先に来るので正常）。
+#
+# ★ 優先順位の入れ替えは採らない。それをやると、解析を再実行しても古い
+#   `markers_annotated.csv` が優先され続け、「新しい解析に古い DEG 表が出る」
+#   という **いま直そうとしている型と同じ欠陥**を作る。
+#
+#   代わりに annotation 列だけを重ねる:
+#     - DEG 本表は現行の優先順位のまま読む（＝常に最新）
+#     - `markers_annotated.csv` からは `gene -> annotation` だけを取る
+#     - 解析を再実行して feature が入れ替われば、古い注釈は join に一致せず
+#       **自然に外れる**（別途の鮮度メタデータが要らない）
+#     - R の出力ファイルには一切書かない
+_ANNOTATION_OVERLAY_NAME = "markers_annotated.csv"
+
+
+def _annotation_overlay_paths(result_base, method_dir):
+    """重ね合わせ元の候補パス。
+
+    ★ 書き側 (`interactive_calibration.execute_reannotation`) は
+      `result_base / method_dir` を試し、無ければ `result_base / method_dir.lower()`
+      に落ちる。読み側も **同じ 2 箇所** を見ないと、大小文字が違う環境で
+      片方だけ外れる。
+    """
+    base = Path(result_base)
+    dirs = []
+    for d in (str(method_dir or ""), str(method_dir or "").lower()):
+        if d not in dirs:
+            dirs.append(d)
+    return [(base / d / _ANNOTATION_OVERLAY_NAME) if d
+            else (base / _ANNOTATION_OVERLAY_NAME) for d in dirs]
+
+
+def read_annotation_overlay(result_base, method_dir) -> dict:
+    """`markers_annotated.csv` から `{gene: annotation}` **だけ** を読む。
+
+    見つからない・読めない・意味のある注釈が無いなら空 dict。
+    本表そのものを差し替えないので、失敗しても表示は従来どおりになる。
+    """
+    out: dict = {}
+    for path in _annotation_overlay_paths(result_base, method_dir):
+        if not path.is_file():
+            continue
+        try:
+            df = pd.read_csv(path, encoding="utf-8", usecols=lambda c: str(c).strip()
+                             in ("gene", "annotation", "", "row.names"))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("注釈の重ね合わせ元を読めません (%s): %s", path, e)
+            continue
+        cols = {str(c).strip(): c for c in df.columns}
+        gene_col = cols.get("gene") or cols.get("row.names") or cols.get("")
+        ann_col = cols.get("annotation")
+        if gene_col is None or ann_col is None:
+            continue
+        for g, a in zip(df[gene_col].astype(str), df[ann_col]):
+            if not isinstance(a, str):
+                continue
+            a = a.strip()
+            if g and g not in out and is_meaningful_annotation(a, g):
+                out[g] = a
+        if out:
+            logger.info("注釈の重ね合わせ: %s から %d 件", path, len(out))
+            break
+    return out
+
+
+def _apply_annotation_overlay(result_base, method_dir, data):
+    """本表の各レコードに、保存済みの注釈を重ねる。
+
+    ★ 本表が `markers_annotated.csv` そのものだった場合（TIMS の通常経路）は
+      同じ値を書き戻すだけなので無害。
+    """
+    if not data:
+        return data
+    try:
+        overlay = read_annotation_overlay(result_base, method_dir)
+    except Exception as e:  # noqa: BLE001
+        # 重ね合わせは付加機能。失敗しても本表は返す（従来の表示に戻るだけ）。
+        logger.warning("注釈の重ね合わせに失敗（本表はそのまま返す）: %s", e)
+        return data
+    if not overlay:
+        return data
+    n = 0
+    for r in data:
+        if not isinstance(r, dict):
+            continue
+        g = str(r.get("gene", ""))
+        cand = overlay.get(g)
+        if cand and cand != r.get("annotation"):
+            r["annotation"] = cand
+            n += 1
+    if n:
+        logger.info("注釈を %d 件のレコードに重ねた", n)
+    return data
 
 
 def _r_escape_path(p: Path) -> str:
@@ -380,7 +564,12 @@ def load_deg_results(
             "手法フォルダは一意に定まるときだけ採用します。", integration_method)
 
     def _cache_and_return(data):
-        """DEG結果をキャッシュして返す（meta.json 経路 / glob fallback 共通）"""
+        """DEG結果をキャッシュして返す（meta.json 経路 / glob fallback 共通）
+
+        ★ ver52.5: ここが成功経路の **唯一の出口**なので、注釈の重ね合わせも
+          ここでやる。出口ごとに書くと、あとで足した出口だけ注釈が付かない。
+        """
+        data = _apply_annotation_overlay(result_base, method_dir, data)
         if cache is not None:
             cache["deg_cache_key"] = cache_key
             cache["deg_cache_data"] = data

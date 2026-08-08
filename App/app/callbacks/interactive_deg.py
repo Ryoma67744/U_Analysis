@@ -307,6 +307,42 @@ def _feature_intensity_style(expr_raw, display_min, display_max):
             below)
 
 
+def _expression_alignment_ok(cache_dir_str, df) -> bool:
+    """発現量を **位置で** 代入してよいか（行順が一致しているか）。
+
+    ★ ver52.5: Feature plot は parquet の 1 列を `plot_data` の行順へ位置で
+      入れており、検査は長さだけだった。ずれると
+      **全ピクセルに別の場所の強度が出る**ため、症状が
+      「もっともらしい別の画像」になり気づけない。
+      同じ parquet に `CellID` 列があり Heatmap 側は merge で突合しているので、
+      **照合できる材料があるのに使っていなかった**。
+
+    ★ 通常時の挙動は変えない。一致（True）と判定不能（None）はどちらも
+      従来どおり進む。止めるのは **不一致と分かったとき** だけで、
+      そのときは黙って別の画像を出すより出さないほうが良い。
+
+    ★ 初回描画と差分更新の 2 経路から呼ぶ。片方だけに置くと
+      「最初は止まるのに m/z を切り替えると出る」になる。
+    """
+    if not cache_dir_str or df is None or "CellID" not in getattr(df, "columns", ()):
+        return True                      # 判定材料が無い → 従来どおり
+    try:
+        # `_bridge` はこのファイルの他の関数と同じく関数内 import
+        # （モジュール先頭で持つと循環 import になる）。
+        from app.callbacks.interactive_callbacks import _bridge
+        ok = _bridge.expression_row_order_matches(Path(cache_dir_str), df["CellID"])
+    except Exception as e:  # noqa: BLE001
+        logger.debug("行順の照合に失敗（従来どおり続行）: %s", e)
+        return True
+    if ok is False:
+        logger.error(
+            "expression_matrix の行順が plot_data と一致しません。"
+            "位置で対応づけると全ピクセルの強度がずれるため描画を中止します: %s",
+            cache_dir_str)
+        return False
+    return True
+
+
 def _feature_display_range(expr_vals, intensity_min, intensity_max):
     """強度レンジ (%) から表示下限/上限の実値を出す。None なら描くものが無い。
 
@@ -534,6 +570,16 @@ def _update_feature_plot_inner(
         _cols = [c for c in ("Sample", "SpatialX", "SpatialY", "CellID", "TotalCount")
                  if c in df.columns]
         df_plot = df[_cols].copy()
+        # ★ ver52.5: 位置で代入する前に、行順が一致していることを確かめる。
+        #   従来の検査は長さだけだったので、ずれても通り、
+        #   **全ピクセルに別の場所の強度が出た図**が「正しく見える」まま出ていた。
+        #   判定不能（CellID 列が無い等）なら従来どおり位置対応に委ねる。
+        if not _expression_alignment_ok(cache_dir_str, df):
+            return _finish(
+                html.Div("発現量とスポットの対応が取れませんでした"
+                         "（キャッシュを作り直してください）",
+                         className="text-danger p-3"),
+                no_update, no_update, [])
         df_plot["_expression"] = np.asarray(expression)
 
         # 表示対象サンプル (早期判定で既に決めてある)
@@ -796,6 +842,10 @@ def patch_feature_intensity(feature_name, intensity_min, intensity_max,
         samples_to_show = [sample] if sample else sorted(df["Sample"].unique())
         _cols = [c for c in ("Sample", "TotalCount") if c in df.columns]
         df_plot = df[_cols].copy()
+        # ★ ver52.5: 初回描画側と同じ照合。差分更新はここだけ通るので、
+        #   片方に足すと「最初は止まるのに、m/z を切り替えると出る」になる。
+        if not _expression_alignment_ok(cache_dir_str, df):
+            return [no_update] * n, [no_update] * n
         df_plot["_expression"] = np.asarray(expression)
 
         expr_vals = df_plot.loc[
