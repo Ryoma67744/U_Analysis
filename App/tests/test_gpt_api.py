@@ -183,8 +183,13 @@ def test_openapi_spec_shape_and_security():
     op_ids = {m["operationId"]
               for path in spec["paths"].values()
               for m in path.values()}
+    # ★ ver52.0: `download` は Action 仕様から外した。Custom GPT Actions は
+    #   バイナリ応答を扱えず **必ず失敗する**（実測 95KB の PNG でも失敗）ため、
+    #   載せておくと GPT が繰り返し試みるだけだった。
+    #   エンドポイント自体はブラウザ直接取得のために残っている。
     assert {"health", "listProjects", "getProject", "getClusters", "getMarkers",
-            "searchCompounds", "listOutputs", "listExports", "download"} <= op_ids
+            "searchCompounds", "listOutputs", "listExports"} <= op_ids
+    assert "download" not in op_ids
     # health は鍵不要（security:[]）
     assert spec["paths"]["/api/gpt/health"]["get"]["security"] == []
 
@@ -259,9 +264,10 @@ def test_openapi_has_phase2_export_ops():
     # 生成開始は POST（副作用あり）
     ip = paths["/api/gpt/projects/{pid}/sub/{sid}/exports/interactive"]
     assert "post" in ip and ip["post"]["operationId"] == "startInteractiveExport"
-    # 状態・ファイルは GET
+    # 状態は GET
     assert paths["/api/gpt/exports/jobs/{job_id}"]["get"]["operationId"] == "getExportJob"
-    assert (paths["/api/gpt/exports/jobs/{job_id}/file"]["get"]["operationId"]
-            == "downloadExportJob")
+    # ★ ver52.0: ファイル本体を返す operation は Action 仕様から外した
+    #   （バイナリ応答は Actions が扱えない）。ルート自体は残っている。
+    assert "/api/gpt/exports/jobs/{job_id}/file" not in paths
     # これらは鍵不要ではない（health のように security:[] を持たない → グローバル鍵が効く）
     assert "security" not in ip["post"]
