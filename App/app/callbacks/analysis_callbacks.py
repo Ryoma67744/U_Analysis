@@ -172,6 +172,15 @@ def _output_has_existing_results(full_output_dir: str) -> bool:
 
     reduction RDS（_detect_integration_methods が非空）/ analysis_params.json /
     RDS_Files/*.rds のいずれかがあれば True。フォルダ非存在は False。
+
+    ★ ver52.3: **判定できないときは True を返す**（fail-closed）。
+      従来は `_detect_integration_methods` が例外を投げると握りつぶして
+      次の判定へ落ち、他の 2 つも空なら `False` ＝「既存結果なし」と答えていた。
+      呼び出し側 2 箇所 (`open_overwrite_modal` / 実行本体) はどちらも
+      True を「止めて確認」として扱うので、**判定不能なら確認モーダルを出す**
+      のが安全側になる。誤って確認が 1 回増えるのと、
+      **確認なしで前の解析結果を上書きする**のとでは、後者の損害が桁違いに大きい。
+      本関数は T5 の中で唯一「間違った結果を出す」ではなく **データを壊す**。
     """
     try:
         p = Path(full_output_dir)
@@ -185,11 +194,20 @@ def _output_has_existing_results(full_output_dir: str) -> bool:
         if _detect_integration_methods(str(p)):
             return True
     except Exception:
-        pass
+        logger.warning(
+            "上書き判定: 既存結果の検出に失敗したため『既存あり』として扱う "
+            "(確認モーダルを表示する): %s", full_output_dir, exc_info=True)
+        return True
     if (p / "analysis_params.json").exists():
         return True
     rds_dir = p / "RDS_Files"
-    if rds_dir.is_dir() and any(rds_dir.glob("*.rds")):
+    try:
+        if rds_dir.is_dir() and any(rds_dir.glob("*.rds")):
+            return True
+    except OSError:
+        logger.warning(
+            "上書き判定: RDS_Files を読めないため『既存あり』として扱う: %s",
+            rds_dir, exc_info=True)
         return True
     return False
 
