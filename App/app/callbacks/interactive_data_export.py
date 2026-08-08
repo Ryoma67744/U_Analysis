@@ -93,20 +93,27 @@ def _build_cluster_lookup(plot_data: pd.DataFrame, cluster_name_map: dict | None
     return lookup
 
 
-def _build_region_lookup(plot_data: pd.DataFrame, rds_path) -> dict:
+def _build_region_lookup(plot_data: pd.DataFrame, rds_path):
     """plot_data 全体から {(sample, round(x,4), round(y,4)): 領域名(ROI)} を構築。
 
     各切片(sample)の H&E オーバーレイ保存状態（hne_overlay_state.json）から ROI を
     割当てる（`hn.regions_from_overlay`）。overlay 未設定／ROI 未割当の spot は
     キーを作らない（出力では空欄になる）。キーは `_build_cluster_lookup` と同方式
     （元 SpatialX/Y を 4 桁丸め）で、クラスタ列と同じ行に突合される。
+
+    ★ ver51.9 / B-10: **ROI を 1 つも割り当てられなかったときは None を返す**。
+      従来は常に dict を返していたため、呼び出し側の
+      `add_region = region_lookup is not None` が必ず True になり、
+      H&E を一度も設定していないプロジェクトでも **常に空の「領域名」列** が付いた。
+      利用者から見ると「ROI 機能を使っていない」と「どの ROI にも入らなかった」の
+      区別が付かない（後者は解析の見落としを意味する）。
     """
     lookup: dict = {}
     if (plot_data is None or not rds_path
             or "SpatialX" not in plot_data.columns
             or "SpatialY" not in plot_data.columns
             or "Sample" not in plot_data.columns):
-        return lookup
+        return None
     for sample in plot_data["Sample"].dropna().astype(str).unique():
         sub = plot_data[plot_data["Sample"].astype(str) == sample]
         if sub.empty:
@@ -123,7 +130,8 @@ def _build_region_lookup(plot_data: pd.DataFrame, rds_path) -> dict:
             if r is None or pd.isna(x) or pd.isna(y):
                 continue
             lookup[(sample, round(float(x), 4), round(float(y), 4))] = str(r)
-    return lookup
+    # ROI が 1 つも取れなければ「ROI 未使用」。空の列を足さない。
+    return lookup or None
 
 
 def _safe_prefix(name: str) -> str:
@@ -405,6 +413,46 @@ def _conditions_sheet_df(conditions: dict):
     return pd.DataFrame(rows, columns=["項目", "値"])
 
 
+# Excel のシート名に使えない文字。openpyxl はこれらを含む名前で例外を投げる
+# （1 サンプルのせいでエクスポート全体が落ちる）。
+_SHEET_FORBIDDEN = str.maketrans({c: "_" for c in "[]:*?/\\"})
+_SHEET_MAX = 31
+
+
+def _unique_sheet_name(stem: str, used: dict) -> str:
+    """Excel のシート名を無害化し、衝突しないよう一意化する (ver51.9)。
+
+    ★ 従来は `sheet_name = stem[:31]` だけだった。openpyxl は同名シートへの
+      `to_excel` を **例外にせず上書き**するため、先頭 31 文字が同じ 2 サンプルが
+      **1 枚のシートに混ざって**出る。MSI の測定ファイル名は長い共通接頭辞を
+      持ちやすく (`20260807_MouseBrain_Section01_Neg_DHB_run1/2` など)、
+      31 文字での衝突はむしろ普通に起きる。出力を見ても混ざったとは分からない。
+
+    `used` は呼び出し側が持ち回る dict（小文字化した名前 → 使用回数）。
+    Excel のシート名比較は大文字小文字を区別しないので小文字で持つ。
+    """
+    base = (str(stem or "").translate(_SHEET_FORBIDDEN)
+            .strip().strip("'"))
+    if not base:
+        base = "Sheet"
+    name = base[:_SHEET_MAX]
+
+    key = name.lower()
+    if key not in used:
+        used[key] = 1
+        return name
+
+    # 衝突: `_2`, `_3`, ... を足す。31 文字に収めるため base 側を削る。
+    n = used[key] + 1
+    while True:
+        suffix = f"_{n}"
+        cand = base[:_SHEET_MAX - len(suffix)] + suffix
+        if cand.lower() not in used:
+            used[key] = n
+            used[cand.lower()] = 1
+            return cand
+        n += 1
+
 
 def _export_desi(
     data_folder: str, method_lookups: OrderedDict, region_lookup: dict | None = None,
@@ -432,8 +480,30 @@ def _export_desi(
         all_sample_names.update(k[0] for k in lookup.keys())
     sample_names = sorted(all_sample_names)
 
+    # ★ ver51.9 / B-9: `.txt` が無いサンプルを従来は**無言で飛ばして**いた。
+    #   `list_msi_files` は `.csv` / `.xlsx` 由来の stem も返す（解析時に
+    #   `.txt` へ変換される前提）ため、変換前にエクスポートすると
+    #   **シートが 1 枚も無い「成功した」Excel** が出る。
+    #   1 枚も書けないと分かっているならここで止める（openpyxl は
+    #   シート 0 枚のブックを保存できず、別の分かりにくい例外になる）。
+    skipped_stems = [s for s in file_stems
+                     if not (Path(data_folder) / f"{s}.txt").exists()]
+    if len(skipped_stems) == len(file_stems):
+        raise ValueError(
+            "書き出せるサンプルがありません。"
+            f"{len(skipped_stems)} 件すべて .txt が未生成です "
+            f"({', '.join(skipped_stems[:5])}"
+            f"{' …' if len(skipped_stems) > 5 else ''})。"
+            "解析を実行して .csv / .xlsx を .txt へ変換してください。")
+    for _s in skipped_stems:
+        logger.warning(
+            "[DataExport] %s.txt が無いためスキップ "
+            "(解析を実行して .txt へ変換してください)", _s)
+
     n_files = max(1, len(file_stems))
     buf = io.BytesIO()
+    # "Conditions" は最後に必ず 1 枚追加するので、先に予約して奪われないようにする
+    used_sheet_names = {"conditions": 1}
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         for i_f, stem in enumerate(file_stems):
             if progress_cb:
@@ -441,7 +511,7 @@ def _export_desi(
                             f"書き込み中… {i_f + 1}/{n_files} ({stem})")
             txt_path = Path(data_folder) / f"{stem}.txt"
             if not txt_path.exists():
-                continue
+                continue        # 上で列挙・記録済み (ver51.9 / B-9)
 
             # 行単位で読み込み（ヘッダー20列/データ21列の不一致に対応）
             with open(txt_path, "r", encoding="utf-8", errors="replace") as fh:
@@ -508,8 +578,8 @@ def _export_desi(
 
             df_out = pd.DataFrame(output_rows)
 
-            # シート名（Excel の31文字制限対応）
-            sheet_name = stem[:31]
+            # シート名（31 文字制限 + 禁止文字 + 衝突対策）
+            sheet_name = _unique_sheet_name(stem, used_sheet_names)
             df_out.to_excel(
                 writer, sheet_name=sheet_name, header=False, index=False
             )
@@ -521,6 +591,15 @@ def _export_desi(
                     writer, sheet_name="Conditions", index=False)
             except Exception:
                 logger.warning("Conditions シートの追加に失敗", exc_info=True)
+
+        # 一部だけ落ちた場合は資料の中に理由を残す（後から «なぜ足りない» を辿れる）
+        if skipped_stems:
+            try:
+                pd.DataFrame({"未出力のサンプル": skipped_stems,
+                              "理由": [".txt が未生成 (解析前)"] * len(skipped_stems)}
+                             ).to_excel(writer, sheet_name="Skipped", index=False)
+            except Exception:
+                logger.warning("Skipped シートの追加に失敗", exc_info=True)
 
     buf.seek(0)
     return buf.getvalue(), "UMAP_cluster_DESI.xlsx"

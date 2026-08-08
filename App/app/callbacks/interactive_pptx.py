@@ -36,6 +36,7 @@ from app.utils.deg_utils import (
 from app.utils.label_persistence import (
     compute_annotation_offsets as _compute_annotation_offsets,
     load_label_positions as _load_label_positions_util,
+    load_cluster_name_map as _load_cluster_name_map,
 )
 from app.utils.pptx_helpers import (
     render_png as _fig_to_png_bytes,
@@ -80,8 +81,14 @@ logger = logging.getLogger("msi.interactive.pptx")
 def _build_feature_plot_fig(df, feature_name, cache_dir_path, rds_path,
                             rotation_store=None, name_map=None, marker_size=2,
                             colorbar_tickformat=None, show_colorbar_title=True,
-                            auto_marker_size=False, show_colorbar=True):
+                            auto_marker_size=False, show_colorbar=True,
+                            intensity_min=None, intensity_max=None):
     """単一 m/z Feature の Spatial Expression Plot figure を生成（PPTX 用）。
+
+    intensity_min / intensity_max: 強度レンジ (%) (ver51.9)。画面側の
+        `feature_intensity_min/max` と揃えるための引数。色域が変わると
+        同じ図に見えて別のことを示すため、資料と画面で食い違うと危ない。
+        None なら従来どおりデータ全域。
 
     Returns:
         go.Figure or None
@@ -106,8 +113,21 @@ def _build_feature_plot_fig(df, feature_name, cache_dir_path, rds_path,
     if expression is None:
         return None
 
+    # ★ ver51.9: 長さの番人。画面側 (interactive_deg.py:524) には ver51.6 で
+    #   入れたのに PPTX 側だけ無かった。R フォールバックがヘッダ 1 行ぶん長い
+    #   Series を返すと、代入で pandas が例外を投げる。ここは
+    #   **数十分かかる背景エクスポートの終盤**なので、最後まで走ってから
+    #   全部無駄になる。1 枚を諦めて資料は出す方が損失が小さい。
+    _expr_arr = np.asarray(
+        expression.values if hasattr(expression, "values") else expression)
+    if len(_expr_arr) != len(df):
+        logger.warning(
+            "発現量の長さが不一致のため Feature をスキップ (feature=%s, %d != %d)",
+            feature_name, len(_expr_arr), len(df))
+        return None
+
     df_plot = df.copy()
-    df_plot["_expression"] = expression.values if hasattr(expression, "values") else expression
+    df_plot["_expression"] = _expr_arr
 
     if "SpatialX" not in df_plot.columns:
         return None
@@ -123,8 +143,15 @@ def _build_feature_plot_fig(df, feature_name, cache_dir_path, rds_path,
     )
 
     expr_vals = df_plot["_expression"].values
-    global_min = float(np.nanmin(expr_vals))
-    global_max = float(np.nanmax(expr_vals))
+    # ★ ver51.9: 強度レンジ (%) を画面と揃える。式は画面側の
+    #   `interactive_deg._feature_display_range` と同一 (別々に書くとまたずれる)。
+    from app.callbacks.interactive_deg import _feature_display_range
+    _rng = _feature_display_range(expr_vals, intensity_min, intensity_max)
+    if _rng is None:
+        global_min = float(np.nanmin(expr_vals))
+        global_max = float(np.nanmax(expr_vals))
+    else:
+        global_min, global_max = _rng
 
     use_raster = _raster.raster_enabled()
     for idx, s in enumerate(samples, 1):
@@ -231,9 +258,115 @@ def _build_feature_plot_fig(df, feature_name, cache_dir_path, rds_path,
     return fig
 
 
+# --------------------------------------------------------------------------
+# 表示設定（ver51.9 / B-2）
+# --------------------------------------------------------------------------
+# ★ 「解析条件」スライドと図が食い違っていた。条件スライドは
+#   `provenance_callbacks` が記録した利用者の閾値を出すのに、Volcano は
+#   `_build_volcano_fig_for_cluster(deg_data, cl_str)` と **既定値のまま**
+#   呼ばれていたので破線も有意判定も常に 0.5 / 1.3 だった。
+#   同じ 1 ファイルの中で矛盾するため、外から真偽を判断できない。
+#
+#   直し方は「条件スライドと図が **同じ 1 つの dict** を見る」。`conditions` は
+#   クリック時点で確定させているので、そこから取り出せば構造上ずれない。
+
+# 記録が無い/壊れているときの既定値。**従来の図と同じになる値**にする
+# （条件を一度も触っていないプロジェクトで見た目を変えないため）。
+_DISPLAY_DEFAULTS = {
+    "volcano_fc": 0.5,
+    "volcano_p": 1.3,
+    "volcano_top_n": None,          # None = ラベル件数は従来どおり
+    "heatmap_scale": None,          # None = 従来の自動判定 (アプリ図の zmid を見る)
+    "feature_intensity_min": None,  # None = データ全域
+    "feature_intensity_max": None,
+}
+
+
+def _num(value, default):
+    """数値として読めるときだけ採る。読めなければ既定へ落とす。
+
+    設定ファイルが壊れていても長時間のエクスポートを落とさない。
+    """
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _display_settings(conditions) -> dict:
+    """「解析条件」スライドが出すのと同じ表示設定を、図の生成用に取り出す。"""
+    inter = ((conditions or {}).get("interactive") or {})
+    vol = inter.get("volcano_display") or {}
+    hm = inter.get("heatmap_display") or {}
+    feat = inter.get("feature_display") or {}
+
+    top_n = vol.get("label_top_n")
+    try:
+        top_n = int(top_n) if top_n is not None else None
+    except (TypeError, ValueError):
+        top_n = None
+
+    scale = hm.get("scale")
+    if scale is not None and not isinstance(scale, str):
+        scale = None
+
+    umap_view = inter.get("umap_view") or {}
+    return {
+        "volcano_fc": _num(vol.get("fc_threshold"),
+                           _DISPLAY_DEFAULTS["volcano_fc"]),
+        "volcano_p": _num(vol.get("p_threshold"),
+                          _DISPLAY_DEFAULTS["volcano_p"]),
+        "volcano_top_n": top_n,
+        "heatmap_scale": scale,
+        "feature_intensity_min": _num(feat.get("intensity_min"), None),
+        "feature_intensity_max": _num(feat.get("intensity_max"), None),
+        # ver51.9 / B-7: マージ表示。画面は Cluster_merged で描くのに
+        # PPTX には参照が 1 つも無く、**別のクラスタリングの資料**が出ていた。
+        "merge_toggle": umap_view.get("merge_toggle"),
+        "merge_color_mode": umap_view.get("merge_color_mode") or "shade",
+    }
+
+
+def _apply_merge_view(df, display_settings, custom_colors):
+    """マージ表示なら Cluster / UMAP 座標を統合後のものへ差し替える (ver51.9)。
+
+    ★ 画面 (`interactive_umap.py:537-545`) と同じ変換。PPTX にだけ無かったため、
+      「マージ統合」で確認した利用者が **元のクラスタリングの資料** を配っていた。
+      見出しも凡例も同じ形なので、受け取った人には区別が付かない。
+
+    Returns (df, effective_custom_colors, merged: bool)
+    """
+    if (display_settings or {}).get("merge_toggle") != "merged":
+        return df, custom_colors, False
+    if df is None or "Cluster_merged" not in df.columns:
+        return df, custom_colors, False
+
+    cols = [c for c in ("Sample", "CellID", "SpatialX", "SpatialY",
+                        "Annotation") if c in df.columns]
+    merged_df = df[cols].copy()
+    merged_df["Cluster"] = df["Cluster_merged"].to_numpy()
+    for src, dst in (("UMAP_1_merged", "UMAP_1"), ("UMAP_2_merged", "UMAP_2")):
+        if src in df.columns:
+            merged_df[dst] = df[src].to_numpy()
+        elif dst in df.columns:
+            merged_df[dst] = df[dst].to_numpy()
+
+    from app.utils.color_utils import get_merged_cluster_color_map
+    effective = get_merged_cluster_color_map(
+        merged_df["Cluster"],
+        mode=display_settings.get("merge_color_mode") or "shade")
+    return merged_df, effective, True
+
+
 def _build_volcano_fig_for_cluster(deg_data, cluster, fc_thresh=0.5, p_thresh=1.3,
-                                   marker_size=8):
+                                   marker_size=8, label_top_n=5):
     """指定クラスタの Volcano Plot figure を生成（PPTX 用）。
+
+    label_top_n: 自動ラベルを付ける up/down それぞれの件数 (ver51.9)。
+        画面側 (`interactive_deg.update_volcano_plot`) は
+        `volcano_label_top_n` を見るのに、ここは 5 固定だった。
 
     Returns:
         go.Figure or None
@@ -302,9 +435,10 @@ def _build_volcano_fig_for_cluster(deg_data, cluster, fc_thresh=0.5, p_thresh=1.
     # --- Top N アノテーション（PPTX用） ---
     sig_mask = (df["neg_log10_p"] >= p_thresh) & (df["avg_log2FC"].abs() >= fc_thresh)
     sig_df = df[sig_mask]
-    if not sig_df.empty:
-        _top_up = sig_df[sig_df["avg_log2FC"] > 0].nlargest(5, "avg_log2FC")
-        _top_down = sig_df[sig_df["avg_log2FC"] < 0].nsmallest(5, "avg_log2FC")
+    _n_label = 5 if label_top_n is None else max(0, int(label_top_n))
+    if not sig_df.empty and _n_label > 0:
+        _top_up = sig_df[sig_df["avg_log2FC"] > 0].nlargest(_n_label, "avg_log2FC")
+        _top_down = sig_df[sig_df["avg_log2FC"] < 0].nsmallest(_n_label, "avg_log2FC")
         _auto_label = pd.concat([_top_up, _top_down])
         if len(_auto_label) > 0:
             _pts = list(zip(
@@ -339,8 +473,15 @@ def _build_volcano_fig_for_cluster(deg_data, cluster, fc_thresh=0.5, p_thresh=1.
 
 
 def _build_heatmap_for_cluster(deg_data, cluster, df, cache_dir, top_n,
-                                mrm_path=None):
-    """指定クラスタの Top N マーカーを全クラスタで比較する Z-score ヒートマップを生成。"""
+                                mrm_path=None, scale=None):
+    """指定クラスタの Top N マーカーを全クラスタで比較するヒートマップを生成。
+
+    scale: "zscore" | "raw" | None (ver51.9)。画面のスケール切替
+        (`heatmap_scale`) と揃えるための引数。**Z-score か Raw かは
+        「何をプロットしたか」そのもの**で、見た目だけの違いではない。
+        従来は常に Z-score だったため、Raw を選んで確認した利用者が
+        Z-score の図を配ることになっていた。None は従来どおり Z-score。
+    """
     if not deg_data or not cache_dir:
         return None
     try:
@@ -380,10 +521,12 @@ def _build_heatmap_for_cluster(deg_data, cluster, df, cache_dir, top_n,
             sorted(cluster_means.index, key=_cluster_sort_key))
 
         z_data = cluster_means.values.copy()
-        col_mean = z_data.mean(axis=0)
-        col_std = z_data.std(axis=0)
-        col_std[col_std == 0] = 1
-        z_data = (z_data - col_mean) / col_std
+        is_zscore = (scale != "raw")     # None / "zscore" は従来どおり Z-score
+        if is_zscore:
+            col_mean = z_data.mean(axis=0)
+            col_std = z_data.std(axis=0)
+            col_std[col_std == 0] = 1
+            z_data = (z_data - col_mean) / col_std
 
         # Y軸ラベル（アノテーション付き）
         y_labels = available
@@ -402,14 +545,16 @@ def _build_heatmap_for_cluster(deg_data, cluster, df, cache_dir, top_n,
             mz_to_compound = _build_mz_to_compound_map(str(mrm_path), tolerance=0.1)
             y_labels = _annotate_gene_labels(available, mz_to_compound, tolerance=0.1)
 
+        _z_label = "Z-score" if is_zscore else "Intensity"
         fig = go.Figure(go.Heatmap(
             z=z_data.T,
             x=[str(c) for c in cluster_means.index],
             y=y_labels,
             colorscale="RdBu_r",
-            zmid=0,
+            zmid=0 if is_zscore else None,
             ygap=2,  # Top N m/z行間の区切り線
-            hovertemplate="Cluster: %{x}<br>Gene: %{y}<br>Z-score: %{z:.3f}<extra></extra>",
+            hovertemplate=("Cluster: %{x}<br>Gene: %{y}<br>"
+                           + _z_label + ": %{z:.3f}<extra></extra>"),
         ))
         fig.update_layout(
             margin=dict(l=20, r=20, t=30, b=20),
@@ -850,7 +995,8 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                  set_progress=None, mrm_path=None,
                  existing_prs=None, progress_offset=0, progress_total=None,
                  saved_positions=None, cluster_name_map=None,
-                 include_deg=True, deadline=None, conditions=None):
+                 include_deg=True, deadline=None, conditions=None,
+                 display_settings=None):
     """グローバル概要 + クラスターごとの詳細スライドを含む PPTX を生成し bytes を返す。
 
     グローバルセクション:
@@ -866,8 +1012,17 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                   bytes は返さず None を返す。
     progress_offset: 進捗計算のオフセット（複数手法ループ時に使用）
     progress_total: 進捗計算の全体ステップ数（複数手法ループ時に使用）
+    display_settings: `_display_settings(conditions)` の戻り値。図の閾値・スケール・
+                  強度レンジを「解析条件」スライドと揃えるために使う (ver51.9)。
+                  None なら conditions から自前で導く（従来の呼び出しも壊さない）。
     """
     import time
+
+    # ★ ver51.9: 条件スライドと図が同じ設定を見るようにする。
+    #   呼び出し側が渡さなかった場合も conditions から導けるようにしておく
+    #   （どちらも無ければ既定 = 従来の図と同じ）。
+    if display_settings is None:
+        display_settings = _display_settings(conditions)
 
     from pptx import Presentation
     from pptx.util import Inches, Pt, Emu
@@ -1335,7 +1490,13 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                             _gene_ann_map[_g] = _a
 
                 # Volcano Plot を生成（レイアウト計算に必要）。描画は下段配置時に逐次実行。
-                volcano_cl = _build_volcano_fig_for_cluster(deg_data, cl_str)
+                # ★ ver51.9: 閾値は「解析条件」スライドと同じものを使う。
+                #   従来は既定値のままだったため、同じ資料の中で条件と図が食い違っていた。
+                volcano_cl = _build_volcano_fig_for_cluster(
+                    deg_data, cl_str,
+                    fc_thresh=display_settings["volcano_fc"],
+                    p_thresh=display_settings["volcano_p"],
+                    label_top_n=display_settings["volcano_top_n"])
 
                 # ---- 自動レイアウト計算 ----
                 has_up = bool(up_features)
@@ -1403,7 +1564,9 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                         rotation_store, name_map, marker_size=2,
                         show_colorbar_title=is_last_up,
                         show_colorbar=is_last_up,
-                        auto_marker_size=True)
+                        auto_marker_size=True,
+                        intensity_min=display_settings["feature_intensity_min"],
+                        intensity_max=display_settings["feature_intensity_max"])
                     if not feat_fig:
                         continue
                     _feat_title = feat
@@ -1452,7 +1615,9 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                         rotation_store, name_map, marker_size=2,
                         show_colorbar_title=is_last_down,
                         show_colorbar=is_last_down,
-                        auto_marker_size=True)
+                        auto_marker_size=True,
+                        intensity_min=display_settings["feature_intensity_min"],
+                        intensity_max=display_settings["feature_intensity_max"])
                     if not feat_fig:
                         continue
                     _feat_title = feat
@@ -1506,14 +1671,21 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                 _progress(f"{_cl_name} — DEG")
 
             # === Slide C: Per-cluster Heatmap (Top N, Z-score) ===
+            # ★ ver51.9: スケール切替 (Z-score / Raw) を画面と揃える。
+            #   従来は常に Z-score だったため、Raw を選んで確認した利用者が
+            #   Z-score の図を配ることになっていた（見出しは同じ "Heatmap"）。
+            _hm_scale = display_settings["heatmap_scale"]
             hm_fig = _build_heatmap_for_cluster(
-                deg_data, cl_str, df, cache_dir, top_n, mrm_path=mrm_path)
+                deg_data, cl_str, df, cache_dir, top_n, mrm_path=mrm_path,
+                scale=_hm_scale)
             if hm_fig:
                 hm_png = _fig_to_png_bytes(hm_fig, width=1200, height=800)
                 if hm_png:
+                    _hm_kind = "Raw" if _hm_scale == "raw" else "Z-score"
                     slide_c = prs.slides.add_slide(prs.slide_layouts[6])
                     _pptx_add_title_bar(
-                        slide_c, f"{_cl_name} — Heatmap (Top {top_n})")
+                        slide_c,
+                        f"{_cl_name} — Heatmap (Top {top_n}, {_hm_kind})")
                     _pptx_add_image_preserve_ratio(
                         slide_c, hm_png,
                         int((prs.slide_width - Inches(12)) / 2), Inches(0.9),
@@ -1684,7 +1856,15 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
             filename = f"MSI_Report_{timestamp}.pptx"
 
         top_n = top_n or 5
-        saved_positions = _get_merged_label_positions(accumulated_positions)
+        # ★ ver51.9: rds_path / method を明示する。この callback は
+        #   `background=True` で **DiskcacheManager が fork した別プロセス**で動くため、
+        #   `_interactive_data` は空。引数なしだと JSON の解決先が None になり、
+        #   **現在の手法だけラベル位置が既定に戻る**（他手法は下の
+        #   `_load_label_positions_util(rds, method)` で正しく出るので、
+        #   1 つの資料の中でラベルの付き方が不揃いになる）。
+        #   正しい形は同ファイル :2020/:2178 と interactive_spatial.py:1161 にある。
+        saved_positions = _get_merged_label_positions(
+            accumulated_positions, rds_path=rds_path, method=current_method)
 
         # 解析条件は **クリック時点** で確定させる。PPTX 生成は数分かかることが
         # あり、その間にユーザーが設定を変えると、出力と条件がずれてしまう。
@@ -1704,6 +1884,12 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                                 "pptx_report", conditions)
         except Exception as _e:
             logger.warning("PPTX の条件記録に失敗: %s", _e)
+
+        # ★ ver51.9: 図に使う表示設定は「解析条件」スライドと **同じ dict** から
+        #   取り出す。別々に読むと片方だけ直し忘れて、1 つの資料の中で
+        #   条件と図が食い違う（従来がまさにそれで、Volcano の破線は常に
+        #   既定の 0.5 / 1.3 なのに条件スライドには利用者の閾値が出ていた）。
+        display_settings = _display_settings(conditions)
 
         # 全体 watchdog の期限（既定 45 分, PPTX_EXPORT_TIMEOUT_SEC で調整, 0 で無効）。
         # 1 枚単位のタイムアウトだけでは、多数がタイムアウトすると総時間が伸び得るため。
@@ -1763,6 +1949,10 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                     with open(meta_file, "r", encoding="utf-8") as f:
                         meta = json.load(f)
 
+            # ★ ver51.9 / B-7: 画面が「マージ統合」表示ならそれを反映する。
+            df, custom_colors, _merged = _apply_merge_view(
+                df, display_settings, custom_colors)
+
             pptx_bytes = _build_pptx(
                 umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                 sub_name=sub_name, volcano_fig=volcano_fig,
@@ -1777,6 +1967,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 include_deg=include_deg,
                 deadline=_deadline,
                 conditions=conditions,
+                display_settings=display_settings,
             )
 
             return (
@@ -1861,12 +2052,31 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 method_deg_data = _load_deg_results(
                     result_base, method_name)
 
+            # ★ ver51.9 / B-7: 画面が「マージ統合」表示ならそれを反映する。
+            #   色も統合後の体系 (親クラスタ濃淡 / 独立色) に切り替わる。
+            method_df, method_colors, _merged = _apply_merge_view(
+                method_df, display_settings, custom_colors)
+
             extracted_data[method_name] = {
                 "df": method_df,
+                "custom_colors": method_colors,
+                "merged": _merged,
                 "meta": method_meta,
                 "cache_dir": method_cache_dir,
                 "deg_data": method_deg_data,
                 "rds_path": method_rds,
+                # ★ ver51.9: クラスタの改名は**手法ごとに独立**
+                #   (`cluster_name_map::<method>`)。従来は `cluster_name_map_store`
+                #   を State から 1 回読み、その **現在表示中の手法の分** を
+                #   全手法のスライドへ渡していた。クラスタ ID は手法間で無関係なので、
+                #   Harmony でクラスタ 3 を「腫瘍」にすると RPCA の別物のクラスタ 3 も
+                #   「腫瘍」になる。手法比較のための資料でラベルが汚染される。
+                #   ラベル位置は既に手法別に読み直している(下記 _method_positions)。
+                #   表示中の手法だけ Store の値を使う (未保存の改名を落とさないため)。
+                "cluster_name_map": (
+                    (cluster_name_map or {})
+                    if method_name == current_method
+                    else _load_cluster_name_map(method_rds, method_name)),
             }
             progress_offset += 1
 
@@ -1905,9 +2115,12 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 else:
                     _method_positions = _load_label_positions_util(
                         ed["rds_path"], method_name)
+                # ver51.9: 改名も色もマージ表示も手法別（Phase 1 で解決済み）
+                _method_names_cmp = ed["cluster_name_map"]
+                _method_colors_cmp = ed["custom_colors"]
 
                 color_map_cmp = _get_cluster_color_map(
-                    m_df["Cluster"], custom_colors)
+                    m_df["Cluster"], _method_colors_cmp)
                 all_samples_cmp = sorted(m_df["Sample"].unique())
                 n_sp_cmp = len(all_samples_cmp)
                 _legend_w_cmp = 1.3
@@ -1936,7 +2149,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 _lh_cmp = min(_n_cl_cmp * 0.35 + 0.2, 6.0)
                 legend_fig_cmp = _build_cluster_legend_fig(
                     m_df["Cluster"].unique(), color_map_cmp,
-                    cluster_name_map=cluster_name_map)
+                    cluster_name_map=_method_names_cmp)
                 legend_png_cmp = _fig_to_png_bytes(
                     legend_fig_cmp.to_dict(),
                     width=200, height=600, scale=2)
@@ -1959,10 +2172,10 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                             highlight_clusters=None,
                             show_legend=False, show_labels=True,
                             title=_display_name(s, name_map),
-                            marker_size=3, custom_colors=custom_colors,
+                            marker_size=3, custom_colors=_method_colors_cmp,
                             title_font_size=40, label_size=24,
                             saved_positions=_umap_pos_cmp,
-                            cluster_name_map=cluster_name_map)
+                            cluster_name_map=_method_names_cmp)
                         if umap_s is not None:
                             umap_s.update_xaxes(range=u_xrange)
                             umap_s.update_yaxes(range=u_yrange)
@@ -2007,7 +2220,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                                 embed_legend=False,
                                 title_font_size=40, label_size=24,
                                 saved_positions=_sp_pos_cmp,
-                                cluster_name_map=cluster_name_map)
+                                cluster_name_map=_method_names_cmp)
                             if sp_fig_cmp is not None:
                                 sp_dict = (sp_fig_cmp.to_dict()
                                            if hasattr(sp_fig_cmp, "to_dict")
@@ -2054,6 +2267,10 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
             method_cache_dir = ed["cache_dir"]
             method_deg_data = ed["deg_data"]
             method_rds = ed["rds_path"]
+            # ver51.9: 改名・色・マージ表示は手法別（Phase 1 で解決済み）
+            method_name_map = ed["cluster_name_map"]
+            method_colors = ed["custom_colors"]
+            method_merged = ed["merged"]
 
             method_start_idx = len(prs.slides)
 
@@ -2090,6 +2307,17 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
             p2.font.size = Pt(18)
             p2.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
             p2.alignment = PP_ALIGN.CENTER
+            if method_merged:
+                # ★ ver51.9 / B-7: どちらのクラスタリングを出したのかを明記する。
+                #   DEG は元クラスタで計算されているため、マージ後のクラスタには
+                #   対応する Volcano / Heatmap が存在しない（スライドが出ない）。
+                #   黙って欠けるのではなく理由を書く。
+                p3 = tf.add_paragraph()
+                p3.text = ("クラスタ表示: マージ統合 "
+                           "（DEG は元クラスタで算出のため Volcano / Heatmap は非掲載）")
+                p3.font.size = Pt(14)
+                p3.font.color.rgb = RGBColor(0x85, 0x64, 0x04)
+                p3.alignment = PP_ALIGN.CENTER
             progress_offset += 1
 
             # --- UMAP 図を生成 ---
@@ -2098,9 +2326,9 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 method_df, color_by="Cluster",
                 highlight_clusters=None,
                 show_legend=True, show_labels=True,
-                custom_colors=custom_colors,
+                custom_colors=method_colors,
                 saved_positions=_umap_pos_m,
-                cluster_name_map=cluster_name_map,
+                cluster_name_map=method_name_map,
             )
 
             # --- クラスタ統計の生成 ---
@@ -2114,8 +2342,13 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                     n_c = int((method_df["Cluster"] == c).sum())
                     pct = (f"{n_c / n_total * 100:.1f}"
                            if n_total else "0")
+                    # ★ ver51.9 / B-6: 表は生のクラスタ ID、各スライドの見出しは
+                    #   改名後の表示名、という不整合があった。対応表が無いので
+                    #   「腫瘍」の統計がどの行か分からない。見出しと同じ関数
+                    #   (_cluster_display_name) で揃える。
+                    #   改名していないクラスタは従来どおり ID がそのまま出る。
                     method_cluster_stats.append({
-                        "Cluster": str(c),
+                        "Cluster": _cluster_display_name(str(c), method_name_map),
                         "Pixels": n_c,
                         "Percent": pct,
                     })
@@ -2136,7 +2369,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 df=method_df,
                 cache_dir=(str(method_cache_dir)
                            if method_cache_dir else None),
-                custom_colors=custom_colors,
+                custom_colors=method_colors,
                 rotation_store=rotation_store,
                 name_map=name_map,
                 set_progress=set_progress,
@@ -2145,9 +2378,10 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 progress_offset=progress_offset,
                 progress_total=total_steps,
                 saved_positions=method_saved_positions,
-                cluster_name_map=cluster_name_map,
+                cluster_name_map=method_name_map,
                 include_deg=include_deg,
                 deadline=_deadline,
+                display_settings=display_settings,
             )
             if isinstance(returned, int):
                 progress_offset = returned

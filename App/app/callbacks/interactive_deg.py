@@ -813,7 +813,21 @@ def patch_feature_intensity(feature_name, intensity_min, intensity_max,
         # ★ 保存用 figure の名前は **表示名** (name_map 適用後) で作られている。
         #   グラフ id は生のサンプル名なので、同じ変換を通してから対応付ける。
         stored = list(get_export_figures("feature", session_id, rds_path) or [])
-        stored_by_name = {name: idx for idx, (name, _fd) in enumerate(stored)}
+        # ★ ver51.9 / B-4: 従来は **表示名の suffix 一致** で引いていた
+        #   (`k.endswith(f"_{display_s}")`)。名前は
+        #   `Feature_{file_label}_{display_s}` で file_label も display_s も
+        #   `_` を含みうるため、境界が曖昧になる:
+        #     - `WT_liver` と `liver` のように片方が他方の `_` 付き接尾辞だと
+        #       **別サンプルの figure に書き込む**
+        #     - 表示名が重複すると dict が潰れて片方が古いまま残る
+        #   殻 (`_update_feature_plot_inner`) は `samples_to_show` の順で
+        #   `export_figs` を作るので、**位置**で対応付ければ名前に依存しない。
+        #   件数が食い違うときだけ従来の名前照合へ落とす（殻が古い等）。
+        if len(stored) == len(samples_to_show):
+            stored_index_of = {str(s): i for i, s in enumerate(samples_to_show)}
+        else:
+            stored_index_of = None
+            stored_by_name = {name: idx for idx, (name, _fd) in enumerate(stored)}
 
         figures, configs = [], []
         measured = {"color": [], "opacity": [], "note": []}
@@ -854,8 +868,11 @@ def patch_feature_intensity(feature_name, intensity_min, intensity_max,
 
                 display_s = _display_name(s_key, name_map or {})
                 new_name = f"Feature_{file_label}_{display_s}"
-                si = next((stored_by_name[k] for k in stored_by_name
-                           if k.endswith(f"_{display_s}")), None)
+                if stored_index_of is not None:
+                    si = stored_index_of.get(s_key)
+                else:
+                    si = next((stored_by_name[k] for k in stored_by_name
+                               if k.endswith(f"_{display_s}")), None)
                 if si is not None:
                     stored[si] = _apply_feature_data_to_stored(
                         stored[si], color, alpha, below, display_min,
