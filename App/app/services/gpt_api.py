@@ -42,6 +42,216 @@ _GPT_EXPORT_SEM = threading.BoundedSemaphore(_GPT_EXPORT_MAX_CONCURRENCY)
 # 出力形式の許可値（TIMS のみ意味を持つ。DESI は常に xlsx）。
 _EXPORT_FORMATS = ("parquet", "csv", "xlsx")
 
+# ---------------------------------------------------------------------------
+# 入力契約 (ver52.0)
+# ---------------------------------------------------------------------------
+# ★ 監査で出た Critical は全部「失敗せずに、もっともらしい間違った結果を返す」型。
+#   GPT の Instructions ではなく **サーバー側**で直す。Instructions は
+#   「お願い」であって契約ではなく、別クライアントやモデル挙動の揺れを防げない。
+TOP_DEFAULT = 10
+TOP_MIN = 1
+TOP_MAX = 50
+
+DIRECTIONS = ("up", "down", "both")
+DIRECTION_DEFAULT = "both"
+
+# マーカーの並び順。**符号を見ない**ので「高発現の上位」ではない。
+# 応答にそのまま載せて、GPT が誤って「高発現」と書けないようにする。
+MARKER_SORT_DESC = "p_val_adj asc, abs(avg_log2FC) desc"
+
+# Custom GPT Actions はリクエスト/レスポンスとも 10 万文字未満。
+# 余裕を見て手前で切る（Action 側で失敗すると原因が利用者に見えない）。
+MAX_RESPONSE_CHARS = 90_000
+
+
+class ApiError:
+    """構造化エラー (ver52.0)。
+
+    ★ 従来は「入力形式が不正」「クラスタが存在しない」「本当にマーカーが無い」
+      「キャッシュ未生成」が **すべて `ok:true` + 空配列**で、利用者にも GPT にも
+      区別できなかった。区別できないと、GPT は「該当なし」と要約してしまう。
+    """
+
+    __slots__ = ("code", "message", "status", "detail")
+
+    def __init__(self, code: str, message: str, status: int = 422, detail=None):
+        self.code = code
+        self.message = message
+        self.status = status
+        self.detail = detail or {}
+
+    def to_payload(self) -> dict:
+        d = {"ok": False, "code": self.code, "error": self.message}
+        d.update(self.detail)
+        return d
+
+    def __repr__(self):  # デバッグ用
+        return f"ApiError({self.code!r}, status={self.status})"
+
+
+def parse_top(raw):
+    """`top` を検証して (値, ApiError|None) を返す (ver52.0 / F-01)。
+
+    ★ 従来は既定も上下限も無く、
+        - 省略 → `shape_markers(top=None)` → **全件**
+        - `top=0` → `if top:` が偽 → **全件**（「0 件」ではない）
+      となり、Actions の応答上限に当たって `ResponseTooLargeError` になっていた。
+      利用者に見えるのはそのエラーだけで、何を直せばよいか分からない。
+    """
+    if raw is None or raw == "":
+        return TOP_DEFAULT, None
+    try:
+        val = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None, ApiError(
+            "INVALID_TOP",
+            f"top は整数で指定してください（{TOP_MIN}〜{TOP_MAX}）。受け取った値: {raw!r}")
+    if val < TOP_MIN or val > TOP_MAX:
+        return None, ApiError(
+            "INVALID_TOP",
+            f"top は {TOP_MIN} 以上 {TOP_MAX} 以下で指定してください。"
+            f"受け取った値: {val}")
+    return val, None
+
+
+def parse_clusters(raw):
+    """`cluster` を検証して (リスト|None, ApiError|None) を返す (ver52.0 / F-02)。
+
+    ★ 従来は `str(r["cluster"]) == str(cluster)` の完全一致だったので、
+      `"1,3,7"` は **どのレコードにも一致せず必ず 0 件**。しかも `ok:true` なので
+      「マーカーが無い」と読める。実際には入力形式を処理できなかっただけで、
+      **研究結果がそのまま欠落する**。
+
+    422 で弾くこともできるが、正しく複数として処理すれば
+    「1 質問あたり N 回呼ぶ」構造（監査 F-07）も同時に解消できる。
+    戻り値の `markers[]` は平らなままなので既存の GPT 設定を壊さない。
+
+    None は「全クラスタ」を意味する（従来と同じ）。
+    """
+    if raw is None or raw == "":
+        return None, None
+    parts = [p.strip() for p in str(raw).split(",")]
+    if any(p == "" for p in parts):
+        return None, ApiError(
+            "INVALID_CLUSTER_FORMAT",
+            f"cluster の書式が不正です（空の要素があります）: {raw!r}。"
+            "例: '1' または '1,3,7'")
+    seen, out = set(), []
+    for p in parts:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out, None
+
+
+def parse_direction(raw):
+    """`direction` を検証して (値, ApiError|None) を返す (ver52.0 / 監査 17.1)。"""
+    if raw is None or raw == "":
+        return DIRECTION_DEFAULT, None
+    val = str(raw).strip().lower()
+    if val not in DIRECTIONS:
+        return None, ApiError(
+            "INVALID_DIRECTION",
+            f"direction は {' / '.join(DIRECTIONS)} のいずれかです。受け取った値: {raw!r}")
+    return val, None
+
+
+def resolve_method(requested, rds_map):
+    """要求手法を検証して (選択手法, ApiError|None) を返す (ver52.0 / F-03, F-04)。
+
+    ★ 従来の `_pick_method` は、要求手法が `rds_map` に無いと
+      `_METHOD_ORDER` の先頭（＝ふつう Harmony）へ**黙って落ちて**いた。
+      実測で `PCA` / `PCA (uncorrected)` / `INVALID` がすべて `Harmony` になり、
+      **応答の解析手法ラベルが信用できない**状態だった。
+      PCA で比較したつもりが Harmony 同士の比較になる。
+
+    規則:
+      - 未知の手法名          → 422 INVALID_METHOD（そんな手法は無い）
+      - 既知だがこの結果に無い → 409 METHOD_NOT_AVAILABLE ＋ available_methods
+      - 省略                  → 既定順の先頭へフォールバックしてよい
+                                （要求していないので「置換」ではない）
+    表記ゆれは ver51.9 A-2 と同じく大文字小文字・前後空白を無視して吸収する。
+    """
+    available = [m for m in _METHOD_ORDER if m in (rds_map or {})]
+    available += [m for m in (rds_map or {}) if m not in _METHOD_ORDER]
+    if not available:
+        return None, ApiError(
+            "NO_RESULT", "この結果には解析済み RDS が見つかりません。", 404)
+
+    if requested is None or str(requested).strip() == "":
+        return available[0], None
+
+    key = str(requested).strip().lower()
+    known = {m.lower(): m for m in _METHOD_ORDER}
+    known.update({m.lower(): m for m in (rds_map or {})})
+    canonical = known.get(key)
+    if canonical is None:
+        return None, ApiError(
+            "INVALID_METHOD",
+            f"未知の解析手法です: {requested!r}。"
+            f"指定できるのは {' / '.join(_METHOD_ORDER)} です。",
+            422, {"available_methods": available})
+    if canonical not in (rds_map or {}):
+        return None, ApiError(
+            "METHOD_NOT_AVAILABLE",
+            f"{canonical} はこの解析結果にはありません。"
+            "別の手法の結果で代用はしません（結果の由来が分からなくなるため）。",
+            409, {"available_methods": available})
+    return canonical, None
+
+
+def marker_outcome(shaped, requested_clusters, available_clusters):
+    """マーカーが空のとき、その理由コードを返す (ver52.0 / F-09)。
+
+    ★ 「クラスタが存在しない」と「クラスタは在るがマーカーが無い」は
+      利用者にとって全く違う意味。前者は**指定ミス**（直せる）、
+      後者は**生物学的な結果**（直しようがない）。従来はどちらも
+      `ok:true` + 空配列で、GPT はどちらも「該当なし」と要約していた。
+
+    shaped: 整形後のマーカー（空かどうかだけ見る）
+    requested_clusters: 要求されたクラスタのリスト（None = 全クラスタ）
+    available_clusters: この結果に実在するクラスタの集合
+    """
+    if shaped:
+        return None
+    if requested_clusters:
+        avail = {str(c) for c in (available_clusters or ())}
+        # 要求したクラスタが **1 つも実在しない** ときだけ指定ミスと判定する。
+        # 一部でも実在するなら「そのクラスタにマーカーが無い」が正しい。
+        if avail and not any(str(c) in avail for c in requested_clusters):
+            return "CLUSTER_NOT_FOUND"
+    return "NO_MARKERS"
+
+
+def limit_response_size(payload: dict, list_key: str):
+    """応答が Actions の上限を超えるなら件数を削る (ver52.0 / F-01)。
+
+    ★ Action 側で失敗すると `ResponseTooLargeError` としか出ず、
+      利用者には何を直せばよいか分からない。サーバー側で削って
+      「削った」と明示するほうが情報量が多い。
+
+    Returns (payload, truncated: bool)
+    """
+    items = payload.get(list_key)
+    if not isinstance(items, list):
+        return payload, False
+    if len(json.dumps(payload, ensure_ascii=False, default=str)) <= MAX_RESPONSE_CHARS:
+        return payload, False
+
+    lo, hi = 0, len(items)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        trial = dict(payload)
+        trial[list_key] = items[:mid]
+        if len(json.dumps(trial, ensure_ascii=False,
+                          default=str)) <= MAX_RESPONSE_CHARS:
+            lo = mid
+        else:
+            hi = mid - 1
+    out = dict(payload)
+    out[list_key] = items[:lo]
+    return out, True
+
 
 # ===========================================================================
 # 認証判定（flask 非依存・純関数 → 単体テスト可能）
@@ -238,28 +448,58 @@ def _clean_marker(r: dict) -> dict:
     return out
 
 
-def shape_markers(records, cluster=None, top=None):
+def shape_markers(records, cluster=None, top=None, direction=DIRECTION_DEFAULT):
     """DEG レコード列をクラスタ絞り込み＋有意度順に整形（純関数）。
 
-    ``cluster`` 指定時はそのクラスタのみ。``top`` 指定時は（クラスタ指定なら上位N、
-    未指定ならクラスタごとに上位N）。並びは (調整p値 昇順, |log2FC| 降順)。
+    cluster: None（全クラスタ）/ 文字列 1 個 / **文字列のリスト**。
+        ★ ver52.0: リストを受けられるようにした。従来は文字列の完全一致だけで、
+          `"1,3,7"` のような入力が **どのレコードにも一致せず必ず 0 件**になり、
+          しかも `ok:true` なので「マーカーが無い」と読めた（監査 F-02）。
+    top: 各クラスタの上位 N。
+    direction: "up" | "down" | "both"。
+        ★ ver52.0: 並びは `p 昇順, |log2FC| 降順` で **符号を見ない**ため、
+          「上位 N ＝ そのクラスタで高発現」ではない。実測で上位 10 件が全部
+          負（＝相対的に低い）になる例があり、GPT が「高発現する上位マーカー」と
+          説明していた（監査 17.1）。符号で絞れるようにする。
+          既定 "both" は従来の挙動と同じ。
+
+    並びは (調整p値 昇順, |log2FC| 降順) = `MARKER_SORT_DESC`。
     """
     recs = list(records or [])
-    if cluster is not None and str(cluster) != "":
-        recs = [r for r in recs if str(r.get("cluster", "")) == str(cluster)]
+
+    if cluster is None or cluster == "":
+        wanted = None
+    elif isinstance(cluster, (list, tuple, set)):
+        wanted = {str(c) for c in cluster}
+    else:
+        wanted = {str(cluster)}
+    if wanted is not None:
+        recs = [r for r in recs if str(r.get("cluster", "")) in wanted]
+
+    if direction in ("up", "down"):
+        def _fc(r):
+            try:
+                v = float(r.get("avg_log2FC", 0) or 0)
+                return 0.0 if v != v else v
+            except (TypeError, ValueError):
+                return 0.0
+        recs = [r for r in recs
+                if (_fc(r) > 0 if direction == "up" else _fc(r) < 0)]
+
     recs.sort(key=_marker_sort_key)
     if top:
         top = int(top)
-        if cluster is not None and str(cluster) != "":
-            recs = recs[:top]
-        else:
-            from collections import defaultdict
-            by = defaultdict(list)
-            for r in recs:
-                by[str(r.get("cluster", ""))].append(r)
-            recs = []
-            for _cl, rs in by.items():
-                recs.extend(sorted(rs, key=_marker_sort_key)[:top])
+        # ★ 単一クラスタでも複数クラスタでも「クラスタごとに上位 N」で揃える。
+        #   従来は単一指定のときだけ全体から N 件取っていたが、結果は同じ
+        #   （すでに 1 クラスタに絞られているため）。分岐を無くして
+        #   複数クラスタでも 1 クラスタでも同じ意味になるようにする。
+        from collections import defaultdict
+        by = defaultdict(list)
+        for r in recs:
+            by[str(r.get("cluster", ""))].append(r)
+        recs = []
+        for _cl, rs in by.items():
+            recs.extend(rs[:top])          # by の各リストは既にソート済み
     return [_clean_marker(r) for r in recs]
 
 
@@ -328,9 +568,30 @@ def build_openapi_spec(base_url: str = "") -> dict:
     """
     server_url = (base_url or "https://YOUR-DOMAIN").rstrip("/")
 
-    def _p(name, where="query", typ="string", required=False, desc=""):
+    def _p(name, where="query", typ="string", required=False, desc="",
+           enum=None, default=None, minimum=None, maximum=None):
+        """パラメータ定義。
+
+        ★ ver52.0: `enum` / `default` / `minimum` / `maximum` を書けるようにした。
+          **モデルが実際に読むのはこの仕様書**なので、サーバー側だけ直しても
+          ここが緩いままだとリクエストの作られ方は変わらない
+          （`top` 省略で応答上限に当たり続ける、無効な method を送り続ける）。
+        """
+        schema = {"type": typ}
+        if enum is not None:
+            schema["enum"] = list(enum)
+        if default is not None:
+            schema["default"] = default
+        if minimum is not None:
+            schema["minimum"] = minimum
+        if maximum is not None:
+            schema["maximum"] = maximum
         return {"name": name, "in": where, "required": required,
-                "schema": {"type": typ}, "description": desc}
+                "schema": schema, "description": desc}
+
+    _method_p = _p("method", enum=_METHOD_ORDER,
+                   desc=("解析手法。指定した手法の結果が無い場合は 409 を返し、"
+                         "**別手法で代用はしない**。省略時は既定順の先頭。"))
 
     obj = {"type": "object"}
     return {
@@ -369,16 +630,31 @@ def build_openapi_spec(base_url: str = "") -> dict:
                 "summary": "クラスタ統計（ウォームキャッシュがある場合）",
                 "parameters": [_p("pid", "path", required=True),
                                _p("sid", "path", required=True),
-                               _p("method", desc="Harmony / RPCA / PCA")],
+                               _method_p],
                 "responses": {"200": {"description": "クラスタ統計",
                                       "content": {"application/json": {"schema": obj}}}}}},
             "/api/gpt/projects/{pid}/sub/{sid}/markers": {"get": {
-                "operationId": "getMarkers", "summary": "クラスタ別マーカー（DEG）",
+                "operationId": "getMarkers",
+                "summary": "クラスタ別マーカー（DEG）",
+                "description": (
+                    "並びは " + MARKER_SORT_DESC + "。**符号を見ないので"
+                    "「上位 N ＝ そのクラスタで高発現」ではない**。"
+                    "高発現だけが必要なら direction=up を指定すること。"),
                 "parameters": [_p("pid", "path", required=True),
                                _p("sid", "path", required=True),
-                               _p("method", desc="Harmony / RPCA / PCA"),
-                               _p("cluster", desc="クラスタ番号（省略で全クラスタ）"),
-                               _p("top", "query", "integer", desc="各クラスタ上位N")],
+                               _method_p,
+                               _p("cluster",
+                                  desc=("クラスタ番号。カンマ区切りで複数指定できる"
+                                        "（例: '1,3,7'）。省略すると全クラスタ。")),
+                               _p("top", "query", "integer",
+                                  default=TOP_DEFAULT, minimum=TOP_MIN,
+                                  maximum=TOP_MAX,
+                                  desc=(f"各クラスタの上位 N 件（{TOP_MIN}〜{TOP_MAX}、"
+                                        f"既定 {TOP_DEFAULT}）。範囲外は 422。")),
+                               _p("direction", enum=DIRECTIONS,
+                                  default=DIRECTION_DEFAULT,
+                                  desc=("up=そのクラスタで高い側のみ / "
+                                        "down=低い側のみ / both=両方（既定）"))],
                 "responses": {"200": {"description": "マーカー",
                                       "content": {"application/json": {"schema": obj}}}}}},
             "/api/gpt/projects/{pid}/sub/{sid}/compounds": {"get": {
@@ -386,7 +662,7 @@ def build_openapi_spec(base_url: str = "") -> dict:
                 "summary": "化合物アノテーション検索（名前 / m/z / 脂質クラス）",
                 "parameters": [_p("pid", "path", required=True),
                                _p("sid", "path", required=True),
-                               _p("method", desc="Harmony / RPCA / PCA"),
+                               _method_p,
                                _p("query", desc="名前部分一致"),
                                _p("mz", "query", "number", desc="m/z 中心"),
                                _p("tol", "query", "number", desc="m/z 許容差(Da) 既定0.01"),
@@ -394,28 +670,28 @@ def build_openapi_spec(base_url: str = "") -> dict:
                                _p("limit", "query", "integer", desc="最大件数 既定50")],
                 "responses": {"200": {"description": "検索結果",
                                       "content": {"application/json": {"schema": obj}}}}}},
+            # ★ ver52.0: ファイル本体を返す 2 つの operation
+            #   (`download` / `downloadExportJob`) を **Action 仕様から外した**。
+            #   Custom GPT Actions はバイナリ応答を扱えず、**必ず失敗する**
+            #   （実測: 95KB の PNG でも ClientResponseError。容量の問題ではない）。
+            #   仕様に載っていると GPT が繰り返し試みて、利用者には
+            #   「ダウンロードできるはずなのにできない」ようにしか見えない。
+            #   エンドポイント自体はブラウザからの直接取得のために残してある。
             "/api/gpt/projects/{pid}/sub/{sid}/outputs": {"get": {
-                "operationId": "listOutputs", "summary": "出力画像一覧（ダウンロードURL付き）",
+                "operationId": "listOutputs",
+                "summary": "出力画像の一覧（メタデータのみ。取得はアプリから）",
                 "parameters": [_p("pid", "path", required=True),
                                _p("sid", "path", required=True)],
                 "responses": {"200": {"description": "画像一覧",
                                       "content": {"application/json": {"schema": obj}}}}}},
             "/api/gpt/projects/{pid}/sub/{sid}/exports": {"get": {
                 "operationId": "listExports",
-                "summary": "保存済み MetaboAnalyst エクスポート一覧（ダウンロードURL付き）",
+                "summary": ("保存済み MetaboAnalyst エクスポートの一覧"
+                            "（メタデータのみ。取得はアプリから）"),
                 "parameters": [_p("pid", "path", required=True),
                                _p("sid", "path", required=True)],
                 "responses": {"200": {"description": "エクスポート一覧",
                                       "content": {"application/json": {"schema": obj}}}}}},
-            "/api/gpt/download/{token}": {"get": {
-                "operationId": "download",
-                "summary": "エクスポート/出力ファイルのダウンロード（一覧が返すトークン）",
-                "parameters": [_p("token", "path", required=True)],
-                "responses": {"200": {"description": "ファイル本体",
-                                      "content": {"application/octet-stream":
-                                                  {"schema": {"type": "string",
-                                                              "format": "binary"}}}},
-                              "404": {"description": "not found"}}}},
             "/api/gpt/projects/{pid}/sub/{sid}/exports/interactive": {"post": {
                 "operationId": "startInteractiveExport",
                 "summary": ("インタラクティブ Export（UMAP_cluster）をその場で生成開始"
@@ -433,15 +709,6 @@ def build_openapi_spec(base_url: str = "") -> dict:
                 "responses": {"200": {"description": "状態",
                                       "content": {"application/json": {"schema": obj}}},
                               "404": {"description": "unknown job"}}}},
-            "/api/gpt/exports/jobs/{job_id}/file": {"get": {
-                "operationId": "downloadExportJob",
-                "summary": "生成済みインタラクティブ Export のダウンロード",
-                "parameters": [_p("job_id", "path", required=True)],
-                "responses": {"200": {"description": "ファイル本体",
-                                      "content": {"application/octet-stream":
-                                                  {"schema": {"type": "string",
-                                                              "format": "binary"}}}},
-                              "404": {"description": "not found"}}}},
         },
     }
 
@@ -491,16 +758,34 @@ def _resolve_sub(pid: str, sid: str):
 
 
 def _pick_method(rds_map: dict, method):
-    """要求手法 method に対する (method_name, rds_path) を返す。無ければ既定順で先頭。"""
-    if not rds_map:
-        return None, None
-    if method and method in rds_map:
-        return method, rds_map[method]
-    for m in _METHOD_ORDER:
-        if m in rds_map:
-            return m, rds_map[m]
-    k = next(iter(rds_map))
-    return k, rds_map[k]
+    """要求手法 method に対する (method_name, rds_path, ApiError|None) を返す。
+
+    ★ ver52.0: 従来は要求手法が `rds_map` に無いと `_METHOD_ORDER` の先頭
+      （ふつう Harmony）へ**黙って落ちて**いた。実測で `PCA` /
+      `PCA (uncorrected)` / `INVALID` がすべて `Harmony` になり、
+      **応答の解析手法ラベルが信用できない**状態だった。PCA で比較したつもりが
+      Harmony 同士の比較になる。検証は `resolve_method` に集約した。
+    """
+    selected, err = resolve_method(method, rds_map)
+    if err is not None:
+        return None, None, err
+    return selected, (rds_map or {}).get(selected), None
+
+
+def _method_block(requested, selected, rds_map):
+    """応答に載せる手法の由来 (ver52.0)。
+
+    `requested_method` と `selected_method` を分けることで、
+    「省略したので既定に落ちた」と「要求どおり」を利用者が区別できる。
+    """
+    available = [m for m in _METHOD_ORDER if m in (rds_map or {})]
+    available += [m for m in (rds_map or {}) if m not in _METHOD_ORDER]
+    return {
+        "method": selected,                 # 後方互換（既存 GPT 設定が読む）
+        "requested_method": requested or None,
+        "selected_method": selected,
+        "available_methods": available,
+    }
 
 
 def _warm_cache_dir(rds_path):
@@ -516,6 +801,44 @@ def _warm_cache_dir(rds_path):
     except Exception as e:  # noqa: BLE001
         logger.warning("warm cache 判定に失敗: %s", e)
     return None
+
+
+def readiness(result_dir, rds_map, warm_cache_dirs) -> dict:
+    """種別ごとの取得可否を返す (ver52.0 / 監査 F-05, F-06)。
+
+    ★ `warm` 1 個では現状を表せない。実際には
+        - クラスタ統計 / 化合物検索 … 抽出キャッシュが要る
+        - マーカー(DEG)            … 結果フォルダのファイルを直接読むので不要
+        - 出力画像                  … 同上
+      という非対称があり、監査でも「cold なのに getMarkers は取れる」と
+      観測されている。1 個の bool で返すと、GPT が「まだ何も取れない」と
+      誤解して再試行するか、逆に諦める。
+
+    R は起動しない（ファイルの存在確認だけ）。
+    """
+    has_cache = bool(warm_cache_dirs)
+    markers = False
+    outputs = False
+    if result_dir:
+        root = Path(result_dir)
+        if root.is_dir():
+            try:
+                from app.utils.deg_utils import load_deg_results
+                for m in ([m for m in _METHOD_ORDER if m in (rds_map or {})]
+                          or [None]):
+                    if load_deg_results(root, m):
+                        markers = True
+                        break
+            except Exception as e:  # noqa: BLE001
+                logger.debug("readiness: DEG 判定に失敗: %s", e)
+            try:
+                exts = {".png", ".jpg", ".jpeg"}
+                outputs = any(f.suffix.lower() in exts
+                              for f in root.rglob("*") if f.is_file())
+            except OSError:
+                outputs = False
+    return {"clusters": has_cache, "compounds": has_cache,
+            "markers": markers, "outputs": outputs}
 
 
 def _read_clusters(cache_dir):
@@ -720,8 +1043,21 @@ def register_gpt_api(server) -> None:
         d.update(payload)
         return _json(d, 200)
 
-    def _fail(msg, status=400):
-        return _json({"ok": False, "error": msg}, status)
+    def _fail(msg, status=400, code=None):
+        d = {"ok": False, "error": msg}
+        if code:
+            d["code"] = code
+        return _json(d, status)
+
+    def _fail_api(err):
+        """`ApiError` をそのまま応答にする (ver52.0)。"""
+        return _json(err.to_payload(), err.status)
+
+    def _readiness(r):
+        """解決済みサブプロジェクトの種別別 readiness (ver52.0)。"""
+        warm = [rds for rds in (r["rds_map"] or {}).values()
+                if _warm_cache_dir(rds)]
+        return readiness(r["result_dir"], r["rds_map"], warm)
 
     # ---- 認証 (before_request): /api/gpt/* のみ X-API-Key を要求 --------------
     def _gpt_before_request():
@@ -764,51 +1100,106 @@ def register_gpt_api(server) -> None:
     def _clusters(pid, sid):
         r = _resolve_sub(pid, sid)
         if not r:
-            return _fail("project/sub not found", 404)
-        method, rds = _pick_method(r["rds_map"], request.args.get("method"))
-        if not rds:
-            return _fail("この結果には解析済み RDS が見つかりません。", 404)
+            return _fail("project/sub not found", 404, "NOT_FOUND")
+        requested = request.args.get("method")
+        method, rds, err = _pick_method(r["rds_map"], requested)
+        if err is not None:
+            return _fail_api(err)
+        mblock = _method_block(requested, method, r["rds_map"])
         cache_dir = _warm_cache_dir(rds)
         if not cache_dir:
-            return _ok({"warm": False, "method": method,
-                        "message": "抽出キャッシュ未生成です。アプリで一度開くと取得できます。"})
+            # ★ ver52.0: `warm` 1 個では状態を表せない。`getMarkers` は
+            #   キャッシュが無くても取れる（DEG ファイルを直接読むため）。
+            #   種別ごとの readiness を返して、GPT が「まだ何も取れない」と
+            #   誤解しないようにする（監査 F-05 / F-06）。
+            return _ok({"warm": False, "code": "CACHE_COLD", **mblock,
+                        "ready": _readiness(r),
+                        "message": ("クラスタ統計は抽出キャッシュが必要です"
+                                    "（アプリで一度開くと生成されます）。"
+                                    "マーカー(getMarkers)は今のままでも取得できます。")})
         recs, meta = _read_clusters(cache_dir)
-        return _ok({"warm": True, "method": method, **shape_clusters(recs, meta)})
+        return _ok({"warm": True, **mblock, "ready": _readiness(r),
+                    **shape_clusters(recs, meta)})
 
     # ---- マーカー（DEG。純ファイル読み） ------------------------------------
     def _markers(pid, sid):
         r = _resolve_sub(pid, sid)
         if not r:
-            return _fail("project/sub not found", 404)
+            return _fail("project/sub not found", 404, "NOT_FOUND")
         if not r["result_dir"]:
-            return _fail("結果フォルダが未設定です。", 404)
-        method = request.args.get("method") or "Harmony"
-        cluster = request.args.get("cluster")
-        top = request.args.get("top")
-        try:
-            top = int(top) if top not in (None, "") else None
-        except ValueError:
-            top = None
+            return _fail("結果フォルダが未設定です。", 404, "NO_RESULT")
+
+        # ★ ver52.0: 入力を先に検証する。従来は
+        #   top 省略/0 → 全件（応答上限に当たる）、`"1,3,7"` → 黙って 0 件、
+        #   無効 method → そのまま通る、だった。
+        requested = request.args.get("method")
+        method, _rds, err = _pick_method(r["rds_map"], requested)
+        if err is not None:
+            return _fail_api(err)
+        clusters, err = parse_clusters(request.args.get("cluster"))
+        if err is not None:
+            return _fail_api(err)
+        top, err = parse_top(request.args.get("top"))
+        if err is not None:
+            return _fail_api(err)
+        direction, err = parse_direction(request.args.get("direction"))
+        if err is not None:
+            return _fail_api(err)
+
+        mblock = _method_block(requested, method, r["rds_map"])
         from app.utils.deg_utils import load_deg_results
         recs = load_deg_results(Path(r["result_dir"]), method)
         if recs is None:
-            return _ok({"method": method, "markers": [],
+            return _ok({**mblock, "markers": [], "code": "NO_MARKERS",
                         "message": "この手法の DEG 結果が見つかりません。"})
-        return _ok({"method": method,
-                    "markers": shape_markers(recs, cluster=cluster, top=top)})
+
+        available = {str(x.get("cluster", "")) for x in recs}
+        shaped = shape_markers(recs, cluster=clusters, top=top,
+                               direction=direction)
+        payload = {
+            **mblock,
+            "cluster": clusters,
+            "top": top,
+            "direction": direction,
+            # ★ 並び順を明示する。符号を見ないので「高発現の上位」ではない。
+            #   これを書いておかないと GPT が「高発現する上位マーカー」と
+            #   説明してしまう（監査 17.1）。
+            "sort": MARKER_SORT_DESC,
+            "markers": shaped,
+        }
+        code = marker_outcome(shaped, clusters, available)
+        if code:
+            payload["code"] = code
+            payload["available_clusters"] = sorted(available, key=str)
+            payload["message"] = (
+                "指定したクラスタはこの結果に存在しません。"
+                if code == "CLUSTER_NOT_FOUND" else
+                "条件に合うマーカーがありませんでした（クラスタは存在します）。")
+        payload, truncated = limit_response_size(payload, "markers")
+        if truncated:
+            payload["truncated"] = True
+            payload["code"] = "RESPONSE_TRUNCATED"
+            payload["message"] = (
+                "応答が大きすぎるため件数を削りました。top を小さくするか、"
+                "クラスタを絞ってください。")
+        return _ok(payload)
 
     # ---- 化合物検索（ウォームのアノテーション） -----------------------------
     def _compounds(pid, sid):
         r = _resolve_sub(pid, sid)
         if not r:
-            return _fail("project/sub not found", 404)
-        method, rds = _pick_method(r["rds_map"], request.args.get("method"))
-        if not rds:
-            return _fail("この結果には解析済み RDS が見つかりません。", 404)
+            return _fail("project/sub not found", 404, "NOT_FOUND")
+        requested = request.args.get("method")
+        method, rds, err = _pick_method(r["rds_map"], requested)
+        if err is not None:
+            return _fail_api(err)
+        mblock = _method_block(requested, method, r["rds_map"])
         cache_dir = _warm_cache_dir(rds)
         if not cache_dir:
-            return _ok({"warm": False, "method": method, "compounds": [],
-                        "message": "抽出キャッシュ未生成です。アプリで一度開くと取得できます。"})
+            return _ok({"warm": False, "code": "CACHE_COLD", **mblock,
+                        "compounds": [], "ready": _readiness(r),
+                        "message": ("化合物検索は抽出キャッシュが必要です"
+                                    "（アプリで一度開くと生成されます）。")})
         recs = _read_annotations(cache_dir)
         mz = request.args.get("mz")
         try:
@@ -827,8 +1218,16 @@ def register_gpt_api(server) -> None:
             recs, query=request.args.get("query"), mz=mz, tol=tol,
             lipid_class=request.args.get("lipid_class"), limit=limit,
         )
-        return _ok({"warm": True, "method": method,
-                    "n_total_annotated": len(recs), "compounds": result})
+        payload = {"warm": True, **mblock,
+                   "n_total_annotated": len(recs), "compounds": result}
+        payload, truncated = limit_response_size(payload, "compounds")
+        if truncated:
+            payload["truncated"] = True
+            payload["code"] = "RESPONSE_TRUNCATED"
+            payload["message"] = (
+                "応答が大きすぎるため件数を削りました。limit を小さくするか、"
+                "検索条件を絞ってください。")
+        return _ok(payload)
 
     # ---- 出力画像一覧 --------------------------------------------------------
     def _outputs(pid, sid):
