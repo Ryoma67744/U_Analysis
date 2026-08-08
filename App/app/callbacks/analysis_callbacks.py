@@ -1857,6 +1857,8 @@ def auto_detect_observed_peaks(n, table_data, search_window, cache_dir,
     feature_names = list(mz_values.keys())
 
     matched_count = 0
+    unreadable_refs = 0        # ref_mz を数値化できなかった行
+    unknown_intensity = 0      # 窓内に強度既知の feature が無かった行
     updated_data = []
 
     for row in table_data:
@@ -1868,6 +1870,14 @@ def auto_detect_observed_peaks(n, table_data, search_window, cache_dir,
         try:
             ref_f = float(ref)
         except (ValueError, TypeError):
+            # ★ ver52.3: 従来は行を **そのまま** 追加していたので、
+            #   前回実行時の obs_mz / Δppm が残ったまま use=Yes で表示され、
+            #   **一致済みの行に見えていた**（「7/8 マッチ」と出るのに
+            #   どの行が外れたのか分からない）。すぐ下の「窓内にピーク無し」
+            #   分岐は正しく空にしているので、そちらに揃える。
+            row["obs_mz"] = ""
+            row["ppm_drift"] = "--"
+            unreadable_refs += 1
             updated_data.append(row)
             continue
 
@@ -1878,8 +1888,20 @@ def auto_detect_observed_peaks(n, table_data, search_window, cache_dir,
             updated_data.append(row)
             continue
 
-        # ウィンドウ内で最大強度のピークを選択
-        best_idx = max(within, key=lambda i: avg_spectrum.get(feature_names[i], 0))
+        # ウィンドウ内で最大強度のピークを選択。
+        # ★ ver52.3: `avg_spectrum.get(..., 0)` は「強度不明」を「強度 0」と
+        #   同一視するため、窓内の強度が 1 つも分からないと `max` が
+        #   **最初の要素（≒最小 m/z）**を返す。強度を見ずに選んだ観測値が
+        #   Δppm として表示され、そのまま較正に使われる。
+        #   対話側 `_calibrate_mz` と同じ直し方で、強度が分かるものだけを候補にする。
+        known = [i for i in within if feature_names[i] in avg_spectrum]
+        if not known:
+            row["obs_mz"] = ""
+            row["ppm_drift"] = "--"
+            unknown_intensity += 1
+            updated_data.append(row)
+            continue
+        best_idx = max(known, key=lambda i: avg_spectrum[feature_names[i]])
         obs = float(mz_array[best_idx])
         ppm = (obs - ref_f) / ref_f * 1e6
         row["obs_mz"] = round(obs, 5)
@@ -1889,6 +1911,16 @@ def auto_detect_observed_peaks(n, table_data, search_window, cache_dir,
 
     sample_label = target_sample or "全サンプル"
     status = f"✓ 検出完了 [{sample_label}]: {matched_count}/{len(table_data)} ピークがマッチしました"
+    # ★ ver52.3: 外れた理由を伝える。従来は「7/8」とだけ出るので、
+    #   利用者はどの行がなぜ外れたのかテーブルから読み取れなかった
+    #   （しかも数値化できなかった行は前回値が残って一致済みに見えていた）。
+    notes = []
+    if unreadable_refs:
+        notes.append(f"参照 m/z を数値として読めない行 {unreadable_refs} 件")
+    if unknown_intensity:
+        notes.append(f"窓内の強度が不明な行 {unknown_intensity} 件")
+    if notes:
+        status += "（" + " / ".join(notes) + " は空欄にしました）"
     return updated_data, status
 
 

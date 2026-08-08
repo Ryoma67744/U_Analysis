@@ -18,7 +18,7 @@
 
 ■ ★ 双子の関数は同じ罠を防いでいる
 
-`_build_annotation_csv_map`（同ファイル :133）には
+`_build_annotation_csv_map`（同ファイルの HMDB 節）には
 
     if mz <= 0 or pd.isna(mz):
         continue
@@ -115,15 +115,67 @@ class TestBlankCellDoesNotPoisonTheMap:
         # Beta は Daughter だけが空。Parent 側は残る。
         assert 200.7 in mz_map and mz_map[200.7] == "Beta"
 
-    def test_skipped_rows_are_reported(self, mrm_with_one_blank_cell, caplog):
-        """★ 黙って捨てない（本スライスの主題）。"""
+
+class TestReportingDistinguishesBlankFromBroken:
+    """★ 「読めなかった」の報告は、**空セルを数えない**こと。
+
+    ver52.3 ④ の最初の実装は空セルも数えていた。だが MRM も TraceFinder/HMDB も
+    付加イオンごとに列を持つので、空セルは「この化合物にこの付加イオンは無い」
+    という**正常な状態**であり、実データでは数千件になる。
+
+    「毎回数千件スキップしました」と出る報告は、利用者に無視されるようになる
+    ——それは報告しないのと同じで、直したことにならない。
+    そこで **非空なのに数値として読めないセルだけ**を数える。
+
+    この 2 本は対で意味を持つ（片方だけだと「報告しない」実装でも通る）。
+    """
+
+    def test_blank_cell_is_not_reported(self, mrm_with_one_blank_cell, caplog):
+        """空セル（＝正常）では警告を出さない。"""
         import logging
         with caplog.at_level(logging.WARNING):
-            IC._build_mz_to_compound_map(mrm_with_one_blank_cell)
+            _, n = IC._build_mz_to_compound_map(
+                mrm_with_one_blank_cell, return_skipped=True)
+        assert n == 0, f"空セルを「読めなかった」に数えている: {n} 件"
         messages = [r.getMessage() for r in caplog.records]
-        assert any("数値化できず除外" in m for m in messages), (
-            "m/z を数値化できず捨てた行があるのに、何も報告していない。"
+        assert not [m for m in messages if "読めませんでした" in m], (
+            "空セルは正常な状態なのに警告が出ている。"
+            "実データでは数千件になり、報告そのものが無視されるようになる。"
             f"出たログ: {messages}")
+
+    def test_non_blank_unreadable_cell_is_reported(self, tmp_path, caplog):
+        """非空なのに数値でないセル（＝書式の壊れ）は必ず報告する。"""
+        import logging
+        path = _write_mrm(tmp_path, [
+            {"Compound": "Alpha", "Parent_mz": 100.5, "Daughter_mz": 80.2},
+            {"Compound": "Beta", "Parent_mz": "N.D.", "Daughter_mz": 150.3},
+        ])
+        with caplog.at_level(logging.WARNING):
+            mz_map, n = IC._build_mz_to_compound_map(path, return_skipped=True)
+        assert n == 1, (
+            f"非空なのに数値化できないセルを数えていない (n={n}, map={mz_map})。"
+            "この化合物は注釈から黙って消え、markers_annotated.csv にも出ない")
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("読めませんでした" in m for m in messages), (
+            f"件数は数えたのに報告していない。出たログ: {messages}")
+
+    def test_the_twin_counts_the_same_way(self, tmp_path, caplog):
+        """★ 双子 `_build_annotation_csv_map` も同じ数え方であること。
+
+        片方だけ報告できると、利用者から見て
+        「ファイル形式によって警告が出たり出なかったり」になる（T3 そのもの）。
+        """
+        import logging
+        p = tmp_path / "hmdb.csv"
+        pd.DataFrame([
+            {"name": "Alpha", "[M+H]+": 100.5},
+            {"name": "Beta", "[M+H]+": ""},        # 空 = 正常
+            {"name": "Gamma", "[M+H]+": "N.D."},   # 非空だが読めない
+        ]).to_csv(p, index=False)
+        with caplog.at_level(logging.WARNING):
+            m, n = IC._build_annotation_csv_map(str(p), return_skipped=True)
+        assert n == 1, f"双子の数え方が MRM 側と揃っていない (n={n}, map={m})"
+        assert any("読めませんでした" in r.getMessage() for r in caplog.records)
 
 
 class TestTwinFunctionGuardsIt:

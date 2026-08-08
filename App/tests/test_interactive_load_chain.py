@@ -230,7 +230,12 @@ def test_link_d_success_returns_34_and_shows_viz(monkeypatch, sample_df, deg_rec
     captured = {}
     def spy_anno(features, **kwargs):
         captured["features"] = features
-        return {"built": True}
+        captured["kwargs"] = kwargs
+        # ★ ver52.3 ④: 読み込み経路は `return_skipped=True` で呼ぶので
+        #   スタブも 2-tuple を返す。dict のままだとアンパックが例外になり、
+        #   本体の `except Exception` が拾って **注釈ゼロで「読み込み完了」**に
+        #   なる（実際にこのテストがそれを捕まえた）。
+        return ({"built": True}, 0)
     monkeypatch.setattr(cal, "_build_feature_annotation_map", spy_anno)
     out = _call_link_d(rds_path)
     assert len(out) == 34
@@ -243,6 +248,40 @@ def test_link_d_success_returns_34_and_shows_viz(monkeypatch, sample_df, deg_rec
     # アノテーションが正しい features で構築された (result 参照バグの回帰防止)
     assert captured.get("features") == st["features_list"]
     assert ic._get_state(rds_path).get("annotation_map") == {"built": True}
+    # ★ 読めなかったセルを数えられる形で呼んでいること。
+    #   ここが False/未指定に戻ると、読み込み経路は再び黙って化合物名を落とす。
+    assert captured["kwargs"].get("return_skipped") is True
+
+
+def test_link_d_reports_unreadable_annotation_cells(monkeypatch, sample_df):
+    """★ ver52.3 ④: 読み込み時点で「読めなかった質量セル」を利用者に出すこと。
+
+    ここで落ちた化合物名は backfill 経由で PPTX / export にも欠けたまま出る。
+    再アノテーション画面を開かない利用者には、ここ以外に気づく機会が無い。
+    """
+    rds_path = "/proj/A.rds"
+    st = _seed_state(rds_path, sample_df)
+    st["_deg_data"] = None
+    monkeypatch.setattr(ic, "_load_interactive_settings", lambda: {})
+    import app.callbacks.interactive_calibration as cal
+    monkeypatch.setattr(cal, "_build_feature_annotation_map",
+                        lambda *a, **k: ({}, 3))
+    out = _call_link_d(rds_path)
+    info = str(out[0])
+    assert "3 件" in info and "注釈されていません" in info, (
+        f"読めなかった質量セルが読み込み完了行に出ていない: {info}")
+
+
+def test_link_d_says_nothing_when_all_cells_are_readable(monkeypatch, sample_df):
+    """★ 過剰報告の番人: 0 件なら何も足さない。"""
+    rds_path = "/proj/A.rds"
+    st = _seed_state(rds_path, sample_df)
+    st["_deg_data"] = None
+    monkeypatch.setattr(ic, "_load_interactive_settings", lambda: {})
+    import app.callbacks.interactive_calibration as cal
+    monkeypatch.setattr(cal, "_build_feature_annotation_map",
+                        lambda *a, **k: ({}, 0))
+    assert "注釈されていません" not in str(_call_link_d(rds_path)[0])
 
 
 def test_link_d_calib_warning_appended(monkeypatch, sample_df):
@@ -252,7 +291,7 @@ def test_link_d_calib_warning_appended(monkeypatch, sample_df):
     st["_calib_warning"] = "（注: m/zキャリブレーションに失敗したため未適用）"
     monkeypatch.setattr(ic, "_load_interactive_settings", lambda: {})
     import app.callbacks.interactive_calibration as cal
-    monkeypatch.setattr(cal, "_build_feature_annotation_map", lambda *a, **k: {})
+    monkeypatch.setattr(cal, "_build_feature_annotation_map", lambda *a, **k: ({}, 0))
     out = _call_link_d(rds_path)
     assert "キャリブレーション" in str(out[0])  # info_text に警告付加
 

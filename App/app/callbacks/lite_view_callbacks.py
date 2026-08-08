@@ -532,11 +532,17 @@ def _build_spot_filtering_section(result_dir):
         return None
 
     cards = []
+    unreadable = []          # 読めなかった QC 画像のファイル名
     for p in pngs:
         try:
             with open(p, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode()
-        except Exception:
+        except Exception as e:
+            # ★ ver52.3 (T5): 読めない画像は無言で落ちていた。全部落ちると
+            #   節ごと消えるので、閲覧者からは「Otsu 除去をしていない解析」と
+            #   区別が付かない（この節の有無が唯一の手がかりなので実害がある）。
+            logger.warning("スポット除去 QC 画像を読めません (%s): %s", p.name, e)
+            unreadable.append(p.name)
             continue
         cards.append(
             html.Div(
@@ -549,6 +555,17 @@ def _build_spot_filtering_section(result_dir):
                     ),
                 ],
                 className="mb-4",
+            )
+        )
+    if unreadable:
+        # 1 枚も出せなくても節は出す。「QC 画像はあるが読めなかった」と
+        # 「そもそも Otsu 除去をしていない」は、閲覧者にとって全く別の意味。
+        cards.append(
+            dbc.Alert(
+                f"⚠ QC 画像 {len(unreadable)} 件を読み込めませんでした: "
+                + ", ".join(unreadable[:5])
+                + ("…" if len(unreadable) > 5 else ""),
+                color="warning", className="small py-1 px-2 mb-0",
             )
         )
     if not cards:

@@ -78,6 +78,36 @@ REPORTS_SKIPS = {
     ("deg_utils.py", "build_marker_rows"):
         "ver52.3 ④: 上の件数を受け取り、**同じ表の注記行**として出す"
         "（表そのものが利用者に届く成果物なので、在庫内で報告できる）",
+    # --- ver52.3 ④ 後半: 未精査 11 件の精査で HARM と判定し、報告を足したもの ---
+    ("interactive_calibration.py", "_build_annotation_csv_map"):
+        "ver52.3 ④: 質量セルを数値化できない化合物が黙って注釈から消えていた。"
+        "`return_skipped=True` で件数を返し、再アノテーション画面が"
+        "「除外 N 件」を出す（緑ではなく警告色にする）。"
+        "★ **空セルは数えない**——付加イオン列は元々まばらなので、"
+        "区別せず数えると毎回数千件になり報告が無視される",
+    ("interactive_calibration.py", "_build_mz_to_compound_map"):
+        "ver52.3 ④: 上の双子。引数・戻り値・数え方を揃えた"
+        "（片方だけ報告できると「ファイル形式によって警告が出たり出なかったり」になる）。"
+        "併せて `pd.isna` ガードを入れ、空セル 1 つで全注釈が消える NaN 汚染も塞いだ",
+    ("interactive_calibration.py", "auto_detect_int_cal_peaks"):
+        "ver52.3 ④: 参照 m/z が読めない行を **前回値のまま** 残していたので"
+        "「一致済み」に見えていた。空欄にしたうえで理由と件数を状態表示に出す",
+    ("analysis_callbacks.py", "auto_detect_observed_peaks"):
+        "ver52.3 ④: 上のバッチ版。同時に直した"
+        "（片方だけ直すと、利用者が直せる唯一の場所で不正行が見えないままになる）",
+    ("scils_converter.py", "_read_peaklist"):
+        "ver52.3 ④: 列不足・非数値・NaN/Inf の 3 通りで無言に捨てていた。"
+        "化合物名は変換後 Parquet の**列名に焼き込まれる**ので後から復元できない。"
+        "`return_skipped=True` で内訳を返し、変換は `result.warnings`、"
+        "分子情報の後付けはプレビューに出す（文言は `peaklist_skip_message` で 1 箇所）",
+    ("receipt.py", "_collect_outputs"):
+        "ver52.3 ④: `OSError` 1 つでパターンごと欠落し、上限 200 件の打ち切りも無言だった。"
+        "レシートは「この条件からどの成果物が出たか」の証跡なので、"
+        "不完全な一覧を完全として書くと証跡自体が嘘になる。"
+        "`result.outputs_incomplete` に載せ、RECEIPT.md の再現性の一文にも但し書きを付ける",
+    ("lite_view_callbacks.py", "_build_spot_filtering_section"):
+        "ver52.3 ④: QC 画像が読めないと節ごと消え、「除去していない」と区別が付かなかった。"
+        "読めなかった件数を節内に出す",
 }
 
 # ===========================================================================
@@ -104,6 +134,31 @@ SKIPS_ARE_IMMATERIAL = {
         "同上。★ 前回監査の『出力画像の重複』はここではなく解析側の出力が原因",
     ("project_manager.py", "scan_project_meta"):
         "プロジェクト一覧。壊れた meta は一覧に出ないだけ",
+    # --- ver52.3 ④ 後半: 精査して「報告不要」と判断したもの（根拠を残す） ---
+    ("interactive_calibration.py", "_features_within_windows"):
+        "ver52.3 ④ 精査: 数値化できない参照 m/z を飛ばすが、**消費側が必ず気付く**。"
+        "(a) 非数値の参照は `_calibrate_mz` の `np.abs(mz_array - ref)` が"
+        "TypeError を投げて「キャリブレーションエラー」として画面に出る。"
+        "(b) 数値だが窓内の強度が読めない参照は `_calibrate_mz` が `n_unusable` に数え、"
+        "`format_calibration_status` が件数を出す（ver52.3 ④ で追加）。"
+        "★ 『到達不能だから安全』とは書かない——到達可能になった瞬間に嘘になる。"
+        "ここは**下流が報告するから安全**という理由なので、下流の報告を消したら"
+        "この登録も見直すこと",
+    ("peak_annotation.py", "parse_scils_name"):
+        "ver52.3 ④ 精査: `except ValueError: pass` の直前に "
+        "`_PPM_RE = ^-?\\d+(\\.\\d+)?\\s*ppm$` の照合があり、"
+        "`re.sub` で 'ppm' を外した残りは必ず float 可能"
+        "（桁があふれても float は inf を返し例外にならない）。"
+        "書式が合わない値はそもそもこの分岐に入らず `extras` へ退避されるので、"
+        "情報は落ちない",
+    ("deg_utils.py", "load_deg_results"):
+        "ver52.3 ④ 精査: 握りつぶしは **候補ファイル** の走査であって、"
+        "返す表の中身ではない。読めない候補は次の候補へ落ち、"
+        "**返る表は必ず単一ファイルの全内容**（部分的な表が完全な表として出ることは無い）。"
+        "全部読めなければ `None` を返し、画面は「DEG が見つかりません」を出す。"
+        "手法スコープ（ver51.8/51.9）も `_is_other_method` で保たれる。"
+        "★ 残る穴: 第一候補が壊れて第二候補が使われたことはログにしか出ない。"
+        "ただし両者は同じ手法スコープ内なので、誤った表にはならない",
 }
 
 # ===========================================================================
@@ -118,30 +173,22 @@ MUST_REPORT: dict = {}
 # 分類 4: ★ まだ精査していない。ver52.3 で 1 件ずつ判断する。
 #   「分類済み」を装わない。ここが空になるまで T5 は閉じていない。
 # ===========================================================================
-UNREVIEWED = {
-    ("interactive_calibration.py", "_build_annotation_csv_map"):
-        "化合物名の対応表。飛ばすと化合物名が欠ける可能性",
-    ("interactive_calibration.py", "_build_mz_to_compound_map"):
-        "同上",
-    ("interactive_calibration.py", "_features_within_windows"):
-        "キャリブレーション窓内の feature 抽出",
-    ("interactive_calibration.py", "auto_detect_int_cal_peaks"):
-        "参照ピークの自動検出。飛ばすとテーブルの行が欠ける",
-    ("interactive_calibration.py", "recalculate_int_cal_ppm"):
-        "ppm 列の再計算。表示専用の可能性が高いが未確認",
-    ("analysis_callbacks.py", "auto_detect_observed_peaks"):
-        "バッチ側の参照ピーク自動検出",
-    ("scils_converter.py", "_read_peaklist"):
-        "ピークリストの読み込み。飛ばすと注釈が欠ける",
-    ("deg_utils.py", "load_deg_results"):
-        "DEG 結果の読み込み。ver51.8/51.9 で手法スコープを直した経路",
-    ("receipt.py", "_collect_outputs"):
-        "receipt に載せる出力ファイルの収集（再現性の証跡）",
-    ("lite_view_callbacks.py", "_build_spot_filtering_section"):
-        "Lite ビューのスポット絞り込み表示",
-    ("peak_annotation.py", "parse_scils_name"):
-        "SCiLS 名の解析",
-}
+#   ver52.3 ④ で **11 件すべてを精査し、0 件にした**。内訳:
+#     報告を足した (REPORTS_SKIPS へ) …… 7 件
+#       _build_annotation_csv_map / _build_mz_to_compound_map /
+#       auto_detect_int_cal_peaks / auto_detect_observed_peaks /
+#       _read_peaklist / _collect_outputs / _build_spot_filtering_section
+#     精査して報告不要 (SKIPS_ARE_IMMATERIAL へ) …… 3 件
+#       _features_within_windows / parse_scils_name / load_deg_results
+#     握りつぶしそのものを止めたので母数から外れた …… 1 件
+#       interactive_calibration.recalculate_int_cal_ppm
+#       （`except: pass` → 「Δppm を "--" に戻す」に変えた。
+#         従来は編集で値を壊しても**前回の Δppm が残り**計算済みに見えていた。
+#         正解は設定タブの双子 analysis_callbacks.recalculate_ppm_on_edit に既にあった）
+#
+#   ★ ここを 0 にしたことで「T5 を全数見た」と言える。以後ここが増えるのは
+#     新しい実装が入ったときだけで、そのとき番人が必ず落ちる。
+UNREVIEWED: dict = {}
 
 _ALL = {}
 for _reg, _label in ((REPORTS_SKIPS, "REPORTS_SKIPS"),
@@ -263,6 +310,26 @@ def test_dropna_shape_is_not_covered_but_does_not_grow():
         + "\n  ".join(f"{loc} {fn}()" for loc, fn in sites))
 
 
+# ---------------------------------------------------------------------------
+# ★ 既知の盲点 2: 「母数から外れた」は「直った」を意味しない
+# ---------------------------------------------------------------------------
+# ver52.3 ④ で `recalculate_int_cal_ppm` の `except: pass` を
+# 「Δppm を "--" に戻す」に変えたところ、この関数は**母数から外れた**。
+# 母数の条件が `except → continue` か `except → pass`（本体 1 文）だからで、
+# 本体を 1 文でも足せば外れる。
+#
+# つまり本番人は「握りつぶしを直したか」ではなく
+# **「握りつぶしの形をしているか」**しか見ていない。
+#   except:
+#       row["ppm_drift"] = "--"     # ← 報告していないのに母数から外れる
+# と書いても外れてしまう（今回はたまたま「値を消す」ことが報告になっていた）。
+#
+# 型を**形**で近似している以上これは避けられない。回避策を発明するより、
+# **番人の限界をここに書いて残す**（ver52.2 の「文字列や個数で型を近似した
+# 番人は別の現れ方を通す」と同じ話が、自分の番人にも当たった記録）。
+# → 母数から外れた関数は、外れた理由を UNREVIEWED のコメントに必ず書くこと。
+
+
 class TestTheGuardIsNotInert:
     """★ 番人が空振りしていないこと（ver51.9 で 3 回空振りさせた反省）。"""
 
@@ -319,20 +386,29 @@ class TestKnownDefectsAreTracked:
             "握りつぶしを直したなら登録から外すこと（良いこと）:\n  "
             + "\n  ".join(f"{f}::{n}" for f, n in gone))
 
-    def test_unreviewed_does_not_grow(self):
-        """★ 未精査は増やさない。ver52.3 で減らして 0 にする。"""
-        assert len(UNREVIEWED) <= 11, (
-            f"未精査が {len(UNREVIEWED)} 件に増えている。"
+    def test_unreviewed_is_empty(self):
+        """★ 未精査は 0 件のまま。
+
+        ver52.2 では 11 件あり、上限を 11 にして「増やさない」ことだけ
+        担保していた。ver52.3 ④ で全件を精査して 0 にしたので、
+        **上限も 0 に下げる**。ここを 11 のままにしておくと、
+        新しい未精査を 11 件まで黙って積めてしまい、
+        「T5 を全数見た」という主張が翌版で静かに崩れる。
+        """
+        assert not UNREVIEWED, (
+            f"未精査が {len(UNREVIEWED)} 件ある。"
             "新しい実装は精査してから REPORTS_SKIPS / SKIPS_ARE_IMMATERIAL / "
-            "MUST_REPORT のいずれかに入れること")
+            "MUST_REPORT のいずれかに入れること:\n  "
+            + "\n  ".join(f"{f}::{n}" for f, n in sorted(UNREVIEWED)))
 
     def test_unreviewed_is_declared_not_hidden(self):
         """★ 未精査があること自体を可視にする。
 
-        この型はまだ閉じていない。UNREVIEWED が空になって初めて
-        「T5 を全数見た」と言える。緑だから終わり、ではない。
+        ver52.3 ④ で UNREVIEWED は空になった（＝T5 を全数見た）。
+        再び増えたときに「緑だから終わり」と読まれないよう、
+        この表明は残しておく。
         """
         if UNREVIEWED:
             pytest.xfail(
-                f"T5 はまだ閉じていない: 未精査 {len(UNREVIEWED)} 件 / "
-                f"母数 {len(population())} 件。ver52.3 で 1 件ずつ判断する")
+                f"T5 が再び開いた: 未精査 {len(UNREVIEWED)} 件 / "
+                f"母数 {len(population())} 件。1 件ずつ判断すること")

@@ -87,6 +87,23 @@ def _first(*values):
     return None
 
 
+def _outputs_incomplete(status: Optional[dict]) -> dict:
+    """`_collect_outputs` の status を、レシートに書く形へ縮める。
+
+    完全に列挙できたときは空 dict（＝「不完全ではない」）。
+    """
+    if not status:
+        return {}
+    out: dict = {}
+    failed = status.get("failed_patterns") or []
+    if failed:
+        out["unscannable_patterns"] = [
+            {"pattern": pat, "error": err} for pat, err in failed]
+    if status.get("truncated"):
+        out["truncated_at"] = _OUTPUT_LIMIT
+    return out
+
+
 def build_receipt(params: dict,
                   r_sidecar: Optional[dict] = None,
                   inputs: Optional[Sequence[str]] = None,
@@ -94,7 +111,8 @@ def build_receipt(params: dict,
                   app_version: Optional[str] = None,
                   annotation_sources: Optional[Sequence[str]] = None,
                   started_at: Optional[str] = None,
-                  ended_at: Optional[str] = None) -> dict:
+                  ended_at: Optional[str] = None,
+                  outputs_status: Optional[dict] = None) -> dict:
     """既存 analysis_params dict（＋R サイドカー）から集約レシートを組み立てる。
 
     params は analysis_params.json の内容（フラットな dict）。r_sidecar は R 側で出した
@@ -199,6 +217,8 @@ def build_receipt(params: dict,
         "result": {
             "output_dir": params.get("output_dir"),
             "outputs": [file_entry(p) for p in (outputs or [])],
+            # ★ ver52.3 (T5): 一覧が不完全なら**そう書く**。空 dict なら完全。
+            "outputs_incomplete": _outputs_incomplete(outputs_status),
         },
         "raw_params": params,
     }
@@ -252,7 +272,23 @@ def render_receipt_markdown(receipt: dict) -> str:
         for e in inputs:
             lines.append(f"- `{e.get('path')}`  sha256=`{(e.get('sha256') or '')[:12]}…`")
         lines.append("")
+    # ★ ver52.3 (T5): 成果物の列挙に失敗・打ち切りがあったら **必ず書く**。
+    #   最後の 1 行は「これ 1 つで再現できる」と主張しているので、
+    #   一覧が不完全なまま黙っていると、レシート自体が嘘をつくことになる。
+    incomplete = (receipt.get("result", {}) or {}).get("outputs_incomplete") or {}
+    if incomplete:
+        lines.append("### ⚠ 成果物一覧は不完全です")
+        lines.append("")
+        for e in incomplete.get("unscannable_patterns", []):
+            lines.append(f"- 走査できなかったパターン: `{e.get('pattern')}` ({e.get('error')})")
+        if incomplete.get("truncated_at"):
+            lines.append(f"- 件数上限 {incomplete['truncated_at']} 件で打ち切りました"
+                         "（これ以降の成果物は一覧にありません）")
+        lines.append("")
     lines.append("> このレシート 1 つで、同じ入力・設定からの再現を意図しています。")
+    if incomplete:
+        lines.append("> ただし上記のとおり **成果物一覧は不完全** です"
+                     "（一覧に無いこと＝生成されなかったこと、ではありません）。")
     return "\n".join(lines)
 
 
@@ -331,8 +367,10 @@ def finalize_receipt(output_dir, app_version: Optional[str] = None,
             inputs.append(str(tmpl))
     # ver47.0: 出力一覧が常に空だったのを、主要成果物の列挙で埋める。
     # 「どの図表がこの条件から出たか」が辿れないと再現性の主張ができない。
+    outputs_status = None
     if outputs is None:
-        outputs = [str(p) for p in _collect_outputs(out)]
+        _paths, outputs_status = _collect_outputs(out, return_status=True)
+        outputs = [str(p) for p in _paths]
     if annotation_sources is None:
         annotation_sources = params.get("annotation_sources") or []
     receipt = build_receipt(
@@ -343,6 +381,7 @@ def finalize_receipt(output_dir, app_version: Optional[str] = None,
         app_version=app_version,
         annotation_sources=annotation_sources,
         ended_at=ended_at,
+        outputs_status=outputs_status,
     )
     write_receipt(output_dir, receipt)
     return receipt
@@ -354,16 +393,35 @@ _OUTPUT_GLOBS = ("RDS_Files/*.rds", "*/markers_annotated.csv", "markers_annotate
 _OUTPUT_LIMIT = 200
 
 
-def _collect_outputs(out: Path) -> list:
-    """主要成果物のパスを列挙する（件数上限つき、失敗しても空リスト）。"""
+def _collect_outputs(out: Path, *, return_status: bool = False):
+    """主要成果物のパスを列挙する（件数上限つき、失敗しても空リスト）。
+
+    ★ ver52.3 (T5): 失敗と打ち切りが **どちらも無言**だった。
+      レシートは「この条件からどの成果物が出たか」を主張する証跡なので、
+      不完全な一覧を完全なものとして書くと、**証跡そのものが嘘になる**
+      （利用者は「この図は記録に無い＝出ていない」と読む）。
+      走査できなかったパターンと上限打ち切りを status に載せ、
+      レシート本体へも書き出す。
+
+    Args:
+        return_status: True なら `(paths, status)` を返す。`status` は
+            `{"failed_patterns": [(pattern, 理由), ...], "truncated": bool}`。
+    """
     found: list = []
+    status = {"failed_patterns": [], "truncated": False}
+
+    def _out():
+        return (found, status) if return_status else found
+
     for pattern in _OUTPUT_GLOBS:
         try:
             for p in sorted(out.glob(pattern)):
                 if p.is_file():
                     found.append(p)
                     if len(found) >= _OUTPUT_LIMIT:
-                        return found
-        except OSError:
+                        status["truncated"] = True
+                        return _out()
+        except OSError as e:
+            status["failed_patterns"].append((pattern, str(e)))
             continue
-    return found
+    return _out()

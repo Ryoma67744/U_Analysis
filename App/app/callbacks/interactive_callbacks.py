@@ -1082,8 +1082,11 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
             f"{meta.get('n_clusters', '?')} clusters, "
             f"samples: {', '.join(meta.get('samples', []))}"
         )
-        if calib_warning:
-            info_text = info_text + " " + calib_warning
+        # ★ ver52.3 ④: 注記は **info_text を組み立てた後** にも増えうる
+        #   （アノテーション対応表の構築はこの下）。ここで文字列に焼くと、
+        #   後から足した注記が黙って消える。注記は 1 つのリストに集めて、
+        #   全部出そろってから最後に連結する。
+        info_notes = [calib_warning] if calib_warning else []
 
         # クラスタ選択肢
         clusters = sorted(_interactive_data["plot_data"]["Cluster"].unique(), key=_cluster_sort_key)
@@ -1108,16 +1111,38 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
             }
         else:
             try:
-                _interactive_data["annotation_map"] = _build_feature_annotation_map(
+                ann_map, n_unreadable = _build_feature_annotation_map(
                     state["features_list"],
                     annotation_csv_path=annotation_csv or "",
                     ion_mode=ion_mode or "Positive",
                     adduct_patterns=adduct_filter,
                     tolerance=float(tolerance_mz or 0.01),
                     deg_data=deg_data,
+                    return_skipped=True,
                 )
-            except Exception:
+                _interactive_data["annotation_map"] = ann_map
+                # ★ ver52.3 ④: 読めなかった質量セルを **読み込み時点で** 出す。
+                #   ここで落ちた化合物名は backfill_annotations 経由で
+                #   PPTX / export にも欠けたまま出るので、再アノテーション画面を
+                #   一度も開かない利用者には気づく機会が無かった。
+                #   既存の `_calib_warning`（読み込み完了行に連結される）に載せる
+                #   ——新しい Output を足すと、同じ役割の通知経路が 2 本になる。
+                if n_unreadable:
+                    info_notes.append(
+                        f"（注: アノテーション CSV の質量セル {n_unreadable} 件を"
+                        "数値として読めず、その化合物は注釈されていません）")
+            except Exception as e:
+                # ★ ver52.3 ④: 従来はここが**完全に無言**だった。
+                #   注釈が 1 件も付かないまま「読み込み完了」と出るので、
+                #   利用者は「この装置データには化合物名が無い」と読む。
+                #   実際この except は、本スライスで戻り値の形を変えたときの
+                #   アンパック失敗まで飲み込んでいた（テストが検出）。
+                #   fail-soft は維持しつつ、起きたことは必ず残す。
+                logger.warning("アノテーション対応表の構築に失敗しました: %s", e)
                 _interactive_data["annotation_map"] = {}
+                info_notes.append(
+                    "（注: アノテーション対応表を構築できませんでした。"
+                    "化合物名は表示されません）")
 
         # DEG レコードの空 annotation を annotation_map から補完しておくと、
         # Volcano/Heatmap/クラスタTop5/マーカー表/PPTX が化合物名を一括参照できる。
@@ -1198,6 +1223,10 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
             ensure_sub_project_data_folder(project_id, sub_project_id, result_folder, r_instrument)
         except Exception:
             pass
+
+        # ★ ver52.3 ④: 集めた注記をここで初めて連結する（上の info_notes 参照）。
+        if info_notes:
+            info_text = info_text + " " + " ".join(info_notes)
 
         return (
             info_text,

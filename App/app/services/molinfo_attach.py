@@ -133,9 +133,10 @@ def attach_molecular_info(
         also_result_dirs: data_folder に加え結果ディレクトリにもサイドカーを置く
 
     Returns:
-        dict: status / n_features / n_peaklist / n_matched / sidecar_paths / base
+        dict: status / n_features / n_peaklist / n_matched / sidecar_paths / base /
+            n_peaklist_skipped / peaklist_skip_message
     """
-    from app.services.scils_converter import _read_peaklist
+    from app.services.scils_converter import _read_peaklist, peaklist_skip_message
     from app.services.peak_annotation import build_feature_annotation_table
     from app.services.annotation_inspect import _is_real_compound
 
@@ -154,7 +155,7 @@ def attach_molecular_info(
     if not base:
         raise ValueError("本体 parquet が data_folder に見つかりません。")
 
-    pk_mz, pk_names = _read_peaklist(Path(csv_path))
+    pk_mz, pk_names, pk_skipped = _read_peaklist(Path(csv_path), return_skipped=True)
     if pk_mz.size == 0:
         raise ValueError("peak-list CSV から m/z を読み取れませんでした（形式を確認してください）。")
 
@@ -168,6 +169,11 @@ def attach_molecular_info(
         "n_matched": n_matched,
         "sidecar_paths": [],
         "base": base,
+        # ★ ver52.3 (T5): 読めなかった行を **プレビューに出す**。
+        #   従来は「CSV: N ピーク」とだけ出るので、N が壊れ行のぶん
+        #   少ないことに気づけなかった（元 CSV を開かない限り分からない）。
+        "n_peaklist_skipped": int(sum(pk_skipped.values())),
+        "peaklist_skip_message": peaklist_skip_message(pk_skipped),
     }
     if dry_run:
         result["status"] = "preview"

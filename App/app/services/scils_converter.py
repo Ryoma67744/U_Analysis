@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import math
 import os
 import re
 import shutil
@@ -544,7 +545,7 @@ def _csv_to_temp_parquet(
 _PEAKLIST_MZ_TOL_DA = 0.01
 
 
-def _read_peaklist(path: Path):
+def _read_peaklist(path: Path, *, return_skipped: bool = False):
     """peak-list (Feature list) CSV から (m/z 配列, Name 配列) を返す。
 
     SCiLS の `Name` 欄は `adduct_family=mass_only;n=2;adducts=[M-H]-,[M]-;peaks=12,47` のように
@@ -552,6 +553,17 @@ def _read_peaklist(path: Path):
     列数が合わず壊れるため、ヘッダ列数を基準に「Name より後ろの列数」を固定し、超過トークンを
     Name へ再結合して原文を復元する。区切りを内部に含み得るのは Name 列のみ（m/z・Interval・
     Color は数値/16進、Name 以降は強度数値）という構造に依拠するため、超過分は必ず Name に属する。
+
+    ★ ver52.3 (T5): 壊れ行は 3 通りの理由で **無言で捨てられていた**。
+      落ちた行の化合物名は変換後 Parquet の**列名に焼き込まれない**ので、
+      あとから復元できない（サイドカーを作り直しても元 CSV が要る）。
+      `return_skipped=True` で理由別の内訳を受け取れるようにし、
+      呼び出し 2 箇所（変換 / 分子情報の後付け）から利用者へ見せる。
+      既定は 2-tuple のままなので既存の呼び出しは壊れない。
+
+    Args:
+        return_skipped: True なら `(m/z 配列, Name 配列, skipped)` の 3-tuple を返す。
+            `skipped` は `{"short_row": n, "non_numeric_mz": n, "non_finite_mz": n}`。
     """
     headers, delim, skip = first_header_and_skipcount(path)
     norm = [str(h).strip().lower().replace(" ", "") for h in headers]
@@ -574,6 +586,7 @@ def _read_peaklist(path: Path):
 
     mz_list: list[float] = []
     name_list: list[str] = []
+    skipped = {"short_row": 0, "non_numeric_mz": 0, "non_finite_mz": 0}
     with path.open("r", newline="", encoding="utf-8", errors="replace") as f:
         for _ in range(skip + 1):        # `#` 行 + ヘッダ行を読み飛ばす
             next(f, None)
@@ -583,16 +596,45 @@ def _read_peaklist(path: Path):
                 continue
             tok = line.split(delim)
             if len(tok) < ncol:          # 列不足の壊れ行はスキップ
+                skipped["short_row"] += 1
                 continue
             try:
                 mz = float(tok[mz_idx])
             except ValueError:
+                skipped["non_numeric_mz"] += 1
                 continue                 # m/z が数値でない行は除外（従来の NaN マスク相当）
+            # ★ ver52.3: `float("nan")` / `float("inf")` は **例外を出さない**ので
+            #   従来はここを素通りし、注釈テーブルの最近傍探索で
+            #   （比較が常に偽になるため）どの feature にも当たらず消えていた。
+            #   「読めなかった」と同じ扱いにして数える。
+            if not math.isfinite(mz):
+                skipped["non_finite_mz"] += 1
+                continue
             # Name は name_idx から「後ろの固定列数」を残して再結合（内部の区切りを原文復元）
             name = delim.join(tok[name_idx:len(tok) - n_after_name])
             mz_list.append(mz)
             name_list.append(name)
-    return np.asarray(mz_list, dtype=float), name_list
+    arr = np.asarray(mz_list, dtype=float)
+    if return_skipped:
+        return arr, name_list, skipped
+    return arr, name_list
+
+
+def peaklist_skip_message(skipped: dict) -> str:
+    """`_read_peaklist(..., return_skipped=True)` の内訳を利用者向け 1 行にする。
+
+    捨てた行が無ければ空文字。呼び出し 2 箇所で同じ文言にするためここに置く
+    （文言を 2 か所で書くと、片方だけ直す T3 を自分で作ることになる）。
+    """
+    labels = (("short_row", "列数が足りない行"),
+              ("non_numeric_mz", "m/z が数値でない行"),
+              ("non_finite_mz", "m/z が NaN/Inf の行"))
+    parts = [f"{label} {skipped.get(key, 0)} 件"
+             for key, label in labels if skipped.get(key, 0)]
+    if not parts:
+        return ""
+    return ("peak-list の " + " / ".join(parts)
+            + " を除外しました（この行の化合物名は付与されません）。")
 
 
 def _ensure_unique_colnames(names: list[str]) -> list[str]:
@@ -931,7 +973,14 @@ def convert_scils_to_parquet(
             try:
                 _report(12, "化合物アノテーションを付与中…")
                 from app.services import peak_annotation as _pann
-                pk_mz, pk_names = _read_peaklist(peaklist_path)
+                pk_mz, pk_names, pk_skipped = _read_peaklist(
+                    peaklist_path, return_skipped=True)
+                # ★ ver52.3 (T5): 壊れ行は捨てるだけで、変換は「成功」と表示されていた。
+                #   化合物名は Parquet の列名に焼き込まれるので、後から復元できない。
+                pk_skip_msg = peaklist_skip_message(pk_skipped)
+                if pk_skip_msg:
+                    logger.warning("%s", pk_skip_msg)
+                    result.warnings.append(pk_skip_msg)
                 feat_ann_df = _pann.build_feature_annotation_table(
                     mz_sorted, pk_mz, pk_names, tol_da=_PEAKLIST_MZ_TOL_DA
                 )

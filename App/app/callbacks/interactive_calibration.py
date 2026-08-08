@@ -33,21 +33,58 @@ logger = logging.getLogger("msi.interactive.calibration")
 # アノテーション CSV / MRM マッピング ヘルパー
 # ---------------------------------------------------------------------------
 
-def _build_annotation_csv_map(csv_path, ion_mode="Positive", adduct_patterns=None, tolerance=0.01):
+def _is_blank_cell(v) -> bool:
+    """アノテーション CSV の「その付加イオンは無い」を表す空セルか。
+
+    ★ ver52.3 (T5): 質量セルが数値化できない理由は 2 通りあり、扱いが逆になる。
+      - **空セル**: TraceFinder/HMDB は付加イオンごとに列（ブロック）を持つので、
+        2 種類しか持たない化合物は残りが空。これは正常で、報告してはいけない。
+      - **非空なのに数値でない**: 書式の壊れ。その化合物は注釈から**黙って消え**、
+        `markers_annotated.csv` にも出ないまま残る。これだけを数える。
+      両者を区別せずに数えると「毎回数千件スキップ」と出て、
+      報告そのものが無視されるようになる（＝報告しないのと同じ）。
+    """
+    try:
+        if v is None or pd.isna(v):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return str(v).strip() in ("", "-", "NA", "N/A", "nan", "None")
+
+
+def _build_annotation_csv_map(csv_path, ion_mode="Positive", adduct_patterns=None,
+                              tolerance=0.01, *, return_skipped=False):
     """アノテーションCSV（TraceFinder/HMDB）→ {m/z: compound_name} マッピング。
 
     1行目でフォーマットを自動判定し、イオンモード・付加イオンでフィルタして返す。
+
+    Args:
+        return_skipped: True なら `(map, n_skipped)` を返す。`n_skipped` は
+            **非空なのに数値として読めなかった質量セル**の件数（空セルは数えない）。
+            既定は dict のままなので既存の呼び出しは壊れない。
+
     Returns:
         dict[float, str] — m/z数値 → 化合物名
     """
+    skipped = 0
+
+    def _out(m):
+        # 出口が 6 つあるので、記録はここ 1 箇所に集める
+        # （出口ごとに書くと、あとで足した出口だけ黙る）。
+        if skipped:
+            logger.warning(
+                "アノテーション CSV の質量セル %d 件を数値として読めませんでした"
+                "（この化合物は注釈されません）: %s", skipped, csv_path)
+        return (m, skipped) if return_skipped else m
+
     if not csv_path or not Path(csv_path).exists():
-        return {}
+        return _out({})
 
     try:
         with open(csv_path, encoding="utf-8", errors="replace") as f:
             first_line = f.readline()
     except Exception:
-        return {}
+        return _out({})
 
     pol_need = "+" if ion_mode == "Positive" else "-"
 
@@ -56,9 +93,9 @@ def _build_annotation_csv_map(csv_path, ion_mode="Positive", adduct_patterns=Non
         try:
             df = pd.read_csv(csv_path, skiprows=2, encoding="utf-8", on_bad_lines="skip")
         except Exception:
-            return {}
+            return _out({})
         if "CompoundName" not in df.columns:
-            return {}
+            return _out({})
         # ExtractedMass / Adduct / Polarity の繰返しブロックを検出
         # pandas は重複カラム名に .1, .2, .3 サフィックスを付与するため対応
         import re as _re2
@@ -69,21 +106,29 @@ def _build_annotation_csv_map(csv_path, ion_mode="Positive", adduct_patterns=Non
         pol_cols  = [i for i, c in enumerate(df.columns)
                      if c == "Polarity" or _re2.match(r"Polarity\.\d+$", c)]
         if not mass_cols or not add_cols or not pol_cols:
-            return {}
+            return _out({})
         n_blocks = min(len(mass_cols), len(add_cols), len(pol_cols))
         rows = []
         for k in range(n_blocks):
             for _, row in df.iterrows():
                 name = str(row.iloc[0]).strip()  # CompoundName は常に0列目
+                raw_mz = row.iloc[mass_cols[k]]
                 try:
-                    mz = float(row.iloc[mass_cols[k]])
+                    mz = float(raw_mz)
                 except (ValueError, TypeError):
+                    # 空セル = 「この化合物にこの付加イオンは無い」（正常）
+                    if not _is_blank_cell(raw_mz):
+                        skipped += 1
+                    continue
+                if not (mz > 0):     # NaN もここに落ちる
+                    if not _is_blank_cell(raw_mz):
+                        skipped += 1
                     continue
                 adduct = str(row.iloc[add_cols[k]]).strip()
                 pol_raw = str(row.iloc[pol_cols[k]]).strip().upper()
                 pol = "+" if pol_raw in ("+", "POS", "P", "POSITIVE") else (
                       "-" if pol_raw in ("-", "NEG", "N", "NEGATIVE") else "")
-                if pol == pol_need and name and mz > 0:
+                if pol == pol_need and name:
                     rows.append((mz, name, adduct))
         # フィルタ: adduct_patterns
         if adduct_patterns:
@@ -91,7 +136,7 @@ def _build_annotation_csv_map(csv_path, ion_mode="Positive", adduct_patterns=Non
                         if any(p in ad for p in adduct_patterns)]
         else:
             filtered = rows
-        return {mz: f"{nm} {ad}" for mz, nm, ad in filtered}
+        return _out({mz: f"{nm} {ad}" for mz, nm, ad in filtered})
 
     # --- HMDB format ---
     adduct_col_map = {
@@ -106,7 +151,7 @@ def _build_annotation_csv_map(csv_path, ion_mode="Positive", adduct_patterns=Non
     try:
         df = pd.read_csv(csv_path, encoding="utf-8", on_bad_lines="skip")
     except Exception:
-        return {}
+        return _out({})
     # 化合物名カラム検出
     name_col = None
     for c in ("name (accession)", "name", "Name", "CompoundName"):
@@ -114,7 +159,7 @@ def _build_annotation_csv_map(csv_path, ion_mode="Positive", adduct_patterns=Non
             name_col = c
             break
     if name_col is None:
-        return {}
+        return _out({})
 
     import re as _re
     result = {}
@@ -126,33 +171,57 @@ def _build_annotation_csv_map(csv_path, ion_mode="Positive", adduct_patterns=Non
             if not any(p in adduct_str for p in adduct_patterns):
                 continue
         for _, row in df.iterrows():
+            raw_mz = row[col_name]
             try:
-                mz = float(row[col_name])
+                mz = float(raw_mz)
             except (ValueError, TypeError):
+                if not _is_blank_cell(raw_mz):
+                    skipped += 1
                 continue
             if mz <= 0 or pd.isna(mz):
+                # 空セル（＝この化合物にこの付加イオンは無い）は正常なので数えない
+                if not _is_blank_cell(raw_mz):
+                    skipped += 1
                 continue
             name = str(row[name_col]).strip()
             # HMDB ID 除去
             name = _re.sub(r"\s*\(HMDB\d+\)\s*$", "", name)
             if name:
                 result[mz] = f"{name} {adduct_str}"
-    return result
+    return _out(result)
 
 
-def _build_mz_to_compound_map(mrm_path_str, tolerance=0.1):
+def _build_mz_to_compound_map(mrm_path_str, tolerance=0.1, *, return_skipped=False):
     """MRMファイルから m/z値 → 化合物名 のマッピング辞書を構築する。
 
     Parent m/z と Daughter m/z の両方を対象にマッチングを行う。
+
+    ★ ver52.3: `_build_annotation_csv_map` と**同じ役割の双子**なので、
+      引数・戻り値・数え方を揃える（片方だけ報告できる状態にすると、
+      利用者から見て「ファイル形式によって警告が出たり出なかったり」になる）。
+
+    Args:
+        return_skipped: True なら `(map, n_skipped)` を返す。`n_skipped` は
+            **非空なのに数値として読めなかった m/z セル**の件数。
+
     Returns:
         dict[float, str] — m/z数値 → 化合物名
     """
+    skipped = 0
+
+    def _out(m):
+        if skipped:
+            logger.warning(
+                "MRM ファイルの m/z セル %d 件を数値として読めませんでした"
+                "（この化合物は注釈されません）: %s", skipped, mrm_path_str)
+        return (m, skipped) if return_skipped else m
+
     if not mrm_path_str:
-        return {}
+        return _out({})
     from app.services.data_manager import load_mrm_file
     mrm_df = load_mrm_file(mrm_path_str)
     if mrm_df is None or mrm_df.empty:
-        return {}
+        return _out({})
 
     # カラム名の正規化（R側と同様のロジック）
     col_map = {}
@@ -170,38 +239,37 @@ def _build_mz_to_compound_map(mrm_path_str, tolerance=0.1):
     mrm_df = mrm_df.rename(columns=col_map)
 
     if "Compound" not in mrm_df.columns:
-        return {}
+        return _out({})
 
     # m/z → 化合物名 マッピング (Parent と Daughter 両方)
     mz_map = {}
-    skipped = 0
     for _, row in mrm_df.iterrows():
         name = str(row.get("Compound", "")).strip()
         if not name:
             continue
         for mz_col in ("Parent_mz", "Daughter_mz"):
             if mz_col in mrm_df.columns:
+                raw_mz = row[mz_col]
                 try:
-                    mz_val = float(row[mz_col])
+                    mz_val = float(raw_mz)
                 except (ValueError, TypeError):
-                    skipped += 1
+                    if not _is_blank_cell(raw_mz):
+                        skipped += 1
                     continue
                 # ★ ver52.3: `float(nan)` は例外を出さないので、空セルが
                 #   `mz_map[nan]` として入っていた。すると後段の
                 #   `np.argmin(np.abs(mrm_mz_values - mz_val))` が **常に NaN の
                 #   添字**を返し、許容差判定が必ず False になるため、
                 #   **データセット全体の化合物注釈が消える**（1 セルの欠損で全滅）。
-                #   双子の `_build_annotation_csv_map` は :133 で同じ罠を
+                #   双子の `_build_annotation_csv_map` は HMDB 節で同じ罠を
                 #   `pd.isna` で防いでいたのに、こちらだけ守られていなかった。
                 if pd.isna(mz_val) or mz_val <= 0:
-                    skipped += 1
+                    # Daughter m/z が空の行は正常にあり得るので数えない
+                    if not _is_blank_cell(raw_mz):
+                        skipped += 1
                     continue
                 mz_map[mz_val] = name
-    if skipped:
-        logger.warning(
-            "MRM ファイルの %d 行分の m/z を数値化できず除外した: %s",
-            skipped, mrm_path_str)
-    return mz_map
+    return _out(mz_map)
 
 
 def _annotate_gene_labels(gene_list, mz_to_compound, tolerance=0.1):
@@ -241,11 +309,20 @@ def _build_feature_annotation_map(
     adduct_patterns: list | None = None,
     tolerance: float = 0.01,
     deg_data: list | None = None,
-) -> dict:
+    *,
+    return_skipped: bool = False,
+):
     """Feature文字列 → 化合物名 のマッピングを構築。
 
     アノテーションCSVとDEGデータの両方からマッピングを構築し統合する。
     DEGデータのアノテーションが優先される。
+
+    Args:
+        return_skipped: True なら `(map, n_skipped)` を返す (ver52.3 ④)。
+            ★ この関数は**読み込み経路**から呼ばれる。読み込み経路で落ちた
+              化合物名は `backfill_annotations` 経由で PPTX や export にも
+              そのまま欠けたまま出るので、再アノテーション画面を一度も
+              開かない利用者は気づけない。件数を上へ渡せるようにする。
 
     Returns:
         dict[str, str] — feature文字列 → 化合物名
@@ -253,11 +330,12 @@ def _build_feature_annotation_map(
     result = {}
 
     # 1) アノテーションCSVからの m/z(float)→化合物名 マッピング
-    csv_map = _build_annotation_csv_map(
+    csv_map, n_skipped = _build_annotation_csv_map(
         annotation_csv_path,
         ion_mode=ion_mode,
         adduct_patterns=adduct_patterns,
         tolerance=tolerance,
+        return_skipped=True,
     )
     if csv_map:
         csv_mz_values = np.array(sorted(csv_map.keys()))
@@ -283,7 +361,7 @@ def _build_feature_annotation_map(
     #   外部由来（LC-MS/MS・METASPACE・MS-DIAL）を app/services/annotation_sources で
     #   取り込み・対応づけし、由来付きラベル（例 "ATP (METASPACE, FDR=10%)"）に統合する想定。
     #   取込設計が未確定のため現状は変更なし。詳細: App/docs/MVP4_IMPLEMENTATION_STATUS.md
-    return result
+    return (result, n_skipped) if return_skipped else result
 
 
 # ---------------------------------------------------------------------------
@@ -870,7 +948,15 @@ def auto_detect_int_cal_peaks(n, table_data, search_window, cache_dir,
 
     mz_array = np.array(list(mz_values.values()))
     feature_names = list(mz_values.keys())
+    # ★ ver52.3: 設定タブの双子 (analysis_callbacks.auto_detect_observed_peaks)
+    #   と同じ 2 つの欠陥があった。片方だけ直すと経路で挙動が変わるので同時に直す。
+    #     (a) ref_mz を数値化できない行を **そのまま** 追加していたため、
+    #         前回実行時の obs_mz / Δppm が残って「一致済み」に見えていた
+    #     (b) `avg_spectrum.get(..., 0)` が「強度不明」を「強度 0」と同一視し、
+    #         窓内の強度が 1 つも分からないと最小 m/z を選んでいた
     matched_count = 0
+    unreadable_refs = 0
+    unknown_intensity = 0
     updated_data = []
     for row in table_data:
         row = dict(row)
@@ -881,6 +967,9 @@ def auto_detect_int_cal_peaks(n, table_data, search_window, cache_dir,
         try:
             ref_f = float(ref)
         except (ValueError, TypeError):
+            row["obs_mz"] = ""
+            row["ppm_drift"] = "--"
+            unreadable_refs += 1
             updated_data.append(row)
             continue
         within = np.where(np.abs(mz_array - ref_f) <= sw)[0]
@@ -889,7 +978,14 @@ def auto_detect_int_cal_peaks(n, table_data, search_window, cache_dir,
             row["ppm_drift"] = "--"
             updated_data.append(row)
             continue
-        best_idx = max(within, key=lambda i: avg_spectrum.get(feature_names[i], 0))
+        known = [i for i in within if feature_names[i] in avg_spectrum]
+        if not known:
+            row["obs_mz"] = ""
+            row["ppm_drift"] = "--"
+            unknown_intensity += 1
+            updated_data.append(row)
+            continue
+        best_idx = max(known, key=lambda i: avg_spectrum[feature_names[i]])
         obs = float(mz_array[best_idx])
         ppm = (obs - ref_f) / ref_f * 1e6
         row["obs_mz"] = round(obs, 5)
@@ -898,6 +994,13 @@ def auto_detect_int_cal_peaks(n, table_data, search_window, cache_dir,
         updated_data.append(row)
 
     status = f"検出完了: {matched_count}/{len(table_data)} ピークがマッチしました"
+    notes = []
+    if unreadable_refs:
+        notes.append(f"参照 m/z を数値として読めない行 {unreadable_refs} 件")
+    if unknown_intensity:
+        notes.append(f"窓内の強度が不明な行 {unknown_intensity} 件")
+    if notes:
+        status += "（" + " / ".join(notes) + " は空欄にしました）"
     return updated_data, status
 
 
@@ -927,7 +1030,15 @@ def recalculate_int_cal_ppm(ts, table_data):
                     changed = True
                 row["ppm_drift"] = new_drift
             except (ValueError, TypeError):
-                pass
+                # ★ ver52.3: 従来は `pass` だったので、編集で値を壊しても
+                #   **前回の Δppm がそのまま残り**、計算済みに見えていた。
+                #   正解は設定タブの双子
+                #   (analysis_callbacks.recalculate_ppm_on_edit) に
+                #   既にある。同じ形へ揃える（この経路の Δppm は表示専用で、
+                #   較正計算は ref/obs から独立に再計算するため実害は軽い）。
+                if row.get("ppm_drift") != "--":
+                    row["ppm_drift"] = "--"
+                    changed = True
         else:
             if row.get("ppm_drift") != "--":
                 changed = True
@@ -1315,21 +1426,30 @@ def execute_reannotation(n_clicks,
         ann_path = Path(annotation_path)
         is_excel = ann_path.suffix.lower() in (".xlsx", ".xls")
 
+        # ★ ver52.3 (T5): 読めなかった質量セルの件数を受け取り、必ず利用者へ出す。
+        #   従来は「N 件のアノテーションを更新しました」とだけ出るので、
+        #   書式が壊れた化合物が落ちていても気づけなかった
+        #   （落ちた化合物は markers_annotated.csv にも注釈なしで残る）。
         if is_excel:
-            mz_to_compound = _build_mz_to_compound_map(
-                annotation_path, tolerance=tol)
+            mz_to_compound, n_unreadable = _build_mz_to_compound_map(
+                annotation_path, tolerance=tol, return_skipped=True)
         else:
-            mz_to_compound = _build_annotation_csv_map(
+            mz_to_compound, n_unreadable = _build_annotation_csv_map(
                 annotation_path,
                 ion_mode=ion_mode or "Positive",
                 adduct_patterns=adduct_filter,
                 tolerance=tol,
+                return_skipped=True,
             )
+        unreadable_note = (
+            f"（質量を数値として読めなかったセル {n_unreadable} 件は除外しました）"
+            if n_unreadable else "")
 
         if not mz_to_compound:
             return no_update, dbc.Alert(
                 "アノテーションファイルから化合物情報を読み取れませんでした。"
-                "ファイル形式・イオンモード・付加イオンを確認してください。",
+                "ファイル形式・イオンモード・付加イオンを確認してください。"
+                + unreadable_note,
                 color="warning", className="small py-1 px-2 mb-0",
             )
 
@@ -1388,9 +1508,13 @@ def execute_reannotation(n_clicks,
                 pass
 
         total = len(updated)
-        status_msg = f"再アノテーション完了: {update_count}/{total} 件更新{csv_saved_msg}"
+        status_msg = (f"再アノテーション完了: {update_count}/{total} 件更新"
+                      f"{csv_saved_msg}{unreadable_note}")
         return updated, dbc.Alert(
-            status_msg, color="success", className="small py-1 px-2 mb-0",
+            status_msg,
+            # 読めなかったセルがあるなら「完了」の緑では出さない
+            color="warning" if n_unreadable else "success",
+            className="small py-1 px-2 mb-0",
         )
 
     except Exception as e:
