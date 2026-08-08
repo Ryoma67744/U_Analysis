@@ -149,14 +149,28 @@ SETTINGS = {
 #   隠さず記録し、(a) これ以上増えないこと (b) 直ったら気付けること を担保する。
 # --------------------------------------------------------------------------
 NOT_PROPAGATED = {
-    ("volcano", "lite_view_callbacks", "_build_volcano_fig", "FC 閾値"):
-        "lite_view_callbacks.py:1406 で 0.5 固定。共有ペイロードに閾値が無い",
-    ("volcano", "lite_view_callbacks", "_build_volcano_fig", "p 閾値"):
-        "lite_view_callbacks.py:1407 で 1.3 固定",
+    # ★ ver52.3 ⑥: FC 閾値 / p 閾値 は解消（Lite が
+    #   `interactive_settings.json` を読んで渡すようになった）。
+    #   残る 2 件は「まだ直していない」ではなく、**構造上そのまま渡せない**もの。
+    #   推測で作り替えず、実測して分かった理由に書き換えた。
     ("volcano", "lite_view_callbacks", "_build_volcano_fig", "ラベル Top-N"):
-        "Lite ビューは自動ラベルを出さない",
+        "Lite の Volcano には**ラベル層そのものが無い**（散布 3 系列と破線だけで、"
+        "アノテーション trace を 1 つも作らない）。件数を渡す先が存在しないので、"
+        "『届いていない』ではなく『機能が無い』。"
+        "ラベルを出すなら画面側の `_compute_annotation_offsets` / ラベル位置の"
+        "永続化まで含めた追加になるので、設定の伝播とは別の作業として扱う",
     ("heatmap", "lite_view_callbacks", "_build_heatmap_section", "スケール"):
-        "引数が無く Z-score 固定。画面の heatmap_scale が届かない",
+        "★ 配線では済まないことを実測で確認した。Lite は **DEG 表の avg_log2FC を "
+        "pivot** して描く (`values=\"avg_log2FC\"`, `colorscale=RdBu_r`, `zmid=0`, "
+        "colorbar は log2FC) のに対し、画面と PPTX は "
+        "`expression_matrix.parquet` の発現量を読む。"
+        "`heatmap_display.scale` の 'Z-score' / 'Raw' は**発現量に対する変換**なので、"
+        "既に中心化された相対量である log2FC に当てても画面と同じ意味にならない。"
+        "引数を足して受け取った顔をするのは、設定が届いたという嘘になる。"
+        "揃えるなら Lite も expression_matrix を読む形にする必要があり、それは"
+        "『設定を流す』ではなくデータ経路の変更（ver52.4 以降）。"
+        "★ 一方 Top-N は元データに関係なく効くので ver52.3 ⑥ で解消した"
+        "（既定 3 が画面既定 5 と食い違っていた件も同時に解消）",
 }
 
 # ★ ver52.3 ①: 旧 read-only 共有ページ (page_shared / sv_* 9 本 / shared_view.py)
@@ -346,6 +360,61 @@ class TestSettingsReachEveryCopy:
             "NOT_PROPAGATED に載っているが実際には設定が届くようになっている。"
             "直ったのは良いことなので、登録から外すこと:\n  "
             + "\n  ".join(f"{role}: {m}.{f} / {s}" for role, m, f, s in fixed))
+
+
+# --------------------------------------------------------------------------
+# ★★ ver52.3 ⑥ で分かった、この番人自身の弱点
+#
+# 上の `_violations()` は「**引数として受け取っているか**」しか見ない。
+# ところが `_build_heatmap_section(deg_records, top_n_per_cluster=3, ...)` は
+# **最初から引数を持っていた**——ただし呼び出し側が一度も渡さず、既定 3 のまま
+# 描いていた（画面の既定は 5）。つまり番人は緑なのに、利用者の設定は届いていない。
+#
+# ver52.2 で書いた「型を文字列や個数で近似した番人は別の現れ方を通す」が、
+# ここでは「**引数の有無**で近似した」形で自分に当たった。
+# 受け口があることと、値が渡ることは別なので、渡っていることも見る。
+# --------------------------------------------------------------------------
+def _kwargs_passed_to(module, func):
+    """`module` 内の `func(...)` 呼び出しで実際に渡されているキーワード名。"""
+    path = CB / f"{module}.py"
+    if not path.is_file():
+        return set()
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    out = set()
+    for n in ast.walk(tree):
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                and n.func.id == func):
+            out |= {k.arg for k in n.keywords if k.arg}
+    return out
+
+
+# 「受け口があるだけ」で終わらせない設定。呼び出し側が渡すことまで見る。
+MUST_BE_PASSED = {
+    ("volcano", "lite_view_callbacks", "_build_volcano_fig", "FC 閾値"),
+    ("volcano", "lite_view_callbacks", "_build_volcano_fig", "p 閾値"),
+    ("heatmap", "lite_view_callbacks", "_build_heatmap_section", "Top-N"),
+}
+
+
+class TestSettingsAreActuallyPassedNotJustAccepted:
+
+    def test_the_scan_finds_call_sites(self):
+        """★ 番人が空振りしていないこと。"""
+        assert _kwargs_passed_to("lite_view_callbacks", "_build_volcano_fig"), (
+            "`_build_volcano_fig` の呼び出しが 1 件も見つからない。走査が壊れている疑い")
+
+    @pytest.mark.parametrize("entry", sorted(MUST_BE_PASSED))
+    def test_the_caller_passes_the_setting(self, entry):
+        role, module, func, label = entry
+        passed = _kwargs_passed_to(module, func)
+        aliases = SETTINGS[role][label]
+        assert passed & aliases, (
+            f"{module}.{func} は「{label}」を引数で受け取れるのに、"
+            f"呼び出し側が一度も渡していない。**受け口があるだけ**で、"
+            f"利用者の設定は届かず既定値で描かれる"
+            f"（`_build_heatmap_section` が実際にこの状態だった）。\n"
+            f"  渡されているキーワード: {sorted(passed)}\n"
+            f"  期待するいずれか:       {sorted(aliases)}")
 
 
 # --------------------------------------------------------------------------
