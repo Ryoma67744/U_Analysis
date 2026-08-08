@@ -73,18 +73,80 @@ def _infer_modality(path_str: str) -> Modality:
     return "auto"
 
 
-def _find_by_tail(tail: str, root: Path, is_file: bool) -> Optional[Path]:
-    """root 配下で末尾名 (tail) に一致するパスを探す"""
+def _collect_by_tail(tail: str, root: Path, is_file: bool) -> list[Path]:
+    """root 配下で末尾名 (tail) に一致するパスを **すべて** 集める。
+
+    ★ ver51.9 / C-5: 従来は最初の 1 件を返していた。`rglob` の順序は環境依存で、
+      `Data` / `output` / `RDS_Files` のような一般名は **どのプロジェクトにも
+      ある**ため、別プロジェクトのフォルダへ貼り替わっていた。パスは補正済みと
+      して表示されるので利用者は気づけない。呼び出し側が曖昧さを判断できるよう
+      全件返す。
+
+    ★ 併せて `_MAX_SCAN_DEPTH` を実際に効かせる（宣言だけで未使用だった）。
+      巨大な共有ドライブで補正のたびに全走査になるのを防ぐ。
+    """
     if not root.is_dir():
-        return None
+        return []
+    out: list[Path] = []
     try:
-        for candidate in root.rglob(tail):
-            if is_file and candidate.is_file():
-                return candidate
-            if not is_file and candidate.is_dir():
-                return candidate
+        for depth in range(1, _MAX_SCAN_DEPTH + 1):
+            pattern = "/".join(["*"] * (depth - 1) + [tail]) if depth > 1 else tail
+            for candidate in root.glob(pattern):
+                if is_file and candidate.is_file():
+                    out.append(candidate)
+                elif not is_file and candidate.is_dir():
+                    out.append(candidate)
     except (PermissionError, OSError) as exc:
         logger.debug("探索中にエラー %s: %s", root, exc)
+    return out
+
+
+def _tail_match_score(candidate: Path, parts: list[str]) -> int:
+    """壊れたパスの末尾から何段一致するかを返す (ver51.9 / C-5)。
+
+    `.../ProjectB/Data` を探すとき、`<root>/ProjectB/Data` は 2 段一致、
+    `<root>/ProjectA/Data` は 1 段一致。深く一致する方が確からしい。
+    """
+    cand = [p for p in candidate.parts if p not in ("/", "\\")]
+    score = 0
+    for a, b in zip(reversed(cand), reversed(parts)):
+        if a.lower() != b.lower():
+            break
+        score += 1
+    return score
+
+
+def _resolve_unique(parts: list[str], candidates: list[Path],
+                    is_file: bool, broken_path: str) -> Optional[Path]:
+    """候補ルート群から **一意に定まるときだけ** 解決する (ver51.9 / C-5)。
+
+    末尾からの一致段数で採点し、最良スコアの候補が 1 つに決まらなければ
+    補正しない。「黙って別プロジェクトを指す」より「未解決として警告する」
+    ほうが安全（DEG の手法スコープ ver51.9 A-2 と同じ方針）。
+    """
+    tail = parts[-1]
+    found: list[Path] = []
+    for root in candidates:
+        found.extend(_collect_by_tail(tail, root, is_file))
+    # 同じ実体を複数ルートから拾った場合は 1 つに畳む
+    uniq = {p.resolve(): p for p in found}
+    found = list(uniq.values())
+    if not found:
+        return None
+    if len(found) == 1:
+        logger.info("パス補正: %s → %s", broken_path, found[0])
+        return found[0]
+
+    scored = [(_tail_match_score(p, parts), p) for p in found]
+    best = max(s for s, _ in scored)
+    winners = [p for s, p in scored if s == best]
+    if len(winners) == 1:
+        logger.info("パス補正 (%d 段一致): %s → %s", best, broken_path, winners[0])
+        return winners[0]
+
+    logger.warning(
+        "パス補正を見送り（候補が %d 件あり一意に定まらない）: %s → %s",
+        len(winners), broken_path, [str(p) for p in winners[:5]])
     return None
 
 
@@ -127,29 +189,10 @@ def resolve_data_path(
     if not parts:
         return None
 
-    tail = parts[-1]
     candidates = _candidates_for(modality, field)
-
-    for root in candidates:
-        found = _find_by_tail(tail, root, is_file)
-        if found:
-            logger.info("パス補正: %s → %s", broken_path, found)
-            return found
-
-    # 末尾 1 階層で見つからない場合、末尾 2 階層を試す
-    if len(parts) >= 2:
-        tail2 = f"{parts[-2]}/{parts[-1]}"
-        for root in candidates:
-            if not root.is_dir():
-                continue
-            for candidate in root.rglob(parts[-2]):
-                target = candidate / parts[-1]
-                if is_file and target.is_file():
-                    logger.info("パス補正 (2階層): %s → %s", broken_path, target)
-                    return target
-                if not is_file and target.is_dir():
-                    logger.info("パス補正 (2階層): %s → %s", broken_path, target)
-                    return target
+    found = _resolve_unique(parts, candidates, is_file, broken_path)
+    if found is not None:
+        return found
 
     logger.warning("パス補正失敗: %s", broken_path)
     return None

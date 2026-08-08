@@ -36,11 +36,23 @@ _TRIGGER = Output("provenance_save_trigger", "data", allow_duplicate=True)
 
 
 def _save(key: str, value: dict, rds_path):
-    """interactive_settings.json の 1 キーを更新する（失敗しても画面は壊さない）。"""
+    """interactive_settings.json の 1 キーを更新する（失敗しても画面は壊さない）。
+
+    ★ ver51.8: `rds_path` を **真偽判定にしか使っていなかった**。実際の書き込み先は
+      `_save_interactive_settings` がスレッドの active key から解決するため、
+      `_set_active_key` を呼ばないと
+        - active key 未設定 → `__default__` の rds_path=None → **記録が黙って捨てられる**
+        - active key が別プロジェクト → **他プロジェクトの
+          interactive_settings.json へ書き込む**
+      のどちらかになる。waitress はスレッドを使い回すので後者は実際に起こる。
+      正しい形は interactive_spatial.save_spatial_display_settings にある。
+    """
     if not rds_path:
         raise PreventUpdate
     try:
-        from app.callbacks.interactive_callbacks import _save_interactive_settings
+        from app.callbacks.interactive_callbacks import (
+            _save_interactive_settings, _set_active_key)
+        _set_active_key(rds_path)
         _save_interactive_settings(key, value)
     except Exception as e:
         logger.warning("解析条件の保存に失敗 (%s): %s", key, e)

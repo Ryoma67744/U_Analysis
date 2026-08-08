@@ -77,9 +77,18 @@ def first_header_and_skipcount(path: Path) -> tuple[list[str], str, int]:
     -------
     (headers, delimiter, skip_lines)
     """
+    # ★ ver51.9: `utf-8-sig` で開く。Windows の Excel / SCiLS が出す CSV は
+    #   **UTF-8 BOM 付き**が既定で、素の `utf-8` だと先頭セルが `m/z` ではなく
+    #   `﻿m/z` になる。影響は 2 つ:
+    #     1. ver51.8 で m/z 列を必須にしたので、BOM 付きピークリストが
+    #        「m/z 列がありません」で落ちるようになった
+    #        (それ以前は「見つからなければ列 0」で偶然正しかった)
+    #     2. BOM が `#` コメント行に付くと `startswith("#")` が False になり、
+    #        **コメント行をヘッダとして採用**する。例外は出ず列が丸ごとずれる
+    #   BOM が無いファイルには影響しない。
     skip = 0
     header_line: Optional[str] = None
-    with path.open("r", newline="", encoding="utf-8", errors="replace") as f:
+    with path.open("r", newline="", encoding="utf-8-sig", errors="replace") as f:
         for line in f:
             if line.startswith("#"):
                 skip += 1
@@ -489,7 +498,12 @@ def _csv_to_temp_parquet(
 
     if _use_polars:
         logger.info("Phase A エンジン: polars (streaming sink)")
-        schema_overrides = {h: pl.Float64 for h in int_headers}
+        # ★ ver51.9: **位置指定**で渡す。列名キーの dict にすると、エンジンが
+        #   BOM を剥がなかったとき 1 列目 (m/z) のキーが一致せず、dtype 指定が
+        #   黙って無視されて m/z が文字列として推論される。
+        #   `first_header_and_skipcount` は utf-8-sig で読むので int_headers は
+        #   BOM 無し、CSV 本体を読むエンジンが剥ぐかは別問題 — その差に依存しない。
+        schema_overrides = [pl.Float64] * len(int_headers)
         lf = pl.scan_csv(
             str(intensity_path),
             separator=delim,
@@ -542,7 +556,17 @@ def _read_peaklist(path: Path):
     headers, delim, skip = first_header_and_skipcount(path)
     norm = [str(h).strip().lower().replace(" ", "") for h in headers]
     ncol = len(headers)
-    mz_idx = next((i for i, c in enumerate(norm) if c in ("m/z", "mz", "m_z")), 0)
+    # ★ ver51.8: m/z 列が見つからないとき **黙って列 0 にフォールバック**していた。
+    #   Name 列は同じ状況で例外を投げるのに非対称で、正当化できない。
+    #   ヘッダが認識できない書式（"Center m/z" / "Mass" / 先頭に Index 列がある等）
+    #   だと `float(tok[0])` がインデックス値を読んで成功してしまうため、
+    #   例外も出ずに **全行の m/z が行番号**になり、以降の近傍マッチが
+    #   「全部 No DB hit」か「低 m/z だけ無関係な化合物に一致」になる。
+    #   気づける手段が無いので、ここで止める。
+    mz_idx = next((i for i, c in enumerate(norm) if c in ("m/z", "mz", "m_z")), None)
+    if mz_idx is None:
+        raise ValueError(
+            f"peak-list に m/z 列がありません: {path.name} (ヘッダ: {headers})")
     name_idx = next((i for i, c in enumerate(norm) if c == "name"), None)
     if name_idx is None:
         raise ValueError(f"peak-list に Name 列がありません: {path.name}")
@@ -887,7 +911,12 @@ def convert_scils_to_parquet(
 
         # 4) m/z 列読込 + ソート
         pf = pq.ParquetFile(str(temp_parquet))
-        mz_col_name = int_headers[0]
+        # ★ ver51.9: m/z 列は **位置**で解決する。`int_headers[0]` で引くと、
+        #   CSV 本体を読むエンジンが BOM を剥がなかったとき一時 Parquet の
+        #   1 列目が `﻿m/z` のままで名前が一致せず、BOM 付き CSV の変換が丸ごと落ちる。
+        #   m/z 列が先頭であることは SCiLS Intensity CSV の構造上の前提
+        #   (`compute_spot_mapping` も int_headers[1:] を spot 列として扱う)。
+        mz_col_name = pf.schema_arrow.names[0]
         mz_num = pf.read(columns=[mz_col_name]).column(0).to_numpy(zero_copy_only=False).astype(np.float64)
         if np.isnan(mz_num).any():
             raise ValueError("Intensity の m/z 列に欠損値があります")
@@ -906,7 +935,15 @@ def convert_scils_to_parquet(
                 feat_ann_df = _pann.build_feature_annotation_table(
                     mz_sorted, pk_mz, pk_names, tol_da=_PEAKLIST_MZ_TOL_DA
                 )
-                result.n_annotated = int((feat_ann_df["compound"].astype(str) != "").sum())
+                # ★ ver51.8: 以前は `compound != ""` で数えていたが、
+                #   `parse_scils_name` は DB 未ヒットでも compound に
+                #   **"No DB hit" という文字列**を入れる（is_db_hit=False にするだけ）。
+                #   そのため未同定ピークまで「付与済み」に数えられ、変換画面が
+                #   「2,700 / 2,700 に付与」、注釈プレビューが「60 / 2,700」と
+                #   矛盾した数字を出していた。プレビュー側と同じ判定に揃える。
+                from app.services.annotation_inspect import _is_real_compound
+                result.n_annotated = int(
+                    feat_ann_df["compound"].map(_is_real_compound).sum())
                 logger.info("Peak-list 注釈: %d / %d feature にマッチ", result.n_annotated, n_mz)
             except Exception as e:
                 logger.warning("peak-list 解析に失敗（注釈なしで継続）: %s", e)

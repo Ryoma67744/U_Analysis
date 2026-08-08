@@ -58,9 +58,11 @@ logger = logging.getLogger("msi.interactive.fullscreen")
      Input("expand_feature_btn", "n_clicks"),
      Input("expand_spatial_btn", "n_clicks"),
      Input("expand_deg_btn", "n_clicks")],
-    [State("interactive_umap_plot", "figure"),
-     State("feature_plot_container", "children"),
-     State("last_spatial_figure_store", "data"),
+    # ★ ver51.9: `interactive_umap_plot.figure` と `last_spatial_figure_store`
+    #   を State で受けていたが、**関数本体で一度も参照していなかった**。
+    #   フルスクリーンは図を作り直すので不要。全 spot の点データ 2 つぶんが
+    #   ボタンを押すたびにブラウザ→サーバへ往復していた。
+    [State("feature_plot_container", "children"),
      State("deg_data_store", "data"),
      State("spatial_rotation_store", "data"),
      State("custom_color_map_store", "data"),
@@ -71,7 +73,7 @@ logger = logging.getLogger("msi.interactive.fullscreen")
     prevent_initial_call=True,
 )
 def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
-                      umap_fig, feat_container_children, spatial_fig_data, deg_data,
+                      feat_container_children, deg_data,
                       rotation_store, custom_colors, spatial_rows, hne_opacity,
                       cluster_name_map=None, rds_path=None):
     from app.callbacks.interactive_callbacks import _set_active_key

@@ -73,7 +73,20 @@ def _read_positions_json(path: Path) -> dict | None:
     書き込みは save_label_positions が os.replace で原子的に行うため、
     更新されれば mtime/size が変わりキャッシュは自動的に無効化される。
     失敗時 None（呼び出し元は「読めなかった」として従来どおり処理する）。
+
+    ★ ver51.9 / C-1: **複製を返す**。従来はキャッシュの dict をそのまま返して
+      いたが、描画側 (`interactive_umap._get_merged_label_positions`) は
+      返ってきた dict と入れ子を **in-place で merge** する。本番は 1 プロセスで
+      キャッシュはプロセス共有なので、あるセッションのドラッグ途中の位置が
+      キャッシュへ焼き込まれ、別セッションの描画と PPTX に混ざっていた。
+      ファイルは変わらないので mtime キーは有効なまま = **再起動するまで消えない**。
+
+      呼び出し側の in-place merge はそのままにする。そちらを直すには
+      4 つの描画経路すべてを揃える必要があり、1 つでも漏らすと同じことが起きる。
+      ここで断てば経路が増えても安全。
     """
+    import copy
+
     try:
         st = path.stat()
         key = (str(path), st.st_mtime_ns, st.st_size)
@@ -83,7 +96,7 @@ def _read_positions_json(path: Path) -> dict | None:
         hit = _POSITIONS_CACHE.get(key)
         if hit is not None:
             _POSITIONS_CACHE.move_to_end(key)
-            return hit
+            return copy.deepcopy(hit)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception as e:
@@ -96,7 +109,8 @@ def _read_positions_json(path: Path) -> dict | None:
         _POSITIONS_CACHE.move_to_end(key)
         while len(_POSITIONS_CACHE) > _POSITIONS_CACHE_MAX:
             _POSITIONS_CACHE.popitem(last=False)
-    return data
+    # 初回も複製を返す（呼び出し側は自分が 1 回目かどうかを知らない）
+    return copy.deepcopy(data)
 
 
 def load_label_positions(rds_path: str | None, method: str | None = None) -> dict:

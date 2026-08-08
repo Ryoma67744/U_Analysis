@@ -58,13 +58,50 @@ class TestExtractMzNumeric:
         result = extract_mz_numeric("mz_500")
         assert abs(result - 500.0) < 0.001
 
-    def test_embedded_number(self):
-        result = extract_mz_numeric("feature_42_extra")
-        assert abs(result - 42.0) < 0.001
+    # ---- ver51.8: 「最初の数字を取る」規則をやめた ----
+    # ★ 下の 2 件は **誤った仕様を固定していた**ので書き換えた。
+    #   旧規則は annotated な feature 名 (`<化合物名>_<m/z> | …`) で化合物名側の
+    #   数字を拾う。同梱 DB の 53% が名前に数字を含むため、実データで常時誤る。
 
-    def test_multiple_numbers_takes_first(self):
-        result = extract_mz_numeric("mz_100.5_200.3")
-        assert abs(result - 100.5) < 0.001
+    def test_unrecognized_format_has_no_mz(self):
+        """m/z として読めない名前は inf（＝ m/z 無し）。
+
+        旧: "feature_42_extra" -> 42.0（最初の数字）。
+        新: 末尾が `_<数値>` でないので inf。
+        ★ 意味のない数値を返すと m/z 窓に紛れ込む。DESI の 1 行ヘッダ形式は
+          "Vitamin B12" のような純粋な化合物名になり、旧規則では 12.0 として
+          m/z 12 の calibration 窓に入ってしまっていた。
+        """
+        assert extract_mz_numeric("feature_42_extra") == float("inf")
+        assert extract_mz_numeric("Vitamin B12") == float("inf")
+
+    def test_trailing_number_wins_not_the_first(self):
+        """数字が複数あるときは **末尾の `_<数値>`** を採る。
+
+        旧: "mz_100.5_200.3" -> 100.5（最初）。
+        新: 200.3（末尾）。実形式は `<名前>_<m/z>` なので末尾が m/z。
+        """
+        assert abs(extract_mz_numeric("mz_100.5_200.3") - 200.3) < 0.001
+
+    @pytest.mark.parametrize("name,expected", [
+        # 外部監査が再現に使った 4 例
+        ("2-Hydroxybutyric acid_105.0546 | HMDB | M+H", 105.0546),
+        ("3-Hydroxypropanal_75.0441 | endogenous | M+H", 75.0441),
+        ("(R)-1-Aminopropan-2-ol_76.0757 | endogenous | M+H", 76.0757),
+        ("Propan-2-ol_61.0648 | endogenous | M+H", 61.0648),
+        # 脂質命名（コロンを含むので旧規則だと 38 / 74 になる）
+        ("PI 38:4 (PI 18:0/20:4)_760.5851", 760.5851),
+        ("CL 74:8_1475.9870", 1475.9870),
+        # 数字を含まない化合物名（旧規則でも偶然通っていた）
+        ("Choline_104.1059 | HMDB | [M+H]+", 104.1059),
+        # R の非 annotated 経路が作る形式
+        ("m/z 760.58510", 760.5851),
+        # 素の数値列名（peak_annotation.make_column_name の Name 空フォールバック）
+        ("419.257200", 419.2572),
+    ])
+    def test_annotated_feature_names(self, name, expected):
+        """★ 化合物名に数字が入っていても m/z を取り違えないこと。"""
+        assert abs(extract_mz_numeric(name) - expected) < 1e-6
 
 
 # ---- standardize_deg_df ----

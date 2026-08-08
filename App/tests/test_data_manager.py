@@ -179,20 +179,43 @@ class TestReadTimsRaw:
     def test_returns_none_for_empty_folder(self, tmp_path):
         assert dm.read_raw_mz_spectrum(str(tmp_path), is_tims=True) is None
 
-    def test_sample_name_override_still_limited_to_candidates(self, tmp_path):
-        """sample_name 指定時も候補は _filter_tims_candidates に絞られる。
+    def test_unmatched_sample_name_returns_none(self, tmp_path):
+        """★ ver51.8: 指定サンプルが候補に無ければ **None**（先頭へ落とさない）。
 
-        Parquet が存在する場合、sample_name で CSV stem を指定しても CSV は候補外。
-        → candidates 内に一致が無い場合 candidates[0] にフォールバック。
+        旧テスト名は test_sample_name_override_still_limited_to_candidates で、
+        「candidates 内に一致が無い場合 candidates[0] にフォールバック」を
+        **正しい仕様として固定していた**。だが利用者がキャリブレーション対象
+        サンプルを明示的に選んでいるのに黙って別サンプルのスペクトルを返すのは
+        科学的に誤りで、そのまま ppm ドリフトの推定に使われる。
+
+        候補の絞り込み（_filter_tims_candidates が中間 CSV を除外すること）自体は
+        従来どおりで、その結果一致しなければ「見つからない」と答える。
         """
         _write_dummy_parquet(tmp_path / "sample.parquet", mz_values=[100.5])
         _write_annotation_csv(tmp_path / "Brain_Annotation.csv")
-        # 中間 CSV の stem を指定しても Parquet が選ばれる (フィルタ済み候補から matched[0])
         result = dm.read_raw_mz_spectrum(
             str(tmp_path), is_tims=True, sample_name="Brain_Annotation",
         )
-        assert result is not None
-        assert any("100" in c for c in result.columns)
+        assert result is None, "候補外の指定で別ファイルを返している"
+
+    def test_matched_sample_name_is_used(self, tmp_path):
+        """正常系: 候補内の stem を指定したらそのファイルが読まれること。"""
+        _write_dummy_parquet(tmp_path / "A.parquet", mz_values=[100.5])
+        _write_dummy_parquet(tmp_path / "B.parquet", mz_values=[900.5])
+
+        res_b = dm.read_raw_mz_spectrum(str(tmp_path), is_tims=True, sample_name="B")
+        assert res_b is not None and any("900" in c for c in res_b.columns), \
+            f"B を指定したのに別ファイル: {list(res_b.columns) if res_b is not None else None}"
+
+        res_a = dm.read_raw_mz_spectrum(str(tmp_path), is_tims=True, sample_name="A")
+        assert res_a is not None and any("100" in c for c in res_a.columns)
+
+    def test_no_sample_name_still_takes_the_first(self, tmp_path):
+        """未指定のときは従来どおり先頭ファイル（過剰な締め付けの番人）。"""
+        _write_dummy_parquet(tmp_path / "A.parquet", mz_values=[100.5])
+        _write_dummy_parquet(tmp_path / "B.parquet", mz_values=[900.5])
+        res = dm.read_raw_mz_spectrum(str(tmp_path), is_tims=True)
+        assert res is not None and any("100" in c for c in res.columns)
 
 
 # ---------------------------------------------------------------------------
@@ -215,3 +238,53 @@ class TestFilterHelper:
         result = dm._filter_tims_candidates(tmp_path)
         assert len(result) == 1
         assert result[0].name == "BIG.PARQUET"
+
+
+# ---------------------------------------------------------------------------
+# DESI 生データのサンプル選択 (ver51.8)
+# ---------------------------------------------------------------------------
+# ★ 従来 `_read_desi_raw` は sample_name を **引数に持っていなかった**。
+#   `read_raw_mz_spectrum` は TIMS にだけ渡しており、DESI では利用者がどの
+#   サンプルを選んでも常に先頭の .txt を読んでいた（警告も無し）。
+#   キャリブレーションはその平均スペクトルから ppm ドリフトを決めるため、
+#   **サンプル A の補正曲線がサンプル B の測定値から作られる**。
+#   DESI 経路にはテストが 1 件も無かった。
+
+def _write_desi_txt(path, mz_values):
+    """_read_desi_raw が期待する 5 行ヘッダ + 1 画素の .txt を書く。"""
+    n = len(mz_values)
+    lines = [
+        "",                                        # 行1: 空行
+        "header info",                             # 行2
+        "\t".join(["idx"] * (n + 3)),              # 行3: 列インデックス
+        "\t".join(["", "", ""] + [f"{m}" for m in mz_values]),   # 行4: m/z
+        "\t".join(["", "", ""] + ["0"] * n),       # 行5: フラグメント
+        "\t".join(["1", "0", "0"] + ["10"] * n),   # 行6〜: 画素データ
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+class TestReadDesiRawSampleSelection:
+    def test_named_sample_is_read(self, tmp_path):
+        """★ 指定したサンプルの .txt が読まれること（従来は常に先頭）。"""
+        _write_desi_txt(tmp_path / "A.txt", [100.5])
+        _write_desi_txt(tmp_path / "B.txt", [900.5])
+
+        res = dm.read_raw_mz_spectrum(str(tmp_path), is_tims=False, sample_name="B")
+        assert res is not None, "B が読めない"
+        assert any("900" in c for c in res.columns), \
+            f"B を指定したのに先頭(A)を読んでいる: {list(res.columns)}"
+
+    def test_unmatched_sample_returns_none(self, tmp_path):
+        """★ 指定が満たせなければ None（黙って別サンプルを返さない）。"""
+        _write_desi_txt(tmp_path / "A.txt", [100.5])
+        _write_desi_txt(tmp_path / "B.txt", [900.5])
+        assert dm.read_raw_mz_spectrum(
+            str(tmp_path), is_tims=False, sample_name="MISSING") is None
+
+    def test_no_sample_name_takes_the_first(self, tmp_path):
+        """未指定なら従来どおり先頭ファイル。"""
+        _write_desi_txt(tmp_path / "A.txt", [100.5])
+        _write_desi_txt(tmp_path / "B.txt", [900.5])
+        res = dm.read_raw_mz_spectrum(str(tmp_path), is_tims=False)
+        assert res is not None and any("100" in c for c in res.columns)

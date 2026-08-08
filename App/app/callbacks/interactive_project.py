@@ -155,7 +155,14 @@ def set_interactive_folders_from_sub_project(sub_id, project_id, skip_reset):
     """サブプロジェクト選択時にフォルダパスを自動設定 + データリセット
     sap_skip_reset=True の場合はリセットをスキップ（保存後の自動切替時）。"""
     if skip_reset:
-        return (no_update,) * 6 + (False,)
+        # ★ ver51.9 / C-4: 並びが 1 つずれていた。Output は
+        #   [result_folder, msi_folder, data_info, ms_instrument,
+        #    viz_container.style, sap_skip_reset, sap_btn_wrapper.style]
+        #   の 7 つ。`(no_update,)*6 + (False,)` だと sap_skip_reset に
+        #   no_update、sap_btn_wrapper.style に False（style として不正）が入る。
+        #   skip フラグが降りないので **次のサブプロジェクト切替でもリセットが
+        #   skip され**、フォルダ入力が前のサブプロジェクトを指したまま残る。
+        return (no_update,) * 5 + (False, no_update)
 
     # 前のプロジェクトの state を破棄（複数プロジェクト同時閲覧時の混線防止）
     _drop_state()

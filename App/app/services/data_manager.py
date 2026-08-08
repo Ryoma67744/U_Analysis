@@ -140,7 +140,8 @@ def read_raw_mz_spectrum(data_folder: str, is_tims: bool = True,
         if is_tims:
             return _read_tims_raw(folder, sample_name=sample_name)
         else:
-            return _read_desi_raw(folder)
+            # ver51.8: DESI にも sample_name を渡す（従来は捨てていた）
+            return _read_desi_raw(folder, sample_name=sample_name)
     except Exception:
         return None
 
@@ -192,9 +193,22 @@ def _read_tims_raw(folder: Path, sample_name: str = None) -> Optional[pd.DataFra
     if not files:
         return None
 
+    # ★ ver51.8: サンプル指定時に一致が無ければ **先頭ファイルへ落とさない**。
+    #   従来は `matched[0] if matched else files[0]` で、利用者が
+    #   キャリブレーション対象サンプルを明示的に選んでいても、そのファイルが
+    #   候補集合に無ければ黙って別サンプルのスペクトルを返していた。
+    #   キャリブレーションはその結果で ppm ドリフトを決めるので、
+    #   **サンプル A の補正曲線がサンプル B の測定値から作られる**。
+    #   指定が満たせないなら None を返し、呼び出し側にエラーを出させる。
     if sample_name:
         matched = [f for f in files if f.stem == sample_name]
-        fp = matched[0] if matched else files[0]
+        if not matched:
+            logger.warning(
+                "指定サンプル '%s' が %s に見つかりません（候補: %s）。"
+                "別ファイルへのフォールバックはしません。",
+                sample_name, folder, [f.stem for f in files][:10])
+            return None
+        fp = matched[0]
     else:
         fp = files[0]
     ext = fp.suffix.lower()
@@ -241,8 +255,12 @@ def _read_tims_raw(folder: Path, sample_name: str = None) -> Optional[pd.DataFra
     return avg
 
 
-def _read_desi_raw(folder: Path) -> Optional[pd.DataFrame]:
+def _read_desi_raw(folder: Path, sample_name: str = None) -> Optional[pd.DataFrame]:
     """DESI 生データ（.txt）から m/z 値と平均強度を取得。
+
+    ★ ver51.8: `sample_name` を受け取るようにした。従来は引数に存在すらせず、
+      `read_raw_mz_spectrum` が TIMS にだけ渡していたため、DESI では利用者が
+      どのサンプルを選んでも **常に先頭の .txt** を読んでいた。
 
     DESI .txt フォーマット:
       行1: 空行
@@ -258,7 +276,18 @@ def _read_desi_raw(folder: Path) -> Optional[pd.DataFrame]:
     if not txt_files:
         return None
 
-    fp = txt_files[0]
+    # TIMS 側と同じ規約: 指定があれば厳密一致、無ければ None（先頭へ落とさない）
+    if sample_name:
+        matched = [f for f in txt_files if f.stem == sample_name]
+        if not matched:
+            logger.warning(
+                "指定サンプル '%s' が %s に見つかりません（候補: %s）。"
+                "別ファイルへのフォールバックはしません。",
+                sample_name, folder, [f.stem for f in txt_files][:10])
+            return None
+        fp = matched[0]
+    else:
+        fp = txt_files[0]
     with open(fp, "r", encoding="utf-8") as fh:
         lines = [fh.readline() for _ in range(5)]
 

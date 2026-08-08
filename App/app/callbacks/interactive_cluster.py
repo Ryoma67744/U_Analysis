@@ -359,10 +359,22 @@ def load_saved_cluster_name_map(rds_path, method=None):
     Output("feature_cluster_filter", "options", allow_duplicate=True),
     [Input("cluster_name_map_store", "data"),
      Input("umap_merge_toggle", "value")],
+    # ★ ver51.9: どのプロジェクトを見ているかを受け取る（元は無かった）。
+    State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
-def update_cluster_dropdown_labels(cluster_name_map, merge_toggle):
-    """cluster_name_map変更時 or マージ切替時に全クラスタ関連ドロップダウンのラベルを更新"""
+def update_cluster_dropdown_labels(cluster_name_map, merge_toggle, rds_path):
+    """cluster_name_map変更時 or マージ切替時に全クラスタ関連ドロップダウンのラベルを更新
+
+    ★ ver51.9: `_set_active_key` を呼んでいなかった。ver51.8 でリクエスト境界に
+      active key のリセットを入れたため、**常に `plot_data` が None** になり、
+      クラスタを改名してもドロップダウンのラベルが更新されなくなっていた。
+      (リセット前は「前のリクエストが見ていたプロジェクト」が残っていたので
+       たまたま動いていた = 元から正しくなかった)
+    """
+    if not rds_path:
+        return (no_update,) * 5
+    _set_active_key(rds_path)
     df = _interactive_data.get("plot_data")
     if df is None:
         return (no_update,) * 5

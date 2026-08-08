@@ -214,16 +214,20 @@ def apply_mz_filter(n_clicks, mz_min, mz_max, rds_path=None):
     if mz_min is None and mz_max is None:
         return None  # フィルタなし -> 全件に戻す
 
+    # ver51.8: 独自の正規表現をやめ共通窓口に統一した。
+    # ★ 従来は「最初の数字」だったので annotated 名 (`PI 38:4 (...)_760.5851`) を
+    #   38 と読み、m/z 範囲で絞ると脂質が丸ごと消えていた。
+    # ★ さらに m/z を持たない feature を `filtered.append(f)` へ素通りさせており、
+    #   範囲外でも残っていた。inf は「m/z 無し」なので範囲指定時は除外する。
     filtered = []
     for f in features:
-        # feature名から数値部分を抽出（例: "mz_123.456" -> 123.456）
-        match = re.search(r"(\d+\.?\d*)", f)
-        if match:
-            val = float(match.group(1))
-            if mz_min is not None and val < mz_min:
-                continue
-            if mz_max is not None and val > mz_max:
-                continue
+        val = _extract_mz_numeric(f)
+        if val == float("inf"):
+            continue  # m/z が読めない feature は範囲指定時に含めない
+        if mz_min is not None and val < mz_min:
+            continue
+        if mz_max is not None and val > mz_max:
+            continue
         filtered.append(f)
     return filtered
 
@@ -809,7 +813,21 @@ def patch_feature_intensity(feature_name, intensity_min, intensity_max,
         # ★ 保存用 figure の名前は **表示名** (name_map 適用後) で作られている。
         #   グラフ id は生のサンプル名なので、同じ変換を通してから対応付ける。
         stored = list(get_export_figures("feature", session_id, rds_path) or [])
-        stored_by_name = {name: idx for idx, (name, _fd) in enumerate(stored)}
+        # ★ ver51.9 / B-4: 従来は **表示名の suffix 一致** で引いていた
+        #   (`k.endswith(f"_{display_s}")`)。名前は
+        #   `Feature_{file_label}_{display_s}` で file_label も display_s も
+        #   `_` を含みうるため、境界が曖昧になる:
+        #     - `WT_liver` と `liver` のように片方が他方の `_` 付き接尾辞だと
+        #       **別サンプルの figure に書き込む**
+        #     - 表示名が重複すると dict が潰れて片方が古いまま残る
+        #   殻 (`_update_feature_plot_inner`) は `samples_to_show` の順で
+        #   `export_figs` を作るので、**位置**で対応付ければ名前に依存しない。
+        #   件数が食い違うときだけ従来の名前照合へ落とす（殻が古い等）。
+        if len(stored) == len(samples_to_show):
+            stored_index_of = {str(s): i for i, s in enumerate(samples_to_show)}
+        else:
+            stored_index_of = None
+            stored_by_name = {name: idx for idx, (name, _fd) in enumerate(stored)}
 
         figures, configs = [], []
         measured = {"color": [], "opacity": [], "note": []}
@@ -850,8 +868,11 @@ def patch_feature_intensity(feature_name, intensity_min, intensity_max,
 
                 display_s = _display_name(s_key, name_map or {})
                 new_name = f"Feature_{file_label}_{display_s}"
-                si = next((stored_by_name[k] for k in stored_by_name
-                           if k.endswith(f"_{display_s}")), None)
+                if stored_index_of is not None:
+                    si = stored_index_of.get(s_key)
+                else:
+                    si = next((stored_by_name[k] for k in stored_by_name
+                               if k.endswith(f"_{display_s}")), None)
                 if si is not None:
                     stored[si] = _apply_feature_data_to_stored(
                         stored[si], color, alpha, below, display_min,
@@ -930,14 +951,19 @@ for _ctl_id, _fn in (
     Output("feature_history_store", "data"),
     Input("add_feature_bookmark_btn", "n_clicks"),
     [State("feature_select", "value"),
-     State("feature_history_store", "data")],
+     State("feature_history_store", "data"),
+     # ★ ver51.8: 保存先を決めるため rds_path を受け取る（元は無かった）
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def add_feature_bookmark(n_clicks, feature_name, current_bookmarks):
+def add_feature_bookmark(n_clicks, feature_name, current_bookmarks, rds_path):
     """ブックマーク追加ボタン -> 現在の Feature をブックマークストアに保存"""
-    from app.callbacks.interactive_callbacks import _save_interactive_settings
-    if not n_clicks or not feature_name:
+    from app.callbacks.interactive_callbacks import (
+        _save_interactive_settings, _set_active_key)
+    if not n_clicks or not feature_name or not rds_path:
         return no_update
+    # ★ active key を立てないと別プロジェクトのブックマークを書き換える
+    _set_active_key(rds_path)
     bookmarks = list(current_bookmarks) if current_bookmarks else []
     if feature_name in bookmarks:
         bookmarks.remove(feature_name)
@@ -952,14 +978,18 @@ def add_feature_bookmark(n_clicks, feature_name, current_bookmarks):
      Output("feature_history_select", "value")],
     Input("remove_feature_bookmark_btn", "n_clicks"),
     [State("feature_history_select", "value"),
-     State("feature_history_store", "data")],
+     State("feature_history_store", "data"),
+     # ★ ver51.8: 保存先を決めるため rds_path を受け取る（元は無かった）
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def remove_feature_bookmark(n_clicks, selected, current_bookmarks):
+def remove_feature_bookmark(n_clicks, selected, current_bookmarks, rds_path):
     """選択中のブックマークを削除"""
-    from app.callbacks.interactive_callbacks import _save_interactive_settings
-    if not n_clicks or not selected or not current_bookmarks:
+    from app.callbacks.interactive_callbacks import (
+        _save_interactive_settings, _set_active_key)
+    if not n_clicks or not selected or not current_bookmarks or not rds_path:
         return no_update, no_update
+    _set_active_key(rds_path)
     bookmarks = list(current_bookmarks)
     if selected in bookmarks:
         bookmarks.remove(selected)

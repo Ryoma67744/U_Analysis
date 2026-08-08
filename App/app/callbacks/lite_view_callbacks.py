@@ -42,7 +42,9 @@ from app.callbacks.interactive_callbacks import (
     _get_cluster_color_map,
     _load_deg_results,
 )
-from app.callbacks.share_callbacks import _shared_data, _sv_bridge
+from app.callbacks.share_callbacks import (
+    _shared_data, _shared_data_get, _shared_data_put, _sv_bridge,
+)
 from app.callbacks.interactive_umap import _build_umap_integrated_fig
 from app.callbacks.interactive_spatial import _create_single_spatial_fig
 from app.utils.deg_utils import is_meaningful_annotation
@@ -160,10 +162,15 @@ def initialize_lite_view(target, method_data):
 
     # データロード（lite 専用 cache key で _shared_data を流用）
     cache_key = _lite_cache_key(project_id, sub_id, integration_method, rds_path)
-    if cache_key not in _shared_data:
+    # ★ ver51.8: _shared_data は LRU + TTL 付きになったので、
+    #   「in で確認 → 後で [] で取り出す」は間に eviction が挟まると KeyError になる
+    #   （間に extract_data() という重い処理があるので隙間は小さくない）。
+    #   取り出した dict を **ローカルに持ち続ける**形にして、以降は添字を使わない。
+    data = _shared_data_get(cache_key)
+    if data is None:
         try:
             extracted = _sv_bridge.extract_data(rds_path)
-            _shared_data[cache_key] = {
+            data = {
                 "plot_data": extracted["plot_data"],
                 "cluster_stats": extracted["cluster_stats"],
                 "features_list": extracted["features_list"],
@@ -171,10 +178,9 @@ def initialize_lite_view(target, method_data):
                 "rds_path": rds_path,
                 "cache_dir": str(extracted["cache_dir"]),
             }
+            _shared_data_put(cache_key, data)
         except Exception as e:
             return html.Div(), True, f"RDS 読込エラー: {e}"
-
-    data = _shared_data[cache_key]
     df_plot = data["plot_data"]
     df_stats = data["cluster_stats"]
 
@@ -209,7 +215,10 @@ def initialize_lite_view(target, method_data):
 
     # per-cluster カード遅延展開時に再利用するため bundle をキャッシュ
     color_map = _get_cluster_color_map(df_plot["Cluster"], custom_color_map)
-    _shared_data[cache_key]["_lite_bundle"] = {
+    # ★ ver51.8: 添字ではなくローカル参照へ書く。
+    #   data はキャッシュに入っているのと同じ dict オブジェクトなので、
+    #   まだ残っていれば更新され、evict 済みなら何も壊さずに済む。
+    data["_lite_bundle"] = {
         "df_plot": df_plot,
         "color_map": color_map,
         "deg_records": deg_records,
@@ -314,7 +323,7 @@ def _resolve_lite_data_for_target(target, method_data):
     rds_path = rds_map[integration_method]
 
     cache_key = _lite_cache_key(project_id, sub_id, integration_method, rds_path)
-    cached = _shared_data.get(cache_key)
+    cached = _shared_data_get(cache_key)
     if cached and "_lite_bundle" in cached:
         return cached["_lite_bundle"]
 
@@ -323,7 +332,9 @@ def _resolve_lite_data_for_target(target, method_data):
     try:
         if not cached:
             extracted = _sv_bridge.extract_data(rds_path)
-            _shared_data[cache_key] = {
+            # ver51.8: put した後に添字で取り直すと、その間の eviction で
+            # KeyError になりうる。put する dict をそのまま持つ。
+            cached = {
                 "plot_data": extracted["plot_data"],
                 "cluster_stats": extracted["cluster_stats"],
                 "features_list": extracted["features_list"],
@@ -331,7 +342,7 @@ def _resolve_lite_data_for_target(target, method_data):
                 "rds_path": rds_path,
                 "cache_dir": str(extracted["cache_dir"]),
             }
-            cached = _shared_data[cache_key]
+            _shared_data_put(cache_key, cached)
     except Exception as e:
         # ver3.7: lite_view の bundle 再構築失敗を silent から logger.error に
         # 変更。UI は空白表示のままだが原因究明できるようにする

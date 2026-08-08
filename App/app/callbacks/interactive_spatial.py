@@ -719,11 +719,22 @@ def toggle_cluster_color_visibility(selected):
 @callback(
     Output({"type": "cluster_color_swatch", "index": ALL, "color": ALL}, "style"),
     Input("custom_color_map_store", "data"),
+    # ★ ver51.9: どのプロジェクトを見ているかを受け取る（元は無かった）。
+    State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
-def update_swatch_disabled_state(custom_colors):
-    """色マップ変更時に、他クラスタで使用中のスウォッチをグレーアウトする"""
-    from app.callbacks.interactive_callbacks import _interactive_data
+def update_swatch_disabled_state(custom_colors, rds_path):
+    """色マップ変更時に、他クラスタで使用中のスウォッチをグレーアウトする
+
+    ★ ver51.9: `_set_active_key` を呼んでいなかった。ver51.8 でリクエスト境界に
+      active key のリセットを入れたため、**常に `plot_data` が None** になり、
+      使用済み色のグレーアウトが効かなくなっていた。
+    """
+    from app.callbacks.interactive_callbacks import (
+        _interactive_data, _set_active_key)
+    if not rds_path:
+        raise PreventUpdate
+    _set_active_key(rds_path)
     if not custom_colors:
         custom_colors = {}
     df = _interactive_data.get("plot_data")

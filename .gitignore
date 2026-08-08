@@ -43,3 +43,9 @@ venv/
 
 # Rセッション（レガシー、リポジトリルート直下の旧 Other/ — Data/Other/ とは別物）
 Other/sessions/
+
+# パッケージビルドの中間生成物 (ver51.8)
+# tests/test_packaging.py が実際に wheel をビルドして中身を検査するため、
+# pip がソース側に build/ と *.egg-info/ を残す。
+App/build/
+App/msi_analysis_app.egg-info/
