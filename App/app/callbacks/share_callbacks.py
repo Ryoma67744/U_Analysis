@@ -139,15 +139,38 @@ def route_share_url(pathname):
     result_dir = share.get("result_dir", "")
     project_id = share.get("project_id", "")
     sub_project_id = share.get("sub_project_id", "")
-    # MSI データフォルダはサブプロジェクトから取得
+
+    # MSI データフォルダはサブプロジェクトから取得。
+    #
+    # ★ ver52.3: ここは「空」と「解決できなかった」を区別せず、下の return で
+    #   `data_folder or no_update` としていた。`no_update` は **直前に開いて
+    #   いた別プロジェクトの値を store に残す**ので、
+    #     - 見出しとプロジェクト ID は新しい共有のもの
+    #     - MSI データフォルダは前のプロジェクトのもの
+    #   という食い違いが起きる。以後の生スペクトル読み出し
+    #   （キャリブレーション自動検出・DESI エクスポート）が
+    #   **別データセットに当たる**（スコープ漏れ）。
+    #
+    #   解決できなければ空文字を**明示的に**入れる。空なら下流は
+    #   「データフォルダ未設定」として扱うので安全側に倒れる。
+    #   黙って前の値を使い続けるより、開けないほうがましという判断。
     data_folder = ""
     try:
         from app.services.project_manager import get_sub_project
         sub = get_sub_project(project_id, sub_project_id)
         if sub:
-            data_folder = sub.get("data_folder", "")
+            data_folder = sub.get("data_folder", "") or ""
+        else:
+            logger.warning(
+                "share: サブプロジェクトが見つからない project=%s sub=%s。"
+                "データフォルダは未設定にする（前の値を残さない）",
+                project_id, sub_project_id)
     except Exception:
-        pass
+        logger.warning(
+            "share: サブプロジェクトの解決に失敗 project=%s sub=%s。"
+            "データフォルダは未設定にする（前の値を残さない）",
+            project_id, sub_project_id, exc_info=True)
+        data_folder = ""
 
     shared_session = {
         "active": True,
@@ -161,10 +184,15 @@ def route_share_url(pathname):
     }
     logger.info("shared interactive open: kind=%s project=%s sub=%s",
                 kind, project_id, sub_project_id)
+    # ★ ver52.3: `x or no_update` をやめ、常に明示的な値を入れる。
+    #   `no_update` は「変更しない」なので、**直前に開いていた別プロジェクトの
+    #   結果フォルダ / データフォルダがそのまま残る**。project_id と
+    #   sub_project_id だけが新しくなるため、画面は新しい共有を名乗りながら
+    #   中身は前のプロジェクトを指す、という状態になっていた。
     return (
         "analysis",
-        result_dir or no_update,
-        data_folder or no_update,
+        result_dir,
+        data_folder,
         project_id,
         sub_project_id,
         "shared",            # interactive_entry_mode → auto_load 対象
