@@ -62,6 +62,14 @@ REPORTS_SKIPS = {
         "skipped_methods を最終ステータス文に「（スキップ: …）」として出す (:2413)",
     ("hne_overlay_callbacks.py", "hne_export_stage_b"):
         "skipped を msg に「（スキップ: …）」として出す (:951)",
+    # --- ver52.3 ④ で報告するようにしたもの ---
+    ("deg_utils.py", "get_top_n_features_for_cluster"):
+        "ver52.3 ④: avg_log2FC を数値化できない record は Up にも Down にも"
+        "入らないため両方の Top-N から消えていた。`return_dropped=True` で"
+        "件数を返すようにし、呼び出し側が利用者へ出せるようにした",
+    ("deg_utils.py", "build_marker_rows"):
+        "ver52.3 ④: 上の件数を受け取り、**同じ表の注記行**として出す"
+        "（表そのものが利用者に届く成果物なので、在庫内で報告できる）",
 }
 
 # ===========================================================================
@@ -102,9 +110,6 @@ MUST_REPORT = {
     ("analysis_runner.py", "compute_calibration_coefficients"):
         "H-3: 参照ピークの行が数値化できないと無言で捨てて残りで回帰する。"
         "点数が減ると次数も自動で下がるのに、点数が報告されない",
-    ("deg_utils.py", "build_marker_rows"):
-        "H-7: avg_log2FC が読めない record は Up にも Down にも入らず"
-        "**両方の Top-N から消える**。落とした件数の報告が無い",
 }
 
 # ===========================================================================
@@ -213,6 +218,49 @@ def population():
 
 
 # --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# ★ 既知の盲点: `dropna()` で黙って落とす形
+# ---------------------------------------------------------------------------
+# 本番人の母数は「集めて返す × except で握りつぶす」で定義している。
+# 同じ T5 でも **`pd.to_numeric(errors="coerce")` → `dropna()`** の形は
+# except を使わないので**検出できない**（ver52.3 ④ の作業中に判明）。
+#
+# 例: lite_view_callbacks._build_volcano_fig は avg_log2FC を coerce して
+#     dropna するので、読めない record が図から黙って消える。
+#
+# 分類は ver52.3 の後続コミットで行う。それまで **数が増えないこと**だけ
+# 固定して、新しい写しが黙って生えるのを防ぐ。
+DROPNA_SITES_AT_VER52_3 = 9
+
+
+def _dropna_sites():
+    out = []
+    for rel, tree in [(p.relative_to(APP.parent), ast.parse(p.read_text(encoding="utf-8")))
+                      for p in sorted(APP.rglob("*.py"))]:
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for n in ast.walk(fn):
+                if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                        and n.func.attr == "dropna"):
+                    out.append((f"{rel}:{n.lineno}", fn.name))
+    return out
+
+
+def test_dropna_shape_is_not_covered_but_does_not_grow():
+    """★ 番人が見られない形があること自体を、番人に書いておく。
+
+    「緑だから全部見た」と誤解しないための表明。数が増えたら落ちる。
+    """
+    sites = _dropna_sites()
+    assert len(sites) <= DROPNA_SITES_AT_VER52_3, (
+        f"`dropna()` で黙って落とす箇所が {len(sites)} に増えた"
+        f"（ver52.3 時点 {DROPNA_SITES_AT_VER52_3}）。"
+        "この形は本番人の母数の定義（except で握りつぶす）に入らないので、"
+        "増やす前に分類すること:\n  "
+        + "\n  ".join(f"{loc} {fn}()" for loc, fn in sites))
+
+
 class TestTheGuardIsNotInert:
     """★ 番人が空振りしていないこと（ver51.9 で 3 回空振りさせた反省）。"""
 

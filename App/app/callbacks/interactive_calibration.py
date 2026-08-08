@@ -174,6 +174,7 @@ def _build_mz_to_compound_map(mrm_path_str, tolerance=0.1):
 
     # m/z → 化合物名 マッピング (Parent と Daughter 両方)
     mz_map = {}
+    skipped = 0
     for _, row in mrm_df.iterrows():
         name = str(row.get("Compound", "")).strip()
         if not name:
@@ -182,9 +183,24 @@ def _build_mz_to_compound_map(mrm_path_str, tolerance=0.1):
             if mz_col in mrm_df.columns:
                 try:
                     mz_val = float(row[mz_col])
-                    mz_map[mz_val] = name
                 except (ValueError, TypeError):
+                    skipped += 1
                     continue
+                # ★ ver52.3: `float(nan)` は例外を出さないので、空セルが
+                #   `mz_map[nan]` として入っていた。すると後段の
+                #   `np.argmin(np.abs(mrm_mz_values - mz_val))` が **常に NaN の
+                #   添字**を返し、許容差判定が必ず False になるため、
+                #   **データセット全体の化合物注釈が消える**（1 セルの欠損で全滅）。
+                #   双子の `_build_annotation_csv_map` は :133 で同じ罠を
+                #   `pd.isna` で防いでいたのに、こちらだけ守られていなかった。
+                if pd.isna(mz_val) or mz_val <= 0:
+                    skipped += 1
+                    continue
+                mz_map[mz_val] = name
+    if skipped:
+        logger.warning(
+            "MRM ファイルの %d 行分の m/z を数値化できず除外した: %s",
+            skipped, mrm_path_str)
     return mz_map
 
 
@@ -448,26 +464,49 @@ def _calibrate_mz(features_list, avg_spectrum, reference_mz,
 
     # 参照ピークとのマッチング
     matched = []
+    unknown_windows = 0          # 強度が 1 つも分からず除外した参照の数
     for ref in reference_mz:
         within_window = np.where(np.abs(mz_array - ref) <= search_window)[0]
         if len(within_window) == 0:
             continue
-        # ウィンドウ内で最大強度のピークを選択
+        # ウィンドウ内で最大強度のピークを選択。
+        # ★ ver52.3: 番兵が `-1`、既定が `avg_spectrum.get(fname, 0.0)` だったため
+        #   **強度が 1 つも分からない窓でも `0.0 > -1` が真になり、
+        #   窓内の最初（≒最小 m/z）の feature が「最大強度」として採用**されていた。
+        #   その観測 m/z から出た ppm ずれが較正回帰に入り、係数は全 m/z に適用される。
+        #   実測では強度不明のまま `calibrated: True` で -1996 ppm を返した。
+        #   docstring が「avg_spectrum は参照窓の外は入っていなくてよい」と
+        #   契約している以上、窓内が欠ける状態は起こりうる。
+        #   「強度が無い」と「強度が 0」を区別し、分からない feature は候補にしない。
         best_idx = None
-        best_intensity = -1
+        best_intensity = None
         for idx in within_window:
             fname = feature_names[idx]
-            intensity = avg_spectrum.get(fname, 0.0)
-            if intensity > best_intensity:
+            if fname not in avg_spectrum:
+                continue                     # 強度不明 → 較正の根拠に使わない
+            intensity = avg_spectrum[fname]
+            if best_intensity is None or intensity > best_intensity:
                 best_intensity = intensity
                 best_idx = idx
-        if best_idx is not None:
-            obs = mz_array[best_idx]
-            ppm = (obs - ref) / ref * 1e6
-            matched.append({
-                "ref_mz": ref, "obs_mz": float(obs),
-                "ppm_drift": float(ppm), "avg_intensity": float(best_intensity),
-            })
+        if best_idx is None:
+            # 窓内に強度の分かる feature が 1 つも無い。この参照は採用しない。
+            logger.debug(
+                "較正: 参照 %.4f の窓内に強度既知の feature が無いため除外", ref)
+            unknown_windows += 1
+            continue
+
+        obs = mz_array[best_idx]
+        ppm = (obs - ref) / ref * 1e6
+        matched.append({
+            "ref_mz": ref, "obs_mz": float(obs),
+            "ppm_drift": float(ppm), "avg_intensity": float(best_intensity),
+        })
+
+    # ★ ver52.3: 黙って落とさない。落とした参照の数を呼び出し側へ渡す
+    #   （本スライスの主題「部分的失敗を成功として報告しない」）。
+    if unknown_windows:
+        logger.warning(
+            "較正: %d 件の参照ピークを、窓内の強度が不明なため除外した", unknown_windows)
 
     if len(matched) < min_peaks:
         return {"calibrated": False, "corrected_mz_map": {}, "report": matched}

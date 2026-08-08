@@ -766,3 +766,135 @@ class TestDownloadUrlIsHonest:
         epath = "/api/gpt/projects/{pid}/sub/{sid}/exports/interactive"
         fmt = _param(epath, "format", "post")
         assert set(fmt["schema"]["enum"]) == set(g._EXPORT_FORMATS), fmt
+
+
+# ===========================================================================
+# ver52.3 ④: direction 指定で読めない avg_log2FC が両方向から消える
+# ===========================================================================
+# `_fc` は読めない値も NaN も 0.0 に落としていたため、その record は
+# `> 0` にも `< 0` にも入らず **up でも down でも返らなかった**。
+# 件数の報告も無いので、切り詰められた一覧が「上位マーカーの全部」として
+# GPT に渡っていた。入口 (parse_top / parse_limit / parse_direction) を
+# 2 版続けて硬くした同じファイルの中で、絞り込み側だけ見ていなかった。
+
+def _recs_with_unreadable():
+    return [
+        {"cluster": "1", "gene": "mz_100.0", "avg_log2FC": 2.0,
+         "p_val_adj": 1e-5},
+        {"cluster": "1", "gene": "mz_200.0", "avg_log2FC": "n.d.",
+         "p_val_adj": 1e-5},
+        {"cluster": "1", "gene": "mz_300.0", "avg_log2FC": float("nan"),
+         "p_val_adj": 1e-5},
+        {"cluster": "1", "gene": "mz_400.0", "avg_log2FC": -1.5,
+         "p_val_adj": 1e-4},
+    ]
+
+
+class TestUnreadableFoldChangeIsCounted:
+
+    def test_counts_both_unparseable_and_nan(self):
+        from app.services.gpt_api import count_unreadable_fc
+        assert count_unreadable_fc(_recs_with_unreadable()) == 2
+
+    def test_zero_is_readable(self):
+        """★ 0.0 は「変動なし」という正当な値。読めなかったのとは違う。"""
+        from app.services.gpt_api import count_unreadable_fc
+        assert count_unreadable_fc([{"avg_log2FC": 0.0}]) == 0
+
+    # ▼ 以下 2 件は **修正前後で結果が変わらない**（症状そのものの記録）。
+    #   除外する挙動自体は従来どおり正しい。変わったのは「件数を伝えるか」なので、
+    #   直ったことを突くのは上の count_unreadable_fc と下の応答テスト。
+    #   弱いテストを「効いている」と誤解しないよう、ここに明記しておく。
+    def test_symptom_direction_filter_excludes_unreadable(self):
+        from app.services.gpt_api import shape_markers
+        up = shape_markers(_recs_with_unreadable(), cluster="1",
+                           direction="up")
+        down = shape_markers(_recs_with_unreadable(), cluster="1",
+                             direction="down")
+        assert [r["gene"] for r in up] == ["mz_100.0"]
+        assert [r["gene"] for r in down] == ["mz_400.0"]
+
+    def test_symptom_both_directions_together_miss_them(self):
+        """up と down を足しても読めない 2 件は出てこない（＝黙って消える）。"""
+        from app.services.gpt_api import shape_markers
+        recs = _recs_with_unreadable()
+        genes = {r["gene"] for r in shape_markers(recs, cluster="1", direction="up")}
+        genes |= {r["gene"] for r in shape_markers(recs, cluster="1", direction="down")}
+        assert genes == {"mz_100.0", "mz_400.0"}
+
+    def test_direction_both_is_unaffected(self):
+        """★ 過剰修正の番人: direction 未指定は従来どおり全件返すこと。"""
+        from app.services.gpt_api import shape_markers
+        got = shape_markers(_recs_with_unreadable(), cluster="1", direction="both")
+        assert len(got) == 4, f"direction=both で件数が変わっている: {len(got)}"
+
+
+class TestResponseReportsDroppedRecords:
+    """★ 本命: 落とした件数が **実際の HTTP 応答** に載ること。
+
+    純関数だけ直しても応答に出なければ利用者（GPT）には届かない。
+    ver51.8 A-7（ヘルパを作ったのに呼び替え漏れ）と同じ形を避けるため、
+    このファイルの既存の client fixture と同じやり方で応答を見る。
+    """
+
+    @pytest.fixture
+    def client(self, tmp_path, monkeypatch):
+        flask = pytest.importorskip("flask")
+        import pandas as pd
+
+        result_dir = tmp_path / "result"
+        rds_dir = result_dir / "RDS_Files"
+        rds_dir.mkdir(parents=True)
+        p = rds_dir / "seu_harmony.rds"
+        p.write_bytes(b"x")
+        rds_map = {"Harmony": str(p)}
+        d = result_dir / "Harmony"
+        d.mkdir()
+        pd.DataFrame([
+            {"gene": "mz_100.0", "cluster": "1", "avg_log2FC": 2.0,
+             "p_val_adj": 1e-5},
+            {"gene": "mz_200.0", "cluster": "1", "avg_log2FC": "n.d.",
+             "p_val_adj": 1e-5},
+            {"gene": "mz_300.0", "cluster": "1", "avg_log2FC": -1.5,
+             "p_val_adj": 1e-4},
+        ]).to_csv(d / "deg_markers.csv", index=False)
+
+        monkeypatch.setattr(
+            g, "_resolve_sub",
+            lambda pid, sid: {"project": {}, "sub": {},
+                              "result_dir": str(result_dir),
+                              "data_folder": None, "ms_instrument": "TIMS",
+                              "rds_map": rds_map})
+        monkeypatch.setattr(g, "_warm_cache_dir", lambda rds: None)
+
+        app = flask.Flask(__name__)
+        monkeypatch.setattr("app.config.GPT_API_KEY", "k", raising=False)
+        g.register_gpt_api(app)
+        c = app.test_client()
+        c.environ_base["HTTP_X_API_KEY"] = "k"
+        return c
+
+    @staticmethod
+    def _markers(client, **params):
+        from urllib.parse import urlencode
+        r = client.get("/api/gpt/projects/p/sub/s/markers?" + urlencode(params),
+                       headers={"X-API-Key": "k"})
+        assert r.status_code == 200, f"{r.status_code}: {r.data[:200]}"
+        return r.get_json()
+
+    def test_dropped_count_is_in_the_response(self, client):
+        body = self._markers(client, cluster="1", direction="up")
+        assert body.get("dropped_unreadable_log2fc") == 1, (
+            "avg_log2FC を読めない record を除外したのに、応答が件数を伝えていない。"
+            "GPT には切り詰められた一覧が『上位マーカーの全部』として渡る: "
+            f"{ {k: v for k, v in body.items() if k != 'markers'} }")
+
+    def test_message_explains_it(self, client):
+        body = self._markers(client, cluster="1", direction="up")
+        assert "avg_log2FC" in (body.get("message") or ""), \
+            f"説明文が無い: {body.get('message')!r}"
+
+    def test_no_noise_when_everything_is_readable(self, client):
+        """★ 過剰修正の番人: 落とすものが無ければ余計なキーを足さないこと。"""
+        body = self._markers(client, cluster="1", direction="both")
+        assert "dropped_unreadable_log2fc" not in body

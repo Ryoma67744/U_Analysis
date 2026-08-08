@@ -591,21 +591,31 @@ def load_deg_results(
 # ---------------------------------------------------------------------------
 
 def get_top_n_features_for_cluster(
-    deg_data: list[dict], cluster, n: int = 5
-) -> tuple[list[str], list[str]]:
+    deg_data: list[dict], cluster, n: int = 5, return_dropped: bool = False
+):
     """指定クラスタの DEG データから Top N up/down regulated feature を取得。
 
+    Args:
+        return_dropped: True なら `avg_log2FC` を数値化できず除外した件数も返す
+            (ver52.3)。既定 False は従来どおりの 2-tuple なので既存の
+            呼び出しを壊さない。
+
     Returns:
-        (up_features: list[str], down_features: list[str])
+        (up_features, down_features) — `return_dropped=True` なら
+        (up_features, down_features, dropped_count)
     """
+    # ★ 早期 return も `return_dropped` の戻り値の形に従うこと。
+    #   ver52.3 で 3-tuple を足したとき、ここを直し忘れて
+    #   「not enough values to unpack」で落ちた（テストが即座に捕まえた）。
+    _empty = ([], [], 0) if return_dropped else ([], [])
     if not deg_data:
-        return [], []
+        return _empty
     cluster_records = [
         r for r in deg_data
         if str(r.get("cluster", "")) == str(cluster)
     ]
     if not cluster_records:
-        return [], []
+        return _empty
 
     def _sort_key(r):
         p = r.get("p_val_adj_raw")
@@ -639,19 +649,39 @@ def get_top_n_features_for_cluster(
                     break
         return result
 
+    # ★ ver52.3: `avg_log2FC` が読めない record は `fc = 0.0` になり、
+    #   `> 0` にも `< 0` にも入らないため **Up / Down の両方の Top-N から消える**。
+    #   件数の報告も無いので、切り詰められた一覧が「上位マーカーの全部」として
+    #   表・スライドに出ていた。落とした件数を数えて呼び出し側へ渡せるようにする。
     up_records = []
     down_records = []
+    dropped = 0
     for r in cluster_records:
+        raw = r.get("avg_log2FC", 0)
         try:
-            fc = float(r.get("avg_log2FC", 0) or 0)
+            fc = float(raw if raw not in (None, "") else 0)
         except (ValueError, TypeError):
-            fc = 0.0
+            dropped += 1
+            continue
+        if fc != fc:                      # NaN も「読めなかった」扱いにする
+            dropped += 1
+            continue
         if fc > 0:
             up_records.append(r)
         elif fc < 0:
             down_records.append(r)
+        # fc == 0.0 は「変動なし」という**正当な測定値**なので落とさない。
+        # Up でも Down でもないだけで、読めなかったわけではない。
 
-    return _extract_top_n(up_records, n), _extract_top_n(down_records, n)
+    if dropped:
+        logger.warning(
+            "クラスタ %s: avg_log2FC を数値化できない record を %d 件除外した",
+            cluster, dropped)
+
+    up, down = _extract_top_n(up_records, n), _extract_top_n(down_records, n)
+    if return_dropped:
+        return up, down, dropped
+    return up, down
 
 
 def build_marker_rows(clusters, deg_data, top_n: int = 5,
@@ -707,10 +737,13 @@ def build_marker_rows(clusters, deg_data, top_n: int = 5,
             return "" if v in (None, "") else str(v)
 
     rows = []
+    dropped_total = 0
     for cl in clusters:
         cl_str = str(cl)
         cl_label = str(name_map.get(cl_str, cl_str))
-        up_f, down_f = get_top_n_features_for_cluster(deg_data, cl_str, n=top_n)
+        up_f, down_f, dropped = get_top_n_features_for_cluster(
+            deg_data, cl_str, n=top_n, return_dropped=True)
+        dropped_total += dropped
         for direction, feats in (("▲Up", up_f), ("▼Down", down_f)):
             for feat in feats:
                 rec = rec_by.get((cl_str, str(feat)), {})
@@ -719,4 +752,15 @@ def build_marker_rows(clusters, deg_data, top_n: int = 5,
                 rows.append([cl_label, mz_s, _compound(feat), direction,
                              _fmt(rec.get("avg_log2FC", "")),
                              str(rec.get("p_val_adj", ""))])
+
+    # ★ ver52.3: 読めなかった record を黙って消さない。
+    #   `avg_log2FC` が数値化できない record は Up にも Down にも入らないため、
+    #   従来は**両方の Top-N から消え、件数の報告も無かった**。
+    #   表そのものが利用者に届く成果物なので、注記行として同じ表に載せる
+    #   （リポジトリ内の正解例: interactive_data_export の "Skipped" シート、
+    #    interactive_pptx の skipped_methods → 最終ステータス文）。
+    if dropped_total:
+        rows.append(["—", "—",
+                     f"※ avg_log2FC を読み取れず除外した記録 {dropped_total} 件",
+                     "—", "—", "—"])
     return headers, rows

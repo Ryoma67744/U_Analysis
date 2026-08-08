@@ -336,6 +336,31 @@ def resolve_method(requested, rds_map):
     return canonical, None
 
 
+def _fc_or_none(rec):
+    """`avg_log2FC` を float で返す。読めなければ None (ver52.3)。
+
+    ★ 0.0 と「読めなかった」を区別することが要点。従来はどちらも 0.0 に
+      落としていたので、読めない record が Up/Down の**両方から消えて**いた。
+    """
+    raw = rec.get("avg_log2FC", None)
+    if raw is None or raw == "":
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return None if v != v else v          # NaN も「読めなかった」扱い
+
+
+def count_unreadable_fc(records) -> int:
+    """`avg_log2FC` を数値化できない record の件数を数える (ver52.3)。
+
+    `marker_outcome` と同じ「dict を返して payload に merge する」形で
+    応答へ載せるための純関数。
+    """
+    return sum(1 for r in (records or []) if _fc_or_none(r) is None)
+
+
 def marker_outcome(shaped, requested_clusters, available_clusters):
     """マーカーの結果に添える注意書きを返す（無ければ None）(ver52.1 / F-09)。
 
@@ -635,14 +660,20 @@ def shape_markers(records, cluster=None, top=None, direction=DIRECTION_DEFAULT):
         recs = [r for r in recs if str(r.get("cluster", "")) in wanted]
 
     if direction in ("up", "down"):
-        def _fc(r):
-            try:
-                v = float(r.get("avg_log2FC", 0) or 0)
-                return 0.0 if v != v else v
-            except (TypeError, ValueError):
-                return 0.0
-        recs = [r for r in recs
-                if (_fc(r) > 0 if direction == "up" else _fc(r) < 0)]
+        # ★ ver52.3: 以前は読めない `avg_log2FC` を 0.0 に落としていたため、
+        #   その record は `> 0` にも `< 0` にも入らず **両方向から消えて**いた。
+        #   件数の報告も無いので、切り詰められた一覧が「上位マーカーの全部」として
+        #   GPT に渡っていた。入口 (`parse_top` 等) を 2 版続けて硬くした
+        #   同じファイルの中で、絞り込み側だけ見ていなかった。
+        #   0.0 は「変動なし」という正当な値なので、読めなかったものと区別する。
+        keep = []
+        for r in recs:
+            v = _fc_or_none(r)
+            if v is None:
+                continue                  # 読めない → 件数は下で別途数える
+            if (v > 0) if direction == "up" else (v < 0):
+                keep.append(r)
+        recs = keep
 
     recs.sort(key=_marker_sort_key)
     if top:
@@ -1345,6 +1376,17 @@ def register_gpt_api(server) -> None:
             # ★ ver52.1: 一部だけ存在しないクラスタも必ず伝える
             #   （従来は 999 について何も言わなかった）。
             payload.update(notice)
+        # ★ ver52.3: `direction` 指定で読めない avg_log2FC の record が
+        #   両方向から落ちていた。落とした件数を必ず伝える
+        #   （黙って切り詰めた一覧を「上位マーカーの全部」として渡さない）。
+        if direction in ("up", "down"):
+            unreadable = count_unreadable_fc(recs)
+            if unreadable:
+                payload["dropped_unreadable_log2fc"] = unreadable
+                payload["message"] = (
+                    (payload.get("message", "") + " ").strip()
+                    + f"avg_log2FC を数値化できない {unreadable} 件は "
+                      "up/down のどちらにも分類できないため除外しました。").strip()
         payload, truncated = limit_response_size(payload, "markers")
         if truncated:
             payload["truncated"] = True

@@ -40,8 +40,6 @@
 （`continue`）。ver52.3 ④ で直す。
 """
 
-import pytest
-
 from app.callbacks import interactive_calibration as IC
 
 FEATURES = ["m/z 100.0000", "m/z 100.3000", "m/z 200.0000", "m/z 200.4000"]
@@ -59,10 +57,8 @@ def test_intensity_is_used_when_it_is_known():
 
 
 class TestUnknownIntensityIsNotTreatedAsZero:
+    """ver52.3 ④ で修正済み。以後の再発を防ぐ。"""
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "ver52.3 ④ で直す。番兵 -1 と既定 0.0 のせいで、強度が 1 つも"
-        "分からない窓でも最初の feature が『最大強度』として採用される"))
     def test_window_without_any_known_intensity_is_skipped(self):
         """★ 本丸: 強度が全く分からない窓は、較正の根拠に使わないこと。"""
         res = IC._calibrate_mz(
@@ -74,21 +70,50 @@ class TestUnknownIntensityIsNotTreatedAsZero:
             f"{[(r['ref_mz'], r['obs_mz'], r['avg_intensity']) for r in res['report']]}。"
             "この ppm ずれが較正回帰に入り、係数が全 m/z に適用される")
 
-    def test_the_symptom_is_real(self):
-        """★ 症状の実測（xfail 側が直るまでの記録）。
+    def test_it_is_not_calibrated_on_nothing(self):
+        """★ 根拠が無いのに「較正した」と言わないこと。
 
-        直ったらここも見直す必要があるので、症状そのものを固定しておく。
+        修正前は calibrated: True を返し、-1996 ppm のずれを回帰へ渡していた。
         """
         res = IC._calibrate_mz(
             FEATURES, avg_spectrum={},
+            reference_mz=[100.2, 200.2], search_window=0.5, min_peaks=1,
+            regression_mode="linear")
+        assert res["calibrated"] is False
+
+    def test_dropped_references_are_reported(self, caplog):
+        """★ 黙って落とさない（本スライスの主題）。"""
+        import logging
+        with caplog.at_level(logging.WARNING):
+            IC._calibrate_mz(
+                FEATURES, avg_spectrum={},
+                reference_mz=[100.2, 200.2], search_window=0.5, min_peaks=1,
+                regression_mode="linear")
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("強度が不明" in m for m in messages), (
+            f"参照ピークを落としたのに報告していない。出たログ: {messages}")
+
+    def test_partial_knowledge_still_calibrates(self):
+        """★ 過剰修正の番人: 一部でも強度が分かる窓は従来どおり使うこと。
+
+        「分からないものを外す」を広く書きすぎて、分かっている窓まで
+        落とすと較正そのものが動かなくなる。
+        """
+        res = IC._calibrate_mz(
+            FEATURES,
+            avg_spectrum={"m/z 100.3000": 9.0},   # 100.2 の窓だけ既知
+            reference_mz=[100.2, 200.2], search_window=0.5, min_peaks=1,
+            regression_mode="linear")
+        obs = [r["obs_mz"] for r in res["report"]]
+        assert obs == [100.3], (
+            f"強度が分かっている窓まで落としている: {obs}")
+
+    def test_zero_intensity_is_still_a_real_measurement(self):
+        """★ 「強度 0 と分かっている」は「不明」ではない。区別が本題。"""
+        res = IC._calibrate_mz(
+            FEATURES,
+            avg_spectrum={"m/z 100.0000": 0.0, "m/z 100.3000": 0.0},
             reference_mz=[100.2], search_window=0.5, min_peaks=1,
             regression_mode="linear")
-        if not res["report"]:
-            pytest.skip("すでに修正済み（xfail 側が xpass して知らせる）")
-        r = res["report"][0]
-        assert r["avg_intensity"] == 0.0, "強度不明が 0.0 として記録されている"
-        assert r["obs_mz"] == 100.0, (
-            "窓内の最小 m/z が『最大強度のピーク』として選ばれている "
-            f"(選ばれたのは {r['obs_mz']})")
-        assert abs(r["ppm_drift"]) > 1000, (
-            "強度を見ずに選んだ観測値から、大きな ppm ずれが回帰へ渡っている")
+        assert res["report"], (
+            "強度 0 と記録されている feature まで『不明』として捨てている")

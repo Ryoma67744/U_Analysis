@@ -85,10 +85,8 @@ class TestArgminIsPoisonedByNan:
 
 
 class TestBlankCellDoesNotPoisonTheMap:
+    """ver52.3 ④ で修正済み。以後の再発を防ぐ。"""
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "ver52.3 ④ で直す。`float(nan)` は例外を出さないので `mz_map[nan]` が入る。"
-        "双子の `_build_annotation_csv_map` は :133 で `pd.isna` を弾いている"))
     def test_map_has_no_nan_key(self, mrm_with_one_blank_cell):
         """★ 本丸: 空セルが NaN キーとして地図に入らないこと。"""
         mz_map = IC._build_mz_to_compound_map(mrm_with_one_blank_cell)
@@ -97,7 +95,6 @@ class TestBlankCellDoesNotPoisonTheMap:
             f"m/z→化合物名 の地図に NaN キーが入っている: {nan_keys}。"
             "以後 np.argmin が常に NaN を選ぶので、**全 feature の注釈が消える**")
 
-    @pytest.mark.xfail(strict=True, reason="上と同じ原因（ver52.3 ④ で直す）")
     def test_other_compounds_are_still_annotated(self, mrm_with_one_blank_cell):
         """★ 利用者から見た症状: 無関係な化合物まで注釈されなくなる。"""
         mz_map = IC._build_mz_to_compound_map(mrm_with_one_blank_cell)
@@ -105,6 +102,28 @@ class TestBlankCellDoesNotPoisonTheMap:
         assert "Gamma" in labels[0], (
             f"空セルと無関係な m/z 300.9 の注釈まで消えている: {labels[0]}。"
             "1 セルの欠損がデータセット全体の化合物名を消す")
+
+    def test_the_valid_rows_survive(self, mrm_with_one_blank_cell):
+        """★ 過剰修正の番人: 空セルの行以外は落とさないこと。
+
+        「NaN を弾く」を広く書きすぎて正当な m/z まで捨てると、
+        症状が「全滅」から「一部欠落」に変わるだけで良くならない。
+        """
+        mz_map = IC._build_mz_to_compound_map(mrm_with_one_blank_cell)
+        assert set(mz_map.values()) == {"Alpha", "Beta", "Gamma"}, (
+            f"空セル以外の行まで落ちている: {mz_map}")
+        # Beta は Daughter だけが空。Parent 側は残る。
+        assert 200.7 in mz_map and mz_map[200.7] == "Beta"
+
+    def test_skipped_rows_are_reported(self, mrm_with_one_blank_cell, caplog):
+        """★ 黙って捨てない（本スライスの主題）。"""
+        import logging
+        with caplog.at_level(logging.WARNING):
+            IC._build_mz_to_compound_map(mrm_with_one_blank_cell)
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("数値化できず除外" in m for m in messages), (
+            "m/z を数値化できず捨てた行があるのに、何も報告していない。"
+            f"出たログ: {messages}")
 
 
 class TestTwinFunctionGuardsIt:
