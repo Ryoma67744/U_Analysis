@@ -97,19 +97,23 @@ def _sort_items(items, sort_order):
     [Output("page_landing", "style"),
      Output("page_action", "style"),
      Output("page_analysis", "style"),
-     Output("page_shared", "style"),
      Output("page_lite", "style")],
     Input("current_page", "data"),
 )
 def toggle_pages(current_page):
-    """current_page Store の値に応じてページの表示/非表示を切り替え"""
+    """current_page Store の値に応じてページの表示/非表示を切り替え
+
+    ★ ver52.3: "shared" の行を削除した。旧 read-only 共有ページ (page_shared)
+      を削除したため。`current_page` に "shared" が入ることは無く
+      （共有リンクは "analysis" を返し "shared" は `interactive_entry_mode` 側）、
+      この行は一度も選ばれていなかった。
+    """
     hide = {"display": "none"}
     pages = {
-        "landing":  [{},   hide, hide, hide, hide],
-        "action":   [hide, {},   hide, hide, hide],
-        "analysis": [hide, hide, {},   hide, hide],
-        "shared":   [hide, hide, hide, {},   hide],
-        "lite":     [hide, hide, hide, hide, {}],
+        "landing":  [{},   hide, hide, hide],
+        "action":   [hide, {},   hide, hide],
+        "analysis": [hide, hide, {},   hide],
+        "lite":     [hide, hide, hide, {}],
     }
     return pages.get(current_page, pages["landing"])
 

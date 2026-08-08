@@ -75,7 +75,6 @@ ROLES = {
         ("interactive_deg", "update_volcano_plot"),
         ("interactive_pptx", "_build_volcano_fig_for_cluster"),
         ("lite_view_callbacks", "_build_volcano_fig"),
-        ("share_callbacks", "sv_update_volcano_plot"),
     ],
     "heatmap": [
         ("interactive_deg", "update_heatmap"),
@@ -85,7 +84,6 @@ ROLES = {
     "feature": [
         ("interactive_deg", "_update_feature_plot_inner"),
         ("interactive_pptx", "_build_feature_plot_fig"),
-        ("share_callbacks", "sv_update_feature_plot"),
     ],
 }
 
@@ -101,7 +99,6 @@ NOT_RENDERERS = {
     ("interactive_deg", "remove_feature_bookmark"): "ブックマーク削除",
     ("interactive_deg", "bookmark_to_feature"): "ブックマーク → 選択",
     ("interactive_deg", "update_volcano_cluster_options"): "ドロップダウンの選択肢",
-    ("share_callbacks", "sv_filter_features"): "候補の絞り込み",
     ("lite_view_callbacks", "toggle_volcano_section"): "節の開閉のみ",
     # --- 表示ヘルパ（親の描画関数から呼ばれる。設定は親が受ける） ---
     ("interactive_deg", "_feature_intensity_style"): "描画ヘルパ",
@@ -158,19 +155,17 @@ NOT_PROPAGATED = {
         "lite_view_callbacks.py:1407 で 1.3 固定",
     ("volcano", "lite_view_callbacks", "_build_volcano_fig", "ラベル Top-N"):
         "Lite ビューは自動ラベルを出さない",
-    ("volcano", "share_callbacks", "sv_update_volcano_plot", "FC 閾値"):
-        "share_callbacks.py:798 で 0.5 固定",
-    ("volcano", "share_callbacks", "sv_update_volcano_plot", "p 閾値"):
-        "share_callbacks.py:798 で 1.3 固定",
-    ("volcano", "share_callbacks", "sv_update_volcano_plot", "ラベル Top-N"):
-        "共有ビューは自動ラベルを出さない",
     ("heatmap", "lite_view_callbacks", "_build_heatmap_section", "スケール"):
         "引数が無く Z-score 固定。画面の heatmap_scale が届かない",
-    ("feature", "share_callbacks", "sv_update_feature_plot", "強度下限"):
-        "share_callbacks.py:641 は強度レンジを受け取らない",
-    ("feature", "share_callbacks", "sv_update_feature_plot", "強度上限"):
-        "同上",
 }
+
+# ★ ver52.3 ①: 旧 read-only 共有ページ (page_shared / sv_* 9 本 / shared_view.py)
+#   を削除したので、共有ビューの 5 件 (Volcano 3 + Feature 2) は
+#   「設定が届かない」ではなく **コードごと消滅**した。
+#   ver4.0 で「共有時はインタラクティブタブ全機能を共有モードで開く」方式へ
+#   置き換わって以降、`current_page` に "shared" を書く箇所も
+#   `share_token` へ書き込むコールバックも 0 件で到達不能だった。
+#   共有リンク (/share/ ・ /view/) 自体は `route_share_url` で生きている。
 
 
 # --------------------------------------------------------------------------
