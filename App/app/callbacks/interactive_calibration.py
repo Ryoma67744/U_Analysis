@@ -367,6 +367,18 @@ def format_calibration_status(cal_result):
 
     r2_text = "評価不能 (点数が次数に対して不足)" if r2 is None else f"{r2:.4f}"
     parts = [f"R²={r2_text}", mode] if mode else [f"R²={r2_text}"]
+
+    # ★ ver52.3: 実際に当てはめに使った点数を必ず出す。
+    #   利用者はテーブルの「使う」行数＝点数だと思っているが、
+    #   数値化できない行は黙って捨てられていた。点数が減ると次数も下がるので、
+    #   「poly3 を選んだのに linear で当たっている」の理由がここにある。
+    n_points = cal_result.get("n_points")
+    if n_points is not None:
+        parts.append(f"{n_points} 点で当てはめ")
+    unusable = cal_result.get("n_unusable") or 0
+    if unusable:
+        parts.append(f"「使う」指定のうち {unusable} 行は数値として読めず除外")
+
     if (requested is not None and degree is not None and requested != degree):
         parts.append(f"指定 {requested} 次 → 実効 {degree} 次に下げた"
                      " (点数不足のため)")
@@ -546,6 +558,11 @@ def _calibrate_mz(features_list, avg_spectrum, reference_mz,
         "r_squared": r_squared,
         "degree": degree,
         "requested_degree": requested_degree,
+        # ★ ver52.3: バッチ側 (`analysis_runner.compute_calibration_coefficients`)
+        #   と同じキーで点数と除外数を返す。片側だけに足すと状態表示が
+        #   経路によって出たり出なかったりする（T3 を自分で作ることになる）。
+        "n_points": len(matched),
+        "n_unusable": unknown_windows,
     }
     if coeffs is not None:
         result["poly_coeffs"] = [float(c) for c in coeffs]

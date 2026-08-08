@@ -109,11 +109,12 @@ def _build_region_lookup(plot_data: pd.DataFrame, rds_path):
       区別が付かない（後者は解析の見落としを意味する）。
     """
     lookup: dict = {}
+    failed: list = []
     if (plot_data is None or not rds_path
             or "SpatialX" not in plot_data.columns
             or "SpatialY" not in plot_data.columns
             or "Sample" not in plot_data.columns):
-        return None
+        return None, failed
     for sample in plot_data["Sample"].dropna().astype(str).unique():
         sub = plot_data[plot_data["Sample"].astype(str) == sample]
         if sub.empty:
@@ -122,7 +123,13 @@ def _build_region_lookup(plot_data: pd.DataFrame, rds_path):
             entry = hp.load_hne_sample(rds_path, sample)
             region = hn.regions_from_overlay(sub, entry)
         except Exception as e:  # noqa: BLE001
+            # ★ ver52.3: 従来はログだけで飛ばしていた。そのスライスだけ
+            #   「領域名」が空欄になり、利用者には
+            #   **「どの ROI にも入らなかった」（＝実データ上の所見）**
+            #   と読める。全サンプルで失敗すると列ごと消えて
+            #   「ROI 未使用」と区別できない。呼び出し側へ返して報告させる。
             logger.warning("[DataExport] %s: 領域割当に失敗: %s", sample, e)
+            failed.append(str(sample))
             continue
         sx = pd.to_numeric(sub["SpatialX"], errors="coerce").to_numpy(float)
         sy = pd.to_numeric(sub["SpatialY"], errors="coerce").to_numpy(float)
@@ -131,7 +138,10 @@ def _build_region_lookup(plot_data: pd.DataFrame, rds_path):
                 continue
             lookup[(sample, round(float(x), 4), round(float(y), 4))] = str(r)
     # ROI が 1 つも取れなければ「ROI 未使用」。空の列を足さない。
-    return lookup or None
+    # ★ ver52.3: 戻り値を (lookup, 失敗したサンプル名) に変えた。
+    #   失敗を呼び出し側へ伝えないと「ROI 未使用」と「割当に失敗」を
+    #   利用者が区別できない（後者は解析の見落としを意味する）。
+    return (lookup or None), failed
 
 
 def _safe_prefix(name: str) -> str:
@@ -457,6 +467,7 @@ def _unique_sheet_name(stem: str, used: dict) -> str:
 def _export_desi(
     data_folder: str, method_lookups: OrderedDict, region_lookup: dict | None = None,
     progress_cb=None, base: int = 0, span: int = 0, conditions: dict | None = None,
+    roi_failed: list | None = None,
 ) -> tuple[bytes, str]:
     """DESI .txt → Excel バイト列（サンプル別シート + 手法別クラスター列）。
 
@@ -593,10 +604,19 @@ def _export_desi(
                 logger.warning("Conditions シートの追加に失敗", exc_info=True)
 
         # 一部だけ落ちた場合は資料の中に理由を残す（後から «なぜ足りない» を辿れる）
-        if skipped_stems:
+        # ★ ver52.3: ROI 割当に失敗したサンプルも同じシートに載せる。
+        #   従来はログだけだったので、そのスライスの「領域名」が空欄になり
+        #   利用者には「どの ROI にも入らなかった」（＝実データ上の所見）と
+        #   区別が付かなかった。既にある報告先を使い、新しい仕組みは作らない。
+        _skip_names = list(skipped_stems)
+        _skip_reasons = [".txt が未生成 (解析前)"] * len(skipped_stems)
+        for _s in (roi_failed or []):
+            _skip_names.append(_s)
+            _skip_reasons.append("ROI(領域名)の割当に失敗 — 領域名は空欄")
+        if _skip_names:
             try:
-                pd.DataFrame({"未出力のサンプル": skipped_stems,
-                              "理由": [".txt が未生成 (解析前)"] * len(skipped_stems)}
+                pd.DataFrame({"未出力のサンプル": _skip_names,
+                              "理由": _skip_reasons}
                              ).to_excel(writer, sheet_name="Skipped", index=False)
             except Exception:
                 logger.warning("Skipped シートの追加に失敗", exc_info=True)
@@ -818,7 +838,7 @@ def _do_export(
         # 領域名(ROI) ルックアップ（読込中 RDS の H&E オーバーレイ保存状態から）。
         # 設定が無ければ空 dict（最終列は空欄）。
         _p(52, "ROI(領域名)を割当中…")
-        region_lookup = _build_region_lookup(plot_data, loaded_rds)
+        region_lookup, roi_failed = _build_region_lookup(plot_data, loaded_rds)
 
         is_desi = (ms_instrument or "").upper() == "DESI"
 
@@ -846,7 +866,8 @@ def _do_export(
         if is_desi:
             file_bytes, filename = _export_desi(
                 data_folder, method_lookups, region_lookup,
-                progress_cb=progress_cb, base=58, span=40, conditions=conditions)
+                progress_cb=progress_cb, base=58, span=40, conditions=conditions,
+                roi_failed=roi_failed)
         else:
             fmt = export_format or "xlsx"
             file_bytes, filename = _export_tims(
@@ -955,11 +976,12 @@ def build_interactive_export_for_project(
         # ROI(領域名) ルックアップ（primary RDS の plot_data + H&E オーバーレイ保存状態）
         _p(52, "ROI(領域名)を割当中…")
         region_lookup = {}
+        roi_failed: list = []
         primary_rds = _pick_primary_rds(rmap)
         if primary_rds:
             try:
                 pdat = _bridge.extract_data(primary_rds).get("plot_data")
-                region_lookup = _build_region_lookup(pdat, primary_rds)
+                region_lookup, roi_failed = _build_region_lookup(pdat, primary_rds)
             except Exception as e:  # noqa: BLE001
                 logger.warning("[APIExport] ROI 割当をスキップ: %s", e)
 
@@ -983,7 +1005,8 @@ def build_interactive_export_for_project(
         if is_desi:
             file_bytes, filename = _export_desi(
                 data_folder, method_lookups, region_lookup,
-                progress_cb=progress_cb, base=58, span=40, conditions=conditions)
+                progress_cb=progress_cb, base=58, span=40, conditions=conditions,
+                roi_failed=roi_failed)
         else:
             fmt = export_format or "parquet"
             file_bytes, filename = _export_tims(

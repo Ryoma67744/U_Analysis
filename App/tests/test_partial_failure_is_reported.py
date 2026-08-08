@@ -63,6 +63,14 @@ REPORTS_SKIPS = {
     ("hne_overlay_callbacks.py", "hne_export_stage_b"):
         "skipped を msg に「（スキップ: …）」として出す (:951)",
     # --- ver52.3 ④ で報告するようにしたもの ---
+    ("interactive_data_export.py", "_build_region_lookup"):
+        "ver52.3 ④: ROI 割当に失敗したサンプル名を戻り値で返し、"
+        "既存の \"Skipped\" シートに理由付きで載せる (:596)。"
+        "従来はログだけだったので「どの ROI にも入らなかった」と区別が付かなかった",
+    ("analysis_runner.py", "compute_calibration_coefficients"):
+        "ver52.3 ④: 「使う」指定なのに数値化できず捨てた行数を `n_unusable` で返し、"
+        "`format_calibration_status` が「N 点で当てはめ」と併せて表示する。"
+        "点数が減ると当てはめ次数も下がるので、その理由が読めるようになった",
     ("deg_utils.py", "get_top_n_features_for_cluster"):
         "ver52.3 ④: avg_log2FC を数値化できない record は Up にも Down にも"
         "入らないため両方の Top-N から消えていた。`return_dropped=True` で"
@@ -102,15 +110,9 @@ SKIPS_ARE_IMMATERIAL = {
 # 分類 3: ★ 報告すべきなのにしていない（実害を確認済み・ver52.3 で直す）
 #   ver52.2 は番人だけを入れて母数を測る版なので、ここでは直さない。
 # ===========================================================================
-MUST_REPORT = {
-    ("interactive_data_export.py", "_build_region_lookup"):
-        "H-1: ROI 割当が例外だとそのスライスだけ領域名が空になる。"
-        "利用者には『どの ROI にも入らなかった』（＝実データ上の所見）と読める。"
-        "全サンプルで失敗すると列ごと消えて『ROI 未使用』と区別できない",
-    ("analysis_runner.py", "compute_calibration_coefficients"):
-        "H-3: 参照ピークの行が数値化できないと無言で捨てて残りで回帰する。"
-        "点数が減ると次数も自動で下がるのに、点数が報告されない",
-}
+#   ver52.3 ④ で登録の 3 件すべてを解消したので現在は空。
+#   （H-1 ROI 割当 / H-3 較正の点数 / H-7 Up・Down 両方から消える）
+MUST_REPORT: dict = {}
 
 # ===========================================================================
 # 分類 4: ★ まだ精査していない。ver52.3 で 1 件ずつ判断する。
