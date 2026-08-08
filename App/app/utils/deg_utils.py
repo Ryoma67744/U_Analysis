@@ -301,6 +301,108 @@ def standardize_deg_df(df: pd.DataFrame) -> list[dict] | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# 注釈の重ね合わせ (ver52.5)
+# ---------------------------------------------------------------------------
+# ★ 問題: DESI テンプレは `analysis_deg_all_markers_*.csv` を出すが、これは
+#   **annotation 列を持たない**。一方アプリの再アノテーションは同じフォルダへ
+#   `markers_annotated.csv` を書く。`_CSV_NAMES` の優先順位では前者が勝つため、
+#   **利用者が保存した化合物名は二度と読まれなかった**（DESI のみ。TIMS は
+#   `markers_annotated.csv` が先に来るので正常）。
+#
+# ★ 優先順位の入れ替えは採らない。それをやると、解析を再実行しても古い
+#   `markers_annotated.csv` が優先され続け、「新しい解析に古い DEG 表が出る」
+#   という **いま直そうとしている型と同じ欠陥**を作る。
+#
+#   代わりに annotation 列だけを重ねる:
+#     - DEG 本表は現行の優先順位のまま読む（＝常に最新）
+#     - `markers_annotated.csv` からは `gene -> annotation` だけを取る
+#     - 解析を再実行して feature が入れ替われば、古い注釈は join に一致せず
+#       **自然に外れる**（別途の鮮度メタデータが要らない）
+#     - R の出力ファイルには一切書かない
+_ANNOTATION_OVERLAY_NAME = "markers_annotated.csv"
+
+
+def _annotation_overlay_paths(result_base, method_dir):
+    """重ね合わせ元の候補パス。
+
+    ★ 書き側 (`interactive_calibration.execute_reannotation`) は
+      `result_base / method_dir` を試し、無ければ `result_base / method_dir.lower()`
+      に落ちる。読み側も **同じ 2 箇所** を見ないと、大小文字が違う環境で
+      片方だけ外れる。
+    """
+    base = Path(result_base)
+    dirs = []
+    for d in (str(method_dir or ""), str(method_dir or "").lower()):
+        if d not in dirs:
+            dirs.append(d)
+    return [(base / d / _ANNOTATION_OVERLAY_NAME) if d
+            else (base / _ANNOTATION_OVERLAY_NAME) for d in dirs]
+
+
+def read_annotation_overlay(result_base, method_dir) -> dict:
+    """`markers_annotated.csv` から `{gene: annotation}` **だけ** を読む。
+
+    見つからない・読めない・意味のある注釈が無いなら空 dict。
+    本表そのものを差し替えないので、失敗しても表示は従来どおりになる。
+    """
+    out: dict = {}
+    for path in _annotation_overlay_paths(result_base, method_dir):
+        if not path.is_file():
+            continue
+        try:
+            df = pd.read_csv(path, encoding="utf-8", usecols=lambda c: str(c).strip()
+                             in ("gene", "annotation", "", "row.names"))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("注釈の重ね合わせ元を読めません (%s): %s", path, e)
+            continue
+        cols = {str(c).strip(): c for c in df.columns}
+        gene_col = cols.get("gene") or cols.get("row.names") or cols.get("")
+        ann_col = cols.get("annotation")
+        if gene_col is None or ann_col is None:
+            continue
+        for g, a in zip(df[gene_col].astype(str), df[ann_col]):
+            if not isinstance(a, str):
+                continue
+            a = a.strip()
+            if g and g not in out and is_meaningful_annotation(a, g):
+                out[g] = a
+        if out:
+            logger.info("注釈の重ね合わせ: %s から %d 件", path, len(out))
+            break
+    return out
+
+
+def _apply_annotation_overlay(result_base, method_dir, data):
+    """本表の各レコードに、保存済みの注釈を重ねる。
+
+    ★ 本表が `markers_annotated.csv` そのものだった場合（TIMS の通常経路）は
+      同じ値を書き戻すだけなので無害。
+    """
+    if not data:
+        return data
+    try:
+        overlay = read_annotation_overlay(result_base, method_dir)
+    except Exception as e:  # noqa: BLE001
+        # 重ね合わせは付加機能。失敗しても本表は返す（従来の表示に戻るだけ）。
+        logger.warning("注釈の重ね合わせに失敗（本表はそのまま返す）: %s", e)
+        return data
+    if not overlay:
+        return data
+    n = 0
+    for r in data:
+        if not isinstance(r, dict):
+            continue
+        g = str(r.get("gene", ""))
+        cand = overlay.get(g)
+        if cand and cand != r.get("annotation"):
+            r["annotation"] = cand
+            n += 1
+    if n:
+        logger.info("注釈を %d 件のレコードに重ねた", n)
+    return data
+
+
 def _r_escape_path(p: Path) -> str:
     """R 文字列リテラル内に埋め込むための簡易エスケープ。
 
@@ -462,7 +564,12 @@ def load_deg_results(
             "手法フォルダは一意に定まるときだけ採用します。", integration_method)
 
     def _cache_and_return(data):
-        """DEG結果をキャッシュして返す（meta.json 経路 / glob fallback 共通）"""
+        """DEG結果をキャッシュして返す（meta.json 経路 / glob fallback 共通）
+
+        ★ ver52.5: ここが成功経路の **唯一の出口**なので、注釈の重ね合わせも
+          ここでやる。出口ごとに書くと、あとで足した出口だけ注釈が付かない。
+        """
+        data = _apply_annotation_overlay(result_base, method_dir, data)
         if cache is not None:
             cache["deg_cache_key"] = cache_key
             cache["deg_cache_data"] = data
