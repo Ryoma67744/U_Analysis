@@ -1485,7 +1485,12 @@ def execute_reannotation(n_clicks,
             if csv_path.parent.exists():
                 try:
                     from app.utils.file_locks import atomic_write_csv
-                    df_out = pd.DataFrame(updated)
+                    from app.utils.deg_utils import drop_derived_columns
+                    # ★ ver52.5: 画面用の派生列 (`p_val_adj_raw` 等) を
+                    #   そのまま書き出していた。次回の読み込みで列名の部分一致が
+                    #   `p_val_adj` と衝突し、**DEG が丸ごと読めなくなっていた**。
+                    #   CSV に出すのは解析が持つ列 + annotation だけにする。
+                    df_out = drop_derived_columns(pd.DataFrame(updated))
                     atomic_write_csv(df_out, csv_path, index=False, encoding="utf-8")
                     csv_saved_msg = f" | CSV保存済み"
                 except Exception as e:
