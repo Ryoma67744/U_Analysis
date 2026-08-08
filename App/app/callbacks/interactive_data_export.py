@@ -922,14 +922,28 @@ def build_interactive_export_for_project(
         if not rmap:
             return None, None, "❌ 解析済み RDS が見つかりません。"
 
-        # selected_methods を rds_map 内に正規化（空/不一致なら全手法）。
-        # これにより _build_all_method_lookups の rmap が空にならず、session を参照する
-        # フォールバック経路（rds_map 無し時のみ）に落ちない。
+        # selected_methods を rds_map 内に正規化する。
+        # ★ ver52.1: 従来は `if not sel: sel = list(rmap.keys())` があり、
+        #   **指定が全部無効だと全手法へ膨らんで**いた。重い R 抽出を指定外の
+        #   手法にも走らせ、成果物の由来を誤らせる（監査 API-07）。
+        #   呼び出し側 (gpt_api.resolve_export_methods) でも検証するが、
+        #   ここは API 以外からも通るので安全網として残す。
+        #   大小文字は吸収する（完全一致だと `harmony` が「無効」になっていた）。
         if selected_methods:
-            sel = [m for m in selected_methods if m in rmap]
+            lookup = {str(m).lower(): m for m in rmap}
+            sel, bad = [], []
+            for m in selected_methods:
+                canon = lookup.get(str(m).lower())
+                if canon is None:
+                    bad.append(str(m))
+                elif canon not in sel:
+                    sel.append(canon)
+            if bad:
+                raise ValueError(
+                    "この解析結果に無い手法が指定されました: "
+                    + ", ".join(bad)
+                    + f"（利用可能: {', '.join(rmap.keys())}）")
         else:
-            sel = list(rmap.keys())
-        if not sel:
             sel = list(rmap.keys())
 
         # 全手法のクラスタルックアップをディスクから構築（current_method=None → session 非参照）
