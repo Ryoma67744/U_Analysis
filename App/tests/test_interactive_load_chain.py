@@ -324,3 +324,37 @@ def test_active_key_isolation_between_projects(monkeypatch, sample_df):
     # A は不変、B は B のデータ
     assert ic._get_state("/proj/A.rds")["plot_data"] is df_a
     assert ic._get_state("/proj/B.rds")["plot_data"] is df_b
+
+
+def test_link_d_annotation_failure_is_not_silent(monkeypatch, sample_df, caplog):
+    """★ ver52.4 の行到達測定で「一度も実行されていない」と分かった except。
+
+    この分岐は ver52.3 ④ より前は **完全に無言**だった。注釈が 1 件も
+    付かないまま「読み込み完了」と出るので、利用者は
+    「この装置データには化合物名が無い」と読む。
+    fail-soft（読み込み自体は続ける）は保ったまま、記録と注記を出す。
+    """
+    import logging
+
+    rds_path = "/proj/A.rds"
+    st = _seed_state(rds_path, sample_df)
+    st["_deg_data"] = None
+    monkeypatch.setattr(ic, "_load_interactive_settings", lambda: {})
+    import app.callbacks.interactive_calibration as cal
+
+    def boom(*a, **k):
+        raise RuntimeError("対応表が壊れている")
+
+    monkeypatch.setattr(cal, "_build_feature_annotation_map", boom)
+    with caplog.at_level(logging.WARNING):
+        out = _call_link_d(rds_path)
+
+    # 1) 読み込み自体は続く（fail-soft を壊していない）
+    assert "読み込み完了" in str(out[0])
+    # 2) 記録が残る
+    assert any("アノテーション対応表の構築に失敗" in r.getMessage()
+               for r in caplog.records), \
+        f"例外が無言のまま握りつぶされている: {[r.getMessage() for r in caplog.records]}"
+    # 3) 利用者にも見える
+    assert "化合物名は表示されません" in str(out[0]), (
+        f"注釈が全滅したことが画面に出ていない: {out[0]}")
