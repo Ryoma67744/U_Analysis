@@ -91,11 +91,17 @@ def get_merged_cluster_color_map(clusters, mode="shade", custom_colors=None):
                 subs = parent_subclusters.get(parent, [cl])
                 idx = subs.index(cl) if cl in subs else 0
                 n_subs = len(subs)
-                if n_subs <= 1:
+                # ★ ver51.9 / C-8: 親クラスタ自身も一覧に居るなら、親が
+                #   「濃淡の 0 番目」を占める。従来はサブクラスタが 1 つだけだと
+                #   factor=1.0 になり、親 3 と 3-a が **同じ色**で描かれていた
+                #   (凡例は 2 行あるのに図で区別できない)。
+                n_slots = n_subs + (1 if parent in str_cls else 0)
+                slot = idx + (1 if parent in str_cls else 0)
+                if n_slots <= 1:
                     factor = 1.0
                 else:
                     # 0番目=元の色, 最後=最も明るい
-                    factor = 1.0 + (idx / (n_subs - 1)) * 1.2
+                    factor = 1.0 + (slot / (n_slots - 1)) * 1.2
                 cmap[cl] = adjust_color_lightness(base_color, factor)
             else:
                 # 通常クラスタはそのまま親の色

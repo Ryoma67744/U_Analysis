@@ -318,8 +318,9 @@ def render_methods(conditions: dict, lang: str = "ja") -> str:
     if warnings:
         out.append(f"## {t['h_warn']}")
         out.append("")
+        # ver51.9 / C-6: 生の dict ではなく文言化して出す（散文側と同じ変換）
         for w in warnings:
-            out.append(f"- {w}")
+            out.append(f"- {warning_text(w, lang)}")
         out.append("")
 
     # --- 未記録項目 ---
@@ -1072,21 +1073,38 @@ def _sec_caveat(c, lang):
             "paragraphs": [_para(caveats.banner_text(lang))]}
 
 
+def warning_text(w, lang: str = "ja") -> str:
+    """再現性警告 1 件を人が読める文にする (ver51.9 / C-6)。
+
+    ★ 従来は Markdown 側 (`render_methods`) がこの変換を通さず、
+      `- {'code': 'cache_only_embedding', 'params': {}}` と **生の dict を
+      そのまま**書き出していた。`_WARNING_TEXTS` は既にあるのに散文
+      レンダラでしか使われていなかった。Methods は論文に貼る文章なので、
+      内部表現がそのまま出ると気づかず提出しうる。
+
+    ★ 未知のコードは **落とさず** コードそのものを出す。散文側は
+      `if not texts: continue` で黙って捨てていたが、それでは
+      「警告があったのに何も出ない」になる（警告の意味が無い）。
+    """
+    ja = lang == "ja"
+    if isinstance(w, dict):
+        texts = _WARNING_TEXTS.get(w.get("code"))
+        if texts:
+            return texts[0 if ja else 1]
+        code = str(w.get("code") or "").strip()
+        if code:
+            return (f"未分類の警告コード: {code}" if ja
+                    else f"Unclassified warning code: {code}")
+        return str(w)
+    # ver47.0 で書かれた analysis_conditions.json は素の文字列を持つ
+    return str(w)
+
+
 def _sec_warnings(c, lang):
     raw = c.get("warnings") or []
     if not raw:
         return None
-    ja = lang == "ja"
-    paras = []
-    for w in raw:
-        if isinstance(w, dict):
-            texts = _WARNING_TEXTS.get(w.get("code"))
-            if not texts:
-                continue
-            paras.append(_para(texts[0 if ja else 1]))
-        elif isinstance(w, str):
-            # ver47.0 で書かれた analysis_conditions.json は素の文字列を持つ
-            paras.append(_para(w))
+    paras = [_para(warning_text(w, lang)) for w in raw]
     return {"heading": _h("warn", lang), "paragraphs": paras} if paras else None
 
 

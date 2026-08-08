@@ -23,16 +23,24 @@ def categorize_image(image_path: str) -> str:
     """画像カテゴリを判定"""
     filename = Path(image_path).name.lower()
 
+    # ★ ver51.9 / C-7: 判定順が誤っていた。
+    #     - "cluster" が "heatmap" より先だったので `cluster_heatmap.png` が
+    #       Spatial に入る
+    #     - "msi" が "cluster" より先だったので `Cluster_3_MSI.png`
+    #       (クラスタ別の Spatial 図) が MSI に入る
+    #   より具体的な語を先に見る。`Cluster_Top5_MSI_*` は "top5" で MSI に残す。
     if "umap" in filename:
         return "UMAP"
     if "volcano" in filename:
         return "Volcano"
-    if "msi" in filename or "top5" in filename:
+    if "heatmap" in filename:
+        return "Heatmap"
+    if "top5" in filename:
         return "MSI"
     if "spatial" in filename or "cluster" in filename:
         return "Spatial"
-    if "heatmap" in filename:
-        return "Heatmap"
+    if "msi" in filename:
+        return "MSI"
     if "tic" in filename:
         return "TIC"
     if "filter" in filename:

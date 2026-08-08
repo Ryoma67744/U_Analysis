@@ -79,6 +79,15 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
     """
     fig = go.Figure()
 
+    # ★ ver51.9 / C-2: 色マップは **除外前** のクラスタ集合で決める。
+    #   色は「存在するクラスタを並べたときの添字」で決まるため、除外してから
+    #   作ると残ったクラスタの色が 1 つずつずれる。サンプル別 UMAP / Spatial /
+    #   凡例 / Lite / PPTX はいずれも除外前に作っているので、統合 UMAP だけ
+    #   別の色になっていた。各パネルは内部的に整合しているので見た目では
+    #   気づけず、「Spatial の緑」と「UMAP の緑」が別のクラスタになる。
+    _df_before_exclude = df
+    _clusters_for_colors = df["Cluster"] if df is not None else []
+
     # 除外クラスタのフィルタリング
     if exclude_clusters:
         exclude_set = set(str(c) for c in exclude_clusters)
@@ -89,7 +98,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
             return fig
 
     df = _rounded_umap(df)   # ver51.4: 表示用に座標の桁を落とす
-    color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
+    color_map = _get_cluster_color_map(_clusters_for_colors, custom_colors)
 
     if highlight_clusters and len(highlight_clusters) > 0:
         highlight_set = set(str(c) for c in highlight_clusters)
@@ -130,7 +139,13 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
         ))
         color_col = color_by if color_by in df.columns else "Cluster"
         categories = sorted(df[color_col].unique(), key=_cluster_sort_key)
-        cat_color_map = _get_cluster_color_map(categories, custom_colors)
+        # ★ ver51.9 / C-2: 色は **除外前** の母集団で決める（上と同じ理由）。
+        #   描くカテゴリは除外後のままでよく、色の割り当てだけを揃える。
+        _cat_pool = (_df_before_exclude[color_col]
+                     if (_df_before_exclude is not None
+                         and color_col in _df_before_exclude.columns)
+                     else categories)
+        cat_color_map = _get_cluster_color_map(_cat_pool, custom_colors)
         for cat in categories:
             mask = df[color_col] == cat
             rank = _cluster_sort_key(cat)[0] if str(cat).isdigit() else 1000
@@ -521,7 +536,11 @@ def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
     from app.callbacks.interactive_callbacks import (
         _interactive_data, _set_active_key, accordion_toggle_is_noop)
     # ver46.1: 他セクションの開閉だけで統合 UMAP を作り直さない
-    if accordion_toggle_is_noop("acc_umap_integrated", None, rds_path,
+    # ★ ver51.9 / C-3: 節 id は `acc_umap`。`acc_umap_integrated` は実在せず、
+    #   is_open が常に False → 記録も常に False → 「変化なし」と判定され、
+    #   アコーディオン操作では **一度も再描画しなかった**。UMAP を畳んだ状態で
+    #   改名や色変更をしてから開き直すと画面も一括保存も古いままになる。
+    if accordion_toggle_is_noop("acc_umap", None, rds_path,
                                 active_items, ctx.triggered_id):
         return no_update
     _set_active_key(rds_path)
@@ -639,7 +658,8 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
         _interactive_data, _set_active_key, accordion_toggle_is_noop,
         set_export_figures)
     # ver46.1: 他セクションの開閉だけで全図を作り直さない
-    if accordion_toggle_is_noop("acc_umap_facet", session_id, rds_path,
+    # ver51.9 / C-3: 同上（`acc_umap_facet` も実在しない）
+    if accordion_toggle_is_noop("acc_umap", session_id, rds_path,
                                 active_items, ctx.triggered_id):
         return no_update
     _set_active_key(rds_path)
