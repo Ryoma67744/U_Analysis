@@ -1310,6 +1310,40 @@ def register_gpt_api(server) -> None:
 
     server.before_request(_gpt_before_request)
 
+    # ---- 想定外例外を JSON にする (ver52.7) ---------------------------------
+    def _gpt_json_errors(e):
+        """`/api/gpt/*` の例外だけを JSON にする。**Dash 側の挙動は変えない**。
+
+        従来 `/api/gpt/*` に errorhandler が無く、ハンドラ内の想定外例外は
+        Werkzeug の **HTML 500** になっていた。`{"ok": false, ...}` という
+        自分の契約を破るうえ、呼び出し側 (ChatGPT の Action) には
+        `ClientResponseError` としか出ず、サーバ側にも何も残らない。
+
+        ★ `/api/gpt/` 以外は **Flask の既定と同じ**ものを返す:
+          - HTTPException → `return e` (ハンドラ未登録時に Flask がする動作)
+          - それ以外       → 再送出 (未処理例外として handle_exception へ)
+          ここで単純に `raise` すると **HTTPException まで 500 に化ける**ので
+          分けている (Dash の 404 が 500 になる)。
+
+        ★ 応答に出すのは例外の**型名だけ**。メッセージや traceback は
+          パスや内部状態を含みうるので出さない (ログには出す)。
+        """
+        from werkzeug.exceptions import HTTPException
+        if not request.path.startswith("/api/gpt/"):
+            if isinstance(e, HTTPException):
+                return e
+            raise e
+        if isinstance(e, HTTPException):
+            return _json({"ok": False,
+                          "error": e.description,
+                          "code": (e.name or "HTTP_ERROR").upper().replace(" ", "_")},
+                         e.code or 500)
+        logger.exception("GPT API で想定外の例外: path=%s", request.path)
+        return _json({"ok": False, "code": "INTERNAL",
+                      "error": type(e).__name__}, 500)
+
+    server.register_error_handler(Exception, _gpt_json_errors)
+
     # ---- 契約・死活 ----------------------------------------------------------
     def _health():
         """死活確認 + 公開 URL の自己申告 (ver52.6)。

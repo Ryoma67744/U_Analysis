@@ -193,3 +193,120 @@ class TestRejectionsAreLogged:
         with caplog.at_level(logging.WARNING, logger="msi.gpt_api"):
             _get(_client(monkeypatch), "/api/gpt/health", key=GOOD_KEY)
         assert not [r for r in caplog.records if "GPT API 拒否" in r.getMessage()]
+
+
+# ===========================================================================
+# ⓑ 想定外例外が JSON になること（HTML 500 を返さない）
+# ===========================================================================
+def _client_with_boom(monkeypatch, exc):
+    """`/api/gpt/*` のハンドラが例外を投げる状況を作る。
+
+    ★ `_projects` が呼ぶ `list_projects` を差し替える。ハンドラの外側で
+      raise すると errorhandler を通らず、検査にならない。
+    """
+    monkeypatch.setattr("app.config.SHARE_BASE_URL", "", raising=False)
+    monkeypatch.setattr("app.config.GPT_API_KEY", GOOD_KEY, raising=False)
+
+    def _boom(*a, **kw):
+        raise exc
+
+    monkeypatch.setattr("app.services.project_manager.list_projects", _boom)
+    app = flask.Flask(__name__)
+    g.register_gpt_api(app)
+    return app.test_client()
+
+
+class TestUnexpectedErrorsAreJson:
+    """★ 呼び出し側は JSON しか読めない。HTML の 500 を返すのは契約違反。"""
+
+    def test_handler_exception_becomes_json_500(self, monkeypatch):
+        c = _client_with_boom(monkeypatch, RuntimeError("内部の詳細"))
+        r = _get(c, "/api/gpt/projects", key=GOOD_KEY)
+        assert r.status_code == 500
+        assert r.mimetype == "application/json", (
+            f"HTML が返っている: {r.mimetype}")
+        body = r.get_json()
+        assert body["ok"] is False
+        assert body["code"] == "INTERNAL"
+
+    def test_the_message_is_not_echoed(self, monkeypatch):
+        """★ 例外メッセージはパスや内部状態を含みうるので応答に出さない。"""
+        c = _client_with_boom(monkeypatch, RuntimeError("/srv/msi/秘密のパス"))
+        raw = _get(c, "/api/gpt/projects", key=GOOD_KEY).get_data(as_text=True)
+        assert "秘密のパス" not in raw, "例外メッセージが応答に漏れている"
+        assert "Traceback" not in raw
+
+    def test_the_exception_is_logged_with_its_traceback(self, monkeypatch, caplog):
+        """★ 応答から消したぶん、**サーバ側には必ず残す**。"""
+        c = _client_with_boom(monkeypatch, RuntimeError("/srv/msi/秘密のパス"))
+        with caplog.at_level(logging.ERROR, logger="msi.gpt_api"):
+            _get(c, "/api/gpt/projects", key=GOOD_KEY)
+        blob = "\n".join(r.getMessage() for r in caplog.records)
+        assert "GPT API で想定外の例外" in blob, blob
+        assert any(r.exc_info for r in caplog.records), "traceback を残していない"
+
+    @pytest.mark.parametrize("path,expect", [
+        ("/api/gpt/does-not-exist", 404),
+        ("/api/gpt/projects/p/sub/s/exports/interactive", 405),   # GET 不可
+    ])
+    def test_http_errors_are_json_too(self, monkeypatch, path, expect):
+        """404 / 405 も JSON にする。ここが HTML だと Action 側で読めない。"""
+        r = _get(_client(monkeypatch), path, key=GOOD_KEY)
+        assert r.status_code == expect
+        assert r.mimetype == "application/json", r.mimetype
+        assert r.get_json()["ok"] is False
+
+
+class TestDashSideIsUnchanged:
+    """★★ 挙動不変の表明。errorhandler は Flask 全体に登録されるので、
+    `/api/gpt/` 以外を巻き込んでいないことを実測で示す。"""
+
+    def _app(self, monkeypatch):
+        monkeypatch.setattr("app.config.GPT_API_KEY", GOOD_KEY, raising=False)
+        app = flask.Flask(__name__)
+
+        @app.route("/dash-ok")
+        def _ok_route():
+            return "ok"
+
+        @app.route("/dash-boom")
+        def _boom_route():
+            raise RuntimeError("dash 側の例外")
+
+        g.register_gpt_api(app)
+        return app
+
+    def test_unknown_dash_path_stays_a_plain_404(self, monkeypatch):
+        """★ ここが JSON 化されると Dash のルーティングが壊れる。
+
+        素朴に `raise e` すると HTTPException が未処理例外扱いになり、
+        **404 が 500 に化ける**。その事故を止める。
+        """
+        r = self._app(monkeypatch).test_client().get("/no-such-page")
+        assert r.status_code == 404, f"Dash 側の 404 が {r.status_code} になった"
+        assert r.mimetype != "application/json", "Dash 側まで JSON 化している"
+
+    def test_dash_route_still_works(self, monkeypatch):
+        r = self._app(monkeypatch).test_client().get("/dash-ok")
+        assert r.status_code == 200 and r.get_data(as_text=True) == "ok"
+
+    def test_dash_exception_stays_a_plain_500(self, monkeypatch):
+        """Dash 側の例外は従来どおり「未処理例外 → 500」のままであること。
+
+        ★ 実測して分かったこと: 素の Flask は `testing=True` を立てない限り
+          例外を送出せず、`wsgi_app` が拾って 500 を返す。再送出しても
+          この経路は変わらない（ハンドラ未登録時と同じ `handle_exception`）。
+          検査すべきは「500 であること」と「**JSON 化していないこと**」。
+        """
+        r = self._app(monkeypatch).test_client().get("/dash-boom")
+        assert r.status_code == 500, f"Dash 側の 500 が {r.status_code} になった"
+        assert r.mimetype != "application/json", (
+            "Dash 側の例外まで JSON 化している。"
+            "/api/gpt/ 以外は従来の応答のままにすること")
+
+    def test_dash_exception_is_not_logged_as_a_gpt_error(self, monkeypatch, caplog):
+        """★ Dash 側の例外を GPT API のログに混ぜないこと（ログの信頼性）。"""
+        with caplog.at_level(logging.ERROR, logger="msi.gpt_api"):
+            self._app(monkeypatch).test_client().get("/dash-boom")
+        assert not [r for r in caplog.records
+                    if "GPT API で想定外の例外" in r.getMessage()]
