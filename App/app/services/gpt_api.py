@@ -22,6 +22,7 @@ import base64
 import hmac
 import json
 import logging
+import math
 import re
 import threading
 from pathlib import Path
@@ -192,6 +193,87 @@ def _finite(raw):
     except (TypeError, ValueError):
         return None
     return v if math.isfinite(v) else None
+
+
+def resolve_feature_column(column_names, mz: float, tol: float):
+    """m/z に最も近い feature 列名を返す（flask 非依存・純関数, ver54.0）。
+
+    `expression_matrix.parquet` の列名は `mz_1234.5678` や
+    `<化合物名>_1234.5678 | ...` のような形なので、数値の抽出は既存の
+    `deg_utils.extract_mz_numeric` に任せる（DESI の MRM トランジションや
+    R の `make.unique()` サフィックスもそちらが吸収する）。
+
+    Returns (列名|None, tol 内に入った候補数)
+        候補数を返すのは、**tol が広すぎて複数の feature を巻き込んでいる**
+        ことを利用者に伝えるため。1 本選んで黙るのは「それらしい別の値」を
+        返すのと同じになる。
+    """
+    from app.utils.deg_utils import extract_mz_numeric
+    hits = []
+    for name in sorted(column_names or []):
+        if name == "CellID":
+            continue
+        v = extract_mz_numeric(name)
+        if v is None or not math.isfinite(v):
+            continue
+        d = abs(v - mz)
+        if d <= tol:
+            hits.append((d, name))
+    if not hits:
+        return None, 0
+    hits.sort()                     # (距離, 名前) 昇順 → 同距離でも決定的
+    return hits[0][1], len(hits)
+
+
+def _finite_or_none(v):
+    """JSON に載せられない値 (NaN / inf) を None にする。"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def cluster_stats_from_frames(expr_df, plot_df, feature_col: str):
+    """CellID で突合してクラスタ別統計を返す（flask 非依存・純関数, ver54.0）。
+
+    ★★ **位置ではなく CellID で突合する。** ver52.5 で見つけたとおり、
+      発現行列と `plot_data` を位置で対応づけて長さだけ検査する実装は、
+      ずれると「もっともらしい別の場所の値」を返す。画面なら気づけるが、
+      **API 経由では利用者が元データを見ないので絶対に気づけない**。
+      Heatmap 側 (`interactive_deg.py:1415`) が既に `merge(on="CellID")` で
+      正しくやっているので、同じ形にする。
+
+    ★ 突合できなかった行数も返す。黙って内側結合で捨てると
+      「一部のピクセルだけの統計」を全体の統計として返すことになる。
+
+    Returns (レコード列, メタ)
+    """
+    merged = expr_df[["CellID", feature_col]].merge(
+        plot_df[["CellID", "Cluster"]], on="CellID", how="inner")
+    recs = []
+    for cluster, grp in merged.groupby("Cluster", dropna=False):
+        vals = grp[feature_col].astype(float)
+        n = int(vals.shape[0])
+        recs.append({
+            "cluster": str(cluster),
+            "n": n,
+            "mean": _finite_or_none(vals.mean()),
+            "median": _finite_or_none(vals.median()),
+            # ★ 標本標準偏差は n<2 で NaN。0.0 に潰すと「ばらつきが無い」と
+            #   読めてしまうので None のまま返す。
+            "sd": _finite_or_none(vals.std()) if n >= 2 else None,
+            "detected_pct": _finite_or_none((vals > 0).mean() * 100.0),
+        })
+    # 並びは画面と同じ規則にする（"3-a" → (3,"a") / 数値以外は末尾）。
+    from app.utils.color_utils import cluster_sort_key
+    recs.sort(key=lambda r: cluster_sort_key(r["cluster"]))
+    meta = {
+        "n_matched": int(merged.shape[0]),
+        "n_expression_rows": int(expr_df.shape[0]),
+        "n_plot_rows": int(plot_df.shape[0]),
+    }
+    return recs, meta
 
 
 def resolve_sub_failure(pid: str, sid: str) -> ApiError:
@@ -1019,6 +1101,54 @@ def build_openapi_spec(base_url: str = "") -> dict:
                 "responses": {"200": {"description": "状態",
                                       "content": {"application/json": {"schema": obj}}},
                               "404": {"description": "unknown job"}}}},
+            "/api/gpt/projects/{pid}/sub/{sid}/features/stats": {"get": {
+                "operationId": "getFeatureStats",
+                "summary": "指定 m/z のクラスタ別統計（実測値）",
+                "description": (
+                    "クラスタごとの n / mean / median / sd / detected_pct を返す。"
+                    "**getMarkers の avg_log2FC は「そのクラスタ vs 残り全部」なので"
+                    "クラスタ間の比較には使えない**。任意の 2 クラスタを比べるなら"
+                    "こちらを使うこと。抽出キャッシュ（発現行列を含む）が必要で、"
+                    "無ければ CACHE_COLD を返すので warmup?with_expression=true を"
+                    "先に実行する。"),
+                "parameters": [_pid_p, _sid_p, _method_p,
+                               _p("mz", "query", "number", required=True,
+                                  desc=("対象の m/z（必須）。有限の数値のみ"
+                                        "（nan / inf は 422）。")),
+                               _p("tol", "query", "number",
+                                  default=TOL_DEFAULT, maximum=TOL_MAX,
+                                  exclusive_minimum=0,
+                                  desc=(f"m/z 許容差(Da)。0 より大きく {TOL_MAX} 以下"
+                                        f"（既定 {TOL_DEFAULT}）。広すぎると複数の "
+                                        "feature を巻き込み、その旨が応答に出る。"))],
+                "responses": {"200": {"description": "クラスタ別統計",
+                                      "content": {"application/json": {"schema": obj}}}}}},
+            "/api/gpt/projects/{pid}/sub/{sid}/features/values": {"get": {
+                "operationId": "getFeatureValues",
+                "summary": "指定 m/z のピクセル単位の実測値（要絞り込み）",
+                "description": (
+                    "x / y / value / cluster / sample を返す。**全ピクセルは返せない**"
+                    "（応答上限の約 60 倍になる）ので cluster か sample で絞ること。"
+                    "削ったときは truncated:true と件数を必ず返す。"
+                    "分布の要約だけでよければ features/stats のほうが安い。"),
+                "parameters": [_pid_p, _sid_p, _method_p,
+                               _p("mz", "query", "number", required=True,
+                                  desc="対象の m/z（必須）。"),
+                               _p("tol", "query", "number",
+                                  default=TOL_DEFAULT, maximum=TOL_MAX,
+                                  exclusive_minimum=0,
+                                  desc=f"m/z 許容差(Da)。既定 {TOL_DEFAULT}。"),
+                               _p("cluster",
+                                  desc=("クラスタ番号。カンマ区切りで複数可"
+                                        "（例: '1,5'）。省略すると全クラスタ。")),
+                               _p("sample", desc="サンプル名で絞る。"),
+                               _p("limit", "query", "integer",
+                                  default=LIMIT_DEFAULT, minimum=LIMIT_MIN,
+                                  maximum=LIMIT_MAX,
+                                  desc=(f"最大件数（{LIMIT_MIN}〜{LIMIT_MAX}、"
+                                        f"既定 {LIMIT_DEFAULT}）。範囲外は 422。"))],
+                "responses": {"200": {"description": "ピクセル値",
+                                      "content": {"application/json": {"schema": obj}}}}}},
             # ★ ver53.0: warmup を追加。
             #   なお `download` / `downloadExportJob` は **意図的に載せない**。
             #   ver52.0 の実測で「Actions はバイナリ応答を扱えず必ず失敗する
@@ -1840,6 +1970,203 @@ def register_gpt_api(server) -> None:
                         "（ブラウザ / アプリで開いてください）。"),
         })
 
+    # ---- feature（m/z）の数値 ----------------------------------------------
+    def _feature_frames(cache_dir, mz, tol):
+        """(expr_df, plot_df, feature_col, n_candidates) を返す。失敗時は ApiError。
+
+        ★★ **CellID が無ければ数値を返さない。** 位置で対応づけて長さだけ
+          見る実装は、ずれると「もっともらしい別の場所の値」を返す
+          (ver52.5 で実際に見つけた形)。画面なら気づけるが、API 経由では
+          利用者が元データを見ないので**絶対に気づけない**。
+          古い抽出は突合材料が無いので、黙って位置で返すより失敗させる。
+        """
+        import pandas as pd
+        expr_path = Path(cache_dir) / "expression_matrix.parquet"
+        if not expr_path.exists():
+            return None, ApiError(
+                "NO_EXPRESSION_MATRIX",
+                "発現行列がまだ生成されていません。"
+                "warmup?with_expression=true を実行してください。", 409)
+        from app.services.seurat_bridge import SeuratBridge
+        names = SeuratBridge()._parquet_column_names(expr_path)
+        if not names:
+            return None, ApiError(
+                "NO_EXPRESSION_MATRIX",
+                "発現行列の列名を読めませんでした。", 409)
+        col, n_cand = resolve_feature_column(names, mz, tol)
+        if col is None:
+            return None, ApiError(
+                "FEATURE_NOT_FOUND",
+                f"m/z {mz} ± {tol} に一致する feature がありません。"
+                "tol を広げるか searchCompounds で近傍を確認してください。", 404)
+        if "CellID" not in names:
+            return None, ApiError(
+                "NO_CELL_ID",
+                "この抽出キャッシュは CellID を持たない古い形式のため、"
+                "発現量とピクセルを突合できません。位置で対応づけると"
+                "別の場所の値を返しうるので数値は返しません。"
+                "抽出キャッシュを作り直してください"
+                "（アプリでこのサブプロジェクトを開き直す）。", 409)
+
+        plot_path = Path(cache_dir) / "plot_data.parquet"
+        plot_csv = Path(cache_dir) / "plot_data.csv"
+        try:
+            if plot_path.exists():
+                plot_df = pd.read_parquet(plot_path)
+            elif plot_csv.exists():
+                plot_df = pd.read_csv(plot_csv)
+            else:
+                return None, ApiError("NO_PLOT_DATA", "plot_data がありません。", 409)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("plot_data 読込失敗: %s", e)
+            return None, ApiError("NO_PLOT_DATA", "plot_data を読めませんでした。", 409)
+        for need in ("CellID", "Cluster"):
+            if need not in plot_df.columns:
+                return None, ApiError(
+                    "NO_CELL_ID",
+                    f"plot_data に {need} 列がないため突合できません。"
+                    "抽出キャッシュを作り直してください。", 409)
+        try:
+            expr_df = pd.read_parquet(expr_path, columns=["CellID", col])
+        except Exception as e:  # noqa: BLE001
+            logger.warning("expression 列の読込失敗 (%s): %s", col, e)
+            return None, ApiError(
+                "READ_FAILED", f"feature 列を読めませんでした: {col}", 500)
+        return (expr_df, plot_df, col, n_cand), None
+
+    def _feature_stats(pid, sid):
+        r = _resolve_sub(pid, sid)
+        if not r:
+            return _fail_api(resolve_sub_failure(pid, sid))
+        method, rds, err = _pick_method(r["rds_map"], request.args.get("method"))
+        if err is not None:
+            return _fail_api(err)
+        mblock = _method_block(request.args.get("method"), method, r["rds_map"])
+        cache_dir = _warm_cache_dir(rds)
+        if not cache_dir:
+            return _ok({"warm": False, "code": "CACHE_COLD", **mblock,
+                        "clusters": [], "ready": _readiness(r),
+                        "message": ("抽出キャッシュが必要です。"
+                                    "warmup?with_expression=true を実行してください。")})
+        mz, err = parse_mz(request.args.get("mz"))
+        if err is not None:
+            return _fail_api(err)
+        if mz is None:
+            return _fail_api(ApiError(
+                "MZ_REQUIRED", "mz は必須です（対象の m/z を指定してください）。", 422))
+        tol, err = parse_tol(request.args.get("tol"))
+        if err is not None:
+            return _fail_api(err)
+
+        got, err = _feature_frames(cache_dir, mz, tol)
+        if err is not None:
+            return _fail_api(err)
+        expr_df, plot_df, col, n_cand = got
+        recs, meta = cluster_stats_from_frames(expr_df, plot_df, col)
+        out = {"warm": True, **mblock, "feature": col, "mz": mz, "tol": tol,
+               "clusters": recs, **meta}
+        if n_cand > 1:
+            # ★ tol が広すぎて複数を巻き込んでいる。1 本選んで黙らない。
+            out["candidates_within_tol"] = n_cand
+            out["note"] = (f"tol {tol} 内に feature が {n_cand} 件あり、"
+                           f"最も近い {col} を使いました。tol を狭めてください。")
+        if meta["n_matched"] < meta["n_expression_rows"]:
+            out["unmatched_note"] = (
+                f"CellID で突合できたのは {meta['n_matched']} 行で、"
+                f"発現行列の {meta['n_expression_rows']} 行すべてではありません。")
+        out["stat_note"] = (
+            "mean / median / sd は **そのクラスタ内の実測値**です。"
+            "getMarkers の avg_log2FC（そのクラスタ vs 残り全部）とは別物なので、"
+            "クラスタ間の比較にはこちらを使ってください。")
+        return _ok(out)
+
+    def _feature_values(pid, sid):
+        """ピクセル単位の実測値。**必ず絞り込んだうえで上限内だけ返す**。
+
+        ★ 全ピクセルは返せない。実測 203,078 ピクセルを最短の JSON で書いても
+          5〜6 MB で、Actions の上限 (90,000 文字) の約 60 倍になる。
+          削るのは避けられないので、**削った事実を必ず応答に書く**
+          （既存 `limit_response_size` と同じ方針。黙って切り詰めない）。
+        """
+        r = _resolve_sub(pid, sid)
+        if not r:
+            return _fail_api(resolve_sub_failure(pid, sid))
+        method, rds, err = _pick_method(r["rds_map"], request.args.get("method"))
+        if err is not None:
+            return _fail_api(err)
+        mblock = _method_block(request.args.get("method"), method, r["rds_map"])
+        cache_dir = _warm_cache_dir(rds)
+        if not cache_dir:
+            return _ok({"warm": False, "code": "CACHE_COLD", **mblock,
+                        "values": [], "ready": _readiness(r),
+                        "message": ("抽出キャッシュが必要です。"
+                                    "warmup?with_expression=true を実行してください。")})
+        mz, err = parse_mz(request.args.get("mz"))
+        if err is not None:
+            return _fail_api(err)
+        if mz is None:
+            return _fail_api(ApiError(
+                "MZ_REQUIRED", "mz は必須です（対象の m/z を指定してください）。", 422))
+        tol, err = parse_tol(request.args.get("tol"))
+        if err is not None:
+            return _fail_api(err)
+        limit, err = parse_limit(request.args.get("limit"))
+        if err is not None:
+            return _fail_api(err)
+
+        got, err = _feature_frames(cache_dir, mz, tol)
+        if err is not None:
+            return _fail_api(err)
+        expr_df, plot_df, col, n_cand = got
+
+        keep = [c for c in ("CellID", "Cluster", "Sample", "SpatialX", "SpatialY")
+                if c in plot_df.columns]
+        merged = expr_df[["CellID", col]].merge(
+            plot_df[keep], on="CellID", how="inner")
+        n_total = int(merged.shape[0])
+
+        cl = request.args.get("cluster")
+        if cl not in (None, ""):
+            wanted = {s.strip() for s in str(cl).split(",") if s.strip()}
+            merged = merged[merged["Cluster"].astype(str).isin(wanted)]
+        sample = request.args.get("sample")
+        if sample not in (None, "") and "Sample" in merged.columns:
+            merged = merged[merged["Sample"].astype(str) == str(sample)]
+        n_selected = int(merged.shape[0])
+
+        rows = []
+        for rec in merged.head(limit).to_dict("records"):
+            row = {"value": _finite_or_none(rec.get(col)),
+                   "cluster": str(rec.get("Cluster"))}
+            for src, dst in (("Sample", "sample"), ("SpatialX", "x"),
+                             ("SpatialY", "y")):
+                if src in rec:
+                    row[dst] = (rec[src] if src == "Sample"
+                                else _finite_or_none(rec[src]))
+            rows.append(row)
+
+        out = {"warm": True, **mblock, "feature": col, "mz": mz, "tol": tol,
+               "values": rows, "n_selected": n_selected, "n_total": n_total,
+               "limit": limit}
+        if n_selected > len(rows):
+            # ★ ここを黙ると「全部でこれだけ」と読まれる。必ず言う。
+            out["truncated"] = True
+            out["message"] = (
+                f"該当 {n_selected} 件のうち先頭 {len(rows)} 件だけを返しました"
+                f"（応答上限のため）。cluster / sample で絞るか、"
+                f"分布だけなら features/stats を使ってください。")
+        if n_cand > 1:
+            out["candidates_within_tol"] = n_cand
+            out["note"] = (f"tol {tol} 内に feature が {n_cand} 件あり、"
+                           f"最も近い {col} を使いました。")
+        payload, truncated = limit_response_size(out, "values")
+        if truncated:
+            payload["truncated"] = True
+            payload["message"] = (
+                (payload.get("message", "") + " ").strip()
+                + "応答サイズの上限に合わせてさらに削りました。")
+        return _ok(payload)
+
     # ---- 抽出キャッシュの事前生成（非同期・冪等） ---------------------------
     def _warmup(pid, sid):
         """POST: 抽出キャッシュを暖める。
@@ -1965,6 +2292,10 @@ def register_gpt_api(server) -> None:
         ("/api/gpt/projects/<pid>/sub/<sid>/compounds", "gpt.compounds", _compounds),
         ("/api/gpt/projects/<pid>/sub/<sid>/outputs", "gpt.outputs", _outputs),
         ("/api/gpt/projects/<pid>/sub/<sid>/exports", "gpt.exports", _exports),
+        ("/api/gpt/projects/<pid>/sub/<sid>/features/stats",
+         "gpt.feature_stats", _feature_stats),
+        ("/api/gpt/projects/<pid>/sub/<sid>/features/values",
+         "gpt.feature_values", _feature_values),
         ("/api/gpt/download/<token>", "gpt.download", _download),
         ("/api/gpt/exports/jobs/<job_id>", "gpt.export_job_status", _export_job_status),
         ("/api/gpt/exports/jobs/<job_id>/file", "gpt.export_job_file", _export_job_file),
