@@ -70,17 +70,23 @@ curl -s https://cciiumap.duckdns.org/api/gpt/health | jq
 ```json
 {
   "ok": true,
-  "app_version": "2026-08-09_ver52.6",
+  "app_version": "2026-08-09_ver52.7",
   "gpt_api": "enabled",
   "public_base_url": "https://cciiumap.duckdns.org",
   "openapi_url": "https://cciiumap.duckdns.org/api/gpt/openapi.json",
-  "https": true
+  "https": true,
+  "key_header_received": false,
+  "authenticated": false
 }
 ```
 
 - `"gpt_api": "disabled"` → **鍵が未設定**。手順 1 に戻る
 - `"https": false` → **仕様書が http を名乗る**。ChatGPT は取り込めない。`SHARE_BASE_URL`
   を設定するか、リバースプロキシが `X-Forwarded-Proto` を送っているか確認する
+
+★ `key_header_received` / `authenticated` は**そのリクエストが鍵を持っていたか**を
+表します。上の `curl` は鍵を付けていないのでどちらも `false` で正常です。
+**この 2 つは ChatGPT 側の設定を切り分けるためにあります**（下記 4 節）。
 
 ### ② 仕様書が正しいアドレスを指しているか
 
@@ -138,12 +144,50 @@ curl -s -H "X-API-Key: $KEY" https://cciiumap.duckdns.org/api/gpt/projects | jq
 |---|---|---|
 | Import from URL が弾かれる／Action が動かない | `servers` が `http://` | 確認①の `"https"` を見る。`SHARE_BASE_URL` を設定して再起動 |
 | `health` は 200 だが他が全部 **503** | `GPT_API_KEY` が未設定 | 手順 1。`.env` 編集後は**再起動が必要** |
-| **401** が返る | ヘッダ名違い or 鍵不一致 | ヘッダ名は `X-API-Key`（`Authorization` ではない）。`.env` の値と一致しているか |
+| **401** が返る | ヘッダ名違い **or** 鍵不一致 | **下記「401 の切り分け」で必ず区別してから直す** |
 | ブラウザでは開けるのに ChatGPT からは繋がらず、**アクセスログにも残らない** | 空 SNI での TLS 握手拒否 | `Caddyfile` の `default_sni cciiumap.duckdns.org`（設定済み）。消さないこと |
 | **404** が返る | パスの綴り | すべて `/api/gpt/` 配下。末尾スラッシュは付けない |
 | `ResponseTooLargeError` | 応答が Actions の上限超 | `top` を指定する。サーバ側でも削って明示するが、指定するほうが確実 |
 | **409** が返る | 指定した解析手法の結果が無い | **別手法で代用はされません**。409 の応答本文に `available_methods` が入るので、その中から選び直す |
 | 一時的に **502/504** | 解析実行中でアプリが重い | 解析完了を待つ。Caddy 側は 600s まで待つ設定 |
+
+### 401 の切り分け（ヘッダ名違いか、鍵不一致か）
+
+サーバが返す 401 は `invalid **or** missing API key` の 1 文で、**どちらかを
+区別しません**。区別は `/api/gpt/health` にさせます。この窓口は鍵不要なので、
+**認証を設定した Action なら鍵ヘッダが届き**、その事実だけが返ります。
+
+ChatGPT に `health` を呼ばせて（Available actions の `health` → Test）、
+応答の 2 つの真偽値を見ます:
+
+| `key_header_received` | `authenticated` | 意味 | 直すところ |
+|---|---|---|---|
+| `false` | `false` | **鍵が届いていない** | Action の Authentication が未設定、または Custom Header Name が `X-API-Key` になっていない |
+| `true` | `false` | **届いているが値が違う** | ChatGPT に貼った鍵が `.env` と不一致。貼り直す（欄はマスク表示なので**全選択してから**貼り替える） |
+| `true` | `true` | 鍵は正しい | 401 は別原因。アプリのログを見る |
+
+★ 鍵そのものは応答にもログにも出ません。出るのは上の真偽値だけです。
+
+サーバ側のログにも拒否が 1 行残ります（**値は出ません。有無だけ**）:
+
+```bash
+docker compose logs --tail=100 msi-app | grep "GPT API 拒否"
+#   GPT API 拒否: path=/api/gpt/projects status=401 X-API-Key=なし   ← 未設定
+#   GPT API 拒否: path=/api/gpt/projects status=401 X-API-Key=あり   ← 値が違う
+```
+
+鍵を貼り直したのに直らないときは、**GPT 編集画面右上の「Update」を押したか**を
+確認してください。認証ダイアログの Save だけでは反映されないことがあります。
+
+サーバ側の値を確認する（値を表示せず指紋で比べる）:
+
+```bash
+cd ~/UMAP-WebApp-ClaudeCode
+grep '^GPT_API_KEY=' .env | cut -d= -f2- | tr -d '\n\r' | sha256sum | cut -c1-8
+docker compose exec msi-app printenv GPT_API_KEY | tr -d '\n\r' | sha256sum | cut -c1-8
+```
+
+2 つが違えば `.env` 編集後に**再起動していません**。
 
 ### ログの見方
 
@@ -151,6 +195,10 @@ curl -s -H "X-API-Key: $KEY" https://cciiumap.duckdns.org/api/gpt/projects | jq
 docker compose logs -f msi-app  | grep -i "gpt\|openapi"   # アプリ側
 docker compose logs -f caddy                               # プロキシ側 (json)
 ```
+
+★ リバースプロキシ (Caddy) のアクセスログは `Cookie` と `Authorization` は
+伏せますが、**`X-API-Key` は伏せません**。`docker logs msi-caddy` を素で開くと
+鍵が平文で見えるので、共有する前に必ず確認してください。
 
 `servers` が https でないときは、アプリのログに次の警告が 1 行出ます:
 

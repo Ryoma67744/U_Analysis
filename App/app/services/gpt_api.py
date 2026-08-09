@@ -1297,6 +1297,15 @@ def register_gpt_api(server) -> None:
         )
         if allow:
             return None
+        # ★ ver52.7: 拒否した事実をサーバ側に残す。
+        #   これが無いと「鍵が届いていない」のか「値が違う」のかを
+        #   運用側から一切追えない (実際、リバースプロキシのログを
+        #   掘るまで原因が分からなかった)。
+        #   ★★ 鍵の値・長さ・先頭数文字は**出さない**。有無だけ。
+        logger.warning(
+            "GPT API 拒否: path=%s status=%d X-API-Key=%s",
+            path, status,
+            "あり" if request.headers.get("X-API-Key") else "なし")
         return _json({"ok": False, "error": err}, status)
 
     server.before_request(_gpt_before_request)
@@ -1309,18 +1318,41 @@ def register_gpt_api(server) -> None:
           **仕様書が何を名乗っているか確認する手段が無かった**から。鍵不要の
           この窓口から見えるようにする (`https` が False なら Action は繋がらない)。
 
-        ★ 出すのは「鍵が設定済みか」だけ。**鍵そのものは出さない**
+        ★ ver52.7: **認証が結線できているか**も答える。
+
+          `key_decision` の 401 は「鍵が無い」と「鍵が違う」を区別せず
+          `invalid **or** missing` の 1 文だけを返すため、利用者からは
+          どちらか分からない。実際、ChatGPT の Action に古い値が入っていた
+          事例で、リバースプロキシのログを掘るまで特定できなかった。
+
+          この窓口は鍵不要なので、**認証を設定した Action なら header が届く**。
+          そこを見れば 1 回の呼び出しで切り分けられる:
+
+            key_header_received=false            → Action の認証が未設定
+            true かつ authenticated=false        → 値が違う
+            両方 true                            → 鍵は正しい
+
+        ★ 出すのは「鍵が設定済みか」と**真偽値**だけ。**鍵そのものは出さない**
           (本モジュール冒頭の方針: 鍵はサーバ側のみに保持)。
           公開ドメインは秘密ではないので `public_base_url` は出してよい。
+
+        ★ 新たなオラクルにはならない: 保護された窓口が 200/401 で返すのと
+          同じ情報しか与えない。照合は `key_decision` と同じ定数時間比較。
         """
         from app.version import version_label
         base = _public_base_url()
+        provided = request.headers.get("X-API-Key", "")
+        configured = _cfg_key()
         return _ok({
             "app_version": version_label(),
-            "gpt_api": "enabled" if _cfg_key() else "disabled",
+            "gpt_api": "enabled" if configured else "disabled",
             "public_base_url": base,
             "openapi_url": f"{base}/api/gpt/openapi.json",
             "https": base.startswith("https://"),
+            "key_header_received": bool(provided),
+            "authenticated": bool(
+                provided and configured
+                and hmac.compare_digest(provided, configured)),
         })
 
     def _openapi():
