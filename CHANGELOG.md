@@ -12,6 +12,117 @@
 
 ---
 
+## 2026-08-09_ver52.6
+
+### 修正: ChatGPT 連携 API が繋がらない — 公開 URL の出どころが 2 つあった
+
+利用者の申告「うまく API との連携ができていない」「Caddy のリバースプロキシ経由で
+https://cciiumap.duckdns.org に公開している」を受けて `/api/gpt/*` の経路を全部読み、
+**原因を実測で特定した**。原因は 2 つあり、**どちらか一方を直しても連携は動かない**。
+
+---
+
+#### ① OpenAPI の `servers` が `http://` を名乗っていた（決定的）
+
+Caddy と同じヘッダ (`Host: cciiumap.duckdns.org` / `X-Forwarded-Proto: https`) を
+付けて計測した結果:
+
+    request.url_root      = http://cciiumap.duckdns.org/     ← OpenAPI の servers
+    external_base_url()   = https://cciiumap.duckdns.org     ← 共有リンク
+
+**同じ 1 リクエストから、アプリが 2 通りの公開 URL を作っていた。**
+
+Flask の `request.scheme` は `X-Forwarded-Proto` を読まない（ProxyFix は本アプリに
+入れていない）。そのため `_openapi()` が渡していた `request.url_root` は `http://` に
+なり、仕様書は `"servers": [{"url": "http://cciiumap.duckdns.org"}]` を名乗っていた。
+**ChatGPT の Action は https を要求する**ので取り込めず、仮に取り込めても呼び出しが
+80→443 リダイレクトに当たって `X-API-Key` を落としうる。
+
+共有リンク (`share_manager.build_share_url` / `persistent_share_manager`) は
+`SHARE_BASE_URL → url_utils.external_base_url()` を通していて正しく https だったため、
+症状は**「ブラウザでは普通に開けるのに、ChatGPT からだけ繋がらない」**になっていた。
+
+★ ver52.3 以降つぶしてきた **T3（対になる経路の非対称）そのもの**。
+`_public_base_url()` を 1 つ置き、共有リンクと同じ 3 行に寄せた。
+
+**`ProxyFix` は導入しない。** `request.scheme` を全域で書き換えると、`session_id.py` /
+`access_logger.py` など既に `X-Forwarded-*` を自前で見ている箇所と二重になる。
+欠陥は「出どころが 2 つある」ことなので、出どころを 1 つに寄せて直した。
+
+`build_openapi_spec` は**純関数のまま**（引数の意味も変えていない）。
+
+#### ② `GPT_API_KEY` を設定する場所が、どこにも書かれていなかった
+
+鍵未設定なら `/api/gpt/*` は 503（fail-closed、設計どおり）。問題は設定先が
+見つからないこと:
+
+| 場所 | GPT_API_KEY |
+|---|---|
+| `App/.env.example`（`.env` の元にする雛形） | **無い** |
+| `.env.docker` | `# GPT_API_KEY=...` と**コメントアウト** |
+| 設定 UI (`EDITABLE_KEYS`) | **無い** |
+
+`/api/gpt/health` は鍵不要なので 200 を返す。ChatGPT からは
+**「health は通るのに他が全部 503」**としか見えず、鍵の問題だと分からなかった。
+
+`.env.example` に `GPT_API_KEY=`（空 = 閉じたまま）を追加した。
+`.env.docker` の `# GPT_API_KEY=CHANGE_ME_TO_RANDOM_HEX_64` は**コメントのまま**にする
+——行頭 `#` を外すだけで、公開リポジトリに書かれている文字列が有効な鍵になる。
+
+#### ③ 「アプリが自分を何と名乗っているか」を見えるようにした
+
+①が見つからなかったのは、**仕様書が何を名乗っているか確認する手段が無かった**から。
+鍵不要の `/api/gpt/health` に `public_base_url` / `openapi_url` / `https` を追加した。
+`"https": false` なら Action は繋がらない、と 1 目で分かる。
+`servers` が https でないときは `logger.warning` も 1 行出す。
+
+★ **鍵そのものは出さない**（出すのは `enabled` / `disabled` のみ）。
+公開ドメインは秘密ではないので `public_base_url` は出してよい。
+
+#### ④ 設定手順書を新設
+
+`docs/` に GPT API の手順書は 1 本も無かった（`DEPLOY.md` は Caddy までで終わり）。
+`App/docs/CHATGPT_API_SETUP.md` を追加し、`DEPLOY.md` 7.7 から相互リンクした。
+確認 3 本と、症状別の切り分け表（今回の 2 原因＋以前ぶつかった空 SNI の
+TLS 握手拒否）を載せている。
+
+---
+
+### 番人（`tests/test_public_url_is_consistent.py`, 16 件）
+
+| 何を | 型 |
+|---|---|
+| Caddy と同じヘッダで**経路ごと**通し `servers` が https になること | 再現（本丸） |
+| 共有リンクと OpenAPI が**同じ 1 リクエストで同じ答え**を出すこと | 再現 |
+| `request` から公開 URL を組み立ててよいのは `url_utils` だけ | **型**（`app/` 全数 + 死に登録検出） |
+| `config.py` が読む環境変数が雛形に載っていること | **型**（内部専用 3 件のみ登録） |
+| `/health` `/openapi.json` が鍵を漏らさないこと | 副作用止め |
+
+★ `build_openapi_spec("https://x")` を直接呼ぶ既存テストは**この欠陥を捕まえられない**
+——欠陥は「ハンドラが何を渡すか」の側にあり、純関数の側には無いから。だから経路ごと通す。
+
+**実測**: 修正前のコードに戻して走らせると **9/16 が落ちる**
+（本丸の `test_servers_is_https_behind_caddy` を含む）ことを確認済み。
+
+### 検証
+
+単体 + E2E **1,518 件** passed / 3 skipped / 3 xfailed、`pyflakes app/` **126**（不変）。
+番人 10 本（122 件）すべて通過。`Share_Test` は変更なし。
+
+### 利用者側の作業
+
+`.env` に 2 行足して再起動するだけ（詳細は `App/docs/CHATGPT_API_SETUP.md`）:
+
+```
+GPT_API_KEY=<openssl rand -hex 32 の出力>
+SHARE_BASE_URL=https://cciiumap.duckdns.org
+```
+
+★ ②はこの `.env` 編集だけで解消するが、**①はコード修正が要る**
+（`_openapi()` は `SHARE_BASE_URL` を見ていなかった）。
+
+---
+
 ## 2026-08-08_ver52.5
 
 ### 修正: 独立調査で見つかった「結果が消える／反映されない」3 件
