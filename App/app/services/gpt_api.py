@@ -752,7 +752,10 @@ def to_jsonable(obj):
 def build_openapi_spec(base_url: str = "") -> dict:
     """Custom GPT の Action に登録する OpenAPI 3.1 仕様を返す。
 
-    `base_url` はハンドラが `request.url_root` から与える（実ホストを servers に反映）。
+    `base_url` はハンドラが `_public_base_url()` から与える（実ホストを servers に反映）。
+    ★ ver52.6: 以前は `request.url_root` を直に渡しており、リバースプロキシ配下で
+      `http://` を名乗って ChatGPT の Action から使えなかった。共有リンクと
+      同じ `SHARE_BASE_URL → external_base_url()` に寄せてある。
     鍵は仕様書には出さず、securityScheme（apiKey / header / X-API-Key）だけ記述する。
     """
     server_url = (base_url or "https://YOUR-DOMAIN").rstrip("/")
@@ -1237,6 +1240,27 @@ def register_gpt_api(server) -> None:
         from app.config import GPT_API_KEY
         return GPT_API_KEY or ""
 
+    def _public_base_url() -> str:
+        """外部から到達できるベース URL (scheme://host) を返す (ver52.6)。
+
+        ★ 共有リンク (`share_manager.build_share_url`) と **同じ出どころ**にする。
+
+        従来ここは `request.url_root` を直に使っていた。Flask の `request.scheme` は
+        `X-Forwarded-Proto` を読まない (ProxyFix は本アプリに入れていない) ため、
+        Caddy 等のリバースプロキシ配下では **`http://` を名乗る**仕様書ができる。
+        ChatGPT の Action は https を要求するので取り込めず、仮に取り込めても
+        呼び出しが 80→443 リダイレクトに当たって `X-API-Key` を落としうる。
+
+        共有リンクは `SHARE_BASE_URL → external_base_url()` を通していたので
+        正しく https になっており、**同じ 1 リクエストからアプリが 2 通りの
+        公開 URL を作っている**状態だった (だから「ブラウザでは開けるのに
+        ChatGPT からだけ繋がらない」になる)。出どころを 1 つに寄せて直す。
+        """
+        from app.config import SHARE_BASE_URL, APP_PORT
+        from app.services.url_utils import external_base_url
+        return (SHARE_BASE_URL.rstrip("/") if SHARE_BASE_URL
+                else external_base_url(APP_PORT))
+
     def _json(data, status=200):
         resp = jsonify(to_jsonable(data))
         resp.status_code = status
@@ -1279,14 +1303,35 @@ def register_gpt_api(server) -> None:
 
     # ---- 契約・死活 ----------------------------------------------------------
     def _health():
+        """死活確認 + 公開 URL の自己申告 (ver52.6)。
+
+        ★ 「OpenAPI の servers が http:// になっている」ことに気づけなかったのは、
+          **仕様書が何を名乗っているか確認する手段が無かった**から。鍵不要の
+          この窓口から見えるようにする (`https` が False なら Action は繋がらない)。
+
+        ★ 出すのは「鍵が設定済みか」だけ。**鍵そのものは出さない**
+          (本モジュール冒頭の方針: 鍵はサーバ側のみに保持)。
+          公開ドメインは秘密ではないので `public_base_url` は出してよい。
+        """
         from app.version import version_label
+        base = _public_base_url()
         return _ok({
             "app_version": version_label(),
             "gpt_api": "enabled" if _cfg_key() else "disabled",
+            "public_base_url": base,
+            "openapi_url": f"{base}/api/gpt/openapi.json",
+            "https": base.startswith("https://"),
         })
 
     def _openapi():
-        return _json(build_openapi_spec(request.url_root))
+        base = _public_base_url()
+        if not base.startswith("https://"):
+            logger.warning(
+                "OpenAPI の servers が %s で https ではない。ChatGPT の Action は "
+                "https を要求するため取り込めない。SHARE_BASE_URL を設定するか、"
+                "リバースプロキシが X-Forwarded-Proto を送っているか確認すること。",
+                base)
+        return _json(build_openapi_spec(base))
 
     # ---- プロジェクト --------------------------------------------------------
     def _projects():
