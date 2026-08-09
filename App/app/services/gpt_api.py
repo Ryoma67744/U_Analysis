@@ -185,6 +185,51 @@ def _finite(raw):
     return v if math.isfinite(v) else None
 
 
+def parse_bool_flag(raw, name: str, default: bool = False):
+    """`true` / `false` 系のクエリを検証する (ver53.0)。
+
+    ★ 「解釈できなければ既定値」にしない。`with_expression=yes` のような
+      綴り違いを黙って False に落とすと、**利用者は発現行列を暖めたつもりで
+      暖まっていない**まま次の呼び出しに進み、原因の分からない失敗になる。
+      同ファイルの `parse_top` / `parse_tol` と同じ方針で 422 を返す。
+
+    Returns (bool, ApiError|None)
+    """
+    if raw is None or str(raw).strip() == "":
+        return default, None
+    s = str(raw).strip().lower()
+    if s in ("true", "1", "yes"):
+        return True, None
+    if s in ("false", "0", "no"):
+        return False, None
+    return None, ApiError(
+        "INVALID_" + name.upper(),
+        f"{name} は true / false で指定してください: {raw!r}", 422)
+
+
+def resolve_warmup_methods(raw, rds_map):
+    """warmup の対象手法を決める（flask 非依存・純関数, ver53.0）。
+
+    ★ export と違い、**省略時は主手法 1 つだけ**にする。
+      - 全手法を暖めると単純に 3 倍の時間がかかる（1 手法で実測 233.7 秒）
+      - `getClusters` / `searchCompounds` が `method` 省略時に選ぶのは主手法
+        なので、既定の用途はそれ 1 つで足りる
+      `methods` を明示すれば従来どおり複数を暖められる。
+
+    Returns (選択リスト, ApiError|None)。export と違い **None は返さない**
+    （「全手法」を暗黙の既定にしないため）。
+    """
+    available = [m for m in _METHOD_ORDER if m in (rds_map or {})]
+    available += [m for m in (rds_map or {}) if m not in _METHOD_ORDER]
+    if not available:
+        return None, ApiError(
+            "NO_RESULT", "このサブプロジェクトに解析結果 (RDS) がありません。", 409)
+    sel, err = resolve_export_methods(raw, rds_map)
+    if err is not None:
+        return None, err
+    return (available[:1] if sel is None else sel), None
+
+
 def parse_mz(raw):
     """`mz` を検証する (ver52.1 / API-04)。
 
@@ -1184,6 +1229,70 @@ def _find_export_job_file(job_id: str):
         return None
 
 
+def warmup_targets(rds_map, methods, with_expression: bool):
+    """まだ暖まっていない手法だけを返す（flask 非依存・純関数, ver53.0）。
+
+    ★ 冪等性の判定はここに集約する。既に暖まっているのに R を起動すると
+      利用者は 4 分待たされる（実測 233.7 秒 / 1 手法）。
+
+    ★ `with_expression` のとき、**基本キャッシュが在っても足りない**。
+      `extract_data` は `_is_cached`（plot_data + cluster_stats + meta）で
+      早期 return するので、後から `with_expression=True` で呼び直しても
+      **expression_matrix.parquet は作られない**。判定を分ける必要がある。
+
+    Returns: 暖める必要のある手法名のリスト（空なら already_warm）
+    """
+    todo = []
+    for m in methods or []:
+        rds = (rds_map or {}).get(m)
+        if not rds:
+            continue
+        cache_dir = _warm_cache_dir(rds)
+        if cache_dir is None:
+            todo.append(m)
+            continue
+        if with_expression and not (cache_dir / "expression_matrix.parquet").exists():
+            todo.append(m)
+    return todo
+
+
+def _run_warmup(job_id: str, resolved: dict, methods, with_expression: bool):
+    """作業スレッド本体: 抽出キャッシュを暖める（成果物ファイルは作らない）。
+
+    ★ 二重抽出は `extract_data` / `ensure_expression_matrix` 内の FileLock が
+      防ぐ。アプリ側で同じサブプロジェクトを開いても R は 1 回しか走らない。
+    """
+    from app.services import export_progress as ep
+    try:
+        from app.services.seurat_bridge import SeuratBridge
+        bridge = SeuratBridge()
+        rds_map = resolved.get("rds_map") or {}
+        total = max(1, len(methods))
+        done_methods = []
+        for i, m in enumerate(methods):
+            rds = rds_map.get(m)
+            if not rds:
+                continue
+            ep.update_job(job_id, int(i * 90 / total), f"{m}: 抽出中…")
+            bridge.extract_data(rds, with_expression=False)
+            if with_expression:
+                ep.update_job(job_id, int((i + 0.5) * 90 / total),
+                              f"{m}: 発現行列を生成中…")
+                bridge.ensure_expression_matrix(rds)
+            done_methods.append(m)
+        if not done_methods:
+            ep.fail_job(job_id, "暖める対象の解析結果が見つかりませんでした。")
+            return
+        ep.finish_job(job_id, msg=(
+            f"抽出キャッシュを準備しました: {', '.join(done_methods)}"
+            + ("（発現行列を含む）" if with_expression else "")))
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[GPT] warmup ジョブ失敗")
+        ep.fail_job(job_id, f"❌ エラー: {e}")
+    finally:
+        _GPT_EXPORT_SEM.release()
+
+
 def _run_interactive_export(job_id: str, resolved: dict, methods, fmt: str):
     """作業スレッド本体: セッション非依存ドライバで Export を生成し一時ファイルへ保存。
 
@@ -1649,6 +1758,61 @@ def register_gpt_api(server) -> None:
                         "（ブラウザ / アプリで開いてください）。"),
         })
 
+    # ---- 抽出キャッシュの事前生成（非同期・冪等） ---------------------------
+    def _warmup(pid, sid):
+        """POST: 抽出キャッシュを暖める。
+
+        ★ 同期では成立しない。実測 233.7 秒 / 1 手法 (seurat_bridge.py の
+          docstring) に対し ChatGPT の Action は数十秒でタイムアウトする。
+          既存の export と同じ非同期ジョブ形式にして、状態は同じ status_url を
+          ポーリングさせる（GPT が覚える操作を増やさない）。
+        """
+        r = _resolve_sub(pid, sid)
+        if not r:
+            return _fail("project/sub not found", 404, "NOT_FOUND")
+        with_expression, err = parse_bool_flag(
+            request.args.get("with_expression"), "with_expression", False)
+        if err is not None:
+            return _fail_api(err)
+        methods, err = resolve_warmup_methods(
+            request.args.get("methods"), r["rds_map"])
+        if err is not None:
+            return _fail_api(err)
+
+        todo = warmup_targets(r["rds_map"], methods, with_expression)
+        if not todo:
+            # ★ 冪等。R を起動せず即答する。これが無いと GPT が毎回 4 分待つ。
+            return _ok({
+                "status": "done", "already_warm": True,
+                "methods": methods, "with_expression": with_expression,
+                "message": "既に抽出済みです。そのまま getClusters 等を呼べます。",
+            })
+
+        # ★ admission は thread 生成前（export と同じ理由: 待機中の job が
+        #   pct 0 の running になって実行中と区別できなくなる）。
+        if not _GPT_EXPORT_SEM.acquire(blocking=False):
+            return _json({
+                "ok": False, "code": "BUSY",
+                "error": ("実行中の重い処理が上限に達しています"
+                          f"（同時 {_GPT_EXPORT_MAX_CONCURRENCY} 件）。"
+                          "時間をおいて再試行してください。"),
+                "retry_after_sec": 60,
+            }, 429)
+        from app.services import export_progress as ep
+        job_id = ep.new_job("warmup")
+        threading.Thread(
+            target=_run_warmup,
+            args=(job_id, r, todo, with_expression), daemon=True,
+        ).start()
+        return _ok({
+            "job_id": job_id, "status": "running",
+            "status_url": f"/api/gpt/exports/jobs/{job_id}",
+            "methods": todo, "with_expression": with_expression,
+            "message": ("抽出を開始しました。1 手法あたり数分かかります。"
+                        "status_url を 30 秒おきにポーリングし、status=done に"
+                        "なってから getClusters / searchCompounds を呼んでください。"),
+        })
+
     def _export_job_status(job_id):
         """GET: 非同期ジョブの状態（export / warmup 共通）。
 
@@ -1731,6 +1895,12 @@ def register_gpt_api(server) -> None:
         "/api/gpt/projects/<pid>/sub/<sid>/exports/interactive",
         endpoint="gpt.export_interactive", view_func=_export_interactive,
         methods=["POST"],
+    )
+    # 抽出キャッシュの事前生成も POST（同じくジョブ起動＝副作用があるため）。
+    # 解析結果そのものは変えない（読み取り専用の原則は保つ）。
+    server.add_url_rule(
+        "/api/gpt/projects/<pid>/sub/<sid>/warmup",
+        endpoint="gpt.warmup", view_func=_warmup, methods=["POST"],
     )
 
     logger.info("GPT API registered (/api/gpt/*); key=%s",
