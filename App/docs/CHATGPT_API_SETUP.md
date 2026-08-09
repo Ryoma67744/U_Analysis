@@ -86,7 +86,7 @@ curl -s https://cciiumap.duckdns.org/api/gpt/health | jq
 
 ★ `key_header_received` / `authenticated` は**そのリクエストが鍵を持っていたか**を
 表します。上の `curl` は鍵を付けていないのでどちらも `false` で正常です。
-**この 2 つは ChatGPT 側の設定を切り分けるためにあります**（下記 4 節）。
+**この 2 つは ChatGPT 側の設定を切り分けるためにあります**（下記 5 節）。
 
 ### ② 仕様書が正しいアドレスを指しているか
 
@@ -118,8 +118,13 @@ curl -s -H "X-API-Key: $KEY" https://cciiumap.duckdns.org/api/gpt/projects | jq
    https://cciiumap.duckdns.org/api/gpt/openapi.json
    ```
    → 取り込むと `listProjects` / `getProject` / `getClusters` / `getMarkers` /
-   `searchCompounds` / `listOutputs` / `listExports` /
+   `searchCompounds` / `listOutputs` / `listExports` / `warmup` /
    `startInteractiveExport` / `getExportJob` / `health` が並びます
+
+   ★ **手書きの仕様書を貼らないでください。** サーバが配信するものには
+   `method` の enum、`top` の既定 10・上限 50、`direction`、`tol` の範囲など、
+   モデルが正しい要求を組み立てるための情報が入っています。簡略版を貼ると
+   これらが失われ、無効な値を送っては 422/409 を受け取る往復が増えます。
 4. **Authentication** → **API Key**
    - Auth Type: **API Key**
    - API Key: 手順 1 で生成した値
@@ -130,15 +135,92 @@ curl -s -H "X-API-Key: $KEY" https://cciiumap.duckdns.org/api/gpt/projects | jq
 ### Instructions に書いておくとよいこと
 
 ```
+- pid / sid は listProjects と getProject が返す値をそのまま使ってください。
+  連番ではありません。推測しないでください。
+  listProjects はサブプロジェクトの件数しか返さないので、sid が要るときは
+  必ず先に getProject を呼んでください。
+
 - 解析手法 (method) を明示しない場合、既定順の先頭が使われます。
   指定した手法の結果が無ければ 409 が返り、別手法で代用はされません。
+
 - マーカー取得 (getMarkers) の top は既定 10・上限 50 です。
   応答が大きいときはサーバ側で件数を削り、その旨を応答に明示します。
+
+- avg_log2FC は「そのクラスタ vs 残り全部」の値です。
+  クラスタ間で引き算して「どちらが高い」と述べないでください。
+
+- getClusters / searchCompounds が CACHE_COLD を返したら故障ではありません。
+  warmup を呼び、status_url が done になってから取り直してください。
+
+- download_url は Action からは取得できません。利用者にブラウザ/アプリで
+  開いてもらってください。自分で取得しようとしないでください。
 ```
 
 ---
 
-## 4. 繋がらないときの切り分け
+## 4. 抽出キャッシュ（`CACHE_COLD` が返ったとき）
+
+`getClusters` と `searchCompounds` は**抽出キャッシュ**を必要とします。
+無いときはエラーではなく、200 でこう返ります:
+
+```json
+{"ok": true, "warm": false, "code": "CACHE_COLD",
+ "ready": {"clusters": false, "compounds": false,
+           "markers": true, "outputs": true},
+ "message": "クラスタ統計は抽出キャッシュが必要です…"}
+```
+
+`ready` を見れば**いま何が取れるか**が種別ごとに分かります。
+`getMarkers` / `listOutputs` / `listExports` はキャッシュ不要なので、
+cold でも取れます。
+
+### 暖める
+
+```
+POST /api/gpt/projects/{pid}/sub/{sid}/warmup
+→ {"job_id": "...", "status_url": "/api/gpt/exports/jobs/<id>"}
+
+GET  /api/gpt/exports/jobs/{job_id}      ← 30 秒おきにポーリング
+→ {"status": "done"}
+```
+
+- **1 手法あたり数分**かかります（実測 233.7 秒 / 203,078 ピクセル × 1,536 特徴量）
+- 既に暖まっていれば `already_warm: true` を即返します。**何度呼んでも安全**です
+- 既定は**主手法 1 つだけ**。`?methods=Harmony,RPCA` で複数指定できます
+- `?with_expression=true` を付けると発現行列も作ります（+約 1.5 倍の時間）。
+  m/z ごとの数値が必要なときだけ
+
+curl で確認する場合:
+
+```bash
+KEY=$(grep '^GPT_API_KEY=' .env | cut -d= -f2-)
+curl -s -X POST -H "X-API-Key: $KEY" \
+  https://cciiumap.duckdns.org/api/gpt/projects/<pid>/sub/<sid>/warmup | jq
+curl -s -H "X-API-Key: $KEY" \
+  https://cciiumap.duckdns.org/api/gpt/exports/jobs/<job_id> | jq
+```
+
+### キャッシュは勝手に消えます
+
+保持数は `SEURAT_CACHE_MAX_ENTRIES`（既定 30）で、超えると **mtime が古いものから
+物理削除**されます。サブプロジェクトの総数がこれを超えていると、使うたびに
+暖め直しが要ります。`.env` で増やせます:
+
+```bash
+echo "SEURAT_CACHE_MAX_ENTRIES=60" >> .env
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+決める前に 1 件あたりのサイズを実測してください:
+
+```bash
+docker compose exec msi-app du -sh /app/Data/Other/seurat_cache
+docker compose exec msi-app du -sh /app/Data/Other/seurat_cache/* | sort -h | tail -3
+```
+
+---
+
+## 5. 繋がらないときの切り分け
 
 | 症状 | 原因 | 対処 |
 |---|---|---|
@@ -210,7 +292,7 @@ https を要求するため取り込めない。SHARE_BASE_URL を設定する�
 
 ---
 
-## 5. 鍵の取り扱い
+## 6. 鍵の取り扱い
 
 - **リポジトリに実値を書かない。** `.env` は `.gitignore` 済み。
   `.env.docker` の `# GPT_API_KEY=CHANGE_ME_TO_RANDOM_HEX_64` は
@@ -223,7 +305,7 @@ https を要求するため取り込めない。SHARE_BASE_URL を設定する�
 
 ---
 
-## 6. 既知の不具合（ver52.6 で修正済み）
+## 7. 既知の不具合（ver52.6 で修正済み）
 
 ver52.5 以前は、`/api/gpt/openapi.json` が `request.url_root` から `servers` を
 組み立てていました。Flask の `request.scheme` は `X-Forwarded-Proto` を読まない

@@ -12,6 +12,141 @@
 
 ---
 
+## 2026-08-09_ver53.0
+
+### 機能追加: 抽出キャッシュを API から暖められるようにした
+
+利用者の要望:
+
+> 「生データを編集はしないが、アクセスし、中の数値を解析に自由に利用できるようにしたい」
+
+その前提として、**使う前にアプリで暖める**必要があるのを解消した。
+
+`getClusters` / `searchCompounds` は抽出キャッシュを要求するが、キャッシュは
+アプリでサブプロジェクトを開いたときにしか作られず、API から作る手段が無かった。
+さらに `SEURAT_CACHE_MAX_ENTRIES=30`（`docker-compose.yml` に直書き）に対し
+サブプロジェクトは実測 **32 件**。全部は保持できず古いものから物理削除されるので、
+「使うたびにアプリで開き直す」運用になっていた。
+
+#### ① `warmup`（新設・非同期・冪等）
+
+```
+POST /api/gpt/projects/{pid}/sub/{sid}/warmup
+GET  /api/gpt/exports/jobs/{job_id}          ← 既存の窓口を流用
+```
+
+同期では成立しない。実測 **233.7 秒 / 1 手法**（`seurat_bridge.py:328` の記録）に
+対し ChatGPT の Action は数十秒でタイムアウトする。既存の
+`startInteractiveExport` と同じ非同期ジョブ形式にし、状態も同じ `status_url` を
+ポーリングさせる（GPT が覚える操作を増やさない）。
+
+- **冪等**: 既に暖まっていれば R を起動せず即 `already_warm:true`。
+  これが無いと GPT が毎回 4 分待つ
+- **省略時は主手法 1 つだけ**。全手法だと 3 倍かかるうえ、`getClusters` が
+  `method` 省略時に選ぶのは主手法なので既定の用途はそれで足りる
+  （export の「省略＝全手法」とは方針が違うので別関数にした）
+- `with_expression` は選択制。既定 False で発現行列生成の 87.4 秒を省く
+
+★ 冪等判定 (`warmup_targets`) で気づいた点: `with_expression` のとき
+**基本キャッシュが在っても足りない**。`extract_data` は `_is_cached`
+(plot_data + cluster_stats + meta) で早期 return するので、後から
+`with_expression=True` で呼び直しても `expression_matrix.parquet` は作られない。
+`ensure_expression_matrix` を別に呼ぶ必要がある。
+
+#### ② 非同期ジョブに種別を持たせた（前提の修正）
+
+`_export_job_status` は「**ファイルが出来ていたら done**」だけで判定していた。
+ファイルを作らない warmup を同じ窓口に載せると **永遠に running** を返す。
+
+同じ判定の副作用で既存の欠陥も 1 件見つかった。export が完了したあと一時
+ファイルが掃除されると (`sweep_old_files` が 1 時間で消す)、最後の return に
+落ちて **pct 100 のまま running** を返し続けていた。利用者は永久に待つ。
+
+`new_job(kind=...)` で種別を持たせ、`finish_job` の `filepath`/`filename` を
+任意にした。既存の呼び出しは挙動が変わらない。
+
+#### ③ `SEURAT_CACHE_MAX_ENTRIES` を `.env` から変えられるようにした
+
+`docker-compose.yml` の直書きを `${SEURAT_CACHE_MAX_ENTRIES:-30}` にし、
+`.env.docker` に「**サブプロジェクトの総数より大きくすると暖め直しが不要になる**」
+旨と、サイズ実測のコマンドを書いた。
+
+#### ④ 404 を「どちらが無いのか」に分けた
+
+`_resolve_sub` は「プロジェクトが無い」と「サブが無い」の両方で `None` を返し、
+呼び出し側 6 箇所すべてが `"project/sub not found"` の 1 文を返していた。しかも
+**3 箇所は `NOT_FOUND` コードすら付いていない**。
+
+実障害: GPT が sid を連番と誤解して `sid=1` を送り、この 1 文だけを見て
+「どこを直せばよいか分からない」になった。
+
+同ファイルの `_pick_method` は 409 で `available_methods` を返す**良い前例**が
+あるので同じ形に揃えた —— `PROJECT_NOT_FOUND` / `SUB_NOT_FOUND` を分け、
+後者には `available_sub_ids`（id と name）を載せる。
+
+#### ⑤ 仕様書に `pid` / `sid` の説明を入れた
+
+12 箇所すべて説明が空だった。モデルが読むのは仕様書だけなので、値の出どころが
+書いていないと連番だと推測する（`sid=1` の原因）。
+
+#### ⑥ 「Action が取得できない URL」を応答でも言う
+
+ver52.0 の API-08（Action が呼べない `download_url` を仕様書で約束しない）は
+**仕様書側だけ**で守られていた。実際の `listOutputs` / `listExports` は
+`download_url` を注記なしで返しており、受け取った GPT は取得できるものとして
+扱う。`download_note` を添えた。
+
+---
+
+### ★ 自分の誤りを実測で見つけて撤回した
+
+設計時に「`download` / `downloadExportJob` がルートにあるのに仕様書に無い＝
+`listOutputs` が `download_token` を返すのに使う経路が無い**行き止まりの欠陥**だ」と
+判断し、仕様書へ足そうとした。
+
+実際は **ver52.0 が実測のうえで外した**ものだった:
+
+> Custom GPT Actions はバイナリ応答を扱えず**必ず失敗する**（実測 95KB の PNG
+> でも失敗）。載せておくと GPT が繰り返し試みるだけ。
+
+追加を取り消した。判断の根拠が個別テストの 1 行コメントにしか無いと、次の人
+（＝私）が掘り返す。番人の `ROUTES_INTENTIONALLY_UNDOCUMENTED` に理由付きで集約した。
+
+### 番人 — `tests/test_gpt_api_surface.py`（新設・55 件）
+
+| 何を | 型 |
+|---|---|
+| **仕様書の operation と実ルートが過不足なく一致する（両方向）** | **型** ← これがあれば上の誤読も起きなかった |
+| バイナリ返却の operation を仕様書に載せないこと | 型（ver52.0 の判断を守る） |
+| path パラメータ全数に説明があること / `pid`・`sid` が値の出どころを書いていること | **型** |
+| 完了した warmup が done になること | 再現（②の欠陥そのもの） |
+| ファイルが消えた export が running を返さないこと | 再現（既存欠陥） |
+| 既に暖まっているときスレッドを起こさないこと | 再現 |
+| 基本キャッシュが在っても発現行列が無ければ対象になること | 再現 |
+| `PROJECT_NOT_FOUND` と `SUB_NOT_FOUND` が別コードで、後者が `available_sub_ids` を含むこと | 再現 |
+| 404 を返す全ハンドラ（7 経路）に `code` があること | **型**（全数） |
+| `download_url` を渡す応答に「Action からは取得できない」注記があること | 再現 |
+
+**実測**: 修正前のコードに戻すと ② で **7/10**、① で **29/40**、④⑤⑥ で **11/55**
+が落ちることを確認済み。
+
+### 自作の誤りを 1 件、実測で見つけて直した
+
+判定関数をクラス属性に置いたら**メソッド化して `self` が第 1 引数に渡り** 26 件
+落ちた（ver52.7 でも同じ形を踏んだ）。モジュール直下から呼ぶ形に直した。
+
+### 検証
+
+単体 + E2E **1,628 件** passed / 3 skipped / 3 xfailed、`pyflakes app/` **126**（不変）。
+番人 12 本（232 件）すべて通過。`Share_Test` は変更なし。
+
+### 利用者側の作業
+
+デプロイ後、GPT の Actions を **Import from URL で貼り直す**と `warmup` が使えます。
+手順は `App/docs/CHATGPT_API_SETUP.md` の 4 節。
+
+---
+
 ## 2026-08-09_ver52.7
 
 ### 修正: `/api/gpt/*` が「なぜ失敗したか」を言えなかった

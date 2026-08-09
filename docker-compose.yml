@@ -36,7 +36,10 @@ services:
       # ようにする (共有を開いたときのコールド R 抽出を防ぐ)。専用ディレクトリ必須
       # (LRU 退避が配下サブディレクトリを削除するため diskcache と同居させない)。
       - SEURAT_CACHE_DIR=/app/Data/Other/seurat_cache
-      - SEURAT_CACHE_MAX_ENTRIES=30
+      # ver53.0: .env で上書きできるようにした。従来は 30 が直書きで、
+      # サブプロジェクト数がこれを超えると古いものから物理削除され、
+      # 使うたびにアプリで開き直す必要があった。
+      - SEURAT_CACHE_MAX_ENTRIES=${SEURAT_CACHE_MAX_ENTRIES:-30}
       # 解析(R)の行列計算スレッド数。analysis_runner.py は未設定時 4 を既定にするため
       # ここで明示すると上書きできる。cpus:'6' に対し 5 = UI 応答に 1 コア残す折衷。
       # 最速にしたいなら 6、UI 応答を優先するなら 4 に。
