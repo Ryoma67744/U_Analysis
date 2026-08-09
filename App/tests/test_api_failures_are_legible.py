@@ -38,6 +38,7 @@ import flask
 import pytest
 
 from app.services import gpt_api as g
+from app.services.access_logger import should_log_request
 
 PROD_HOST = "cciiumap.duckdns.org"
 
@@ -310,3 +311,74 @@ class TestDashSideIsUnchanged:
             self._app(monkeypatch).test_client().get("/dash-boom")
         assert not [r for r in caplog.records
                     if "GPT API で想定外の例外" in r.getMessage()]
+
+
+# ===========================================================================
+# ⓐ アクセスログが実際に書かれること
+# ===========================================================================
+class TestAccessLogIsWritten:
+    """`log_access` は定義とハンドラ登録だけあって**未結線**だった。
+
+    access.log は作られるのにリクエストが 1 行も入らない。WSGI サーバ
+    (waitress) もアクセスログを持たないため、**アプリ側に HTTP リクエストの
+    記録が一切存在しなかった**。実障害では成功した `health` の 200 すら
+    残っておらず、リバースプロキシのログを掘る必要があった。
+    """
+
+    def test_log_access_actually_writes(self, caplog):
+        from app.services.access_logger import log_access
+        app = flask.Flask(__name__)
+        with app.test_request_context("/api/gpt/projects",
+                                      headers={"X-Forwarded-For": "203.0.113.9"}):
+            with caplog.at_level(logging.INFO, logger="msi.access"):
+                log_access(401)
+        blob = "\n".join(r.getMessage() for r in caplog.records)
+        assert "path=/api/gpt/projects" in blob, blob
+        assert "status=401" in blob, blob
+        assert "203.0.113.9" in blob, blob
+
+    def test_it_survives_a_broken_request_context(self, caplog):
+        """ログ失敗で本処理を止めないこと（request 文脈外でも例外にしない）。"""
+        from app.services.access_logger import log_access
+        log_access(200)          # 例外が出なければ良い
+
+
+class TestNoiseIsFilteredButErrorsAreNot:
+    """★ 除外は**成功時だけ**。「うるさいから消す」で異常まで消さない。
+
+    ★ 判定関数はモジュール直下から呼ぶこと。クラス属性に置くと
+      **メソッド化して self が第 1 引数に渡る**（実測で踏んだ）。
+    """
+
+    @pytest.mark.parametrize("path", [
+        "/_dash-update-component", "/_dash-layout", "/assets/style.css",
+        "/_favicon.ico", "/healthz", "/healthz/ready", "/metrics",
+    ])
+    def test_successful_noise_is_skipped(self, path):
+        assert should_log_request(path, 200) is False, path
+
+    @pytest.mark.parametrize("path", [
+        "/_dash-update-component", "/healthz", "/assets/style.css",
+    ])
+    @pytest.mark.parametrize("status", [401, 404, 500, 503])
+    def test_errors_are_never_skipped(self, path, status):
+        """★★ ここが本丸。内部パスでもエラーは必ず残す。"""
+        assert should_log_request(path, status) is True, (path, status)
+
+    @pytest.mark.parametrize("path", [
+        "/api/gpt/projects", "/api/gpt/health", "/share/tok", "/view/tok",
+        "/login", "/", "/help/index",
+    ])
+    def test_real_traffic_is_always_logged(self, path):
+        assert should_log_request(path, 200) is True, path
+
+    def test_main_wires_the_helper(self):
+        """★ 純関数を作っても呼ばなければ意味が無い。main.py 側を検査する。"""
+        import ast
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent.parent
+               / "app" / "main.py").read_text(encoding="utf-8")
+        called = {n.func.id for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        assert "should_log_request" in called, "main.py が除外判定を通していない"
+        assert "log_access" in called, "main.py が log_access を呼んでいない"
