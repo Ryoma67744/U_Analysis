@@ -1650,25 +1650,51 @@ def register_gpt_api(server) -> None:
         })
 
     def _export_job_status(job_id):
-        # GET: 生成ジョブの状態。完了ならファイル解決して download_url を返す。
+        """GET: 非同期ジョブの状態（export / warmup 共通）。
+
+        ★ ver53.0: 従来は「**ファイルが出来ていたら done**」だけで判定していた。
+          成果物ファイルを作らない `warmup` を同じ窓口に載せると
+          **永遠に running を返す**ので、ジョブ記録の `kind` で分ける。
+
+        ★ ジョブ記録が無くてもファイルがあれば done を返す挙動は残す
+          （ジョブは 32 件で打ち切られるので、記録だけ先に消えることがある）。
+          `job is None` のときは種別が分からないので "export" とみなす
+          ＝従来と同じ経路になる。
+        """
         if not valid_job_id(job_id):
             return _fail("bad job id", 404)
         from app.services import export_progress as ep
         job = ep.get_job(job_id)
-        f = _find_export_job_file(job_id)
-        if f is not None:
-            fname = (job or {}).get("filename") or f.name.split("__", 1)[-1]
-            return _ok({
-                "status": "done", "pct": 100, "filename": fname,
-                "download_url": f"/api/gpt/exports/jobs/{job_id}/file",
-                "message": (job or {}).get("msg", "完了"),
-            })
+        kind = (job or {}).get("kind", "export")
+
+        if kind == "export":
+            f = _find_export_job_file(job_id)
+            if f is not None:
+                fname = (job or {}).get("filename") or f.name.split("__", 1)[-1]
+                return _ok({
+                    "status": "done", "pct": 100, "kind": kind, "filename": fname,
+                    "download_url": f"/api/gpt/exports/jobs/{job_id}/file",
+                    "message": (job or {}).get("msg", "完了"),
+                })
         if job is None:
             return _fail("unknown or expired job", 404)
         if job.get("status") == "error":
-            return _ok({"status": "error", "message": job.get("msg", "失敗")})
-        return _ok({"status": "running", "pct": job.get("pct", 0),
-                    "label": job.get("label", "")})
+            return _ok({"status": "error", "kind": kind,
+                        "message": job.get("msg", "失敗")})
+        if job.get("status") == "done":
+            # ★ export でここに来るのは「完了したが一時ファイルが掃除された」
+            #   場合（sweep_old_files が 1 時間で消す）。従来はこの経路が
+            #   最後の return に落ちて **pct 100 のまま running** を返していた。
+            out = {"status": "done", "pct": 100, "kind": kind,
+                   "message": job.get("msg", "完了")}
+            if kind == "export":
+                out["message"] = (
+                    "生成は完了しましたが一時ファイルの保持期限が切れています。"
+                    "もう一度生成してください。")
+                out["expired"] = True
+            return _ok(out)
+        return _ok({"status": "running", "kind": kind,
+                    "pct": job.get("pct", 0), "label": job.get("label", "")})
 
     def _export_job_file(job_id):
         # GET: 生成済みファイルを send_file でストリーム配信。

@@ -18,8 +18,16 @@ _LOCK = threading.Lock()
 _MAX_JOBS = 32
 
 
-def new_job() -> str:
-    """新規ジョブを作成し job_id を返す。上限超過時は完了済みジョブを掃除。"""
+def new_job(kind: str = "export") -> str:
+    """新規ジョブを作成し job_id を返す。上限超過時は完了済みジョブを掃除。
+
+    kind : "export" | "warmup"
+        ★ ver53.0: 種別を持たせる。`export` は成果物ファイルを作るが
+          `warmup`（抽出キャッシュを暖める）は**何もファイルを作らない**。
+          状態問い合わせ側が「ファイルが出来ていたら done」で判定していると、
+          warmup は永遠に running を返す。既定は "export" なので
+          既存の `new_job()` 呼び出しは挙動が変わらない。
+    """
     job_id = uuid.uuid4().hex
     with _LOCK:
         if len(_JOBS) >= _MAX_JOBS:
@@ -27,6 +35,7 @@ def new_job() -> str:
             for k in stale[: len(_JOBS) - _MAX_JOBS + 1]:
                 _JOBS.pop(k, None)
         _JOBS[job_id] = {"pct": 0, "label": "準備中…", "status": "running",
+                         "kind": str(kind or "export"),
                          "filepath": None, "filename": None, "msg": ""}
     return job_id
 
@@ -41,13 +50,22 @@ def update_job(job_id: str, pct: int, label: str = "") -> None:
                 j["label"] = label
 
 
-def finish_job(job_id: str, filepath: str, filename: str, msg: str) -> None:
-    """完了：ダウンロード対象の一時ファイルパスと DL 名を保持する。"""
+def finish_job(job_id: str, filepath=None, filename=None, msg: str = "") -> None:
+    """完了：ダウンロード対象の一時ファイルパスと DL 名を保持する。
+
+    ★ ver53.0: `filepath` / `filename` を任意にした。`warmup` のように
+      **成果物ファイルを作らないジョブ**でも完了を記録できるようにするため。
+      渡さなかった項目は `new_job` が入れた None のまま残す
+      (`str(None)` を書き込んで "None" というパスを作らない)。
+    """
     with _LOCK:
         j = _JOBS.get(job_id)
         if j:
-            j.update(pct=100, label="完了", status="done",
-                     filepath=str(filepath), filename=filename, msg=msg)
+            j.update(pct=100, label="完了", status="done", msg=msg)
+            if filepath is not None:
+                j["filepath"] = str(filepath)
+            if filename is not None:
+                j["filename"] = filename
 
 
 def fail_job(job_id: str, msg: str) -> None:
