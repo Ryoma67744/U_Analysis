@@ -70,7 +70,7 @@ curl -s https://cciiumap.duckdns.org/api/gpt/health | jq
 ```json
 {
   "ok": true,
-  "app_version": "2026-08-09_ver52.7",
+  "app_version": "2026-08-09_ver54.0",
   "gpt_api": "enabled",
   "public_base_url": "https://cciiumap.duckdns.org",
   "openapi_url": "https://cciiumap.duckdns.org/api/gpt/openapi.json",
@@ -86,7 +86,7 @@ curl -s https://cciiumap.duckdns.org/api/gpt/health | jq
 
 ★ `key_header_received` / `authenticated` は**そのリクエストが鍵を持っていたか**を
 表します。上の `curl` は鍵を付けていないのでどちらも `false` で正常です。
-**この 2 つは ChatGPT 側の設定を切り分けるためにあります**（下記 5 節）。
+**この 2 つは ChatGPT 側の設定を切り分けるためにあります**（下記 6 節）。
 
 ### ② 仕様書が正しいアドレスを指しているか
 
@@ -119,6 +119,7 @@ curl -s -H "X-API-Key: $KEY" https://cciiumap.duckdns.org/api/gpt/projects | jq
    ```
    → 取り込むと `listProjects` / `getProject` / `getClusters` / `getMarkers` /
    `searchCompounds` / `listOutputs` / `listExports` / `warmup` /
+   `getFeatureStats` / `getFeatureValues` /
    `startInteractiveExport` / `getExportJob` / `health` が並びます
 
    ★ **手書きの仕様書を貼らないでください。** サーバが配信するものには
@@ -220,7 +221,71 @@ docker compose exec msi-app du -sh /app/Data/Other/seurat_cache/* | sort -h | ta
 
 ---
 
-## 5. 繋がらないときの切り分け
+## 5. m/z ごとの数値を取る
+
+### クラスタ別統計 — まずこれ
+
+```
+GET .../features/stats?mz=1234.5&tol=0.01
+```
+
+```json
+{"feature": "mz_1234.5000", "clusters": [
+  {"cluster": "1", "n": 12043, "mean": 8.21, "median": 7.90, "sd": 2.11, "detected_pct": 94.2},
+  {"cluster": "5", "n":  3980, "mean": 1.05, "median": 0.00, "sd": 1.83, "detected_pct": 31.7}
+]}
+```
+
+★ **`getMarkers` の `avg_log2FC` は「そのクラスタ vs 残り全部」**なので、
+クラスタ間で引き算しても意味がありません。**任意の 2 クラスタを直接比較したい
+ときは必ずこちら**を使ってください。応答にも `stat_note` で明記されます。
+
+### ピクセル単位の生値 — 絞り込みが必須
+
+```
+GET .../features/values?mz=1234.5&cluster=5&limit=200
+```
+
+全ピクセルは返せません（実測 203,078 行 = 5〜6 MB で応答上限の約 60 倍）。
+`cluster` か `sample` で絞ってください。削ったときは `truncated: true` と
+`n_selected` / `n_total` が返るので、**「全部でこれだけ」と誤読しないで済みます**。
+
+### 前提: 発現行列が要ります
+
+どちらも `expression_matrix.parquet` を読むので、**`warmup?with_expression=true`**
+を通しておく必要があります。無いと `NO_EXPRESSION_MATRIX` (409) が返ります。
+
+```bash
+curl -s -X POST -H "X-API-Key: $KEY" \
+  "https://cciiumap.duckdns.org/api/gpt/projects/<pid>/sub/<sid>/warmup?with_expression=true" | jq
+```
+
+### 数値が返らないことがあります（設計どおり）
+
+| コード | 意味 | 対処 |
+|---|---|---|
+| `NO_EXPRESSION_MATRIX` | 発現行列がまだ無い | `warmup?with_expression=true` |
+| `NO_CELL_ID` | 抽出が古く `CellID` を持たない | 抽出キャッシュを作り直す（アプリで開き直す） |
+| `FEATURE_NOT_FOUND` | `tol` 内に該当 m/z が無い | `tol` を広げるか `searchCompounds` で近傍を確認 |
+
+★ `NO_CELL_ID` のとき**あえて数値を返しません**。発現量とピクセルを突合する
+材料が無いので、位置で対応づけると「別の場所の値」を返しかねません。画面なら
+気づけますが、**API 経由では利用者が元データを見ないので気づけない**ためです。
+
+### GPT にやらせるときの Instructions 追記
+
+```
+- 特定の m/z の分布を比べるときは features/stats を使ってください。
+  getMarkers の avg_log2FC はクラスタ間の比較には使えません。
+- features/values は必ず cluster か sample で絞ってください。
+  truncated: true が返ったら「一部だけ」と明示して報告してください。
+- NO_EXPRESSION_MATRIX が返ったら warmup?with_expression=true を実行してから
+  取り直してください。
+```
+
+---
+
+## 6. 繋がらないときの切り分け
 
 | 症状 | 原因 | 対処 |
 |---|---|---|
@@ -292,7 +357,7 @@ https を要求するため取り込めない。SHARE_BASE_URL を設定する�
 
 ---
 
-## 6. 鍵の取り扱い
+## 7. 鍵の取り扱い
 
 - **リポジトリに実値を書かない。** `.env` は `.gitignore` 済み。
   `.env.docker` の `# GPT_API_KEY=CHANGE_ME_TO_RANDOM_HEX_64` は
@@ -305,7 +370,7 @@ https を要求するため取り込めない。SHARE_BASE_URL を設定する�
 
 ---
 
-## 7. 既知の不具合（ver52.6 で修正済み）
+## 8. 既知の不具合（ver52.6 で修正済み）
 
 ver52.5 以前は、`/api/gpt/openapi.json` が `request.url_root` から `servers` を
 組み立てていました。Flask の `request.scheme` は `X-Forwarded-Proto` を読まない
