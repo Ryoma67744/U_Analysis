@@ -468,6 +468,18 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f caddy
 > - DNS が反映されていない（7.2 の dig で確認）
 > - `caddy` コンテナのログを確認: `docker compose logs caddy`
 
+### 7.7 ChatGPT 連携 API を開く（任意）
+
+HTTPS 化まで終わっていれば、ChatGPT の Custom GPT から解析結果を読める
+読み取り専用 API (`/api/gpt/*`) を開けます。`.env` に `GPT_API_KEY` を設定する
+までは **503 で閉じたまま**（fail-closed）なので、使わないなら何もしなくて構いません。
+
+手順・確認コマンド・繋がらないときの切り分けは **`App/docs/CHATGPT_API_SETUP.md`** 参照。
+
+> ★ 7.4 の `SHARE_BASE_URL` は共有リンクだけでなく、この API が名乗る
+> OpenAPI の `servers` URL にも使われます（ver52.6 で出どころを 1 つに揃えた）。
+> 未設定でも Caddy の `X-Forwarded-Proto` から https に解決されますが、明示推奨。
+
 ---
 
 ## 8. データのアップロード
