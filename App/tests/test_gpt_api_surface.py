@@ -26,6 +26,8 @@
     いなかった。
 """
 
+import re
+
 import flask
 import pytest
 
@@ -352,3 +354,230 @@ class TestWarmupEndpoint:
         self._resolved(monkeypatch, {"Harmony": "/h.rds"})
         r = _get(_client(monkeypatch), "/api/gpt/projects/p/sub/s/warmup")
         assert r.status_code == 405
+
+
+# ===========================================================================
+# (B) 仕様書と実ルートが一致すること ← これがあれば download の欠落は起きなかった
+# ===========================================================================
+def _registered_routes(monkeypatch):
+    """`register_gpt_api` が実際に生やす `/api/gpt/*` を (path, method) で返す。"""
+    monkeypatch.setattr("app.config.GPT_API_KEY", KEY, raising=False)
+    app = flask.Flask(__name__)
+    g.register_gpt_api(app)
+    out = set()
+    for rule in app.url_map.iter_rules():
+        if not str(rule.rule).startswith("/api/gpt/"):
+            continue
+        # Flask の <pid> 記法を OpenAPI の {pid} 記法へ寄せる
+        path = re.sub(r"<(?:[^:<>]+:)?([^<>]+)>", r"{\1}", str(rule.rule))
+        for m in rule.methods:
+            if m in ("GET", "POST"):
+                out.add((path, m.lower()))
+    return out
+
+
+def _spec_operations():
+    spec = g.build_openapi_spec("https://x")
+    return {(p, m) for p, ops in spec["paths"].items() for m in ops}
+
+
+class TestSpecMatchesRoutes:
+    """★★ 型の番人。**宣言と実体が過不足なく一致する**こと。
+
+    実測した欠陥: 仕様書は 10 operation しか宣言していないのに実ルートは 13 本。
+    `download` / `downloadExportJob` が載っておらず、**`listOutputs` が
+    `download_token` を返すのに、それを使う経路が仕様書に無い**行き止まりに
+    なっていた。モデルが読むのは仕様書だけなので、宣言されていない経路は
+    存在しないのと同じ。
+    """
+
+    # 意図的に仕様書へ載せないルート。増やすときは**理由を書くこと**。
+    # ★ 仕様書を膨らませて番人を黙らせるのではなく、載せない理由をここに残す。
+    #   ver53.0 の設計時、私は download の欠落を「行き止まりの欠陥」と誤認して
+    #   仕様書に足そうとした。実際は ver52.0 が**実測のうえで外した**もので、
+    #   その根拠は tests/test_gpt_api.py の 1 行コメントにしか無かった。
+    #   判断が個別のテストに埋もれていると次の人（＝私）が掘り返す。ここに集約する。
+    ROUTES_INTENTIONALLY_UNDOCUMENTED = {
+        ("/api/gpt/openapi.json", "get"):
+            "仕様書そのもの。Import from URL で取得するもので、"
+            "Action の operation として呼ぶものではない",
+        ("/api/gpt/download/{token}", "get"):
+            "ver52.0: Custom GPT Actions はバイナリ応答を扱えず必ず失敗する"
+            "（実測 95KB の PNG でも失敗）。載せると GPT が繰り返し試みるだけ。"
+            "ルートはブラウザ / アプリからの直接取得のために残す",
+        ("/api/gpt/exports/jobs/{job_id}/file", "get"):
+            "同上（Export 本体もバイナリ）。ver52.0 で仕様書から外した",
+    }
+
+    def test_no_route_is_missing_from_the_spec(self, monkeypatch):
+        missing = (_registered_routes(monkeypatch) - _spec_operations()
+                   - set(self.ROUTES_INTENTIONALLY_UNDOCUMENTED))
+        assert not missing, (
+            f"実ルートにあるのに仕様書に無い: {sorted(missing)}。"
+            "モデルは仕様書しか読まないので、宣言しない経路は使われない")
+
+    def test_the_exception_registry_has_no_dead_entries(self, monkeypatch):
+        """★ ルートを消したのに登録が残っている、を検出する。"""
+        routes = _registered_routes(monkeypatch)
+        dead = [k for k in self.ROUTES_INTENTIONALLY_UNDOCUMENTED if k not in routes]
+        assert not dead, f"実体の無い除外登録が残っている: {dead}"
+
+    def test_no_spec_operation_is_dead(self, monkeypatch):
+        """★ 逆向きも見る。仕様書にあるのにルートが無ければ 404 を教えることになる。"""
+        dead = _spec_operations() - _registered_routes(monkeypatch)
+        assert not dead, f"仕様書にあるのに実ルートが無い: {sorted(dead)}"
+
+    def test_operation_ids_are_unique(self):
+        spec = g.build_openapi_spec("https://x")
+        ids = [o["operationId"] for ops in spec["paths"].values()
+               for o in ops.values()]
+        assert len(ids) == len(set(ids)), sorted(ids)
+
+    def test_warmup_is_declared(self):
+        ids = {o["operationId"] for ops in g.build_openapi_spec("https://x")["paths"]
+               .values() for o in ops.values()}
+        assert "warmup" in ids, sorted(ids)
+
+    def test_responses_that_hand_out_a_url_say_it_is_not_fetchable(
+            self, monkeypatch, tmp_path):
+        """★ ver52.0 の API-08 は**仕様書側だけ**で守られていた。
+
+        実際の応答は `download_url` を注記なしで返しており、受け取った GPT は
+        「取得できるもの」として扱う。応答側にも同じことを言わせる。
+        """
+        monkeypatch.setattr(g, "_resolve_sub", lambda pid, sid: {
+            "project": {"id": "p"}, "sub": {"id": "s"},
+            "result_dir": str(tmp_path), "data_folder": None,
+            "ms_instrument": "TIMS", "rds_map": {"Harmony": "/h.rds"}})
+        monkeypatch.setattr(g, "_list_outputs", lambda rd: [
+            {"id": "o1", "filename": "a.png", "category": "UMAP",
+             "cluster": None, "size_bytes": 1, "modified": "t"}])
+        monkeypatch.setattr(g, "_list_exports", lambda rm: [
+            {"id": "e1", "filename": "b.zip", "size_bytes": 1, "modified": "t"}])
+        c = _client(monkeypatch)
+        for path, key in (("/api/gpt/projects/p/sub/s/outputs", "outputs"),
+                          ("/api/gpt/projects/p/sub/s/exports", "exports")):
+            body = _get(c, path).get_json()
+            assert body[key], body
+            assert body[key][0].get("download_url"), body
+            note = body.get("download_note", "")
+            assert "Action からは取得できません" in note, (
+                f"{path}: download_url を渡しているのに注記が無い -> {body}")
+
+    def test_binary_downloads_stay_out_of_the_spec(self):
+        """★ ver52.0 の判断を、番人の側からも守る。
+
+        バイナリを返す operation を仕様に載せると、GPT が繰り返し試みて
+        必ず失敗する（実測済み）。ここで固定しておかないと、
+        「ルートがあるのに仕様書に無い＝欠陥だ」と誤読して足してしまう
+        （ver53.0 の設計時に実際にやりかけた）。
+        """
+        ids = {o["operationId"] for ops in g.build_openapi_spec("https://x")["paths"]
+               .values() for o in ops.values()}
+        assert "download" not in ids, ids
+        assert "downloadExportJob" not in ids, ids
+
+
+class TestEveryPathParamIsDocumented:
+    """★ 型の番人。path パラメータに説明が無いとモデルは値を推測する。
+
+    実測した欠陥: `pid` / `sid` は 12 箇所すべて説明が空で、GPT が連番と
+    誤解して `sid=1` を送り 404 になった。
+    """
+
+    def test_all_path_params_have_a_description(self):
+        spec = g.build_openapi_spec("https://x")
+        bad = []
+        for path, ops in spec["paths"].items():
+            for method, op in ops.items():
+                for prm in op.get("parameters", []):
+                    if prm.get("in") != "path":
+                        continue
+                    if not (prm.get("description") or "").strip():
+                        bad.append((op["operationId"], prm["name"]))
+        assert not bad, (
+            f"説明の無い path パラメータ: {bad}。"
+            "値の出どころを書かないとモデルは推測する（実障害: sid=1）")
+
+    @pytest.mark.parametrize("name", ["pid", "sid"])
+    def test_id_params_say_where_the_value_comes_from(self, name):
+        spec = g.build_openapi_spec("https://x")
+        descs = [prm.get("description", "")
+                 for ops in spec["paths"].values() for op in ops.values()
+                 for prm in op.get("parameters", []) if prm["name"] == name]
+        assert descs, f"{name} が仕様書に 1 つも無い"
+        for d in descs:
+            assert "listProjects" in d or "getProject" in d, d
+            assert "連番" in d, f"{name}: 連番でないことを書いていない: {d}"
+
+
+# ===========================================================================
+# (D) 404 が「プロジェクトが無い」と「サブが無い」を区別すること
+# ===========================================================================
+class TestNotFoundIsSpecific:
+    """★ 同ファイルの `_pick_method` は 409 で `available_methods` を返す
+    良い前例がある。pid/sid だけ「1 文だけ返す」で揃っていなかった。"""
+
+    def test_missing_project_says_so(self, monkeypatch):
+        monkeypatch.setattr("app.services.project_manager.get_project",
+                            lambda pid, **k: None)
+        err = g.resolve_sub_failure("nope", "s")
+        assert err.code == "PROJECT_NOT_FOUND" and err.status == 404
+        assert "listProjects" in err.message
+
+    def test_missing_sub_lists_the_valid_ids(self, monkeypatch):
+        """★★ 本丸。**次に何を指定すればよいか**を応答に載せる。"""
+        monkeypatch.setattr("app.services.project_manager.get_project",
+                            lambda pid, **k: {"id": pid})
+        monkeypatch.setattr(
+            "app.services.project_manager.list_sub_projects",
+            lambda pid: [{"id": "f59e83d7", "name": "260526_Kirikae_NEG"}])
+        err = g.resolve_sub_failure("p", "1")
+        assert err.code == "SUB_NOT_FOUND" and err.status == 404
+        assert err.detail["available_sub_ids"] == [
+            {"id": "f59e83d7", "name": "260526_Kirikae_NEG"}]
+        assert "連番" in err.message
+
+    def test_the_two_codes_are_different(self, monkeypatch):
+        """区別できることが要点。同じコードなら分けた意味が無い。"""
+        monkeypatch.setattr("app.services.project_manager.get_project",
+                            lambda pid, **k: None)
+        a = g.resolve_sub_failure("x", "y").code
+        monkeypatch.setattr("app.services.project_manager.get_project",
+                            lambda pid, **k: {"id": pid})
+        monkeypatch.setattr("app.services.project_manager.list_sub_projects",
+                            lambda pid: [])
+        b = g.resolve_sub_failure("x", "y").code
+        assert a != b
+
+    def test_every_handler_uses_the_specific_error(self):
+        """★ 全数。1 箇所でも古い 1 文が残っていれば落ちる。
+
+        修正前は 6 箇所すべてが同じ文で、うち 3 箇所は code すら無かった。
+        """
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent.parent
+               / "app" / "services" / "gpt_api.py").read_text(encoding="utf-8")
+        assert '_fail("project/sub not found"' not in src, (
+            "古い「どちらか分からない 404」が残っている")
+
+    def test_all_handlers_return_a_code_on_404(self, monkeypatch):
+        """★ 404 応答に必ず `code` があること（3 箇所は付いていなかった）。"""
+        monkeypatch.setattr(g, "_resolve_sub", lambda pid, sid: None)
+        monkeypatch.setattr("app.services.project_manager.get_project",
+                            lambda pid, **k: None)
+        c = _client(monkeypatch)
+        paths = [
+            "/api/gpt/projects/p/sub/s/clusters",
+            "/api/gpt/projects/p/sub/s/markers",
+            "/api/gpt/projects/p/sub/s/compounds",
+            "/api/gpt/projects/p/sub/s/outputs",
+            "/api/gpt/projects/p/sub/s/exports",
+        ]
+        for path in paths:
+            body = _get(c, path).get_json()
+            assert body.get("code"), f"{path}: code が無い -> {body}"
+        for path in ("/api/gpt/projects/p/sub/s/exports/interactive",
+                     "/api/gpt/projects/p/sub/s/warmup"):
+            body = c.post(path, headers={"X-API-Key": KEY}).get_json()
+            assert body.get("code"), f"{path}: code が無い -> {body}"

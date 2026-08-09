@@ -63,6 +63,15 @@ MARKER_SORT_DESC = "p_val_adj asc, abs(avg_log2FC) desc"
 # 余裕を見て手前で切る（Action 側で失敗すると原因が利用者に見えない）。
 MAX_RESPONSE_CHARS = 90_000
 
+# ★ ver53.0: `download_url` を返す応答には必ず添える (ver52.0 / API-08 の続き)。
+#   ver52.0 は「Action が取得できない URL を仕様書で約束しない」を **仕様書側**
+#   だけで守っていた。実際の応答は `download_url` を注記なしで返していたので、
+#   受け取った GPT は取得できるものとして扱う。応答側にも同じことを言う。
+_DOWNLOAD_NOTE = (
+    "download_url は **Action からは取得できません**"
+    "（Custom GPT Actions はバイナリ応答を扱えません）。"
+    "利用者にブラウザ / アプリで開いてもらってください。")
+
 
 class ApiError:
     """構造化エラー (ver52.0)。
@@ -183,6 +192,34 @@ def _finite(raw):
     except (TypeError, ValueError):
         return None
     return v if math.isfinite(v) else None
+
+
+def resolve_sub_failure(pid: str, sid: str) -> ApiError:
+    """`_resolve_sub` が None を返したとき、**どちらが無いのか**を返す (ver53.0)。
+
+    ★ 従来は 6 箇所すべてが `"project/sub not found"` の 1 文を返しており、
+      「プロジェクトが無い」と「サブが無い」を区別できなかった。しかも
+      **3 箇所は `NOT_FOUND` コードすら付いていなかった**。
+
+    ★ 実障害: GPT が sid を連番と誤解して `sid=1` を送り、この 1 文だけを見て
+      「どこを直せばよいか分からない」になった。同ファイルの `_pick_method` は
+      409 で `available_methods` を返す**良い前例**があるので、同じ形に揃える
+      ——「次に何を指定すればよいか」を応答自体に載せる。
+    """
+    from app.services.project_manager import get_project, list_sub_projects
+    if not get_project(pid):
+        return ApiError(
+            "PROJECT_NOT_FOUND",
+            f"プロジェクトが見つかりません: {pid!r}。"
+            "listProjects が返す id をそのまま使ってください。", 404)
+    subs = list_sub_projects(pid) or []
+    return ApiError(
+        "SUB_NOT_FOUND",
+        f"サブプロジェクトが見つかりません: {sid!r}。"
+        "getProject が返す id をそのまま使ってください（連番ではありません）。",
+        404,
+        {"available_sub_ids": [{"id": s.get("id"), "name": s.get("name")}
+                               for s in subs]})
 
 
 def parse_bool_flag(raw, name: str, default: bool = False):
@@ -833,6 +870,18 @@ def build_openapi_spec(base_url: str = "") -> dict:
                    desc=("解析手法。指定した手法の結果が無い場合は 409 を返し、"
                          "**別手法で代用はしない**。省略時は既定順の先頭。"))
 
+    # ★ ver53.0: pid / sid には説明が 1 文字も無かった（12 箇所すべて空）。
+    #   モデルが読むのは仕様書だけなので、値の出どころが書いていないと
+    #   連番だと推測する。実障害では `sid=1` が送られて 404 になった。
+    _pid_p = _p("pid", "path", required=True,
+                desc=("プロジェクト id。**listProjects / getProject が返す値を"
+                      "そのまま使う**。連番ではない（例: 'cffa9ae5'）。推測しない。"))
+    _sid_p = _p("sid", "path", required=True,
+                desc=("サブプロジェクト id。**getProject が返す値をそのまま使う**。"
+                      "連番ではない（例: 'f59e83d7'）。推測しない。"
+                      "listProjects は件数しか返さないので、必ず getProject を"
+                      "先に呼ぶこと。"))
+
     obj = {"type": "object"}
     return {
         "openapi": "3.1.0",
@@ -862,14 +911,14 @@ def build_openapi_spec(base_url: str = "") -> dict:
                                       "content": {"application/json": {"schema": obj}}}}}},
             "/api/gpt/projects/{pid}": {"get": {
                 "operationId": "getProject", "summary": "プロジェクト詳細",
-                "parameters": [_p("pid", "path", required=True)],
+                "parameters": [_pid_p],
                 "responses": {"200": {"description": "詳細",
                                       "content": {"application/json": {"schema": obj}}}}}},
             "/api/gpt/projects/{pid}/sub/{sid}/clusters": {"get": {
                 "operationId": "getClusters",
                 "summary": "クラスタ統計（ウォームキャッシュがある場合）",
-                "parameters": [_p("pid", "path", required=True),
-                               _p("sid", "path", required=True),
+                "parameters": [_pid_p,
+                               _sid_p,
                                _method_p],
                 "responses": {"200": {"description": "クラスタ統計",
                                       "content": {"application/json": {"schema": obj}}}}}},
@@ -880,8 +929,8 @@ def build_openapi_spec(base_url: str = "") -> dict:
                     "並びは " + MARKER_SORT_DESC + "。**符号を見ないので"
                     "「上位 N ＝ そのクラスタで高発現」ではない**。"
                     "高発現だけが必要なら direction=up を指定すること。"),
-                "parameters": [_p("pid", "path", required=True),
-                               _p("sid", "path", required=True),
+                "parameters": [_pid_p,
+                               _sid_p,
                                _method_p,
                                _p("cluster",
                                   desc=("クラスタ番号。カンマ区切りで複数指定できる"
@@ -900,8 +949,8 @@ def build_openapi_spec(base_url: str = "") -> dict:
             "/api/gpt/projects/{pid}/sub/{sid}/compounds": {"get": {
                 "operationId": "searchCompounds",
                 "summary": "化合物アノテーション検索（名前 / m/z / 脂質クラス）",
-                "parameters": [_p("pid", "path", required=True),
-                               _p("sid", "path", required=True),
+                "parameters": [_pid_p,
+                               _sid_p,
                                _method_p,
                                _p("query", desc="名前部分一致"),
                                _p("mz", "query", "number",
@@ -929,24 +978,24 @@ def build_openapi_spec(base_url: str = "") -> dict:
             "/api/gpt/projects/{pid}/sub/{sid}/outputs": {"get": {
                 "operationId": "listOutputs",
                 "summary": "出力画像の一覧（メタデータのみ。取得はアプリから）",
-                "parameters": [_p("pid", "path", required=True),
-                               _p("sid", "path", required=True)],
+                "parameters": [_pid_p,
+                               _sid_p],
                 "responses": {"200": {"description": "画像一覧",
                                       "content": {"application/json": {"schema": obj}}}}}},
             "/api/gpt/projects/{pid}/sub/{sid}/exports": {"get": {
                 "operationId": "listExports",
                 "summary": ("保存済み MetaboAnalyst エクスポートの一覧"
                             "（メタデータのみ。取得はアプリから）"),
-                "parameters": [_p("pid", "path", required=True),
-                               _p("sid", "path", required=True)],
+                "parameters": [_pid_p,
+                               _sid_p],
                 "responses": {"200": {"description": "エクスポート一覧",
                                       "content": {"application/json": {"schema": obj}}}}}},
             "/api/gpt/projects/{pid}/sub/{sid}/exports/interactive": {"post": {
                 "operationId": "startInteractiveExport",
                 "summary": ("インタラクティブ Export（UMAP_cluster）をその場で生成開始"
                             "（非同期。job_id を返す。重い処理）"),
-                "parameters": [_p("pid", "path", required=True),
-                               _p("sid", "path", required=True),
+                "parameters": [_pid_p,
+                               _sid_p,
                                _p("format", enum=_EXPORT_FORMATS,
                                   default=_EXPORT_FORMATS[0],
                                   desc="TIMS のみ有効。範囲外は 422。"),
@@ -958,12 +1007,45 @@ def build_openapi_spec(base_url: str = "") -> dict:
                                       "content": {"application/json": {"schema": obj}}}}}},
             "/api/gpt/exports/jobs/{job_id}": {"get": {
                 "operationId": "getExportJob",
-                "summary": ("生成ジョブの状態。done ならファイルの保存先を返すが、"
-                            "Action からは取得できない（ブラウザ / アプリで開く）。"),
-                "parameters": [_p("job_id", "path", required=True)],
+                "summary": "非同期ジョブ（Export 生成 / 抽出キャッシュの暖め）の状態",
+                "description": (
+                    "status は running / done / error。kind=warmup が done に"
+                    "なったら getClusters / searchCompounds を呼べる。"
+                    "kind=export のファイル本体は Action からは取得できないので"
+                    "（ブラウザ / アプリで開く）、done を確認するまでに留めること。"),
+                "parameters": [_p("job_id", "path", required=True,
+                                  desc=("startInteractiveExport / warmup が返した "
+                                        "job_id をそのまま使う。"))],
                 "responses": {"200": {"description": "状態",
                                       "content": {"application/json": {"schema": obj}}},
                               "404": {"description": "unknown job"}}}},
+            # ★ ver53.0: warmup を追加。
+            #   なお `download` / `downloadExportJob` は **意図的に載せない**。
+            #   ver52.0 の実測で「Actions はバイナリ応答を扱えず必ず失敗する
+            #   （95KB の PNG でも失敗）」と分かっており、載せると GPT が
+            #   繰り返し試みるだけになる。ルート自体はブラウザ直接取得のために
+            #   残してある。判断の根拠は tests/test_gpt_api_surface.py の
+            #   ROUTES_INTENTIONALLY_UNDOCUMENTED に理由付きで登録してある。
+            "/api/gpt/projects/{pid}/sub/{sid}/warmup": {"post": {
+                "operationId": "warmup",
+                "summary": "抽出キャッシュを事前生成する（非同期・冪等）",
+                "description": (
+                    "getClusters / searchCompounds は抽出キャッシュを必要とする。"
+                    "cold のときはこれを呼んで status_url が done になってから"
+                    "取得すること。1 手法あたり数分かかる。"
+                    "既に暖まっていれば already_warm=true を即返す（安全に何度でも"
+                    "呼べる）。解析結果そのものは変更しない。"),
+                "parameters": [_pid_p, _sid_p,
+                               _p("methods",
+                                  desc=("カンマ区切り手法名。**省略時は主手法 1 つだけ**"
+                                        "（全手法を暖めると数倍かかる）。")),
+                               _p("with_expression", "query", "boolean",
+                                  default=False,
+                                  desc=("発現行列も生成する（+約 1.5 倍の時間）。"
+                                        "m/z ごとの数値が必要なときだけ true。"))],
+                "responses": {"200": {"description": "ジョブ開始 or already_warm",
+                                      "content": {"application/json": {"schema": obj}}},
+                              "429": {"description": "同時実行の上限"}}}},
         },
     }
 
@@ -1524,7 +1606,7 @@ def register_gpt_api(server) -> None:
     def _clusters(pid, sid):
         r = _resolve_sub(pid, sid)
         if not r:
-            return _fail("project/sub not found", 404, "NOT_FOUND")
+            return _fail_api(resolve_sub_failure(pid, sid))
         requested = request.args.get("method")
         method, rds, err = _pick_method(r["rds_map"], requested)
         if err is not None:
@@ -1549,7 +1631,7 @@ def register_gpt_api(server) -> None:
     def _markers(pid, sid):
         r = _resolve_sub(pid, sid)
         if not r:
-            return _fail("project/sub not found", 404, "NOT_FOUND")
+            return _fail_api(resolve_sub_failure(pid, sid))
         if not r["result_dir"]:
             return _fail("結果フォルダが未設定です。", 404, "NO_RESULT")
 
@@ -1620,7 +1702,7 @@ def register_gpt_api(server) -> None:
     def _compounds(pid, sid):
         r = _resolve_sub(pid, sid)
         if not r:
-            return _fail("project/sub not found", 404, "NOT_FOUND")
+            return _fail_api(resolve_sub_failure(pid, sid))
         requested = request.args.get("method")
         method, rds, err = _pick_method(r["rds_map"], requested)
         if err is not None:
@@ -1664,7 +1746,7 @@ def register_gpt_api(server) -> None:
     def _outputs(pid, sid):
         r = _resolve_sub(pid, sid)
         if not r:
-            return _fail("project/sub not found", 404)
+            return _fail_api(resolve_sub_failure(pid, sid))
         items = _list_outputs(r["result_dir"])
         out = []
         for it in items:
@@ -1676,13 +1758,13 @@ def register_gpt_api(server) -> None:
                 "download_token": tok,
                 "download_url": "/api/gpt/download/" + tok,
             })
-        return _ok({"outputs": out})
+        return _ok({"outputs": out, "download_note": _DOWNLOAD_NOTE})
 
     # ---- 保存済み MetaboAnalyst エクスポート一覧 ----------------------------
     def _exports(pid, sid):
         r = _resolve_sub(pid, sid)
         if not r:
-            return _fail("project/sub not found", 404)
+            return _fail_api(resolve_sub_failure(pid, sid))
         items = _list_exports(r["rds_map"])
         out = []
         for it in items:
@@ -1693,7 +1775,7 @@ def register_gpt_api(server) -> None:
                 "download_token": tok,
                 "download_url": "/api/gpt/download/" + tok,
             })
-        return _ok({"exports": out})
+        return _ok({"exports": out, "download_note": _DOWNLOAD_NOTE})
 
     # ---- ダウンロード（列挙し直して検証 → send_file ストリーム） -------------
     def _download(token):
@@ -1721,7 +1803,7 @@ def register_gpt_api(server) -> None:
         # POST: 生成ジョブを起動し job_id と status_url を返す（重い＝R が走り得る）。
         r = _resolve_sub(pid, sid)
         if not r:
-            return _fail("project/sub not found", 404)
+            return _fail_api(resolve_sub_failure(pid, sid))
         if not r["rds_map"]:
             return _fail("この結果には解析済み RDS が見つかりません。", 404)
         fmt, err = parse_export_format(request.args.get("format"))
@@ -1769,7 +1851,7 @@ def register_gpt_api(server) -> None:
         """
         r = _resolve_sub(pid, sid)
         if not r:
-            return _fail("project/sub not found", 404, "NOT_FOUND")
+            return _fail_api(resolve_sub_failure(pid, sid))
         with_expression, err = parse_bool_flag(
             request.args.get("with_expression"), "with_expression", False)
         if err is not None:
