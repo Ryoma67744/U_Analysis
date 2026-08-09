@@ -281,6 +281,91 @@ class TestAccordionSectionIdsRepoWide:
 # ===========================================================================
 # 横断: 「宣言した対象が実在する」型に番人が付いていること
 # ===========================================================================
+# ===========================================================================
+# 第 5 層: 「hook から呼ぶ」と宣言した関数が、実際に結線されていること (ver52.7)
+# ===========================================================================
+#
+# 実測した欠陥: `access_logger.log_access` は docstring で
+# 「before_request で呼び、現在のリクエストを記録する」と宣言し、
+# 専用ハンドラ (access.log) まで登録されているのに、**どこからも呼ばれて
+# いなかった**。access.log は作られるがリクエストは 1 行も入らない。
+# WSGI サーバ (waitress) もアクセスログを持たないため、アプリ側に HTTP
+# リクエストの記録が一切存在せず、ChatGPT 連携が 401 で弾かれ続けた原因を
+# 追うのにリバースプロキシのログを掘る羽目になった。
+#
+# ★ 既存の本ファイルの番人は「宣言した**ファイル/設定キー**が実在するか」
+#   しか見ておらず、**「宣言した関数が呼ばれているか」を見ていなかった**。
+#   それがこの穴。ここで塞ぐ。
+
+# 宣言だけあって意図的に未結線のもの。増やすときは理由を書くこと。
+KNOWN_UNWIRED: dict[str, str] = {}
+
+
+def _functions_declaring_a_request_hook():
+    """docstring で「before_request / after_request で呼ぶ」と宣言している
+    モジュール直下の関数を {関数名: ファイル} で返す。"""
+    out = {}
+    for rel, tree in _trees():
+        for node in tree.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            doc = ast.get_docstring(node) or ""
+            if "before_request" in doc or "after_request" in doc:
+                out[node.name] = rel.as_posix()
+    return out
+
+
+def _referenced_names():
+    """app/ 配下で参照されている名前を全部集める。
+
+    ★ 呼び出し (`f()`) だけを数えてはいけない。Flask の hook は
+      **引数として渡して結線する** (`server.before_request(_require_login)`)
+      ので、`ast.Call` だけ見ると結線済みのものを未結線と誤判定する。
+      別名 import (`from x import register as register_auth`) も同様なので
+      `ast.alias` も数える。
+    """
+    names = set()
+    for _rel, tree in _trees():
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Name):
+                names.add(n.id)
+            elif isinstance(n, ast.Attribute):
+                names.add(n.attr)
+            elif isinstance(n, ast.alias):
+                names.add(n.name.rsplit(".", 1)[-1])
+    return names
+
+
+class TestDeclaredRequestHooksAreWired:
+    """★ 「hook から呼ぶ」と書いた関数が、実際に結線されていること。"""
+
+    def test_every_declared_hook_is_referenced(self):
+        declared = _functions_declaring_a_request_hook()
+        assert declared, "hook を宣言している関数が 1 つも見つからない（検出が壊れた）"
+        refs = _referenced_names()
+        missing = {n: p for n, p in declared.items()
+                   if n not in refs and n not in KNOWN_UNWIRED}
+        assert not missing, (
+            f"docstring で hook から呼ぶと宣言しているのに、どこからも"
+            f"参照されていない関数: {missing}。"
+            "宣言だけして結線を忘れると、その機能は静かに存在しないことになる"
+            " (ver52.7 の log_access がこれだった)")
+
+    def test_registry_has_no_dead_entries(self):
+        """★ 結線したのに登録を消し忘れたときも落ちること。"""
+        declared = _functions_declaring_a_request_hook()
+        refs = _referenced_names()
+        dead = [n for n in KNOWN_UNWIRED if n not in declared or n in refs]
+        assert not dead, (
+            f"KNOWN_UNWIRED に実体の無い/既に結線済みの登録が残っている: {dead}")
+
+    def test_log_access_is_wired(self):
+        """★ 本件そのもの。個別に固定しておく（検出ロジックが緩んでも残る）。"""
+        assert "log_access" in _referenced_names(), (
+            "access_logger.log_access が結線されていない。"
+            "access.log は作られるがリクエストが 1 行も記録されない状態に戻っている")
+
+
 class TestEveryLayerOfThisTypeHasAGuard:
     """★ この型は 4 層に出ている。各層に番人が在ることを表明する。
 

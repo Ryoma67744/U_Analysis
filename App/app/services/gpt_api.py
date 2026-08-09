@@ -22,6 +22,7 @@ import base64
 import hmac
 import json
 import logging
+import math
 import re
 import threading
 from pathlib import Path
@@ -62,6 +63,15 @@ MARKER_SORT_DESC = "p_val_adj asc, abs(avg_log2FC) desc"
 # Custom GPT Actions はリクエスト/レスポンスとも 10 万文字未満。
 # 余裕を見て手前で切る（Action 側で失敗すると原因が利用者に見えない）。
 MAX_RESPONSE_CHARS = 90_000
+
+# ★ ver53.0: `download_url` を返す応答には必ず添える (ver52.0 / API-08 の続き)。
+#   ver52.0 は「Action が取得できない URL を仕様書で約束しない」を **仕様書側**
+#   だけで守っていた。実際の応答は `download_url` を注記なしで返していたので、
+#   受け取った GPT は取得できるものとして扱う。応答側にも同じことを言う。
+_DOWNLOAD_NOTE = (
+    "download_url は **Action からは取得できません**"
+    "（Custom GPT Actions はバイナリ応答を扱えません）。"
+    "利用者にブラウザ / アプリで開いてもらってください。")
 
 
 class ApiError:
@@ -183,6 +193,160 @@ def _finite(raw):
     except (TypeError, ValueError):
         return None
     return v if math.isfinite(v) else None
+
+
+def resolve_feature_column(column_names, mz: float, tol: float):
+    """m/z に最も近い feature 列名を返す（flask 非依存・純関数, ver54.0）。
+
+    `expression_matrix.parquet` の列名は `mz_1234.5678` や
+    `<化合物名>_1234.5678 | ...` のような形なので、数値の抽出は既存の
+    `deg_utils.extract_mz_numeric` に任せる（DESI の MRM トランジションや
+    R の `make.unique()` サフィックスもそちらが吸収する）。
+
+    Returns (列名|None, tol 内に入った候補数)
+        候補数を返すのは、**tol が広すぎて複数の feature を巻き込んでいる**
+        ことを利用者に伝えるため。1 本選んで黙るのは「それらしい別の値」を
+        返すのと同じになる。
+    """
+    from app.utils.deg_utils import extract_mz_numeric
+    hits = []
+    for name in sorted(column_names or []):
+        if name == "CellID":
+            continue
+        v = extract_mz_numeric(name)
+        if v is None or not math.isfinite(v):
+            continue
+        d = abs(v - mz)
+        if d <= tol:
+            hits.append((d, name))
+    if not hits:
+        return None, 0
+    hits.sort()                     # (距離, 名前) 昇順 → 同距離でも決定的
+    return hits[0][1], len(hits)
+
+
+def _finite_or_none(v):
+    """JSON に載せられない値 (NaN / inf) を None にする。"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def cluster_stats_from_frames(expr_df, plot_df, feature_col: str):
+    """CellID で突合してクラスタ別統計を返す（flask 非依存・純関数, ver54.0）。
+
+    ★★ **位置ではなく CellID で突合する。** ver52.5 で見つけたとおり、
+      発現行列と `plot_data` を位置で対応づけて長さだけ検査する実装は、
+      ずれると「もっともらしい別の場所の値」を返す。画面なら気づけるが、
+      **API 経由では利用者が元データを見ないので絶対に気づけない**。
+      Heatmap 側 (`interactive_deg.py:1415`) が既に `merge(on="CellID")` で
+      正しくやっているので、同じ形にする。
+
+    ★ 突合できなかった行数も返す。黙って内側結合で捨てると
+      「一部のピクセルだけの統計」を全体の統計として返すことになる。
+
+    Returns (レコード列, メタ)
+    """
+    merged = expr_df[["CellID", feature_col]].merge(
+        plot_df[["CellID", "Cluster"]], on="CellID", how="inner")
+    recs = []
+    for cluster, grp in merged.groupby("Cluster", dropna=False):
+        vals = grp[feature_col].astype(float)
+        n = int(vals.shape[0])
+        recs.append({
+            "cluster": str(cluster),
+            "n": n,
+            "mean": _finite_or_none(vals.mean()),
+            "median": _finite_or_none(vals.median()),
+            # ★ 標本標準偏差は n<2 で NaN。0.0 に潰すと「ばらつきが無い」と
+            #   読めてしまうので None のまま返す。
+            "sd": _finite_or_none(vals.std()) if n >= 2 else None,
+            "detected_pct": _finite_or_none((vals > 0).mean() * 100.0),
+        })
+    # 並びは画面と同じ規則にする（"3-a" → (3,"a") / 数値以外は末尾）。
+    from app.utils.color_utils import cluster_sort_key
+    recs.sort(key=lambda r: cluster_sort_key(r["cluster"]))
+    meta = {
+        "n_matched": int(merged.shape[0]),
+        "n_expression_rows": int(expr_df.shape[0]),
+        "n_plot_rows": int(plot_df.shape[0]),
+    }
+    return recs, meta
+
+
+def resolve_sub_failure(pid: str, sid: str) -> ApiError:
+    """`_resolve_sub` が None を返したとき、**どちらが無いのか**を返す (ver53.0)。
+
+    ★ 従来は 6 箇所すべてが `"project/sub not found"` の 1 文を返しており、
+      「プロジェクトが無い」と「サブが無い」を区別できなかった。しかも
+      **3 箇所は `NOT_FOUND` コードすら付いていなかった**。
+
+    ★ 実障害: GPT が sid を連番と誤解して `sid=1` を送り、この 1 文だけを見て
+      「どこを直せばよいか分からない」になった。同ファイルの `_pick_method` は
+      409 で `available_methods` を返す**良い前例**があるので、同じ形に揃える
+      ——「次に何を指定すればよいか」を応答自体に載せる。
+    """
+    from app.services.project_manager import get_project, list_sub_projects
+    if not get_project(pid):
+        return ApiError(
+            "PROJECT_NOT_FOUND",
+            f"プロジェクトが見つかりません: {pid!r}。"
+            "listProjects が返す id をそのまま使ってください。", 404)
+    subs = list_sub_projects(pid) or []
+    return ApiError(
+        "SUB_NOT_FOUND",
+        f"サブプロジェクトが見つかりません: {sid!r}。"
+        "getProject が返す id をそのまま使ってください（連番ではありません）。",
+        404,
+        {"available_sub_ids": [{"id": s.get("id"), "name": s.get("name")}
+                               for s in subs]})
+
+
+def parse_bool_flag(raw, name: str, default: bool = False):
+    """`true` / `false` 系のクエリを検証する (ver53.0)。
+
+    ★ 「解釈できなければ既定値」にしない。`with_expression=yes` のような
+      綴り違いを黙って False に落とすと、**利用者は発現行列を暖めたつもりで
+      暖まっていない**まま次の呼び出しに進み、原因の分からない失敗になる。
+      同ファイルの `parse_top` / `parse_tol` と同じ方針で 422 を返す。
+
+    Returns (bool, ApiError|None)
+    """
+    if raw is None or str(raw).strip() == "":
+        return default, None
+    s = str(raw).strip().lower()
+    if s in ("true", "1", "yes"):
+        return True, None
+    if s in ("false", "0", "no"):
+        return False, None
+    return None, ApiError(
+        "INVALID_" + name.upper(),
+        f"{name} は true / false で指定してください: {raw!r}", 422)
+
+
+def resolve_warmup_methods(raw, rds_map):
+    """warmup の対象手法を決める（flask 非依存・純関数, ver53.0）。
+
+    ★ export と違い、**省略時は主手法 1 つだけ**にする。
+      - 全手法を暖めると単純に 3 倍の時間がかかる（1 手法で実測 233.7 秒）
+      - `getClusters` / `searchCompounds` が `method` 省略時に選ぶのは主手法
+        なので、既定の用途はそれ 1 つで足りる
+      `methods` を明示すれば従来どおり複数を暖められる。
+
+    Returns (選択リスト, ApiError|None)。export と違い **None は返さない**
+    （「全手法」を暗黙の既定にしないため）。
+    """
+    available = [m for m in _METHOD_ORDER if m in (rds_map or {})]
+    available += [m for m in (rds_map or {}) if m not in _METHOD_ORDER]
+    if not available:
+        return None, ApiError(
+            "NO_RESULT", "このサブプロジェクトに解析結果 (RDS) がありません。", 409)
+    sel, err = resolve_export_methods(raw, rds_map)
+    if err is not None:
+        return None, err
+    return (available[:1] if sel is None else sel), None
 
 
 def parse_mz(raw):
@@ -788,6 +952,18 @@ def build_openapi_spec(base_url: str = "") -> dict:
                    desc=("解析手法。指定した手法の結果が無い場合は 409 を返し、"
                          "**別手法で代用はしない**。省略時は既定順の先頭。"))
 
+    # ★ ver53.0: pid / sid には説明が 1 文字も無かった（12 箇所すべて空）。
+    #   モデルが読むのは仕様書だけなので、値の出どころが書いていないと
+    #   連番だと推測する。実障害では `sid=1` が送られて 404 になった。
+    _pid_p = _p("pid", "path", required=True,
+                desc=("プロジェクト id。**listProjects / getProject が返す値を"
+                      "そのまま使う**。連番ではない（例: 'cffa9ae5'）。推測しない。"))
+    _sid_p = _p("sid", "path", required=True,
+                desc=("サブプロジェクト id。**getProject が返す値をそのまま使う**。"
+                      "連番ではない（例: 'f59e83d7'）。推測しない。"
+                      "listProjects は件数しか返さないので、必ず getProject を"
+                      "先に呼ぶこと。"))
+
     obj = {"type": "object"}
     return {
         "openapi": "3.1.0",
@@ -817,14 +993,14 @@ def build_openapi_spec(base_url: str = "") -> dict:
                                       "content": {"application/json": {"schema": obj}}}}}},
             "/api/gpt/projects/{pid}": {"get": {
                 "operationId": "getProject", "summary": "プロジェクト詳細",
-                "parameters": [_p("pid", "path", required=True)],
+                "parameters": [_pid_p],
                 "responses": {"200": {"description": "詳細",
                                       "content": {"application/json": {"schema": obj}}}}}},
             "/api/gpt/projects/{pid}/sub/{sid}/clusters": {"get": {
                 "operationId": "getClusters",
                 "summary": "クラスタ統計（ウォームキャッシュがある場合）",
-                "parameters": [_p("pid", "path", required=True),
-                               _p("sid", "path", required=True),
+                "parameters": [_pid_p,
+                               _sid_p,
                                _method_p],
                 "responses": {"200": {"description": "クラスタ統計",
                                       "content": {"application/json": {"schema": obj}}}}}},
@@ -835,8 +1011,8 @@ def build_openapi_spec(base_url: str = "") -> dict:
                     "並びは " + MARKER_SORT_DESC + "。**符号を見ないので"
                     "「上位 N ＝ そのクラスタで高発現」ではない**。"
                     "高発現だけが必要なら direction=up を指定すること。"),
-                "parameters": [_p("pid", "path", required=True),
-                               _p("sid", "path", required=True),
+                "parameters": [_pid_p,
+                               _sid_p,
                                _method_p,
                                _p("cluster",
                                   desc=("クラスタ番号。カンマ区切りで複数指定できる"
@@ -855,8 +1031,8 @@ def build_openapi_spec(base_url: str = "") -> dict:
             "/api/gpt/projects/{pid}/sub/{sid}/compounds": {"get": {
                 "operationId": "searchCompounds",
                 "summary": "化合物アノテーション検索（名前 / m/z / 脂質クラス）",
-                "parameters": [_p("pid", "path", required=True),
-                               _p("sid", "path", required=True),
+                "parameters": [_pid_p,
+                               _sid_p,
                                _method_p,
                                _p("query", desc="名前部分一致"),
                                _p("mz", "query", "number",
@@ -884,24 +1060,24 @@ def build_openapi_spec(base_url: str = "") -> dict:
             "/api/gpt/projects/{pid}/sub/{sid}/outputs": {"get": {
                 "operationId": "listOutputs",
                 "summary": "出力画像の一覧（メタデータのみ。取得はアプリから）",
-                "parameters": [_p("pid", "path", required=True),
-                               _p("sid", "path", required=True)],
+                "parameters": [_pid_p,
+                               _sid_p],
                 "responses": {"200": {"description": "画像一覧",
                                       "content": {"application/json": {"schema": obj}}}}}},
             "/api/gpt/projects/{pid}/sub/{sid}/exports": {"get": {
                 "operationId": "listExports",
                 "summary": ("保存済み MetaboAnalyst エクスポートの一覧"
                             "（メタデータのみ。取得はアプリから）"),
-                "parameters": [_p("pid", "path", required=True),
-                               _p("sid", "path", required=True)],
+                "parameters": [_pid_p,
+                               _sid_p],
                 "responses": {"200": {"description": "エクスポート一覧",
                                       "content": {"application/json": {"schema": obj}}}}}},
             "/api/gpt/projects/{pid}/sub/{sid}/exports/interactive": {"post": {
                 "operationId": "startInteractiveExport",
                 "summary": ("インタラクティブ Export（UMAP_cluster）をその場で生成開始"
                             "（非同期。job_id を返す。重い処理）"),
-                "parameters": [_p("pid", "path", required=True),
-                               _p("sid", "path", required=True),
+                "parameters": [_pid_p,
+                               _sid_p,
                                _p("format", enum=_EXPORT_FORMATS,
                                   default=_EXPORT_FORMATS[0],
                                   desc="TIMS のみ有効。範囲外は 422。"),
@@ -913,12 +1089,93 @@ def build_openapi_spec(base_url: str = "") -> dict:
                                       "content": {"application/json": {"schema": obj}}}}}},
             "/api/gpt/exports/jobs/{job_id}": {"get": {
                 "operationId": "getExportJob",
-                "summary": ("生成ジョブの状態。done ならファイルの保存先を返すが、"
-                            "Action からは取得できない（ブラウザ / アプリで開く）。"),
-                "parameters": [_p("job_id", "path", required=True)],
+                "summary": "非同期ジョブ（Export 生成 / 抽出キャッシュの暖め）の状態",
+                "description": (
+                    "status は running / done / error。kind=warmup が done に"
+                    "なったら getClusters / searchCompounds を呼べる。"
+                    "kind=export のファイル本体は Action からは取得できないので"
+                    "（ブラウザ / アプリで開く）、done を確認するまでに留めること。"),
+                "parameters": [_p("job_id", "path", required=True,
+                                  desc=("startInteractiveExport / warmup が返した "
+                                        "job_id をそのまま使う。"))],
                 "responses": {"200": {"description": "状態",
                                       "content": {"application/json": {"schema": obj}}},
                               "404": {"description": "unknown job"}}}},
+            "/api/gpt/projects/{pid}/sub/{sid}/features/stats": {"get": {
+                "operationId": "getFeatureStats",
+                "summary": "指定 m/z のクラスタ別統計（実測値）",
+                "description": (
+                    "クラスタごとの n / mean / median / sd / detected_pct を返す。"
+                    "**getMarkers の avg_log2FC は「そのクラスタ vs 残り全部」なので"
+                    "クラスタ間の比較には使えない**。任意の 2 クラスタを比べるなら"
+                    "こちらを使うこと。抽出キャッシュ（発現行列を含む）が必要で、"
+                    "無ければ CACHE_COLD を返すので warmup?with_expression=true を"
+                    "先に実行する。"),
+                "parameters": [_pid_p, _sid_p, _method_p,
+                               _p("mz", "query", "number", required=True,
+                                  desc=("対象の m/z（必須）。有限の数値のみ"
+                                        "（nan / inf は 422）。")),
+                               _p("tol", "query", "number",
+                                  default=TOL_DEFAULT, maximum=TOL_MAX,
+                                  exclusive_minimum=0,
+                                  desc=(f"m/z 許容差(Da)。0 より大きく {TOL_MAX} 以下"
+                                        f"（既定 {TOL_DEFAULT}）。広すぎると複数の "
+                                        "feature を巻き込み、その旨が応答に出る。"))],
+                "responses": {"200": {"description": "クラスタ別統計",
+                                      "content": {"application/json": {"schema": obj}}}}}},
+            "/api/gpt/projects/{pid}/sub/{sid}/features/values": {"get": {
+                "operationId": "getFeatureValues",
+                "summary": "指定 m/z のピクセル単位の実測値（要絞り込み）",
+                "description": (
+                    "x / y / value / cluster / sample を返す。**全ピクセルは返せない**"
+                    "（応答上限の約 60 倍になる）ので cluster か sample で絞ること。"
+                    "削ったときは truncated:true と件数を必ず返す。"
+                    "分布の要約だけでよければ features/stats のほうが安い。"),
+                "parameters": [_pid_p, _sid_p, _method_p,
+                               _p("mz", "query", "number", required=True,
+                                  desc="対象の m/z（必須）。"),
+                               _p("tol", "query", "number",
+                                  default=TOL_DEFAULT, maximum=TOL_MAX,
+                                  exclusive_minimum=0,
+                                  desc=f"m/z 許容差(Da)。既定 {TOL_DEFAULT}。"),
+                               _p("cluster",
+                                  desc=("クラスタ番号。カンマ区切りで複数可"
+                                        "（例: '1,5'）。省略すると全クラスタ。")),
+                               _p("sample", desc="サンプル名で絞る。"),
+                               _p("limit", "query", "integer",
+                                  default=LIMIT_DEFAULT, minimum=LIMIT_MIN,
+                                  maximum=LIMIT_MAX,
+                                  desc=(f"最大件数（{LIMIT_MIN}〜{LIMIT_MAX}、"
+                                        f"既定 {LIMIT_DEFAULT}）。範囲外は 422。"))],
+                "responses": {"200": {"description": "ピクセル値",
+                                      "content": {"application/json": {"schema": obj}}}}}},
+            # ★ ver53.0: warmup を追加。
+            #   なお `download` / `downloadExportJob` は **意図的に載せない**。
+            #   ver52.0 の実測で「Actions はバイナリ応答を扱えず必ず失敗する
+            #   （95KB の PNG でも失敗）」と分かっており、載せると GPT が
+            #   繰り返し試みるだけになる。ルート自体はブラウザ直接取得のために
+            #   残してある。判断の根拠は tests/test_gpt_api_surface.py の
+            #   ROUTES_INTENTIONALLY_UNDOCUMENTED に理由付きで登録してある。
+            "/api/gpt/projects/{pid}/sub/{sid}/warmup": {"post": {
+                "operationId": "warmup",
+                "summary": "抽出キャッシュを事前生成する（非同期・冪等）",
+                "description": (
+                    "getClusters / searchCompounds は抽出キャッシュを必要とする。"
+                    "cold のときはこれを呼んで status_url が done になってから"
+                    "取得すること。1 手法あたり数分かかる。"
+                    "既に暖まっていれば already_warm=true を即返す（安全に何度でも"
+                    "呼べる）。解析結果そのものは変更しない。"),
+                "parameters": [_pid_p, _sid_p,
+                               _p("methods",
+                                  desc=("カンマ区切り手法名。**省略時は主手法 1 つだけ**"
+                                        "（全手法を暖めると数倍かかる）。")),
+                               _p("with_expression", "query", "boolean",
+                                  default=False,
+                                  desc=("発現行列も生成する（+約 1.5 倍の時間）。"
+                                        "m/z ごとの数値が必要なときだけ true。"))],
+                "responses": {"200": {"description": "ジョブ開始 or already_warm",
+                                      "content": {"application/json": {"schema": obj}}},
+                              "429": {"description": "同時実行の上限"}}}},
         },
     }
 
@@ -1184,6 +1441,70 @@ def _find_export_job_file(job_id: str):
         return None
 
 
+def warmup_targets(rds_map, methods, with_expression: bool):
+    """まだ暖まっていない手法だけを返す（flask 非依存・純関数, ver53.0）。
+
+    ★ 冪等性の判定はここに集約する。既に暖まっているのに R を起動すると
+      利用者は 4 分待たされる（実測 233.7 秒 / 1 手法）。
+
+    ★ `with_expression` のとき、**基本キャッシュが在っても足りない**。
+      `extract_data` は `_is_cached`（plot_data + cluster_stats + meta）で
+      早期 return するので、後から `with_expression=True` で呼び直しても
+      **expression_matrix.parquet は作られない**。判定を分ける必要がある。
+
+    Returns: 暖める必要のある手法名のリスト（空なら already_warm）
+    """
+    todo = []
+    for m in methods or []:
+        rds = (rds_map or {}).get(m)
+        if not rds:
+            continue
+        cache_dir = _warm_cache_dir(rds)
+        if cache_dir is None:
+            todo.append(m)
+            continue
+        if with_expression and not (cache_dir / "expression_matrix.parquet").exists():
+            todo.append(m)
+    return todo
+
+
+def _run_warmup(job_id: str, resolved: dict, methods, with_expression: bool):
+    """作業スレッド本体: 抽出キャッシュを暖める（成果物ファイルは作らない）。
+
+    ★ 二重抽出は `extract_data` / `ensure_expression_matrix` 内の FileLock が
+      防ぐ。アプリ側で同じサブプロジェクトを開いても R は 1 回しか走らない。
+    """
+    from app.services import export_progress as ep
+    try:
+        from app.services.seurat_bridge import SeuratBridge
+        bridge = SeuratBridge()
+        rds_map = resolved.get("rds_map") or {}
+        total = max(1, len(methods))
+        done_methods = []
+        for i, m in enumerate(methods):
+            rds = rds_map.get(m)
+            if not rds:
+                continue
+            ep.update_job(job_id, int(i * 90 / total), f"{m}: 抽出中…")
+            bridge.extract_data(rds, with_expression=False)
+            if with_expression:
+                ep.update_job(job_id, int((i + 0.5) * 90 / total),
+                              f"{m}: 発現行列を生成中…")
+                bridge.ensure_expression_matrix(rds)
+            done_methods.append(m)
+        if not done_methods:
+            ep.fail_job(job_id, "暖める対象の解析結果が見つかりませんでした。")
+            return
+        ep.finish_job(job_id, msg=(
+            f"抽出キャッシュを準備しました: {', '.join(done_methods)}"
+            + ("（発現行列を含む）" if with_expression else "")))
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[GPT] warmup ジョブ失敗")
+        ep.fail_job(job_id, f"❌ エラー: {e}")
+    finally:
+        _GPT_EXPORT_SEM.release()
+
+
 def _run_interactive_export(job_id: str, resolved: dict, methods, fmt: str):
     """作業スレッド本体: セッション非依存ドライバで Export を生成し一時ファイルへ保存。
 
@@ -1297,9 +1618,52 @@ def register_gpt_api(server) -> None:
         )
         if allow:
             return None
+        # ★ ver52.7: 拒否した事実をサーバ側に残す。
+        #   これが無いと「鍵が届いていない」のか「値が違う」のかを
+        #   運用側から一切追えない (実際、リバースプロキシのログを
+        #   掘るまで原因が分からなかった)。
+        #   ★★ 鍵の値・長さ・先頭数文字は**出さない**。有無だけ。
+        logger.warning(
+            "GPT API 拒否: path=%s status=%d X-API-Key=%s",
+            path, status,
+            "あり" if request.headers.get("X-API-Key") else "なし")
         return _json({"ok": False, "error": err}, status)
 
     server.before_request(_gpt_before_request)
+
+    # ---- 想定外例外を JSON にする (ver52.7) ---------------------------------
+    def _gpt_json_errors(e):
+        """`/api/gpt/*` の例外だけを JSON にする。**Dash 側の挙動は変えない**。
+
+        従来 `/api/gpt/*` に errorhandler が無く、ハンドラ内の想定外例外は
+        Werkzeug の **HTML 500** になっていた。`{"ok": false, ...}` という
+        自分の契約を破るうえ、呼び出し側 (ChatGPT の Action) には
+        `ClientResponseError` としか出ず、サーバ側にも何も残らない。
+
+        ★ `/api/gpt/` 以外は **Flask の既定と同じ**ものを返す:
+          - HTTPException → `return e` (ハンドラ未登録時に Flask がする動作)
+          - それ以外       → 再送出 (未処理例外として handle_exception へ)
+          ここで単純に `raise` すると **HTTPException まで 500 に化ける**ので
+          分けている (Dash の 404 が 500 になる)。
+
+        ★ 応答に出すのは例外の**型名だけ**。メッセージや traceback は
+          パスや内部状態を含みうるので出さない (ログには出す)。
+        """
+        from werkzeug.exceptions import HTTPException
+        if not request.path.startswith("/api/gpt/"):
+            if isinstance(e, HTTPException):
+                return e
+            raise e
+        if isinstance(e, HTTPException):
+            return _json({"ok": False,
+                          "error": e.description,
+                          "code": (e.name or "HTTP_ERROR").upper().replace(" ", "_")},
+                         e.code or 500)
+        logger.exception("GPT API で想定外の例外: path=%s", request.path)
+        return _json({"ok": False, "code": "INTERNAL",
+                      "error": type(e).__name__}, 500)
+
+    server.register_error_handler(Exception, _gpt_json_errors)
 
     # ---- 契約・死活 ----------------------------------------------------------
     def _health():
@@ -1309,18 +1673,41 @@ def register_gpt_api(server) -> None:
           **仕様書が何を名乗っているか確認する手段が無かった**から。鍵不要の
           この窓口から見えるようにする (`https` が False なら Action は繋がらない)。
 
-        ★ 出すのは「鍵が設定済みか」だけ。**鍵そのものは出さない**
+        ★ ver52.7: **認証が結線できているか**も答える。
+
+          `key_decision` の 401 は「鍵が無い」と「鍵が違う」を区別せず
+          `invalid **or** missing` の 1 文だけを返すため、利用者からは
+          どちらか分からない。実際、ChatGPT の Action に古い値が入っていた
+          事例で、リバースプロキシのログを掘るまで特定できなかった。
+
+          この窓口は鍵不要なので、**認証を設定した Action なら header が届く**。
+          そこを見れば 1 回の呼び出しで切り分けられる:
+
+            key_header_received=false            → Action の認証が未設定
+            true かつ authenticated=false        → 値が違う
+            両方 true                            → 鍵は正しい
+
+        ★ 出すのは「鍵が設定済みか」と**真偽値**だけ。**鍵そのものは出さない**
           (本モジュール冒頭の方針: 鍵はサーバ側のみに保持)。
           公開ドメインは秘密ではないので `public_base_url` は出してよい。
+
+        ★ 新たなオラクルにはならない: 保護された窓口が 200/401 で返すのと
+          同じ情報しか与えない。照合は `key_decision` と同じ定数時間比較。
         """
         from app.version import version_label
         base = _public_base_url()
+        provided = request.headers.get("X-API-Key", "")
+        configured = _cfg_key()
         return _ok({
             "app_version": version_label(),
-            "gpt_api": "enabled" if _cfg_key() else "disabled",
+            "gpt_api": "enabled" if configured else "disabled",
             "public_base_url": base,
             "openapi_url": f"{base}/api/gpt/openapi.json",
             "https": base.startswith("https://"),
+            "key_header_received": bool(provided),
+            "authenticated": bool(
+                provided and configured
+                and hmac.compare_digest(provided, configured)),
         })
 
     def _openapi():
@@ -1349,7 +1736,7 @@ def register_gpt_api(server) -> None:
     def _clusters(pid, sid):
         r = _resolve_sub(pid, sid)
         if not r:
-            return _fail("project/sub not found", 404, "NOT_FOUND")
+            return _fail_api(resolve_sub_failure(pid, sid))
         requested = request.args.get("method")
         method, rds, err = _pick_method(r["rds_map"], requested)
         if err is not None:
@@ -1374,7 +1761,7 @@ def register_gpt_api(server) -> None:
     def _markers(pid, sid):
         r = _resolve_sub(pid, sid)
         if not r:
-            return _fail("project/sub not found", 404, "NOT_FOUND")
+            return _fail_api(resolve_sub_failure(pid, sid))
         if not r["result_dir"]:
             return _fail("結果フォルダが未設定です。", 404, "NO_RESULT")
 
@@ -1445,7 +1832,7 @@ def register_gpt_api(server) -> None:
     def _compounds(pid, sid):
         r = _resolve_sub(pid, sid)
         if not r:
-            return _fail("project/sub not found", 404, "NOT_FOUND")
+            return _fail_api(resolve_sub_failure(pid, sid))
         requested = request.args.get("method")
         method, rds, err = _pick_method(r["rds_map"], requested)
         if err is not None:
@@ -1489,7 +1876,7 @@ def register_gpt_api(server) -> None:
     def _outputs(pid, sid):
         r = _resolve_sub(pid, sid)
         if not r:
-            return _fail("project/sub not found", 404)
+            return _fail_api(resolve_sub_failure(pid, sid))
         items = _list_outputs(r["result_dir"])
         out = []
         for it in items:
@@ -1501,13 +1888,13 @@ def register_gpt_api(server) -> None:
                 "download_token": tok,
                 "download_url": "/api/gpt/download/" + tok,
             })
-        return _ok({"outputs": out})
+        return _ok({"outputs": out, "download_note": _DOWNLOAD_NOTE})
 
     # ---- 保存済み MetaboAnalyst エクスポート一覧 ----------------------------
     def _exports(pid, sid):
         r = _resolve_sub(pid, sid)
         if not r:
-            return _fail("project/sub not found", 404)
+            return _fail_api(resolve_sub_failure(pid, sid))
         items = _list_exports(r["rds_map"])
         out = []
         for it in items:
@@ -1518,7 +1905,7 @@ def register_gpt_api(server) -> None:
                 "download_token": tok,
                 "download_url": "/api/gpt/download/" + tok,
             })
-        return _ok({"exports": out})
+        return _ok({"exports": out, "download_note": _DOWNLOAD_NOTE})
 
     # ---- ダウンロード（列挙し直して検証 → send_file ストリーム） -------------
     def _download(token):
@@ -1546,7 +1933,7 @@ def register_gpt_api(server) -> None:
         # POST: 生成ジョブを起動し job_id と status_url を返す（重い＝R が走り得る）。
         r = _resolve_sub(pid, sid)
         if not r:
-            return _fail("project/sub not found", 404)
+            return _fail_api(resolve_sub_failure(pid, sid))
         if not r["rds_map"]:
             return _fail("この結果には解析済み RDS が見つかりません。", 404)
         fmt, err = parse_export_format(request.args.get("format"))
@@ -1583,26 +1970,304 @@ def register_gpt_api(server) -> None:
                         "（ブラウザ / アプリで開いてください）。"),
         })
 
+    # ---- feature（m/z）の数値 ----------------------------------------------
+    def _feature_frames(cache_dir, mz, tol):
+        """(expr_df, plot_df, feature_col, n_candidates) を返す。失敗時は ApiError。
+
+        ★★ **CellID が無ければ数値を返さない。** 位置で対応づけて長さだけ
+          見る実装は、ずれると「もっともらしい別の場所の値」を返す
+          (ver52.5 で実際に見つけた形)。画面なら気づけるが、API 経由では
+          利用者が元データを見ないので**絶対に気づけない**。
+          古い抽出は突合材料が無いので、黙って位置で返すより失敗させる。
+        """
+        import pandas as pd
+        expr_path = Path(cache_dir) / "expression_matrix.parquet"
+        if not expr_path.exists():
+            return None, ApiError(
+                "NO_EXPRESSION_MATRIX",
+                "発現行列がまだ生成されていません。"
+                "warmup?with_expression=true を実行してください。", 409)
+        from app.services.seurat_bridge import SeuratBridge
+        names = SeuratBridge()._parquet_column_names(expr_path)
+        if not names:
+            return None, ApiError(
+                "NO_EXPRESSION_MATRIX",
+                "発現行列の列名を読めませんでした。", 409)
+        col, n_cand = resolve_feature_column(names, mz, tol)
+        if col is None:
+            return None, ApiError(
+                "FEATURE_NOT_FOUND",
+                f"m/z {mz} ± {tol} に一致する feature がありません。"
+                "tol を広げるか searchCompounds で近傍を確認してください。", 404)
+        if "CellID" not in names:
+            return None, ApiError(
+                "NO_CELL_ID",
+                "この抽出キャッシュは CellID を持たない古い形式のため、"
+                "発現量とピクセルを突合できません。位置で対応づけると"
+                "別の場所の値を返しうるので数値は返しません。"
+                "抽出キャッシュを作り直してください"
+                "（アプリでこのサブプロジェクトを開き直す）。", 409)
+
+        plot_path = Path(cache_dir) / "plot_data.parquet"
+        plot_csv = Path(cache_dir) / "plot_data.csv"
+        try:
+            if plot_path.exists():
+                plot_df = pd.read_parquet(plot_path)
+            elif plot_csv.exists():
+                plot_df = pd.read_csv(plot_csv)
+            else:
+                return None, ApiError("NO_PLOT_DATA", "plot_data がありません。", 409)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("plot_data 読込失敗: %s", e)
+            return None, ApiError("NO_PLOT_DATA", "plot_data を読めませんでした。", 409)
+        for need in ("CellID", "Cluster"):
+            if need not in plot_df.columns:
+                return None, ApiError(
+                    "NO_CELL_ID",
+                    f"plot_data に {need} 列がないため突合できません。"
+                    "抽出キャッシュを作り直してください。", 409)
+        try:
+            expr_df = pd.read_parquet(expr_path, columns=["CellID", col])
+        except Exception as e:  # noqa: BLE001
+            logger.warning("expression 列の読込失敗 (%s): %s", col, e)
+            return None, ApiError(
+                "READ_FAILED", f"feature 列を読めませんでした: {col}", 500)
+        return (expr_df, plot_df, col, n_cand), None
+
+    def _feature_stats(pid, sid):
+        r = _resolve_sub(pid, sid)
+        if not r:
+            return _fail_api(resolve_sub_failure(pid, sid))
+        method, rds, err = _pick_method(r["rds_map"], request.args.get("method"))
+        if err is not None:
+            return _fail_api(err)
+        mblock = _method_block(request.args.get("method"), method, r["rds_map"])
+        cache_dir = _warm_cache_dir(rds)
+        if not cache_dir:
+            return _ok({"warm": False, "code": "CACHE_COLD", **mblock,
+                        "clusters": [], "ready": _readiness(r),
+                        "message": ("抽出キャッシュが必要です。"
+                                    "warmup?with_expression=true を実行してください。")})
+        mz, err = parse_mz(request.args.get("mz"))
+        if err is not None:
+            return _fail_api(err)
+        if mz is None:
+            return _fail_api(ApiError(
+                "MZ_REQUIRED", "mz は必須です（対象の m/z を指定してください）。", 422))
+        tol, err = parse_tol(request.args.get("tol"))
+        if err is not None:
+            return _fail_api(err)
+
+        got, err = _feature_frames(cache_dir, mz, tol)
+        if err is not None:
+            return _fail_api(err)
+        expr_df, plot_df, col, n_cand = got
+        recs, meta = cluster_stats_from_frames(expr_df, plot_df, col)
+        out = {"warm": True, **mblock, "feature": col, "mz": mz, "tol": tol,
+               "clusters": recs, **meta}
+        if n_cand > 1:
+            # ★ tol が広すぎて複数を巻き込んでいる。1 本選んで黙らない。
+            out["candidates_within_tol"] = n_cand
+            out["note"] = (f"tol {tol} 内に feature が {n_cand} 件あり、"
+                           f"最も近い {col} を使いました。tol を狭めてください。")
+        if meta["n_matched"] < meta["n_expression_rows"]:
+            out["unmatched_note"] = (
+                f"CellID で突合できたのは {meta['n_matched']} 行で、"
+                f"発現行列の {meta['n_expression_rows']} 行すべてではありません。")
+        out["stat_note"] = (
+            "mean / median / sd は **そのクラスタ内の実測値**です。"
+            "getMarkers の avg_log2FC（そのクラスタ vs 残り全部）とは別物なので、"
+            "クラスタ間の比較にはこちらを使ってください。")
+        return _ok(out)
+
+    def _feature_values(pid, sid):
+        """ピクセル単位の実測値。**必ず絞り込んだうえで上限内だけ返す**。
+
+        ★ 全ピクセルは返せない。実測 203,078 ピクセルを最短の JSON で書いても
+          5〜6 MB で、Actions の上限 (90,000 文字) の約 60 倍になる。
+          削るのは避けられないので、**削った事実を必ず応答に書く**
+          （既存 `limit_response_size` と同じ方針。黙って切り詰めない）。
+        """
+        r = _resolve_sub(pid, sid)
+        if not r:
+            return _fail_api(resolve_sub_failure(pid, sid))
+        method, rds, err = _pick_method(r["rds_map"], request.args.get("method"))
+        if err is not None:
+            return _fail_api(err)
+        mblock = _method_block(request.args.get("method"), method, r["rds_map"])
+        cache_dir = _warm_cache_dir(rds)
+        if not cache_dir:
+            return _ok({"warm": False, "code": "CACHE_COLD", **mblock,
+                        "values": [], "ready": _readiness(r),
+                        "message": ("抽出キャッシュが必要です。"
+                                    "warmup?with_expression=true を実行してください。")})
+        mz, err = parse_mz(request.args.get("mz"))
+        if err is not None:
+            return _fail_api(err)
+        if mz is None:
+            return _fail_api(ApiError(
+                "MZ_REQUIRED", "mz は必須です（対象の m/z を指定してください）。", 422))
+        tol, err = parse_tol(request.args.get("tol"))
+        if err is not None:
+            return _fail_api(err)
+        limit, err = parse_limit(request.args.get("limit"))
+        if err is not None:
+            return _fail_api(err)
+
+        got, err = _feature_frames(cache_dir, mz, tol)
+        if err is not None:
+            return _fail_api(err)
+        expr_df, plot_df, col, n_cand = got
+
+        keep = [c for c in ("CellID", "Cluster", "Sample", "SpatialX", "SpatialY")
+                if c in plot_df.columns]
+        merged = expr_df[["CellID", col]].merge(
+            plot_df[keep], on="CellID", how="inner")
+        n_total = int(merged.shape[0])
+
+        cl = request.args.get("cluster")
+        if cl not in (None, ""):
+            wanted = {s.strip() for s in str(cl).split(",") if s.strip()}
+            merged = merged[merged["Cluster"].astype(str).isin(wanted)]
+        sample = request.args.get("sample")
+        if sample not in (None, "") and "Sample" in merged.columns:
+            merged = merged[merged["Sample"].astype(str) == str(sample)]
+        n_selected = int(merged.shape[0])
+
+        rows = []
+        for rec in merged.head(limit).to_dict("records"):
+            row = {"value": _finite_or_none(rec.get(col)),
+                   "cluster": str(rec.get("Cluster"))}
+            for src, dst in (("Sample", "sample"), ("SpatialX", "x"),
+                             ("SpatialY", "y")):
+                if src in rec:
+                    row[dst] = (rec[src] if src == "Sample"
+                                else _finite_or_none(rec[src]))
+            rows.append(row)
+
+        out = {"warm": True, **mblock, "feature": col, "mz": mz, "tol": tol,
+               "values": rows, "n_selected": n_selected, "n_total": n_total,
+               "limit": limit}
+        if n_selected > len(rows):
+            # ★ ここを黙ると「全部でこれだけ」と読まれる。必ず言う。
+            out["truncated"] = True
+            out["message"] = (
+                f"該当 {n_selected} 件のうち先頭 {len(rows)} 件だけを返しました"
+                f"（応答上限のため）。cluster / sample で絞るか、"
+                f"分布だけなら features/stats を使ってください。")
+        if n_cand > 1:
+            out["candidates_within_tol"] = n_cand
+            out["note"] = (f"tol {tol} 内に feature が {n_cand} 件あり、"
+                           f"最も近い {col} を使いました。")
+        payload, truncated = limit_response_size(out, "values")
+        if truncated:
+            payload["truncated"] = True
+            payload["message"] = (
+                (payload.get("message", "") + " ").strip()
+                + "応答サイズの上限に合わせてさらに削りました。")
+        return _ok(payload)
+
+    # ---- 抽出キャッシュの事前生成（非同期・冪等） ---------------------------
+    def _warmup(pid, sid):
+        """POST: 抽出キャッシュを暖める。
+
+        ★ 同期では成立しない。実測 233.7 秒 / 1 手法 (seurat_bridge.py の
+          docstring) に対し ChatGPT の Action は数十秒でタイムアウトする。
+          既存の export と同じ非同期ジョブ形式にして、状態は同じ status_url を
+          ポーリングさせる（GPT が覚える操作を増やさない）。
+        """
+        r = _resolve_sub(pid, sid)
+        if not r:
+            return _fail_api(resolve_sub_failure(pid, sid))
+        with_expression, err = parse_bool_flag(
+            request.args.get("with_expression"), "with_expression", False)
+        if err is not None:
+            return _fail_api(err)
+        methods, err = resolve_warmup_methods(
+            request.args.get("methods"), r["rds_map"])
+        if err is not None:
+            return _fail_api(err)
+
+        todo = warmup_targets(r["rds_map"], methods, with_expression)
+        if not todo:
+            # ★ 冪等。R を起動せず即答する。これが無いと GPT が毎回 4 分待つ。
+            return _ok({
+                "status": "done", "already_warm": True,
+                "methods": methods, "with_expression": with_expression,
+                "message": "既に抽出済みです。そのまま getClusters 等を呼べます。",
+            })
+
+        # ★ admission は thread 生成前（export と同じ理由: 待機中の job が
+        #   pct 0 の running になって実行中と区別できなくなる）。
+        if not _GPT_EXPORT_SEM.acquire(blocking=False):
+            return _json({
+                "ok": False, "code": "BUSY",
+                "error": ("実行中の重い処理が上限に達しています"
+                          f"（同時 {_GPT_EXPORT_MAX_CONCURRENCY} 件）。"
+                          "時間をおいて再試行してください。"),
+                "retry_after_sec": 60,
+            }, 429)
+        from app.services import export_progress as ep
+        job_id = ep.new_job("warmup")
+        threading.Thread(
+            target=_run_warmup,
+            args=(job_id, r, todo, with_expression), daemon=True,
+        ).start()
+        return _ok({
+            "job_id": job_id, "status": "running",
+            "status_url": f"/api/gpt/exports/jobs/{job_id}",
+            "methods": todo, "with_expression": with_expression,
+            "message": ("抽出を開始しました。1 手法あたり数分かかります。"
+                        "status_url を 30 秒おきにポーリングし、status=done に"
+                        "なってから getClusters / searchCompounds を呼んでください。"),
+        })
+
     def _export_job_status(job_id):
-        # GET: 生成ジョブの状態。完了ならファイル解決して download_url を返す。
+        """GET: 非同期ジョブの状態（export / warmup 共通）。
+
+        ★ ver53.0: 従来は「**ファイルが出来ていたら done**」だけで判定していた。
+          成果物ファイルを作らない `warmup` を同じ窓口に載せると
+          **永遠に running を返す**ので、ジョブ記録の `kind` で分ける。
+
+        ★ ジョブ記録が無くてもファイルがあれば done を返す挙動は残す
+          （ジョブは 32 件で打ち切られるので、記録だけ先に消えることがある）。
+          `job is None` のときは種別が分からないので "export" とみなす
+          ＝従来と同じ経路になる。
+        """
         if not valid_job_id(job_id):
             return _fail("bad job id", 404)
         from app.services import export_progress as ep
         job = ep.get_job(job_id)
-        f = _find_export_job_file(job_id)
-        if f is not None:
-            fname = (job or {}).get("filename") or f.name.split("__", 1)[-1]
-            return _ok({
-                "status": "done", "pct": 100, "filename": fname,
-                "download_url": f"/api/gpt/exports/jobs/{job_id}/file",
-                "message": (job or {}).get("msg", "完了"),
-            })
+        kind = (job or {}).get("kind", "export")
+
+        if kind == "export":
+            f = _find_export_job_file(job_id)
+            if f is not None:
+                fname = (job or {}).get("filename") or f.name.split("__", 1)[-1]
+                return _ok({
+                    "status": "done", "pct": 100, "kind": kind, "filename": fname,
+                    "download_url": f"/api/gpt/exports/jobs/{job_id}/file",
+                    "message": (job or {}).get("msg", "完了"),
+                })
         if job is None:
             return _fail("unknown or expired job", 404)
         if job.get("status") == "error":
-            return _ok({"status": "error", "message": job.get("msg", "失敗")})
-        return _ok({"status": "running", "pct": job.get("pct", 0),
-                    "label": job.get("label", "")})
+            return _ok({"status": "error", "kind": kind,
+                        "message": job.get("msg", "失敗")})
+        if job.get("status") == "done":
+            # ★ export でここに来るのは「完了したが一時ファイルが掃除された」
+            #   場合（sweep_old_files が 1 時間で消す）。従来はこの経路が
+            #   最後の return に落ちて **pct 100 のまま running** を返していた。
+            out = {"status": "done", "pct": 100, "kind": kind,
+                   "message": job.get("msg", "完了")}
+            if kind == "export":
+                out["message"] = (
+                    "生成は完了しましたが一時ファイルの保持期限が切れています。"
+                    "もう一度生成してください。")
+                out["expired"] = True
+            return _ok(out)
+        return _ok({"status": "running", "kind": kind,
+                    "pct": job.get("pct", 0), "label": job.get("label", "")})
 
     def _export_job_file(job_id):
         # GET: 生成済みファイルを send_file でストリーム配信。
@@ -1627,6 +2292,10 @@ def register_gpt_api(server) -> None:
         ("/api/gpt/projects/<pid>/sub/<sid>/compounds", "gpt.compounds", _compounds),
         ("/api/gpt/projects/<pid>/sub/<sid>/outputs", "gpt.outputs", _outputs),
         ("/api/gpt/projects/<pid>/sub/<sid>/exports", "gpt.exports", _exports),
+        ("/api/gpt/projects/<pid>/sub/<sid>/features/stats",
+         "gpt.feature_stats", _feature_stats),
+        ("/api/gpt/projects/<pid>/sub/<sid>/features/values",
+         "gpt.feature_values", _feature_values),
         ("/api/gpt/download/<token>", "gpt.download", _download),
         ("/api/gpt/exports/jobs/<job_id>", "gpt.export_job_status", _export_job_status),
         ("/api/gpt/exports/jobs/<job_id>/file", "gpt.export_job_file", _export_job_file),
@@ -1639,6 +2308,12 @@ def register_gpt_api(server) -> None:
         "/api/gpt/projects/<pid>/sub/<sid>/exports/interactive",
         endpoint="gpt.export_interactive", view_func=_export_interactive,
         methods=["POST"],
+    )
+    # 抽出キャッシュの事前生成も POST（同じくジョブ起動＝副作用があるため）。
+    # 解析結果そのものは変えない（読み取り専用の原則は保つ）。
+    server.add_url_rule(
+        "/api/gpt/projects/<pid>/sub/<sid>/warmup",
+        endpoint="gpt.warmup", view_func=_warmup, methods=["POST"],
     )
 
     logger.info("GPT API registered (/api/gpt/*); key=%s",

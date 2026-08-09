@@ -214,6 +214,26 @@ def _ensure_session_id():
 
 
 @server.after_request
+def _write_access_log(response):
+    """全リクエストを access.log に記録する (ver52.7)。
+
+    ★ `access_logger.log_access` は定義とハンドラ登録だけあって
+      **どこからも呼ばれていなかった**。WSGI サーバ (waitress) も
+      アクセスログを持たないため、アプリ側に HTTP リクエストの記録が
+      一切存在せず、ChatGPT 連携が 401 で弾かれ続けた原因を追うのに
+      リバースプロキシのログを掘る必要があった。ここで結線する。
+
+    ★ 常時ポーリングされる Dash 内部パスと監視用 endpoint は、
+      **成功しているときだけ**除外する。エラー (4xx/5xx) は常に残す
+      ——「うるさいから消す」で異常まで消すのが、まさに今回の欠陥の形。
+    """
+    from app.services.access_logger import log_access, should_log_request
+    if should_log_request(_flask_request.path, response.status_code):
+        log_access(response.status_code)
+    return response
+
+
+@server.after_request
 def _security_headers(response):
     """PR-H5 E8: セキュリティヘッダー (clickjacking / MIME sniff / referrer)。
 

@@ -70,17 +70,23 @@ curl -s https://cciiumap.duckdns.org/api/gpt/health | jq
 ```json
 {
   "ok": true,
-  "app_version": "2026-08-09_ver52.6",
+  "app_version": "2026-08-09_ver54.0",
   "gpt_api": "enabled",
   "public_base_url": "https://cciiumap.duckdns.org",
   "openapi_url": "https://cciiumap.duckdns.org/api/gpt/openapi.json",
-  "https": true
+  "https": true,
+  "key_header_received": false,
+  "authenticated": false
 }
 ```
 
 - `"gpt_api": "disabled"` → **鍵が未設定**。手順 1 に戻る
 - `"https": false` → **仕様書が http を名乗る**。ChatGPT は取り込めない。`SHARE_BASE_URL`
   を設定するか、リバースプロキシが `X-Forwarded-Proto` を送っているか確認する
+
+★ `key_header_received` / `authenticated` は**そのリクエストが鍵を持っていたか**を
+表します。上の `curl` は鍵を付けていないのでどちらも `false` で正常です。
+**この 2 つは ChatGPT 側の設定を切り分けるためにあります**（下記 6 節）。
 
 ### ② 仕様書が正しいアドレスを指しているか
 
@@ -112,8 +118,14 @@ curl -s -H "X-API-Key: $KEY" https://cciiumap.duckdns.org/api/gpt/projects | jq
    https://cciiumap.duckdns.org/api/gpt/openapi.json
    ```
    → 取り込むと `listProjects` / `getProject` / `getClusters` / `getMarkers` /
-   `searchCompounds` / `listOutputs` / `listExports` /
+   `searchCompounds` / `listOutputs` / `listExports` / `warmup` /
+   `getFeatureStats` / `getFeatureValues` /
    `startInteractiveExport` / `getExportJob` / `health` が並びます
+
+   ★ **手書きの仕様書を貼らないでください。** サーバが配信するものには
+   `method` の enum、`top` の既定 10・上限 50、`direction`、`tol` の範囲など、
+   モデルが正しい要求を組み立てるための情報が入っています。簡略版を貼ると
+   これらが失われ、無効な値を送っては 422/409 を受け取る往復が増えます。
 4. **Authentication** → **API Key**
    - Auth Type: **API Key**
    - API Key: 手順 1 で生成した値
@@ -124,26 +136,205 @@ curl -s -H "X-API-Key: $KEY" https://cciiumap.duckdns.org/api/gpt/projects | jq
 ### Instructions に書いておくとよいこと
 
 ```
+- pid / sid は listProjects と getProject が返す値をそのまま使ってください。
+  連番ではありません。推測しないでください。
+  listProjects はサブプロジェクトの件数しか返さないので、sid が要るときは
+  必ず先に getProject を呼んでください。
+
 - 解析手法 (method) を明示しない場合、既定順の先頭が使われます。
   指定した手法の結果が無ければ 409 が返り、別手法で代用はされません。
+
 - マーカー取得 (getMarkers) の top は既定 10・上限 50 です。
   応答が大きいときはサーバ側で件数を削り、その旨を応答に明示します。
+
+- avg_log2FC は「そのクラスタ vs 残り全部」の値です。
+  クラスタ間で引き算して「どちらが高い」と述べないでください。
+
+- getClusters / searchCompounds が CACHE_COLD を返したら故障ではありません。
+  warmup を呼び、status_url が done になってから取り直してください。
+
+- download_url は Action からは取得できません。利用者にブラウザ/アプリで
+  開いてもらってください。自分で取得しようとしないでください。
 ```
 
 ---
 
-## 4. 繋がらないときの切り分け
+## 4. 抽出キャッシュ（`CACHE_COLD` が返ったとき）
+
+`getClusters` と `searchCompounds` は**抽出キャッシュ**を必要とします。
+無いときはエラーではなく、200 でこう返ります:
+
+```json
+{"ok": true, "warm": false, "code": "CACHE_COLD",
+ "ready": {"clusters": false, "compounds": false,
+           "markers": true, "outputs": true},
+ "message": "クラスタ統計は抽出キャッシュが必要です…"}
+```
+
+`ready` を見れば**いま何が取れるか**が種別ごとに分かります。
+`getMarkers` / `listOutputs` / `listExports` はキャッシュ不要なので、
+cold でも取れます。
+
+### 暖める
+
+```
+POST /api/gpt/projects/{pid}/sub/{sid}/warmup
+→ {"job_id": "...", "status_url": "/api/gpt/exports/jobs/<id>"}
+
+GET  /api/gpt/exports/jobs/{job_id}      ← 30 秒おきにポーリング
+→ {"status": "done"}
+```
+
+- **1 手法あたり数分**かかります（実測 233.7 秒 / 203,078 ピクセル × 1,536 特徴量）
+- 既に暖まっていれば `already_warm: true` を即返します。**何度呼んでも安全**です
+- 既定は**主手法 1 つだけ**。`?methods=Harmony,RPCA` で複数指定できます
+- `?with_expression=true` を付けると発現行列も作ります（+約 1.5 倍の時間）。
+  m/z ごとの数値が必要なときだけ
+
+curl で確認する場合:
+
+```bash
+KEY=$(grep '^GPT_API_KEY=' .env | cut -d= -f2-)
+curl -s -X POST -H "X-API-Key: $KEY" \
+  https://cciiumap.duckdns.org/api/gpt/projects/<pid>/sub/<sid>/warmup | jq
+curl -s -H "X-API-Key: $KEY" \
+  https://cciiumap.duckdns.org/api/gpt/exports/jobs/<job_id> | jq
+```
+
+### キャッシュは勝手に消えます
+
+保持数は `SEURAT_CACHE_MAX_ENTRIES`（既定 30）で、超えると **mtime が古いものから
+物理削除**されます。サブプロジェクトの総数がこれを超えていると、使うたびに
+暖め直しが要ります。`.env` で増やせます:
+
+```bash
+echo "SEURAT_CACHE_MAX_ENTRIES=60" >> .env
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+決める前に 1 件あたりのサイズを実測してください:
+
+```bash
+docker compose exec msi-app du -sh /app/Data/Other/seurat_cache
+docker compose exec msi-app du -sh /app/Data/Other/seurat_cache/* | sort -h | tail -3
+```
+
+---
+
+## 5. m/z ごとの数値を取る
+
+### クラスタ別統計 — まずこれ
+
+```
+GET .../features/stats?mz=1234.5&tol=0.01
+```
+
+```json
+{"feature": "mz_1234.5000", "clusters": [
+  {"cluster": "1", "n": 12043, "mean": 8.21, "median": 7.90, "sd": 2.11, "detected_pct": 94.2},
+  {"cluster": "5", "n":  3980, "mean": 1.05, "median": 0.00, "sd": 1.83, "detected_pct": 31.7}
+]}
+```
+
+★ **`getMarkers` の `avg_log2FC` は「そのクラスタ vs 残り全部」**なので、
+クラスタ間で引き算しても意味がありません。**任意の 2 クラスタを直接比較したい
+ときは必ずこちら**を使ってください。応答にも `stat_note` で明記されます。
+
+### ピクセル単位の生値 — 絞り込みが必須
+
+```
+GET .../features/values?mz=1234.5&cluster=5&limit=200
+```
+
+全ピクセルは返せません（実測 203,078 行 = 5〜6 MB で応答上限の約 60 倍）。
+`cluster` か `sample` で絞ってください。削ったときは `truncated: true` と
+`n_selected` / `n_total` が返るので、**「全部でこれだけ」と誤読しないで済みます**。
+
+### 前提: 発現行列が要ります
+
+どちらも `expression_matrix.parquet` を読むので、**`warmup?with_expression=true`**
+を通しておく必要があります。無いと `NO_EXPRESSION_MATRIX` (409) が返ります。
+
+```bash
+curl -s -X POST -H "X-API-Key: $KEY" \
+  "https://cciiumap.duckdns.org/api/gpt/projects/<pid>/sub/<sid>/warmup?with_expression=true" | jq
+```
+
+### 数値が返らないことがあります（設計どおり）
+
+| コード | 意味 | 対処 |
+|---|---|---|
+| `NO_EXPRESSION_MATRIX` | 発現行列がまだ無い | `warmup?with_expression=true` |
+| `NO_CELL_ID` | 抽出が古く `CellID` を持たない | 抽出キャッシュを作り直す（アプリで開き直す） |
+| `FEATURE_NOT_FOUND` | `tol` 内に該当 m/z が無い | `tol` を広げるか `searchCompounds` で近傍を確認 |
+
+★ `NO_CELL_ID` のとき**あえて数値を返しません**。発現量とピクセルを突合する
+材料が無いので、位置で対応づけると「別の場所の値」を返しかねません。画面なら
+気づけますが、**API 経由では利用者が元データを見ないので気づけない**ためです。
+
+### GPT にやらせるときの Instructions 追記
+
+```
+- 特定の m/z の分布を比べるときは features/stats を使ってください。
+  getMarkers の avg_log2FC はクラスタ間の比較には使えません。
+- features/values は必ず cluster か sample で絞ってください。
+  truncated: true が返ったら「一部だけ」と明示して報告してください。
+- NO_EXPRESSION_MATRIX が返ったら warmup?with_expression=true を実行してから
+  取り直してください。
+```
+
+---
+
+## 6. 繋がらないときの切り分け
 
 | 症状 | 原因 | 対処 |
 |---|---|---|
 | Import from URL が弾かれる／Action が動かない | `servers` が `http://` | 確認①の `"https"` を見る。`SHARE_BASE_URL` を設定して再起動 |
 | `health` は 200 だが他が全部 **503** | `GPT_API_KEY` が未設定 | 手順 1。`.env` 編集後は**再起動が必要** |
-| **401** が返る | ヘッダ名違い or 鍵不一致 | ヘッダ名は `X-API-Key`（`Authorization` ではない）。`.env` の値と一致しているか |
+| **401** が返る | ヘッダ名違い **or** 鍵不一致 | **下記「401 の切り分け」で必ず区別してから直す** |
 | ブラウザでは開けるのに ChatGPT からは繋がらず、**アクセスログにも残らない** | 空 SNI での TLS 握手拒否 | `Caddyfile` の `default_sni cciiumap.duckdns.org`（設定済み）。消さないこと |
 | **404** が返る | パスの綴り | すべて `/api/gpt/` 配下。末尾スラッシュは付けない |
 | `ResponseTooLargeError` | 応答が Actions の上限超 | `top` を指定する。サーバ側でも削って明示するが、指定するほうが確実 |
 | **409** が返る | 指定した解析手法の結果が無い | **別手法で代用はされません**。409 の応答本文に `available_methods` が入るので、その中から選び直す |
 | 一時的に **502/504** | 解析実行中でアプリが重い | 解析完了を待つ。Caddy 側は 600s まで待つ設定 |
+
+### 401 の切り分け（ヘッダ名違いか、鍵不一致か）
+
+サーバが返す 401 は `invalid **or** missing API key` の 1 文で、**どちらかを
+区別しません**。区別は `/api/gpt/health` にさせます。この窓口は鍵不要なので、
+**認証を設定した Action なら鍵ヘッダが届き**、その事実だけが返ります。
+
+ChatGPT に `health` を呼ばせて（Available actions の `health` → Test）、
+応答の 2 つの真偽値を見ます:
+
+| `key_header_received` | `authenticated` | 意味 | 直すところ |
+|---|---|---|---|
+| `false` | `false` | **鍵が届いていない** | Action の Authentication が未設定、または Custom Header Name が `X-API-Key` になっていない |
+| `true` | `false` | **届いているが値が違う** | ChatGPT に貼った鍵が `.env` と不一致。貼り直す（欄はマスク表示なので**全選択してから**貼り替える） |
+| `true` | `true` | 鍵は正しい | 401 は別原因。アプリのログを見る |
+
+★ 鍵そのものは応答にもログにも出ません。出るのは上の真偽値だけです。
+
+サーバ側のログにも拒否が 1 行残ります（**値は出ません。有無だけ**）:
+
+```bash
+docker compose logs --tail=100 msi-app | grep "GPT API 拒否"
+#   GPT API 拒否: path=/api/gpt/projects status=401 X-API-Key=なし   ← 未設定
+#   GPT API 拒否: path=/api/gpt/projects status=401 X-API-Key=あり   ← 値が違う
+```
+
+鍵を貼り直したのに直らないときは、**GPT 編集画面右上の「Update」を押したか**を
+確認してください。認証ダイアログの Save だけでは反映されないことがあります。
+
+サーバ側の値を確認する（値を表示せず指紋で比べる）:
+
+```bash
+cd ~/UMAP-WebApp-ClaudeCode
+grep '^GPT_API_KEY=' .env | cut -d= -f2- | tr -d '\n\r' | sha256sum | cut -c1-8
+docker compose exec msi-app printenv GPT_API_KEY | tr -d '\n\r' | sha256sum | cut -c1-8
+```
+
+2 つが違えば `.env` 編集後に**再起動していません**。
 
 ### ログの見方
 
@@ -151,6 +342,10 @@ curl -s -H "X-API-Key: $KEY" https://cciiumap.duckdns.org/api/gpt/projects | jq
 docker compose logs -f msi-app  | grep -i "gpt\|openapi"   # アプリ側
 docker compose logs -f caddy                               # プロキシ側 (json)
 ```
+
+★ リバースプロキシ (Caddy) のアクセスログは `Cookie` と `Authorization` は
+伏せますが、**`X-API-Key` は伏せません**。`docker logs msi-caddy` を素で開くと
+鍵が平文で見えるので、共有する前に必ず確認してください。
 
 `servers` が https でないときは、アプリのログに次の警告が 1 行出ます:
 
@@ -162,7 +357,7 @@ https を要求するため取り込めない。SHARE_BASE_URL を設定する�
 
 ---
 
-## 5. 鍵の取り扱い
+## 7. 鍵の取り扱い
 
 - **リポジトリに実値を書かない。** `.env` は `.gitignore` 済み。
   `.env.docker` の `# GPT_API_KEY=CHANGE_ME_TO_RANDOM_HEX_64` は
@@ -175,7 +370,7 @@ https を要求するため取り込めない。SHARE_BASE_URL を設定する�
 
 ---
 
-## 6. 既知の不具合（ver52.6 で修正済み）
+## 8. 既知の不具合（ver52.6 で修正済み）
 
 ver52.5 以前は、`/api/gpt/openapi.json` が `request.url_root` から `servers` を
 組み立てていました。Flask の `request.scheme` は `X-Forwarded-Proto` を読まない
