@@ -89,12 +89,35 @@ class TestSectionCoordinateFiles:
         assert "s_Spot" not in result.annotation_labels
         assert "s" not in result.annotation_labels
 
-    def test_partial_coverage_errors_by_default(self, tmp_path):
-        """座標が足りないとき、既定では黙って捨てずにエラーで止まる"""
+    def test_missing_section_is_skipped_by_default(self, tmp_path):
+        """切片統合レイアウトでは、座標を出していない切片があっても変換が通る。
+
+        欲しい切片の座標だけを Export する（例: 04 の座標を出さない）のが通常の
+        運用なので、ここでの「座標が無い spot」は不整合ではなく前提。
+        ただし捨てた事実は必ず申告する。
+        """
         data_dir = tmp_path / "scils"
         _write_intensity(data_dir, "A_Intensity.csv", [100.0, 200.0], [1, 2, 3, 4, 5, 6])
         _write_coords(data_dir, "01.csv", [1, 2, 3])
         _write_coords(data_dir, "02.csv", [4, 5])
+        # spot 6 は「座標を出していない切片」に相当する
+
+        result = sc.convert_scils_to_parquet(
+            str(data_dir), str(tmp_path / "out.parquet"),
+            organize=False, store_float32=False,
+        )
+
+        assert result.n_spots == 5
+        df = pd.read_parquet(result.output_path)
+        assert sorted(df["id"]) == [1, 2, 3, 4, 5]
+        assert result.annotation_labels == ["01", "02"]
+        assert any("除外しました" in w for w in result.warnings), result.warnings
+
+    def test_partial_coverage_still_errors_with_a_master_spot_csv(self, tmp_path):
+        """マスター Spot CSV がある構成では、数が合わないのは本物の不整合"""
+        data_dir = tmp_path / "scils"
+        _write_intensity(data_dir, "s_Intensity.csv", [100.0, 200.0], [1, 2, 3, 4, 5, 6])
+        _write_coords(data_dir, "s_Spot.csv", [1, 2, 3])
 
         with pytest.raises(ValueError) as exc:
             sc.convert_scils_to_parquet(
@@ -105,21 +128,18 @@ class TestSectionCoordinateFiles:
         # 逃げ道を必ず案内する（利用者がここで詰まらないように）
         assert "除外して変換する" in text
 
-    def test_drop_uncovered_keeps_only_covered_spots(self, tmp_path):
+    def test_master_layout_can_opt_into_dropping(self, tmp_path):
         data_dir = tmp_path / "scils"
-        _write_intensity(data_dir, "A_Intensity.csv", [100.0, 200.0], [1, 2, 3, 4, 5, 6])
-        _write_coords(data_dir, "01.csv", [1, 2, 3])
-        _write_coords(data_dir, "02.csv", [4, 5])
+        _write_intensity(data_dir, "s_Intensity.csv", [100.0, 200.0], [1, 2, 3, 4, 5, 6])
+        _write_coords(data_dir, "s_Spot.csv", [1, 2, 3])
 
         result = sc.convert_scils_to_parquet(
             str(data_dir), str(tmp_path / "out.parquet"),
             organize=False, store_float32=False, drop_uncovered=True,
         )
 
-        assert result.n_spots == 5
-        df = pd.read_parquet(result.output_path)
-        assert sorted(df["id"]) == [1, 2, 3, 4, 5]
-        # 捨てた事実は必ず申告する
+        assert result.n_spots == 3
+        assert sorted(pd.read_parquet(result.output_path)["id"]) == [1, 2, 3]
         assert any("除外しました" in w for w in result.warnings), result.warnings
 
     def test_overlapping_section_files_are_rejected(self, tmp_path):

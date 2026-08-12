@@ -129,10 +129,11 @@ def create_scils_converter_modal():
                                     className="small mt-2",
                                 ),
                                 html.Small(
-                                    "測定全体の Intensity に対して切片ごとの座標 CSV しか"
-                                    "無いとき用。OFF（既定）なら spot 数が合わない時点で"
-                                    "エラーにします。ON にすると座標のある spot だけを"
-                                    "変換し、除外した件数を結果に表示します。",
+                                    "測定全体のマスター Spot CSV がある構成で、spot 数が"
+                                    "合わないときの扱い。OFF（既定）ならエラーにします。"
+                                    "切片ごとの座標 CSV を統合する構成では、一部の切片だけ"
+                                    "座標を出さない運用が通常なので、この設定に関わらず"
+                                    "常に除外して変換します（件数は結果に表示）。",
                                     className="text-muted",
                                 ),
                                 dbc.Label(

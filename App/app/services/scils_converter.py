@@ -1018,8 +1018,10 @@ def convert_scils_to_parquet(
         Annotation CSV の座標がマスターと一致するかの許容誤差
     drop_uncovered : bool
         True なら、座標 CSV に載っていない spot 列を除外して変換する。
-        測定全体の Intensity に対して切片ごとの座標しか無い場合向け。
         既定 False = 数が合わなければエラーで止める（黙って捨てない）。
+        ただし**切片ごとの座標 CSV を統合したレイアウトでは常に有効**になる。
+        一部の切片だけ座標を Export しない運用が通常なので、そこでの
+        「座標が無い spot」は不整合ではなく前提のため。除外件数は必ず報告する。
     progress_cb : callable | None
         `progress_cb(value:int, maximum:int, label:str)` 形式の進捗通知（0-100）。
         既定 None なら何もしない（UI のバックグラウンド実行から渡す）。
@@ -1157,9 +1159,16 @@ def convert_scils_to_parquet(
                 feat_ann_df = None
 
         # 5) Spot マッピング (座標表は 1.5 で組み立て済み)
+        # ★ ver55.1: 切片ごとの座標 CSV を統合したレイアウトでは、**欲しい切片の
+        #   座標だけを Export する**のが通常の運用（例: 04 だけ座標を出さない）。
+        #   この構成で「座標が無い spot がある」のは異常ではなく前提なので、
+        #   既定で除外して変換を続ける（件数は必ず warnings に出す）。
+        #   測定全体のマスター Spot CSV があるレイアウトでは、数が合わないことは
+        #   本物の不整合なので従来どおり厳格に突き合わせる。
+        effective_drop = drop_uncovered or (region_map is not None)
         sort_idx, x_sorted, y_sorted, spot_labels_sorted, spot_index_sorted, mapping_warnings = (
             compute_spot_mapping(
-                int_headers, spot_index, x_arr, y_arr, drop_uncovered=drop_uncovered,
+                int_headers, spot_index, x_arr, y_arr, drop_uncovered=effective_drop,
             )
         )
         result.warnings.extend(mapping_warnings)
