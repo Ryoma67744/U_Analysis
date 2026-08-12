@@ -74,12 +74,20 @@ _MZ_BARE_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*$")
 # (DESI テンプレート v16)、そのまま Seurat の rowname になる。
 # **プリカーサ (Q1) が m/z** なので先頭側を採る。
 _MZ_MRM_RE = re.compile(r"^(\d+(?:\.\d+)?)-\d+(?:\.\d+)?\s*$")
+# ★ ver55.2: 化合物名とトランジションを併記した DESI 名 "<化合物名> (Q1-Q3)"
+#   (例 "POS_AA_Ala (90.0477-44.0900)")。ヘッダの化合物名行を特徴量名に使えるよう
+#   にした際の形式で、末尾の括弧内から Q1 を採る。
+_MZ_NAMED_MRM_RE = re.compile(r"\((\d+(?:\.\d+)?)\s*-\s*\d+(?:\.\d+)?\)\s*$")
 # R の `make.unique()` が重複名に付ける ".1" ".2" … のサフィックス。
 _MAKE_UNIQUE_SUFFIX_RE = re.compile(r"\.\d+$")
 
 
 def _parse_mz_head(head: str):
     """パイプより前の部分から m/z を取り出す。取れなければ None。"""
+    # 0. "<化合物名> (Q1-Q3)" (DESI・化合物名併記)。最も限定的なので先に見る。
+    m = _MZ_NAMED_MRM_RE.search(head)
+    if m:
+        return float(m.group(1))
     # 1. 末尾の _<数値>。annotated 名 (`<化合物名>_<m/z>`) と `mz_<m/z>` の両方。
     m = _MZ_TRAILING_RE.search(head)
     if m:
@@ -110,6 +118,7 @@ def extract_mz_numeric(f: str) -> float:
       - `m/z <m/z>`                              … R の非 annotated 経路
       - `<m/z>`                                   … 素の数値列名
       - `<Q1>-<Q3>`                               … DESI の MRM トランジション → Q1
+      - `<化合物名> (<Q1>-<Q3>)`                   … DESI の化合物名併記 → Q1
       - 上記に R の `make.unique()` が付ける `.1` `.2` サフィックスが付いた形
     """
     s = str(f).strip()
