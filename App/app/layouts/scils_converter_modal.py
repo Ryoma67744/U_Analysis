@@ -33,6 +33,10 @@ def create_scils_converter_modal():
                         "・Annotation CSV（SpotIndex / X / Y を持つもの）は領域ラベルになります。"
                         "無ければ全 spot が Unannotated です。",
                         html.Br(),
+                        "・測定全体の座標を持つ Spot CSV が無く、切片ごとの座標 CSV しか"
+                        "無い場合は、それらを統合して座標表を作り、ファイル名を"
+                        "そのまま領域ラベルにします。",
+                        html.Br(),
                         "・Feature list CSV（m/z と Name を持つもの）があれば化合物名を"
                         "サイドカーに登録します。列名は m/z のままなので、"
                         "解析時に表示を切り替えられます。",
@@ -113,6 +117,24 @@ def create_scils_converter_modal():
                                     value=["on"],
                                     switch=True,
                                     className="small mt-2",
+                                ),
+                                dbc.Checklist(
+                                    id="scils_drop_uncovered_check",
+                                    options=[{
+                                        "label": "座標 CSV に無い spot を除外して変換する",
+                                        "value": "on",
+                                    }],
+                                    value=[],
+                                    switch=True,
+                                    className="small mt-2",
+                                ),
+                                html.Small(
+                                    "測定全体のマスター Spot CSV がある構成で、spot 数が"
+                                    "合わないときの扱い。OFF（既定）ならエラーにします。"
+                                    "切片ごとの座標 CSV を統合する構成では、一部の切片だけ"
+                                    "座標を出さない運用が通常なので、この設定に関わらず"
+                                    "常に除外して変換します（件数は結果に表示）。",
+                                    className="text-muted",
                                 ),
                                 dbc.Label(
                                     "spot ブロックサイズ (読み込み単位)",

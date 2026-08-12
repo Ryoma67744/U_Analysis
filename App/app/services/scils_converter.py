@@ -208,12 +208,18 @@ def auto_detect_file_roles(data_dir: Path) -> dict:
             f"検索フォルダ: {data_dir}"
         )
 
-    # 最大サイズ = Spot、残り = Annotation
+    # サイズ降順に並べる。★ ver55.0: 以前はここで「先頭 = マスター Spot、残り =
+    # Annotation」と**確定**させていたが、切片ごとに座標を Export したフォルダには
+    # 全体を覆うマスターが存在せず、一番大きい切片 1 枚がマスターに昇格していた。
+    # 役割の確定は spot 集合を見る `build_master_spot_table` に委ね、ここでは
+    # 候補を順序付けて渡すだけにする（`spot` / `annotations` は従来の呼び出し元と
+    # プレビュー用に残す）。
     spot_likes.sort(key=lambda p: p.stat().st_size, reverse=True)
     return {
         "intensity": intensities[0],
         "spot": spot_likes[0],
         "annotations": spot_likes[1:],
+        "spot_likes": spot_likes,
         "peak_list": peaklists[0] if peaklists else None,
         "unknown": unknowns,
     }
@@ -262,15 +268,53 @@ def read_spot_table(spots_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarra
     return spot_index.astype(int).to_numpy(), x_arr, y_arr
 
 
+def _detect_partial_shift(set_int: set[int], set_spot: set[int]) -> int:
+    """部分カバー時に、決定的なときだけ ±1 のグローバルシフトを判定する。
+
+    戻り値は Intensity の spot 番号に足すべき補正値 (-1 / +1 / 0)。
+
+    番号体系が同じなら、座標 CSV の spot 番号は Intensity の spot 番号の
+    **部分集合**になる。したがって座標側の min/max が Intensity の範囲から
+    はみ出すことは起こり得ない。**ちょうど 1 だけはみ出していて、1 ずらすと
+    完全に内側へ収まる**なら、それはグローバルシフト以外にあり得ない。
+    一部の切片しか座標が無くても、この判定は成立する。
+
+    実データ例 (ver55.1): 座標 CSV は SpotIndex 0..76437、Intensity は
+    `Spot 1`..`Spot 76438` (76438 列)。座標が 0 始まり・Intensity が 1 始まりで、
+    そのままだと全 spot が隣の spot の座標と結び付き、1 spot ずれた画像になる。
+
+    どちらとも言えないときは 0 を返す。呼び出し元が「疑い」として申告する。
+    """
+    if not set_int or not set_spot:
+        return 0
+    lo_s, hi_s = min(set_spot), max(set_spot)
+    lo_i, hi_i = min(set_int), max(set_int)
+    if lo_s == lo_i - 1 and hi_s == hi_i - 1 and {s + 1 for s in set_spot} <= set_int:
+        return -1
+    if lo_s == lo_i + 1 and hi_s == hi_i + 1 and {s - 1 for s in set_spot} <= set_int:
+        return +1
+    return 0
+
+
 def compute_spot_mapping(
     intensity_headers: list[str],
     spot_index: np.ndarray,
     x_arr: np.ndarray,
     y_arr: np.ndarray,
+    *,
+    drop_uncovered: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str], np.ndarray, list[str]]:
     """Intensity ヘッダと Spot テーブルを厳格整合して (y, x) ソートする。
 
     完全一致を要求。±1 グローバルシフトのみ自動補正 (データ不動, ラベルのみ調整)。
+
+    drop_uncovered=True なら、座標が無い spot 列を**除外して**変換を続ける
+    (切片だけを Export し、測定全体の Intensity と突き合わせる運用向け)。
+    除外件数は必ず warnings に出す。
+
+    部分カバーでも、番号空間の範囲から決定的に言えるときは ±1 を補正する
+    (`_detect_partial_shift`)。言えないときは補正せず、疑いを warnings に出す
+    — 誤って補正すると全 spot の座標が 1 つずれた画像を黙って出力してしまうため。
 
     Returns
     -------
@@ -302,18 +346,35 @@ def compute_spot_mapping(
     extra = sorted(set_int - set_spot)
     missing = sorted(set_spot - set_int)
 
+    shift = 0
     if extra or missing:
-        set_int_minus1 = {n - 1 for n in set_int}
-        set_int_plus1 = {n + 1 for n in set_int}
-        if set_int_minus1 == set_spot:
-            warnings.append("Intensity ヘッダの spot 番号に +1 グローバルシフトを検出。ラベルを自動補正しました。")
-            logger.info("Intensity ヘッダ +1 シフト検出 → ラベル -1 補正")
-            spot_nums_int = spot_nums_int - 1
-        elif set_int_plus1 == set_spot:
-            warnings.append("Intensity ヘッダの spot 番号に -1 グローバルシフトを検出。ラベルを自動補正しました。")
-            logger.info("Intensity ヘッダ -1 シフト検出 → ラベル +1 補正")
-            spot_nums_int = spot_nums_int + 1
+        # ±1 のグローバルシフトを補正する (データは動かさず、ラベルだけ調整)。
+        # 完全一致で言えるとき (従来) と、部分カバーでも番号空間の範囲から
+        # 決定的に言えるとき (ver55.1, `_detect_partial_shift`) の 2 通り。
+        if {n - 1 for n in set_int} == set_spot:
+            shift = -1
+        elif {n + 1 for n in set_int} == set_spot:
+            shift = +1
         else:
+            shift = _detect_partial_shift(set_int, set_spot)
+
+        if shift:
+            warnings.append(
+                f"Intensity ヘッダの spot 番号に {-shift:+d} グローバルシフトを検出。"
+                "ラベルを自動補正しました。"
+            )
+            logger.info(
+                "spot 番号シフト検出 → ラベル %+d 補正 (Intensity %d..%d / 座標 %d..%d)",
+                shift, min(set_int), max(set_int), min(set_spot), max(set_spot),
+            )
+            spot_nums_int = spot_nums_int + shift
+            set_int = {int(n) for n in spot_nums_int.tolist()}
+            extra = sorted(set_int - set_spot)
+            missing = sorted(set_spot - set_int)
+
+    # シフト補正後にも残る食い違い (04 のように座標を出していない切片など)
+    if extra or missing:
+        if not drop_uncovered:
             msg = [
                 "Intensity と Spot テーブルの spot 番号が一致しません。",
                 f"- Intensity にのみ存在: {len(extra)} 個 (例: {extra[:10]})",
@@ -321,7 +382,57 @@ def compute_spot_mapping(
                 "SCiLS Lab で両ファイルの spot 番号が一致するよう再エクスポートしてください。",
                 "(±1 のグローバルシフトのみ自動補正対象)",
             ]
+            if extra:
+                msg.append(
+                    "測定全体の Intensity に対して切片ごとの座標 CSV しか無い場合は、"
+                    "詳細設定の「座標 CSV に無い spot を除外して変換する」を有効にすると"
+                    "座標のある spot だけを変換できます。",
+                )
             raise ValueError("\n".join(msg))
+
+        # 座標のある spot だけを残す。数の食い違いを黙って埋めないよう、
+        # 除外件数は必ず申告する。
+        keep = np.fromiter(
+            (n in set_spot for n in spot_nums_int.tolist()), dtype=bool,
+            count=len(spot_nums_int),
+        )
+        n_keep = int(keep.sum())
+        if n_keep == 0:
+            raise ValueError(
+                "座標 CSV に載っている spot が Intensity に 1 つもありません。\n"
+                f"- Intensity の spot 番号: {sorted(set_int)[:5]} ...\n"
+                f"- 座標 CSV の spot 番号: {sorted(set_spot)[:5]} ...\n"
+                "別の測定の Intensity と座標を突き合わせていないかご確認ください。"
+            )
+        if extra:
+            warnings.append(
+                f"座標 CSV に無い {len(extra)} spot を除外しました"
+                f"（Intensity の {len(set_int)} spot 中 {n_keep} spot を変換）。"
+            )
+            logger.warning("座標なし spot を除外: %d 個 (例: %s)", len(extra), extra[:10])
+        if missing:
+            warnings.append(
+                f"座標だけがあり Intensity に列が無い spot が {len(missing)} 個"
+                f"（例: {missing[:10]}）。これらは出力に含まれません。"
+            )
+        # 補正できなかったのに ±1 が疑わしいときは、黙らずに申告する
+        # （1 spot ずれた画像は一見それらしく見えてしまい、後から気付けない）。
+        if not shift:
+            n0 = len(set_int & set_spot)
+            n_minus = len({n - 1 for n in set_int} & set_spot)
+            n_plus = len({n + 1 for n in set_int} & set_spot)
+            if max(n_minus, n_plus) > n0:
+                warnings.append(
+                    "spot 番号が ±1 ずれている可能性があります"
+                    f"（一致数: そのまま {n0} / -1 補正で {n_minus} / +1 補正で {n_plus}）。"
+                    "決め手が無いため自動補正していません。変換後の画像で位置が正しいか"
+                    "必ずご確認ください。"
+                )
+                logger.warning(
+                    "±1 シフトの疑い: 一致数 そのまま=%d, -1=%d, +1=%d", n0, n_minus, n_plus
+                )
+        spot_labels = [spot_labels[i] for i in np.nonzero(keep)[0]]
+        spot_nums_int = spot_nums_int[keep]
 
     coord = {int(si): (float(x_arr[i]), float(y_arr[i])) for i, si in enumerate(spot_index_int)}
     x_map = np.array([coord[int(n)][0] for n in spot_nums_int], dtype=np.float64)
@@ -352,6 +463,85 @@ def annotation_label_from_filename(p: Path) -> str:
     if not label:
         raise ValueError(f"ファイル名からラベル名を抽出できません: {p.name}")
     return label
+
+
+def build_master_spot_table(
+    spot_like_files: list[Path],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, Optional[dict[int, str]], list[str]]:
+    """SpotIndex/X/Y を持つ CSV 群からマスター座標表を組み立てる。
+
+    レイアウトを **ファイル名やサイズではなく spot 集合で** 判別する。
+
+    1. マスター + 領域注釈 (従来)
+       全 spot の座標を持つ 1 本があり、残りはその部分集合。
+       -> そのファイルをマスターとして返し ``region_map=None``。
+          ラベル解決は従来どおり :func:`build_annotation_map` が行う。
+    2. 切片ごとの座標ファイル (ver55.0 で追加)
+       全体を覆う 1 本が無く、各ファイルが切片単位の座標を持つ。
+       -> 全ファイルの和集合をマスターにし、ファイル名をそのまま領域ラベルに
+          した ``region_map`` を返す。
+
+    ★ ver55.0: 以前は「一番大きい spot_like ファイル = マスター」と決め打ちして
+      いたため、切片ごとに Export したフォルダでは**一番大きい切片 1 枚だけが
+      マスターに昇格**し、他の切片はその部分集合であることを要求されて
+      「spot 番号が一致しません」で必ず落ちていた。しかも仮に数が合っても、
+      マスターに吸収された切片は領域ラベルを失っていた。
+
+    Returns
+    -------
+    (spot_index, x, y, region_map, warnings)
+    """
+    if not spot_like_files:
+        raise ValueError("SpotIndex/X/Y を持つ CSV が 1 本もありません。")
+
+    warnings: list[str] = []
+    tables = [(fp, *read_spot_table(fp)) for fp in spot_like_files]
+    sets = [{int(v) for v in si.tolist()} for _, si, _, _ in tables]
+    union: set[int] = set().union(*sets)
+
+    # レイアウト 1: 先頭 (最大サイズ) が全体を覆う → 従来どおり
+    if sets[0] == union:
+        _, si, x, y = tables[0]
+        return si, x, y, None, warnings
+
+    # レイアウト 2: 切片ごとの座標ファイルを統合する
+    labels: list[str] = []
+    owner: dict[int, str] = {}
+    coords: dict[int, tuple[float, float]] = {}
+    for (fp, si, x, y), s in zip(tables, sets):
+        label = annotation_label_from_filename(fp)
+        if label in labels:
+            raise ValueError(f"領域ラベル名が重複しています: '{label}' ({fp.name})")
+        labels.append(label)
+
+        dup = sorted(s & owner.keys())
+        if dup:
+            prev = sorted({owner[d] for d in dup})
+            raise ValueError(
+                f"座標 CSV 間で spot が重複しています: '{label}' ({fp.name}) の "
+                f"{len(dup)} spot が既存の領域 {prev} と重複しています。"
+                f"例: {dup[:5]}\n"
+                "切片ごとに Export したファイルは重複しない想定です。同じ領域を"
+                "二重に Export していないか、測定全体のマスター Spot CSV が"
+                "混ざっていないかをご確認ください。"
+            )
+        for i, sv in enumerate(si.tolist()):
+            owner[int(sv)] = label
+            coords[int(sv)] = (float(x[i]), float(y[i]))
+
+    order = sorted(coords)
+    spot_index = np.asarray(order, dtype=np.int64)
+    x_arr = np.asarray([coords[s][0] for s in order], dtype=np.float64)
+    y_arr = np.asarray([coords[s][1] for s in order], dtype=np.float64)
+
+    breakdown = " / ".join(f"{lab} ({len(s)} spot)" for lab, s in zip(labels, sets))
+    warnings.append(
+        "測定全体を覆うマスター Spot CSV が無いため、座標 CSV を統合して座標表を"
+        f"作りました: {breakdown} — 計 {len(order)} spot。"
+        "ファイル名がそのまま領域ラベルになります。"
+    )
+    logger.info("座標 CSV %d 本を統合 → %d spot (%s)", len(tables), len(order), breakdown)
+    return spot_index, x_arr, y_arr, owner, warnings
 
 
 def build_annotation_map(
@@ -848,6 +1038,7 @@ def convert_scils_to_parquet(
     store_float32: bool = True,
     organize: bool = True,
     annotation_tol: float = 1e-6,
+    drop_uncovered: bool = False,
     progress_cb=None,
 ) -> ConversionResult:
     """SCiLS Intensity+Spot(+Annotation) CSV フォルダを Parquet に変換する。
@@ -872,6 +1063,12 @@ def convert_scils_to_parquet(
         元 CSV を同サブフォルダに移動
     annotation_tol : float
         Annotation CSV の座標がマスターと一致するかの許容誤差
+    drop_uncovered : bool
+        True なら、座標 CSV に載っていない spot 列を除外して変換する。
+        既定 False = 数が合わなければエラーで止める（黙って捨てない）。
+        ただし**切片ごとの座標 CSV を統合したレイアウトでは常に有効**になる。
+        一部の切片だけ座標を Export しない運用が通常なので、そこでの
+        「座標が無い spot」は不整合ではなく前提のため。除外件数は必ず報告する。
     progress_cb : callable | None
         `progress_cb(value:int, maximum:int, label:str)` 形式の進捗通知（0-100）。
         既定 None なら何もしない（UI のバックグラウンド実行から渡す）。
@@ -898,9 +1095,16 @@ def convert_scils_to_parquet(
     # 1) 役割自動検出
     detected = auto_detect_file_roles(folder)
     intensity_path: Path = detected["intensity"]
-    spots_path: Path = detected["spot"]
-    annotation_files: list[Path] = detected["annotations"]
+    spot_likes: list[Path] = detected["spot_likes"]
     peaklist_path: Optional[Path] = detected.get("peak_list")
+
+    # 1.5) マスター座標表を組み立てる。★ ver55.0: 「一番大きい座標 CSV = マスター」
+    #      という決め打ちをやめ、spot 集合を見てレイアウトを判定する。切片ごとに
+    #      Export したフォルダでは全ファイルを統合し、ファイル名を領域ラベルにする。
+    spot_index, x_arr, y_arr, region_map, master_warnings = build_master_spot_table(spot_likes)
+    result.warnings.extend(master_warnings)
+    spots_path: Path = spot_likes[0]
+    annotation_files: list[Path] = list(spot_likes) if region_map is not None else spot_likes[1:]
 
     result.source_intensity = str(intensity_path)
     result.source_spot = str(spots_path)
@@ -920,7 +1124,10 @@ def convert_scils_to_parquet(
 
     logger.info("=== SCiLS 変換開始 ===")
     logger.info("Intensity: %s", intensity_path)
-    logger.info("Spot     : %s", spots_path)
+    if region_map is None:
+        logger.info("Spot     : %s", spots_path)
+    else:
+        logger.info("Spot     : (座標 CSV %d 本を統合)", len(spot_likes))
     if annotation_files:
         logger.info("Annotation: %s", [p.name for p in annotation_files])
     if peaklist_path is not None:
@@ -998,16 +1205,31 @@ def convert_scils_to_parquet(
                 result.warnings.append(f"peak-list の解析に失敗（注釈なしで継続）: {e}")
                 feat_ann_df = None
 
-        # 5) Spot テーブル読込 + マッピング
-        spot_index, x_arr, y_arr = read_spot_table(spots_path)
+        # 5) Spot マッピング (座標表は 1.5 で組み立て済み)
+        # ★ ver55.1: 切片ごとの座標 CSV を統合したレイアウトでは、**欲しい切片の
+        #   座標だけを Export する**のが通常の運用（例: 04 だけ座標を出さない）。
+        #   この構成で「座標が無い spot がある」のは異常ではなく前提なので、
+        #   既定で除外して変換を続ける（件数は必ず warnings に出す）。
+        #   測定全体のマスター Spot CSV があるレイアウトでは、数が合わないことは
+        #   本物の不整合なので従来どおり厳格に突き合わせる。
+        effective_drop = drop_uncovered or (region_map is not None)
         sort_idx, x_sorted, y_sorted, spot_labels_sorted, spot_index_sorted, mapping_warnings = (
-            compute_spot_mapping(int_headers, spot_index, x_arr, y_arr)
+            compute_spot_mapping(
+                int_headers, spot_index, x_arr, y_arr, drop_uncovered=effective_drop,
+            )
         )
         result.warnings.extend(mapping_warnings)
         n_spots = len(spot_labels_sorted)
 
         # 6) Annotation 解決
-        if annotation_files:
+        if region_map is not None:
+            # ★ ver55.0: 切片ごとの座標 CSV を統合したレイアウト。座標表を作った
+            #   時点で spot → 領域ラベルが確定しているので、部分集合であることを
+            #   要求する build_annotation_map は通さない（全ファイルが領域なので
+            #   「マスターの部分集合」という前提自体が成り立たない）。
+            ann_map = dict(region_map)
+            annotation_source = "csv"
+        elif annotation_files:
             ann_map, ann_warnings = build_annotation_map(
                 annotation_files, spot_index, x_arr, y_arr, tol=annotation_tol
             )
