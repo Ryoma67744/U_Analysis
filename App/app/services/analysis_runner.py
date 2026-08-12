@@ -171,12 +171,21 @@ def _r_str(value: str) -> str:
 def _replace_assign(lines: list[str], var: str, new_rhs: str) -> list[str]:
     """R代入文の右辺を置換。最初のマッチのみ。
     R版の正規表現: paste0("^\\s*", var, "\\s*<-\\s*.*$")
+
+    ★ ver55.0: 変数がテンプレートに無いとき、以前は**完全に無言で**素通りしていた。
+    「注入したつもりが、実際はテンプレートのハードコード値がそのまま走っていた」
+    という事故（再解析のアノテーション CSV 指定が破棄され、直書きの Dropbox パスが
+    生き残る等）が、エラーもログも無いまま起き続けていた。見えるようにする。
     """
     pattern = re.compile(rf"^\s*{re.escape(var)}\s*<-\s*.*$")
     for i, line in enumerate(lines):
         if pattern.match(line):
             lines[i] = f"{var} <- {new_rhs}"
-            break
+            return lines
+    logger.warning(
+        "R テンプレートに変数 %r が無いため注入をスキップしました "
+        "（テンプレート側の直書き値がそのまま使われます）", var
+    )
     return lines
 
 
@@ -476,8 +485,14 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
         rds_dir = str(Path(params["resume_rds_paths"][0]).parent)
         lines = _replace_assign(lines, "RESUME_DIR_PATH", _r_str(rds_dir))
 
-    if params.get("annotation_path"):
+    # DESI の化合物同定に使う MRM リスト。★ ver55.0: 条件付きで「注入しない」と
+    #   テンプレート直書きのパスが生き残るため、選ばれていないときは明示的に空を入れる。
+    #   （TIMS テンプレートは MRM_FILE_PATH を宣言していないので _replace_assign が
+    #    警告ログを出して素通りする＝意図どおり。）
+    if params.get("annotation_enable") and params.get("annotation_path"):
         lines = _replace_assign(lines, "MRM_FILE_PATH", _r_str(params["annotation_path"]))
+    elif "MRM_FILE_PATH" in "\n".join(lines):
+        lines = _replace_assign(lines, "MRM_FILE_PATH", _r_str(""))
 
     if params.get("p_thresh") is not None:
         lines = _replace_assign(
@@ -510,11 +525,22 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
         lines = _replace_assign(
             lines, "PROJECT_LABEL", _r_str(params["project_label"])
         )
-    if params.get("annotation_csv_path"):
-        lines = _replace_assign(
-            lines, "ANNOTATION_CSV_PATH",
-            _r_str(params["annotation_csv_path"]),
-        )
+    # ★ ver55.0: **無条件に**注入する。条件付きにすると「注入しない」がそのまま
+    #   「テンプレートのハードコード値が生き残る」を意味してしまう。ver6.R は
+    #   ANNOTATION_ENABLE <- TRUE と Windows の Dropbox パスを直書きしていたため、
+    #   利用者が何も指定しなくても DB 照合が有効なまま走っていた。
+    lines = _replace_assign(
+        lines, "ANNOTATION_CSV_PATH",
+        _r_str(params.get("annotation_csv_path") or ""),
+    )
+    lines = _replace_assign(
+        lines, "ANNOTATION_ENABLE",
+        "TRUE" if params.get("annotation_enable") else "FALSE",
+    )
+    lines = _replace_assign(
+        lines, "USE_EMBEDDED_COMPOUND_NAMES",
+        "TRUE" if params.get("use_embedded_annotation") else "FALSE",
+    )
     if params.get("ion_mode"):
         lines = _replace_assign(
             lines, "ION_MODE", _r_str(params["ion_mode"])
@@ -678,18 +704,27 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
         )
 
     # --- 再解析用アノテーションファイルの注入 ---
-    if params.get("reanalysis_annotation_path"):
-        ann_path = params["reanalysis_annotation_path"]
-        # TIMS (.csv) → ANNOTATION_CSV_PATH
-        if ann_path.lower().endswith(".csv"):
-            lines = _replace_assign(
-                lines, "ANNOTATION_CSV_PATH", _r_str(ann_path)
-            )
+    # ★ ver55.0 (R-01): 置換先が `ANNOTATION_CSV_PATH` だったが、ReUMAP テンプレートが
+    #   宣言しているのは **`V13_ANNOTATION_CSV_PATH`**。名前が一致しないので
+    #   `_replace_assign` は無言で素通りし、UI で指定したアノテーション CSV は
+    #   破棄され、テンプレート直書きの Windows Dropbox パスがそのまま走っていた。
+    #   エラーも出ず解析は緑で完走するため、気づく手段が無かった。
+    #   ReUMAP 側の規約: "" / NA は「ver13 側の設定を上書きしない」を意味する。
+    ann_path = params.get("reanalysis_annotation_path") or ""
+    if ann_path.lower().endswith(".csv"):
+        # TIMS (.csv) → V13_ANNOTATION_CSV_PATH
+        lines = _replace_assign(
+            lines, "V13_ANNOTATION_CSV_PATH", _r_str(ann_path)
+        )
+        lines = _replace_assign(lines, "V13_ANNOTATION_ENABLE", "TRUE")
+    elif ann_path:
         # DESI (.xlsx) → MRM_FILE_PATH
-        else:
-            lines = _replace_assign(
-                lines, "MRM_FILE_PATH", _r_str(ann_path)
-            )
+        lines = _replace_assign(lines, "MRM_FILE_PATH", _r_str(ann_path))
+    else:
+        # 指定なし = 化合物アノテーションを行わない。ここで明示的に空/FALSE を
+        # 注入しないと、テンプレート直書きのパスが生き残る。
+        lines = _replace_assign(lines, "V13_ANNOTATION_CSV_PATH", _r_str(""))
+        lines = _replace_assign(lines, "V13_ANNOTATION_ENABLE", "FALSE")
 
     # --- マージスクリプトパスの注入（DESI/TIMS共通） ---
     if params.get("merge_script_path"):

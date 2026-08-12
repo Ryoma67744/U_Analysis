@@ -267,11 +267,21 @@ local({
 # ============================================================
 
 # ---- アノテーション設定（TraceFinder DB Export を使用）----
-ANNOTATION_ENABLE <- TRUE
+# ★ ver55.0: 既定を FALSE にし、パスも空にした。以前は TRUE と Windows の
+#   Dropbox パスが直書きで、しかも Python 側から一度も注入されていなかったため、
+#   利用者が代謝物 DB を指定していなくても m/z 照合が常に有効なまま走っていた。
+#   analysis_runner がこの 3 変数を**無条件に**注入する。
+ANNOTATION_ENABLE <- FALSE
 
 # TraceFinder Compound Database Export (CSV)
 # 例: "4500_endogenous_metabolites_mod_1.csv"
-ANNOTATION_CSV_PATH <- "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\MSI_Tims\\SCiLS_Transform\\DB\\4500_endogenous_metabolites_mod.csv"
+ANNOTATION_CSV_PATH <- ""
+
+# 変換元 CSV 由来の化合物名（SCiLS Feature list）を feature 名に使うか。
+# ver55.0 以降の変換では列名は m/z のままで、化合物名はサイドカー
+# <BASE>_feature_annotations.parquet が持つ。旧データ（列名に化合物名が
+# 焼き込まれた parquet）はこのフラグに関わらず従来どおり表示される。
+USE_EMBEDDED_COMPOUND_NAMES <- FALSE
 
 # 極性（TraceFinder の Polarity 列が '+' / '-' の前提）
 ION_MODE <- "Negative"   # "Positive" or "Negative"
@@ -810,25 +820,32 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
     pf <- arrow::ParquetFileReader$create(file_path)
     all_names <- pf$GetSchema()$names
     mz_cols <- grep("^mz_", all_names, value = TRUE)
-    is_bare_numeric <- FALSE
     is_annotated <- FALSE
+    resolved_mz <- NULL          # mz_cols と同じ並びの m/z（解決できた場合）
     if (length(mz_cols) == 0) {
       non_meta <- setdiff(all_names, c("id", "x", "y", "annotation"))
-      bare_num <- non_meta[!is.na(suppressWarnings(as.numeric(non_meta)))]
-      if (length(bare_num) > 0) {
-        mz_cols <- bare_num
-        is_bare_numeric <- TRUE
-        cat("  [Info] Bare numeric column names detected, treating as m/z values\n")
-      } else if (length(non_meta) > 0) {
-        # 注釈付き列名 "<化合物名>_<mz> | DB | adduct | ..." 形式。
-        # "| より前" の末尾 _<数値> が m/z として取れる列のみ特徴量として採用。
-        .head <- trimws(sub("\\s*\\|.*$", "", non_meta))
-        .mz   <- suppressWarnings(as.numeric(sub("^.*_([0-9]+\\.?[0-9]*)$", "\\1", .head)))
-        if (any(!is.na(.mz))) {
-          mz_cols <- non_meta[!is.na(.mz)]
-          is_annotated <- TRUE
-          cat(sprintf("  [Info] Annotated column names detected (compound_m/z | ...): %d features\n",
-                      length(mz_cols)))
+      # ★ ver55.0: 以前は「素の数値列」と「注釈付き列」を if / else if の**排他分岐**で
+      #   扱っていた。しかし両者は同じ parquet に**混在する** — peak-list に一致しなかった
+      #   feature は数値名のまま書かれるため、旧データではこれが普通の状態だった。
+      #   その結果、素の数値列が 1 本でもあると `bare_num` 分岐が選ばれ、
+      #   **注釈付き列が丸ごと特徴量から黙って脱落**していた（件数も報告されない）。
+      #   両方を拾い、列ごとに m/z を解決する。
+      .num  <- suppressWarnings(as.numeric(non_meta))
+      .head <- trimws(sub("\\s*\\|.*$", "", non_meta))
+      .ann  <- suppressWarnings(as.numeric(sub("^.*_([0-9]+\\.?[0-9]*)$", "\\1", .head)))
+      .mz   <- ifelse(is.na(.num), .ann, .num)
+      keep  <- !is.na(.mz)
+      if (any(keep)) {
+        mz_cols     <- non_meta[keep]
+        resolved_mz <- .mz[keep]
+        n_bare <- sum(!is.na(.num[keep]))
+        n_ann  <- sum(is.na(.num[keep]))
+        is_annotated <- n_ann > 0
+        cat(sprintf("  [Info] %d features from column names (bare m/z: %d, compound-embedded: %d)\n",
+                    length(mz_cols), n_bare, n_ann))
+        if (any(!keep)) {
+          cat(sprintf("  [Warn] %d columns skipped (m/z not parseable): %s\n",
+                      sum(!keep), paste(utils::head(non_meta[!keep], 5), collapse = ", ")))
         }
       }
     }
@@ -845,29 +862,45 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
 
     # Build feature names + m/z（注釈付きは「化合物名_m/z」を表示名に採用し、|以降のメタは保持）
     feature_annotations <- NULL
-    if (is_annotated) {
+    # m/z の解決は命名の分岐より**前**に済ませる（どちらの命名でも必要なため）。
+    if (is.null(resolved_mz)) {
+      # "mz_" 接頭辞の列（CSV 経路互換）
+      mz_num <- suppressWarnings(as.numeric(sub("^mz_", "", mz_cols)))
+      if (anyNA(mz_num)) {
+        # fallback: strip non-numeric
+        mz_num <- suppressWarnings(as.numeric(gsub("[^0-9.]", "", sub("^mz_", "", mz_cols))))
+      }
+    } else {
+      mz_num <- resolved_mz
+    }
+    if (anyNA(mz_num)) stop("Failed to parse m/z from Parquet column names.")
+
+    # ★ ver55.0: 列名に焼き込まれた化合物名を feature 名に使うかをスイッチで選ぶ。
+    #   ver55.0 以降の変換は列名が常に m/z なのでここは効かない（化合物名はサイドカー）。
+    #   旧データ（列名に焼き込み済み）に対してのみ意味を持ち、既定 (UI で ON) では
+    #   従来どおり化合物名で表示される。OFF にすれば m/z 表示に戻せる。
+    # 変数が未定義のまま実行される経路（ver55.0 より前に生成された runtime スクリプトの
+    # 再実行、ReUMAP からの source 等）では、従来どおり化合物名を使う側に倒す。
+    .use_embedded <- if (exists("USE_EMBEDDED_COMPOUND_NAMES")) {
+      isTRUE(USE_EMBEDDED_COMPOUND_NAMES)
+    } else TRUE
+    if (is_annotated && .use_embedded) {
       raw_names <- mz_cols
       head_tok  <- trimws(sub("\\s*\\|.*$", "", raw_names))                       # 化合物名_m/z
-      mz_num    <- suppressWarnings(as.numeric(sub("^.*_([0-9]+\\.?[0-9]*)$", "\\1", head_tok)))
       compound  <- sub("_[0-9]+\\.?[0-9]*$", "", head_tok)                         # 化合物名のみ（末尾 _m/z を除去）
-      metabolite_names <- make.unique(head_tok)
+      # 化合物名を持たない列（peak-list に一致しなかった素の数値名）は m/z 表示に揃える。
+      has_comp  <- is.na(suppressWarnings(as.numeric(raw_names)))
+      disp      <- ifelse(has_comp, head_tok, sprintf("m/z %.5f", mz_num))
+      metabolite_names <- make.unique(disp)
       feature_annotations <- .parse_feature_annotations(raw_names, metabolite_names, mz_num, compound)
       cat(sprintf("  [Info] Using compound_m/z feature names; metadata preserved (%d features)\n",
                   length(metabolite_names)))
     } else {
       # Build metabolite names to MATCH CSV pipeline naming exactly: "m/z %.5f"
-      if (is_bare_numeric) {
-        mz_num <- as.numeric(mz_cols)
-      } else {
-        mz_num <- suppressWarnings(as.numeric(sub("^mz_", "", mz_cols)))
-        if (anyNA(mz_num)) {
-          # fallback: strip non-numeric
-          mz_num <- suppressWarnings(as.numeric(gsub("[^0-9.]", "", sub("^mz_", "", mz_cols))))
-        }
-      }
-      if (anyNA(mz_num)) stop("Failed to parse m/z from Parquet column names.")
-
       metabolite_names <- make.unique(sprintf("m/z %.5f", mz_num))
+      if (is_annotated) {
+        cat("  [Info] USE_EMBEDDED_COMPOUND_NAMES=FALSE -> feature names are m/z\n")
+      }
     }
 
     # Spot IDs consistent with CSV reader:

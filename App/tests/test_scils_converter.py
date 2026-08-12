@@ -273,8 +273,14 @@ class TestConvertEndToEnd:
         assert result.n_spots == 5
         assert result.n_mz_features == 3
         assert result.has_annotation is False
-        # 単一ラベル (Spot ファイル名由来)
-        assert result.annotation_labels == ["sample"]
+        # ★ ver55.0: Annotation CSV が無いとき、以前は **Spot ファイル名**から
+        #   ラベルを作って全 spot に割り当てていた。指定していない領域アノテーションが
+        #   「ファイルから付いている」ように見え、変換完了画面が
+        #   「Annotation CSV: (なし)」と「annotation ラベル: sample」を同時に出す
+        #   矛盾を生んでいた。無いことを 'Unannotated' で明示する。
+        #   列そのものは残す（R が slice_id → condition の組み立てに使うため）。
+        assert result.annotation_labels == ["Unannotated"]
+        assert result.annotation_source == "none"
 
         df = pd.read_parquet(out_path)
         # 列名: id, x, y, 100.500000, 200.100000, 300.250000, annotation

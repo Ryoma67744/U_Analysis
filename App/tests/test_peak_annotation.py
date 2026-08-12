@@ -173,14 +173,18 @@ def test_convert_embeds_annotation_and_sidecar(tmp_path):
     assert res.n_annotated == 3
     assert res.sidecar_path and Path(res.sidecar_path).exists()
 
-    # 出力 parquet: id/x/y/annotation 不変 + feature 列名に化合物名を埋め込み
+    # ★ ver55.0: 化合物名は **列名に焼き込まない**。列名は常に m/z の数値で、
+    #   化合物名はサイドカーが持つ（= 後から付け外しできる）。
+    #   焼き込みは不可逆で、しかも列名は feature の識別子として R の rowname →
+    #   deg$gene → 画面・CSV・PPTX・PNG 名まで伝播するため表示を切ることもできなかった。
     schema = pq.read_schema(res.output_path)
     names = list(schema.names)
     for meta in ("id", "x", "y", "annotation"):
         assert meta in names
     feat_cols = [n for n in names if n not in ("id", "x", "y", "annotation")]
-    assert any(c.startswith("ADP_419.2572 |") for c in feat_cols)
-    assert any(c.startswith("PI 38:4 (PI 18:0/20:4)_885.5494 |") for c in feat_cols)
+    assert feat_cols == ["419.257200", "673.483100", "885.549400"], feat_cols
+    assert not any("|" in c for c in feat_cols), (
+        "化合物名が列名に焼き込まれている（サイドカーへ入れること）")
 
     # mz_sorted / peak_list メタがファイルに永続化されている（フル桁）
     md = schema.metadata or {}

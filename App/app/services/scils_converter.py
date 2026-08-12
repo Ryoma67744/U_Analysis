@@ -52,6 +52,9 @@ class ConversionResult:
     n_mz_features: int = 0
     has_annotation: bool = False
     annotation_labels: list[str] = field(default_factory=list)
+    # ★ ver55.0: 領域アノテーションの由来。"csv" = 実ファイルから解決、
+    #   "none" = 一枚も渡されず全 spot が 'Unannotated'。
+    annotation_source: str = "none"
     has_peak_list: bool = False
     peak_list_file: str = ""
     sidecar_path: str = ""
@@ -499,12 +502,19 @@ def _csv_to_temp_parquet(
 
     if _use_polars:
         logger.info("Phase A エンジン: polars (streaming sink)")
-        # ★ ver51.9: **位置指定**で渡す。列名キーの dict にすると、エンジンが
-        #   BOM を剥がなかったとき 1 列目 (m/z) のキーが一致せず、dtype 指定が
-        #   黙って無視されて m/z が文字列として推論される。
-        #   `first_header_and_skipcount` は utf-8-sig で読むので int_headers は
-        #   BOM 無し、CSV 本体を読むエンジンが剥ぐかは別問題 — その差に依存しない。
-        schema_overrides = [pl.Float64] * len(int_headers)
+        # ★ ver55.0: **列名キーの dict**で渡す。ver51.9 が「BOM で 1 列目のキーが
+        #   一致せず dtype 指定が黙って無視される」ことを恐れて位置指定の list に
+        #   変えたが、`pl.scan_csv` は `new_columns=` 併用時以外 list を受け付けず
+        #   `TypeError: expected 'schema_overrides' dict, found 'list'` で即死する
+        #   （polars 0.20〜1.33 の全バージョンで同じ）。恐れていた BOM 事故は
+        #   そもそも起きない:
+        #     1. polars はスキーマ推論・本文パースの両経路で BOM を剥ぐ
+        #     2. 剥がなかったとしても、**列数と同数の dict** は polars 側で index
+        #        適用にフォールバックし、列名も int_headers[i] に書き換えられる
+        #        (schema_inference の `schema_overwrite.len() == headers.len()` 分岐)
+        #   つまり dict は位置指定の上位互換で、Phase B が名前で spot 列を読む
+        #   (`pf.read(columns=...)`) ための名前正規化まで担保する。
+        schema_overrides = {h: pl.Float64 for h in int_headers}
         lf = pl.scan_csv(
             str(intensity_path),
             separator=delim,
@@ -515,10 +525,12 @@ def _csv_to_temp_parquet(
             schema_overrides=schema_overrides,
             low_memory=True,
         )
-        try:
-            lf.sink_parquet(str(temp_parquet), compression=_TEMP_PARQUET_COMPRESSION, row_group_size=512)
-        except TypeError:
-            lf.collect(streaming=True).write_parquet(str(temp_parquet), compression=_TEMP_PARQUET_COMPRESSION)
+        # ★ ver55.0: ここに `except TypeError: lf.collect(streaming=True)` のシムが
+        #   あったが、compression/row_group_size は polars 1.x 全域で有効なので何も
+        #   守っておらず、sink_parquet 内部の任意の TypeError を拾って数 GB を
+        #   非ストリーミングで全メモリ展開する経路に落とすだけだった (12 GB
+        #   コンテナでは OOM)。握り潰さずそのまま投げる。
+        lf.sink_parquet(str(temp_parquet), compression=_TEMP_PARQUET_COMPRESSION, row_group_size=512)
     else:
         logger.info("Phase A エンジン: pyarrow (batched fallback)")
         import pyarrow as pa
@@ -635,20 +647,6 @@ def peaklist_skip_message(skipped: dict) -> str:
         return ""
     return ("peak-list の " + " / ".join(parts)
             + " を除外しました（この行の化合物名は付与されません）。")
-
-
-def _ensure_unique_colnames(names: list[str]) -> list[str]:
-    """列名の重複を避ける（万一 4 桁 m/z＋化合物名が衝突した場合の保険）。"""
-    seen: dict[str, int] = {}
-    out: list[str] = []
-    for n in names:
-        if n in seen:
-            seen[n] += 1
-            out.append(f"{n} #{seen[n]}")
-        else:
-            seen[n] = 0
-            out.append(n)
-    return out
 
 
 def _check_conversion_memory(
@@ -976,7 +974,8 @@ def convert_scils_to_parquet(
                 pk_mz, pk_names, pk_skipped = _read_peaklist(
                     peaklist_path, return_skipped=True)
                 # ★ ver52.3 (T5): 壊れ行は捨てるだけで、変換は「成功」と表示されていた。
-                #   化合物名は Parquet の列名に焼き込まれるので、後から復元できない。
+                #   落ちた行の化合物名はサイドカーに載らないので、変換後の成果物からは
+                #   復元できない（元 CSV を直して再登録するしかない）ため必ず報告する。
                 pk_skip_msg = peaklist_skip_message(pk_skipped)
                 if pk_skip_msg:
                     logger.warning("%s", pk_skip_msg)
@@ -1013,16 +1012,26 @@ def convert_scils_to_parquet(
                 annotation_files, spot_index, x_arr, y_arr, tol=annotation_tol
             )
             result.warnings.extend(ann_warnings)
+            annotation_source = "csv"
         else:
-            # Spot ファイル名からラベル導出 (全 spot に単一ラベル)
-            single_label = annotation_label_from_filename(spots_path)
-            logger.info("Annotation ファイルなし → 全 spot に '%s' を割当", single_label)
-            ann_map = {int(si): single_label for si in spot_index}
+            # ★ ver55.0: ここは Spot ファイル名からラベルを導出して全 spot に割り当てて
+            #   いた。領域アノテーションを一枚も渡していない利用者に対して、ファイル名が
+            #   そのまま領域ラベルとして出るため、**Annotation CSV: (なし) と
+            #   annotation ラベル: <ファイル名> が同時に表示される**という矛盾を生む。
+            #   区別が付かないので「無い」ことを 'Unannotated' で明示する。
+            #   列そのものは残す — R が slice_id → condition の組み立てに使っており
+            #   (ver6.R の DEG グループ列)、消すと解析側が壊れる。
+            logger.info("Annotation ファイルなし → 全 spot に 'Unannotated' を割当")
+            ann_map = {int(si): "Unannotated" for si in spot_index}
+            annotation_source = "none"
         annotation_sorted = [ann_map[int(si)] for si in spot_index_sorted]
         result.annotation_labels = sorted(set(annotation_sorted))
 
         # 7) Intensity ヘッダ整合チェック (全 spot 列が一時 Parquet に存在するか)
-        header_set = set(int_headers)
+        # ★ ver55.0: `set(int_headers)` と突き合わせていたが spot_labels_sorted は
+        #   int_headers[1:] 由来なので missing_cols は**常に空**＝恒真だった。
+        #   実際に読む相手 (一時 Parquet) のスキーマと突き合わせる。
+        header_set = set(pf.schema_arrow.names)
         missing_cols = [c for c in spot_labels_sorted if c not in header_set]
         if missing_cols:
             raise ValueError(
@@ -1033,20 +1042,24 @@ def convert_scils_to_parquet(
         logger.info("Phase B 開始: chunk 読込 + 最終 Parquet 書き込み")
         phase_b_start = time.perf_counter()
 
-        if feat_ann_df is not None:
-            from app.services import peak_annotation as _pann
-            mz_colnames = _ensure_unique_colnames([
-                _pann.make_column_name(feat_ann_df["raw"].iloc[i], float(mz_sorted[i]))
-                for i in range(n_mz)
-            ])
-        else:
-            mz_colnames = [f"{v:.6f}" for v in mz_sorted]
+        # ★ ver55.0: 化合物名を**列名に焼き込むのをやめた**。列名は常に m/z の数値。
+        #   焼き込みは不可逆で (下の 'column_names' コメント参照)、しかも列名は
+        #   「注釈」ではなく feature の識別子として R の rowname → deg$gene →
+        #   画面・CSV・PPTX・PNG ファイル名まで伝播するため、後から表示を切ることも
+        #   できなかった。化合物名は同じ変換の最後に生成されるサイドカー
+        #   `<BASE>_feature_annotations.parquet` が持ち、そちらは可逆に付け外しできる
+        #   (「分子情報を後から登録」と同じ仕組み)。
+        mz_colnames = [f"{v:.6f}" for v in mz_sorted]
         # スキーマにメタデータを直接付与（ParquetWriter のスキーマに含めることで
         # 全バッチ＝ファイルへ確実に永続化される）。mz_sorted はフル桁の m/z 一覧で、
-        # 列名がパイプ全文になっても m/z を確実に復元できる正となる。
+        # 列名が丸められていても m/z を確実に復元できる正となる。
         schema_md = {
             b"mz_sorted": ",".join(f"{v:.10g}" for v in mz_sorted).encode("utf-8"),
             b"annotation_files": ";".join(p.name for p in annotation_files).encode("utf-8"),
+            # ★ ver55.0: 領域アノテーションの由来。'csv' = 実ファイルから解決、
+            #   'none' = 一枚も無く全 spot が 'Unannotated'。読み手 (data_manager /
+            #   file_handlers) が「領域の選択肢を出してよいか」を判断できるようにする。
+            b"annotation_source": annotation_source.encode("utf-8"),
         }
         if peaklist_path is not None:
             schema_md[b"peak_list"] = peaklist_path.name.encode("utf-8")
@@ -1165,6 +1178,7 @@ def convert_scils_to_parquet(
         result.n_spots = n_spots
         result.n_mz_features = n_mz
         result.has_annotation = bool(annotation_files)
+        result.annotation_source = annotation_source
     finally:
         # 一時 Parquet を削除 (Windows ファイルロック対策で pf を先に解放)
         pf = None

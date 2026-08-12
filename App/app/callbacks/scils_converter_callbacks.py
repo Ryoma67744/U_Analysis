@@ -105,7 +105,13 @@ def run_scils_conversion(
 def _render_success(result) -> html.Div:
     """ConversionResult を成功パネルとしてレンダリング"""
     warning_items = [html.Li(w) for w in result.warnings]
-    ann_labels = ", ".join(result.annotation_labels) if result.annotation_labels else "(なし)"
+    # ★ ver55.0: 領域アノテーションを一枚も渡していないのに、Spot ファイル名から
+    #   作ったラベルを「annotation ラベル」として出していた（「Annotation CSV: (なし)」
+    #   と併記されるので矛盾して見える）。由来を明示して区別する。
+    if getattr(result, "annotation_source", "none") == "csv":
+        ann_labels = ", ".join(result.annotation_labels) or "(なし)"
+    else:
+        ann_labels = "(なし — 領域アノテーション CSV が無いため全 spot が Unannotated)"
 
     details = [
         (html.Dt("出力ファイル"), html.Dd(result.output_path)),
@@ -122,7 +128,7 @@ def _render_success(result) -> html.Div:
             html.Dt("Peak-list (化合物名)"),
             html.Dd(
                 f"{Path(result.peak_list_file).name}"
-                f"（{result.n_annotated:,} / {result.n_mz_features:,} feature に付与）"
+                f"（{result.n_annotated:,} / {result.n_mz_features:,} feature に登録）"
                 if result.has_peak_list else "(なし)"
             ),
         ),
@@ -160,5 +166,16 @@ def _render_success(result) -> html.Div:
         html.Small(
             "解析タブの「データフォルダ」に出力先を指定するとそのまま読込できます。",
             className="text-muted d-block mt-2",
+        ),
+        # ★ ver55.0: 化合物名を列名に焼き込まなくなったので、その旨と戻し方を出す。
+        html.Small(
+            "化合物名は Parquet の列名ではなくサイドカー "
+            "（<出力名>_feature_annotations.parquet）に登録します。"
+            "列名は m/z のままなので、解析設定の「変換元 CSV 由来の化合物名を使う」で"
+            "いつでも表示を切り替えられます。"
+            if result.has_peak_list else
+            "Feature list (peak-list) CSV が無かったため化合物名は登録していません。"
+            "あとから「分子情報を登録」で追加できます。",
+            className="text-muted d-block mt-1",
         ),
     ])

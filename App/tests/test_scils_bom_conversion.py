@@ -139,30 +139,64 @@ class TestEngineMayKeepTheBom:
         assert names[3:6] == ["100.250000", "200.500000", "300.750000"], names
 
 
-class TestPolarsDtypesArePositional:
-    """polars 経路の dtype 指定が **列名キーでない**こと。
+class TestPolarsPathActuallyRuns:
+    """polars 経路が **実際に完走し、m/z が数値として読める**こと。
 
-    列名キーだと、エンジンが BOM を剥がなかったときに 1 列目の指定が
-    黙って無視され、**m/z 列が文字列として推論される**。
-    polars がこの環境に無いため、渡している形を直接見る。
+    ★ ver55.0: ここには `schema_overrides` が dict 内包表記でないことを AST で
+    検査する `TestPolarsDtypesArePositional` があった。そのテストは合否が正しさと
+    逆相関していた:
+      - 正しい修正（列名キーの dict）は `ast.DictComp` なので **落ちる**
+      - `dict(zip(...))` / `dict.fromkeys(...)` は `ast.Call` なので **通る**
+        （中身は同じ列名キーの dict なのに）
+    守っているつもりの性質を実際には守っておらず、一方で
+    `pl.scan_csv` が list を拒否して `TypeError: expected 'schema_overrides' dict,
+    found 'list'` で即死する **本物の欠陥は検出できなかった**（polars を一度も
+    実行しないため）。構文ではなく振る舞いを固定する。
+
+    守りたい不変条件は 2 つ:
+      1. polars 経路が例外なく完走する（= scan_csv が受け付ける形で渡している）
+      2. m/z 列が String に推論されず Float64 になる（BOM の有無に依存しない）
     """
 
-    def test_schema_overrides_is_a_sequence(self):
-        import ast
-        from pathlib import Path
+    @pytest.fixture(autouse=True)
+    def _allow_polars(self, monkeypatch):
+        """モジュール全体の `_force_pyarrow` を打ち消し、polars 経路を通す。"""
+        monkeypatch.delenv("SCILS_NO_POLARS", raising=False)
 
-        src = (Path(__file__).resolve().parent.parent
-               / "app" / "services" / "scils_converter.py").read_text(encoding="utf-8")
-        tree = ast.parse(src)
-        fn = next(n for n in ast.walk(tree)
-                  if isinstance(n, ast.FunctionDef) and n.name == "_csv_to_temp_parquet")
+    @pytest.mark.parametrize("bom_in_file,bom_in_headers", [
+        (True, False),   # ファイルに BOM。int_headers は utf-8-sig 読みなのでクリーン
+        (False, True),   # 逆向き: int_headers 側だけ BOM 付き（列名キー実装の踏み絵）
+        (False, False),
+    ])
+    def test_mz_column_is_float(self, tmp_path, bom_in_file, bom_in_headers):
+        pytest.importorskip("polars")
+        import pyarrow.parquet as pq
+        from app.services import scils_converter as SC
 
-        assigns = [n for n in ast.walk(fn)
-                   if isinstance(n, ast.Assign)
-                   and any(isinstance(t, ast.Name) and t.id == "schema_overrides"
-                           for t in n.targets)]
-        assert assigns, "schema_overrides の組み立てが見つからない"
-        for a in assigns:
-            assert not isinstance(a.value, ast.DictComp), (
-                "schema_overrides を列名キーの dict で渡している。"
-                "エンジンが BOM を剥がないと 1 列目の dtype 指定が黙って無視される")
+        folder = _make_folder(tmp_path / "in", bom=bom_in_file)
+        intensity = folder / "Data_Intensities.csv"
+        headers, delim, skip = SC.first_header_and_skipcount(intensity)
+        assert not headers[0].startswith(BOM), "utf-8-sig 読みなので BOM は落ちているはず"
+        if bom_in_headers:
+            headers = [BOM + headers[0]] + headers[1:]
+
+        temp = tmp_path / "temp.parquet"
+        SC._csv_to_temp_parquet(intensity, headers, delim, skip, temp)
+
+        schema = pq.read_schema(str(temp))
+        assert str(schema.field(0).type) == "double", (
+            f"m/z 列が {schema.field(0).type} になっている。dtype 指定が効いていない"
+        )
+        assert all(str(f.type) == "double" for f in schema), (
+            "強度列も含め全列 float64 でなければならない"
+        )
+        # Phase B は spot 列を **名前で** 読む (`pf.read(columns=spot_cols)`) ので、
+        # 一時 Parquet の列名が int_headers と一致することが要件。
+        # 列数と同数の dict はキーが一致しないとき index 適用にフォールバックし、
+        # そのとき列名も dict のキー（= int_headers）に揃えられる。だから
+        # 「ファイル側に BOM がある」「int_headers 側に BOM がある」のどちらでも
+        # この一致は保たれる。
+        assert list(schema.names) == list(headers), (
+            "一時 Parquet の列名が int_headers と一致しない。"
+            "Phase B の名前引きが KeyError になる"
+        )

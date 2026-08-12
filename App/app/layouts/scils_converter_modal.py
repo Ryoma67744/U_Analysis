@@ -21,8 +21,22 @@ def create_scils_converter_modal():
             dbc.ModalBody([
                 html.P(
                     "SCiLS Lab で Export した Intensity CSV + Spot CSV "
-                    "(+ 任意の Annotation CSV) が入ったフォルダを指定してください。"
-                    "ヘッダ構造とサイズで役割を自動検出し、Parquet に変換します。",
+                    "(+ 任意の Annotation CSV / Feature list CSV) が入ったフォルダを"
+                    "指定してください。ヘッダ構造とサイズで役割を自動検出し、Parquet に変換します。",
+                    className="text-muted small mb-3",
+                ),
+                # ★ ver55.0: Feature list (peak-list) は「同じフォルダに置いてあれば
+                #   黙って採用され、化合物名が列名に焼き込まれる」挙動だったのに、
+                #   説明文はこれに一言も触れていなかった。何がどう使われるかを書く。
+                html.P(
+                    [
+                        "・Annotation CSV（SpotIndex / X / Y を持つもの）は領域ラベルになります。"
+                        "無ければ全 spot が Unannotated です。",
+                        html.Br(),
+                        "・Feature list CSV（m/z と Name を持つもの）があれば化合物名を"
+                        "サイドカーに登録します。列名は m/z のままなので、"
+                        "解析時に表示を切り替えられます。",
+                    ],
                     className="text-muted small mb-3",
                 ),
 

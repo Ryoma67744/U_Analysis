@@ -281,6 +281,8 @@ def close_overwrite_modal(cancel_clicks, confirm_clicks):
      State("analysis_method_tims", "value"),
      State("data_folder", "value"),
      State("annotation_path", "value"),
+     # ★ ver55.0: 化合物名の由来を明示的に選ばせる（"embedded" / "db"）。
+     State("use_annotation_check", "value"),
      State("p_thresh", "value"),
      State("logfc_thresh", "value"),
      State("resume_rds", "value"),
@@ -347,7 +349,7 @@ def run_analysis(
     downstream_clicks,
     confirm_overwrite_clicks,
     desi_method, tims_method,
-    data_folder, annotation_path, p_thresh, logfc_thresh,
+    data_folder, annotation_path, use_annotation_check, p_thresh, logfc_thresh,
     resume_rds, rds_folder,
     output_subfolder, output_dir,
     rds_path, reanalysis_data_folder, filter_mode, target_clusters,
@@ -508,11 +510,19 @@ def run_analysis(
                 from app.services.data_manager import list_msi_files
                 sample_names = list_msi_files(data_folder)
 
+            # ★ ver55.0: Checklist の value は未初期化で None になりうる。
+            _use_annot = list(use_annotation_check or [])
+
             params = {
                 "template_path": template,
                 "data_folder": data_folder,
                 "sample_names": sample_names,
                 "annotation_path": annotation_path or "",
+                # ★ ver55.0: 化合物名の由来スイッチ。R には ANNOTATION_ENABLE /
+                #   USE_EMBEDDED_COMPOUND_NAMES として無条件に注入する（注入しないと
+                #   テンプレートのハードコード値が生き残るため）。
+                "annotation_enable": ("db" in _use_annot),
+                "use_embedded_annotation": ("embedded" in _use_annot),
                 "p_thresh": float(p_thresh) if p_thresh else 0.05,
                 "logfc_thresh": float(logfc_thresh) if logfc_thresh else 0.25,
                 "resume_from_rds": bool(resume_rds),
@@ -593,16 +603,23 @@ def run_analysis(
                 params["input_paths"] = all_paths
                 # OUTPUT_DIR: TIMSスクリプトはOUTPUT_DIR（大文字）を使用
                 params["output_dir_var"] = "OUTPUT_DIR"
-                # ANNOTATION_CSV_PATH: UIの初期設定から取得
-                if annotation_csv:
-                    _acsv = Path(annotation_csv)
-                    if _acsv.is_file():
-                        params["annotation_csv_path"] = annotation_csv
-                    elif _acsv.is_dir():
-                        # ディレクトリが指定された場合、中の CSV を自動検索
-                        csvs = sorted(_acsv.glob("*.csv"))
-                        if csvs:
-                            params["annotation_csv_path"] = str(csvs[0])
+                # ANNOTATION_CSV_PATH
+                # ★ ver55.0: 以前はサイドバーの「⚙ TIMS初期設定」の既定値
+                #   （同梱の 4500 種代謝物 DB）が無条件でここに流れ込み、利用者が
+                #   一度も指定していなくても R 側で m/z 照合が走っていた。
+                #   「代謝物データベース」を明示的に選んだときだけ渡す。
+                #   可視欄（解析設定）を優先し、無ければサイドバーの既定値を使う。
+                #   ディレクトリ指定時に sorted(glob("*.csv"))[0] を採る分岐は削除した
+                #   ── App/DB/TIMS には DB が 2 本あり、意図しない方が選ばれる。
+                if "db" in _use_annot:
+                    _acsv = Path(annotation_path or annotation_csv or "")
+                    if str(_acsv) and _acsv.is_file():
+                        params["annotation_csv_path"] = str(_acsv)
+                    else:
+                        params["annotation_enable"] = False
+                        logger.warning(
+                            "代謝物 DB 照合が選択されましたが、CSV が見つかりません: %r", str(_acsv)
+                        )
 
             # --- DESI ROI 設定 (ROI 列があれば各 ROI を別サンプルとして扱う) ---
             # desi_roi_filter_list は Store から取得した list[str]。

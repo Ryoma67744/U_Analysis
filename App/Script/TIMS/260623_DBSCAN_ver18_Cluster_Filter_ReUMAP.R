@@ -172,9 +172,13 @@ local({
 # (M) （必要なときだけ）ver13 の設定をこのスクリプト側から“上書き”したい場合
 #     空("") / NA の場合は、ver13 側に書かれている設定をそのまま使います。
 V13_ION_MODE <- "Negative"   # "" にすると上書きしない
-V13_ANNOTATION_CSV_PATH <- "C:\\Users\\Cciia\\Biochem Dropbox\\Biochem's shared workspace\\Workspace\\UMAP\\TIMS\\DB\\4500_endogenous_metabolites_mod.csv"  # "" で上書きしない
+# ★ ver55.0 (R-01): 直書きの Dropbox パスを空にした。Python 側の注入先が
+#   `ANNOTATION_CSV_PATH`（V13_ 接頭辞なし）で名前が一致せず無言で素通りしていたため、
+#   UI で指定したアノテーション CSV は破棄され、この直書き値が使われ続けていた。
+#   エラーも出ず解析は緑で完走するので、気づく手段が無かった。
+V13_ANNOTATION_CSV_PATH <- ""  # "" で上書きしない
 V13_TOLERANCE_MZ <- 0.05     # NA にすると上書きしない
-V13_ANNOTATION_ENABLE <- TRUE  # NA にすると上書きしない
+V13_ANNOTATION_ENABLE <- FALSE  # NA にすると上書きしない
 
 # (M2) m/z キャリブレーション（再解析用）
 # Python が analysis_params.json から復元した回帰係数を注入する

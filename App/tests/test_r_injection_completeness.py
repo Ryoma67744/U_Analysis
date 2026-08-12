@@ -68,9 +68,9 @@ KNOWN_DEAD = {
 #   隠さず記録し、(a) これ以上増えないこと (b) 直ったら気付けること を担保する。
 #   直すには R テンプレ側の変更が要るため ver52.2 に回している。
 KNOWN_UNFIXED = {
-    ("generate_cluster_filter_config", "ANNOTATION_CSV_PATH"):
-        "R-01: テンプレの変数は V13_ANNOTATION_CSV_PATH。"
-        "置換されないまま V13 側のハードコード Windows パスが ver6 コピーへ伝播する",
+    # ★ ver55.0: R-01 は修正済み。`generate_cluster_filter_config` の置換先を
+    #   `V13_ANNOTATION_CSV_PATH` / `V13_ANNOTATION_ENABLE` に直し、ReUMAP テンプレの
+    #   直書き Dropbox パスも空にしたので、ここから外した。
     ("generate_cluster_filter_config", "MRM_FILE_PATH"):
         "R-02: DESI 再解析テンプレに MRM_FILE_PATH も V8_MRM_FILE_PATH も無い。"
         "v16 のハードコード Windows パスが残り化合物照合が無言で飛ぶ",
@@ -160,10 +160,9 @@ class TestAuditFindingsAreCovered:
     """監査が報告した 2 件を名指しで固定する（回帰防止）。"""
 
     @pytest.mark.xfail(strict=True, reason=(
-        "R-01 / R-02: 未修正。R テンプレ側の変更が要るため ver52.2 に回している。"
+        "R-02: 未修正。DESI 再解析テンプレに MRM_FILE_PATH も V8_MRM_FILE_PATH も無い。"
         "直ったらこのテストが xpass になるので、その時点で xfail を外す"))
     @pytest.mark.parametrize("var,label", [
-        ("ANNOTATION_CSV_PATH", "TIMS 再解析"),
         ("MRM_FILE_PATH", "DESI 再解析"),
     ])
     def test_reanalysis_annotation_target(self, template_text, var, label):
@@ -174,6 +173,27 @@ class TestAuditFindingsAreCovered:
         assert _assigned(var, body), (
             f"{label}テンプレに `{var} <-` が無いのに Python が置換しようとしている。"
             "利用者が選んだアノテーション DB が黙って捨てられる")
+
+    def test_r01_is_fixed(self, template_text):
+        """★ ver55.0 (R-01) の回帰防止。
+
+        再解析の注入先が `V13_` 接頭辞であること、かつテンプレに直書きの
+        Windows Dropbox パスが残っていないこと。名前が一致しないと
+        `_replace_assign` は無言で素通りし、UI 指定が捨てられて直書き値が走る。
+        """
+        py = RUNNER.read_text(encoding="utf-8")
+        body = template_text[("generate_cluster_filter_config", "TIMS 再解析")]
+        for var in ("V13_ANNOTATION_CSV_PATH", "V13_ANNOTATION_ENABLE"):
+            assert re.search(rf'_replace_assign\([^)]*"{re.escape(var)}"', py), (
+                f"{var} への注入が無い（R-01 が再発している）")
+            assert _assigned(var, body), f"再解析テンプレに `{var} <-` が無い"
+        # アノテーション行に限定して検査する（他のパス変数は毎回注入で置換されるが、
+        # アノテーションは「指定しない」が正常系なので直書きが残ると必ず発火してしまう）。
+        ann_line = next(
+            ln for ln in body.splitlines()
+            if re.match(r"^\s*V13_ANNOTATION_CSV_PATH\s*<-", ln))
+        assert "Dropbox" not in ann_line, (
+            f"再解析テンプレのアノテーション行に直書きパスが残っている: {ann_line}")
 
 
 class TestReplaceAssignIsVerifiable:
