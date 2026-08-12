@@ -1413,18 +1413,46 @@ def convert_scils_to_parquet(
 
     # 9) organize: 元 CSV をサブフォルダに移動
     if organize:
+        # ★ ver55.4: 切片統合レイアウトでは annotation_files が座標 CSV **全部**なので、
+        #   spots_path (= spot_likes[0]) と重複する。重複したまま move すると 2 回目が
+        #   `No such file or directory` で落ち、**出力は完成しているのに「変換エラー」**
+        #   と表示され、しかも一部だけ移動した中途半端な状態が残っていた。
+        candidates = [intensity_path, spots_path, *annotation_files]
+        if peaklist_path is not None:
+            candidates.append(peaklist_path)
+        move_srcs: list[Path] = []
+        seen_srcs: set[Path] = set()
+        for src in candidates:
+            key = src.resolve()
+            if key in seen_srcs:
+                continue
+            seen_srcs.add(key)
+            move_srcs.append(src)
+
         moved: list[str] = []
-        try:
-            move_srcs = [intensity_path, spots_path, *annotation_files]
-            if peaklist_path is not None:
-                move_srcs.append(peaklist_path)
-            for src in move_srcs:
-                dst = _move_into_folder(src, out_path.parent)
-                moved.append(str(dst))
-            result.moved_files = moved
-            result.organized = True
-        except Exception as e:
-            raise RuntimeError(f"出力は作成済みですが元 CSV の移動に失敗: {e}")
+        failed: list[str] = []
+        for src in move_srcs:
+            if not src.exists():
+                # 既に移動済み (中断後の再実行など)。出力は完成しているので続行する。
+                logger.info("移動をスキップ (既に存在しない): %s", src.name)
+                continue
+            try:
+                moved.append(str(_move_into_folder(src, out_path.parent)))
+            except Exception as e:
+                logger.warning("元 CSV の移動に失敗: %s (%s)", src.name, e)
+                failed.append(f"{src.name} ({e})")
+
+        result.moved_files = moved
+        result.organized = not failed
+        if failed:
+            # ★ ver55.4: 以前はここで RuntimeError を投げていた。整理は後片付けであって
+            #   変換の一部ではなく、Parquet もサイドカーも既に書き終わっている。
+            #   失敗を「変換エラー」として投げると、**成功した変換を失敗と誤認させる**。
+            result.warnings.append(
+                "変換は完了しましたが、元 CSV の移動に失敗したものがあります"
+                f"（{len(failed)} 件）: " + " / ".join(failed)
+                + "。出力ファイルは正常です。"
+            )
 
     result.duration_sec = time.perf_counter() - t_start
     _report(100, "完了")
