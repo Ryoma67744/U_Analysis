@@ -54,12 +54,13 @@ def _auto_sample_name(input_folder: str) -> str:
     State("scils_sample_name", "value"),
     State("scils_organize_check", "value"),
     State("scils_float32_check", "value"),
+    State("scils_drop_uncovered_check", "value"),
     State("scils_spot_block", "value"),
     prevent_initial_call=True,
 )
 def run_scils_conversion(
     n_clicks, input_folder, output_folder, sample_name,
-    organize_value, float32_value, spot_block_value,
+    organize_value, float32_value, drop_uncovered_value, spot_block_value,
 ):
     if not n_clicks:
         return no_update
@@ -77,6 +78,7 @@ def run_scils_conversion(
 
     organize = bool(organize_value) and "on" in (organize_value or [])
     store_float32 = bool(float32_value) and "on" in (float32_value or [])
+    drop_uncovered = "on" in (drop_uncovered_value or [])
     try:
         spot_block = int(spot_block_value) if spot_block_value else 200
     except (TypeError, ValueError):
@@ -88,6 +90,7 @@ def run_scils_conversion(
             spot_block=spot_block,
             store_float32=store_float32,
             organize=organize,
+            drop_uncovered=drop_uncovered,
         )
     except FileNotFoundError as exc:
         logger.warning("SCiLS 変換失敗 (入力不備): %s", exc)
