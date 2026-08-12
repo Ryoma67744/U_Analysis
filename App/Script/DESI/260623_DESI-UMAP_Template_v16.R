@@ -272,7 +272,11 @@ sample_names <- c(
 PROJECT_NAME_PREFIX <- "250621_Ohashi_GF-CV_1"
 
 # MRMリストのファイルパス (化合物同定用)
-MRM_FILE_PATH <- "C:\\Users\\Cciia\\Biochem Dropbox\\Biochem's shared workspace\\Workspace\\UMAP\\DESI\\MRM\\MRM.xlsx"
+# ★ ver55.0: 直書きの Dropbox パスを空にした。読み出し側は file.exists() で
+#   分岐するだけでスイッチが無いため、利用者が MRM を指定していなくても
+#   このパスが存在する環境では化合物同定が黙って走ってしまう。
+#   Python (analysis_runner) が「アノテーション」で選ばれたときだけ注入する。
+MRM_FILE_PATH <- ""
 
 # ROI 別サンプル化モード (TIMS の annotation/slice_id と同等の機能)
 # - USE_ROI_AS_SAMPLE = TRUE: 各 .txt の最終列に ROI 文字列があれば、

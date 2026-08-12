@@ -222,17 +222,42 @@ def _create_analysis_settings_subtab():
                         ]),
                     ]),
                     dbc.Col(width=6, children=[
+                        # ★ ver55.0: 「アノテーションファイル (オプション)」は
+                        #   (a) TIMS では完全な no-op（注入先 MRM_FILE_PATH が TIMS
+                        #   テンプレに無く _replace_assign が無言で素通りする）、
+                        #   (b) 実際に効いていたのは折りたたまれて見えないサイドバーの
+                        #   既定 DB、という二重の分かりにくさがあった。
+                        #   何を使うかを明示的に選ぶ形にする。
                         html.Div(className="param-group", children=[
-                            html.H5("アノテーションファイル (オプション)"),
+                            html.H5("アノテーション (オプション)"),
+                            dbc.Checklist(
+                                id="use_annotation_check",
+                                options=[
+                                    {"label": " 変換元 CSV 由来の化合物名を使う"
+                                              "（SCiLS Feature list）",
+                                     "value": "embedded"},
+                                    {"label": " 代謝物データベース CSV で m/z 照合する",
+                                     "value": "db"},
+                                ],
+                                # 既定: 自分で Export したデータ由来の名前だけ使う。
+                                # 同梱 DB による m/z 照合は明示的に選んだときだけ。
+                                value=ls.get("use_annotation_check", ["embedded"]),
+                                switch=True,
+                            ),
                             dbc.Input(id="annotation_path",
                                       value=ls.get("annotation_path", ls.get("mrm_path", "")),
-                                      placeholder="アノテーションファイルのパス"),
+                                      placeholder="代謝物データベース CSV (TIMS) / MRM .xlsx (DESI)",
+                                      className="mt-2"),
                             dbc.Button("参照...", id="browse_annotation", size="sm", color="secondary",
                                        style={"marginTop": "5px"}),
                             html.Small(
                                 id="annotation_path_path_hint", children="",
                                 style={"color": "#6c757d", "fontSize": "0.75rem",
                                        "marginTop": "2px", "display": "block"},
+                            ),
+                            dbc.FormText(
+                                "どちらも外すと化合物名は一切付けません（m/z 表示）。"
+                                "「代謝物データベース」を選んだときだけ上のパスを使います。"
                             ),
                         ]),
                         # 正規化設定（DESI/TIMS共通・UMAP解析時のみ表示）

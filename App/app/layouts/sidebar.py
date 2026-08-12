@@ -262,10 +262,15 @@ def _create_tims_settings(ls: dict = None):
                                     ls.get("default_tims_data_folder", DEFAULT_TIMS_DATA_FOLDER),
                                     "TIMSデータフォルダ"),
 
-                    html.H6("アノテーションファイル (.csv)", style={"marginTop": "10px"}),
+                    # ★ ver55.0: 既定値を `value`（＝送信される値）として入れていたため、
+                    #   ここは折りたたまれていて画面に出ないのに、同梱の 4500 種代謝物 DB が
+                    #   毎回 UMAP 解析へ渡り、利用者が指定していなくても m/z 照合が
+                    #   走っていた。既定はプレースホルダ（見本）に落とし、実際に使うかは
+                    #   解析設定の「アノテーション (オプション)」で明示的に選ぶ。
+                    html.H6("代謝物データベース (.csv)", style={"marginTop": "10px"}),
                     _path_input_row("default_annotation_csv", "browse_default_annotation",
-                                    ls.get("default_annotation_csv", DEFAULT_ANNOTATION_CSV_PATH),
-                                    "アノテーションファイルのパス"),
+                                    ls.get("default_annotation_csv", ""),
+                                    DEFAULT_ANNOTATION_CSV_PATH),
 
                     html.H6("デフォルト出力先", style={"marginTop": "10px"}),
                     _path_input_row("default_tims_output_dir", "browse_default_tims_output",

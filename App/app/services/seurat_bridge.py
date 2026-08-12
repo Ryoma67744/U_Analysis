@@ -1047,10 +1047,11 @@ class SeuratBridge:
           **サンプル A の化合物名がサンプル B の feature に付く**（m/z 0.005 Da
           一致なので、空欄ではなく「それらしい別名」が出る = 気づけない）。
 
-          サイドカーは m/z が一致すれば内容は等価なので候補が 1 つなら従来どおり。
-          複数あるときは **警告を残す**（どれを使ったか追えるようにする）。
-          本質的な解決はサンプル単位で持つことだが、それは R 側の出力契約に
-          関わるためここでは可視化にとどめる。
+          ★ ver55.0: 警告を出すだけで **先頭を使い続けていた**ので、実害は残ったままだった
+          （RDS は多サンプルを結合したオブジェクトなので、ここに「正しい 1 サンプル」は
+          存在せず、名前で選び直すこともできない）。候補が複数のときは中身を突き合わせ、
+          **一致していれば従来どおり使い、食い違っていれば付けない**（fail-closed）。
+          m/z 0.005 Da 一致で「それらしい別名」が出る事故は、空欄より悪い。
         """
         p = Path(rds_path).resolve()
         bases = [p.parent, p.parent.parent, p.parent.parent.parent]
@@ -1064,14 +1065,43 @@ class SeuratBridge:
                 hits = sorted(base.glob(pattern))
                 if not hits:
                     continue
-                if len(hits) > 1:
-                    logger.warning(
-                        "注釈サイドカーが %d 個見つかりました。先頭 (%s) を使います。"
-                        "サンプルごとに内容が異なる場合、別サンプルの化合物名が"
-                        "付く可能性があります: %s",
-                        len(hits), hits[0].name, [h.name for h in hits])
-                return hits[0]
+                if len(hits) == 1:
+                    return hits[0]
+                if self._sidecars_agree(hits):
+                    logger.info(
+                        "注釈サイドカーが %d 個ありますが内容は一致しています。%s を使います。",
+                        len(hits), hits[0].name)
+                    return hits[0]
+                logger.error(
+                    "注釈サイドカーが %d 個あり、内容が食い違っています。"
+                    "どのサンプルのものか決められないため化合物名を付けません "
+                    "(m/z 表示になります): %s",
+                    len(hits), [h.name for h in hits])
+                return None
         return None
+
+    @staticmethod
+    def _sidecars_agree(paths: list) -> bool:
+        """複数サイドカーが同じ m/z → 化合物名の対応を持つかを判定する。
+
+        読めないものが 1 つでもあれば「一致していない」と見なす（安全側）。
+        """
+        ref = None
+        for path in paths:
+            try:
+                df = pd.read_parquet(path, columns=["mz", "compound"])
+            except Exception:
+                logger.warning("注釈サイドカーを読めません: %s", path, exc_info=True)
+                return False
+            key = sorted(
+                (round(float(m), 4), str(c))
+                for m, c in zip(df["mz"], df["compound"])
+            )
+            if ref is None:
+                ref = key
+            elif key != ref:
+                return False
+        return ref is not None
 
     def _load_feature_annotations(self, cache_dir: Path, rds_path,
                                   features_list: list) -> dict:

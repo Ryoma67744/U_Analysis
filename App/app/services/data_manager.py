@@ -343,6 +343,12 @@ def read_parquet_annotations(file_path: str) -> list[str]:
     """Parquetファイルの annotation 列からユニーク値を取得する。
 
     annotation 列がない場合は空リストを返す。
+
+    ★ ver55.0: 領域アノテーション CSV を一枚も渡していない変換では、annotation 列は
+    全行 'Unannotated' になる（それ以前は Spot ファイル名由来のラベルが入っていた）。
+    どちらも「領域の指定は無い」状態なので、選択肢としては出さない。
+    フッタの `annotation_source` が 'none' ならその場で空を返し、無い旧ファイルでも
+    ラベルが 1 種類だけならユーザーが領域を分けていないと判断できる。
     """
     try:
         import pyarrow.parquet as pq
@@ -350,9 +356,16 @@ def read_parquet_annotations(file_path: str) -> list[str]:
         pf = pq.ParquetFile(file_path)
         if "annotation" not in pf.schema.names:
             return []
+        md = pf.schema_arrow.metadata or {}
+        if md.get(b"annotation_source") == b"none":
+            return []
         df = pd.read_parquet(file_path, columns=["annotation"])
         unique = df["annotation"].dropna().unique().tolist()
-        return sorted(set(str(a).strip() for a in unique if str(a).strip()))
+        labels = sorted(set(str(a).strip() for a in unique if str(a).strip()))
+        # 旧ファイル（annotation_source を持たない）向けの後方互換判定。
+        if b"annotation_source" not in md and len(labels) <= 1:
+            return []
+        return labels
     except Exception:
         return []
 
