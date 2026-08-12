@@ -283,3 +283,57 @@ class TestBuildMasterSpotTable:
         assert sorted(si.tolist()) == [1, 2, 3]
         assert region_map == {1: "01", 2: "01", 3: "02"}
         assert any("統合" in w for w in warnings), warnings
+
+
+class TestOrganizeMovesEachFileOnce:
+    """★ ver55.4: 切片統合レイアウトでは `annotation_files` が座標 CSV **全部**なので、
+    `spots_path` (= 最大サイズの 1 本) と重複する。重複したまま移動すると 2 回目が
+    `No such file or directory` で落ち、**出力は完成しているのに「変換エラー」**と
+    表示され、一部だけ移動した中途半端な状態が残っていた。
+    """
+
+    def test_all_source_csvs_are_moved_exactly_once(self, tmp_path):
+        data_dir = tmp_path / "scils"
+        _write_intensity(data_dir, "A_Intensity.csv", [100.0, 200.0], [1, 2, 3, 4, 5, 6])
+        _write_coords(data_dir, "01.csv", [1, 2, 3])   # 最大 = spots_path になる
+        _write_coords(data_dir, "02.csv", [4, 5])
+        _write_coords(data_dir, "03.csv", [6])
+
+        result = sc.convert_scils_to_parquet(
+            str(data_dir), str(tmp_path / "out.parquet"),
+            organize=True, store_float32=False,
+        )
+
+        assert result.organized is True
+        assert not any("移動に失敗" in w for w in result.warnings), result.warnings
+
+        # 重複移動していない = 移動先に (1) 付きの複製が生まれていない
+        moved_names = sorted(Path(p).name for p in result.moved_files)
+        assert moved_names == ["01.csv", "02.csv", "03.csv", "A_Intensity.csv"]
+
+        transform_dir = data_dir / "A_Transform"
+        assert sorted(p.name for p in transform_dir.glob("*.csv")) == moved_names
+        # 元フォルダに CSV が残っていない
+        assert list(data_dir.glob("*.csv")) == []
+
+    def test_move_failure_does_not_mask_a_successful_conversion(self, tmp_path, monkeypatch):
+        """整理は後片付け。失敗しても変換結果を「エラー」にしてはいけない。"""
+        data_dir = tmp_path / "scils"
+        _write_intensity(data_dir, "A_Intensity.csv", [100.0], [1, 2, 3, 4, 5, 6])
+        _write_coords(data_dir, "01.csv", [1, 2, 3])
+        _write_coords(data_dir, "02.csv", [4, 5, 6])
+
+        def _boom(src, dst_folder):
+            raise OSError("disk is full")
+
+        monkeypatch.setattr(sc, "_move_into_folder", _boom)
+
+        result = sc.convert_scils_to_parquet(
+            str(data_dir), str(tmp_path / "out.parquet"),
+            organize=True, store_float32=False,
+        )
+
+        assert Path(result.output_path).is_file()
+        assert result.n_spots == 6
+        assert result.organized is False
+        assert any("移動に失敗" in w for w in result.warnings), result.warnings
