@@ -174,6 +174,42 @@ class TestSectionCoordinateFiles:
         assert sorted(pd.read_parquet(result.output_path)["id"]) == [1, 2]
         assert any("±1" in w for w in result.warnings), result.warnings
 
+    def test_zero_based_coordinates_are_corrected(self, tmp_path):
+        """実データの形: 座標が 0 始まり、Intensity が 1 始まり。
+
+        座標 CSV の番号空間 (0..11) が Intensity (1..12) をちょうど 1 ずらした
+        範囲に一致するので、一部の切片しか座標が無くてもシフトと確定できる。
+        補正しないと全 spot が**隣の spot の座標**と結び付き、1 spot ずれた
+        画像を黙って出力してしまう。
+        """
+        data_dir = tmp_path / "scils"
+        _write_intensity(data_dir, "A_Intensity.csv", [100.0], list(range(1, 13)))
+        _write_coords(data_dir, "01.csv", [0, 1, 2, 3])
+        _write_coords(data_dir, "02.csv", [4, 5, 6])
+        # 04 に相当する 7, 8 は意図的に出していない
+        _write_coords(data_dir, "05.csv", [9, 10, 11])
+
+        result = sc.convert_scils_to_parquet(
+            str(data_dir), str(tmp_path / "out.parquet"),
+            organize=False, store_float32=False,
+        )
+
+        assert any("グローバルシフト" in w for w in result.warnings), result.warnings
+
+        # 補正後は Intensity の `Spot N` が SpotIndex N-1 の座標を使う。
+        # 残るのは N-1 が座標に載っている N = 1..7, 10..12 の 10 spot
+        # （7, 8 は「04」に相当し座標を出していない）。
+        # 補正しなかった場合は 9 spot になるので、件数だけでも区別が付く。
+        assert result.n_spots == 10
+        df = pd.read_parquet(result.output_path)
+        expected_xy = sorted(
+            (float(si % 10), float(si // 10)) for si in [0, 1, 2, 3, 4, 5, 6, 9, 10, 11]
+        )
+        assert sorted(zip(df["x"], df["y"])) == expected_xy
+        assert result.annotation_labels == ["01", "02", "05"]
+        # 補正できているので「±1 の疑い」は出さない
+        assert not any("可能性があります" in w for w in result.warnings), result.warnings
+
     def test_no_intersection_at_all_is_an_error(self, tmp_path):
         """別測定同士を突き合わせた場合は drop_uncovered でも止める"""
         data_dir = tmp_path / "scils"
@@ -200,6 +236,31 @@ class TestAutoDetectExposesAllSpotLikes:
         # 従来キーも維持（プレビュー等の既存呼び出し元のため）
         assert roles["spot"].name == "01.csv"
         assert [p.name for p in roles["annotations"]] == ["02.csv"]
+
+
+class TestDetectPartialShift:
+    def test_zero_based_coords_against_one_based_intensity(self):
+        # 実データ相当: 座標 0..76437 (04 の 45938..65751 は欠番) / Intensity 1..76438
+        set_spot = set(range(0, 45938)) | set(range(65752, 76438))
+        set_int = set(range(1, 76439))
+        assert sc._detect_partial_shift(set_int, set_spot) == -1
+
+    def test_same_numbering_is_not_shifted(self):
+        """番号体系が同じなら座標は Intensity の部分集合。補正してはならない。"""
+        set_spot = {1, 2, 3, 7, 8}
+        set_int = set(range(1, 11))
+        assert sc._detect_partial_shift(set_int, set_spot) == 0
+
+    def test_ambiguous_partial_coverage_returns_zero(self):
+        """端が届いていなければ決め手が無い。推測しない。"""
+        set_spot = {0, 1, 2}
+        set_int = set(range(1, 7))
+        assert sc._detect_partial_shift(set_int, set_spot) == 0
+
+    def test_plus_one_direction(self):
+        set_spot = {2, 3, 6, 11}
+        set_int = set(range(1, 11))
+        assert sc._detect_partial_shift(set_int, set_spot) == +1
 
 
 class TestBuildMasterSpotTable:

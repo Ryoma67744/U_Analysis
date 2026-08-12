@@ -268,6 +268,34 @@ def read_spot_table(spots_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarra
     return spot_index.astype(int).to_numpy(), x_arr, y_arr
 
 
+def _detect_partial_shift(set_int: set[int], set_spot: set[int]) -> int:
+    """部分カバー時に、決定的なときだけ ±1 のグローバルシフトを判定する。
+
+    戻り値は Intensity の spot 番号に足すべき補正値 (-1 / +1 / 0)。
+
+    番号体系が同じなら、座標 CSV の spot 番号は Intensity の spot 番号の
+    **部分集合**になる。したがって座標側の min/max が Intensity の範囲から
+    はみ出すことは起こり得ない。**ちょうど 1 だけはみ出していて、1 ずらすと
+    完全に内側へ収まる**なら、それはグローバルシフト以外にあり得ない。
+    一部の切片しか座標が無くても、この判定は成立する。
+
+    実データ例 (ver55.1): 座標 CSV は SpotIndex 0..76437、Intensity は
+    `Spot 1`..`Spot 76438` (76438 列)。座標が 0 始まり・Intensity が 1 始まりで、
+    そのままだと全 spot が隣の spot の座標と結び付き、1 spot ずれた画像になる。
+
+    どちらとも言えないときは 0 を返す。呼び出し元が「疑い」として申告する。
+    """
+    if not set_int or not set_spot:
+        return 0
+    lo_s, hi_s = min(set_spot), max(set_spot)
+    lo_i, hi_i = min(set_int), max(set_int)
+    if lo_s == lo_i - 1 and hi_s == hi_i - 1 and {s + 1 for s in set_spot} <= set_int:
+        return -1
+    if lo_s == lo_i + 1 and hi_s == hi_i + 1 and {s - 1 for s in set_spot} <= set_int:
+        return +1
+    return 0
+
+
 def compute_spot_mapping(
     intensity_headers: list[str],
     spot_index: np.ndarray,
@@ -282,9 +310,11 @@ def compute_spot_mapping(
 
     drop_uncovered=True なら、座標が無い spot 列を**除外して**変換を続ける
     (切片だけを Export し、測定全体の Intensity と突き合わせる運用向け)。
-    除外件数は必ず warnings に出す。この経路では ±1 の自動補正は行わない
-    — 部分カバーでは shift の有無を集合の一致では判定できず、誤って補正すると
-    全 spot の座標が 1 つずれた画像を黙って出力してしまうため。
+    除外件数は必ず warnings に出す。
+
+    部分カバーでも、番号空間の範囲から決定的に言えるときは ±1 を補正する
+    (`_detect_partial_shift`)。言えないときは補正せず、疑いを warnings に出す
+    — 誤って補正すると全 spot の座標が 1 つずれた画像を黙って出力してしまうため。
 
     Returns
     -------
@@ -316,62 +346,35 @@ def compute_spot_mapping(
     extra = sorted(set_int - set_spot)
     missing = sorted(set_spot - set_int)
 
+    shift = 0
     if extra or missing:
-        set_int_minus1 = {n - 1 for n in set_int}
-        set_int_plus1 = {n + 1 for n in set_int}
-        if set_int_minus1 == set_spot:
-            warnings.append("Intensity ヘッダの spot 番号に +1 グローバルシフトを検出。ラベルを自動補正しました。")
-            logger.info("Intensity ヘッダ +1 シフト検出 → ラベル -1 補正")
-            spot_nums_int = spot_nums_int - 1
-        elif set_int_plus1 == set_spot:
-            warnings.append("Intensity ヘッダの spot 番号に -1 グローバルシフトを検出。ラベルを自動補正しました。")
-            logger.info("Intensity ヘッダ -1 シフト検出 → ラベル +1 補正")
-            spot_nums_int = spot_nums_int + 1
-        elif drop_uncovered:
-            # 座標のある spot だけを残す。数の食い違いを黙って埋めないよう、
-            # 除外件数は必ず申告する。
-            keep = np.fromiter(
-                (n in set_spot for n in spot_nums_int.tolist()), dtype=bool,
-                count=len(spot_nums_int),
-            )
-            n_keep = int(keep.sum())
-            if n_keep == 0:
-                raise ValueError(
-                    "座標 CSV に載っている spot が Intensity に 1 つもありません。\n"
-                    f"- Intensity の spot 番号: {sorted(set_int)[:5]} ...\n"
-                    f"- 座標 CSV の spot 番号: {sorted(set_spot)[:5]} ...\n"
-                    "別の測定の Intensity と座標を突き合わせていないかご確認ください。"
-                )
-            if extra:
-                warnings.append(
-                    f"座標 CSV に無い {len(extra)} spot を除外しました"
-                    f"（Intensity の {len(set_int)} spot 中 {n_keep} spot を変換）。"
-                )
-                logger.warning("座標なし spot を除外: %d 個 (例: %s)", len(extra), extra[:10])
-            if missing:
-                warnings.append(
-                    f"座標だけがあり Intensity に列が無い spot が {len(missing)} 個"
-                    f"（例: {missing[:10]}）。これらは出力に含まれません。"
-                )
-            # ★ 部分カバーでは ±1 シフトを集合の一致で判定できない。自動補正は
-            #   しないが、疑わしいときは黙らずに申告する（1 spot ずれた画像は
-            #   一見それらしく見えてしまい、後から気付けない）。
-            n0 = len(set_int & set_spot)
-            n_minus = len({n - 1 for n in set_int} & set_spot)
-            n_plus = len({n + 1 for n in set_int} & set_spot)
-            if max(n_minus, n_plus) > n0:
-                warnings.append(
-                    "spot 番号が ±1 ずれている可能性があります"
-                    f"（一致数: そのまま {n0} / -1 補正で {n_minus} / +1 補正で {n_plus}）。"
-                    "部分カバーでは自動補正しないため、変換後の画像で位置が正しいか"
-                    "必ずご確認ください。"
-                )
-                logger.warning(
-                    "±1 シフトの疑い: 一致数 そのまま=%d, -1=%d, +1=%d", n0, n_minus, n_plus
-                )
-            spot_labels = [spot_labels[i] for i in np.nonzero(keep)[0]]
-            spot_nums_int = spot_nums_int[keep]
+        # ±1 のグローバルシフトを補正する (データは動かさず、ラベルだけ調整)。
+        # 完全一致で言えるとき (従来) と、部分カバーでも番号空間の範囲から
+        # 決定的に言えるとき (ver55.1, `_detect_partial_shift`) の 2 通り。
+        if {n - 1 for n in set_int} == set_spot:
+            shift = -1
+        elif {n + 1 for n in set_int} == set_spot:
+            shift = +1
         else:
+            shift = _detect_partial_shift(set_int, set_spot)
+
+        if shift:
+            warnings.append(
+                f"Intensity ヘッダの spot 番号に {-shift:+d} グローバルシフトを検出。"
+                "ラベルを自動補正しました。"
+            )
+            logger.info(
+                "spot 番号シフト検出 → ラベル %+d 補正 (Intensity %d..%d / 座標 %d..%d)",
+                shift, min(set_int), max(set_int), min(set_spot), max(set_spot),
+            )
+            spot_nums_int = spot_nums_int + shift
+            set_int = {int(n) for n in spot_nums_int.tolist()}
+            extra = sorted(set_int - set_spot)
+            missing = sorted(set_spot - set_int)
+
+    # シフト補正後にも残る食い違い (04 のように座標を出していない切片など)
+    if extra or missing:
+        if not drop_uncovered:
             msg = [
                 "Intensity と Spot テーブルの spot 番号が一致しません。",
                 f"- Intensity にのみ存在: {len(extra)} 個 (例: {extra[:10]})",
@@ -386,6 +389,50 @@ def compute_spot_mapping(
                     "座標のある spot だけを変換できます。",
                 )
             raise ValueError("\n".join(msg))
+
+        # 座標のある spot だけを残す。数の食い違いを黙って埋めないよう、
+        # 除外件数は必ず申告する。
+        keep = np.fromiter(
+            (n in set_spot for n in spot_nums_int.tolist()), dtype=bool,
+            count=len(spot_nums_int),
+        )
+        n_keep = int(keep.sum())
+        if n_keep == 0:
+            raise ValueError(
+                "座標 CSV に載っている spot が Intensity に 1 つもありません。\n"
+                f"- Intensity の spot 番号: {sorted(set_int)[:5]} ...\n"
+                f"- 座標 CSV の spot 番号: {sorted(set_spot)[:5]} ...\n"
+                "別の測定の Intensity と座標を突き合わせていないかご確認ください。"
+            )
+        if extra:
+            warnings.append(
+                f"座標 CSV に無い {len(extra)} spot を除外しました"
+                f"（Intensity の {len(set_int)} spot 中 {n_keep} spot を変換）。"
+            )
+            logger.warning("座標なし spot を除外: %d 個 (例: %s)", len(extra), extra[:10])
+        if missing:
+            warnings.append(
+                f"座標だけがあり Intensity に列が無い spot が {len(missing)} 個"
+                f"（例: {missing[:10]}）。これらは出力に含まれません。"
+            )
+        # 補正できなかったのに ±1 が疑わしいときは、黙らずに申告する
+        # （1 spot ずれた画像は一見それらしく見えてしまい、後から気付けない）。
+        if not shift:
+            n0 = len(set_int & set_spot)
+            n_minus = len({n - 1 for n in set_int} & set_spot)
+            n_plus = len({n + 1 for n in set_int} & set_spot)
+            if max(n_minus, n_plus) > n0:
+                warnings.append(
+                    "spot 番号が ±1 ずれている可能性があります"
+                    f"（一致数: そのまま {n0} / -1 補正で {n_minus} / +1 補正で {n_plus}）。"
+                    "決め手が無いため自動補正していません。変換後の画像で位置が正しいか"
+                    "必ずご確認ください。"
+                )
+                logger.warning(
+                    "±1 シフトの疑い: 一致数 そのまま=%d, -1=%d, +1=%d", n0, n_minus, n_plus
+                )
+        spot_labels = [spot_labels[i] for i in np.nonzero(keep)[0]]
+        spot_nums_int = spot_nums_int[keep]
 
     coord = {int(si): (float(x_arr[i]), float(y_arr[i])) for i, si in enumerate(spot_index_int)}
     x_map = np.array([coord[int(n)][0] for n in spot_nums_int], dtype=np.float64)
