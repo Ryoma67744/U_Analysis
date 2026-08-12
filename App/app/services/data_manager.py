@@ -396,9 +396,14 @@ def read_desi_roi_list(file_path: str, *, max_roi: int = 200) -> list[str]:
         if _converted is None:
             return []
         file_path = str(_converted)
+    # ★ ver55.2: ヘッダは 4 行固定ではない (実データは 5 行: 空/化合物名/代謝物番号/Q1/Q3)。
+    #   4 行決め打ちだと Q3 の行をデータ行として ROI 判定の集計に混ぜてしまう。
+    from app.services.desi_header import read_desi_header
+    _hdr = read_desi_header(file_path)
+    n_header = _hdr.n_header if _hdr is not None else 4
     try:
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-            for _ in range(4):  # ヘッダ 4 行スキップ (R fread skip=4 と整合)
+            for _ in range(n_header):  # ヘッダ行スキップ (R fread skip=n_header と整合)
                 if not f.readline():
                     return []
 
@@ -457,14 +462,22 @@ def validate_msi_file(file_path: str) -> dict:
 
     try:
         with open(path, "r", encoding="utf-8") as f:
-            lines = [f.readline() for _ in range(5)]
+            lines = [f.readline() for _ in range(12)]
 
         if len([l for l in lines if l]) < 5:
             return {"valid": False, "message": "ファイルの行数が不足しています (最低5行必要)"}
 
-        # 5行目がタブ区切りデータかチェック
-        data_fields = lines[4].strip().split("\t")
-        if len(data_fields) < 4:
+        # ★ ver55.2: 以前は「5 行目がタブ区切りで 4 列以上あるか」だけを見ていた。
+        #   ヘッダ 5 行のファイルでは 5 行目が Q3 の行なので、この検査は
+        #   **ヘッダをデータと誤認したまま通ってしまう**（実際に通っていた）。
+        #   データ開始行を明示的に特定して検査する。
+        from app.services.desi_header import is_data_line
+        data_at = next((i for i, ln in enumerate(lines) if ln and is_data_line(ln)), None)
+        if data_at is None:
+            return {"valid": False, "message": "データ行が見つかりません (先頭のヘッダ形式が想定と異なります)"}
+        if data_at < 1:
+            return {"valid": False, "message": "ヘッダ行がありません"}
+        if len(lines[data_at].strip().split("\t")) < 4:
             return {"valid": False, "message": "データ形式が正しくありません"}
 
         return {"valid": True, "message": "OK"}
