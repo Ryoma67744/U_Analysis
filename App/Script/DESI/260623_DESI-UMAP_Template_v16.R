@@ -1696,28 +1696,96 @@ export_cluster_highlights <- function(obj, prefix, outdir, sample_names = NULL,
 # ---- DESIデータの読み込み関数 ----
 read_desi_data <- function(file_path, sample_prefix = NULL) {
   cat("Reading DESI data from:", file_path, "\n")
-  # ヘッダー4行は従来通りreadLinesで取得
-  header_lines <- readLines(file_path, n = 4, warn = FALSE)
-  if (length(header_lines) < 4) stop("データファイルの行数が不足しています: ", file_path)
-  metabolite_numbers <- trimws(strsplit(header_lines[2], "\t")[[1]])
-  pre_masses <- trimws(strsplit(header_lines[3], "\t")[[1]])
-  post_masses <- trimws(strsplit(header_lines[4], "\t")[[1]])
+  # ---- ヘッダ行数を自動判定 ----
+  # ★ ver55.2: 従来は readLines(n = 4) / fread(skip = 4) の 4 行決め打ちだった。
+  #   実データのヘッダは 5 行 (空 / 化合物名 / 代謝物番号 / Q1 / Q3) で、次の 3 つが
+  #   同時に起きていた:
+  #     (a) pre=代謝物番号 / post=Q1 と取り違え、特徴量名が "1-90.0477" のように
+  #         **番号と Q1 を連結した無意味な文字列**になっていた (本来は Q1-Q3)。
+  #     (b) 化合物名が metabolite_numbers に入り、以降で参照されず捨てられていた。
+  #     (c) skip=4 のため Q3 行がデータ 1 行目として読まれ、列 1..3 が空なので
+  #         spot_index/x/y が NA の "Spot_NA" という幽霊ピクセルが混入していた。
+  #   データ開始行の判定は DESI_RDS_ClusterFilter_ver3.R の is_data_line と同じ基準
+  #   (列1 が整数の PixelID、列2/3 が数値) にそろえる。
+  probe <- readLines(file_path, n = 12, warn = FALSE)
+  if (length(probe) < 5) stop("データファイルの行数が不足しています: ", file_path)
+  .is_data_line <- function(ln) {
+    sp <- strsplit(ln, "\t", fixed = TRUE)[[1]]
+    if (length(sp) < 3) return(FALSE)
+    a <- trimws(sp[1]); b <- trimws(sp[2]); cc <- trimws(sp[3])
+    if (!nzchar(a)) return(FALSE)
+    if (grepl("\\.", a)) return(FALSE)  # PixelID は整数の想定
+    aid <- suppressWarnings(as.integer(a))
+    bx <- suppressWarnings(as.numeric(b))
+    cy <- suppressWarnings(as.numeric(cc))
+    is.finite(aid) && is.finite(bx) && is.finite(cy)
+  }
+  hit <- which(vapply(probe, .is_data_line, logical(1)))
+  if (!length(hit) || hit[1] < 2) {
+    stop("データ開始行を特定できません (先頭のヘッダ形式が想定と異なります): ", file_path)
+  }
+  n_header <- hit[1] - 1L
+  header_lines <- probe[seq_len(n_header)]
 
-  metabolite_numbers <- metabolite_numbers[nzchar(metabolite_numbers)]
-  pre_masses <- pre_masses[nzchar(pre_masses)]
-  post_masses <- post_masses[nzchar(post_masses)]
+  # ---- 各ヘッダ行は「4 列目以降」を位置で切り出す ----
+  # ★ 空セルを詰める方式だと、実データの 2 行目 1 列目に入っている余計な値 ('5') が
+  #   化合物名に混ざり、特徴量数と 1 個ズレる。列位置で切れば混ざらない。
+  .row_cells <- function(ln) {
+    sp <- trimws(strsplit(ln, "\t", fixed = TRUE)[[1]])
+    if (length(sp) <= 3L) return(character(0))
+    sp <- sp[-seq_len(3L)]
+    sp[nzchar(sp)]
+  }
+  hrows <- lapply(header_lines, .row_cells)
 
-  # 特徴量名の構築:
-  #  - 従来形式 (4行ヘッダ): pre=Q1, post=Q3 → "Q1-Q3" (例 "146.1-102.0")
-  #  - 新形式 (1行ヘッダ・列名=化合物名): post(Q3)が空のため pre(化合物名)をそのまま使う
-  if (length(post_masses) == 0) {
-    metabolite_names <- pre_masses
+  compounds <- character(0); metabolite_numbers <- character(0)
+  pre_masses <- character(0); post_masses <- character(0)
+  if (n_header >= 5L) {
+    # 空 / 化合物名 / 代謝物番号 / Q1 / Q3 (末尾から数えるので先頭の空行数に依らない)
+    compounds          <- hrows[[n_header - 3L]]
+    metabolite_numbers <- hrows[[n_header - 2L]]
+    pre_masses         <- hrows[[n_header - 1L]]
+    post_masses        <- hrows[[n_header]]
+  } else if (n_header == 4L && length(hrows[[4L]]) == 0L) {
+    # desi_converter が新形式から組み替えた形 (空 / 代謝物番号 / 化合物名 / 空)
+    metabolite_numbers <- hrows[[2L]]
+    compounds          <- hrows[[3L]]
+  } else if (n_header == 4L) {
+    # 化合物名を持たない 4 行ヘッダ (空 / 代謝物番号 / Q1 / Q3)
+    metabolite_numbers <- hrows[[2L]]
+    pre_masses         <- hrows[[3L]]
+    post_masses        <- hrows[[4L]]
   } else {
-    metabolite_names <- paste(pre_masses, post_masses, sep = "-")
+    stop("DESI ヘッダの形式を判定できません (ヘッダ ", n_header, " 行): ", file_path)
   }
 
+  # ---- 特徴量名の構築 ----
+  # 化合物名と MRM トランジションの**両方**を持たせる (片方しか無ければあるものを使う)。
+  # 化合物名末尾の `_<数字>_<数字>` (CE/DP 等のパラメータ) は落とす。
+  #   例: POS_AA_Ala_24_6 + 90.0477/44.0900 → "POS_AA_Ala (90.0477-44.0900)"
+  transitions <- character(0)
+  if (length(pre_masses) && length(pre_masses) == length(post_masses)) {
+    transitions <- paste(pre_masses, post_masses, sep = "-")
+  } else if (length(pre_masses)) {
+    transitions <- pre_masses
+  }
+  if (length(compounds)) {
+    cname <- sub("_[0-9]+_[0-9]+$", "", compounds)
+    metabolite_names <- if (length(transitions) == length(cname)) {
+      paste0(cname, " (", transitions, ")")
+    } else {
+      cname
+    }
+  } else {
+    metabolite_names <- transitions
+  }
+  if (!length(metabolite_names)) stop("特徴量名を構築できません: ", file_path)
+  metabolite_names <- make.unique(metabolite_names)
+  cat("  ヘッダ", n_header, "行 / 特徴量", length(metabolite_names), "件",
+      if (length(compounds)) "(化合物名あり)" else "(化合物名なし)", "\n")
+
   # [P5] データ部分はfreadで一括高速読込
-  data_df <- data.table::fread(file_path, sep = "\t", skip = 4,
+  data_df <- data.table::fread(file_path, sep = "\t", skip = n_header,
                                 header = FALSE, fill = TRUE,
                                 data.table = FALSE)
   if (nrow(data_df) == 0) stop("データ行が存在しません: ", file_path)
