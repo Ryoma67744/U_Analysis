@@ -2239,6 +2239,7 @@ from app.services.data_manager import (
     validate_output_dir,
     validate_msi_file, list_msi_files,
 )
+from app.services.data_browser import is_persistent_path
 
 import dash_bootstrap_components as dbc
 from dash import html
@@ -2302,7 +2303,19 @@ def validate_output_dir_input(folder):
     if not folder or not folder.strip():
         return ""
     result = validate_output_dir(folder)
-    return _badge(result)
+    if not result["ok"]:
+        return _badge(result)
+    # 「書き込み可能」だけでは足りない。コンテナの書き込み層 (/app 直下など) は
+    # 書けてしまうが、コンテナを作り直すと消え、SFTP からも見えない。
+    if is_persistent_path(folder):
+        return _badge(result)
+    return html.Span([
+        _badge(result),
+        html.Span(
+            " ⚠ コンテナ内の一時領域です。再ビルドで消え、SFTP からも見えません",
+            style={"color": "#e67e22", "fontSize": "0.8rem"},
+        ),
+    ])
 
 
 @callback(

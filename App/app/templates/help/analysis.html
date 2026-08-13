@@ -364,6 +364,21 @@
   パスを毎回入力する必要はありません。
 </div>
 
+<div class="help-alert warn">
+  <div class="alert-title">⚠ 出力先は「消えない場所」を選ぶ</div>
+  <p class="small mb-1">
+    出力先の既定は <code>/app/Data/Other/output</code>（＝ホストの <code>/srv/msi/output</code>）です。
+    ここは永続化されているので、アプリを更新しても結果は残ります。
+  </p>
+  <p class="small mb-0">
+    <code>/app</code> 直下のようにマウントされていない場所を指定すると
+    <strong>「⚠ コンテナ内の一時領域です」</strong> と警告が出ます。書き込みはできますが、
+    SFTP から見えず、コンテナを作り直すと消えます。既にそこに結果がある場合は
+    <strong>「データ管理」タブ →「📦 フォルダの移動」</strong> で退避できます
+    （プロジェクトの参照先パスも自動で更新されます）。
+  </p>
+</div>
+
 <!-- -------- DESI ROI モード (ver2.0+) -------- -->
 <h3 class="subsection-heading" id="roi-mode">🆕 DESI ROI モード（複数 ROI を別サンプル扱い）</h3>
 

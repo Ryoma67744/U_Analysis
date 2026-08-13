@@ -120,6 +120,13 @@ SKIPS_ARE_IMMATERIAL = {
         "ファイルブラウザの一覧。権限が無いものは表示されないだけ",
     ("data_browser.py", "_dir_stats"):
         "フォルダサイズの概算表示",
+    ("data_browser.py", "_resolved_location_roots"):
+        "ver56.0: DATA_LOCATIONS のルート解決。解決できないルートは一覧から外れるが、"
+        "消費側 2 箇所はどちらも安全側に倒れる —— `is_persistent_path` は"
+        "「非永続」と答えるので警告が出る方向、`preview_move` はそのルートを"
+        "「移動できない場所」として守れなくなるだけ。"
+        "実体は config 由来の固定パスで、非 strict な resolve() が失敗するのは"
+        "symlink ループ等の異常時のみ（そのルートは既に壊れている）",
     ("export_progress.py", "sweep_old_files"):
         "古い一時ファイルの後始末。消せなければ次回消す",
     ("job_registry.py", "default_search_roots"):

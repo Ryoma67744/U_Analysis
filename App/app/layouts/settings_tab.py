@@ -9,7 +9,7 @@ from dash import html, dcc, dash_table
 import dash_bootstrap_components as dbc
 
 from app.config import (
-    DEFAULT_DESI_DATA_FOLDER, APP_BASE_DIR,
+    DEFAULT_DESI_DATA_FOLDER, OUTPUT_DATA_DIR,
     DEFAULT_CALIBRATION_ENABLE, DEFAULT_CALIBRATION_MATRIX,
     DEFAULT_CALIBRATION_SEARCH_WINDOW, DEFAULT_CALIBRATION_MIN_PEAKS,
     DEFAULT_CALIBRATION_REGRESSION,
@@ -977,7 +977,10 @@ def _create_analysis_settings_subtab():
             ]),
             dbc.Col(width=4, children=[
                 html.H6("出力先"),
-                dbc.Input(id="output_dir", value=ls.get("output_dir", str(APP_BASE_DIR))),
+                # 既定は永続化された解析出力ディレクトリ。以前は APP_BASE_DIR
+                # (=コンテナ内の /app) が既定で、結果が書き込み層に残り
+                # コンテナ再作成で消える・SFTP から見えない状態になっていた。
+                dbc.Input(id="output_dir", value=ls.get("output_dir", str(OUTPUT_DATA_DIR))),
             ]),
             dbc.Col(width=4, children=[
                 dbc.Button("参照...", id="browse_output", size="sm", color="secondary",

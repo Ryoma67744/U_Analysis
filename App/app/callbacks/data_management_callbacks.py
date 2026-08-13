@@ -16,6 +16,8 @@ from app.services.data_browser import (
     find_meta_projects,
     list_backup_generations,
     format_bytes,
+    move_entry,
+    preview_move,
 )
 from app.services.project_manager import restore_projects_from_meta
 
@@ -299,6 +301,149 @@ def on_restore(clicks, scan_cache, refresh_token):
     except (TypeError, ValueError):
         new_refresh = 1
     return True, "プロジェクト復元", msg, icon, new_refresh
+
+
+# ---------------------------------------------------------------------------
+# 5.5. フォルダ移動（確認モーダル → 実行）
+# ---------------------------------------------------------------------------
+
+_DEST_LABELS = {
+    "desi": "DESI生データ",
+    "tims": "TIMS生データ",
+    "output": "解析出力",
+    "internal": "アプリ内部データ",
+}
+
+
+@callback(
+    [Output("dm_move_confirm_modal", "is_open"),
+     Output("dm_move_confirm_body", "children"),
+     Output("dm_move_pending", "data"),
+     Output("dm_toast", "is_open", allow_duplicate=True),
+     Output("dm_toast", "header", allow_duplicate=True),
+     Output("dm_toast", "children", allow_duplicate=True),
+     Output("dm_toast", "icon", allow_duplicate=True)],
+    Input("dm_move_btn", "n_clicks"),
+    [State("dm_move_src", "value"),
+     State("dm_move_dest", "value"),
+     State("dm_move_subpath", "value")],
+    prevent_initial_call=True,
+)
+def on_move_request(n_clicks, src, dest_key, subpath):
+    """移動ボタン → 事前検証。問題なければ確認モーダルを開く。"""
+    if not n_clicks:
+        return (no_update,) * 7
+    dest_key = dest_key or "output"
+    pre = preview_move(src or "", dest_key, subpath or "")
+    if not pre["ok"]:
+        return (
+            False, no_update, None,
+            True, "移動できません", pre["msg"], "danger",
+        )
+
+    rows = [
+        ("移動元", pre["src"]),
+        ("移動先", f"[{_DEST_LABELS.get(dest_key, dest_key)}] {pre['target']}"),
+        ("内容", f"{pre['file_count']:,} ファイル / {format_bytes(pre['used_bytes'])}"),
+    ]
+    body = [
+        html.Div([
+            html.Strong(f"{label}: "),
+            html.Span(value, style={"wordBreak": "break-all"}),
+        ], className="mb-1")
+        for label, value in rows
+    ]
+    if not pre["same_fs"]:
+        body.append(dbc.Alert(
+            "別のファイルシステムへの移動のためコピー＋削除になります。"
+            "容量によっては数分かかり、完了までブラウザの操作が返りません。",
+            color="warning", className="py-2 mb-1 small",
+        ))
+    body.append(html.Small(
+        "移動後、結果フォルダ内の _project_meta.json をもとに"
+        "プロジェクトの参照先パスを自動更新します。",
+        className="text-muted",
+    ))
+    # 確認した内容をそのまま実行するため、移動先も一緒に持ち回す。
+    # 実行時に入力欄を読み直すと、モーダルを開いたまま移動先を変えられてしまう。
+    pending = dict(pre, dest_key=dest_key, dest_subpath=subpath or "")
+    return True, body, pending, no_update, no_update, no_update, no_update
+
+
+@callback(
+    Output("dm_move_confirm_modal", "is_open", allow_duplicate=True),
+    Input("dm_move_cancel_btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def on_move_cancel(n_clicks):
+    if not n_clicks:
+        return no_update
+    return False
+
+
+@callback(
+    [Output("dm_move_confirm_modal", "is_open", allow_duplicate=True),
+     Output("dm_move_src", "value", allow_duplicate=True),
+     Output("dm_state", "data", allow_duplicate=True),
+     Output("dm_toast", "is_open", allow_duplicate=True),
+     Output("dm_toast", "header", allow_duplicate=True),
+     Output("dm_toast", "children", allow_duplicate=True),
+     Output("dm_toast", "icon", allow_duplicate=True),
+     Output("project_list_refresh", "data", allow_duplicate=True)],
+    Input("dm_move_exec_btn", "n_clicks"),
+    [State("dm_move_pending", "data"),
+     State("project_list_refresh", "data")],
+    prevent_initial_call=True,
+)
+def on_move_execute(n_clicks, pending, refresh_token):
+    """確認モーダルの「移動を実行」→ 移動＋パス更新。"""
+    if not n_clicks or not pending or not pending.get("src"):
+        return (no_update,) * 8
+
+    dest_key = pending.get("dest_key") or "output"
+    try:
+        result = move_entry(
+            pending["src"], dest_key, pending.get("dest_subpath") or "",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return (
+            False, no_update, no_update,
+            True, "移動失敗", f"例外発生: {exc}", "danger",
+            no_update,
+        )
+
+    if not result["ok"]:
+        return (
+            False, no_update, no_update,
+            True, "移動失敗", result["msg"], "danger",
+            no_update,
+        )
+
+    updates = result.get("path_updates") or []
+    message = [html.Div(result["msg"], style={"wordBreak": "break-all"})]
+    if updates:
+        message += [html.Div(u, className="small") for u in updates]
+    else:
+        message.append(html.Small(
+            "（_project_meta.json が無いため、パス更新は行っていません）",
+            className="text-muted",
+        ))
+
+    # 移動先の一覧に切り替えて、着地したことを目で確認できるようにする
+    new_state = {
+        "location_key": dest_key,
+        "subpath": str(Path(result["new_path"]).parent),
+    }
+    try:
+        new_refresh = int(refresh_token or 0) + 1
+    except (TypeError, ValueError):
+        new_refresh = 1
+
+    return (
+        False, "", new_state,
+        True, "移動完了", message, "success",
+        new_refresh,
+    )
 
 
 # ---------------------------------------------------------------------------
