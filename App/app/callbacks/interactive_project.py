@@ -6,6 +6,7 @@
 # =============================================================================
 
 import logging
+from pathlib import Path
 
 import dash_bootstrap_components as dbc
 from dash import (Input, Output, State, callback, ctx, no_update)
@@ -181,6 +182,14 @@ def set_interactive_folders_from_sub_project(sub_id, project_id, skip_reset):
     warnings = []
     if not result_dir:
         warnings.append("結果フォルダが未設定です")
+    elif not Path(result_dir).is_dir():
+        # ver56.2: 「未設定」だけでなく「実体が無い」も出す。出力先が
+        # コンテナの書き込み層 (/app 直下など) のままだと再ビルドで消えるが、
+        # 登録は残るので従来は画面上どこにも異常が出なかった。
+        warnings.append(
+            f"結果フォルダが見つかりません: {result_dir}"
+            "（移動されたか、コンテナ再作成で失われた可能性があります）"
+        )
     if not data_folder:
         warnings.append("MSIデータフォルダが未設定です")
     msg = "\u26a0 " + "\u3001".join(warnings) if warnings else "データを読み込んでください"

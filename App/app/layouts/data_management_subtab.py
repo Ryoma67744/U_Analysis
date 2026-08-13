@@ -80,6 +80,19 @@ def create_data_management_subtab():
         ),
         html.Hr(),
 
+        # ---- セクション2.4: 結果フォルダの健全性 ----
+        html.H5("\U0001F6A8 要注意の結果フォルダ"),
+        html.P(
+            "登録済みサブプロジェクトの結果フォルダのうち、"
+            "実体が無いものと、コンテナ内の一時領域にあるものを挙げます。"
+            "一時領域のものは次に "
+            "docker compose up -d --build を実行した時点で消えるので、"
+            "アップデート前にここが 0 件であることを確認してください。",
+            className="text-muted small mb-2",
+        ),
+        html.Div(id="dm_result_audit", className="mb-4"),
+        html.Hr(),
+
         # ---- セクション2.5: フォルダ移動 ----
         html.H5("\U0001F4E6 フォルダの移動"),
         html.P(

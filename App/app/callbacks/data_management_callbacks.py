@@ -13,11 +13,13 @@ from app.services.data_browser import (
     get_layout_summary,
     get_directory_listing,
     get_storage_stats,
-    find_meta_projects,
+    find_meta_projects_everywhere,
     list_backup_generations,
     format_bytes,
+    audit_result_dirs,
     move_entry,
     preview_move,
+    RESULT_DIR_STATES,
 )
 from app.services.project_manager import restore_projects_from_meta
 
@@ -223,7 +225,9 @@ def on_crumb_click(clicks, state):
 def on_scan(n_clicks):
     if not n_clicks:
         return no_update, no_update, no_update
-    meta_list = find_meta_projects("output")
+    # ver56.2: 「解析出力」だけでなく 4 か所すべてを見る。実運用では結果を
+    # 生データフォルダの隣に出しているため、従来は大半が検出できなかった。
+    meta_list = find_meta_projects_everywhere()
     if not meta_list:
         return (
             html.Div(
@@ -245,6 +249,10 @@ def on_scan(n_clicks):
             dbc.Row(align="center", children=[
                 dbc.Col(width=9, children=[
                     html.Strong(f"{proj_name} / {sub_name}"),
+                    dbc.Badge(
+                        meta.get("_found_location", ""),
+                        color="info", className="ms-2",
+                    ) if meta.get("_found_location") else "",
                     html.Br(),
                     html.Small(
                         found_dir,
@@ -301,6 +309,75 @@ def on_restore(clicks, scan_cache, refresh_token):
     except (TypeError, ValueError):
         new_refresh = 1
     return True, "プロジェクト復元", msg, icon, new_refresh
+
+
+# ---------------------------------------------------------------------------
+# 4.5. 要注意の結果フォルダ
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("dm_result_audit", "children"),
+    Input("dm_state", "data"),
+    Input("dm_refresh_btn", "n_clicks"),
+)
+def render_result_audit(_state, _n):
+    rows = audit_result_dirs()
+    if not rows:
+        return dbc.Alert(
+            "✅ 登録済みの結果フォルダはすべて永続化された場所にあります。",
+            color="success", className="py-2 mb-0 small",
+        )
+
+    header = html.Tr([
+        html.Th("プロジェクト / サブ"),
+        html.Th("結果フォルダ"),
+        html.Th("状態"),
+        html.Th(""),
+    ])
+    body_rows = []
+    for r in rows:
+        volatile = r["state"] == "volatile"
+        body_rows.append(html.Tr([
+            html.Td([
+                html.Strong(r["project_name"]),
+                html.Br(),
+                html.Small(r["sub_name"], className="text-muted"),
+            ]),
+            html.Td(html.Code(r["path"], style={
+                "fontSize": "0.8rem", "wordBreak": "break-all",
+            })),
+            html.Td(html.Span(
+                ("⚠ " if volatile else "✗ ") + RESULT_DIR_STATES[r["state"]],
+                className="text-warning" if volatile else "text-danger",
+                style={"fontSize": "0.85rem"},
+            )),
+            html.Td(
+                # 一時領域のものはそのまま下の「フォルダの移動」に送れる。
+                # 実体が無いものは移動しようがないのでボタンを出さない。
+                dbc.Button(
+                    "移動元に入れる",
+                    id={"type": "dm_audit_pick", "path": r["path"]},
+                    color="warning", outline=True, size="sm",
+                ) if volatile else "",
+                className="text-end",
+            ),
+        ]))
+    return dbc.Table(
+        [html.Thead(header), html.Tbody(body_rows)],
+        hover=True, striped=True, size="sm", responsive=True,
+    )
+
+
+@callback(
+    Output("dm_move_src", "value", allow_duplicate=True),
+    Input({"type": "dm_audit_pick", "path": ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+def on_audit_pick(clicks):
+    """一覧の「移動元に入れる」→ 移動元フォルダ欄に流し込む。"""
+    if not ctx.triggered_id or not any(c for c in clicks if c):
+        return no_update
+    return ctx.triggered_id.get("path", "") or no_update
 
 
 # ---------------------------------------------------------------------------

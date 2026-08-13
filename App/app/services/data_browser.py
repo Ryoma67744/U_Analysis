@@ -21,6 +21,7 @@ from app.layouts.file_browser_modal import list_directory
 from app.services.project_manager import (
     get_project,
     get_sub_project,
+    list_projects,
     restore_projects_from_meta,
     scan_project_meta,
 )
@@ -482,6 +483,57 @@ def move_entry(src: str, dest: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# 結果フォルダの健全性チェック
+# ---------------------------------------------------------------------------
+# ver56.2: 出力先が /app 直下（コンテナの書き込み層）のまま解析した結果が
+# `docker compose up -d --build` で消えた。厄介だったのは、消えた後も
+# projects.json には登録が残り、結果フォルダ欄も古いパスを表示し続けるため
+# **画面上どこにも異常が出なかった**こと。再ビルド前に気づける表を用意する。
+
+RESULT_DIR_STATES = {
+    "missing": "実体がありません。再解析が必要です",
+    "volatile": "コンテナ内の一時領域です。次回の再ビルドで消えます",
+}
+
+
+def audit_result_dirs() -> list[dict]:
+    """全サブプロジェクトの結果フォルダを調べ、危ないものだけ返す。
+
+    Returns
+    -------
+    list[dict]
+        `{"project_name", "sub_name", "path", "state"}` のリスト。
+        `state` は `missing`（実体なし）か `volatile`（非永続な場所にある）。
+        永続化された場所に実体があるものは返さない。
+    """
+    rows: list[dict] = []
+    try:
+        projects = list_projects()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("プロジェクト一覧の取得に失敗: %s", exc)
+        return rows
+
+    for proj in projects:
+        for sub in proj.get("sub_projects", []):
+            path = (sub.get("last_result_dir") or sub.get("output_dir") or "").strip()
+            if not path:
+                continue          # 未解析。まだ結果が無いだけなので警告しない
+            try:
+                exists = Path(path).is_dir()
+            except OSError:
+                exists = False
+            if exists and is_persistent_path(path):
+                continue
+            rows.append({
+                "project_name": proj.get("name", "(名称未設定)"),
+                "sub_name": sub.get("name", "(名称未設定)"),
+                "path": path,
+                "state": "missing" if not exists else "volatile",
+            })
+    return rows
+
+
 def find_meta_projects(key: str) -> list[dict]:
     """指定場所配下から _project_meta.json を持つフォルダを列挙
 
@@ -495,6 +547,30 @@ def find_meta_projects(key: str) -> list[dict]:
     if root is None or not root.is_dir():
         return []
     return scan_project_meta(str(root))
+
+
+def find_meta_projects_everywhere() -> list[dict]:
+    """DATA_LOCATIONS 4 か所すべてから `_project_meta.json` を集める。
+
+    ver56.2: 従来は「解析出力」配下だけを見ていたが、実運用では結果を
+    生データフォルダの隣（DESI/TIMS 生データ配下）に出しているため、
+    **登録済み 33 件中 32 件が検出対象外**だった。
+
+    「アプリ内部データ」(`Data/Other`) は「解析出力」(`Data/Other/output`) を
+    含むので同じフォルダが 2 回拾われる。`_found_dir` で 1 つに畳み、
+    先に見つかった側のラベルを `_found_location` に入れる。
+    """
+    seen: set[str] = set()
+    out: list[dict] = []
+    for key, label, _root in _resolved_location_roots():
+        for meta in find_meta_projects(key):
+            found = meta.get("_found_dir", "")
+            if found in seen:
+                continue
+            seen.add(found)
+            meta["_found_location"] = label
+            out.append(meta)
+    return out
 
 
 def list_backup_generations(limit: int = 20) -> list[dict]:

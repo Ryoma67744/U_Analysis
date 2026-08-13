@@ -3,7 +3,7 @@
 # MSI Analysis Application - Volume バックアップスクリプト
 #
 # Docker Volume をまるごと tar.gz でバックアップ。災害復旧用。
-# 対象: msi-projects, msi-sessions, msi-presets, msi-shares, msi-output
+# 対象: msi-projects, msi-sessions, msi-presets, msi-shares, msi-output, msi-logs
 # 除外: msi-cache（再生成可能）, msi-desi-data / msi-tims-data（巨大、原本あり前提）
 #
 # 使い方:
@@ -20,7 +20,7 @@ set -euo pipefail
 
 BACKUP_DIR="${BACKUP_DIR:-./backups}"
 RETENTION_DAYS="${RETENTION_DAYS:-30}"
-VOLUMES=(msi-projects msi-sessions msi-presets msi-shares msi-output)
+VOLUMES=(msi-projects msi-sessions msi-presets msi-shares msi-output msi-logs)
 
 mkdir -p "$BACKUP_DIR"
 BACKUP_DIR_ABS="$(cd "$BACKUP_DIR" && pwd)"
