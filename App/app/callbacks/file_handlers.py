@@ -674,6 +674,8 @@ _BROWSE_BUTTONS = {
     "browse_restore_scan_folder": ("folder", "restore_scan_folder"),
     # データ管理サブタブ: 移動元フォルダ (退避したい /app 直下も選べるよう起点は APP_BASE_DIR)
     "dm_browse_move_src": ("folder", "dm_move_src"),
+    # データ管理サブタブ: 移動先フォルダ (起点は解析出力。上部ショートカットで 4 か所へ飛べる)
+    "dm_browse_move_dest": ("folder", "dm_move_dest_path"),
     # ver3.9: プロジェクト編集モーダルのサムネ画像パス
     "browse_edit_thumbnail": ("file", "edit_project_thumbnail"),
     # TIMS 追加データフォルダ
@@ -709,6 +711,7 @@ _DEFAULT_START_DIR = {
     "output_dir": OUTPUT_DATA_DIR,
     "default_output_dir": OUTPUT_DATA_DIR,
     "restore_scan_folder": OUTPUT_DATA_DIR,
+    "dm_move_dest_path": OUTPUT_DATA_DIR,
     # ver3.9: サムネ用 PNG は output 配下にあることが多い
     "edit_project_thumbnail": OUTPUT_DATA_DIR,
 }

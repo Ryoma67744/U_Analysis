@@ -114,62 +114,97 @@ class TestIsPersistentPath:
 class TestPreviewMoveGuards:
 
     def test_empty_source(self, locs):
-        assert not db.preview_move("", "output")["ok"]
+        assert not db.preview_move("", str(locs["output"]))["ok"]
 
     def test_relative_source_is_rejected(self, locs):
-        assert "絶対パス" in db.preview_move("relative/dir", "output")["msg"]
+        r = db.preview_move("relative/dir", str(locs["output"]))
+        assert "絶対パス" in r["msg"]
 
     def test_missing_source_is_rejected(self, locs):
-        r = db.preview_move(str(locs["stray"] / "nope"), "output")
+        r = db.preview_move(str(locs["stray"] / "nope"), str(locs["output"]))
         assert "見つかりません" in r["msg"]
 
-    def test_unknown_destination_key_is_rejected(self, locs):
-        assert not db.preview_move(str(locs["stray"]), "bogus")["ok"]
+    def test_empty_destination(self, locs):
+        src = _make_result_dir(locs["stray"])
+        assert "移動先が未入力" in db.preview_move(str(src), "")["msg"]
+
+    def test_relative_destination_is_rejected(self, locs):
+        src = _make_result_dir(locs["stray"])
+        assert "絶対パス" in db.preview_move(str(src), "output/2026")["msg"]
 
     def test_location_root_cannot_be_moved(self, locs):
         """マウントポイント自体を動かすと復旧が面倒なので弾く。"""
-        r = db.preview_move(str(locs["output"]), "desi")
+        r = db.preview_move(str(locs["output"]), str(locs["desi"]))
         assert "ルートフォルダは移動できません" in r["msg"]
 
     def test_already_in_destination(self, locs):
         src = _make_result_dir(locs["output"])
-        assert "既に移動先の直下" in db.preview_move(str(src), "output")["msg"]
+        r = db.preview_move(str(src), str(locs["output"]))
+        assert "既に移動先の直下" in r["msg"]
 
     def test_name_collision_is_not_overwritten(self, locs):
         """★ 上書きしないこと。既存の結果を黙って潰さない。"""
         src = _make_result_dir(locs["stray"])
         (locs["output"] / src.name).mkdir()
-        assert "同名の項目" in db.preview_move(str(src), "output")["msg"]
+        r = db.preview_move(str(src), str(locs["output"]))
+        assert "同名の項目" in r["msg"]
 
     def test_destination_inside_source_is_rejected(self, locs):
         """移動先が移動元の配下（＝自分の中に自分を入れる）を弾く。"""
         outer = locs["output"].parent          # 全ルートの親 = tmp_path
-        r = db.preview_move(str(outer), "output")
+        r = db.preview_move(str(outer), str(locs["output"]))
         assert not r["ok"]
         assert "配下です" in r["msg"], r["msg"]
+
+
+class TestDestinationMustBeAPersistentLocation:
+    """★ 本丸: 参照で自由にパスを選べるようになった分、行き先を絞る。"""
+
+    def test_outside_every_location_is_rejected(self, locs, tmp_path):
+        src = _make_result_dir(locs["stray"])
+        for bad in (str(locs["stray"]), str(tmp_path), "/tmp"):
+            r = db.preview_move(str(src), bad)
+            assert not r["ok"], bad
+            assert "配下を指定してください" in r["msg"], (bad, r["msg"])
+
+    def test_missing_destination_folder_is_rejected_not_created(self, locs):
+        """存在しない移動先は作らない（作成は SFTP 等の責務）。"""
+        src = _make_result_dir(locs["stray"])
+        missing = locs["output"] / "2026"
+        r = db.preview_move(str(src), str(missing))
+        assert "移動先フォルダが見つかりません" in r["msg"]
+        assert not missing.exists(), "検証で勝手に作ってしまっている"
+
+    @pytest.mark.parametrize("key,label", [
+        ("output", "解析出力"), ("desi", "DESI生データ"),
+        ("tims", "TIMS生データ"), ("internal", "アプリ内部データ"),
+    ])
+    def test_destination_label_is_resolved(self, key, label, locs):
+        src = _make_result_dir(locs["stray"])
+        r = db.preview_move(str(src), str(locs[key]))
+        assert r["ok"], r["msg"]
+        assert r["dest_key"] == key
+        assert r["dest_label"] == label
 
 
 class TestPreviewMoveSuccess:
 
     def test_target_and_size(self, locs):
         src = _make_result_dir(locs["stray"])
-        r = db.preview_move(str(src), "output")
+        r = db.preview_move(str(src), str(locs["output"]))
         assert r["ok"], r["msg"]
         assert r["target"] == str(locs["output"] / src.name)
         assert r["file_count"] == 2          # ディレクトリは数えない
         assert r["used_bytes"] == 2048 + 1024
 
-    def test_subfolder_is_honoured(self, locs):
+    def test_nested_destination_is_honoured(self, locs):
+        """参照で深い階層を選べること。"""
         src = _make_result_dir(locs["stray"])
-        (locs["output"] / "2026").mkdir()
-        r = db.preview_move(str(src), "output", "2026")
-        assert r["target"] == str(locs["output"] / "2026" / src.name)
-
-    def test_absolute_subpath_cannot_escape_the_root(self, locs):
-        """★ `_safe_resolve` によりルート外を指定してもルートへ丸められる。"""
-        src = _make_result_dir(locs["stray"])
-        r = db.preview_move(str(src), "output", "/etc")
-        assert r["target"].startswith(str(locs["output"]))
+        nested = locs["output"] / "2026" / "batch1"
+        nested.mkdir(parents=True)
+        r = db.preview_move(str(src), str(nested))
+        assert r["ok"], r["msg"]
+        assert r["target"] == str(nested / src.name)
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +216,7 @@ class TestMoveEntry:
     def test_moves_and_reports_no_relink_without_meta(
             self, locs, no_running_analysis, projects_store):
         src = _make_result_dir(locs["stray"])
-        r = db.move_entry(str(src), "output")
+        r = db.move_entry(str(src), str(locs["output"]))
         assert r["ok"], r["msg"]
         assert (locs["output"] / src.name / "umap.png").is_file()
         assert not src.exists()
@@ -194,7 +229,7 @@ class TestMoveEntry:
         monkeypatch.setattr(ar, "_find_running_job_for_guard",
                             lambda: {"analyst": "誰か"})
         src = _make_result_dir(locs["stray"])
-        r = db.move_entry(str(src), "output")
+        r = db.move_entry(str(src), str(locs["output"]))
         assert not r["ok"]
         assert "実行中" in r["msg"]
         assert src.is_dir(), "拒否したのに動かしてしまっている"
@@ -206,7 +241,7 @@ class TestMoveEntry:
         monkeypatch.setattr(ar, "_find_running_job_for_guard",
                             lambda: {"_scan_failed": True})
         src = _make_result_dir(locs["stray"])
-        r = db.move_entry(str(src), "output")
+        r = db.move_entry(str(src), str(locs["output"]))
         assert not r["ok"]
         assert src.is_dir()
 
@@ -214,7 +249,7 @@ class TestMoveEntry:
             self, locs, no_running_analysis, projects_store):
         src = _make_result_dir(locs["stray"], "Analysis_meta")
         _write_meta(src)
-        r = db.move_entry(str(src), "output")
+        r = db.move_entry(str(src), str(locs["output"]))
         assert r["ok"], r["msg"]
         assert any("復元" in m for m in r["path_updates"]), r["path_updates"]
         sub = pm.get_sub_project("proj_1", "sub_1")
@@ -236,7 +271,7 @@ class TestMoveEntry:
                               "last_result_dir": str(src)}],
         })
 
-        r = db.move_entry(str(src), "output")
+        r = db.move_entry(str(src), str(locs["output"]))
         assert r["ok"], r["msg"]
         assert any("パス更新" in m for m in r["path_updates"]), r["path_updates"]
         sub = pm.get_sub_project("proj_1", "sub_1")
@@ -249,7 +284,86 @@ class TestMoveEntry:
         existing.mkdir()
         (existing / "keep.txt").write_text("keep", encoding="utf-8")
 
-        r = db.move_entry(str(src), "output")
+        r = db.move_entry(str(src), str(locs["output"]))
         assert not r["ok"]
         assert src.is_dir()
         assert (existing / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+    def test_reports_both_old_and_new_path(
+            self, locs, no_running_analysis, projects_store):
+        """呼び出し側が「開いているのは移動したフォルダか」を判定できること。"""
+        src = _make_result_dir(locs["stray"])
+        r = db.move_entry(str(src), str(locs["output"]))
+        assert r["old_path"] == str(src)
+        assert r["new_path"] == str(locs["output"] / src.name)
+
+
+# ---------------------------------------------------------------------------
+# 開いている結果フォルダの読み替え
+# ---------------------------------------------------------------------------
+
+class TestRemapOpenResultFolder:
+    """移動後、インタラクティブ解析が開いているパスを差し替える判定。
+
+    プロジェクト ID ではなくパスで見るので、`_project_meta.json` を持たない
+    結果フォルダでも効く。
+    """
+
+    @staticmethod
+    def _remap(*args):
+        from app.callbacks.data_management_callbacks import (
+            _remap_open_result_folder,
+        )
+        return _remap_open_result_folder(*args)
+
+    def test_exact_match_is_remapped(self):
+        assert self._remap("/app/A", "/app/A", "/app/Data/Other/output/A") == \
+            "/app/Data/Other/output/A"
+
+    def test_descendant_keeps_its_suffix(self):
+        assert self._remap("/app/A/RDS_Files", "/app/A",
+                           "/app/Data/Other/output/A") == \
+            "/app/Data/Other/output/A/RDS_Files"
+
+    def test_unrelated_folder_is_left_alone(self):
+        """★ 無関係なフォルダを開いていたら触らない。"""
+        assert self._remap("/app/B", "/app/A", "/app/Data/Other/output/A") == ""
+
+    def test_prefix_lookalike_is_not_remapped(self):
+        """/app/A2 は /app/A の配下ではない（文字列前方一致で誤爆しないこと）。"""
+        assert self._remap("/app/A2", "/app/A", "/app/Data/Other/output/A") == ""
+
+    @pytest.mark.parametrize("cur,old,new", [
+        ("", "/app/A", "/app/out/A"),
+        ("/app/A", "", "/app/out/A"),
+        ("/app/A", "/app/A", ""),
+    ])
+    def test_missing_inputs_are_left_alone(self, cur, old, new):
+        assert self._remap(cur, old, new) == ""
+
+
+class TestAutoLoadIsSkippedRightAfterAMove:
+    """★ 差替えたパスで自動読込まで走らせない。
+
+    結果フォルダが変わると auto_scan_rds_files → auto_load_on_rds_ready と連鎖し、
+    entry_mode が sub_project / shared なら読込まで自動で走る。移動直後は Seurat
+    抽出キャッシュがミスして数分かかるので、設定タブにいる利用者の意図しない
+    ところで始めない。
+    """
+
+    @staticmethod
+    def _call(skip):
+        from app.callbacks.interactive_callbacks import auto_load_on_rds_ready
+        return auto_load_on_rds_ready(
+            {"Harmony": "/x/step3.rds"}, "Harmony", "sub_project", 3, skip,
+        )
+
+    def test_flag_suppresses_autoload_and_is_consumed(self):
+        from dash import no_update
+        n_clicks, flag = self._call(True)
+        assert n_clicks is no_update, "自動読込を止められていない"
+        assert flag is False, "フラグが 1 回で消費されていない"
+
+    def test_without_the_flag_autoload_still_runs(self):
+        n_clicks, _flag = self._call(False)
+        assert n_clicks == 4, "通常のサブプロジェクト遷移で自動読込が止まっている"

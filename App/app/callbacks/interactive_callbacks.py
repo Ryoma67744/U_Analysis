@@ -610,17 +610,24 @@ def auto_scan_rds_files(folder_path, shared):
 # (entry_mode が手動 standalone の場合は自動実行しない = 従来通り手動)
 
 @callback(
-    Output("load_interactive_data", "n_clicks", allow_duplicate=True),
+    [Output("load_interactive_data", "n_clicks", allow_duplicate=True),
+     Output("dm_move_skip_autoload", "data", allow_duplicate=True)],
     Input("interactive_rds_map", "data"),
     [State("interactive_integration_method", "value"),
      State("interactive_entry_mode", "data"),
-     State("load_interactive_data", "n_clicks")],
+     State("load_interactive_data", "n_clicks"),
+     State("dm_move_skip_autoload", "data")],
     prevent_initial_call=True,
 )
-def auto_load_on_rds_ready(rds_map, method, entry_mode, cur_clicks):
+def auto_load_on_rds_ready(rds_map, method, entry_mode, cur_clicks, skip_autoload):
+    # データ管理タブの「フォルダの移動」が結果フォルダを差し替えた直後は自動読込しない。
+    # 移動直後は Seurat 抽出キャッシュがミスして数分かかるので、設定タブにいる
+    # 利用者の意図しないところで走らせない（フラグは 1 回で消費する）。
+    if skip_autoload:
+        return no_update, False
     if rds_map and method and entry_mode in ("sub_project", "shared"):
-        return (cur_clicks or 0) + 1
-    return no_update
+        return (cur_clicks or 0) + 1, no_update
+    return no_update, no_update
 
 
 # ---------------------------------------------------------------------------

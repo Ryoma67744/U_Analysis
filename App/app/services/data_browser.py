@@ -226,22 +226,35 @@ def get_storage_stats() -> list[dict]:
 # /app/Analysis_* は 4 つのルートのどれにも属さず、縛ると目的を達せないため。
 
 
-def _resolved_location_roots() -> list[tuple[str, Path]]:
-    """DATA_LOCATIONS のルートを解決して (label, path) の一覧で返す。
+def _resolved_location_roots() -> list[tuple[str, str, Path]]:
+    """DATA_LOCATIONS のルートを解決して (key, label, path) の一覧で返す。
 
     解決できないルートは飛ばす。実体は config 由来の固定パスで、非 strict な
     `resolve()` が失敗するのは symlink ループ等の異常時だけなので、そのときは
     「その場所は無い」として扱ってよい（判定はどちらも安全側に倒れる。
-    `is_persistent_path` は「非永続」と答え、`preview_move` はルート保護を
-    諦めるが、そもそも解決できないルートは既に壊れている）。
+    `is_persistent_path` は「非永続」と答え、`preview_move` はそのルートを
+    移動先として認めなくなるが、そもそも解決できないルートは既に壊れている）。
     """
-    out: list[tuple[str, Path]] = []
+    out: list[tuple[str, str, Path]] = []
     for loc in DATA_LOCATIONS.values():
         try:
-            out.append((loc.label, loc.root.resolve()))
+            out.append((loc.key, loc.label, loc.root.resolve()))
         except OSError:
             continue
     return out
+
+
+def location_labels() -> str:
+    """DATA_LOCATIONS の表示名を「A / B / C」形式で返す（エラー文言・説明用）。"""
+    return " / ".join(loc.label for loc in DATA_LOCATIONS.values())
+
+
+def _location_for(path: Path) -> Optional[tuple[str, str]]:
+    """`path` を含む DATA_LOCATION の (key, label)。どこにも属さなければ None。"""
+    for key, label, root in _resolved_location_roots():
+        if path.is_relative_to(root):
+            return key, label
+    return None
 
 
 def is_persistent_path(path) -> bool:
@@ -252,7 +265,7 @@ def is_persistent_path(path) -> bool:
         target = Path(str(path).strip()).resolve()
     except OSError:
         return False
-    return any(target.is_relative_to(root) for _label, root in _resolved_location_roots())
+    return _location_for(target) is not None
 
 
 def _running_analysis_block() -> str:
@@ -277,17 +290,27 @@ def _running_analysis_block() -> str:
     return f"{who}が実行中です。完了してから移動してください。"
 
 
-def preview_move(src: str, dest_key: str, dest_subpath: str = "") -> dict:
+def preview_move(src: str, dest: str) -> dict:
     """移動の事前検証。実際には何も動かさない。
+
+    Parameters
+    ----------
+    src : str
+        移動元フォルダの絶対パス。コンテナ内ならどこでもよい。
+    dest : str
+        移動先フォルダの絶対パス。DATA_LOCATIONS のいずれかの配下に限る。
+        存在しないフォルダは作らない（作成は SFTP 等の責務）。
 
     Returns
     -------
     dict
-        {"ok", "msg", "src", "target", "file_count", "used_bytes", "same_fs"}
+        {"ok", "msg", "src", "dest", "dest_key", "dest_label", "target",
+         "file_count", "used_bytes", "same_fs"}
     """
     result = {
-        "ok": False, "msg": "", "src": "", "target": "",
-        "file_count": 0, "used_bytes": 0, "same_fs": False,
+        "ok": False, "msg": "", "src": "", "dest": "",
+        "dest_key": "", "dest_label": "",
+        "target": "", "file_count": 0, "used_bytes": 0, "same_fs": False,
     }
 
     if not src or not str(src).strip():
@@ -308,19 +331,34 @@ def preview_move(src: str, dest_key: str, dest_subpath: str = "") -> dict:
     result["src"] = str(src_path)
 
     # マウントポイントそのものを動かすと復旧が面倒なので弾く
-    for label, root in _resolved_location_roots():
+    for _key, label, root in _resolved_location_roots():
         if src_path == root:
             result["msg"] = f"「{label}」のルートフォルダは移動できません"
             return result
 
-    root = get_location_root(dest_key)
-    if root is None:
-        result["msg"] = "移動先の場所が不正です"
+    if not dest or not str(dest).strip():
+        result["msg"] = "移動先が未入力です"
         return result
-    if not root.is_dir():
-        result["msg"] = f"移動先が未作成です: {root}"
+    dest_dir = Path(str(dest).strip())
+    if not dest_dir.is_absolute():
+        result["msg"] = "移動先は絶対パスで指定してください"
         return result
-    dest_dir = _safe_resolve(root, dest_subpath)
+    try:
+        dest_dir = dest_dir.resolve()
+    except OSError as exc:
+        result["msg"] = f"移動先を解決できません: {exc}"
+        return result
+    result["dest"] = str(dest_dir)
+
+    # 永続化されない場所へ「退避」しても意味が無いので、移動先は 4 か所に限る
+    located = _location_for(dest_dir)
+    if located is None:
+        result["msg"] = (
+            f"移動先は {location_labels()} の配下を指定してください"
+        )
+        return result
+    result["dest_key"], result["dest_label"] = located
+
     if not dest_dir.is_dir():
         result["msg"] = f"移動先フォルダが見つかりません: {dest_dir}"
         return result
@@ -402,21 +440,23 @@ def _relink_projects(moved_dir: Path) -> list[str]:
         return []
 
 
-def move_entry(src: str, dest_key: str, dest_subpath: str = "") -> dict:
-    """`src` を DATA_LOCATIONS[dest_key] 配下へ移動し、パス参照も更新する。
+def move_entry(src: str, dest: str) -> dict:
+    """`src` を `dest`（DATA_LOCATIONS 配下）へ移動し、パス参照も更新する。
 
     Returns
     -------
     dict
-        {"ok", "msg", "new_path", "path_updates"}
+        {"ok", "msg", "old_path", "new_path", "path_updates"}
     """
     blocked = _running_analysis_block()
     if blocked:
-        return {"ok": False, "msg": blocked, "new_path": "", "path_updates": []}
+        return {"ok": False, "msg": blocked, "old_path": "", "new_path": "",
+                "path_updates": []}
 
-    pre = preview_move(src, dest_key, dest_subpath)
+    pre = preview_move(src, dest)
     if not pre["ok"]:
-        return {"ok": False, "msg": pre["msg"], "new_path": "", "path_updates": []}
+        return {"ok": False, "msg": pre["msg"], "old_path": "", "new_path": "",
+                "path_updates": []}
 
     src_path = Path(pre["src"])
     target = Path(pre["target"])
@@ -427,6 +467,7 @@ def move_entry(src: str, dest_key: str, dest_subpath: str = "") -> dict:
         return {
             "ok": False,
             "msg": f"移動に失敗しました: {exc}",
+            "old_path": "",
             "new_path": "",
             "path_updates": [],
         }
@@ -435,6 +476,7 @@ def move_entry(src: str, dest_key: str, dest_subpath: str = "") -> dict:
     return {
         "ok": True,
         "msg": f"移動しました: {target}",
+        "old_path": str(src_path),
         "new_path": str(target),
         "path_updates": _relink_projects(target),
     }

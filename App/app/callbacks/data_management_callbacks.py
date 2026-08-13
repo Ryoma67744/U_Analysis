@@ -307,14 +307,6 @@ def on_restore(clicks, scan_cache, refresh_token):
 # 5.5. フォルダ移動（確認モーダル → 実行）
 # ---------------------------------------------------------------------------
 
-_DEST_LABELS = {
-    "desi": "DESI生データ",
-    "tims": "TIMS生データ",
-    "output": "解析出力",
-    "internal": "アプリ内部データ",
-}
-
-
 @callback(
     [Output("dm_move_confirm_modal", "is_open"),
      Output("dm_move_confirm_body", "children"),
@@ -325,16 +317,14 @@ _DEST_LABELS = {
      Output("dm_toast", "icon", allow_duplicate=True)],
     Input("dm_move_btn", "n_clicks"),
     [State("dm_move_src", "value"),
-     State("dm_move_dest", "value"),
-     State("dm_move_subpath", "value")],
+     State("dm_move_dest_path", "value")],
     prevent_initial_call=True,
 )
-def on_move_request(n_clicks, src, dest_key, subpath):
+def on_move_request(n_clicks, src, dest):
     """移動ボタン → 事前検証。問題なければ確認モーダルを開く。"""
     if not n_clicks:
         return (no_update,) * 7
-    dest_key = dest_key or "output"
-    pre = preview_move(src or "", dest_key, subpath or "")
+    pre = preview_move(src or "", dest or "")
     if not pre["ok"]:
         return (
             False, no_update, None,
@@ -343,7 +333,7 @@ def on_move_request(n_clicks, src, dest_key, subpath):
 
     rows = [
         ("移動元", pre["src"]),
-        ("移動先", f"[{_DEST_LABELS.get(dest_key, dest_key)}] {pre['target']}"),
+        ("移動先", f"[{pre['dest_label']}] {pre['target']}"),
         ("内容", f"{pre['file_count']:,} ファイル / {format_bytes(pre['used_bytes'])}"),
     ]
     body = [
@@ -364,10 +354,9 @@ def on_move_request(n_clicks, src, dest_key, subpath):
         "プロジェクトの参照先パスを自動更新します。",
         className="text-muted",
     ))
-    # 確認した内容をそのまま実行するため、移動先も一緒に持ち回す。
-    # 実行時に入力欄を読み直すと、モーダルを開いたまま移動先を変えられてしまう。
-    pending = dict(pre, dest_key=dest_key, dest_subpath=subpath or "")
-    return True, body, pending, no_update, no_update, no_update, no_update
+    # 検証結果をそのまま持ち回す。実行時に入力欄を読み直すと、
+    # モーダルを開いたまま移動先を書き換えられてしまう。
+    return True, body, pre, no_update, no_update, no_update, no_update
 
 
 @callback(
@@ -381,6 +370,30 @@ def on_move_cancel(n_clicks):
     return False
 
 
+def _remap_open_result_folder(current: str, old_path: str, new_path: str) -> str:
+    """インタラクティブ解析が開いているパスを、移動後のパスに読み替える。
+
+    移動したフォルダ自身か、その配下を指しているときだけ書き換える。
+    無関係なフォルダを開いているなら空文字を返す（＝触らない）。
+    プロジェクト ID ではなくパスで判定するので、`_project_meta.json` を持たない
+    結果フォルダでも差替えが効く。
+    """
+    if not current or not old_path or not new_path:
+        return ""
+    try:
+        cur = Path(current).resolve()
+        old = Path(old_path).resolve()
+    except OSError:
+        return ""
+    if cur == old:
+        return new_path
+    try:
+        rel = cur.relative_to(old)
+    except ValueError:
+        return ""
+    return str(Path(new_path) / rel)
+
+
 @callback(
     [Output("dm_move_confirm_modal", "is_open", allow_duplicate=True),
      Output("dm_move_src", "value", allow_duplicate=True),
@@ -389,34 +402,34 @@ def on_move_cancel(n_clicks):
      Output("dm_toast", "header", allow_duplicate=True),
      Output("dm_toast", "children", allow_duplicate=True),
      Output("dm_toast", "icon", allow_duplicate=True),
-     Output("project_list_refresh", "data", allow_duplicate=True)],
+     Output("project_list_refresh", "data", allow_duplicate=True),
+     Output("interactive_result_folder", "value", allow_duplicate=True),
+     Output("dm_move_skip_autoload", "data", allow_duplicate=True)],
     Input("dm_move_exec_btn", "n_clicks"),
     [State("dm_move_pending", "data"),
-     State("project_list_refresh", "data")],
+     State("project_list_refresh", "data"),
+     State("interactive_result_folder", "value")],
     prevent_initial_call=True,
 )
-def on_move_execute(n_clicks, pending, refresh_token):
+def on_move_execute(n_clicks, pending, refresh_token, open_result_folder):
     """確認モーダルの「移動を実行」→ 移動＋パス更新。"""
     if not n_clicks or not pending or not pending.get("src"):
-        return (no_update,) * 8
+        return (no_update,) * 10
 
-    dest_key = pending.get("dest_key") or "output"
     try:
-        result = move_entry(
-            pending["src"], dest_key, pending.get("dest_subpath") or "",
-        )
+        result = move_entry(pending["src"], pending.get("dest") or "")
     except Exception as exc:  # noqa: BLE001
         return (
             False, no_update, no_update,
             True, "移動失敗", f"例外発生: {exc}", "danger",
-            no_update,
+            no_update, no_update, no_update,
         )
 
     if not result["ok"]:
         return (
             False, no_update, no_update,
             True, "移動失敗", result["msg"], "danger",
-            no_update,
+            no_update, no_update, no_update,
         )
 
     updates = result.get("path_updates") or []
@@ -429,9 +442,22 @@ def on_move_execute(n_clicks, pending, refresh_token):
             className="text-muted",
         ))
 
+    # 今インタラクティブ解析が開いているのが移動したフォルダなら、新パスに差し替える。
+    # 自動読込まで走ると移動直後は Seurat 抽出キャッシュがミスして数分かかるので、
+    # skip フラグを立てて auto_load_on_rds_ready を 1 回だけ黙らせる。
+    remapped = _remap_open_result_folder(
+        open_result_folder or "", result.get("old_path", ""), result["new_path"],
+    )
+    if remapped:
+        message.append(html.Small(
+            "インタラクティブ解析の結果フォルダを新しいパスに切り替えました。"
+            "再読込は「データを読み込む」から。",
+            className="text-muted d-block",
+        ))
+
     # 移動先の一覧に切り替えて、着地したことを目で確認できるようにする
     new_state = {
-        "location_key": dest_key,
+        "location_key": pending.get("dest_key") or "output",
         "subpath": str(Path(result["new_path"]).parent),
     }
     try:
@@ -443,6 +469,8 @@ def on_move_execute(n_clicks, pending, refresh_token):
         False, "", new_state,
         True, "移動完了", message, "success",
         new_refresh,
+        remapped or no_update,
+        True if remapped else no_update,
     )
 
 

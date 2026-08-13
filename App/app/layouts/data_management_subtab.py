@@ -6,6 +6,9 @@
 from dash import html, dcc
 import dash_bootstrap_components as dbc
 
+from app.config import OUTPUT_DATA_DIR
+from app.services.data_browser import location_labels
+
 
 def create_data_management_subtab():
     """データ管理サブタブのレイアウト
@@ -103,32 +106,29 @@ def create_data_management_subtab():
                     ),
                 ]),
             ]),
-            dbc.Col(width=3, children=[
-                dbc.Label("移動先", className="small fw-bold mb-1"),
-                dbc.Select(
-                    id="dm_move_dest",
-                    options=[
-                        {"label": "解析出力", "value": "output"},
-                        {"label": "DESI生データ", "value": "desi"},
-                        {"label": "TIMS生データ", "value": "tims"},
-                        {"label": "アプリ内部データ", "value": "internal"},
-                    ],
-                    value="output",
-                    size="sm",
-                ),
-            ]),
-            dbc.Col(width=3, children=[
-                dbc.Label(
-                    "移動先のサブフォルダ (省略可)",
-                    className="small fw-bold mb-1",
-                ),
-                dbc.Input(
-                    id="dm_move_subpath",
-                    placeholder="例: 2026",
-                    size="sm",
-                ),
+            dbc.Col(width=6, children=[
+                dbc.Label("移動先フォルダ", className="small fw-bold mb-1"),
+                dbc.InputGroup([
+                    dbc.Input(
+                        id="dm_move_dest_path",
+                        value=str(OUTPUT_DATA_DIR),
+                        placeholder=f"例: {OUTPUT_DATA_DIR}",
+                        size="sm",
+                    ),
+                    dbc.Button(
+                        "参照...",
+                        id="dm_browse_move_dest",
+                        color="secondary",
+                        size="sm",
+                    ),
+                ]),
             ]),
         ]),
+        html.Small(
+            f"移動先は {location_labels()} の配下のみ指定できます。"
+            "存在しないフォルダは作成しません（先に作っておいてください）。",
+            className="text-muted d-block mb-2",
+        ),
         dbc.Button(
             "\U0001F4E6 移動する",
             id="dm_move_btn",
@@ -190,6 +190,11 @@ def create_data_management_subtab():
         dcc.Store(id="dm_scan_cache", data=[]),
         # 移動の事前検証結果 (確認モーダルで表示 → 実行時に参照)
         dcc.Store(id="dm_move_pending", data=None),
+        # 移動でインタラクティブ解析の結果フォルダを差し替えたとき、
+        # auto_load_on_rds_ready の自動読込を 1 回だけ飛ばすフラグ
+        # (sap_skip_reset と同じ形。移動直後は Seurat 抽出キャッシュがミスするため、
+        #  設定タブにいる利用者の意図しないところで数分の処理を始めない)
+        dcc.Store(id="dm_move_skip_autoload", data=False),
 
         # ---- 移動の確認モーダル ----
         dbc.Modal(
