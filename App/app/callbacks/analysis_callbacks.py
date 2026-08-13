@@ -1517,6 +1517,32 @@ def reflect_analysis_busy(_n, app_state):
     return (True,) * len(_START_BUTTON_IDS) + (note,)
 
 
+# 自動生成した出力フォルダー名の形。利用者が付け直した名前を消さないための判定に使う。
+_AUTO_SUBFOLDER_RE = re.compile(r"^Analysis_\d{8}_\d{6}$")
+
+
+@callback(
+    Output("output_subfolder", "value"),
+    Input("main_tabs", "active_tab"),
+    State("output_subfolder", "value"),
+)
+def refresh_output_subfolder(active_tab, current):
+    """解析設定タブを開くたびに、出力フォルダー名を「今」の時刻で作り直す。
+
+    ver56.3: `app.layout = create_main_layout()` は **import 時に 1 度だけ**
+    評価されるため、`settings_tab.py` の既定値 `Analysis_%Y%m%d_%H%M%S` は
+    「アプリを起動した時刻」で固定されていた。何時間経っても同じ名前が出るので、
+    そのまま実行すると前回と同じフォルダを指し、上書き確認モーダルに毎回当たる。
+
+    利用者が名前を付け直している場合は触らない（自動生成の形のときだけ差し替える）。
+    """
+    if active_tab != "settings":
+        return no_update
+    if current and not _AUTO_SUBFOLDER_RE.match(str(current).strip()):
+        return no_update
+    return datetime.now().strftime("Analysis_%Y%m%d_%H%M%S")
+
+
 def _format_started_at(value) -> str:
     """台帳の started_at を 'HH:MM' に。読めなければ空文字。"""
     if not value:

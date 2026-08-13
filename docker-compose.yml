@@ -18,6 +18,10 @@ services:
       - R_HOME=/usr/lib/R
       - APP_HOST=0.0.0.0
       - APP_PORT=3838
+      # ver56.3: タイムゾーン。未設定だとコンテナは UTC で動き、出力フォルダ名・
+      # 解析の開始時刻表示・ログ・projects.json の更新日時が全部 9 時間ずれる。
+      # 日本以外で使うなら .env で TZ=... を指定する。
+      - TZ=${TZ:-Asia/Tokyo}
       # 認証 (Tier A: 解析者用 / Tier B: 共有 URL 閲覧用 / Master: 変更権限)
       - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-}
       - MASTER_PASSWORD=${MASTER_PASSWORD:-}

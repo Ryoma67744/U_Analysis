@@ -5,6 +5,16 @@
 
 FROM rocker/r2u:noble
 
+# タイムゾーン。既定の UTC のままだと Python の datetime.now() も R の Sys.time() も
+# UTC を返し、出力フォルダ名 (Analysis_YYYYMMDD_HHMMSS)・解析の開始時刻表示・ログ・
+# projects.json の更新日時が全部 9 時間ずれる。docker-compose の TZ で上書き可。
+ENV TZ=Asia/Tokyo
+RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime \
+    && echo "$TZ" > /etc/timezone \
+    && rm -rf /var/lib/apt/lists/*
+
 # Python 関連のみ apt で入れる (R 関連は bspm が apt で自動解決)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv python3-dev \

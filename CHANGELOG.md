@@ -12,6 +12,47 @@
 
 ---
 
+## 2026-08-13_ver56.3
+
+### 表示時刻が 9 時間ずれていた（コンテナが UTC のまま）＋ 出力フォルダ名が起動時刻で固定
+
+日本時間 17:23 に開始した解析が **「08:23開始」** と表示されていた。
+
+**1. コンテナのタイムゾーンが UTC だった**
+
+`docker-compose.yml` にも `Dockerfile` にも TZ 指定が無く、Docker の既定である UTC で
+動いていた。Python の `datetime.now()` も R の `Sys.time()` も UTC を返すため、
+次のすべてが 9 時間ずれていた。
+
+- 出力フォルダ名 `Analysis_YYYYMMDD_HHMMSS`
+- 「あなたの解析が実行中です（… / HH:MM開始）」の表示
+- アプリログ (`msi_app.log`) と access.log のタイムスタンプ
+- `projects.json` の `created_at` / `last_modified`、`_project_meta.json` の `saved_at`
+- レシート・PreFlight 診断の生成時刻（R 側 `Sys.time()`）
+
+`Dockerfile` で `tzdata` を入れて `ENV TZ=Asia/Tokyo` を既定にし、
+`docker-compose.yml` から `TZ=${TZ:-Asia/Tokyo}` を渡す（`.env` で上書き可）。
+TZ 環境変数だけでは zoneinfo が無いと UTC のままなので、`tzdata` の導入と
+`/etc/localtime` の設定も併せて行う。
+
+経過時間の計算（`_format_remaining_time` / `_format_elapsed_time`）は保存済みの開始時刻と
+現在時刻の差だが、TZ 変更にはコンテナ再作成が要り、その時点で実行中の解析は落ちるので、
+またぐ比較は起きない。編集ロックはメモリ上（`edit_lock_manager._locks`）なので再起動で消える。
+**既存の記録（過去のフォルダ名・ログ）は UTC のまま残る。**
+
+**2. 出力フォルダー名がアプリ起動時刻で固定されていた**
+
+`app.layout = create_main_layout()` は **import 時に 1 度だけ**評価されるため、
+`settings_tab.py` の既定値 `datetime.now().strftime("Analysis_%Y%m%d_%H%M%S")` は
+アプリを起動した瞬間の時刻で焼き付いていた。今回の `Analysis_20260813_074823` も
+コンテナ作成時刻（07:48:21Z）とほぼ一致しており、UTC かつ起動時刻という二重のずれだった。
+
+何時間経っても同じ名前が出るので、そのまま実行すると前回と同じフォルダを指し、
+毎回上書き確認モーダルに当たる。解析設定タブを開くたびに「今」の時刻で作り直すようにした。
+利用者が名前を付け直している場合は触らない（`^Analysis_\d{8}_\d{6}$` に一致するときだけ差し替える）。
+
+---
+
 ## 2026-08-13_ver56.2
 
 ### 結果フォルダが消えたことに誰も気づけなかったので、再ビルド前に気づける表を出す
