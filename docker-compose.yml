@@ -18,6 +18,10 @@ services:
       - R_HOME=/usr/lib/R
       - APP_HOST=0.0.0.0
       - APP_PORT=3838
+      # ver56.3: タイムゾーン。未設定だとコンテナは UTC で動き、出力フォルダ名・
+      # 解析の開始時刻表示・ログ・projects.json の更新日時が全部 9 時間ずれる。
+      # 日本以外で使うなら .env で TZ=... を指定する。
+      - TZ=${TZ:-Asia/Tokyo}
       # 認証 (Tier A: 解析者用 / Tier B: 共有 URL 閲覧用 / Master: 変更権限)
       - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-}
       - MASTER_PASSWORD=${MASTER_PASSWORD:-}
@@ -77,6 +81,10 @@ services:
       - msi-seurat-cache:/app/Data/Other/seurat_cache
       # 認証設定 (auth.json: bcrypt ハッシュ + password_version)
       - msi-common:/app/Data/Other/common
+      # ver56.2: アプリログ。ここが書き込み層にあると `up -d --build` のたびに
+      # 消え、「いつ何が起きたか」を後から追えない（結果フォルダの消失を追跡できず、
+      # 原因特定にコンテナの Created 時刻を使う羽目になった）。
+      - msi-logs:/app/Data/Other/logs
       # 解析データ（ユーザーがアップロード）
       # .env で DESI_DATA_HOST / TIMS_DATA_HOST を指定すればホストの固定パスをマウント
       - ${DESI_DATA_HOST:-msi-desi-data}:/app/Data/DESI/Data
@@ -108,6 +116,7 @@ volumes:
   msi-cache:
   msi-seurat-cache:
   msi-common:
+  msi-logs:
   msi-desi-data:
   msi-tims-data:
   msi-output:

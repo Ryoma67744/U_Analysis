@@ -34,7 +34,7 @@
 | `${DESI_DATA_HOST}` | `/app/Data/DESI/Data` | `msi-desi-data` (named volume) |
 | `${TIMS_DATA_HOST}` | `/app/Data/TIMS/Data` | `msi-tims-data` (named volume) |
 | `${OUTPUT_DATA_HOST}` | `/app/Data/Other/output` | `msi-output` (named volume) |
-| (固定マウント) | `/app/Data/Other/{sessions,projects,presets,shares,cache,common}` | named volume |
+| (固定マウント) | `/app/Data/Other/{sessions,projects,presets,shares,cache,common,logs}` | named volume |
 
 **ポイント**: コンテナを `docker compose down` で破棄しても、ホストマウント上のデータは消えません。アプリのバージョン更新は「コンテナ差し替え」で完結します。
 
@@ -95,13 +95,28 @@ Seurat 抽出キャッシュが効かず数分の再抽出になるためで、�
 
 ## 4. アプリ更新時のデータ保持
 
+### ⚠ 更新前に必ず確認すること
+
+コンテナを作り直すと、**マウントにも named volume にも載っていない場所（`/app` 直下など）は消えます**。
+更新の前に、アプリの **「解析設定」→「データ管理」→「🚨 要注意の結果フォルダ」が 0 件**であることを確認してください。
+
+- 「⚠ コンテナ内の一時領域です」と出ているものは、**次の `up -d --build` で消えます**。
+  同じ画面の「📦 フォルダの移動」で永続化された場所へ移してから更新すること
+  （一覧の「移動元に入れる」ボタンでそのまま移動に進めます）
+- 「✗ 実体がありません」は既に失われています。再解析が必要です
+
+過去に実際、出力先が既定の `/app` のままだった結果 1 件が更新時に失われました（ver56.0 の再ビルド）。
+旧コンテナは `up -d --build` で削除されるため `docker cp` でも救出できません。
+
+### 更新手順
+
 ```
 docker compose down       # コンテナ停止 → 削除
 git pull                  # 新コード取得
 docker compose up -d --build   # コンテナ再構築・起動
 ```
 
-上記操作で **`/srv/msi/` 配下のデータは一切影響を受けません**。コンテナ内の `/app/Data/Other/projects/projects.json` も `msi-projects` named volume に永続化されています。
+上記操作で **`/srv/msi/` 配下のデータは一切影響を受けません**。コンテナ内の `/app/Data/Other/projects/projects.json` も `msi-projects` named volume に永続化されています。アプリのログ（`/app/Data/Other/logs`）も `msi-logs` volume に永続化されているので、更新をまたいで残ります。
 
 万一プロジェクト一覧 (`projects.json`) が消えた場合は、Webアプリの「解析設定」→「データ管理」サブタブから「出力フォルダをスキャン」→「ワンクリック復元」で `_project_meta.json` から自動復元できます。
 
