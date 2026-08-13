@@ -672,6 +672,8 @@ _BROWSE_BUTTONS = {
     "browse_reann_annotation": ("file", "reann_annotation_path"),
     # プロジェクト復元スキャンフォルダ
     "browse_restore_scan_folder": ("folder", "restore_scan_folder"),
+    # データ管理サブタブ: 移動元フォルダ (退避したい /app 直下も選べるよう起点は APP_BASE_DIR)
+    "dm_browse_move_src": ("folder", "dm_move_src"),
     # ver3.9: プロジェクト編集モーダルのサムネ画像パス
     "browse_edit_thumbnail": ("file", "edit_project_thumbnail"),
     # TIMS 追加データフォルダ

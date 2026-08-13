@@ -77,6 +77,67 @@ def create_data_management_subtab():
         ),
         html.Hr(),
 
+        # ---- セクション2.5: フォルダ移動 ----
+        html.H5("\U0001F4E6 フォルダの移動"),
+        html.P(
+            "結果フォルダを永続化された場所へ移します。"
+            "出力先が /app 直下のようなコンテナ内の一時領域だった場合、"
+            "そのままではコンテナを作り直すと消え、SFTP からも見えません。"
+            "移動後は projects.json のパスも自動で更新されます。",
+            className="text-muted small mb-2",
+        ),
+        dbc.Row(className="mb-2 align-items-end", children=[
+            dbc.Col(width=6, children=[
+                dbc.Label("移動元フォルダ", className="small fw-bold mb-1"),
+                dbc.InputGroup([
+                    dbc.Input(
+                        id="dm_move_src",
+                        placeholder="例: /app/Analysis_20260812_054611",
+                        size="sm",
+                    ),
+                    dbc.Button(
+                        "参照...",
+                        id="dm_browse_move_src",
+                        color="secondary",
+                        size="sm",
+                    ),
+                ]),
+            ]),
+            dbc.Col(width=3, children=[
+                dbc.Label("移動先", className="small fw-bold mb-1"),
+                dbc.Select(
+                    id="dm_move_dest",
+                    options=[
+                        {"label": "解析出力", "value": "output"},
+                        {"label": "DESI生データ", "value": "desi"},
+                        {"label": "TIMS生データ", "value": "tims"},
+                        {"label": "アプリ内部データ", "value": "internal"},
+                    ],
+                    value="output",
+                    size="sm",
+                ),
+            ]),
+            dbc.Col(width=3, children=[
+                dbc.Label(
+                    "移動先のサブフォルダ (省略可)",
+                    className="small fw-bold mb-1",
+                ),
+                dbc.Input(
+                    id="dm_move_subpath",
+                    placeholder="例: 2026",
+                    size="sm",
+                ),
+            ]),
+        ]),
+        dbc.Button(
+            "\U0001F4E6 移動する",
+            id="dm_move_btn",
+            color="warning",
+            size="sm",
+            className="mb-2",
+        ),
+        html.Hr(),
+
         # ---- セクション3: 検出済みプロジェクト + ワンクリック復元 ----
         html.H5("\U0001F4E5 検出済みプロジェクトと復元"),
         html.P(
@@ -127,6 +188,30 @@ def create_data_management_subtab():
         dcc.Store(id="dm_state", data={"location_key": "desi", "subpath": ""}),
         # スキャン結果キャッシュ (復元時に参照)
         dcc.Store(id="dm_scan_cache", data=[]),
+        # 移動の事前検証結果 (確認モーダルで表示 → 実行時に参照)
+        dcc.Store(id="dm_move_pending", data=None),
+
+        # ---- 移動の確認モーダル ----
+        dbc.Modal(
+            id="dm_move_confirm_modal",
+            centered=True,
+            children=[
+                dbc.ModalHeader(dbc.ModalTitle("フォルダの移動")),
+                dbc.ModalBody(id="dm_move_confirm_body"),
+                dbc.ModalFooter([
+                    dbc.Button(
+                        "キャンセル",
+                        id="dm_move_cancel_btn",
+                        color="secondary",
+                    ),
+                    dbc.Button(
+                        "移動を実行",
+                        id="dm_move_exec_btn",
+                        color="warning",
+                    ),
+                ]),
+            ],
+        ),
         # トースト通知
         dbc.Toast(
             id="dm_toast",
