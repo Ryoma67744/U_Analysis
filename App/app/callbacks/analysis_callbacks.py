@@ -523,8 +523,16 @@ def run_analysis(
                 #   テンプレートのハードコード値が生き残るため）。
                 "annotation_enable": ("db" in _use_annot),
                 "use_embedded_annotation": ("embedded" in _use_annot),
-                "p_thresh": float(p_thresh) if p_thresh else 0.05,
-                "logfc_thresh": float(logfc_thresh) if logfc_thresh else 0.25,
+                # ★ ver56.5 (§4.2 / C03-1): `float(x) if x else 既定` は
+                #   **0 を既定値に化けさせる**（0 は falsy）。`logfc_thresh=0`
+                #   （= 倍率で絞り込まない）や `p_thresh=0` は画面から入力できる
+                #   正当な指定で、min=0 も宣言されている。画面には 0 が表示された
+                #   まま 0.25 / 0.05 で計算されるため、利用者は指定どおり解析された
+                #   と信じてしまう。再解析側 (:754-756) は `is not None` で 0 を
+                #   正しく通しており、同じ入力欄が経路によって別解釈になっていた。
+                #   既定値は `PARAM_BOUNDS` を単一出典とする `coerce_number` に委ねる。
+                "p_thresh": float(coerce_number(p_thresh, "p_thresh")),
+                "logfc_thresh": float(coerce_number(logfc_thresh, "logfc_thresh")),
                 "resume_from_rds": bool(resume_rds),
                 "resume_rds_paths": [],
                 # 入力正規化ポリシー（UIトグル）: OFF=正規化済み入力 → INPUT_NORMALIZED=TRUE
@@ -583,7 +591,8 @@ def run_analysis(
             # TIMS固有パラメータ
             if analysis_type == "tims_v8":
                 params["ion_mode"] = ion_mode or "Positive"
-                params["tolerance_mz"] = float(tolerance_mz) if tolerance_mz else 0.01
+                # ★ ver56.5 (§4.2 / C03-1 と同型): 0 が既定値に化けないようにする
+                params["tolerance_mz"] = float(coerce_number(tolerance_mz, "tolerance_mz"))
                 if adduct_filter:
                     params["adduct_patterns"] = adduct_filter
                 # 解析シナリオ → 補正ポリシーを注入（ver6 の ANNOTATION_ROLE 等）
@@ -632,7 +641,12 @@ def run_analysis(
 
             # --- m/z アライメント (ppm) ---
             if analysis_type == "tims_v8":
-                params["mz_align_ppm"] = float(mz_align_ppm) if mz_align_ppm else 0
+                # ★ ver56.5 (§4.2 / C03-1 と同型): 既定値も 0 なので結果は同じだが、
+                #   `x if x else 定数` の形を残すと将来既定値が変わった瞬間に
+                #   「0 を指定したのに既定値で走る」に転落する。既定値の出典を
+                #   `PARAM_BOUNDS` に一本化しておく。
+                params["mz_align_ppm"] = float(
+                    coerce_number(mz_align_ppm, "mz_align_ppm"))
 
             # --- Annotation Filter（TIMS: Parquet内の切片選択） ---
             if analysis_type == "tims_v8" and annotation_filter_data:

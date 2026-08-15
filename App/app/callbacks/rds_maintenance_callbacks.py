@@ -234,8 +234,14 @@ def stop_rds_slim(n_clicks):
 # ログポーリング
 # ---------------------------------------------------------------------------
 
-_FILE_COUNT_RE = re.compile(r"^\s*\[slim\]\s+(\d+)\s+files matched")
-_FILE_PROGRESS_RE = re.compile(r"^\s*\[(\d+)/(\d+)\]")
+# ★ ver56.5 (デバッグ総点検 §4 / C11-1): `re.MULTILINE` が抜けていた。
+#   これらは**ログ全文**（複数行の文字列）に対して search / finditer される。
+#   MULTILINE が無いと `^` は文字列全体の先頭にしか一致しないため、2 行目以降の
+#   「[slim] N files matched」「[i/N]」を **1 件も拾えない**。
+#   その結果、総数 0 → 進捗バーは実行中ずっと 0%「準備中」のまま動かず、
+#   終了した瞬間だけ 100% に跳ぶという表示になっていた（処理自体は正常）。
+_FILE_COUNT_RE = re.compile(r"^\s*\[slim\]\s+(\d+)\s+files matched", re.MULTILINE)
+_FILE_PROGRESS_RE = re.compile(r"^\s*\[(\d+)/(\d+)\]", re.MULTILINE)
 
 
 def _parse_summary(log_text: str):
@@ -338,10 +344,18 @@ def poll_rds_slim(n, store):
         summary = _parse_summary(full_log)
         summary_node = _render_summary(summary, dry_run, status)
         if status == "finished":
+            # ★ ver56.5 (§4 / C11-2): 一部のファイルが失敗していても緑の
+            #   「完了しました。」を出していた（parquet 側は失敗を明示するのに
+            #   RDS 側だけ非対称）。R が集計した Errors 件数を見て、
+            #   0 でなければ警告色にし、件数を本文に出す。
+            _errors = str(summary.get("Errors", "0")).strip()
+            _has_errors = bool(_errors) and _errors not in ("0", "-", "")
             alert = dbc.Alert(
-                "完了しました。" + ("（Dry-run のため書き込みはしていません）"
-                                      if dry_run else ""),
-                color="success",
+                ("完了しました（一部のファイルで失敗があります: "
+                 f"Errors {_errors}）。下の詳細を確認してください。"
+                 if _has_errors else "完了しました。")
+                + ("（Dry-run のため書き込みはしていません）" if dry_run else ""),
+                color="warning" if _has_errors else "success",
             )
             # 完了時は 100% を明示表示
             pct = 100

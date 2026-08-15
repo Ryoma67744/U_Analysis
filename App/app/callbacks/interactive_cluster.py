@@ -56,10 +56,37 @@ def update_cluster_stats(rds_path, cluster_name_map=None):
     total = len(df)
     stats = df["Cluster"].value_counts()
     stats = stats.reindex(sorted(stats.index, key=_cluster_sort_key))
+    # ★ ver56.5 (§4.2 / C04-2): 表示名とは別に **生のクラスタ ID** も持たせる。
+    #   表の "Cluster" 列は表示名（改名済みならユーザーが付けた名前）だが、
+    #   行選択を受ける update_cluster_info は生 ID で df と突き合わせる必要がある。
+    #   両者が同じ列を使っていたため、改名すると必ず不一致になり
+    #   「Tumor: 0 pixels (0.0%)」と表示されていた。
+    #   `_cluster_id` は DataTable の columns に無いので画面には出ない。
     return [
-        {"Cluster": _cluster_display_name(c, cluster_name_map), "Pixels": int(n), "Percent": f"{n / total * 100:.1f}%"}
+        {"Cluster": _cluster_display_name(c, cluster_name_map),
+         "_cluster_id": str(c),
+         "Pixels": int(n), "Percent": f"{n / total * 100:.1f}%"}
         for c, n in stats.items()
     ]
+
+
+def _resolve_cluster_id(value, name_map):
+    """表示名または生 ID から、df と突き合わせるための生 ID を解決する。
+
+    ★ ver56.5 (§4.2 / C04-2) のフォールバック経路。
+      通常は表の `_cluster_id` を使うが、それを持たない古い表データに備える。
+      **生 ID としての一致を先に見る** — 例えばクラスタ 0 を "2" と改名した場合、
+      表示名だけで逆引きすると本物のクラスタ 2 と取り違えるため。
+    """
+    s = str(value)
+    if not name_map:
+        return s
+    if s in {str(k) for k in name_map}:
+        return s
+    for raw, disp in name_map.items():
+        if str(disp).strip() == s:
+            return str(raw)
+    return s
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +111,14 @@ def update_cluster_info(selected_rows, highlight, table_data,
 
     cluster_id = None
     if selected_rows and table_data:
-        cluster_id = table_data[selected_rows[0]].get("Cluster")
+        # ★ ver56.5 (§4.2 / C04-2): 生 ID を優先して取る。
+        #   "Cluster" 列は表示名なので、改名済みだと df の生 ID と一致せず
+        #   件数が 0 になっていた。`_cluster_id` が無い古いデータ（別経路で
+        #   組まれた表など）に備え、表示名からの逆引きをフォールバックに置く。
+        row = table_data[selected_rows[0]]
+        cluster_id = row.get("_cluster_id")
+        if cluster_id is None:
+            cluster_id = _resolve_cluster_id(row.get("Cluster"), cluster_name_map)
     elif highlight and len(highlight) == 1:
         cluster_id = str(highlight[0])
 
