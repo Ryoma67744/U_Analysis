@@ -481,9 +481,24 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
     )
 
     # 途中再開用のRDSディレクトリパス
-    if params.get("resume_from_rds") and params.get("resume_rds_paths"):
-        rds_dir = str(Path(params["resume_rds_paths"][0]).parent)
-        lines = _replace_assign(lines, "RESUME_DIR_PATH", _r_str(rds_dir))
+    if params.get("resume_from_rds"):
+        _resume_paths = params.get("resume_rds_paths") or []
+        if _resume_paths:
+            rds_dir = str(Path(_resume_paths[0]).parent)
+            lines = _replace_assign(lines, "RESUME_DIR_PATH", _r_str(rds_dir))
+        else:
+            # ★ ver56.5 (デバッグ総点検 §5.3 / R12-N1): 「途中再開」を ON にして
+            #   RDS が 1 つも見つからないとき、従来は RESUME_DIR_PATH を
+            #   **注入しないまま** RESUME_FROM_RDS=TRUE だけを立てていた。
+            #   テンプレートに直書きされた開発者の Windows パスがそのまま残り、
+            #   R 側はそこを探して見つからず、結局最初から計算し直す。
+            #   利用者から見ると「途中再開のはずが数時間かけて全部やり直し」になる。
+            #   空を明示的に入れて、R 側の「空欄なら保存先と同じ場所を探す」規定の
+            #   挙動に倒す（開発機のパスを引きずらない）。
+            lines = _replace_assign(lines, "RESUME_DIR_PATH", _r_str(""))
+            logger.warning(
+                "途中再開が ON だが RDS が見つからないため RESUME_DIR_PATH を空にした "
+                "(テンプレート直書きのパスを引き継がない)")
 
     # DESI の化合物同定に使う MRM リスト。★ ver55.0: 条件付きで「注入しない」と
     #   テンプレート直書きのパスが生き残るため、選ばれていないときは明示的に空を入れる。
@@ -1154,6 +1169,15 @@ def _start_analysis_process_locked(
     except Exception as e:
         if log_fh:
             log_fh.close()
+        # ★ ver56.5 (デバッグ総点検 §3.5): 起動に失敗したら status を戻す。
+        #   status_file には Popen の **前** に "running" を書いている。
+        #   R が見つからない等で起動そのものに失敗すると、実際には何も動いて
+        #   いないのに記録簿が "running" のまま残り、画面には「実行中の解析が
+        #   あります」と表示され続けていた（次回アプリ再起動時の整合処理まで解消しない）。
+        try:
+            status_file.write_text("error", encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            logger.warning("起動失敗後の status 書き戻しに失敗: %s", status_file)
         return {
             "success": False,
             "message": f"プロセス起動エラー: {e}",
