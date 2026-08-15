@@ -1134,9 +1134,26 @@ def save_int_cal_list(n, enable, ion_mode, adduct_filter, matrix, table_data,
 @callback(
     Output("int_cal_adduct_filter", "value", allow_duplicate=True),
     Input("int_cal_ion_mode", "value"),
+    State("int_cal_restore_pending", "data"),
     prevent_initial_call=True,
 )
-def auto_switch_int_cal_adduct(ion_mode):
+def auto_switch_int_cal_adduct(ion_mode, is_restoring):
+    """イオンモードを **利用者が** 変えたときだけ付加イオンを既定へ揃える。
+
+    ★ ver56.5 (デバッグ総点検 §4.2 / C06-1・C13-H4): 復元ガードが無かった。
+      データ読込の復元は int_cal_ion_mode と int_cal_adduct_filter を同じ
+      ラウンドで書き戻すが、ion_mode の変化がこのコールバックを発火させ、
+      **復元したばかりの付加イオン選択を既定 4 種で上書き**していた。
+      しかも直後の自動保存がその既定値を保存し直すため、利用者が
+      「+H だけ」に絞って保存しても、読み込むたびに既定へ戻り、
+      設定ファイルまで書き換えられていた（絞り込みが二度と保持されない）。
+
+      隣の `update_int_cal_table_on_matrix` は同じ理由で
+      `int_cal_restore_pending` を見ており、こちらだけ漏れていた。
+      復元フェーズのフラグ降ろしはテーブル側が行うので、ここでは見るだけにする。
+    """
+    if is_restoring:
+        return no_update
     from app.config import DEFAULT_ADDUCT_POSITIVE, DEFAULT_ADDUCT_NEGATIVE
     if ion_mode == "Positive":
         return DEFAULT_ADDUCT_POSITIVE
