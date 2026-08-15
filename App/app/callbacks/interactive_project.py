@@ -149,12 +149,35 @@ def reset_interactive_on_project_change(project_id, skip_reset):
      Output("sap_btn_wrapper", "style", allow_duplicate=True)],
     Input("interactive_sub_project_select", "value"),
     [State("interactive_project_select", "value"),
-     State("sap_skip_reset", "data")],
+     State("sap_skip_reset", "data"),
+     # ★ ver56.5 (§4 / C13-H8): 共有リンクが固定した結果フォルダを守るため
+     State("shared_session", "data")],
     prevent_initial_call=True,
 )
-def set_interactive_folders_from_sub_project(sub_id, project_id, skip_reset):
+def set_interactive_folders_from_sub_project(sub_id, project_id, skip_reset,
+                                             shared_session=None):
     """サブプロジェクト選択時にフォルダパスを自動設定 + データリセット
     sap_skip_reset=True の場合はリセットをスキップ（保存後の自動切替時）。"""
+    # ★ ver56.5 (デバッグ総点検 §4 / C13-H8): 共有リンクで開いた場合は
+    #   結果フォルダを上書きしない。
+    #
+    #   共有ルート (share_callbacks.route_share_url) は、共有した時点の
+    #   result_dir を固定して interactive_result_folder に入れる。ところが
+    #   同時に interactive_sub_project_select も設定するため、その変化が
+    #   この callback を発火させ、`sub.get("last_result_dir")`（= **最新**の
+    #   解析結果）で共有先の表示を上書きしていた。
+    #
+    #   その結果、共有した後にそのサブプロジェクトを解析し直すと、
+    #   共有リンクを開いた人には「共有した時点の結果」ではなく最新結果が出る。
+    #   画面上は正しい共有を開いたように見え、警告も出ないため、送った側も
+    #   受け取った側も別の結果を見ていることに気づけない。
+    #
+    #   共有対象と同じサブプロジェクトを開いている間だけスキップする
+    #   （共有先の利用者が別のサブプロジェクトを明示的に選んだ場合は通常動作）。
+    if (shared_session and shared_session.get("active")
+            and sub_id and shared_session.get("sub_project_id") == sub_id):
+        return (no_update,) * 7
+
     if skip_reset:
         # ★ ver51.9 / C-4: 並びが 1 つずれていた。Output は
         #   [result_folder, msi_folder, data_info, ms_instrument,

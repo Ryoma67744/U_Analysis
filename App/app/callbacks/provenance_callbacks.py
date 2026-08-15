@@ -352,18 +352,38 @@ def export_conditions_bundle(n_clicks, rds_path, result_folder, method):
 @callback(
     [Output("methods_modal", "is_open"),
      Output("methods_unlock_store", "data", allow_duplicate=True),
-     Output("methods_unlock_error", "children", allow_duplicate=True)],
+     Output("methods_unlock_error", "children", allow_duplicate=True),
+     # ★ ver56.5 (デバッグ総点検 §4 / C07-F1): 画面の解錠表示も必ず戻す
+     Output("methods_lock_panel", "style", allow_duplicate=True),
+     Output("methods_content_panel", "style", allow_duplicate=True),
+     Output("methods_rendered_store", "data", allow_duplicate=True),
+     Output("btn_download_methods", "disabled", allow_duplicate=True),
+     Output("btn_methods_copy", "disabled", allow_duplicate=True)],
     [Input("btn_show_methods", "n_clicks"),
      Input("btn_methods_close", "n_clicks")],
     State("methods_modal", "is_open"),
     prevent_initial_call=True,
 )
 def toggle_methods_modal(show_clicks, close_clicks, is_open):
-    """開くたびに解錠状態をリセットする（開きっぱなしの解錠を持ち越さない）。"""
+    """開閉のたびに施錠状態へ戻す（解錠を持ち越さない）。
+
+    ★ ver56.5 (§4 / C07-F1): 従来は `methods_unlock_store` を None にするだけで、
+      **パネルの表示状態とボタンの有効/無効を戻していなかった**。そのため
+      いったんパスワードで表示したあとモーダルを閉じて開き直すと、
+      パスワードを聞かれずに本文がそのまま見える状態になっていた
+      （席を離れた端末では他人にも読める）。さらに「ダウンロード」ボタンは
+      有効の見た目のまま、Store が空なので押しても無反応という食い違いも起きていた。
+
+      解錠時と同じ 5 つの出力を、施錠側の値で明示的に戻す。
+    """
     from dash import ctx
+    locked = ({"display": "block"},   # methods_lock_panel: パスワード入力を出す
+              {"display": "none"},    # methods_content_panel: 本文を隠す
+              None,                   # methods_rendered_store: 本文を捨てる
+              True, True)             # ダウンロード / コピーを無効化
     if ctx.triggered_id == "btn_methods_close":
-        return False, None, ""
-    return True, None, ""
+        return (False, None, "") + locked
+    return (True, None, "") + locked
 
 
 # ---- Methods モーダル: 解錠 -------------------------------------------------
