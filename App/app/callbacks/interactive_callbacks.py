@@ -363,6 +363,37 @@ _accordion_seen_lock = threading.Lock()
 _MAX_ACCORDION_SEEN = 256
 
 
+def _accordion_key(section: str, session_id, rds_path) -> tuple:
+    return (str(section), str(session_id or "__nosession__"), str(rds_path or ""))
+
+
+def _accordion_remember(key: tuple, is_open: bool):
+    """開閉状態を記録し、前回値を返す（無ければ None）。"""
+    with _accordion_seen_lock:
+        prev = _accordion_seen.get(key)
+        _accordion_seen[key] = is_open
+        _accordion_seen.move_to_end(key)
+        while len(_accordion_seen) > _MAX_ACCORDION_SEEN:
+            _accordion_seen.popitem(last=False)
+    return prev
+
+
+def accordion_record_closed(section: str, session_id, rds_path) -> None:
+    """「今このセクションは閉じている」ことだけを記録する。
+
+    ★ ver56.5 (デバッグ総点検 §4.3 / C09-1・C04-1):
+      呼び出し元は「セクションが閉じていれば描画せず早期 return」する作りだが、
+      その経路では `accordion_toggle_is_noop` に到達しないため、
+      **閉じている間ずっと記録が「開」のまま**になっていた。
+      その結果、開き直したときに prev=True / is_open=True となり
+      「変化なし」と誤判定され、**畳んでいる間に行った改名・色変更・マージ切替が
+      画面にも一括保存にも反映されない**（古い図が成果物として保存される）。
+
+      早期 return の直前でこれを呼び、閉状態を必ず残すこと。
+    """
+    _accordion_remember(_accordion_key(section, session_id, rds_path), False)
+
+
 def accordion_toggle_is_noop(section: str, session_id, rds_path,
                              active_items, triggered_id) -> bool:
     """accordion の開閉だけが理由の発火で、当該セクションの状態が不変なら True。
@@ -372,14 +403,8 @@ def accordion_toggle_is_noop(section: str, session_id, rds_path,
     active_list = (active_items if isinstance(active_items, list)
                    else ([active_items] if active_items else []))
     is_open = section in active_list
-    key = (str(section), str(session_id or "__nosession__"), str(rds_path or ""))
-
-    with _accordion_seen_lock:
-        prev = _accordion_seen.get(key)
-        _accordion_seen[key] = is_open
-        _accordion_seen.move_to_end(key)
-        while len(_accordion_seen) > _MAX_ACCORDION_SEEN:
-            _accordion_seen.popitem(last=False)
+    prev = _accordion_remember(_accordion_key(section, session_id, rds_path),
+                               is_open)
 
     # accordion 以外がトリガー → 通常の再描画（表示内容が変わっている）
     if triggered_id != "interactive_accordion":

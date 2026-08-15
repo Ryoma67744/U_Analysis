@@ -1110,11 +1110,16 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
                          hne_mono, accumulated_positions,
                          session_id=None, marker_size=0, label_size=10,
                          hne_opacity=100, hne_marker_size=5):
+    from app.callbacks.interactive_callbacks import (
+        _set_active_key, accordion_toggle_is_noop, accordion_record_closed,
+        set_export_figures)
     active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
     if "acc_spatial" not in active_list:
+        # ★ ver56.5 (§4.3 / C04-1): 閉状態を記録してから抜ける。
+        #   記録しないと「開」のまま据え置かれ、開き直したときに
+        #   「変化なし」と誤判定されて古い図が残る。
+        accordion_record_closed("acc_spatial", session_id, rds_path)
         return no_update, no_update
-    from app.callbacks.interactive_callbacks import (
-        _set_active_key, accordion_toggle_is_noop, set_export_figures)
     # ver46.1: 他セクションの開閉だけで全タイルを作り直さない
     # （Feature Plot を開いただけで Spatial 全図が再構築されていた）。
     if accordion_toggle_is_noop("acc_spatial", session_id, rds_path,
