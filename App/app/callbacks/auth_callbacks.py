@@ -38,20 +38,27 @@ def populate_current_analyst(_pathname):
 
 # ---- clientside: current_analyst -> 各ヘッダー span に反映 ----
 
+# ★ ver56.4: 3 つ目の出力先 `header_analyst_label_shared` を削除した。
+#   この id は ver52.3 で共有ページごとレイアウトから消えていたが、
+#   この callback だけが取り残されていた。Dash は
+#   suppress_callback_exceptions=True のため起動時には落ちず、
+#   **実行時にこの callback 全体が停止**していたため、実在する
+#   landing / analysis の 2 つにも解析者名が入らず、
+#   ログインしてもヘッダーが常に空欄だった (実ブラウザで確認済)。
+#   JS の返り値も 2 要素へ揃える (個数がずれると同じ症状に戻る)。
 clientside_callback(
     """
     function(data) {
         if (!data || !data.name) {
-            return ["", "", ""];
+            return ["", ""];
         }
         const tier = data.tier || "?";
         const label = "解析者: " + data.name + " (" + tier + ")";
-        return [label, label, label];
+        return [label, label];
     }
     """,
     Output("header_analyst_label_landing", "children"),
     Output("header_analyst_label_analysis", "children"),
-    Output("header_analyst_label_shared", "children"),
     Input("current_analyst", "data"),
 )
 
