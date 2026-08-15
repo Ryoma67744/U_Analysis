@@ -2,19 +2,19 @@
 
 U_Analysis デバッグ総点検 (2026-08) の付録。本文は `DEBUG_AUDIT_2026-08.md`。
 
-本ファイルは、独立した検証官による反証審査を通過した全指摘 67 件の詳細記録である。
+本ファイルは、独立した検証官による反証審査を通過した全指摘 79 件の詳細記録である。
 各項目は「利用者から見た症状」「科学的影響」「検証の経緯(どう反証を試み、なぜ失敗したか)」
 「再現手順」「根拠(ファイル:行)」「修正方針」で構成する。
 
-- **判定**: UPHELD = 反証できず主張が成立 / WEAKENED = 条件付きで成立(訂正後の主張を併記) /
-  OVERTURNED = 反証成立(誤検出。透明性のため残す)
-- **確証度**: [実行確認] = 実際にアプリ・関数・スクリプトを動かして再現 /
-  [コード確認] = コード読解のみ / [要データ検証] = 実データが必要で未確定
+- **判定**: UPHELD(58 件) = 反証できず主張が成立 / WEAKENED(17 件) = 条件付きで成立(訂正後の主張を併記) /
+  OVERTURNED(4 件) = 反証成立(誤検出。透明性のため残す)
+- **確証度**: [実行確認](78 件) = 実際にアプリ・関数・スクリプトを動かして再現 /
+  [コード確認](1 件) = コード読解のみ / [要データ検証] = 実データが必要で未確定
 - **修正区分**: 機械的修正 = 挙動の設計判断なしに直せる / 要科学的判断・要設計判断 = 承認が必要
 
 ---
 
-## C-1. ② ボタン・UI 結線に関する指摘 (38 件)
+## C-1. ② ボタン・UI 結線に関する指摘 (50 件)
 
 ### 1. [S2] sub_action_new_analysis: 前サブプロジェクトの設定値が残留 (ver52.3 同型の未修正残り)
 
@@ -376,7 +376,38 @@ UMAP や Spatial の見出しを畳んだ状態でクラスタ名の変更・色
 3 呼出箇所（interactive_umap.py:534/543、:655/662、interactive_spatial.py:1114/1120）で accordion_toggle_is_noop(...) を先に評価して結果を変数に取り、その後『閉なら return』→『noop なら return』の順にする。閉状態が False として記録されるため、再オープン時に prev(False) != is_open(True) となり再描画される（機械変換版で実証済み）。併せて番人テストに『閉→改名→再オープンで描画される』呼出順のテストを追加する。
 
 
-### 12. [S2] RDS軽量化の進捗バーが実行中ずっと 0%（進捗 regex に re.MULTILINE 欠落）
+### 12. [S2] UMAP 一括保存/サムネ登録: per_sample 表示中に保持 figure が追い出されていると空白 PNG を出力・サムネ上書き
+
+**判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/interactive_batch_save.py:284`
+
+**利用者から見た症状**
+
+サンプル別の UMAP を表示している状態で「一括保存」を押すと、真っ白(枠線だけ)の画像が UMAP_integrated.png という名前で ZIP に入ります。「サムネ登録」を押した場合は「サムネを umap で登録しました」と成功メッセージが出るのに、プロジェクト一覧のサムネイル画像が真っ白になり、前のサムネは戻せません。
+
+**検証の経緯(反証の試みと結果)**
+
+反証を試みたが機構・実害とも成立し、さらに主張より到達しやすいことが分かった。当該 callback を直接呼んだ実測で、per_sample 時の interactive_umap_plot.figure = {'data': [], 'layout': {...}} が truthy のまま素通りし、cb_batch_save_umap は 2400x1800 で色数240・データ色ゼロ(枠線のみ)の PNG を UMAP_integrated.png として ZIP に入れ、cb_set_thumbnail_umap は (True, 'サムネを umap で登録しました', 'success') を返しながらほぼ真っ白な 600x600 PNG でプロジェクトサムネを上書きした。台帳は発生条件を LRU 24 件超・TTL 30 分・再起動に限定しているが、update_umap_per_sample が set_export_figures("umap", ..., []) を明示的に書く分岐が 2 つあり、追い出しを一切必要としない確定経路になる: (a) 表示=サンプル別かつ分割基準=選択グループでグループ未保存 (interactive_umap.py:701-706、selection_groups_store の初期値は {"groups": []})、(b) display_mode 不一致 / plot_data が None (同:672-676)。_create_zip_from_figures にも空 figure の判定は無い。画面と保存物が完全に食い違い、サムネは成功を名乗って既存画像を破壊するため S2 に引き上げる。
+
+**再現手順**
+
+(A) 直接呼び出し: python3 /tmp/claude-0/-home-user-U-Analysis/36bca7d3-f22b-5213-86d8-66891f484e7a/scratchpad/tmp/v8b_c10_direct.py を実行し [C10-5]/[C10-5c] の出力を見る。(B) 実データ経路: インタラクティブでデータを読み込み、UMAP 節で表示を「サンプル別」、分割基準を「選択グループ」にする(グループ未保存)。「選択グループがありません」が出た状態で 📷一括保存 / 📌サムネ登録 を押す。
+
+**根拠**
+
+- `/home/user/U_Analysis/App/app/callbacks/interactive_batch_save.py:284: elif umap_fig: / figures = [("UMAP_integrated", umap_fig)]`
+- `/home/user/U_Analysis/App/app/callbacks/interactive_umap.py:547: if display_mode == "per_sample": / return go.Figure()`
+- `/home/user/U_Analysis/App/app/callbacks/interactive_umap.py:703: if not groups: / return _finish(html.Div("選択グループがありません（UMAP の「選択グループ」で保存してください）。", ...), [])`
+- `/home/user/U_Analysis/App/app/callbacks/interactive_umap.py:672: if display_mode != "per_sample": / return _finish("", [])`
+- `/home/user/U_Analysis/App/app/callbacks/interactive_batch_save.py:569: elif umap_fig: / figs = [("UMAP_integrated", umap_fig)]`
+- `/home/user/U_Analysis/App/app/callbacks/interactive_callbacks.py:326: for k in [k for k, ts in _export_figures_time.items() if (now - ts) > _EXPORT_FIG_TTL_SEC and k != key]:`
+- `/tmp/claude-0/-home-user-U-Analysis/36bca7d3-f22b-5213-86d8-66891f484e7a/scratchpad/tmp/v8b_c10_direct.py 実行結果: UMAP_integrated.png: 92439B size=(2400,1800) 色数=240 上位=[(4316876,(255,255,255)),(1466,(42,63,95))] / cb_set_thumbnail_umap return: (True, 'サムネを umap で登録しました', 'success')`
+
+**修正方針**
+
+interactive_batch_save.py:284 の `elif umap_fig:` と :569 の `elif umap_fig:` を `elif umap_fig and umap_fig.get("data"):` に変える。空 figure なら既存の else 分岐 (raise PreventUpdate / 「UMAP プロットが見つかりません」トースト) に落ち、白紙 PNG も白紙サムネも出なくなる。
+
+
+### 13. [S2] RDS軽量化の進捗バーが実行中ずっと 0%（進捗 regex に re.MULTILINE 欠落）
 
 **判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/rds_maintenance_callbacks.py:237`
 
@@ -407,7 +438,7 @@ UMAP や Spatial の見出しを畳んだ状態でクラスタ名の変更・色
 rds_maintenance_callbacks.py:237-238 の両 re.compile に re.MULTILINE を足す(parquet_maintenance_callbacks.py:232-233 と同じ)。併せて :315 の current = int(m.group(1)) を parquet :318 と同じ current = max(current, int(m.group(1))) にすると、ログの並びに依存しなくなる。挙動変化は進捗表示のみ。
 
 
-### 13. [S2] C11-3
+### 14. [S2] C11-3
 
 **判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正
 
@@ -437,7 +468,7 @@ rds_maintenance_callbacks.py:237-238 の両 re.compile に re.MULTILINE を足�
 auth_callbacks.py:54 の Output("header_analyst_label_shared", "children") を1行削除する。これだけで表示が復活することを実ブラウザで確認済み(JS の return が3要素のままでも dash-renderer が zipIfArray で短い方に切り詰めるため無害)。:45/:49 の return を2要素にするのは可読性のための同時修正で必須ではない。再発防止には『登録済み callback の全 Output id が layout に実在すること』を見るテストの追加が有効(現状 App/tests に該当なし)。
 
 
-### 14. [S2] プリセット読込の adduct_filter が auto_switch_adduct に即座に上書きされる
+### 15. [S2] プリセット読込の adduct_filter が auto_switch_adduct に即座に上書きされる
 
 **判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 要設計判断／**該当**: `App/app/callbacks/file_handlers.py:505`
 
@@ -467,7 +498,7 @@ auth_callbacks.py:54 の Output("header_analyst_label_shared", "children") を1�
 adduct_filter.value / reanalysis_adduct_filter.value を単一 callback が所有する形に寄せ、Input(ion_mode.value) と Input(プリセット適用シグナル) を並べて dash.ctx.triggered_id で『イオンモード変更なら既定に振り直す / 復元なら保存値を入れる』を分岐させる。暫定策として、load_preset_cb が同一レスポンスで restore_in_progress_store を立て、auto_switch_adduct が State で読んで no_update を返す形でも塞げる(prop 適用は下流発火より先なので State で見える)。
 
 
-### 15. [S2] reset_reanalysis_defaults が復元直後の再解析パラメータを既定値で上書き
+### 16. [S2] reset_reanalysis_defaults が復元直後の再解析パラメータを既定値で上書き
 
 **判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 要設計判断／**該当**: `App/app/callbacks/file_handlers.py:469`
 
@@ -497,7 +528,7 @@ adduct_filter.value / reanalysis_adduct_filter.value を単一 callback が所�
 reset_reanalysis_defaults を『手法が利用者操作で変わったとき』にだけ効かせる必要がある。復元系 (sub_action_new_analysis / load_preset_cb / send_to_reanalysis) が同一レスポンスで restore_in_progress_store を立て、reset_reanalysis_defaults が State で読んで no_update を返す形が最小。恒久策は reanalysis_ion_mode / reanalysis_tolerance_mz の書き手を単一 callback に統合し ctx.triggered_id で分岐させること。
 
 
-### 16. [S2] auto_switch_data_folder がサブプロジェクト復元/再解析転記直後の data_folder を既定フォルダで上書き
+### 17. [S2] auto_switch_data_folder がサブプロジェクト復元/再解析転記直後の data_folder を既定フォルダで上書き
 
 **判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 要設計判断／**該当**: `App/app/callbacks/file_handlers.py:487`
 
@@ -527,7 +558,39 @@ reset_reanalysis_defaults を『手法が利用者操作で変わったとき』
 auto_switch_data_folder を『利用者が手法ラジオを操作したとき』だけ効かせる。復元系 (sub_action_new_analysis / load_preset_cb / send_to_reanalysis) が同一レスポンスで restore_in_progress_store を立て、auto_switch_data_folder が State で読んで no_update を返すのが最小の塞ぎ方。恒久策は data_folder.value の書き手を単一 callback に統合し ctx.triggered_id で分岐させること(現状 5 つの writer が競合している)。
 
 
-### 17. [S2] キャリブレーションプリセット読込が switch_cal_sample の連鎖で旧テーブルに巻き戻される
+### 18. [S2] データ読込復元の int_cal_adduct_filter が auto_switch_int_cal_adduct に上書きされる (restore_pending ガード欠落)
+
+**判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/interactive_calibration.py:1139`
+
+**利用者から見た症状**
+
+キャリブレーションの「付加イオン」チェックボックスを自分で絞り込んで保存しても、次にそのデータを読み込むと必ず初期状態(+H, +Na, +NH4, +K の 4 つ全部)に戻る。しかも画面が戻るだけでなく、保存ファイル(結果フォルダ内 interactive_settings.json)の中身まで初期値に書き換えられるため、設定は完全に失われる。そのまま「キャリブレーション適用」を押すと、意図していない付加イオンまで対象にして化合物名の照合が行われる。
+
+**検証の経緯(反証の試みと結果)**
+
+主張は正しく、しかも台帳より実害が重い。3方向の反証を全て潰した。(1)「復元値が現在値と同じなら連鎖しない」= 否。dash-renderer は返された prop のキー集合だけで下流を起動し値比較をしない(dash_renderer.dev.js:2100-2107 の getCallbacksByInput 呼び出し)。本体と同形の最小 Dash アプリを実 Chromium で操作した結果、ion_mode に現在値と同一の "Positive" を書いても auto_switch は発火し、同一レスポンスで書いた adduct=['+H'] が既定 4 個に戻された。よって読込のたびに必ず上書きされる。(2)「stage D の書込みが後勝ちする」= 否。stage D 応答の適用後に下流 auto_switch が走るので後勝ちは auto_switch(実測で ['+Na']→['-H'] を確認)。(3)「Negative なら既定と同じで無害」= 部分的に真。陰イオン候補は -H の 1 つだけ(interactive_tab.py:178-184)なので Negative では差が出ず、Positive で利用者が 4 個から絞り込んでいた場合に顕在化する(条件付き)。ここまでは台帳どおりだが、台帳が書いていない決定的な事実を発見した: auto_save_int_cal(interactive_calibration.py:1054-1058)は int_cal_adduct_filter.value を Input に持ち、:1078-1081 で _save_interactive_settings("int_calibration", {... "adduct_filter": ...}) を呼ぶ。保存先は RDS と同じディレクトリの interactive_settings.json(utils/label_persistence.py:153-157, :171-189)。auto_switch が既定値を書いた瞬間にこの自動保存が再発火するため、UI が既定に戻るだけでなく、保存済みの付加イオン設定がディスク上でも既定値に塗り潰される。保存先を決める seurat_rds_path_store も同じ stage D で書かれているので確実に保存される。apply_int_calibration は State("int_cal_adduct_filter","value") を化合物照合(:1269 adduct_patterns=adduct_filter)に使うため、気付かずに適用すると想定外の付加イオン集合でアノテーションが付く。復元されないだけでなく不可逆に消えるので、台帳の S3 を S2 に引き上げる。同じ int_cal_ion_mode を Input に持つ update_int_cal_table_on_matrix(:796-799)は is_restoring ガードを持っており、この 1 本だけガードが欠けているという非対称も確認した。
+
+**再現手順**
+
+1) master password でログイン。2) 任意のサブプロジェクトからインタラクティブ解析を開き、データを読み込む。3) キャリブレーションを有効にし、イオンモード Positive のまま付加イオンを +H だけに絞る(自動保存で interactive_settings.json の int_calibration.adduct_filter が ["+H"] になる)。4) 一度別のプロジェクトへ移るかページを再読込し、同じデータをもう一度読み込む。5) 付加イオンが 4 つ全部に戻り、interactive_settings.json の adduct_filter も ["+H","+Na","+NH4","+K"] に書き換わっている。/ 実行済みの機構実証: scratchpad/tmp/v9_min_chain.py + v9_probe_min2.py(同値でも下流が発火し復元値が既定で上書きされることを実 Chromium で確認)、scratchpad/tmp/v9_direct_calls.py(auto_switch_int_cal_adduct が Positive/Negative/None のいずれでも無条件に既定を返すことを確認)。
+
+**根拠**
+
+- `App/app/callbacks/interactive_calibration.py:1139-1143: def auto_switch_int_cal_adduct(ion_mode): if ion_mode == "Positive": return DEFAULT_ADDUCT_POSITIVE / return DEFAULT_ADDUCT_NEGATIVE`
+- `App/app/callbacks/interactive_calibration.py:796-799: def update_int_cal_table_on_matrix(matrix_type, ion_mode, is_restoring): # データ読み込み直後の復元フェーズではテーブル上書きをスキップ / if is_restoring: return no_update, False`
+- `App/app/callbacks/interactive_callbacks.py:1015-1023: Output("int_cal_ion_mode", "value"), … Output("int_cal_adduct_filter", "value", allow_duplicate=True), … Output("int_cal_restore_pending", "data"),`
+- `App/app/callbacks/interactive_callbacks.py:1260-1261: r_table, r_enable, r_ion_mode, r_matrix, r_adduct, r_mrm, / r_sw, r_mp, r_reg, r_instrument, True,`
+- `App/app/callbacks/interactive_calibration.py:1056-1058: Input("int_cal_enable", "value"), Input("int_cal_ion_mode", "value"), Input("int_cal_adduct_filter", "value"),`
+- `App/app/callbacks/interactive_calibration.py:1078-1081: _save_interactive_settings("int_calibration", { "enable": enable or False, "ion_mode": ion_mode or "Positive", "adduct_filter": adduct_filter or DEFAULT_ADDUCT_POSITIVE,`
+- `App/app/utils/label_persistence.py:171-177: def save_interactive_settings(key: str, value, rds_path: str | None) -> None: … path = get_interactive_settings_path(rds_path)`
+- `実測 scratchpad/tmp/v9_probe_min2.py 出力: case_ion_same_value.log = ["restore_same -> ion=Positive(同値) adduct=['+H']", "auto_switch FIRED (ion=Positive) -> adduct=['+H','+Na','+NH4','+K']"] / 画面上の最終チェックも 4 個`
+
+**修正方針**
+
+auto_switch_int_cal_adduct 専用の復元フラグ Store(例 int_cal_adduct_restore_pending)を追加し、load_stage_d_finish が True を書き、auto_switch は State でそれを読んで True の間は no_update を返しつつ自分で False に落とす。既存の int_cal_restore_pending は update_int_cal_table_on_matrix が消費してしまい State の読み順も保証されないため共用しないこと。
+
+
+### 19. [S2] キャリブレーションプリセット読込が switch_cal_sample の連鎖で旧テーブルに巻き戻される
 
 **判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/analysis_callbacks.py:2110`
 
@@ -559,7 +622,39 @@ auto_switch_data_folder を『利用者が手法ラジオを操作したとき�
 最小修正は switch_cal_sample の先頭に `if new_sample == prev_sample: return no_update, no_update, no_update` を入れること（ケース(a) が消える）。本筋の修正は State("calibration_table","data") を State("calibration_table_data","data") に変えて Store を単一の真実にすること（手動編集は recalculate_ppm_on_edit が data_timestamp 経由で Store に反映済みなので値は失われない）。
 
 
-### 18. [S2] 共有リンクが固定した result_dir を set_interactive_folders_from_sub_project が最新結果で上書き (shared ガード欠落)
+### 20. [S2] ランディングからの standalone 起動が auto_fill に乗っ取られ entry_mode が二重書込で sub_project 化する
+
+**判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/interactive_project.py:42`
+
+**利用者から見た症状**
+
+同じタブで一度でも解析を実行したあとにトップページの「インタラクティブ解析」を押すと、空の選択画面ではなく前回解析したプロジェクトが勝手に開き、プロジェクトを選ぶドロップダウンが画面から消えます(サブプロジェクトの欄だけ残ります)。トップに戻ってもう一度押しても直らず、ブラウザのタブを開き直すまで別のプロジェクトを選べません。
+
+**検証の経緯(反証の試みと結果)**
+
+実機で完全に再現し、反証は成立しなかった。app_state は dcc.Store(storage_type="session") (main_layout.py:396) で、解析開始時に full_output_dir が入り(analysis_callbacks.py:937-948)、完了時は is_running を False にするだけなので同一タブに残り続ける。この状態でランディングの「インタラクティブ解析」を押した実測では、(0) open_interactive_from_landing が entry_mode='standalone' と main_tabs='interactive' を書き、(2) auto_fill_interactive_from_analysis が entry_mode='sub_project'・project_select='94eb7627'・sub_select='87d0da68'・result_folder='/V8B/PREVIOUS_RUN_OUTPUT' で後勝ち上書きし、(4) toggle_project_dropdown_visibility が interactive_project_row に display:none を掛けた。対照実験(app_state 未注入)では project_row は表示・ドロップダウンは未選択のままで、app_state の有無だけで挙動が変わることを確認した。さらに追加検証で、ホームに戻ってもう一度同じボタンを押しても復帰せず(main_tabs.active_tab は同値でも応答に含まれれば下流が再発火するため auto_fill が再び倒す)、sessionStorage の app_state を消して初めて復帰した。つまりタブを閉じるまでこのボタンは壊れたままになる。ボタンの意図と結果が違い、選び直す UI も消え、押し直しても直らないので S2。
+
+**再現手順**
+
+python3 /tmp/claude-0/-home-user-U-Analysis/36bca7d3-f22b-5213-86d8-66891f484e7a/scratchpad/tmp/v8b_probe_h7.py inject (乗っ取りを再現) と .../v8b_probe_h7.py clean (対照)、および .../v8b_probe_h7b.py (押し直しでは復帰しないことの確認)。実 UI では解析を1回走らせた後、同じタブでトップへ戻り「インタラクティブ解析」を押す。
+
+**根拠**
+
+- `/home/user/U_Analysis/App/app/callbacks/interactive_project.py:47: if entry_mode in ("sub_project", "shared"): / return (no_update,) * 5`
+- `/home/user/U_Analysis/App/app/callbacks/interactive_project.py:59: "sub_project", / app_state.get("project_id") or no_update,`
+- `/home/user/U_Analysis/App/app/callbacks/project_callbacks.py:390: return ( "analysis", "interactive", "standalone",)`
+- `/home/user/U_Analysis/App/app/callbacks/interactive_project.py:76: if entry_mode in ("sub_project", "shared"): / return {"display": "none"}`
+- `/home/user/U_Analysis/App/app/layouts/main_layout.py:396: dcc.Store(id="app_state", storage_type="session", data={`
+- `/home/user/U_Analysis/App/app/layouts/interactive_tab.py:30: html.Div(id="interactive_project_row", children=[ / dbc.Label("プロジェクト", ...), / dcc.Dropdown(id="interactive_project_select", ...)`
+- `/tmp/claude-0/-home-user-U-Analysis/36bca7d3-f22b-5213-86d8-66891f484e7a/scratchpad/tmp/v8b_probe_h7.py 実行結果 (inject): project_row_style='display: none;' project_select='V1TEST' result_folder='/V1/OUT_A_REANALYZED' ; 通信 2: {"interactive_entry_mode": "{'data': 'sub_project'}", "interactive_project_select": "{'value': '94eb7627'}"}`
+- `/tmp/claude-0/-home-user-U-Analysis/36bca7d3-f22b-5213-86d8-66891f484e7a/scratchpad/tmp/v8b_probe_h7b.py 実行結果: 1回目クリック後 {"row_visible": false, "project": "V1TEST"} / 2回目クリック後 {"row_visible": false, "project": "V1TEST"} / app_state 削除後 {"row_visible": true, "project": "プロジェクトを選択"}`
+
+**修正方針**
+
+interactive_project.py:47 のガードを `if entry_mode in ("sub_project", "shared", "standalone"):` に広げる。standalone は「利用者が明示的に選択画面を開いた」意思表示なので自動補完の対象から外す。
+
+
+### 21. [S2] 共有リンクが固定した result_dir を set_interactive_folders_from_sub_project が最新結果で上書き (shared ガード欠落)
 
 **判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/interactive_project.py:155`
 
@@ -589,7 +684,7 @@ auto_switch_data_folder を『利用者が手法ラジオを操作したとき�
 set_interactive_folders_from_sub_project(interactive_project.py:143-155)に State("interactive_entry_mode","data") を足し、entry_mode == "shared" のときは interactive_result_folder と interactive_msi_folder の 2 出力だけ no_update にする(残り 5 出力は現状どおり返して ms_instrument や data_info は従来通り設定する)。populate_interactive_sub_projects(:112-113)と同じガードに揃えるだけで、他の経路の挙動は変わらない。
 
 
-### 19. [S2] 孤児 Output: header_analyst_label_shared (①-B 再確認・原因特定)
+### 22. [S2] 孤児 Output: header_analyst_label_shared (①-B 再確認・原因特定)
 
 **判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/auth_callbacks.py:54`
 
@@ -619,9 +714,11 @@ set_interactive_folders_from_sub_project(interactive_project.py:143-155)に Stat
 auth_callbacks.py:54 の Output("header_analyst_label_shared", "children") を削除する(これだけで表示が復活することを実ブラウザで確認済み)。:45 と :49 の return 配列を2要素に揃えるのは可読性のための任意の同時修正。再発防止に『登録済み callback の全 Output id が app.layout に実在する』ことを検査するテストを追加すると良い。
 
 
-### 20. [S2] 死にOutput: header_analyst_label_shared が layout に不在（既知候補①-B を確認）
+### 23. [S2] 死にOutput: header_analyst_label_shared が layout に不在（既知候補①-B を確認）
 
 **判定**: OVERTURNED(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/auth_callbacks.py:54`
+
+> ⚠ **この指摘は反証が成立した(誤検出)。透明性のため記録を残す。**
 
 **利用者から見た症状**
 
@@ -649,7 +746,7 @@ auth_callbacks.py:54 の Output("header_analyst_label_shared", "children") を�
 修正方針自体は C11-0 の記述どおりで正しい: auth_callbacks.py:54 の Output 1行を削除する(JS の3要素 return はそのままでも動く)。ただし『実害が無いので直さなくてよい』という優先度判断は撤回すべきで、表示機能の復旧として S2 相当で扱う。
 
 
-### 21. [S3] toggle_create_sub_modal: confirm で無条件クローズ → name 未入力時にサブプロジェクトが黙って作成されない
+### 24. [S3] toggle_create_sub_modal: confirm で無条件クローズ → name 未入力時にサブプロジェクトが黙って作成されない
 
 **判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/project_callbacks.py:1076`
 
@@ -678,7 +775,7 @@ auth_callbacks.py:54 の Output("header_analyst_label_shared", "children") を�
 プロジェクト版(project_callbacks.py:839-852 / :890-895)をそのまま写す。(1) toggle_create_sub_modal の Input から confirm_create_sub_project を外す。(2) handle_create_sub_project の Output に create_sub_project_modal.is_open とエラー Div を追加し、検証失敗時は is_open=True 維持 +「「タイトル」は必須です。」を返す。(3) action_page.py の作成モーダルに html.Div(id="new_sub_error", className="text-danger") を追加。
 
 
-### 22. [S3] C03-3
+### 25. [S3] C03-3
 
 **判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 要設計判断
 
@@ -704,7 +801,7 @@ auth_callbacks.py:54 の Output("header_analyst_label_shared", "children") を�
 - `App/app/layouts/settings_tab.py:1033: value=30, min=2, max=100, step=1, size="sm"),  （:1043 value=0.3 / :1064 value=30 / :1053 value="cosine"）← 既定値では _suf は常に非空`
 
 
-### 23. [S3] 拡大対象が空のとき拡大ボタン押下でモーダルが開かないのに fullscreen_closed_trigger が加算され重い5コールバックが一斉再走
+### 26. [S3] 拡大対象が空のとき拡大ボタン押下でモーダルが開かないのに fullscreen_closed_trigger が加算され重い5コールバックが一斉再走
 
 **判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/interactive_fullscreen.py:393`
 
@@ -737,7 +834,38 @@ DEG を計算していない状態で DEG の拡大ボタン（⤢）を押す�
 toggle_fullscreen の各フォールスルー（:87 の `if not trigger:`、:100、:204、:393）を `return False, "", ""` から `raise PreventUpdate`（または 3 出力とも no_update）に変える。モーダルは元々閉じているため表示挙動は変わらず、fullscreen_closed_trigger の空加算だけが止まる。あわせて対象データが無い旨のメッセージを出すと親切（別件・S4）。
 
 
-### 24. [S3] ブックマーク選択肢: _set_active_key 無しで label_from_active_state を呼び、SCiLS/CSV 由来の化合物名が常に欠落
+### 27. [S3] standalone解析後の自動連携で entry_mode='sub_project' が無条件に書かれ、プロジェクト選択DDが消える
+
+**判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/interactive_project.py:56`
+
+**利用者から見た症状**
+
+プロジェクトに紐づけずに(ランディングの「インタラクティブ解析」から入って)フォルダを指定して解析し、その後インタラクティブ解析タブを開くと、それまで表示されていた「プロジェクト」選択ドロップダウンが画面から消えてしまう。隣の「サブプロジェクト」欄だけが中身のない状態で残るため、プロジェクトから結果を選び直す手段が失われる。さらに、押していないのに「データを読み込む」が勝手に走り出す(数分かかる読み込みが始まる)。元に戻すにはヘッダーからプロジェクト一覧へ戻って入り直すしかない。
+
+**検証の経緯(反証の試みと結果)**
+
+4方向の反証をすべて潰し、関数直接呼び出しと稼働アプリへの実POSTの2系統で再現した。(1)「standalone なら手前のガードで抜ける」= 否。ガードは interactive_project.py:47 の entry_mode in ("sub_project","shared") のみで、"standalone" も初期値 "" (main_layout.py:209 data="") も素通りする。(2)「project_id が空なら全体が no_update になる」= 否。空になるのは project_select / sub_project_select の 2 出力だけで、entry_mode は位置固定のリテラル "sub_project" (:59)。実POSTの応答は entry_mode だけが返り project/sub は応答に含まれない(=no_update)ことを示した。(3)「後段が standalone に戻す」= 否。interactive_entry_mode の書き手 4 本(project_callbacks.py:393 / :763、share_callbacks.py:198、interactive_project.py:59・:409)のうち standalone を書くのはランディングのボタンだけで、一度 sub_project になると再入場するまで戻らない。(4)「既存テストが意図として固定」= 否。App/tests/ に auto_fill_interactive_from_analysis / interactive_project_row を触るテストは無い。さらに台帳に無い実害を 2 つ発見した: (a) entry_mode="sub_project" は auto_load_on_rds_ready(interactive_callbacks.py:628)の条件も満たすため、auto_fill が同時に書く result_folder → auto_scan_rds_files → rds_map の連鎖で「データを読み込む」が自動実行される。同ファイル :610 のコメントは「entry_mode が手動 standalone の場合は自動実行しない」と明記しており、この宣言も破られる。(b) populate_interactive_sub_projects(:112-113)がサブプロ value を no_update にする分岐へ入るため、以後プロジェクトを変えてもサブプロ選択が消えなくなる。重大度は台帳どおり S3 を維持する(standalone 入場かつプロジェクト未連携で解析した場合に限られ、ランディングへ戻れば復帰できるため)。
+
+**再現手順**
+
+1) master password でログイン。2) ランディングページの「インタラクティブ解析」ボタンを押す(entry_mode="standalone"、この時点で #interactive_project_row の display は block = 表示。実測済み)。3) 「解析設定」タブに移り、プロジェクトを選ばずにデータフォルダを指定して ▶解析実行 → 完了まで待つ(app_state.project_id は analysis_callbacks.py:946 により "")。4) 「インタラクティブ解析」タブに戻る。5) プロジェクト選択ドロップダウンが消えている。/ 実行済みの等価確認: scratchpad/tmp/v9_probe_app2.py が稼働アプリの /_dash-update-component に entry_mode="standalone", project_id="" で POST し、応答 {"interactive_entry_mode":{"data":"sub_project"}} かつ project/sub は応答に無いことを確認。scratchpad/tmp/v9_direct_calls.py で toggle_project_dropdown_visibility("sub_project") == {"display":"none"} を確認。
+
+**根拠**
+
+- `App/app/callbacks/interactive_project.py:56-62: return ( app_state["full_output_dir"], data_folder or no_update, "sub_project", app_state.get("project_id") or no_update, app_state.get("sub_project_id") or no_update, )`
+- `App/app/callbacks/interactive_project.py:76-78: if entry_mode in ("sub_project", "shared"): return {"display": "none"} / return {}`
+- `App/app/callbacks/analysis_callbacks.py:946: "project_id": selected_project.get("id", "") if selected_project else "",`
+- `App/app/callbacks/project_callbacks.py:393: "standalone",      # interactive_entry_mode（プロジェクト・サブプロジェクトDD表示）`
+- `App/app/callbacks/interactive_callbacks.py:628: if rds_map and method and entry_mode in ("sub_project", "shared"): return (cur_clicks or 0) + 1, no_update`
+- `App/app/callbacks/interactive_callbacks.py:610: # (entry_mode が手動 standalone の場合は自動実行しない = 従来通り手動)`
+- `実測 scratchpad/audit/w3/v9_app_probe2.json: post_auto_fill_standalone -> status 200, {"interactive_entry_mode":{"data":"sub_project"}} で project/sub は応答に含まれず(=no_update)`
+
+**修正方針**
+
+interactive_project.py:59 の literal "sub_project" を ("sub_project" if app_state.get("project_id") else no_update) に変える。project_id が空のときは entry_mode を触らないので standalone のまま DD が残り、auto_load_on_rds_ready の自動読込にも入らない。他の 4 出力と他経路の挙動は変わらない。
+
+
+### 28. [S3] ブックマーク選択肢: _set_active_key 無しで label_from_active_state を呼び、SCiLS/CSV 由来の化合物名が常に欠落
 
 **判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/interactive_deg.py:1070`
 
@@ -767,7 +895,7 @@ Feature の検索欄には「760.58510 (PI 38:4)」のように化合物名が�
 update_bookmark_options に State("seurat_rds_path_store","data") を追加し、関数先頭で _set_active_key(rds_path) を呼ぶ。併せて tests/test_active_project_scope.py の走査対象に label_from_active_state 等『アクティブ state を読むヘルパ』の呼び出しを加え、間接参照の抜けを塞ぐ。
 
 
-### 25. [S3] 選択グループ undo がプロジェクト切替をまたいで残存し、旧プロジェクトの cell_ids を新プロジェクトへ保存しうる
+### 29. [S3] 選択グループ undo がプロジェクト切替をまたいで残存し、旧プロジェクトの cell_ids を新プロジェクトへ保存しうる
 
 **判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/interactive_selection_groups.py:86`
 
@@ -797,7 +925,7 @@ update_bookmark_options に State("seurat_rds_path_store","data") を追加し�
 interactive_selection_groups.py:58-61 の seurat_rds_path_store 分岐で undo を破棄する（return sg.load_groups(rds_path), no_update, None）。より確実にするなら undo レコードに rds_path を持たせ、:86 の復元分岐で現在の rds_path と一致しなければ復元せず『別プロジェクトの削除は取り消せません』を返す。
 
 
-### 26. [S3] 既知候補②-C確定: interactive_umap.py:543 の session_id=None で _accordion_seen キーが全セッション共有になり、別セッションの初回オープンが誤スキップされる
+### 30. [S3] 既知候補②-C確定: interactive_umap.py:543 の session_id=None で _accordion_seen キーが全セッション共有になり、別セッションの初回オープンが誤スキップされる
 
 **判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/interactive_umap.py:543`
 
@@ -827,7 +955,37 @@ interactive_selection_groups.py:58-61 の seurat_rds_path_store 分岐で undo �
 update_umap_plot に State("session_id_store", "data") を追加し、accordion_toggle_is_noop("acc_umap", None, ...) の None を session_id に置き換える（兄弟の interactive_umap.py:662 / interactive_spatial.py:1120 と同じ形にするだけ）。C09-1 の guard 順序修正とは独立に必要。
 
 
-### 27. [S3] RDS軽量化: 一部ファイル失敗でも緑の『完了しました。』成功表示（parquet 側と非対称）
+### 31. [S3] DEG 一括保存: 全クラスタ横断 Heatmap のファイル名に volcano の選択クラスタ suffix が付く
+
+**判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/interactive_batch_save.py:399`
+
+**利用者から見た症状**
+
+DEG の一括保存でダウンロードした ZIP の中で、ヒートマップの画像ファイル名が「Heatmap_Cluster3.png」のように特定クラスタの図であるかのように見えます。ヒートマップ側で別の「フォーカスクラスタ」を選んでいると、画像に書かれたタイトル(例: Cluster5)とファイル名(Cluster3)が食い違います。
+
+**検証の経緯(反証の試みと結果)**
+
+反証できず、むしろ主張より一段悪い。登録済みコールバックグラフで heatmap_plot.figure の Input は [heatmap_top_n, heatmap_scale, heatmap_annotation_switch, umap_merge_toggle, heatmap_cluster_select] であり volcano_cluster_select を含まない。cb_batch_save_deg を直接呼ぶと volcano_cluster_select='3' で ['Volcano_Cluster3.png','Heatmap_Cluster3.png','DEG_combined.png','analysis_conditions.json'] が生成された(値は文字列なので '0' でも suffix は消えない)。台帳は「Heatmap は全クラスタ横断なので紛らわしい」とするが、update_heatmap は heatmap_cluster_select(フォーカスクラスタ)が選ばれていればそのクラスタのマーカーに絞った図を出し、図タイトルにも 'Heatmap — <cluster> vs Rest' と正しく入る。よって Volcano=3 / Heatmap フォーカス=5 の状態で保存すると、タイトルが Cluster5 の図に Heatmap_Cluster3.png という別クラスタの名前が付く。ZIP 同梱の analysis_conditions.json には図別のクラスタ情報が入らない(extra=None)ため、ファイル名とタイトルが矛盾したまま配布される。図の中身自体は正しいので S2 ではないが、科学的成果物の誤ラベルという条件付きリスクとして S3 に引き上げる。
+
+**再現手順**
+
+python3 /tmp/claude-0/-home-user-U-Analysis/36bca7d3-f22b-5213-86d8-66891f484e7a/scratchpad/tmp/v8b_c10_direct.py の [C10-6] 節。実 UI では DEG 節で Volcano のクラスタを 3、Heatmap のフォーカスクラスタを 5 にして 📷一括保存。
+
+**根拠**
+
+- `/home/user/U_Analysis/App/app/callbacks/interactive_batch_save.py:399: suffix = f"_Cluster{cluster_select}" if cluster_select else "" / figures.append((f"Heatmap{suffix}", heatmap_fig))`
+- `/home/user/U_Analysis/App/app/callbacks/interactive_deg.py:1360: if selected_cluster: / df_deg_filtered = df_deg[df_deg["cluster"].astype(str) == str(selected_cluster)]`
+- `/home/user/U_Analysis/App/app/callbacks/interactive_deg.py:1471: text=(f"Heatmap — {_cluster_display_name(selected_cluster, cluster_name_map)} vs Rest (Top {top_n})" if selected_cluster`
+- `/home/user/U_Analysis/App/app/layouts/interactive_tab.py:1689: id="heatmap_cluster_select", / placeholder="全クラスタ",`
+- `/tmp/claude-0/-home-user-U-Analysis/36bca7d3-f22b-5213-86d8-66891f484e7a/scratchpad/evidence/dash-dependencies.json #144: heatmap_plot.figure inputs = [heatmap_top_n.value, heatmap_scale.value, heatmap_annotation_switch.value, umap_merge_toggle.value, heatmap_cluster_select.value]`
+- `/tmp/claude-0/-home-user-U-Analysis/36bca7d3-f22b-5213-86d8-66891f484e7a/scratchpad/tmp/v8b_c10_direct.py 実行結果: volcano_cluster_select='3' → ['Volcano_Cluster3.png','Heatmap_Cluster3.png','DEG_combined.png','analysis_conditions.json']`
+
+**修正方針**
+
+cb_batch_save_deg に State("heatmap_cluster_select","value") を追加し、Volcano は volcano_cluster_select、Heatmap は heatmap_cluster_select から別々に suffix を作る(未選択なら suffix 無し=全クラスタ)。
+
+
+### 32. [S3] RDS軽量化: 一部ファイル失敗でも緑の『完了しました。』成功表示（parquet 側と非対称）
 
 **判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/rds_maintenance_callbacks.py:340`
 
@@ -857,7 +1015,70 @@ RDS 軽量化で一部の .rds が変換に失敗しても、画面には緑色�
 parquet_maintenance_callbacks.py:255-261 の _summary_has_errors() をそのまま rds 側へ移植し、rds_maintenance_callbacks.py:340 の分岐を「finished and not has_err → success」「finished and has_err → warning『一部のファイルで失敗しました。』」の2段に割る。_render_summary:265 の color も同じ判定に合わせる(parquet :263-264 と同型)。
 
 
-### 28. [S3] チェック全解除が「全選択」に反転する(annotation/ROIフィルタのNone集約)
+### 33. [S3] キャンセル表示が後着のステージ応答で上書きされるのは事実(実測)。ただし『最終状態は正しく収束する非決定的一時状態』は誤りで、上書きが起きる窓(stage B 
+
+**判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正
+
+**利用者から見た症状**
+
+データ読み込み中に「キャンセル」を押すと「キャンセルしています…」と出るが、押したタイミングが RDS 抽出の後(マーカー読み込み〜設定復元の段階)だと、そのメッセージがすぐ進捗表示に上書きされ、そのまま「完了」まで進んでデータが読み込まれてしまう。利用者から見ると「キャンセルを押したのに止まらなかった」状態で、なぜ止まらなかったのかも画面からは分からない。読み込みの前半(RDS抽出中)に押した場合は正しく中止される。
+
+**検証の経緯(反証の試みと結果)**
+
+【担当 ID C13-H11 は台帳に存在しないため、台帳を全文検索し「残りの多重書込み」に最も近い C13-W8(interactive_callbacks.py:727 キャンセル表示がステージ応答で上書きされる)を担当として判定した。】主張の現象(キャンセル表示が後着のステージ応答で上書きされる)は最小再現で実測できたので UPHELD とするが、台帳の『最終状態は正しく収束する非決定的一時状態』という評価は誤りであり、実際にはその窓でキャンセル自体が効かない。stage A(4秒)→B→C 相当の連鎖を持つ最小 Dash アプリで、stage B 完了直後にキャンセルを押すと t=0.6s『RDSデータを抽出中…』→ t=4.8s『マーカー(DEG)を読み込み中…』→ cancel『キャンセルしています…』→『完了』となり、後着応答が確実に上書きした。本体側を読むと、キャンセル機構は stage B 専用である: cancel_event を渡すのは stage B の derive_uncorrected_pca / extract_data だけ(interactive_callbacks.py:806-812)で、stage C(:883)と stage D(:1052)は cancel を一切参照しない(grep cancel_event で全数確認)。さらに stage B の finally が _clear_cancel_event(token) を呼ぶ(:854-855)ため、抽出が終わった時点でトークンが registry から消え、その後に押されたキャンセルは _get_or_create_cancel_event(:690-699)が新しい Event を作って set するだけで誰も監視しない。キャンセルボタンは load_progress_container が表示されている間ずっと出ており(:710-718)、stage D が _PROGRESS_HIDE を返す(:1264)まで押せる。結果、stage C/D の窓で押したキャンセルは一瞬メッセージが出た後『設定を復元中…』(:981-982)→『完了』(:1265)と進んで読込が完走する = 押しても効かない。stage C は ensure_expression_matrix(R 呼び出し)や parquet 読みを含むので窓は短くない。副次的に、消えたトークン宛の Event が _LOAD_CANCELS に残り続ける小さなリークもある。ただし本来の主対象である重い RDS 抽出(stage B、画面表示上も「最大2分程度」)ではキャンセルは正しく効くため、S2 ではなく S3 とする(台帳の S4 からは引き上げ)。
+
+**再現手順**
+
+1) master password でログイン、インタラクティブ解析でサイズの大きい結果フォルダを選ぶ。2) 「データを読み込む」を押す。3) 進捗ラベルが「RDSデータを抽出中…」から「マーカー(DEG)を読み込み中…」に変わるのを待つ(= stage B 完了)。4) その後に「キャンセル」を押す。5) 「キャンセルしています…」が一瞬表示された後、「設定を復元中…」→「完了」と進み、読み込みが最後まで走る。/ 実行済みの機構実証: scratchpad/tmp/v9_min2.py + v9_probe_min3.py — label_t4.8s_before_cancel="マーカー(DEG)を読み込み中…" → label_just_after_cancel="キャンセルしています…" → label_final="完了"。
+
+**根拠**
+
+- `App/app/callbacks/interactive_callbacks.py:730-735: if not n_clicks or not token: raise PreventUpdate / ev = _get_or_create_cancel_event(token) / if ev is not None: ev.set() / return "キャンセルしています…"`
+- `App/app/callbacks/interactive_callbacks.py:854-855: finally: / _clear_cancel_event(token)   ← stage B 完了時点でトークンが消える`
+- `App/app/callbacks/interactive_callbacks.py:806-812: cancel_event = _get_or_create_cancel_event(token) … _bridge.extract_data(rds_path, cancel_event=cancel_event)   ← cancel を見るのは stage B だけ`
+- `App/app/callbacks/interactive_callbacks.py:981-982: return ( "設定を復元中…", 85, no_update, no_update,   ← stage C がキャンセル表示を上書き`
+- `App/app/callbacks/interactive_callbacks.py:1264-1265: _PROGRESS_HIDE,  # load_progress_container 非表示 / "完了",          # load_progress_label`
+- `App/app/callbacks/interactive_callbacks.py:715-718: visible = bool(progress_style) and progress_style.get("display") != "none" / return {"display": "inline-block"} if visible else {"display": "none"}   ← stage D まで押せる`
+- `実測 scratchpad/tmp/v9_probe_min3.py 出力: label_t4.8s_before_cancel="マーカー(DEG)を読み込み中…" / label_just_after_cancel="キャンセルしています…" / label_final="完了"`
+
+**修正方針**
+
+(1) _clear_cancel_event(token) を stage B の finally(:854-855)から stage D の終端へ移し、読込全体が終わるまでトークンを生かす。(2) stage C / stage D の冒頭で当該トークンの Event を確認し、set 済みなら進捗 teardown と「読み込みをキャンセルしました。」を返して打ち切る。(3) キャンセル確定表示は最終リンク側に一本化すれば表示揺れも消える。
+
+
+### 34. [S3] interactive_data_info への並行書込レース: reset と set_folders の後着勝ちで⚠警告が非決定的に消える
+
+**判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 要設計判断／**該当**: `App/app/callbacks/interactive_project.py:126`
+
+**利用者から見た症状**
+
+サブプロジェクトのインタラクティブ解析を開いたとき、「⚠ 結果フォルダが見つかりません: …」という警告が出る回とまったく出ない回があります。出なかった場合、結果フォルダが失われていることに気づけないまま「データ読込」を押すことになります。
+
+**検証の経緯(反証の試みと結果)**
+
+反証を試みたが、逆に実アプリで症状そのものを再現できた。(1) 並行性: サブプロ「インタラクティブ」クリック時、#159 reset の REQ(t=0.0931)と #160 folders の REQ(t=0.1029)がどちらの応答(t=0.2486/0.2500)よりも先に送出されており同時に飛んでいる。dash-renderer が直列化しない理由も確定した: 順序制御の getReadyCallbacks は cb.getInputs(paths) しか見ず、getInputs は callback.inputs のみで State を含まないため、両者が sap_skip_reset.data を Output かつ State に持つことはブロック関係を作らない。(2) 後着勝ちの実証: 同一トポロジの最小アプリで #159 を 0.6 秒遅らせると実行順が #160→#159 に反転し、最終表示が '⚠ 結果フォルダが見つかりません' から 'データを読み込んでください' に変わった。遅延なしの 12 試行でも 1 回自然に反転して警告が消えた。(3) 実アプリでの再現: ランディング→インタラクティブ解析の経路で 10 試行したところ 1 回だけ #160→#159 の順で応答が届き、最終表示が 'データを読み込んでください' になって ⚠ 警告が消えた(残り 9 回は警告が残る)。サブプロカード経由の 11 試行はすべて警告が残ったので、実アプリ計 21 試行中 1 回(約5%)。#159 が _drop_state()+_set_active_key(None) のほぼ no-op、#160 が FileLock+projects.json 読込+Path.is_dir() で重いため順序は警告側に偏るが、保証はない。interactive_data_info を書く他の 4 つは load_interactive_data 起点なので、読込ボタンを押すまで誤った固定文言が残る。発生率が低く、消えるのは警告文言のみなので S3 に据え置く。
+
+**再現手順**
+
+python3 /tmp/claude-0/-home-user-U-Analysis/36bca7d3-f22b-5213-86d8-66891f484e7a/scratchpad/tmp/v8b_probe_h7.py inject を 10 回繰り返し、末尾の data_info を比べる(1 回程度 'データを読み込んでください' になる)。確実に再現するには v8b_h6_race_app.py 8452 を起動して python3 v8b_drive_h6_race.py 8452 を実行し slow=reset の行を見る。
+
+**根拠**
+
+- `/home/user/U_Analysis/App/app/callbacks/interactive_project.py:139: return {"display": "none"}, "データを読み込んでください", False, {"display": "none"}`
+- `/home/user/U_Analysis/App/app/callbacks/interactive_project.py:195: msg = "⚠ " + "、".join(warnings) if warnings else "データを読み込んでください"`
+- `/home/user/U_Analysis/App/app/callbacks/project_callbacks.py:756: return ( "analysis", "interactive", result_dir, data_folder, project_id, sub_id, "sub_project", sub_id,)`
+- `/usr/local/lib/python3.11/dist-packages/dash/dash-renderer/build/dash_renderer.dev.js:1542: getInputs: function getInputs(paths) { return callback.inputs.map(resolve(paths)); }`
+- `/usr/local/lib/python3.11/dist-packages/dash/dash-renderer/build/dash_renderer.dev.js:1457: }, differenceBasedOnId(flatten(cb.getInputs(paths)), flatten(cb.getOutputs(paths))));`
+- `/tmp/claude-0/-home-user-U-Analysis/36bca7d3-f22b-5213-86d8-66891f484e7a/scratchpad/tmp/v8b_probe_h6.py 実行結果: REQ 0.0931 #159 reset / REQ 0.1029 #160 folders / RES 0.2486 #159 → データを読み込んでください / RES 0.2500 #160 → ⚠ 結果フォルダが見つかりません`
+- `/tmp/claude-0/-home-user-U-Analysis/36bca7d3-f22b-5213-86d8-66891f484e7a/scratchpad/tmp/v8b_drive_h6_race.py 実行結果: slow=reset server実行順=#160 folders -> #159 reset 最終表示='データを読み込んでください' (slow=none では '⚠ 結果フォルダが見つかりません: /V1/OUT_A')`
+- `/tmp/claude-0/-home-user-U-Analysis/36bca7d3-f22b-5213-86d8-66891f484e7a/scratchpad/tmp/v8b_drive_h6_race2.py 実行結果 (mode=none, N=12): 最終表示 Counter({'WARN': 11, 'RESET': 1}) / 到着順×表示 {('#160 -> #159','RESET'): 1}`
+
+**修正方針**
+
+どちらが最終メッセージの権威かを決める設計判断が要る。機械的に寄せるなら reset_interactive_on_project_change から interactive_data_info の Output を外し、「データを読み込んでください」も set_interactive_folders_from_sub_project 側に一本化する(サブプロ未選択時の文言もそちらで扱う)。
+
+
+### 35. [S3] チェック全解除が「全選択」に反転する(annotation/ROIフィルタのNone集約)
 
 **判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 要設計判断／**該当**: `App/app/callbacks/file_handlers.py:280`
 
@@ -886,7 +1107,7 @@ parquet_maintenance_callbacks.py:255-261 の _summary_has_errors() をそのま�
 『部品なし(None)』と『部品はあるが全解除(空リスト)』を型で区別する必要がある。sync_*_to_store を merged が空なら [] を返すよう変え、下流を `if x is not None` 判定に切り替えるのが素直。ただし空リストのときに(a)解析を止めて警告するか(b)全採用のままにするかは製品判断で、1 サンプルだけ全解除した場合の R 側 stop() との非対称も同時に設計する必要がある。
 
 
-### 29. [S3] L484/L492 が try の外にあるのは事実だが、実害が出るのは **output_dir が空文字のとき** のみ。空文字だと Path("")= ".
+### 36. [S3] L484/L492 が try の外にあるのは事実だが、実害が出るのは **output_dir が空文字のとき** のみ。空文字だと Path("")= ".
 
 **判定**: WEAKENED(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正
 
@@ -920,7 +1141,7 @@ parquet_maintenance_callbacks.py:255-261 の _summary_has_errors() をそのま�
 L484 の直前で `_out = (output_dir or "").strip()` を作り、空なら `return (app_state, True, {"display":"none"}, ..., "出力先を指定してください", True, no_update, no_update)` で中止する。あわせて L484 を `Path(_out) / (output_subfolder or "")` にして open_overwrite_modal:236 とガードを揃える。
 
 
-### 30. [S3] 色編集ロックが別クラスタ(先頭)に誤取得される (全 picker 書き戻し→triggered_id 取り違え) 要検証
+### 37. [S3] 色編集ロックが別クラスタ(先頭)に誤取得される (全 picker 書き戻し→triggered_id 取り違え) 要検証
 
 **判定**: WEAKENED(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/interactive_spatial.py:1445`
 
@@ -953,7 +1174,7 @@ L484 の直前で `_out = (output_dir or "").strip()` を作り、空なら `ret
 acquire_cluster_color_lock の Input に Input({"type":"cluster_color_swatch","index":ALL,"color":ALL}, "n_clicks") を追加する。実測どおり『ユーザーが動かした prop が triggered の先頭に来る』ため ctx.triggered_id がスウォッチ dict に解決され、既存の triggered.get("index") がそのまま正しいクラスタを返す（ピッカー経路の挙動は変わらない）。
 
 
-### 31. [S3] UMAP ポリゴン下書き overlay の Patch data[-1] 前提崩壊(空 figure への Patch / 不可視下書きの確定)
+### 38. [S3] UMAP ポリゴン下書き overlay の Patch data[-1] 前提崩壊(空 figure への Patch / 不可視下書きの確定)
 
 **判定**: WEAKENED(独立検証)／**確証度**: [実行確認]／**修正区分**: 要設計判断／**該当**: `App/app/callbacks/interactive_loupe.py:93`
 
@@ -984,7 +1205,7 @@ UMAP をクリックして選択範囲の頂点を置いたあと、マーカー
 『figure を作り直したら下書きも描き直す』（update_umap_plot が draft store の頂点を最終 trace に入れて返す）か『作り直しの契機で下書きを捨てる』（umap_display_mode / umap_merge_toggle / seurat_rds_path_store の変化で draft store を空にする）かの選択。どちらでも「画面の見た目と確定結果が一致する」ことを満たす。
 
 
-### 32. [S3] PreFlight ポーリングが process ハンドル消失時に永久スピナー+無限ポーリングになる
+### 39. [S3] PreFlight ポーリングが process ハンドル消失時に永久スピナー+無限ポーリングになる
 
 **判定**: WEAKENED(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/preflight_callbacks.py:437`
 
@@ -1016,7 +1237,7 @@ PreFlight 診断が実際には終わって結果ファイルもできている�
 poll_preflight に『store['status'] == "running" かつ proc is None』の分岐を追加し、diagnostics.json があれば表示して disabled=True、無ければ『実行状態を追跡できなくなりました。📂 で結果を確認するか再実行してください』を出して disabled=True を返す。恒久対策として実行ごとの run_id を store と _preflight_process_state の双方に持たせ、他人の実行完了を自分の完了と誤認しない形にする（こちらは設計判断）。
 
 
-### 33. [S3] annotation選択UIがTIMS追加データフォルダを無視する
+### 40. [S3] annotation選択UIがTIMS追加データフォルダを無視する
 
 **判定**: WEAKENED(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/file_handlers.py:235`
 
@@ -1048,7 +1269,7 @@ UI 欠落の機序は反証できなかった。find_tims_file_path は単一フ
 update_annotation_selector に Input("extra_data_folders_store","data") を足し、find_tims_file_path(data_folder, sample) を [data_folder]+extra_folders を順に探す複数フォルダ版(list_tims_files_multi と同じ方針の find_tims_file_path_multi)に置き換える。update_sample_selector:178-179 と同じ形にそろえるだけで挙動は壊れない。
 
 
-### 34. [S4] C03-4
+### 41. [S4] C03-4
 
 **判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 要設計判断
 
@@ -1074,7 +1295,7 @@ update_annotation_selector に Input("extra_data_folders_store","data") を足�
 - `App/app/callbacks/analysis_callbacks.py:956: ("解析を開始しました（出力: " + Path(full_output_dir).name + "）"  ← 同じクリックで出る成功トースト`
 
 
-### 35. [S4] プロジェクト切替時の _drop_state()/_set_active_key(None) が恒等 no-op（宣言された state 破棄が実行されない）
+### 42. [S4] プロジェクト切替時の _drop_state()/_set_active_key(None) が恒等 no-op（宣言された state 破棄が実行されない）
 
 **判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/interactive_project.py:134`
 
@@ -1104,7 +1325,37 @@ update_annotation_selector に Input("extra_data_folders_store","data") を足�
 seurat_rds_path_store を State に取って _drop_state(rds_path) と明示キーで呼ぶか、実行されない 2 行と『state エントリを破棄』『前のプロジェクトの state を破棄(混線防止)』のコメントを削除して実態(キーが rds_path 別なので破棄不要)を書く。どちらも挙動は変わらない。
 
 
-### 36. [S4] デフォルト適用ボタンが空欄を反映しない(`x or no_update` が空文字を飲む)
+### 43. [S4] Spatial/Feature 一括保存: サーバ保持 figure 不在時にボタンが無言で無反応(トースト無し)
+
+**判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/interactive_batch_save.py:328`
+
+**利用者から見た症状**
+
+「📷 一括保存」を押しても、ダウンロードも始まらずエラーメッセージも出ず、まったく何も起こらないことがあります。同じ状態で「📌 サムネ登録」を押すと「保存対象のプロットがありません」と教えてくれるため、一括保存だけ理由が分からないままになります。
+
+**検証の経緯(反証の試みと結果)**
+
+反証できず。当該 callback を直接呼ぶと cb_batch_save_spatial / cb_batch_save_feature は PreventUpdate で終わり画面に何も起きないのに対し、同条件の cb_set_thumbnail_spatial は (True, '保存対象のプロットがありません', 'danger') を返してトーストを出した。非対称は実在する。到達経路は台帳の「未描画・LRU/TTL 追い出し・再起動後」より広く、Feature Plot 節を開いて m/z 未選択なら interactive_deg.py:506-508 が figs=[] を確定的に保持し、空間座標の無いデータなら interactive_spatial.py:1127-1129 が同様に [] を書く。ボタンは節の中にあるので押せる状態で必ず無言になる。ただしこの 2 経路はパネル内に理由が表示されており、利用者が本当に困るのは「図は見えているのにボタンが死ぬ」追い出し系のときだけ。データも結果も壊れず、通知が無いだけなので S4 のまま据え置く。
+
+**再現手順**
+
+python3 /tmp/claude-0/-home-user-U-Analysis/36bca7d3-f22b-5213-86d8-66891f484e7a/scratchpad/tmp/v8b_c10_direct.py の [C10-7] 節。実 UI では Feature Plot 節を開き m/z を選ばずに 📷一括保存 を押す(何も起きない)→ Spatial 節で 📌サムネ登録 を押す(トーストが出る)。
+
+**根拠**
+
+- `/home/user/U_Analysis/App/app/callbacks/interactive_batch_save.py:328: if not spatial_figs: / raise PreventUpdate`
+- `/home/user/U_Analysis/App/app/callbacks/interactive_batch_save.py:365: if not feature_figs: / raise PreventUpdate`
+- `/home/user/U_Analysis/App/app/callbacks/interactive_batch_save.py:447: if not figures_list: / return False, "保存対象のプロットがありません"`
+- `/home/user/U_Analysis/App/app/callbacks/interactive_deg.py:506: if not feature_name or not rds_path: / return _finish(html.Div("m/z Feature を選択してください", ...), no_update, no_update, [])`
+- `/home/user/U_Analysis/App/app/callbacks/interactive_spatial.py:1127: if df is None or "SpatialX" not in df.columns: / set_export_figures("spatial", session_id, rds_path, [])`
+- `/tmp/claude-0/-home-user-U-Analysis/36bca7d3-f22b-5213-86d8-66891f484e7a/scratchpad/tmp/v8b_c10_direct.py 実行結果: cb_batch_save_spatial: PreventUpdate → 画面変化ゼロ / cb_set_thumbnail_spatial: is_open=True msg='保存対象のプロットがありません' icon='danger'`
+
+**修正方針**
+
+4 つの一括保存 callback (umap/spatial/feature/deg) に notification_toast の is_open/children/icon を allow_duplicate で追加し、figs 空および zip_bytes is None のときの raise PreventUpdate を「保存対象のプロットがありません」トーストに置き換える(サムネ登録側と対称にする)。
+
+
+### 44. [S4] デフォルト適用ボタンが空欄を反映しない(`x or no_update` が空文字を飲む)
 
 **判定**: UPHELD(独立検証)／**確証度**: [実行確認]／**修正区分**: 要設計判断／**該当**: `App/app/callbacks/file_handlers.py:599`
 
@@ -1133,7 +1384,40 @@ apply_desi_defaults / apply_tims_defaults / apply_output_defaults を直接呼�
 『空欄で潰さない』方針自体は維持したうえで、この callback に status 出力(例: 適用しました / 空欄のため適用しませんでした)を 1 つ足して無反応をなくすのが最小の改善。欄を空へリセットしたい要求まで満たすなら、明示的な「クリア」操作を別に用意する(無条件返却への変更は挙動変更になるので不可)。
 
 
-### 37. [S4] 共発現散布図: 発現行列と plot_data の行順照合が無い（ver52.5 の番人が feature plot のみ）
+### 45. [S4] _TAB_TO_PATH が実在タブ hne を欠き、docstring の /app/results・/app/history は実在しない（H&EタブはURL共有不可・URL残留）
+
+**判定**: WEAKENED(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/tab_url_routing.py:81`
+
+> **訂正後の主張**: _TAB_TO_PATH は実在タブ hne を欠き、H&E タブ選択中は URL が直前タブのまま残る(真)。ただし『hne だけ URL 共有できない』のではなく、_route_app_url_to_analysis が /app/* deep link を無条件に "/" へ正規化するため、settings・interactive を含む全タブで URL からのタブ復元は成立していない(実測)。したがってこれは機能欠落ではなく、冒頭 docstring が実装していない仕様(URL 共有で同じタブが開く、/app/results、/app/history)を謳っている文書欠陥と、H&E での URL 残留という表示の不整合である。
+
+**利用者から見た症状**
+
+「解剖×クラスタ (H&E)」タブを開いても、ブラウザのアドレスバーは直前に見ていたタブ(解析設定 または インタラクティブ解析)のアドレスを表示したままになる。そのアドレスをコピーして送っても相手には H&E タブは開かない。ただしこれは H&E に限った話ではなく、どのタブのアドレスを保存して後で開き直しても、必ずプロジェクト一覧(トップ)に戻される仕様なので、実際に操作が失敗する場面は無い。画面上の表示が実態と食い違うだけ。
+
+**検証の経緯(反証の試みと結果)**
+
+事実の列挙(_TAB_TO_PATH に hne が無い / H&E タブ選択中は URL が直前タブのまま残る / docstring の /app/results・/app/history はコードにもレイアウトにも存在しない)は全て真で、実ブラウザと関数直接呼び出しの両方で確認した。しかし『H&E だけ URL 共有ができず、そのブックマークは別タブを開く』という実害の枠組みが誤っている。_route_app_url_to_analysis(tab_url_routing.py:64-78)は current_page != "analysis" のとき URL を無条件に "/" へ正規化する設計で、current_page は memory Store(main_layout.py:198 data="landing")なのでリロード時は必ず "landing"。実測でも /app/settings /app/interactive /app/hne /app/results の 4 つすべてが最終 URL "/" になり(HTTP リダイレクト 0 件 = クライアント側書換)、ランディングページが表示された。つまり deep link からタブが復元されないのは hne 固有ではなく全タブ共通で、しかもそれは当該関数の docstring が明記する意図的な仕様である。したがってモジュール冒頭 docstring の『URL を共有しただけで他人が同じタブを開ける』が実装と矛盾している(=文書側の欠陥)のであって、hne が差別的に壊れているわけではない。残る実害は (a) H&E 表示中のアドレスバーが別タブを指す誤情報、(b) 将来 deep link を有効化しても hne だけ抜ける、(c) 実在しない 2 経路が docstring に残る、の 3 点で、利用者の操作が失敗する場面は無いため S4 を維持する(台帳の S4 と同値だが理由が異なる)。
+
+**再現手順**
+
+1) master password でログイン。2) ランディングの「インタラクティブ解析」→ アドレスバーが /app/interactive になる。3) 「解析設定」タブをクリック → /app/settings になる。4) 「解剖×クラスタ (H&E)」タブをクリック → アドレスバーは /app/settings のまま(実測)。5) そのアドレスをコピーして新しいタブで開く → / (プロジェクト一覧)に飛ばされる。/app/settings や /app/interactive でも同じく / に戻る。実行済み: scratchpad/tmp/v9_probe_app2.py(結果 scratchpad/audit/w3/v9_app_probe2.json の tab_to_url / deeplink 各項)。
+
+**根拠**
+
+- `App/app/callbacks/tab_url_routing.py:81-84: _TAB_TO_PATH = { "settings": "/app/settings", "interactive": "/app/interactive", }`
+- `App/app/layouts/main_layout.py:349-353: dbc.Tab( label="解剖×クラスタ (H&E)", tab_id="hne", children=[create_hne_overlay_tab()], ),`
+- `App/app/callbacks/tab_url_routing.py:9-12: #   /app/settings     → 解析設定タブ / #   /app/results      → 結果閲覧タブ / #   /app/history      → セッション履歴タブ`
+- `App/app/callbacks/tab_url_routing.py:77-78: # 初回ロード/ランディングからの /app/* → 一覧に留め、URL をクリーンにする / return no_update, "/"`
+- `App/app/layouts/main_layout.py:198: dcc.Store(id="current_page", data="landing"),`
+- `実測 scratchpad/audit/w3/v9_app_probe2.json: tab_to_url — 「解剖×クラスタ (H&E)」クリック後の window.location.pathname が /app/settings のまま(次の H&E クリックでは /app/interactive のまま)`
+- `実測 scratchpad/audit/w3/v9_app_probe.json: deeplink /app/settings, /app/interactive, /app/hne, /app/results の final_url が全て http://127.0.0.1:3838/ , http_redirects: [] (HTTP リダイレクトではなくクライアント側書換)`
+
+**修正方針**
+
+_TAB_TO_PATH(tab_url_routing.py:81-84)に "hne": "/app/hne" を 1 行足す(_PATH_TO_TAB は自動生成なので双方向とも直る)。併せて冒頭 docstring(:9-12)の /app/results・/app/history を削除して /app/hne に置き換え、「URL 共有で同じタブが開く」の記述を _route_app_url_to_analysis の実装(deep link は / へ正規化)に合わせて書き直す。
+
+
+### 46. [S4] 共発現散布図: 発現行列と plot_data の行順照合が無い（ver52.5 の番人が feature plot のみ）
 
 **判定**: WEAKENED(独立検証)／**確証度**: [実行確認]／**修正区分**: 機械的修正／**該当**: `App/app/callbacks/interactive_feature_lists.py:235`
 
@@ -1166,9 +1450,44 @@ apply_desi_defaults / apply_tims_defaults / apply_output_defaults を直接呼�
 interactive_feature_lists.py:235 の行数検査の直後に interactive_deg._expression_alignment_ok(cache_dir, df) を呼び、False なら go.Figure() と『発現量とスポットの対応が取れませんでした（キャッシュを作り直してください）』を返す。判定不能(None)と一致(True)は従来どおり通すので通常時の挙動は変わらない。
 
 
-### 38. [INFO] マーカーテーブルのクラスタ filter が stale 値のまま全行除外され空表示になる
+### 47. [S4] prevent_initial_call=True は dcc.Location 由来の初回発火を止めず、/app/interactive を新規ロードすると 
+
+**判定**: WEAKENED(独立検証)／**確証度**: [実行確認]／**修正区分**: 要設計判断
+
+> **訂正後の主張**: prevent_initial_call=True は dcc.Location 由来の初回発火を止めず、/app/interactive を新規ロードすると main_tabs が裏で "interactive" に復元される(実測。コメント :101-103 の前提は成立していない)。ただし current_page に "analysis" を書く 5 経路すべてが main_tabs を明示指定するため、『空のインタラクティブタブが選ばれる』という帰結は発生しない。実害はコメントと実装の乖離のみで S4。
+
+**利用者から見た症状**
+
+利用者の画面には何も現れない。/app/interactive のようなアドレスを直接開くとプロジェクト一覧に戻される(これは意図した動作)が、その裏で解析画面のタブだけが「インタラクティブ解析」に切り替わっている。ただしプロジェクト一覧から解析画面に入るどの経路も、入る瞬間に開くタブを明示的に指定し直すので、利用者が誤ったタブを見せられることはない。
+
+**検証の経緯(反証の試みと結果)**
+
+【担当 ID C13-H9 は台帳に存在しない(C13 系は H1-H8, W1-W8)。台帳を全文検索し、重点テーマ「タブ/URL ルーティング」に最も近い C13-W6(tab_url_routing.py:106 main_tabs⇄url_bar 同期ループと初回ロード非発火の前提)を担当として判定した。】前半の機構は実測で真であり、後半の実害は否定できたので WEAKENED とする。ログイン済み実ブラウザで /app/interactive を新規ロードすると、URL は _route_app_url_to_analysis により "/" に正規化されランディングが表示される(page_analysis の display は none)一方で、裏の main_tabs は「インタラクティブ解析」に切り替わっていた。対照として /app/settings・/app/hne・/app/results では「解析設定」のまま。つまり _sync_tab_from_url は prevent_initial_call=True にもかかわらず初回ロードで発火しており、tab_url_routing.py:101-103 のコメントが謳う「初回ロード(リロード)では URL からタブを復元しない(=空のインタラクティブ解析を開かせない)」という安全性をコードは持っていない。ただし台帳が心配した『空のインタラクティブタブが選ばれ得る』は起きない。current_page に "analysis" を書く callback を全数(grep -rn 'Output("current_page"' = 10 本)洗った結果、解析画面へ入る 5 経路すべてが同一レスポンスで main_tabs.active_tab を明示指定していた(project_callbacks.py:390-394 → "interactive"、:688-691 → "settings"、:756-765 → "interactive"、share_callbacks.py:217-220 → "interactive"、interactive_reanalysis_bridge.py:79 → "settings")。tab_url_routing.py:58 の _route_app_url_to_analysis は全分岐で current_page に no_update を返す(直接呼び出しで確認)ため、裏で書き換わったタブが利用者の目に触れる経路が存在しない。実測でも /app/interactive 新規ロード → ランディングのボタンで入場 → タブは明示指定どおりになった。同期ループ自体もガードで 1 周停止することを再確認した。よって重大度は S3 から S4(コメントと実装の乖離)に引き下げる。
+
+**再現手順**
+
+1) master password でログイン。2) アドレスバーに http://127.0.0.1:3838/app/interactive を直接入力して開く。3) URL が / に戻りプロジェクト一覧が表示される。4) 開発者ツールで #main_tabs_wrapper の active な nav-link を見ると「インタラクティブ解析」になっている(= URL からタブが復元されている)。5) そのままランディングの「インタラクティブ解析」ボタンなど解析画面に入る操作をすると、その経路が指定するタブで正しく開く。実行済み: scratchpad/tmp/v9_probe_app2.py の fresh_load_app_interactive / then_enter_analysis(結果 scratchpad/audit/w3/v9_app_probe2.json)。
+
+**根拠**
+
+- `App/app/callbacks/tab_url_routing.py:101-104: # 初回ロード（リロード）では URL からタブを復元しない（=空のインタラクティブ解析を / # 開かせない）。… prevent_initial_call=True,`
+- `App/app/callbacks/tab_url_routing.py:114-117: tab_id = _PATH_TO_TAB.get(normalized) / if tab_id and tab_id != current_active: return tab_id / return no_update`
+- `App/app/callbacks/project_callbacks.py:390-394: return ( "analysis",        # current_page / "interactive",     # main_tabs / "standalone",      # interactive_entry_mode`
+- `App/app/callbacks/project_callbacks.py:688-691: return ( "analysis",   # current_page / "settings",   # main_tabs`
+- `App/app/callbacks/share_callbacks.py:217-220: def _shared_activate_interactive_tab(shared): if shared and shared.get("active"): return "interactive"`
+- `実測 scratchpad/audit/w3/v9_app_probe2.json: fresh_load_app_interactive = {"path": "/", "tab_hidden": "インタラクティブ解析", "page_analysis_display": "none"} / then_enter_analysis = {"path": "/app/interactive", "tab": "インタラクティブ解析"}`
+- `実測 scratchpad/tmp/v9_direct_calls.py: 5_route_app_url current_page=landing → (no_update, "/") / current_page=analysis → (no_update, no_update)  ← current_page は常に no_update`
+
+**修正方針**
+
+実害が無いので緊急の修正は不要。整合を取るなら _sync_tab_from_url に State("current_page","data") を足して current_page == "analysis" のときだけ復元するか、逆にコメント(:101-103)を実態(初回ロードでも復元されるが、解析画面へ入る全経路がタブを明示指定するので問題にならない)に書き換える。どちらを取るかは「deep link でタブを復元したいのか、させたくないのか」という設計判断なので design-judgment とした。
+
+
+### 48. [INFO] マーカーテーブルのクラスタ filter が stale 値のまま全行除外され空表示になる
 
 **判定**: OVERTURNED(独立検証)／**確証度**: [実行確認]／**修正区分**: 修正不要／**該当**: `App/app/callbacks/interactive_loupe.py:359`
+
+> ⚠ **この指摘は反証が成立した(誤検出)。透明性のため記録を残す。**
 
 **利用者から見た症状**
 
@@ -1188,6 +1507,62 @@ interactive_feature_lists.py:235 の行数検査の直後に interactive_deg._ex
 - `App/app/layouts/interactive_tab.py:1715: id="deg_markers_cluster_filter", / :1716 placeholder="全クラスタ", clearable=True),（persistence 無し＝再現アプリと同条件）`
 - `/usr/local/lib/python3.11/dist-packages/dash/dcc/async-dropdown.js: var e=m.map(function(e){return e.value}); ... else e.includes(c)||l({value:null});（options に無い value を null にして setProps）`
 - `実行ログ scratchpad/tmp/v6_repro_calls.log: populate: trig=deg deg_clusters=['10','11'] value='1' -> rows=0 / populate: trig=f deg_clusters=['10','11'] value=None -> rows=6`
+
+
+### 49. [INFO] Lite ビュー初回表示で全レポートが必ず 2 回構築される(動的挿入 RadioItems の初期発火)
+
+**判定**: OVERTURNED(独立検証)／**確証度**: [実行確認]／**修正区分**: 修正不要／**該当**: `App/app/callbacks/lite_view_callbacks.py:242`
+
+> ⚠ **この指摘は反証が成立した(誤検出)。透明性のため記録を残す。**
+
+**利用者から見た症状**
+
+利用者に見える変化はありません。軽量ビューアの表示は1回で完了し、スピナーが2度出ることも、描画が組み直されることもありません(内部で無害な通信が1回だけ余分に走るだけです)。
+
+**検証の経緯(反証の試みと結果)**
+
+主張の前半(動的挿入で prevent_initial_call が効かず update_method_store が発火する)は実測どおり正しい。しかし後半の「initialize_lite_view が再発火して全レポートがもう1度構築される」は誤り。結線トポロジを1:1で写した最小アプリを実 Chromium で操作したところ、Lite ビューを開いたときの _dash-update-component は 3 往復 (lite_target_store → lv_report_body → lv_method_store) だけで、lv_report_body.children の往復は 1 回、サーバ側 initialize_lite_view の呼び出しも 1 回だった。理由は dash-renderer の循環コールバック除去で、動的チャンクから拾われた callback はチャンクを作った callback を predecessors として継承し (dev.js:2119-2126)、その後 initialize_lite_view が自分の predecessors に含まれるため requested から除去される (dev.js:2667-2676)。RPCA を選び直したときも往復 2 回・再構築 1 回で正常。したがって「最重量ページの初期表示コストが常に2倍」「スピナーの再表示」は起きない。残るのは既定と同値を書くだけの余分な1往復のみで、利用者に見える症状はゼロ。
+
+**再現手順**
+
+python3 /tmp/claude-0/-home-user-U-Analysis/36bca7d3-f22b-5213-86d8-66891f484e7a/scratchpad/tmp/v8b_c10_3_app.py 8451 を起動し、python3 .../scratchpad/tmp/v8b_drive_c10_3b.py 8451 を実行。「network roundtrips: 3」「server calls: initialize_lite_view=1」を確認する。実 /lite/<pid>/<sid> は本環境に RDS 実データが無いため最小再現で測定。
+
+**根拠**
+
+- `/usr/local/lib/python3.11/dist-packages/dash/dash-renderer/build/dash_renderer.dev.js:2667: 0. Prune circular callbacks that have completed the loop / - cb.callback included in cb.predecessors`
+- `/usr/local/lib/python3.11/dist-packages/dash/dash-renderer/build/dash_renderer.dev.js:2119: requestedCallbacks = concat(requestedCallbacks, getLayoutCallbacks(graphs, paths, children, {chunkPath: oldChildrenPath, filterRoot}).map(rcb => ({...rcb, predecessors})))`
+- `/usr/local/lib/python3.11/dist-packages/dash/dash-renderer/build/dash_renderer.dev.js:5733: if (chunkPath) { handleThisCallback = function (cb) { if (!includes(stringifyPath(chunkPath), pluck('path', flatten(cb.getOutputs(paths))))) { maybeAddCallback(cb); } } }`
+- `/home/user/U_Analysis/App/app/callbacks/lite_view_callbacks.py:251: if (current or {}).get("method") == value: / return no_update`
+- `/home/user/U_Analysis/App/app/layouts/lite_view.py:42: dcc.Store(id="lv_method_store", data={}),`
+- `/tmp/claude-0/-home-user-U-Analysis/36bca7d3-f22b-5213-86d8-66891f484e7a/scratchpad/tmp/v8b_drive_c10_3b.py 実行結果: network roundtrips: 3 / 0: lite_target_store.data / 1: lv_report_body.children / 2: lv_method_store.data ; server calls: {'route_lite_url':1,'initialize_lite_view':1,'update_method_store':1}`
+
+
+### 50. [INFO] 相互クリア対は主張どおり両側から書かれ得るが、dash-renderer が相互依存 callback を同時実行しない(未完了 callback の Outp
+
+**判定**: OVERTURNED(独立検証)／**確証度**: [実行確認]／**修正区分**: 修正不要
+
+> ⚠ **この指摘は反証が成立した(誤検出)。透明性のため記録を残す。**
+
+**利用者から見た症状**
+
+利用者に見える異常は起きない。設定ファイルに DESI と TIMS の両方の解析手法が入っているような壊れたデータを読み込んでも、片方(DESI 側)が選ばれた状態に落ち着き、「どちらも未選択」になることはない(8 回の実測すべてで確認)。
+
+**検証の経緯(反証の試みと結果)**
+
+【担当 ID C13-H10 は台帳に存在しないため、台帳を全文検索し「残りの多重書込み」に最も近い C13-W7(file_handlers.py:39 analysis_method⇄analysis_method_tims 相互クリア対)を担当として判定した。】主張の核心「両方が同一レスポンスで書かれると cb0/cb1 が並行発火して互いをクリアし、最終的に両方 None(どちらの方式も未選択)になる」を実験で否定できた。主張と同じ構造(相互クリア対 + 両方 truthy を 1 応答で書く復元 callback)の最小 Dash アプリを実 Chromium で 8 回動かした結果、8/8 とも {"analysis_method": "desi_v8", "analysis_method_tims": null} に収束し、両方 None には一度もならなかった。理由は dash-renderer が「他の未完了 callback の Output を Input に持つ callback」を実行可能集合から除外するため、相互依存の 2 本が同時に走らず、先に走った側が tims=None を書き、後から走る側は tims=None を見て no_update を返して 1 周で停止するからである(なお『同値でも下流は発火する』ことは別途実証済みだが、この停止条件は値が偽になることに依るのでループは止まる)。到達性の面でも両 truthy はほぼ生じない: project_callbacks.py:694-695 は or no_update で片側のみ書き、interactive_reanalysis_bridge.py:71-74 は必ず片方 truthy + 片方 None、analysis_callbacks.py:414-416 の自動保存は相互クリア後の UI 値を書き、preset_callbacks.py:120 の params.get(k, no_update) は保存時点の値(片方 None)をそのまま復元する。仮に手書き/旧データで両 truthy になっても、登録順の先(DESI 側)が残り TIMS 側が捨てられるだけで、これは不正データの正常化であり欠陥ではない。よって OVERTURNED、重大度は INFO とする。
+
+**再現手順**
+
+再現しない(反証実験)。scratchpad/tmp/v9_min2.py(相互クリア対 + 両方 truthy を 1 応答で書く復元ボタン)を起動し、scratchpad/tmp/v9_probe_min4.py を実行すると、8 回とも analysis_method="desi_v8" / analysis_method_tims=null に収束する。両方 None は 0 回。
+
+**根拠**
+
+- `App/app/callbacks/file_handlers.py:39-43: def clear_tims_on_desi_select(desi_val): """DESI が選択されたら TIMS の選択をクリア""" / if desi_val: return None / return no_update`
+- `App/app/callbacks/file_handlers.py:51-55: def clear_desi_on_tims_select(tims_val): """TIMS が選択されたら DESI の選択をクリア""" / if tims_val: return None / return no_update`
+- `App/app/callbacks/project_callbacks.py:694-695: settings.get("analysis_method") or no_update,           # analysis_method / settings.get("analysis_method_tims") or no_update,      # analysis_method_tims`
+- `App/app/callbacks/interactive_reanalysis_bridge.py:71-74: if inst == "DESI": desi_method, tims_method = "desi_cluster_filter", None / else: desi_method, tims_method = None, "tims_cluster_filter"`
+- `実測 scratchpad/tmp/v9_probe_min4.py 出力: distribution = {"{\"analysis_method\": \"desi_v8\", \"analysis_method_tims\": null}": 8}  ← 8/8、両方 None は 0 回`
+- `実測 scratchpad/tmp/v9_direct_calls.py: 4_clear_pair — clear_tims_on_desi_select('desi_v8')=None / clear_desi_on_tims_select('tims_v3')=None / clear_tims_on_desi_select(None)=no_update`
 
 
 ---
