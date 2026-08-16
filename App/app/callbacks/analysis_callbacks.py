@@ -168,6 +168,17 @@ def _strip_hp_suffix(name: str) -> str:
     return _HP_SUFFIX_RE.sub("", name or "")
 
 
+def _resolved_output_dir(output_dir):
+    """出力先を正規化して返す。未設定・空白のみなら None。
+
+    ver56.6: `Path("")` は `.`（カレント）になるため、出力先が空欄のまま
+    実行すると **アプリの作業フォルダの下に解析結果が書き出されていた**。
+    「空欄」「空白のみ」「未設定」を等しく未設定として扱い、実行前に止める。
+    """
+    text = (output_dir or "").strip()
+    return text or None
+
+
 def _output_has_existing_results(full_output_dir: str) -> bool:
     """出力先フォルダに既存の解析結果があるか判定（上書き警告ゲート用）。
 
@@ -494,14 +505,27 @@ def run_analysis(
     # リマップする（last_result_dir の部分集合 reduction を④がロードして再UMAP）。
     if downstream_mode and analysis_type in ("desi_cluster_filter", "tims_cluster_filter"):
         analysis_type = "tims_v8" if analysis_type == "tims_cluster_filter" else "desi_v8"
-    full_output_dir = str(Path(output_dir) / output_subfolder)
+    # ver56.6: 出力先の空欄検査。`Path("")` は `.`（カレント）になるので、
+    #   空欄のまま実行するとアプリの作業フォルダへ結果が書き出される。
+    #   出力サブフォルダが未設定だと `Path(x) / None` が TypeError になり、
+    #   ここは try の外なのでボタンが死んだように見えていた。
+    _out = _resolved_output_dir(output_dir)
+    if not _out:
+        return (
+            app_state, True,
+            {"display": "none"}, {"display": "none"}, {"display": "none"},
+            no_update,
+            "出力先を指定してください", True,
+            no_update, no_update,
+        )
+    full_output_dir = str(Path(_out) / (output_subfolder or ""))
     if downstream_mode:
         # ④: ハイパラ反復を上書きせず比較できるよう、UMAPハイパラ値で出力サブフォルダを自動命名
         _suf = _umap_hp_suffix(umap_n_neighbors_input, umap_min_dist_input,
                                umap_dims_input, umap_metric_input)
         if _suf:
             _base = _strip_hp_suffix(output_subfolder or "umap")
-            full_output_dir = str(Path(output_dir) / f"{_base}{_suf}")
+            full_output_dir = str(Path(_out) / f"{_base}{_suf}")
     Path(full_output_dir).mkdir(parents=True, exist_ok=True)
 
     try:
@@ -2130,16 +2154,33 @@ def update_cal_sample_options(selected_samples):
      Output("cal_sample_selector_prev", "data")],
     Input("cal_sample_selector", "value"),
     [State("cal_sample_selector_prev", "data"),
-     State("calibration_table", "data"),
+     # ver56.6 (C13-H5): 切替前の表は **Store** から読む。
+     #   以前は DataTable (`calibration_table`) から読んでいたが、DataTable は
+     #   Store から `sync_calibration_store_to_table` 経由で同期される「写し」で、
+     #   同じ応答で Store が書き換わっても写しはまだ古いことがある。
+     #   手動編集は `recalculate_ppm_on_edit` が Store へ書き戻しているので、
+     #   Store を読めば手動編集も含めた最新値が得られる。
+     State("calibration_table_data", "data"),
      State("cal_per_sample_store", "data")],
     prevent_initial_call=True,
 )
 def switch_cal_sample(new_sample, prev_sample, current_table, store):
     """キャリブレーション対象サンプル切替時にテーブルを保存/復元
-    NOTE: State は calibration_table (DataTable) から読み取り（手動編集を含む最新値）、
+
     Output は calibration_table_data (Store) へ書き込み →
-    sync_calibration_store_to_table 経由で DataTable に反映
+    sync_calibration_store_to_table 経由で DataTable に反映される。
     """
+    # ver56.6 (C13-H5): 切替が起きていないなら何も書き換えない。
+    #   「プリセット読込」は 1 回の応答で較正表・サンプル別データ・セレクタ
+    #   (= "__all__") を同時に書く。3 つ目がこのコールバックを発火させるため、
+    #   以前は **読み込んだばかりの表を切替前の内容で上書き**し、プリセットの
+    #   サンプル別データごと消していた（利用者には「プリセットを選んだのに
+    #   前の較正表のまま」に見え、気づかずに解析すると別の補正が掛かる）。
+    #   読込側が cal_sample_selector_prev も "__all__" に揃えるので、
+    #   ここは「切替は起きていない」と判断できる。
+    if new_sample == prev_sample:
+        return no_update, no_update, no_update
+
     store = dict(store or {})
     # 現在のテーブルデータを前のサンプルキーに保存
     if prev_sample and current_table is not None:
@@ -2185,7 +2226,14 @@ def _cal_preset_options():
      Output("calibration_min_peaks", "value", allow_duplicate=True),
      Output("cal_preset_status", "children"),
      Output("cal_per_sample_store", "data", allow_duplicate=True),
-     Output("cal_sample_selector", "value", allow_duplicate=True)],
+     Output("cal_sample_selector", "value", allow_duplicate=True),
+     # ver56.6 (C13-H5): セレクタを "__all__" に戻すと switch_cal_sample が
+     #   発火し、「サンプルを切り替えた」とみなして**読み込んだばかりの表を
+     #   切替前の内容で上書き**していた。ここで「切替前も __all__ だった」と
+     #   宣言しておくと、switch_cal_sample は切替が起きていないと判断して
+     #   何も書き換えない。1 コールバックの全 Output は下流の発火前に
+     #   まとめて反映されるので、State は必ずこの値で届く。
+     Output("cal_sample_selector_prev", "data", allow_duplicate=True)],
     Input("cal_preset_select", "value"),
     State("ion_mode", "value"),
     prevent_initial_call=True,
@@ -2196,10 +2244,11 @@ def load_cal_preset(preset_name, current_ion_mode):
     update_calibration_table_on_matrix が発火しテーブルがリセットされるため）
     """
     if not preset_name:
-        return [no_update] * 4 + ["", no_update, no_update]
+        return [no_update] * 4 + ["", no_update, no_update, no_update]
     p = load_calibration_preset(preset_name)
     if not p:
-        return [no_update] * 4 + ["⚠ プリセットが見つかりません", no_update, no_update]
+        return ([no_update] * 4
+                + ["⚠ プリセットが見つかりません", no_update, no_update, no_update])
 
     matrix_info = p.get("matrix", "?")
     ion_info = p.get("ion_mode", "?")
@@ -2222,6 +2271,7 @@ def load_cal_preset(preset_name, current_ion_mode):
         status,
         per_sample,
         "__all__",
+        "__all__",   # cal_sample_selector_prev も揃える (C13-H5)
     ]
 
 

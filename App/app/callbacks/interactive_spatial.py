@@ -1449,13 +1449,21 @@ def reflect_sample_rotation_lock(lock_state, comp_id, my_session_id):
 
 @callback(
     Output({"type": "cluster_color_lock_indicator", "index": ALL}, "id"),
-    Input({"type": "cluster_color_picker", "index": ALL}, "value"),
+    [Input({"type": "cluster_color_picker", "index": ALL}, "value"),
+     # ver56.6: 色見本(スウォッチ)からの選択も発火元にする。
+     #   スウォッチを押すと**全ピッカーの値が書き戻される**ため、ピッカーだけを
+     #   Input にしていると発火元が先頭のクラスタに解決されてしまい、
+     #   **触ってもいないクラスタがロックされ、触ったクラスタは無防備**になっていた。
+     #   利用者が実際に動かした prop が triggered の先頭に来るので、
+     #   スウォッチを並べておけば既存の `triggered.get("index")` がそのまま正しい。
+     Input({"type": "cluster_color_swatch", "index": ALL, "color": ALL},
+           "n_clicks")],
     [State("seurat_rds_path_store", "data"),
      State("session_id_store", "data"),
      State({"type": "cluster_color_lock_indicator", "index": ALL}, "id")],
     prevent_initial_call=True,
 )
-def acquire_cluster_color_lock(_vals, rds_path, session_id, ids):
+def acquire_cluster_color_lock(_vals, _swatch_clicks, rds_path, session_id, ids):
     from app.callbacks.edit_lock_callbacks import acquire_lock_for_callback
     triggered = ctx.triggered_id
     if not isinstance(triggered, dict) or not rds_path or not session_id:

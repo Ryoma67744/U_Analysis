@@ -1051,13 +1051,21 @@ def remove_feature_bookmark(n_clicks, selected, current_bookmarks, rds_path):
 @callback(
     Output("feature_history_select", "options"),
     Input("feature_history_store", "data"),
-    State("deg_data_store", "data"),
+    [State("deg_data_store", "data"),
+     # ver56.6: 化合物名は「いま見ているプロジェクトの状態」から解決するので、
+     #   その前に _set_active_key(rds_path) が要る。呼んでいなかったため、
+     #   SCiLS / CSV 由来の化合物名 (プロジェクト状態にしか無い) が常に解決できず、
+     #   ブックマークだけ m/z の数字が並んでいた。DEG 表由来の名前はここで
+     #   引数として渡っているのでたまたま出るが、それ以外は必ず落ちる。
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def update_bookmark_options(bookmarks, deg_data):
+def update_bookmark_options(bookmarks, deg_data, rds_path=None):
     """ブックマークストアからドロップダウンオプションを生成"""
     if not bookmarks:
         return []
+    from app.callbacks.interactive_callbacks import _set_active_key
+    _set_active_key(rds_path)
     ann_map = {}
     if deg_data:
         for r in deg_data:
