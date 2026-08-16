@@ -61,6 +61,14 @@ PATCHERS = {
     ),
 }
 
+# 各再解析スクリプトから抽出できる anchor の実数（下限）。
+# 抽出ロジックが壊れると 0 個に近づくので、その検出に使う。
+EXPECTED_ANCHOR_COUNT = {
+    "DESI 再解析": 4,
+    # ver56.5: Retry Logic 置換を削除して 4 → 3。
+    "TIMS 再解析": 3,
+}
+
 # 手術対象のコードを保持している R の変数名。
 # `grep(pat, code_vec)` の第 2 引数がこれなら「テンプレを探している」と判定する。
 CODE_VARS = ("code_vec", "code")
@@ -160,9 +168,17 @@ class TestTheGuardIsNotInert:
 
     @pytest.mark.parametrize("label", sorted(PATCHERS))
     def test_anchors_are_discoverable(self, label):
+        """抽出が壊れていないこと（見つかる anchor が急に減っていないこと）。
+
+        ver56.5: 一律 `>= 4` だったが、TIMS 再解析の Retry Logic 置換を
+        削除して 3 個になった（本体テンプレが同じことをするようになったため）。
+        「抽出の破綻」と「パッチの正当な削減」を区別できるよう、
+        スクリプトごとの実数を控える。減ったときはここも一緒に直す。
+        """
         found = _anchors(PATCHERS[label][0])
-        assert len(found) >= 4, (
-            f"{label}: anchor が {len(found)} 個しか見つからない。"
+        assert len(found) >= EXPECTED_ANCHOR_COUNT[label], (
+            f"{label}: anchor が {len(found)} 個しか見つからない"
+            f"（期待 {EXPECTED_ANCHOR_COUNT[label]} 個以上）。"
             "抽出が壊れている疑い（R 側の書き方が変わった？）")
 
     def test_r_string_unescaping_works(self):
