@@ -1154,10 +1154,8 @@ def auto_switch_int_cal_adduct(ion_mode, is_restoring):
     """
     if is_restoring:
         return no_update
-    from app.config import DEFAULT_ADDUCT_POSITIVE, DEFAULT_ADDUCT_NEGATIVE
-    if ion_mode == "Positive":
-        return DEFAULT_ADDUCT_POSITIVE
-    return DEFAULT_ADDUCT_NEGATIVE
+    from app.config import adducts_for_ion_mode
+    return adducts_for_ion_mode(ion_mode)
 
 
 # INT-CB-MRM: アノテーションセクション表示制御（DESIのみ表示）
@@ -1374,10 +1372,8 @@ def apply_int_calibration(n_clicks, cal_enable, cal_table_data,
 )
 def auto_switch_reann_adduct(ion_mode):
     """再アノテーション: イオンモード変更時にadductを自動切替"""
-    from app.config import DEFAULT_ADDUCT_POSITIVE, DEFAULT_ADDUCT_NEGATIVE
-    if ion_mode == "Positive":
-        return DEFAULT_ADDUCT_POSITIVE
-    return DEFAULT_ADDUCT_NEGATIVE
+    from app.config import adducts_for_ion_mode
+    return adducts_for_ion_mode(ion_mode)
 
 
 @callback(

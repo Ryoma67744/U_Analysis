@@ -503,9 +503,8 @@ def auto_switch_data_folder(desi_val, tims_val, desi_default, tims_default):
     prevent_initial_call=True,
 )
 def auto_switch_adduct(ion_mode):
-    if ion_mode == "Positive":
-        return ["+H", "+Na", "+NH4", "+K"]
-    return ["-H"]
+    from app.config import adducts_for_ion_mode
+    return adducts_for_ion_mode(ion_mode)
 
 
 @callback(
@@ -514,9 +513,8 @@ def auto_switch_adduct(ion_mode):
     prevent_initial_call=True,
 )
 def auto_switch_reanalysis_adduct(ion_mode):
-    if ion_mode == "Positive":
-        return ["+H", "+Na", "+NH4", "+K"]
-    return ["-H"]
+    from app.config import adducts_for_ion_mode
+    return adducts_for_ion_mode(ion_mode)
 
 
 # ---------------------------------------------------------------------------

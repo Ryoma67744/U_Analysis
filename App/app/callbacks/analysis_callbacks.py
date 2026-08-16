@@ -431,6 +431,19 @@ def run_analysis(
             "reanalysis_logfc_thresh": reanalysis_logfc_thresh,
             "reanalysis_ion_mode": reanalysis_ion_mode,
             "reanalysis_tolerance_mz": reanalysis_tolerance_mz,
+            # ver56.5: 画面は復元しようとしていたのに、誰も保存していなかった項目。
+            # 保存経路が無いと `ls.get(...)` は常に既定値を返すため、
+            # 「設定して解析したのに次に開くと戻っている」になっていた。
+            "adduct_filter": adduct_filter,
+            "reanalysis_adduct_filter": reanalysis_adduct_filter,
+            "mz_align_ppm": mz_align_ppm,
+            "use_annotation_check": use_annotation_check,
+            "resume_reanalysis": resume_reanalysis,
+            "resume_reanalysis_dir": resume_reanalysis_dir,
+            "reanalysis_annotation_path": reanalysis_annotation_path,
+            "rds_folder_reanalysis": rds_folder_reanalysis,
+            "cluster_source": cluster_source,
+            "reanalysis_calibration_use_previous": reanalysis_cal_use_previous,
             "desi_v8_script_path": desi_v8_script,
             "desi_cluster_filter_script_path": desi_cluster_script,
             "tims_v8_script_path": tims_v8_script,
