@@ -39,6 +39,14 @@ def result_dir(tmp_path):
 # バッチ ZIP
 # ---------------------------------------------------------------------------
 
+# ver56.5: 図の中身は「トレースが 1 本でもあること」。以前ここは
+# {"data": [], "layout": {}} という**空の figure** を置き場所として使っていたが、
+# 空の figure は PNG にすると真っ白になるため _create_zip_from_figures が
+# 弾くようになった (C10-5)。条件 JSON の同梱を見るテストなので、
+# 図としては最小の実データを持たせる。
+_FIG = {"data": [{"type": "scattergl", "x": [1, 2], "y": [1, 2]}], "layout": {}}
+
+
 def test_batch_zip_includes_conditions(monkeypatch):
     import app.callbacks.interactive_batch_save as bs
 
@@ -46,7 +54,7 @@ def test_batch_zip_includes_conditions(monkeypatch):
                         lambda *a, **k: b"\x89PNG\r\n\x1a\n" + b"0" * 64)
     conditions = {"conditions_version": "1", "analysis": {"analysis_type": "tims_v8"}}
     data = bs._create_zip_from_figures(
-        [("UMAP_integrated", {"data": [], "layout": {}})],
+        [("UMAP_integrated", _FIG)],
         width=100, height=100, scale=1, section_name="UMAP",
         conditions=conditions)
 
@@ -64,7 +72,7 @@ def test_batch_zip_without_conditions_is_unchanged(monkeypatch):
 
     monkeypatch.setattr(bs, "fig_to_png_bytes", lambda *a, **k: b"PNGDATA")
     data = bs._create_zip_from_figures(
-        [("UMAP_integrated", {"data": [], "layout": {}})],
+        [("UMAP_integrated", _FIG)],
         width=100, height=100, scale=1, conditions=None)
     with zipfile.ZipFile(BytesIO(data)) as zf:
         assert zf.namelist() == ["UMAP_integrated.png"]

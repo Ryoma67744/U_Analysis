@@ -24,6 +24,37 @@ from app.utils.pptx_helpers import fig_to_png_bytes
 
 logger = logging.getLogger(__name__)
 
+# 保存対象が無いときのトースト文言。ボタンごとに書き分けず 1 か所にまとめる。
+_NOTHING_TO_SAVE = "保存対象のプロットがありません"
+
+
+def _figure_has_content(fig):
+    """PNG にして意味のある中身が入っているか。
+
+    ver56.5 (C10-5): plotly の figure は、トレースが 1 本も無くても
+    `{"data": [], "layout": {...}}` という **truthy な dict** になる。
+    そのため `if fig:` は空の図を素通りさせ、枠線だけの真っ白な PNG が
+    ZIP に入ったり、プロジェクトのサムネイルを白紙で上書きしたりしていた。
+    しかもサムネ登録は「登録しました」と成功を名乗るため、前のサムネを
+    失ったことに気づけない。
+
+    UMAP 節で表示を「サンプル別」にしていると統合 UMAP の figure は
+    確定的にこの形になるので、特別な条件は要らずに踏める。
+
+    H&E の背景画像だけを持つ図 (`layout.images`) はトレースが無くても
+    中身があるので、それは通す。
+    """
+    if not fig:
+        return False
+    if not isinstance(fig, dict):
+        to_json = getattr(fig, "to_plotly_json", None)
+        if to_json is None:
+            return False
+        fig = to_json() or {}
+    if fig.get("data"):
+        return True
+    return bool((fig.get("layout") or {}).get("images"))
+
 
 def _get_export_figures(kind, session_id, rds_path, *, marker_size=None,
                         label_size=None, spot_opacity=None, hne_marker_size=None):
@@ -201,6 +232,12 @@ def _create_zip_from_figures(figures_list, width, height, scale, section_name=""
     if not figures_list:
         return None
 
+    # ver56.5: 中身の無い図はここでも落とす（呼び出し側の見落としに対する最後の砦）
+    figures_list = [(name, fd) for name, fd in figures_list
+                    if _figure_has_content(fd)]
+    if not figures_list:
+        return None
+
     # ver28.0: 凡例(欠番空白化で常に全クラスタ分)が縦に溢れて PNG で見切れるのを防ぐため、
     # 凡例行数に応じて書き出し高さを自動拡張する。combined は高さ差を中央寄せで吸収する。
     def _legend_rows(fd):
@@ -263,8 +300,27 @@ def _timestamp():
 # UMAP 一括保存
 # ---------------------------------------------------------------------------
 
-@callback(
+def _nothing_to_save(reason=_NOTHING_TO_SAVE):
+    """保存対象が無いときの戻り値。
+
+    ver56.5 (C10-7): 以前は PreventUpdate で終わっていたため、ボタンを押しても
+    ダウンロードもエラーも出ず**まったく何も起きなかった**。同じ状態でも
+    「📌 サムネ登録」は理由を出すので、一括保存だけ原因が分からなくなる。
+    """
+    return no_update, True, reason, "warning"
+
+
+# 一括保存の Output は 4 つ共通 (ZIP + トースト 3 点)。
+_BATCH_OUTPUTS = [
     Output("dl_batch_zip", "data", allow_duplicate=True),
+    Output("notification_toast", "is_open", allow_duplicate=True),
+    Output("notification_toast", "children", allow_duplicate=True),
+    Output("notification_toast", "icon", allow_duplicate=True),
+]
+
+
+@callback(
+    _BATCH_OUTPUTS,
     Input("btn_batch_save_umap", "n_clicks"),
     [State("interactive_umap_plot", "figure"),
      State("umap_display_mode", "value"),
@@ -277,27 +333,26 @@ def cb_batch_save_umap(n_clicks, umap_fig, display_mode, session_id, rds_path):
         raise PreventUpdate
     per_sample_figs = _get_export_figures("umap", session_id, rds_path)
 
-    figures = []
     if display_mode == "per_sample" and per_sample_figs:
         figures = per_sample_figs
         w, h, s = _PANEL_W, _PANEL_H_UMAP, _PANEL_SCALE
-    elif umap_fig:
+    elif _figure_has_content(umap_fig):
+        # ver56.5 (C10-5): 空の figure も truthy なので、以前はここを素通りして
+        # 枠線だけの真っ白な PNG が UMAP_integrated.png として ZIP に入っていた。
         figures = [("UMAP_integrated", umap_fig)]
         w, h, s = _INTEGRATED_W, _INTEGRATED_H, _INTEGRATED_SCALE
     else:
-        raise PreventUpdate
-
-    if not figures:
-        raise PreventUpdate
+        return _nothing_to_save()
 
     conditions = _conditions_for(rds_path, "batch_zip_umap")
     zip_bytes = _create_zip_from_figures(figures, width=w, height=h, scale=s,
                                          section_name="UMAP",
                                          conditions=conditions)
     if zip_bytes is None:
-        raise PreventUpdate
+        return _nothing_to_save()
 
-    return dcc.send_bytes(zip_bytes, f"UMAP_{_timestamp()}.zip")
+    return (dcc.send_bytes(zip_bytes, f"UMAP_{_timestamp()}.zip"),
+            no_update, no_update, no_update)
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +360,7 @@ def cb_batch_save_umap(n_clicks, umap_fig, display_mode, session_id, rds_path):
 # ---------------------------------------------------------------------------
 
 @callback(
-    Output("dl_batch_zip", "data", allow_duplicate=True),
+    _BATCH_OUTPUTS,
     Input("btn_batch_save_spatial", "n_clicks"),
     [State("session_id_store", "data"),
      State("seurat_rds_path_store", "data"),
@@ -326,7 +381,7 @@ def cb_batch_save_spatial(n_clicks, session_id, rds_path, marker_size,
         hne_marker_size=hne_marker_size)
 
     if not spatial_figs:
-        raise PreventUpdate
+        return _nothing_to_save()
 
     zip_bytes = _create_zip_from_figures(
         spatial_figs,
@@ -335,9 +390,10 @@ def cb_batch_save_spatial(n_clicks, session_id, rds_path, marker_size,
         conditions=_conditions_for(rds_path, "batch_zip_spatial"),
     )
     if zip_bytes is None:
-        raise PreventUpdate
+        return _nothing_to_save()
 
-    return dcc.send_bytes(zip_bytes, f"SpatialMapping_{_timestamp()}.zip")
+    return (dcc.send_bytes(zip_bytes, f"SpatialMapping_{_timestamp()}.zip"),
+            no_update, no_update, no_update)
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +401,7 @@ def cb_batch_save_spatial(n_clicks, session_id, rds_path, marker_size,
 # ---------------------------------------------------------------------------
 
 @callback(
-    Output("dl_batch_zip", "data", allow_duplicate=True),
+    _BATCH_OUTPUTS,
     Input("btn_batch_save_feature", "n_clicks"),
     [State("session_id_store", "data"),
      State("seurat_rds_path_store", "data"),
@@ -363,7 +419,7 @@ def cb_batch_save_feature(n_clicks, session_id, rds_path,
         session_id, rds_path, marker_size=marker_size, colorscale=colorscale)
 
     if not feature_figs:
-        raise PreventUpdate
+        return _nothing_to_save()
 
     zip_bytes = _create_zip_from_figures(
         feature_figs,
@@ -372,9 +428,10 @@ def cb_batch_save_feature(n_clicks, session_id, rds_path,
         conditions=_conditions_for(rds_path, "batch_zip_feature"),
     )
     if zip_bytes is None:
-        raise PreventUpdate
+        return _nothing_to_save()
 
-    return dcc.send_bytes(zip_bytes, f"FeaturePlot_{_timestamp()}.zip")
+    return (dcc.send_bytes(zip_bytes, f"FeaturePlot_{_timestamp()}.zip"),
+            no_update, no_update, no_update)
 
 
 # ---------------------------------------------------------------------------
@@ -382,28 +439,35 @@ def cb_batch_save_feature(n_clicks, session_id, rds_path,
 # ---------------------------------------------------------------------------
 
 @callback(
-    Output("dl_batch_zip", "data", allow_duplicate=True),
+    _BATCH_OUTPUTS,
     Input("btn_batch_save_deg", "n_clicks"),
     [State("volcano_plot", "figure"),
      State("heatmap_plot", "figure"),
      State("volcano_cluster_select", "value"),
+     # ver56.5 (C10-6): Heatmap には独立した「フォーカスクラスタ」がある。
+     # 以前は両方のファイル名に Volcano 側の選択を付けていたため、
+     # タイトルが Cluster5 の図に Heatmap_Cluster3.png という別クラスタの
+     # 名前が付いたまま配布されていた。
+     State("heatmap_cluster_select", "value"),
      State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
 def cb_batch_save_deg(n_clicks, volcano_fig, heatmap_fig, cluster_select,
-                      rds_path):
+                      heatmap_cluster_select, rds_path):
     if not n_clicks:
         raise PreventUpdate
 
+    def _suffix(value):
+        return f"_Cluster{value}" if value else ""
+
     figures = []
-    suffix = f"_Cluster{cluster_select}" if cluster_select else ""
-    if volcano_fig:
-        figures.append((f"Volcano{suffix}", volcano_fig))
-    if heatmap_fig:
-        figures.append((f"Heatmap{suffix}", heatmap_fig))
+    if _figure_has_content(volcano_fig):
+        figures.append((f"Volcano{_suffix(cluster_select)}", volcano_fig))
+    if _figure_has_content(heatmap_fig):
+        figures.append((f"Heatmap{_suffix(heatmap_cluster_select)}", heatmap_fig))
 
     if not figures:
-        raise PreventUpdate
+        return _nothing_to_save()
 
     zip_bytes = _create_zip_from_figures(
         figures, width=_DEG_W, height=_DEG_H, scale=_DEG_SCALE,
@@ -411,9 +475,10 @@ def cb_batch_save_deg(n_clicks, volcano_fig, heatmap_fig, cluster_select,
         conditions=_conditions_for(rds_path, "batch_zip_deg"),
     )
     if zip_bytes is None:
-        raise PreventUpdate
+        return _nothing_to_save()
 
-    return dcc.send_bytes(zip_bytes, f"DEG_{_timestamp()}.zip")
+    return (dcc.send_bytes(zip_bytes, f"DEG_{_timestamp()}.zip"),
+            no_update, no_update, no_update)
 
 
 # =============================================================================
@@ -444,8 +509,14 @@ def _save_figure_as_thumbnail(figures_list, width, height, scale,
     if not project:
         return False, f"プロジェクトが見つかりません: {project_id}"
 
+    # ver56.5 (C10-5): 中身の無い図で既存サムネを上書きしない。以前は
+    # 枠線だけの真っ白な PNG で上書きしたうえ「登録しました」と成功を名乗り、
+    # 前のサムネは戻せなかった。
+    figures_list = [f for f in (figures_list or [])
+                    if _figure_has_content(
+                        f[1] if isinstance(f, (list, tuple)) and len(f) >= 2 else f)]
     if not figures_list:
-        return False, "保存対象のプロットがありません"
+        return False, _NOTHING_TO_SAVE
 
     # ver3.11: 複数 figure (per-sample 等) は **最初の 1 枚だけ** 使う。
     # 横結合 (concat) はサムネで見切れるため廃止
@@ -566,7 +637,9 @@ def cb_set_thumbnail_umap(n_clicks, umap_fig,
     # 表示モードに応じて選択: per_sample なら 1 枚目、それ以外は統合 UMAP
     if display_mode == "per_sample" and per_sample_figs:
         figs = per_sample_figs
-    elif umap_fig:
+    elif _figure_has_content(umap_fig):
+        # ver56.5 (C10-5): 空の figure も truthy。以前はここを素通りして
+        # 真っ白な PNG でサムネを上書きし、しかも成功メッセージを出していた。
         figs = [("UMAP_integrated", umap_fig)]
     else:
         return True, "UMAP プロットが見つかりません", "danger", no_update
