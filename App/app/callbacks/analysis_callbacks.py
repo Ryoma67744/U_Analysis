@@ -179,6 +179,28 @@ def _resolved_output_dir(output_dir):
     return text or None
 
 
+def _resolve_full_output_dir(output_dir, output_subfolder, *, downstream,
+                             umap_nn=None, umap_md=None, umap_dims=None,
+                             umap_metric=None):
+    """実際に書き込む出力先を決める。出力先が未設定なら None。
+
+    ver56.7 (C03-3): 「どのフォルダに書くか」を **1 か所に集約**する。
+    以前は上書き確認モーダルと実行本体がそれぞれ組み立てており、
+    片方だけ直すと **確認した先と実際に書く先が食い違う**。とくに ④
+    (reduction 再利用) は UMAP ハイパラからサフィックスを自動命名するため、
+    その危険が大きかった（実際、確認モーダル側は ④ を知らなかった）。
+    """
+    base = _resolved_output_dir(output_dir)
+    if not base:
+        return None
+    if downstream:
+        suffix = _umap_hp_suffix(umap_nn, umap_md, umap_dims, umap_metric)
+        if suffix:
+            stem = _strip_hp_suffix(output_subfolder or "umap")
+            return str(Path(base) / f"{stem}{suffix}")
+    return str(Path(base) / (output_subfolder or ""))
+
+
 def _output_has_existing_results(full_output_dir: str) -> bool:
     """出力先フォルダに既存の解析結果があるか判定（上書き警告ゲート用）。
 
@@ -230,21 +252,38 @@ def _output_has_existing_results(full_output_dir: str) -> bool:
      Output("overwrite_pending_mode", "data")],
     Input("run_analysis", "n_clicks"),
     Input("btn_make_reduction", "n_clicks"),
+    # ver56.7 (C03-3): ④ も確認対象にする。④ の出力先は UMAP ハイパラから
+    #   自動命名されるため、同じ条件でもう一度押すと前回と同じ名前になり、
+    #   **前回の ④ の結果が黙って上書きされて消えて**いた。
+    Input("btn_run_downstream", "n_clicks"),
     [State("output_dir", "value"),
-     State("output_subfolder", "value")],
+     State("output_subfolder", "value"),
+     # ④ の出力先を実行本体と同じ式で求めるために必要
+     State("umap_n_neighbors_input", "value"),
+     State("umap_min_dist_input", "value"),
+     State("umap_dims_input", "value"),
+     State("umap_metric_input", "value")],
     prevent_initial_call=True,
 )
-def open_overwrite_modal(run_clicks, reduction_clicks, output_dir, output_subfolder):
-    """フル/reductionのみ実行時、出力先に既存結果があれば上書き確認モーダルを開く。
+def open_overwrite_modal(run_clicks, reduction_clicks, downstream_clicks,
+                         output_dir, output_subfolder,
+                         umap_nn=None, umap_md=None, umap_dims=None,
+                         umap_metric=None):
+    """実行前に、出力先に既存結果があれば上書き確認モーダルを開く。
 
     既存結果が無ければモーダルは開かない（従来どおり即実行）。pending mode に
-    どちらのボタンだったか("run"/"reduction")を記録し、確認後の本実行で復元する。
+    どのボタンだったか("run"/"reduction"/"downstream")を記録し、
+    確認後の本実行で復元する。
     """
     trig = ctx.triggered_id
-    mode = "reduction" if trig == "btn_make_reduction" else "run"
-    if not output_dir:
+    mode = {"btn_make_reduction": "reduction",
+            "btn_run_downstream": "downstream"}.get(trig, "run")
+    target = _resolve_full_output_dir(
+        output_dir, output_subfolder, downstream=(mode == "downstream"),
+        umap_nn=umap_nn, umap_md=umap_md, umap_dims=umap_dims,
+        umap_metric=umap_metric)
+    if not target:
         return False, no_update, mode
-    target = str(Path(output_dir) / (output_subfolder or ""))
     if not _output_has_existing_results(target):
         return False, no_update, mode
     try:
@@ -409,14 +448,20 @@ def run_analysis(
     # 出力先に既存結果がある状態で「解析実行」/「reductionのみ」を押した場合は、
     # 確認モーダル（open_overwrite_modal が表示）で「実行する」が押されるまで本実行しない。
     if trig == "confirm_overwrite_results":
-        # 確認後の本実行: 元のモードを pending から復元（downstream は警告対象外）
+        # 確認後の本実行: 元のモードを pending から復元する。
+        # ver56.7 (C03-3): 以前は ④ を「警告対象外」として downstream_mode を
+        #   無条件に False へ潰していた。④ も確認対象にした以上、ここを直さないと
+        #   **確認を経ると ④ ではなく通常解析が走ってしまう**。
         reduction_only_mode = (overwrite_pending_mode == "reduction")
-        downstream_mode = False
+        downstream_mode = (overwrite_pending_mode == "downstream")
         if not confirm_overwrite_clicks:
             return (no_update,) * 10
-    elif trig in ("run_analysis", "btn_make_reduction") and output_dir:
-        _target = str(Path(output_dir) / (output_subfolder or ""))
-        if _output_has_existing_results(_target):
+    elif trig in ("run_analysis", "btn_make_reduction", "btn_run_downstream"):
+        _target = _resolve_full_output_dir(
+            output_dir, output_subfolder, downstream=downstream_mode,
+            umap_nn=umap_n_neighbors_input, umap_md=umap_min_dist_input,
+            umap_dims=umap_dims_input, umap_metric=umap_metric_input)
+        if _target and _output_has_existing_results(_target):
             # 実行は止める（モーダル表示は open_overwrite_modal が担当）
             return (no_update,) * 10
 
@@ -509,8 +554,14 @@ def run_analysis(
     #   空欄のまま実行するとアプリの作業フォルダへ結果が書き出される。
     #   出力サブフォルダが未設定だと `Path(x) / None` が TypeError になり、
     #   ここは try の外なのでボタンが死んだように見えていた。
-    _out = _resolved_output_dir(output_dir)
-    if not _out:
+    # ver56.7 (C03-3): 出力先の決め方は上書き確認モーダルと共通の
+    #   `_resolve_full_output_dir()` に集約した（確認した先と実際に書く先が
+    #   食い違わないようにするため）。④ のサフィックス自動命名もそこで行う。
+    full_output_dir = _resolve_full_output_dir(
+        output_dir, output_subfolder, downstream=downstream_mode,
+        umap_nn=umap_n_neighbors_input, umap_md=umap_min_dist_input,
+        umap_dims=umap_dims_input, umap_metric=umap_metric_input)
+    if not full_output_dir:
         return (
             app_state, True,
             {"display": "none"}, {"display": "none"}, {"display": "none"},
@@ -518,14 +569,6 @@ def run_analysis(
             "出力先を指定してください", True,
             no_update, no_update,
         )
-    full_output_dir = str(Path(_out) / (output_subfolder or ""))
-    if downstream_mode:
-        # ④: ハイパラ反復を上書きせず比較できるよう、UMAPハイパラ値で出力サブフォルダを自動命名
-        _suf = _umap_hp_suffix(umap_n_neighbors_input, umap_min_dist_input,
-                               umap_dims_input, umap_metric_input)
-        if _suf:
-            _base = _strip_hp_suffix(output_subfolder or "umap")
-            full_output_dir = str(Path(_out) / f"{_base}{_suf}")
     Path(full_output_dir).mkdir(parents=True, exist_ok=True)
 
     try:

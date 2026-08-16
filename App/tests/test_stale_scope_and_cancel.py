@@ -210,15 +210,25 @@ def test_stage_c_stops_when_cancelled(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_blank_output_dir_is_refused():
-    """★ 出力先が空欄なら、カレントに書かずに理由を出して止めること。"""
+    """★ 出力先が空欄なら、カレントに書かずに理由を出して止めること。
+
+    ver56.7 で出力先の決定は `_resolve_full_output_dir()` に集約された
+    （上書き確認モーダルと実行本体で食い違わないようにするため）。
+    空欄検査はその中にあり、実行本体は None を受けて止める。
+    """
     import app.callbacks.analysis_callbacks as ac
 
+    # 決める側: 空欄・空白のみ・未設定はどれも「決められない」
+    for blank in ("", "   ", None):
+        assert ac._resolve_full_output_dir(
+            blank, "umap", downstream=False) is None, blank
+
+    # 使う側: None を受けたら理由を出して止める
     src = inspect.getsource(ac.run_analysis)
-    idx = src.index("full_output_dir = str(")
+    idx = src.index("Path(full_output_dir).mkdir")
     head = src[:idx]
-    assert "_resolved_output_dir(output_dir)" in head, (
-        "出力先の空欄検査が無い（Path('') は '.' になり、"
-        "アプリの作業フォルダへ結果が書き出される）")
+    assert "if not full_output_dir:" in head, (
+        "出力先が決まらないまま書き込みへ進んでいる")
     assert "出力先を指定してください" in head, "理由を利用者に出していない"
 
 

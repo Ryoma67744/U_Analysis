@@ -131,8 +131,14 @@ def populate_interactive_sub_projects(project_id, entry_mode):
 
 
 @callback(
+    # ver56.7: `interactive_data_info` の Output を外した。
+    #   このコールバックとサブプロジェクト側の `set_interactive_folders_from_sub_project`
+    #   が**同じ表示欄を奪い合って**おり、どちらの応答が後に届くかは毎回変わるため、
+    #   「⚠ 結果フォルダが見つかりません」が**出る回と出ない回**があった。
+    #   出なかった回は、結果フォルダが失われていることに気づけないまま
+    #   「データ読込」を押すことになる。
+    #   表示欄の持ち主は「フォルダを実際に調べている側」に一本化する。
     [Output("interactive_viz_container", "style", allow_duplicate=True),
-     Output("interactive_data_info", "children", allow_duplicate=True),
      Output("sap_skip_reset", "data", allow_duplicate=True),
      Output("sap_btn_wrapper", "style", allow_duplicate=True)],
     Input("interactive_project_select", "value"),
@@ -149,15 +155,15 @@ def reset_interactive_on_project_change(project_id, skip_reset, loaded_rds=None)
     sub_project_select の value が同一でも確実にクリアされる。
     sap_skip_reset=True の場合はリセットをスキップ（保存後の自動切替時）。"""
     if skip_reset:
-        return no_update, no_update, False, no_update
+        return no_update, False, no_update
 
     # いま読み込んでいるプロジェクトの state エントリを破棄
     _drop_state(loaded_rds)
     _set_active_key(None)
 
-    if not project_id:
-        return {"display": "none"}, "", False, {"display": "none"}
-    return {"display": "none"}, "データを読み込んでください", False, {"display": "none"}
+    # 表示欄 (interactive_data_info) はここでは触らない。
+    # サブプロジェクト側が確定させる (ver56.7)。
+    return {"display": "none"}, False, {"display": "none"}
 
 
 @callback(
@@ -216,12 +222,19 @@ def set_interactive_folders_from_sub_project(sub_id, project_id, skip_reset,
     _drop_state(loaded_rds)
     _set_active_key(None)
 
+    # ver56.7: 表示欄 (interactive_data_info) の**唯一の持ち主**はここ。
+    #   以前はリセット側と奪い合っており、警告が出る回と出ない回があった。
+    #   サブプロ未選択の経路でも no_update ではなく確定値を返す
+    #   （返さないと前の表示が残り続ける）。
     if not sub_id or not project_id:
-        return no_update, no_update, no_update, no_update, {"display": "none"}, False, {"display": "none"}
+        _idle = "データを読み込んでください" if project_id else ""
+        return (no_update, no_update, _idle, no_update,
+                {"display": "none"}, False, {"display": "none"})
     from app.services.project_manager import get_sub_project
     sub = get_sub_project(project_id, sub_id)
     if not sub:
-        return no_update, no_update, no_update, no_update, {"display": "none"}, False, {"display": "none"}
+        return (no_update, no_update, "データを読み込んでください", no_update,
+                {"display": "none"}, False, {"display": "none"})
     result_dir = sub.get("last_result_dir") or sub.get("output_dir", "")
     data_folder = sub.get("data_folder", "")
     ms_instrument = sub.get("ms_instrument", "TIMS")

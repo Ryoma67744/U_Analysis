@@ -45,19 +45,39 @@ def _active_items_list(active_items):
 # - umap_polygon_commit : 下書き(>=3頂点) の内側セルを points_in_polygon で判定し選択へ
 # selected_cell_ids_store の主たる writer は commit。選択統計(P1)/選択DE(P2)/選択グループ(P3)が読む。
 # ---------------------------------------------------------------------------
+# ver56.7: 図を作り直す操作。これらが起きると UMAP の figure が新しく作られ、
+#   下書きを描いていた専用 trace は空に戻る＝**画面から線だけが消える**。
+#   以前は下書きの頂点だけが残っていたため、「下書き 5 点 —『確定』で選択を確定」の
+#   文字も残り、そのまま確定すると**見えない範囲でピクセルが選択され**ていた。
+#   マージ表示に切り替えてから確定した場合は、描いた場所とは無関係なピクセルが選ばれる。
+#   線が消える操作では下書きも捨て、ラベルも同時に消えるようにする
+#   （ラベルは下書きストア由来なので自動的に消える）。
+_FIGURE_REBUILT_BY = ("umap_display_mode", "umap_merge_toggle",
+                      "seurat_rds_path_store")
+
+
 @callback(
     Output("umap_polygon_draft_store", "data"),
     [Input("interactive_umap_plot", "clickData"),
      Input("umap_polygon_undo", "n_clicks"),
-     Input("umap_polygon_clear", "n_clicks")],
-    [State("umap_polygon_draft_store", "data"),
-     State("umap_display_mode", "value")],
+     Input("umap_polygon_clear", "n_clicks"),
+     # 図を作り直す操作 (ver56.7)
+     Input("umap_display_mode", "value"),
+     Input("umap_merge_toggle", "value"),
+     Input("seurat_rds_path_store", "data")],
+    State("umap_polygon_draft_store", "data"),
     prevent_initial_call=True,
 )
-def umap_polygon_draft(click, _undo_n, _clear_n, draft, display_mode):
-    """UMAP クリックで頂点を追加 / 直前1点を取消 / 下書きをクリア。"""
+def umap_polygon_draft(click, _undo_n, _clear_n, display_mode, _merge, _rds,
+                       draft):
+    """UMAP クリックで頂点を追加 / 直前1点を取消 / 下書きをクリア。
+
+    図を作り直す操作 (表示モード・マージ・データ切替) でも下書きを捨てる。
+    """
     trig = ctx.triggered_id
     draft = list(draft or [])
+    if trig in _FIGURE_REBUILT_BY:
+        return []
     if trig == "umap_polygon_clear":
         return []
     if trig == "umap_polygon_undo":
