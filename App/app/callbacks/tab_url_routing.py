@@ -3,17 +3,29 @@
 # 解析画面のタブ ↔ URL 双方向同期
 #
 # 解析画面 (current_page="analysis") の dbc.Tabs (id="main_tabs") を URL に
-# 反映し、URL を共有しただけで他人が同じタブを開けるようにする。
+# 反映し、いま見ているタブがアドレスバーに出るようにする。
 #
 # URL スキーム:
 #   /app/settings     → 解析設定タブ
-#   /app/results      → 結果閲覧タブ
 #   /app/interactive  → インタラクティブ解析タブ
-#   /app/history      → セッション履歴タブ
-#   /                 → デフォルト (landing 経由で settings)
+#   /app/hne          → 解剖×クラスタ (H&E) タブ
+#   /                 → デフォルト (landing)
 #
-# 認証: /app/* は Tier A 必須 (auth_middleware のデフォルト)。共有用ではなく
-# 解析者自身が deep link / ブックマークするための機能。
+# ★ ver56.6 の訂正: ここには以前
+#     (a) 実在しないアドレスが 2 つ書かれていた（結果閲覧・セッション履歴）
+#     (b)「URL を共有しただけで他人が同じタブを開ける」と書かれていた
+#   の 2 つの誤りがあり、あわせて _TAB_TO_PATH から H&E タブが漏れていたため
+#   H&E を開いてもアドレスバーが直前のタブのまま残っていた。
+#
+#   (b) について実装は逆で、`_route_app_url_to_analysis` が
+#   current_page != "analysis" のとき URL を無条件に "/" へ正規化する。
+#   つまり **/app/* を開き直すと必ずトップ (プロジェクト一覧) に戻る**。
+#   これは H&E に限らず全タブ共通の意図的な仕様で、ブラウザ側にプロジェクト
+#   選択が残っていない状態で空の画面が開くのを避けるためである。
+#   したがって URL の役割は「いま見ているタブの表示」であって、
+#   deep link やブックマークからのタブ復元ではない。
+#
+# 認証: /app/* は Tier A 必須 (auth_middleware のデフォルト)。
 # 共有目的の URL は /share/<token> (期間付き、Tier B) または
 # /view/<token> (無期限、認証不要) を使う。
 # =============================================================================
@@ -81,6 +93,9 @@ def _route_app_url_to_analysis(target, current_page):
 _TAB_TO_PATH = {
     "settings": "/app/settings",
     "interactive": "/app/interactive",
+    # ver56.6: 実在するのに漏れていた。無いとこのタブを開いてもアドレスバーが
+    #   直前のタブのまま残る (_PATH_TO_TAB は自動生成なので双方向とも直る)。
+    "hne": "/app/hne",
 }
 _PATH_TO_TAB = {v: k for k, v in _TAB_TO_PATH.items()}
 

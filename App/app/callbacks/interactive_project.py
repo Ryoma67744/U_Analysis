@@ -136,18 +136,23 @@ def populate_interactive_sub_projects(project_id, entry_mode):
      Output("sap_skip_reset", "data", allow_duplicate=True),
      Output("sap_btn_wrapper", "style", allow_duplicate=True)],
     Input("interactive_project_select", "value"),
-    State("sap_skip_reset", "data"),
+    [State("sap_skip_reset", "data"),
+     # ver56.6: 破棄したい state を**明示して渡す**。引数なしの `_drop_state()` は
+     #   「いまアクティブなプロジェクト」を対象にするが、それはリクエスト境界で
+     #   毎回 None に戻される (reset_active_key) ため、関数は先頭で何もせず戻る＝
+     #   宣言された破棄は一度も実行されていなかった。
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def reset_interactive_on_project_change(project_id, skip_reset):
+def reset_interactive_on_project_change(project_id, skip_reset, loaded_rds=None):
     """プロジェクト変更時にインタラクティブデータをリセット。
     sub_project_select の value が同一でも確実にクリアされる。
     sap_skip_reset=True の場合はリセットをスキップ（保存後の自動切替時）。"""
     if skip_reset:
         return no_update, no_update, False, no_update
 
-    # アクティブプロジェクトの state エントリを破棄（プロジェクト別キャッシュ対応）
-    _drop_state()
+    # いま読み込んでいるプロジェクトの state エントリを破棄
+    _drop_state(loaded_rds)
     _set_active_key(None)
 
     if not project_id:
@@ -167,11 +172,14 @@ def reset_interactive_on_project_change(project_id, skip_reset):
     [State("interactive_project_select", "value"),
      State("sap_skip_reset", "data"),
      # ★ ver56.5 (§4 / C13-H8): 共有リンクが固定した結果フォルダを守るため
-     State("shared_session", "data")],
+     State("shared_session", "data"),
+     # ver56.6: 破棄対象を明示して渡す（引数なしでは何も破棄されなかった）
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
 def set_interactive_folders_from_sub_project(sub_id, project_id, skip_reset,
-                                             shared_session=None):
+                                             shared_session=None,
+                                             loaded_rds=None):
     """サブプロジェクト選択時にフォルダパスを自動設定 + データリセット
     sap_skip_reset=True の場合はリセットをスキップ（保存後の自動切替時）。"""
     # ★ ver56.5 (デバッグ総点検 §4 / C13-H8): 共有リンクで開いた場合は
@@ -205,7 +213,7 @@ def set_interactive_folders_from_sub_project(sub_id, project_id, skip_reset,
         return (no_update,) * 5 + (False, no_update)
 
     # 前のプロジェクトの state を破棄（複数プロジェクト同時閲覧時の混線防止）
-    _drop_state()
+    _drop_state(loaded_rds)
     _set_active_key(None)
 
     if not sub_id or not project_id:
