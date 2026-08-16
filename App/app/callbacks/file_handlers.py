@@ -214,10 +214,16 @@ def sync_selected_samples(value):
     [Input("selected_samples", "value"),
      Input("data_folder", "value"),
      Input("analysis_method", "value"),
-     Input("analysis_method_tims", "value")],
+     Input("analysis_method_tims", "value"),
+     # ver56.5 (F-C02-1): サンプル一覧は追加フォルダも含めて作られるのに、
+     # ここだけ基準フォルダしか見ていなかった。追加フォルダのサンプルは
+     # パス解決に失敗して黙って読み飛ばされ、切片(annotation)のチェックボックスが
+     # 出ない = そのサンプルだけ切片で絞り込めない状態になっていた。
+     Input("extra_data_folders_store", "data")],
     prevent_initial_call=True,
 )
-def update_annotation_selector(selected_samples, data_folder, desi_method, tims_method):
+def update_annotation_selector(selected_samples, data_folder, desi_method,
+                               tims_method, extra_folders=None):
     """選択されたTIMSファイルごとにannotation一覧をチェックボックスで表示"""
     active = desi_method or tims_method or "desi_v8"
 
@@ -228,11 +234,14 @@ def update_annotation_selector(selected_samples, data_folder, desi_method, tims_
     if not selected_samples or not data_folder or not Path(data_folder).is_dir():
         return [], None
 
+    from app.services.data_manager import find_tims_file_path_multi
+    all_folders = [data_folder] + list(extra_folders or [])
+
     children = []
     all_annotations = []
 
     for sample in selected_samples:
-        file_path = find_tims_file_path(data_folder, sample)
+        file_path = find_tims_file_path_multi(all_folders, sample)
         if not file_path:
             continue
         annotations = read_parquet_annotations(file_path)
