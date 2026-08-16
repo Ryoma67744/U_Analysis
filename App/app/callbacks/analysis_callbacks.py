@@ -456,7 +456,28 @@ def run_analysis(
         downstream_mode = (overwrite_pending_mode == "downstream")
         if not confirm_overwrite_clicks:
             return (no_update,) * 10
-    elif trig in ("run_analysis", "btn_make_reduction", "btn_run_downstream"):
+    # ── 入力チェックのゲート (ver56.7 / C03-4) ──
+    # 以前はチェックが表示しかしておらず、赤いエラーと「解析を開始しました」の緑が
+    # **同時に出て解析が走って**いた。表示側と同じ `_collect_preflight_errors()` を
+    # ここでも呼んで、実行しても必ず失敗する入力なら起動しない。
+    # 「出力先の親フォルダが無い」は下の mkdir(parents=True) が自分で解消するので
+    # blocking には入らない（入れると正常な実行まで止まる）。
+    if trig != "confirm_overwrite_results":
+        _blocking, _ = _collect_preflight_errors(
+            desi_method, tims_method, data_folder, reanalysis_data_folder,
+            output_dir, p_thresh, logfc_thresh, tolerance_mz,
+            resume_rds, rds_folder, rds_folder_reanalysis)
+        if _blocking:
+            return (
+                app_state, True,
+                {"display": "none"}, {"display": "none"}, {"display": "none"},
+                no_update,
+                "入力チェックのエラーを解消してください: " + " / ".join(_blocking),
+                True,
+                no_update, no_update,
+            )
+
+    if trig in ("run_analysis", "btn_make_reduction", "btn_run_downstream"):
         _target = _resolve_full_output_dir(
             output_dir, output_subfolder, downstream=downstream_mode,
             umap_nn=umap_n_neighbors_input, umap_md=umap_min_dist_input,
@@ -2464,65 +2485,58 @@ def validate_output_dir_input(folder):
     ])
 
 
-@callback(
-    Output("validation_summary", "children"),
-    Output("validation_summary", "style"),
-    Input("run_analysis", "n_clicks"),
-    [State("analysis_method", "value"),
-     State("analysis_method_tims", "value"),
-     State("data_folder", "value"),
-     State("reanalysis_data_folder", "value"),
-     State("output_dir", "value"),
-     State("p_thresh", "value"),
-     State("logfc_thresh", "value"),
-     State("tolerance_mz", "value"),
-     State("resume_rds", "value"),
-     State("rds_folder", "value"),
-     State("rds_folder_reanalysis", "value")],
-    prevent_initial_call=True,
-)
-def preflight_validation(
-    n_clicks, desi_method, tims_method,
-    data_folder, reanalysis_data_folder, output_dir,
-    p_thresh, logfc_thresh, tolerance_mz,
-    resume_rds, rds_folder, rds_folder_reanalysis,
-):
-    """解析実行ボタン押下時にプリフライトチェックを実行する。
-    問題がなければ非表示のまま。問題があればエラー一覧を表示。"""
-    if not n_clicks:
-        return "", {"display": "none"}
-
-    errors = []
+# ver56.7 (C03-4): 入力チェックを **表示側と実行側の共通関数**にする。
+#   以前はチェックが表示しかしておらず、実行本体はクリック数しか見ていなかったため、
+#   「入力チェックでエラーが見つかりました」の赤い枠と「解析を開始しました」の緑が
+#   **同時に出て解析が走って**いた。利用者はエラーなのか動いているのか判断できず、
+#   しばらく待たされた末に R 側のエラーログで失敗を知ることになる。
+#
+#   ★ 止めすぎないことが最重要:
+#     出力先の「親フォルダが見つかりません」は実行本体が mkdir(parents=True) で
+#     **自分で作って解消する**。これを止める対象に入れると、**今まで正常に
+#     動いていた実行まで止まる**。そこで結果を 2 つに分ける。
+#
+#       blocking … 実行しても必ず失敗する（データフォルダが無い / 書き込み権限が
+#                  無い / 数値が範囲外 / 出力先が未入力）→ 実行を止める
+#       advisory … 実行すれば解消する（出力先の親フォルダが無い）→ 知らせるだけ
+#
+#   実行本体が「別のコールバックが書いた Store」を読む形にしなかったのは、
+#   同じクリックで両方が走るため **前回の検査結果を読んでしまう**ため。
+#   両者がこの関数を自分で呼ぶ。
+def _collect_preflight_errors(desi_method, tims_method,
+                              data_folder, reanalysis_data_folder, output_dir,
+                              p_thresh, logfc_thresh, tolerance_mz,
+                              resume_rds, rds_folder, rds_folder_reanalysis):
+    """入力を検査して (blocking, advisory) の 2 つのリストを返す。"""
+    blocking, advisory = [], []
     analysis_type = desi_method or tims_method or "desi_v8"
     is_tims = bool(tims_method)
     is_reanalysis = analysis_type in ("desi_cluster_filter", "tims_cluster_filter")
 
     if is_reanalysis:
-        # 再解析: reanalysis_data_folder を検証
         r = validate_data_folder(reanalysis_data_folder, is_tims=is_tims)
         if not r["ok"]:
-            errors.append(f"データフォルダ: {r['msg']}")
-
-        # 再解析: RDSフォルダを検証
+            blocking.append(f"データフォルダ: {r['msg']}")
         r = validate_rds_folder(rds_folder_reanalysis)
         if not r["ok"]:
-            errors.append(f"RDSフォルダ: {r['msg']}")
+            blocking.append(f"RDSフォルダ: {r['msg']}")
     else:
-        # UMAP解析: data_folder を検証
         r = validate_data_folder(data_folder, is_tims=is_tims)
         if not r["ok"]:
-            errors.append(f"データフォルダ: {r['msg']}")
-
-        # RDSフォルダ (途中再開時のみ)
+            blocking.append(f"データフォルダ: {r['msg']}")
         if resume_rds:
             r = validate_rds_folder(rds_folder)
             if not r["ok"]:
-                errors.append(f"RDSフォルダ: {r['msg']}")
+                blocking.append(f"RDSフォルダ: {r['msg']}")
 
-    # 出力先
+    # 出力先: 「親フォルダが無い」だけは実行時に自動作成されるので止めない
     r = validate_output_dir(output_dir)
     if not r["ok"]:
-        errors.append(f"出力先: {r['msg']}")
+        if "親フォルダが見つかりません" in r["msg"]:
+            advisory.append(
+                f"出力先: {output_dir}（存在しないため、実行時に作成されます）")
+        else:
+            blocking.append(f"出力先: {r['msg']}")
 
     # 数値パラメータ
     # ★ ver52.3 ⑤: 範囲をここに直接書いていたので、`PARAM_BOUNDS`・レイアウトの
@@ -2537,21 +2551,80 @@ def preflight_validation(
     ]:
         ok, msg = validate_param(param_id, val)
         if not ok:
-            errors.append(msg)
+            blocking.append(msg)
 
-    if not errors:
+    return blocking, advisory
+
+
+def _preflight_alert(blocking, advisory):
+    """検査結果を画面表示用のアラートにする。問題が無ければ None。"""
+    if blocking:
+        return dbc.Alert(
+            children=[
+                html.Strong("入力チェックでエラーが見つかりました:"),
+                html.Ul([html.Li(e, style={"fontSize": "0.85rem"})
+                         for e in blocking],
+                        style={"marginBottom": 0, "marginTop": "5px"}),
+                html.Div("修正するまで解析は開始しません。",
+                         style={"fontSize": "0.8rem", "marginTop": "5px"}),
+            ],
+            color="danger", dismissable=True, style={"marginBottom": "10px"},
+        )
+    if advisory:
+        # 実行すれば解消する件。「エラー」とは言わない
+        # （赤いエラーと「開始しました」が同時に出る、が症状の本体だったため）
+        return dbc.Alert(
+            children=[
+                html.Strong("確認:"),
+                html.Ul([html.Li(e, style={"fontSize": "0.85rem"})
+                         for e in advisory],
+                        style={"marginBottom": 0, "marginTop": "5px"}),
+            ],
+            color="warning", dismissable=True, style={"marginBottom": "10px"},
+        )
+    return None
+
+
+@callback(
+    Output("validation_summary", "children"),
+    Output("validation_summary", "style"),
+    # ver56.7: ①④ でもチェックを走らせる（以前は「解析実行」だけだった）
+    Input("run_analysis", "n_clicks"),
+    Input("btn_make_reduction", "n_clicks"),
+    Input("btn_run_downstream", "n_clicks"),
+    [State("analysis_method", "value"),
+     State("analysis_method_tims", "value"),
+     State("data_folder", "value"),
+     State("reanalysis_data_folder", "value"),
+     State("output_dir", "value"),
+     State("p_thresh", "value"),
+     State("logfc_thresh", "value"),
+     State("tolerance_mz", "value"),
+     State("resume_rds", "value"),
+     State("rds_folder", "value"),
+     State("rds_folder_reanalysis", "value")],
+    prevent_initial_call=True,
+)
+def preflight_validation(
+    n_clicks, reduction_clicks, downstream_clicks,
+    desi_method, tims_method,
+    data_folder, reanalysis_data_folder, output_dir,
+    p_thresh, logfc_thresh, tolerance_mz,
+    resume_rds, rds_folder, rds_folder_reanalysis,
+):
+    """起動ボタン押下時にプリフライトチェックを実行する。
+
+    問題がなければ非表示のまま。止める問題はエラー、実行すれば解消する問題は
+    「確認」として色を分けて出す。実行を止めるかどうかは run_analysis が
+    同じ `_collect_preflight_errors()` を呼んで自分で判断する。
+    """
+    blocking, advisory = _collect_preflight_errors(
+        desi_method, tims_method, data_folder, reanalysis_data_folder,
+        output_dir, p_thresh, logfc_thresh, tolerance_mz,
+        resume_rds, rds_folder, rds_folder_reanalysis)
+    alert = _preflight_alert(blocking, advisory)
+    if alert is None:
         return "", {"display": "none"}
-
-    items = [html.Li(e, style={"fontSize": "0.85rem"}) for e in errors]
-    alert = dbc.Alert(
-        children=[
-            html.Strong("入力チェックでエラーが見つかりました:"),
-            html.Ul(items, style={"marginBottom": 0, "marginTop": "5px"}),
-        ],
-        color="danger",
-        dismissable=True,
-        style={"marginBottom": "10px"},
-    )
     return alert, {"display": "block"}
 
 

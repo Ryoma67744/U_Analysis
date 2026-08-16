@@ -582,10 +582,43 @@ def reset_output_defaults(n):
 # デフォルト設定適用
 # ---------------------------------------------------------------------------
 
+# ver56.7: 「適用」の結果を必ず伝える。
+#   欄が空のまま適用すると `x or no_update` が空文字を飲んで何も起きず、
+#   成功メッセージもエラーも出ないため **ボタンが壊れているように見えていた**
+#   (欄に値が入っていれば正常に動く)。
+#   「空欄で既存の指定を潰さない」方針自体は正しいので変えない。変えるのは
+#   「黙って終わる」ことだけ。欄を空へ戻したい場合は明示的な操作を別に用意する。
+def _apply_defaults_status(applied, skipped):
+    """適用した項目数・空欄で見送った項目数から文言を作る。"""
+    if applied and skipped:
+        return html.Span(
+            f"✓ {applied} 項目を適用しました（{skipped} 項目は空欄のため据え置き）",
+            style={"color": "#e67e22"})
+    if applied:
+        return html.Span(f"✓ {applied} 項目を適用しました",
+                         style={"color": "#28a745"})
+    return html.Span("空欄のため適用しませんでした（値を入れてから押してください）",
+                     style={"color": "#e67e22"})
+
+
+def _apply_values(values):
+    """(出力値のタプル, 状況表示) を返す。空欄は no_update のまま。"""
+    outs, applied, skipped = [], 0, 0
+    for v in values:
+        if v and str(v).strip():
+            outs.append(v)
+            applied += 1
+        else:
+            outs.append(no_update)
+            skipped += 1
+    return tuple(outs), _apply_defaults_status(applied, skipped)
+
+
 @callback(
     [Output("data_folder", "value", allow_duplicate=True),
      Output("annotation_path", "value", allow_duplicate=True),
-     Output("output_dir", "value", allow_duplicate=True)],
+     Output("output_dir", "value", allow_duplicate=True),
+     Output("apply_defaults_status", "children", allow_duplicate=True)],
     Input("apply_desi_defaults", "n_clicks"),
     [State("default_desi_data_folder", "value"),
      State("default_annotation_file", "value"),
@@ -594,7 +627,7 @@ def reset_output_defaults(n):
 )
 def apply_desi_defaults(n, desi_folder, annotation_file, desi_output):
     if not n:
-        return no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update
     try:
         save_last_settings({
             "default_desi_data_folder": desi_folder,
@@ -603,13 +636,15 @@ def apply_desi_defaults(n, desi_folder, annotation_file, desi_output):
         })
     except Exception as e:
         warn_user(f"DESI初期設定の保存に失敗: {e}")
-    return desi_folder or no_update, annotation_file or no_update, desi_output or no_update
+    outs, status = _apply_values([desi_folder, annotation_file, desi_output])
+    return outs + (status,)
 
 
 @callback(
     [Output("data_folder", "value", allow_duplicate=True),
      Output("annotation_path", "value", allow_duplicate=True),
-     Output("output_dir", "value", allow_duplicate=True)],
+     Output("output_dir", "value", allow_duplicate=True),
+     Output("apply_defaults_status", "children", allow_duplicate=True)],
     Input("apply_tims_defaults", "n_clicks"),
     [State("default_tims_data_folder", "value"),
      State("default_annotation_csv", "value"),
@@ -618,7 +653,7 @@ def apply_desi_defaults(n, desi_folder, annotation_file, desi_output):
 )
 def apply_tims_defaults(n, tims_folder, annotation_csv, tims_output):
     if not n:
-        return no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update
     try:
         save_last_settings({
             "default_tims_data_folder": tims_folder,
@@ -627,23 +662,26 @@ def apply_tims_defaults(n, tims_folder, annotation_csv, tims_output):
         })
     except Exception as e:
         warn_user(f"TIMS初期設定の保存に失敗: {e}")
-    return tims_folder or no_update, annotation_csv or no_update, tims_output or no_update
+    outs, status = _apply_values([tims_folder, annotation_csv, tims_output])
+    return outs + (status,)
 
 
 @callback(
-    Output("output_dir", "value", allow_duplicate=True),
+    [Output("output_dir", "value", allow_duplicate=True),
+     Output("apply_defaults_status", "children", allow_duplicate=True)],
     Input("apply_output_defaults", "n_clicks"),
     State("default_output_dir", "value"),
     prevent_initial_call=True,
 )
 def apply_output_defaults(n, output_dir):
     if not n:
-        return no_update
+        return no_update, no_update
     try:
         save_last_settings({"default_output_dir": output_dir})
     except Exception as e:
         warn_user(f"出力設定の保存に失敗: {e}")
-    return output_dir or no_update
+    outs, status = _apply_values([output_dir])
+    return outs + (status,)
 
 
 # ---------------------------------------------------------------------------

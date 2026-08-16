@@ -113,9 +113,20 @@ _PATH_TO_TAB = {v: k for k, v in _TAB_TO_PATH.items()}
     Output("main_tabs", "active_tab", allow_duplicate=True),
     Input("url_bar", "pathname"),
     State("main_tabs", "active_tab"),
-    # 初回ロード（リロード）では URL からタブを復元しない（=空のインタラクティブ解析を
-    # 開かせない）。in-session の URL 変化（タブ→URL 同期や back/forward）には追従する。
     # allow_duplicate 出力には prevent_initial_call の指定が必須（True は可、False は不可）。
+    #
+    # ★ ver56.6 の訂正: ここには以前「初回ロード（リロード）では URL からタブを
+    #   復元しない」と書いていたが、**事実ではない**。`prevent_initial_call=True` は
+    #   `dcc.Location` 由来の初回発火は止まらないため、`/app/interactive` のような
+    #   アドレスを直接開くと **裏で解析画面のタブだけが切り替わる**。
+    #
+    #   ただし利用者に見える影響は無い。`_route_app_url_to_analysis` が
+    #   URL を "/" へ正規化してプロジェクト一覧に留めるうえ、一覧から解析画面へ
+    #   入るどの経路も、入る瞬間に開くタブを**明示指定し直す**ため、
+    #   誤ったタブが見せられることはない。
+    #
+    #   実装を変えると挙動変更になり、実害が無いので**説明のほうを実態に合わせた**。
+    #   「deep link でタブを復元したいのか、させたくないのか」を決めるまでは現状維持。
     prevent_initial_call=True,
 )
 def _sync_tab_from_url(pathname, current_active):

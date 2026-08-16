@@ -142,6 +142,11 @@ def _run(trigger, monkeypatch, *, has_results=True, pending=None):
     monkeypatch.setattr(ac, "ctx", _Ctx)
     monkeypatch.setattr(ac, "_output_has_existing_results",
                         lambda target: has_results)
+    # ver56.7: 入力チェックのゲートが上書きゲートより手前にある。ここで見たいのは
+    #   **上書きの扱い**なので、入力は正常だったことにして切り分ける
+    #   （入力チェック側は tests/test_preflight_blocks_execution.py が見る）。
+    monkeypatch.setattr(ac, "_collect_preflight_errors",
+                        lambda *a, **kw: ([], []))
     seen = {}
     monkeypatch.setattr(ac, "save_last_settings", lambda d: seen.update(d))
     kwargs = dict(_RUN_ARGS)

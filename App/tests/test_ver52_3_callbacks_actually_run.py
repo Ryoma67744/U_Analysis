@@ -264,8 +264,10 @@ class TestPreflightValidationRuns:
 
     def _call(self, p_thresh, logfc, tol):
         from app.callbacks import analysis_callbacks as AC
+        # ver56.7: 起動ボタン 3 つ (解析実行 / reduction のみ / reduction 再利用)
+        #   すべてでチェックが走るようになったため n_clicks が 3 つになった。
         return AC.preflight_validation(
-            1, "desi_umap", None,
+            1, 0, 0, "desi_umap", None,
             "/does/not/exist", "", "/does/not/exist",
             p_thresh, logfc, tol,
             False, "", "")
