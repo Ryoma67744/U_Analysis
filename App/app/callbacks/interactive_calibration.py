@@ -721,6 +721,37 @@ def _calibrate_mz_from_pairs(features_list, matched_pairs,
     return result
 
 
+def _build_annotation_map_any(path, ion_mode="Positive", adduct_patterns=None,
+                              tolerance=0.1):
+    """アノテーションファイルを、形式を問わず {m/z: 化合物名} へ読む。
+
+    ver56.5 (C06-2): キャリブレーション節の「アノテーションファイル」欄は
+    形式を選ばせない 1 本の入力欄なのに、読み取り側は MRM/TraceFinder の
+    列構成 (Compound / Parent m/z) でのみ解釈していた。TraceFinder 形式や
+    HMDB 形式の CSV を入れると `_build_mz_to_compound_map` が空を返し、
+    **画面には何も出ないまま**アノテーションが付かない。
+
+    同じ画面の「再アノテーション」は拡張子で読み方を切り替えており同じ
+    ファイルを読めるので、利用者から見ると「片方では読めて片方では読めない」
+    という食い違いになる。ここで両方の読み手を順に試して揃える。
+
+    従来の解釈は変えない: MRM 列構成で読めるならそちらを使い、読めなかった
+    ときだけアノテーション CSV として読み直す。
+    """
+    if not path:
+        return {}
+    mrm_map = _build_mz_to_compound_map(path, tolerance=tolerance)
+    if mrm_map:
+        return mrm_map
+    # Excel は _build_annotation_csv_map がテキストとして開くため対象外
+    if Path(path).suffix.lower() in (".xlsx", ".xls"):
+        return {}
+    return _build_annotation_csv_map(
+        path, ion_mode=ion_mode, adduct_patterns=adduct_patterns,
+        tolerance=tolerance,
+    )
+
+
 def _reannotate_with_calibration(deg_data, corrected_mz_map, mrm_path, tolerance=0.1,
                                   annotation_csv_path=None, ion_mode="Positive",
                                   adduct_patterns=None):
@@ -739,7 +770,12 @@ def _reannotate_with_calibration(deg_data, corrected_mz_map, mrm_path, tolerance
         list[dict] — annotation更新済みDEGデータ
     """
     # アノテーションCSV（TraceFinder/HMDB）を優先、MRMをフォールバック
-    mz_to_compound = _build_mz_to_compound_map(mrm_path, tolerance=tolerance)
+    # ver56.5 (C06-2): mrm_path 側も形式を問わず読む（MRM 列構成で読めなければ
+    # TraceFinder/HMDB として読み直す）。以前はここが MRM 専用だったため、
+    # 「再アノテーション」では読める CSV がキャリブレーションでは黙って無視されていた。
+    mz_to_compound = _build_annotation_map_any(
+        mrm_path, ion_mode=ion_mode, adduct_patterns=adduct_patterns,
+        tolerance=tolerance)
     ann_map = _build_annotation_csv_map(
         annotation_csv_path, ion_mode=ion_mode,
         adduct_patterns=adduct_patterns, tolerance=tolerance,

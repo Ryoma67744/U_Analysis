@@ -44,7 +44,17 @@ def auto_fill_interactive_from_analysis(active_tab, app_state, data_folder, entr
     if active_tab != "interactive" or current_page != "analysis":
         return (no_update,) * 5
     # sub_action_interactive から来た場合は既にセット済み → スキップ
-    if entry_mode in ("sub_project", "shared"):
+    #
+    # ver56.5: "standalone" を追加した。ランディングの「インタラクティブ解析」
+    # ボタンは entry_mode="standalone" (= 利用者が自分でプロジェクトを選ぶ) を
+    # 書いてタブを切り替えるが、同じタブ切替でこのコールバックも走り、直前の
+    # 解析の情報で後勝ち上書きしていた。entry_mode が "sub_project" になると
+    # プロジェクト選択欄に display:none が掛かるため、**選び直す UI ごと消える**。
+    # app_state は session Store でタブを閉じるまで残るので、ホームに戻って
+    # 押し直しても毎回同じ上書きが起き、復帰しなかった。
+    # さらに "sub_project" は auto_load_on_rds_ready の実行条件も満たすため、
+    # 「手動 standalone では自動実行しない」という宣言も破られていた。
+    if entry_mode in ("sub_project", "shared", "standalone"):
         return (no_update,) * 5
     # 解析が実行されていない場合はスキップ
     if not app_state or not app_state.get("full_output_dir"):
@@ -53,12 +63,18 @@ def auto_fill_interactive_from_analysis(active_tab, app_state, data_folder, entr
     if app_state.get("is_running"):
         return (no_update,) * 5
 
+    project_id = app_state.get("project_id") or ""
+    sub_project_id = app_state.get("sub_project_id") or ""
     return (
         app_state["full_output_dir"],
         data_folder or no_update,
-        "sub_project",
-        app_state.get("project_id") or no_update,
-        app_state.get("sub_project_id") or no_update,
+        # ver56.5: プロジェクトに紐づかない解析 (プロジェクト未選択で実行) では
+        # project_id が空になる。それでも "sub_project" を名乗ると、選択された
+        # プロジェクトが無いのに選択欄だけ消えて選び直せなくなる。
+        # 実際にプロジェクトが決まったときだけ名乗る。
+        "sub_project" if project_id else no_update,
+        project_id or no_update,
+        sub_project_id or no_update,
     )
 
 
