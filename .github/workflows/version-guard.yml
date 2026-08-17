@@ -1,0 +1,63 @@
+# バージョン採番の衝突を「マージ前に」検出する（ver56.9 で新設）。
+#
+# 背景: PR #154 と PR #155 が同じ main から分岐して両方が ver56.4 を名乗り、
+# 先にマージされなかった側がバージョンを後退させる状態になった。同種の重複は
+# ver38.1 / ver43.0 でも起きている。原因は複数のセッションが並行して main から
+# 分岐し、それぞれ作業開始時点の番号を採ること。
+#
+# スコープを「バージョン検査」に絞ってあるのは意図的で、全テスト (約 1,700 件) を
+# CI で回すのは今は見送っている。requirements.txt の numpy / pyarrow に上限ピンが
+# 無く、最新版では既存テスト 11 件が落ちるため、そのまま CI 化すると初日から
+# 赤いままになる。依存のピン留めを片付けてから別途この workflow に足すこと。
+
+name: version-guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+# 同じ PR に連続で push されたら古い実行を打ち切る
+concurrency:
+  group: version-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  version-guard:
+    name: APP_VERSION と CHANGELOG の整合性
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # base ブランチと比較するため全履歴を取る
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: base ブランチの version.py を取り出す
+        env:
+          # ブランチ名を run の中に直接展開せず環境変数で渡す
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$BASE_REF"
+          git show "origin/${BASE_REF}:App/app/version.py" > "${RUNNER_TEMP}/base_version.py"
+
+      - name: APP_VERSION が base より大きいことを確認
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/check_version_bump.py \
+            "${RUNNER_TEMP}/base_version.py" \
+            App/app/version.py
+
+      - name: CHANGELOG との整合性を確認
+        run: |
+          set -euo pipefail
+          # App/tests/conftest.py が numpy / pandas を import するため最小限だけ入れる
+          python3 -m pip install --quiet --disable-pip-version-check pytest numpy pandas
+          cd App && python3 -m pytest tests/test_version_consistency.py -v
