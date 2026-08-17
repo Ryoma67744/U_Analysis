@@ -23,7 +23,9 @@ from typing import Callable, Optional
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from app.services.scils_converter import _available_memory_gb, _unique_path
+from app.services.scils_converter import (
+    _PER_CHUNK_META_BYTES, _available_memory_gb, _unique_path,
+)
 
 logger = logging.getLogger("msi.parquet_repack")
 
@@ -44,9 +46,9 @@ _HEADROOM_GB = 1.0
 # 再パックは Dash ワーカーとは別プロセスで走り、かつ start_analysis_process が
 # 起動前に「空き 10GB 以上」を確認済みのため（二重ゲート）。
 _AVAIL_FRACTION = 0.85
-# column chunk 1 件あたりの解析済みフッタ常駐バイト数。
-# 2,700 列 × row group 20 / 400 / 1,000 で実測: 1,185 / 1,015 / 1,010 B/chunk。
-_PER_CHUNK_META_BYTES = 1024
+# column chunk 1 件あたりの解析済みフッタ常駐バイト数 (_PER_CHUNK_META_BYTES) は
+# ★ ver56.8 で scils_converter へ移設した（変換側の Phase A フッタ見積りでも使うため）。
+# 実測値の根拠は移設先のコメントを参照。ここでは import して従来どおり使う。
 # フッタの on-disk サイズ → 解析後 RAM の膨張率。同じ実測で 8.25 / 7.64 / 7.57 倍。
 # 実ファイルは列名がさらに長く bytes/chunk が約 2 倍のため、
 # _PER_CHUNK_META_BYTES 側との max を採って安全側に倒す。

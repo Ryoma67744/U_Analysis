@@ -669,6 +669,15 @@ def _move_into_folder(src: Path, dst_folder: Path) -> Path:
 # 一時 Parquet は変換後に必ず削除される使い捨て。保存コストが無いので zstd ではなく
 # 高速・相互運用性の高い snappy を使い、Phase A 書込／Phase B 読込の CPU を削減する。
 _TEMP_PARQUET_COMPRESSION = "snappy"
+# 一時 Parquet の row group 行数。この値が一時 Parquet の row group 数
+# (= ceil(n_mz / この値)) を決め、Phase B の間ずっと常駐するフッタ量に直結するため、
+# メモリ見積り (_phase_a_footer_bytes) と Phase A の書き込みで**同じ定数**を参照する。
+# 片方だけ変えると見積りが黙って外れる。
+_TEMP_PARQUET_ROW_GROUP_SIZE = 512
+# pyarrow フォールバック時に CSV を 1 度に読むバイト数。1 行が「spot 数 × 約 11 バイト」
+# なので、実データ規模ではこのブロックに十数行しか入らない（＝バッチが大量に出る）。
+# テストから小さくして「バッチを束ねて row group にする」経路を検証できるよう定数化する。
+_CSV_READ_BLOCK_BYTES = 32 << 20
 
 
 def _csv_to_temp_parquet(
@@ -720,7 +729,8 @@ def _csv_to_temp_parquet(
         #   守っておらず、sink_parquet 内部の任意の TypeError を拾って数 GB を
         #   非ストリーミングで全メモリ展開する経路に落とすだけだった (12 GB
         #   コンテナでは OOM)。握り潰さずそのまま投げる。
-        lf.sink_parquet(str(temp_parquet), compression=_TEMP_PARQUET_COMPRESSION, row_group_size=512)
+        lf.sink_parquet(str(temp_parquet), compression=_TEMP_PARQUET_COMPRESSION,
+                        row_group_size=_TEMP_PARQUET_ROW_GROUP_SIZE)
     else:
         logger.info("Phase A エンジン: pyarrow (batched fallback)")
         import pyarrow as pa
@@ -728,19 +738,44 @@ def _csv_to_temp_parquet(
         import pyarrow.parquet as pq
 
         column_types = {h: pa.float64() for h in int_headers}
-        read_opts = pacsv.ReadOptions(block_size=32 << 20, skip_rows=skip)
+        read_opts = pacsv.ReadOptions(block_size=_CSV_READ_BLOCK_BYTES, skip_rows=skip)
         parse_opts = pacsv.ParseOptions(delimiter=delim)
         convert_opts = pacsv.ConvertOptions(column_types=column_types)
         reader = pacsv.open_csv(str(intensity_path), read_opts, parse_opts, convert_opts)
         first_batch = reader.read_next_batch()
         arrow_schema = pa.schema([(n, pa.float64()) for n in first_batch.schema.names])
+        # ★ ver56.8: 以前は `w.write_batch(batch)` を素で繰り返していたが、pyarrow は
+        #   **1 回の write_batch = 1 row group** として書き出す。ReadOptions(block_size=32MB)
+        #   に対し 1 行は「spot 数 × 約 11 バイト」なので、実データ規模では 1 バッチが
+        #   十数行にしかならず、row group 数が polars 経路 (row_group_size=512) の
+        #   数十倍に膨らんでいた。column chunk 数 = row group 数 × spot 数 が
+        #   そのまま Phase B 中のフッタ常駐量になるため、SCILS_NO_POLARS=1 の経路だけ
+        #   メモリ見積り (_phase_a_footer_bytes) が成り立たない状態だった。
+        #   閾値行数まで束ねてから 1 row group として書き、両エンジンを揃える。
         with pq.ParquetWriter(str(temp_parquet), arrow_schema, compression=_TEMP_PARQUET_COMPRESSION) as w:
-            w.write_batch(first_batch)
+            pending: list = []
+            pending_rows = 0
+
+            def _flush() -> None:
+                nonlocal pending, pending_rows
+                if not pending:
+                    return
+                table = pa.Table.from_batches(pending, schema=arrow_schema)
+                # row_group_size は必ず明示する。None 既定は 1,048,576 行で無言分割する。
+                w.write_table(table, row_group_size=table.num_rows)
+                pending, pending_rows = [], 0
+
+            batch = first_batch
             while True:
+                pending.append(batch)
+                pending_rows += batch.num_rows
+                if pending_rows >= _TEMP_PARQUET_ROW_GROUP_SIZE:
+                    _flush()
                 try:
-                    w.write_batch(reader.read_next_batch())
+                    batch = reader.read_next_batch()
                 except StopIteration:
                     break
+            _flush()
 
 
 # peak-list の m/z と Intensity の m/z を突き合わせる許容（Da）
@@ -839,24 +874,53 @@ def peaklist_skip_message(skipped: dict) -> str:
             + " を除外しました（この行の化合物名は付与されません）。")
 
 
+def _estimate_conversion_need_gb(
+    *,
+    csv_bytes: int,
+    n_spots: int,
+    itemsize: int = 4,
+) -> tuple[float, int]:
+    """Intensity CSV のサイズから変換のピークメモリ (GB) と推定 m/z 数を返す。
+
+    ★ ver56.8: 以前はここが `CSV サイズ × 1.5 + 1GB` という**比例式**だった。これは
+    CSV 全体をメモリに展開していた ver4.23 当時の名残で、現在の Phase A は polars の
+    `sink_parquet` / pyarrow の逐次書き出しで**全経路ストリーミング**、ピーク RAM は
+    CSV サイズに比例しない。比例式のまま `mem_limit: 12g` と組み合わさった結果、
+    `(12 - 1) / 1.5 = 7.3GB` を超える Intensity CSV は**空きがいくらあっても必ず
+    弾かれる**という構造的な壁になっていた（9.5GB の CSV で実際に発生）。
+
+    後段の `_plan_row_groups` と**同じ U 字コストモデル**で見積る形に一本化する。
+    n_mz は Phase A 後まで確定しないので「CSV 1 セルあたり平均バイト数」から逆算する。
+    誤差が大きいので戻り値は早期却下の閾値にのみ使い、レイアウト決定には使わない。
+
+    ファイル I/O を含まない純関数なので、巨大 CSV を用意せずに単体テストできる。
+    """
+    n_cols = max(1, n_spots) + 1                        # m/z 列 + spot 列
+    n_mz_est = max(1, int(csv_bytes / (n_cols * _AVG_CSV_CELL_BYTES)))
+    _, cost_bytes = _min_conversion_cost_bytes(
+        n_spots=n_spots, n_mz=n_mz_est, itemsize=itemsize)
+    return cost_bytes / (1024 ** 3) + _STREAMING_OVERHEAD_GB, n_mz_est
+
+
 def _check_conversion_memory(
     intensity_path: Path,
     *,
     n_spots_hint: int = 0,
     itemsize: int = 4,
 ) -> None:
-    """変換前の簡易メモリチェック。空きメモリが Intensity CSV に対して著しく不足する
-    場合は明示的に RuntimeError を送出し、無言の OOM（途中終了＋0byte 一時ファイル
-    残留）を避ける。psutil 不在環境ではスキップ。
+    """変換前の簡易メモリチェック。推定した規模でも明らかに載らない場合は明示的に
+    RuntimeError を送出し、無言の OOM（途中終了＋0byte 一時ファイル残留）を避ける。
+    メモリ量が取得できない環境ではスキップ。
 
-    Phase A は数分かかるため、全行 1 row group の出力バッファが明らかに載らない場合も
-    ここで落とす。ただし n_mz は Phase A 後まで確定しないので CSV サイズからの粗い概算に
-    留め、「絶望的な場合の早期却下」にのみ使う（レイアウト決定には使わない）。
+    Phase A は数分かかるので、そこに入る前に落とせる価値がある。ただし n_mz は
+    Phase A 後まで確定せず推定値は粗いため、**楽観側に倒して境界例は通す**。
+    確定した n_mz での判断は `_plan_row_groups` が行う（そちらは row group 分割で
+    救うこともできるので、ここで先に落とすと救えるケースまで殺してしまう）。
 
     Parameters
     ----------
     n_spots_hint : int
-        spot 数の上限見積り（`len(int_headers) - 1`）。0 なら出力バッファの概算をスキップ。
+        spot 数の上限見積り（`len(int_headers) - 1`）。0 なら見積れないのでスキップ。
     itemsize : int
         出力 m/z 列 1 要素のバイト数（float32 なら 4）。
     """
@@ -867,33 +931,27 @@ def _check_conversion_memory(
     csv_gb = csv_bytes / (1024 ** 3)
     if csv_gb < 0.5:
         return  # 小さいデータはメモリチェック不要
+    if n_spots_hint <= 0:
+        return  # spot 数が読めなければ見積れない。判定は _plan_row_groups に委ねる
 
-    avail_gb = _available_memory_gb()
+    avail_gb, source = _available_memory_gb(with_source=True)
     if avail_gb is None:
         return
 
-    need_gb = csv_gb * 1.5 + 1.0
-
-    # 全行 1 row group の出力バッファ概算。n_mz は Phase A 後まで不明なので
-    # 「CSV 1 セルあたり平均バイト数」から逆算する（誤差は大きい）。
-    buf_gb = 0.0
-    if n_spots_hint > 0:
-        n_cols = n_spots_hint + 1                       # m/z 列 + spot 列
-        n_mz_est = max(1, int(csv_bytes / (n_cols * _AVG_CSV_CELL_BYTES)))
-        buf_gb = n_mz_est * n_spots_hint * itemsize / (1024 ** 3)
-        # Phase A / Phase B は同時に走らないので、必要量は両者の最大値
-        need_gb = max(need_gb, buf_gb + _PHASE_A_FOOTER_MARGIN_GB)
+    need_gb, n_mz_est = _estimate_conversion_need_gb(
+        csv_bytes=csv_bytes, n_spots=n_spots_hint, itemsize=itemsize)
 
     logger.info(
-        "変換メモリ確認: Intensity CSV %.2f GB / 空き %.2f GB（目安 %.1f GB 以上"
-        "%s）",
-        csv_gb, avail_gb, need_gb,
-        f" / 出力バッファ概算 {buf_gb:.1f} GB" if buf_gb else "",
+        "変換メモリ確認: Intensity CSV %.2f GB / 空き %.2f GB (取得元 %s) / "
+        "推定 %s spot × %s m/z → 必要 %.1f GB",
+        csv_gb, avail_gb, source, f"{n_spots_hint:,}", f"{n_mz_est:,}", need_gb,
     )
+    # ここは「推定規模でも明らかに載らない」ケースの早期却下だけを担うので、
+    # _RG_AVAIL_FRACTION を掛けて厳しくはしない。
     if avail_gb < need_gb:
         raise RuntimeError(
-            f"空きメモリが不足しています（Intensity CSV {csv_gb:.1f} GB に対し空き "
-            f"{avail_gb:.1f} GB）。約 {need_gb:.1f} GB 以上の空きが必要です。"
+            f"空きメモリが不足しています（推定 {n_spots_hint:,} spot × {n_mz_est:,} m/z "
+            f"に対し空き {avail_gb:.1f} GB）。約 {need_gb:.1f} GB 以上の空きが必要です。"
             "他の解析・変換の完了を待つか、サーバのメモリを増やしてください。"
         )
 
@@ -913,53 +971,164 @@ def _check_conversion_memory(
 # 実データ規模（203,078 spot × 2,700 m/z）では 200 行/row group が約 3.8GB、
 # 全行 1 つが約 2.2GB で、全行 1 つのほうが軽い。
 _RG_METADATA_BYTES = 6.4 * 1024 ** 2
-# Phase A の一時 parquet のフッタは Phase B の間ずっと常駐する（pf を保持するため）。
-# n_mz 行 × n_spots 列 ÷ row_group_size=512 で column chunk が百万単位になり、
-# 実データ規模で約 1.15GB。計上しないと 1GB 以上見積りを外す。
-_PHASE_A_FOOTER_MARGIN_GB = 1.5
+# column chunk 1 件あたりの「解析済みフッタ」常駐バイト数。
+# 2,700 列 × row group 20 / 400 / 1,000 で実測: 1,185 / 1,015 / 1,010 B/chunk。
+# ★ ver56.8: parquet_repack から移設（依存方向が parquet_repack → 本モジュールなので
+#   ここが単一の出所。あちらは本モジュールから import する）。
+# ※ 上の _RG_METADATA_BYTES とは**別物**なので統合しないこと。
+#   _RG_METADATA_BYTES = 書き手 (ParquetWriter) が close() まで抱える row group 単位の量、
+#   _PER_CHUNK_META_BYTES = 読み手 (ParquetFile) が保持する解析済みフッタの chunk 単位の量。
+_PER_CHUNK_META_BYTES = 1024
 # 空きメモリのうち変換に使ってよい割合（残りは他ユーザーの解析・アプリ本体のため）
 _RG_AVAIL_FRACTION = 0.6
 # これ以上小さく割っても意味がない下限（メタデータ側が支配的になる）
 _RG_MIN_ROWS = 1024
 # CSV 1 セルあたりの平均バイト数（早期チェックの粗い概算用）
 _AVG_CSV_CELL_BYTES = 11
+# ストリーミング処理そのものが使う分（Python + numpy + pyarrow の常駐、polars の
+# ストリーミングチャンク、CSV リーダのブロックバッファ）。
+# ★ ver56.8: **CSV サイズに比例させないこと**が今回の修正の要点。ここを
+#   「CSV × 係数」に戻すと、大きい CSV が空き容量と無関係に弾かれる欠陥が再発する。
+_STREAMING_OVERHEAD_GB = 1.0
 
 
-def _available_memory_gb() -> Optional[float]:
+def _phase_a_footer_bytes(*, n_spots: int, n_mz: int) -> float:
+    """Phase A の一時 Parquet の解析済みフッタが Phase B 中ずっと占める量 (bytes)。
+
+    Phase B は `pf = pq.ParquetFile(temp_parquet)` を握ったまま chunk 読みするので、
+    このフッタは最後まで解放されない。column chunk 数は
+    `ceil(n_mz / _TEMP_PARQUET_ROW_GROUP_SIZE) × (n_spots + 1)` で、実データ規模
+    （203,078 spot × 2,700 m/z）では約 120 万 chunk = 約 1.2GB になる。
+
+    ★ ver56.8: 以前は `_PHASE_A_FOOTER_MARGIN_GB = 1.5` という**固定値**だった。
+    実データ規模ではたまたま近い値だが、この量は n_mz にほぼ比例するので、m/z 数の
+    多いデータでは大幅な過小評価（＝本物の OOM を検出できない）になり、逆に小さい
+    データでは 1.5GB を丸ごと無駄に予約していた。実際の chunk 数から算出する。
+    """
+    n_rg = -(-max(1, n_mz) // _TEMP_PARQUET_ROW_GROUP_SIZE)
+    return float(n_rg * (max(1, n_spots) + 1) * _PER_CHUNK_META_BYTES)
+
+
+# cgroup の現在使用量。v2 / v1 の順に試す。テストから差し替えられるよう定数化する。
+_CGROUP_CURRENT_PATHS = ("/sys/fs/cgroup/memory.current",
+                         "/sys/fs/cgroup/memory/memory.usage_in_bytes")
+# cgroup の内訳統計。inactive_file（＝すぐ回収できるページキャッシュ）を読むために使う。
+_CGROUP_STAT_PATHS = ("/sys/fs/cgroup/memory.stat",
+                      "/sys/fs/cgroup/memory/memory.stat")
+
+
+def _container_limit_gb() -> Optional[float]:
+    """コンテナ (cgroup) のメモリ上限 (GB)。取得できなければ None。
+
+    実装は analysis_runner にあるものを再利用する。ここを 1 段挟んでおくと、
+    テストが analysis_runner の import 連鎖（config → dotenv …）に引きずられずに
+    上限値を差し替えられる。
+    """
+    try:
+        from app.services.analysis_runner import _container_memory_limit_gb
+        return _container_memory_limit_gb()
+    except Exception:
+        return None
+
+
+def _reclaimable_cache_bytes() -> float:
+    """cgroup の memory.stat から「すぐ回収できるページキャッシュ」を返す (bytes)。
+
+    読めなければ 0.0（＝補正なし）。
+    """
+    for path in _CGROUP_STAT_PATHS:
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            key, _, value = line.partition(" ")
+            if key == "inactive_file":
+                try:
+                    return float(int(value.strip()))
+                except ValueError:
+                    return 0.0
+        return 0.0
+    return 0.0
+
+
+def _available_memory_gb(*, with_source: bool = False):
     """変換に使える空きメモリ (GB)。cgroup 上限を優先し、無ければ psutil にフォールバック。
 
     psutil.virtual_memory().available はホストの /proc/meminfo をそのまま返し cgroup を
     見ないため、大きなホスト上のコンテナでは「コンテナはほぼ満杯なのにチェックを通る」。
     analysis_runner に既にある cgroup 読み取りを再利用する。
+
+    ★ ver56.8: cgroup v2 の `memory.current` は**回収可能なページキャッシュを含む**。
+    数 GB の CSV / Parquet を読み書きした直後はその分だけ空きが小さく見え、再試行する
+    ほど弾かれやすくなっていた（キャッシュは実際には解放できるので OOM の要因ではない）。
+    `memory.stat` の `inactive_file` を空きへ戻して補正する。
+
+    `with_source=True` を渡すと `(GB, 取得元)` のタプルを返す。取得元をログに出せると、
+    「表示された空きがコンテナ基準なのかホスト基準なのか」を後から切り分けられる。
+    既定の戻り値は float のままなので、既存の呼び出し (parquet_repack.budget_bytes) は
+    そのまま動く。
     """
-    limit_gb = None
-    try:
-        from app.services.analysis_runner import _container_memory_limit_gb
-        limit_gb = _container_memory_limit_gb()
-    except Exception:
-        limit_gb = None
+    def _ret(gb: Optional[float], source: str):
+        return (gb, source) if with_source else gb
+
+    limit_gb = _container_limit_gb()
 
     if limit_gb is not None:
-        # cgroup v2 の現在使用量が読めれば「上限 - 使用中」を空きとする
-        for path in ("/sys/fs/cgroup/memory.current",
-                     "/sys/fs/cgroup/memory/memory.usage_in_bytes"):
+        # cgroup v2 の現在使用量が読めれば「上限 - 使用中 + 回収可能キャッシュ」を空きとする
+        for path in _CGROUP_CURRENT_PATHS:
             try:
                 used_gb = int(Path(path).read_text(encoding="utf-8").strip()) / (1024 ** 3)
             except (OSError, ValueError):
                 continue
-            return max(0.0, limit_gb - used_gb)
+            cache_gb = _reclaimable_cache_bytes() / (1024 ** 3)
+            avail_gb = limit_gb - used_gb + cache_gb
+            # キャッシュを足し戻しても上限は超えられない
+            avail_gb = min(limit_gb, max(0.0, avail_gb))
+            return _ret(avail_gb, "cgroup+cache" if cache_gb else "cgroup")
 
     try:
         import psutil
-        return psutil.virtual_memory().available / (1024 ** 3)
+        # psutil の available は既に回収可能キャッシュを含む（cgroup ではなくホスト基準）
+        return _ret(psutil.virtual_memory().available / (1024 ** 3), "psutil(host)")
     except Exception:
-        return None
+        return _ret(None, "unknown")
 
 
 def _row_group_cost_bytes(rg_rows: int, *, n_spots: int, n_mz: int, itemsize: int) -> float:
-    """1 row group を rg_rows 行にしたときの Phase B ピークメモリ概算 (bytes)"""
+    """1 row group を rg_rows 行にしたときの Phase B ピークメモリ概算 (bytes)
+
+    ★ ver56.8: Phase A の一時 Parquet フッタ（Phase B の間ずっと常駐）を含める。
+    以前は呼び出し側で予算から固定 1.5GB を引いていたが、この量は実際には
+    n_mz × n_spots に比例するので、コスト側で実量を計上する形に改めた。
+    """
     n_groups = -(-n_spots // max(1, rg_rows))
-    return n_mz * rg_rows * itemsize + _RG_METADATA_BYTES * n_groups
+    return (n_mz * rg_rows * itemsize
+            + _RG_METADATA_BYTES * n_groups
+            + _phase_a_footer_bytes(n_spots=n_spots, n_mz=n_mz))
+
+
+def _min_conversion_cost_bytes(
+    *, n_spots: int, n_mz: int, itemsize: int,
+) -> tuple[int, float]:
+    """row group をどう刻んでもこれ以上は減らせないピークメモリと、その行数を返す。
+
+    コストは rg に対して U 字（`_row_group_cost_bytes` の注記参照）なので、理論最小
+    `rg* = sqrt(meta * n_spots / (itemsize * n_mz))` の近傍と両端を候補に取って選ぶ。
+
+    事前チェック（推定 n_mz）と最終判定（確定 n_mz）の**両方がこの 1 つのモデルを
+    共有する**ことが要点。ver56.7 以前は前者が `CSV サイズ × 1.5` という別式を持ち、
+    後者が救えるケースまで先に弾いていた。
+    """
+    n_spots = max(1, int(n_spots))
+    n_mz = max(1, int(n_mz))
+    ideal = int((_RG_METADATA_BYTES * n_spots / (itemsize * n_mz)) ** 0.5) or 1
+    candidates = {1, n_spots, ideal, max(1, ideal // 2), min(n_spots, ideal * 2), _RG_MIN_ROWS}
+    candidates = {min(n_spots, max(1, c)) for c in candidates}
+    best = min(candidates, key=lambda c: _row_group_cost_bytes(
+        c, n_spots=n_spots, n_mz=n_mz, itemsize=itemsize))
+    return best, _row_group_cost_bytes(
+        best, n_spots=n_spots, n_mz=n_mz, itemsize=itemsize)
 
 
 def _plan_row_groups(
@@ -990,7 +1159,9 @@ def _plan_row_groups(
         logger.info("row group 計画: 空きメモリ不明のため %s (%d 行) をそのまま採用", policy, want)
         return want, policy, warns
 
-    budget = max(0.0, (avail_gb - _PHASE_A_FOOTER_MARGIN_GB)) * _RG_AVAIL_FRACTION * 1024 ** 3
+    # ★ ver56.8: Phase A フッタは予算から固定 1.5GB を引くのではなく、
+    #   _row_group_cost_bytes がコストとして実量を計上する。
+    budget = max(0.0, avail_gb) * _RG_AVAIL_FRACTION * 1024 ** 3
     want_cost = _row_group_cost_bytes(want, n_spots=n_spots, n_mz=n_mz, itemsize=itemsize)
 
     if want_cost <= budget:
@@ -1000,13 +1171,9 @@ def _plan_row_groups(
         )
         return want, policy, warns
 
-    # 予算超過 → U 字の最小点を探す。理論最小は rg* = sqrt(meta * n_spots / (itemsize * n_mz))
-    ideal = int((_RG_METADATA_BYTES * n_spots / (itemsize * n_mz)) ** 0.5) or 1
-    candidates = {1, n_spots, ideal, max(1, ideal // 2), min(n_spots, ideal * 2), _RG_MIN_ROWS}
-    candidates = {min(n_spots, max(1, c)) for c in candidates}
-    best = min(candidates, key=lambda c: _row_group_cost_bytes(
-        c, n_spots=n_spots, n_mz=n_mz, itemsize=itemsize))
-    best_cost = _row_group_cost_bytes(best, n_spots=n_spots, n_mz=n_mz, itemsize=itemsize)
+    # 予算超過 → U 字の最小点を探す（事前チェックと同じモデルを共有する）
+    best, best_cost = _min_conversion_cost_bytes(
+        n_spots=n_spots, n_mz=n_mz, itemsize=itemsize)
 
     if best_cost > budget:
         raise RuntimeError(
