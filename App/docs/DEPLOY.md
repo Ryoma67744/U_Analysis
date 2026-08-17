@@ -710,7 +710,7 @@ docker exec -it msi-analysis-app bash
 docker exec msi-analysis-app Rscript -e "library(Seurat); cat('OK\n')"
 ```
 
-### メモリ不足
+### メモリ不足（解析）
 
 解析開始時に「空きメモリが不足しています（残 X.X GB）」と表示される場合：
 
@@ -723,6 +723,31 @@ free -h
 #   さくらVPS 16GB プラン: mem_limit: 10g
 #   さくらVPS 32GB プラン: mem_limit: 24g
 ```
+
+### メモリ不足（SCiLS 変換）
+
+変換モーダルに「変換エラー: 空きメモリが不足しています（推定 N spot × M m/z に対し
+空き X.X GB）」と出る場合、まずログで**実際の見積り内訳**を確認する。
+
+```bash
+grep "変換メモリ確認" Data/Other/logs/msi_app.log | tail -5
+# 例: 変換メモリ確認: Intensity CSV 9.50 GB / 空き 11.80 GB (取得元 cgroup+cache)
+#     / 推定 203,078 spot × 4,566 m/z → 必要 3.0 GB
+```
+
+読み方（ver56.8 以降）:
+
+- **取得元** — `cgroup` / `cgroup+cache` ならコンテナ基準（`mem_limit` が上限）、
+  `psutil(host)` ならホスト全体の空きを見ている。前者なら `mem_limit` の調整が効く。
+- **必要 X GB** — Phase B の出力バッファ + ParquetWriter のメタデータ + 一時 Parquet の
+  フッタ常駐分。**Intensity CSV のサイズには比例しない**（Phase A はストリーミングのため）。
+  m/z 数と spot 数の積で決まるので、必要量が大きいときは m/z 数を絞って Export し直すのが効く。
+- ここは推定値による早期却下のみを行う。実際のレイアウト決定と最終判定は Phase A 完了後に
+  `row group 計画:` の行で行われる。
+
+> ver56.7 以前は必要量を「CSV サイズ × 1.5 + 1GB」で見積っていたため、`mem_limit: 12g` では
+> **7.3GB を超える Intensity CSV が空き容量と無関係に必ず弾かれていた**。この症状に当たった
+> 場合はアプリを ver56.8 以降へ更新すること（`mem_limit` を上げても根本解決にはならない）。
 
 ### ディスク容量不足
 

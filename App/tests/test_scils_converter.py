@@ -530,11 +530,15 @@ class TestRowGroupLayout:
         3 m/z × 5 spot・float32 なので、全行 1 つ = 3*5*4 + meta*1 = 61 バイト、
         1 行/group = 3*1*4 + meta*5 = 17 バイト（meta を 1 バイトに縮めた場合）。
         予算を 30 バイトに固定すると必ず前者だけが弾かれる。
+
+        ★ ver56.8: Phase A フッタは「予算から固定 GB を引く」のをやめてコスト側に
+        移したので、_PHASE_A_FOOTER_MARGIN_GB ではなく _PER_CHUNK_META_BYTES を
+        0 にして同じ意図（フッタ項を無視して分割だけを見る）を作る。
         """
-        monkeypatch.setattr(sc, "_PHASE_A_FOOTER_MARGIN_GB", 0.0)
+        monkeypatch.setattr(sc, "_PER_CHUNK_META_BYTES", 0)
         monkeypatch.setattr(sc, "_RG_AVAIL_FRACTION", 1.0)
         monkeypatch.setattr(sc, "_RG_METADATA_BYTES", 1.0)
-        monkeypatch.setattr(sc, "_available_memory_gb", lambda: 30 / 1024 ** 3)
+        monkeypatch.setattr(sc, "_available_memory_gb", lambda **kw: 30 / 1024 ** 3)
         data_dir = tmp_path / "scils"
         _make_basic_pair(data_dir)
         result = sc.convert_scils_to_parquet(
@@ -547,12 +551,12 @@ class TestRowGroupLayout:
 
     def test_guard_raises_when_hopeless(self, monkeypatch):
         """どう分割しても載らない場合は明示エラー（フォールバックで誤魔化さない）。"""
-        monkeypatch.setattr(sc, "_available_memory_gb", lambda: 2.0)   # 予算 0.3 GB
+        monkeypatch.setattr(sc, "_available_memory_gb", lambda **kw: 2.0)  # 予算 1.2 GB
         with pytest.raises(RuntimeError, match="メモリが不足"):
             sc._plan_row_groups(n_spots=1_000_000, n_mz=100_000, itemsize=8, requested=None)
 
     def test_plan_prefers_single_when_it_fits(self, monkeypatch):
-        monkeypatch.setattr(sc, "_available_memory_gb", lambda: 8.0)
+        monkeypatch.setattr(sc, "_available_memory_gb", lambda **kw: 8.0)
         rg, policy, warns = sc._plan_row_groups(
             n_spots=5_000, n_mz=100, itemsize=4, requested=None)
         assert (rg, policy, warns) == (5_000, "single", [])
@@ -563,9 +567,14 @@ class TestRowGroupLayout:
         row group を細かくすると ParquetWriter が抱えるメタデータが増えるため、
         単調に減らすと逆に悪化する。理論最小 rg* = sqrt(meta * n_spots / (itemsize * n_mz))
         の近傍が選ばれること、かつ結果が予算内であることを確認する。
+
+        ★ ver56.8: 規模を 200,000 spot × 5,000 m/z へ落とした。旧値
+        (1,000,000 × 100,000) は Phase A の一時 Parquet フッタだけで約 200GB になり
+        （196 row group × 100 万列）、どう刻んでも載らない＝送出が正しい領域なので、
+        U 字最小化を確かめる題材として成立しなくなったため。
         """
-        monkeypatch.setattr(sc, "_available_memory_gb", lambda: 12.0)  # 予算 6.3 GB
-        n_spots, n_mz, itemsize = 1_000_000, 100_000, 8
+        monkeypatch.setattr(sc, "_available_memory_gb", lambda **kw: 12.0)  # 予算 7.2 GB
+        n_spots, n_mz, itemsize = 200_000, 5_000, 8
         rg, policy, warns = sc._plan_row_groups(
             n_spots=n_spots, n_mz=n_mz, itemsize=itemsize, requested=None)
         assert policy == "single-fallback" and warns
@@ -639,6 +648,185 @@ class TestRowGroupLayout:
         assert pq.ParquetFile(out).metadata.num_rows == 5
         # 中途半端な一時ファイルも残っていない
         assert sorted(p.name for p in out.parent.iterdir()) == ["sample.parquet"]
+
+
+_GB = 1024 ** 3
+
+
+class TestConversionMemoryGuard:
+    """変換前メモリチェックの番人（ver56.8）。
+
+    ver56.7 以前の `need_gb = CSV サイズ × 1.5 + 1GB` は、Phase A が全経路
+    ストリーミングになった後も残っていた比例式で、`mem_limit: 12g` と組み合わさると
+    **7.3GB を超える Intensity CSV が空き容量と無関係に必ず弾かれる**という
+    構造的な壁になっていた（9.5GB の CSV / 空き 11.8GB で実際に発生）。
+    ここは「実ケースが通ること」と「本当に載らないものは弾くこと」を同時に固定する。
+    """
+
+    # 実際に失敗した条件。CSV 9.5GB・空き 11.8GB（12GB コンテナ）。
+    REAL_CSV_BYTES = int(9.5 * _GB)
+    REAL_N_SPOTS = 203_078
+    REAL_AVAIL_GB = 11.8
+
+    def _write_fake_csv(self, tmp_path, size_bytes: int) -> Path:
+        """指定サイズに見える疎ファイルを作る（実ディスクはほぼ消費しない）。"""
+        p = tmp_path / "fake_Intensity.csv"
+        with open(p, "wb") as f:
+            f.truncate(size_bytes)
+        return p
+
+    def test_real_world_case_passes(self, tmp_path, monkeypatch):
+        """9.5GB CSV × 空き 11.8GB は通る。これが今回の不具合そのもの。"""
+        monkeypatch.setattr(
+            sc, "_available_memory_gb", lambda **kw: (self.REAL_AVAIL_GB, "test"))
+        csv_path = self._write_fake_csv(tmp_path, self.REAL_CSV_BYTES)
+        # 送出しないことが全て（旧実装はここで「約 15.2 GB 必要」と送出していた）
+        sc._check_conversion_memory(
+            csv_path, n_spots_hint=self.REAL_N_SPOTS, itemsize=4)
+
+    def test_real_world_estimate_is_far_below_old_formula(self):
+        """実ケースの見積りが旧式 15.25GB から大きく下がり、空きに収まること。"""
+        need_gb, n_mz_est = sc._estimate_conversion_need_gb(
+            csv_bytes=self.REAL_CSV_BYTES, n_spots=self.REAL_N_SPOTS, itemsize=4)
+        assert need_gb < self.REAL_AVAIL_GB
+        old_formula = self.REAL_CSV_BYTES / _GB * 1.5 + 1.0      # = 15.25
+        assert need_gb < old_formula / 2
+        assert 3_000 < n_mz_est < 6_000       # 9.5GB / (203,079 列 × 11B) ≒ 4,566
+
+    def test_need_stays_well_below_csv_size(self):
+        """大きい CSV ほど「CSV サイズより十分小さい」必要量になること。
+
+        Phase A はストリーミングなので、CSV サイズはピーク RAM を直接は決めない。
+        旧式 (`CSV × 1.5 + 1`) は必ず CSV サイズを上回るため、この不等式が
+        比例項の復活を検出する番人になる（12GB コンテナで CSV が 8GB を超えると、
+        比例項がある限り空き容量と無関係に弾かれてしまう）。
+        """
+        for csv_gb in (5, 10, 20, 40):
+            need_gb, _ = sc._estimate_conversion_need_gb(
+                csv_bytes=csv_gb * _GB, n_spots=self.REAL_N_SPOTS, itemsize=4)
+            assert need_gb < csv_gb / 2, f"CSV {csv_gb}GB の必要量 {need_gb:.2f}GB が大きすぎる"
+
+    def test_quadrupling_csv_does_not_quadruple_need(self):
+        """CSV を 4 倍にしても必要量は 4 倍にならない。"""
+        base, _ = sc._estimate_conversion_need_gb(
+            csv_bytes=5 * _GB, n_spots=self.REAL_N_SPOTS, itemsize=4)
+        quad, _ = sc._estimate_conversion_need_gb(
+            csv_bytes=20 * _GB, n_spots=self.REAL_N_SPOTS, itemsize=4)
+        assert quad < base * 4
+
+    def test_hopeless_case_still_raises(self, tmp_path, monkeypatch):
+        """本当に載らないデータは Phase A に入る前に弾く（ガードを殺していない）。"""
+        monkeypatch.setattr(sc, "_available_memory_gb", lambda **kw: (2.0, "test"))
+        csv_path = self._write_fake_csv(tmp_path, 200 * _GB)
+        with pytest.raises(RuntimeError, match="空きメモリが不足"):
+            sc._check_conversion_memory(csv_path, n_spots_hint=1_000_000, itemsize=8)
+
+    def test_small_csv_skips_check(self, tmp_path, monkeypatch):
+        """0.5GB 未満は空き 0 でも素通りする（従来どおり）。"""
+        monkeypatch.setattr(sc, "_available_memory_gb", lambda **kw: (0.0, "test"))
+        csv_path = self._write_fake_csv(tmp_path, int(0.1 * _GB))
+        sc._check_conversion_memory(csv_path, n_spots_hint=1_000, itemsize=4)
+
+    def test_skips_when_spot_count_unknown(self, tmp_path, monkeypatch):
+        """spot 数が読めなければ見積れないので判定しない（_plan_row_groups に委ねる）。"""
+        monkeypatch.setattr(sc, "_available_memory_gb", lambda **kw: (0.1, "test"))
+        csv_path = self._write_fake_csv(tmp_path, 50 * _GB)
+        sc._check_conversion_memory(csv_path, n_spots_hint=0, itemsize=4)
+
+    def test_phase_a_footer_scales_with_n_mz(self):
+        """一時 Parquet のフッタは n_mz に比例する。旧実装の固定 1.5GB では追えない。"""
+        small = sc._phase_a_footer_bytes(n_spots=203_078, n_mz=2_700)
+        large = sc._phase_a_footer_bytes(n_spots=203_078, n_mz=27_000)
+        # 実データ規模ではモジュール注記どおり約 1.15GB になる
+        assert 1.0 < small / _GB < 1.4
+        # 10 倍の m/z ではおよそ 10 倍（固定 1.5GB なら見逃していた領域）
+        assert 8 < large / small < 12
+
+    def test_footer_is_counted_in_row_group_cost(self):
+        """フッタ項がコストに乗っていること（予算から引く旧方式に戻さない）。"""
+        kwargs = dict(n_spots=203_078, n_mz=2_700, itemsize=4)
+        cost = sc._row_group_cost_bytes(203_078, **kwargs)
+        buffer_and_meta = 2_700 * 203_078 * 4 + sc._RG_METADATA_BYTES
+        assert cost - buffer_and_meta == pytest.approx(
+            sc._phase_a_footer_bytes(n_spots=203_078, n_mz=2_700))
+
+    def test_available_memory_adds_reclaimable_cache(self, tmp_path, monkeypatch):
+        """memory.current に含まれる回収可能なページキャッシュを空きへ戻す。
+
+        補正が無いと、大きな CSV を読んだ直後ほど「空きが少ない」と誤認し、
+        再試行するほど弾かれやすくなる。
+        """
+        current = tmp_path / "memory.current"
+        stat = tmp_path / "memory.stat"
+        current.write_text(str(10 * _GB), encoding="utf-8")     # 使用中 10GB
+        stat.write_text(f"anon 1000\ninactive_file {6 * _GB}\nslab 20\n", encoding="utf-8")
+        monkeypatch.setattr(sc, "_CGROUP_CURRENT_PATHS", (str(current),))
+        monkeypatch.setattr(sc, "_CGROUP_STAT_PATHS", (str(stat),))
+
+        monkeypatch.setattr(sc, "_container_limit_gb", lambda: 12.0)
+
+        gb, source = sc._available_memory_gb(with_source=True)
+        # 12 - 10 = 2GB ではなく、回収可能な 6GB を戻した 8GB
+        assert gb == pytest.approx(8.0)
+        assert source == "cgroup+cache"
+
+    def test_available_memory_never_exceeds_limit(self, tmp_path, monkeypatch):
+        """キャッシュを足し戻しても cgroup 上限は超えない。"""
+        current = tmp_path / "memory.current"
+        stat = tmp_path / "memory.stat"
+        current.write_text(str(2 * _GB), encoding="utf-8")
+        stat.write_text(f"inactive_file {50 * _GB}\n", encoding="utf-8")
+        monkeypatch.setattr(sc, "_CGROUP_CURRENT_PATHS", (str(current),))
+        monkeypatch.setattr(sc, "_CGROUP_STAT_PATHS", (str(stat),))
+
+        monkeypatch.setattr(sc, "_container_limit_gb", lambda: 12.0)
+
+        assert sc._available_memory_gb() == pytest.approx(12.0)
+
+    def test_pyarrow_fallback_batches_into_large_row_groups(self, tmp_path, monkeypatch):
+        """pyarrow 経路が「1 バッチ = 1 row group」で書かないこと。
+
+        ver56.7 以前は `w.write_batch(batch)` の素の繰り返しだったため、
+        バッチ数がそのまま row group 数になっていた。実データ規模では 1 バッチが
+        十数行にしかならず、column chunk 数 = row group 数 × spot 数 が
+        Phase B のフッタ常駐量を押し上げる（polars 経路とも挙動が乖離していた）。
+        読み込みブロックを小さくして大量のバッチを作り、それでも row group が
+        ceil(n_mz / 512) 程度に収まることを固定する。
+        """
+        monkeypatch.setenv("SCILS_NO_POLARS", "1")          # pyarrow 経路を強制
+        monkeypatch.setattr(sc, "_CSV_READ_BLOCK_BYTES", 4096)   # 多数のバッチを作る
+
+        n_mz, n_spots = 2_000, 6
+        data_dir = tmp_path / "scils"
+        _write_intensity_csv(
+            data_dir, "big_Intensity.csv",
+            mz_values=[100.0 + i for i in range(n_mz)],
+            spot_numbers=list(range(1, n_spots + 1)),
+            matrix=np.arange(n_mz * n_spots).reshape(n_mz, n_spots).astype(float),
+        )
+        csv_path = data_dir / "big_Intensity.csv"
+        headers, delim, skip = sc.first_header_and_skipcount(csv_path)
+        temp = tmp_path / "temp.parquet"
+        sc._csv_to_temp_parquet(csv_path, headers, delim, skip, temp)
+
+        md = pq.ParquetFile(str(temp)).metadata
+        assert md.num_rows == n_mz
+        expected_max = -(-n_mz // sc._TEMP_PARQUET_ROW_GROUP_SIZE) + 1     # = 5
+        assert md.num_row_groups <= expected_max, (
+            f"row group が {md.num_row_groups} 個。バッチごとに書いている疑い"
+        )
+
+    def test_available_memory_without_stat_falls_back(self, tmp_path, monkeypatch):
+        """memory.stat が読めなければ従来どおり「上限 - 使用中」。"""
+        current = tmp_path / "memory.current"
+        current.write_text(str(4 * _GB), encoding="utf-8")
+        monkeypatch.setattr(sc, "_CGROUP_CURRENT_PATHS", (str(current),))
+        monkeypatch.setattr(sc, "_CGROUP_STAT_PATHS", (str(tmp_path / "missing"),))
+
+        monkeypatch.setattr(sc, "_container_limit_gb", lambda: 12.0)
+
+        gb, source = sc._available_memory_gb(with_source=True)
+        assert (gb, source) == (pytest.approx(8.0), "cgroup")
 
 
 class TestLegacyLayoutCompat:
