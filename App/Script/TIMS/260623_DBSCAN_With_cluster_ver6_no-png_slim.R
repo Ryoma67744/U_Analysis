@@ -2580,17 +2580,48 @@ if (!step2_done && !.stage_downstream) {
   # [ver6.6] 進捗バー用の段階マーカー。reduction 構築中は一致キーワードが出ず
   #   UI が「準備中」に見えるため、"preprocessing" を1行出す（_detect_current_step が拾う）。
   cat("Preprocessing (variable features / scaling / PCA)...\n")
-  if (!is.na(group_var)) {
-    for (cfg in HARMONY_RETRY_GRID) {
-      ok <- tryCatch({ seu_harmony <- run_pipeline(TRUE, cfg); TRUE }, error=function(e) FALSE)
-      if(ok) { REDUCTION_USED <- "harmony"; break }
+
+  # [ver56.5] リトライで軽い設定へ落ちたことを必ず記録する (R3-RETRY)。
+  #   従来は tryCatch(error=function(e) FALSE) が失敗理由ごと捨て、ループ内に
+  #   ログも 1 行も無かったため、
+  #     可変特徴量 3000→1000→500 / 主成分 30→20→15 / UMAP 次元 30→20→15
+  #   と縮退して計算されても、画面にもログにも成果物にも痕跡が残らなかった。
+  #   受領書と Methods は最初の構成値(例 dims=30)を報告するので、論文の
+  #   Methods に実際とは違うハイパーパラメータが載り、再現実験も成立しない。
+  #   ここで採用した段と設定値をグローバルへ残し、rds_io.R のサイドカー経由で
+  #   受領書・Methods へ流す。**計算そのものは一切変えない**（記録の追加のみ）。
+  .record_retry <- function(tier, cfg) {
+    RETRY_TIER_USED              <<- tier
+    RETRY_N_VAR_FEATURES_EFFECTIVE <<- cfg$n_var_features
+    RETRY_MAX_PCS_EFFECTIVE      <<- cfg$max_pcs
+    RETRY_UMAP_DIMS_EFFECTIVE    <<- cfg$umap_dims
+    cat(sprintf("[retry] 採用 tier%d: n_var_features=%d max_pcs=%d umap_dims=%d\n",
+                tier, cfg$n_var_features, cfg$max_pcs, cfg$umap_dims))
+    if (tier > 1L) {
+      cat(sprintf(paste0("[retry] 注意: 1 段目より軽い設定で計算しました。",
+                         "受領書・Methods にはこの実効値が記録されます。\n")))
     }
   }
-  if(is.null(seu_harmony)) {
-    for (cfg in PCA_RETRY_GRID) {
-      ok <- tryCatch({ seu_harmony <- run_pipeline(FALSE, cfg); TRUE }, error=function(e) FALSE)
-      if(ok) { REDUCTION_USED <- "pca"; break }
+  .try_grid <- function(grid, use_harmony) {
+    for (i in seq_along(grid)) {
+      cfg <- grid[[i]]
+      ok <- tryCatch({ seu_harmony <<- run_pipeline(use_harmony, cfg); TRUE },
+                     error = function(e) {
+                       message(sprintf("[retry] tier%d 失敗 (%s): %s", i,
+                                       if (use_harmony) "harmony" else "pca",
+                                       conditionMessage(e)))
+                       FALSE
+                     })
+      if (ok) { .record_retry(i, cfg); return(TRUE) }
     }
+    FALSE
+  }
+
+  if (!is.na(group_var)) {
+    if (.try_grid(HARMONY_RETRY_GRID, TRUE)) REDUCTION_USED <- "harmony"
+  }
+  if(is.null(seu_harmony)) {
+    if (.try_grid(PCA_RETRY_GRID, FALSE)) REDUCTION_USED <- "pca"
   }
   if(is.null(seu_harmony)) stop("All pipelines failed.")
   

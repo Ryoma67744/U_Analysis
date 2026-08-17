@@ -35,6 +35,15 @@ _AUTO_SAVE_KEYS = [
     "ion_mode", "tolerance_mz",
     "reanalysis_ion_mode", "reanalysis_tolerance_mz",
     "reanalysis_p_thresh", "reanalysis_logfc_thresh",
+    # ver56.5: 画面が `ls.get(...)` で復元しようとしているのに、ここに載って
+    # いなかったため無音で捨てられていたキー。載っていないキーは例外も警告も
+    # 出さずに落ちるので、渡した側も画面側も気づけない (R13-03/R13-05)。
+    "adduct_filter", "reanalysis_adduct_filter",
+    "mz_align_ppm", "use_annotation_check",
+    "resume_reanalysis", "resume_reanalysis_dir",
+    # 正規化設定は run_analysis が渡していたのに、ここに無いので毎回既定へ戻っていた
+    "normalize_input", "norm_mode",
+    "normalize_input_reanalysis", "norm_mode_reanalysis",
     # 解析シナリオ（切片アノテーションの意味 → 補正ポリシー）
     "tims_scenario", "reanalysis_tims_scenario",
     # サイドバー設定

@@ -56,9 +56,13 @@ def mutate_selection_groups(rds_trigger, _n_save, _n_ren, _n_del, _n_comb,
 
     # データロード時はディスクから読み直す (保存はしない)
     if trig == "seurat_rds_path_store":
+        # ver56.6: 取り消し用の控えは **必ず捨てる**。
+        #   残しておくと、プロジェクトを切り替えたあとに「取り消し」を押した時に
+        #   **別プロジェクトの pixel ID 群が、いま開いているプロジェクトへ
+        #   保存される**。控えは切替前のプロジェクトのものなので、跨いで使えない。
         if not rds_path:
-            return sg.empty_state(), no_update, no_update
-        return sg.load_groups(rds_path), no_update, no_update
+            return sg.empty_state(), no_update, None
+        return sg.load_groups(rds_path), no_update, None
 
     if trig == "btn_save_selection_group":
         if not selected_ids:

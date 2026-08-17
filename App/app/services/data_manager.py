@@ -339,6 +339,22 @@ def find_tims_file_path(data_folder: str, stem: str) -> Optional[str]:
     return None
 
 
+def find_tims_file_path_multi(data_folders, stem: str) -> Optional[str]:
+    """複数フォルダを順に探して、ファイル名（拡張子なし）からフルパスを解決する。
+
+    ver56.5: サンプル一覧は `list_tims_files_multi` で追加フォルダも含めて作る
+    のに、パス解決は基準フォルダ 1 つしか見ない箇所があった。追加フォルダの
+    サンプルは解決に失敗して黙って読み飛ばされる（F-C02-1）。
+    """
+    for folder in data_folders or []:
+        if not folder:
+            continue
+        found = find_tims_file_path(folder, stem)
+        if found:
+            return found
+    return None
+
+
 def read_parquet_annotations(file_path: str) -> list[str]:
     """Parquetファイルの annotation 列からユニーク値を取得する。
 

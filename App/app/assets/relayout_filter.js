@@ -19,6 +19,25 @@
 // `edits: {annotationPosition: true}` によるラベルのドラッグは必ず
 // `annotations[N].x` / `annotations[N].y` を含むため、保存機能はそのまま動く。
 // scrollZoom も従来どおり有効のままにできる。
+//
+// -----------------------------------------------------------------------------
+// ver56.5 修正: 「発火元」と「渡す座標」がずれていた (C05-1)
+// -----------------------------------------------------------------------------
+// Plotly の relayoutData プロパティは**発火後も値が残る**。一度 UMAP のラベルを
+// ドラッグすると `interactive_umap_plot.relayoutData` は `annotations[N].x` を
+// 持ったままになる。その後 Spatial のラベルをドラッグすると、
+//   - 発火元 (callback_context.triggered) = spatial_graph
+//   - しかし従来の実装は Input を先頭から走査して「最初に見つかった
+//     アノテーション移動」を返していたので、拾うのは **UMAP の古い座標**
+// となり、UMAP のラベル座標が Spatial のラベル位置として保存されていた。
+// UMAP の座標は概ね ±15、Spatial はピクセル単位で数千なので、保存後に
+// Spatial のラベルが画面外へ飛ぶ。逆向き (Spatial → UMAP) も同様に起きる。
+//
+// 対策: **発火元のプロパティ値だけ**を見る。Dash の clientside 版
+// `callback_context.triggered` は `{prop_id, value}` を持つ (dash-renderer が
+// inputDict から解決して渡す) ので、発火した Input の値そのものを使える。
+// 発火元がアノテーション移動でなければ (パン/ズーム) 他の Input に古い
+// アノテーション座標が残っていても通さない。
 // =============================================================================
 
 window.dash_clientside = window.dash_clientside || {};
@@ -39,16 +58,12 @@ window.dash_clientside = window.dash_clientside || {};
         return false;
     }
 
-    // 発火元の component id を取り出す。パターンマッチ id ("{...}.relayoutData")
-    // は JSON 文字列なので dict に戻す。サーバ側はこの id で
-    // umap_per_sample_graph / spatial_graph / fs_spatial_graph を判別する。
-    function triggeredId() {
-        var ctx = window.dash_clientside.callback_context;
-        if (!ctx || !ctx.triggered || !ctx.triggered.length) {
-            return null;
-        }
-        var propId = ctx.triggered[0].prop_id || "";
-        var idPart = propId.substring(0, propId.lastIndexOf("."));
+    // prop_id ("<id>.relayoutData") から component id を取り出す。パターンマッチ
+    // id ("{...}.relayoutData") は JSON 文字列なので dict に戻す。サーバ側は
+    // この id で umap_per_sample_graph / spatial_graph / fs_spatial_graph を判別する。
+    function idFromPropId(propId) {
+        var idPart = String(propId || "");
+        idPart = idPart.substring(0, idPart.lastIndexOf("."));
         if (!idPart) {
             return null;
         }
@@ -62,30 +77,59 @@ window.dash_clientside = window.dash_clientside || {};
         return idPart;
     }
 
-    // 引数は Input の並びどおりに届く。ALL パターンの Input は配列で来るため、
-    // 平坦化してから「アノテーション移動を含む最初の 1 件」を探す。
+    function signal(rd, triggeredId) {
+        return {
+            relayout: rd,
+            triggered_id: triggeredId,
+            // 同じラベルを同じ座標へ戻した場合でも Store の変化として
+            // 検知させるためのシーケンス番号。Date.now() ではなく単調増加
+            // カウンタを使い、同一ミリ秒内の連続ドラッグも取りこぼさない。
+            seq: (window.dash_clientside.__relayout_seq =
+                (window.dash_clientside.__relayout_seq || 0) + 1),
+        };
+    }
+
+    // 発火元 (callback_context.triggered) の値だけを見る。他の Input に残った
+    // 古い relayoutData は、たとえアノテーション移動を含んでいても使わない。
     function filterAnnotationRelayout() {
         var NU = window.dash_clientside.no_update;
+        var ctx = window.dash_clientside.callback_context;
+        var triggered = (ctx && ctx.triggered) || [];
+        var sawValue = false;
+        for (var i = 0; i < triggered.length; i++) {
+            var t = triggered[i] || {};
+            if (!Object.prototype.hasOwnProperty.call(t, "value")) {
+                continue;
+            }
+            sawValue = true;
+            if (hasAnnotationMove(t.value)) {
+                return signal(t.value, idFromPropId(t.prop_id));
+            }
+        }
+        if (sawValue) {
+            // 発火元は判明していて、そのいずれもアノテーション移動ではない
+            // (パン/ズーム)。他の Input の残骸は見ない。
+            return NU;
+        }
+
+        // --- 後方互換の退避経路 ---
+        // callback_context が無い / triggered に value が入らない環境
+        // (テストからの直接呼び出しや古い dash-renderer) では、従来どおり
+        // 引数を平坦化して走査する。ALL パターンの Input は配列で来る。
         var flat = [];
-        for (var i = 0; i < arguments.length; i++) {
-            var a = arguments[i];
+        for (var j = 0; j < arguments.length; j++) {
+            var a = arguments[j];
             if (Array.isArray(a)) {
                 flat = flat.concat(a);
             } else {
                 flat.push(a);
             }
         }
-        for (var j = 0; j < flat.length; j++) {
-            if (hasAnnotationMove(flat[j])) {
-                return {
-                    relayout: flat[j],
-                    triggered_id: triggeredId(),
-                    // 同じラベルを同じ座標へ戻した場合でも Store の変化として
-                    // 検知させるためのシーケンス番号。Date.now() ではなく単調増加
-                    // カウンタを使い、同一ミリ秒内の連続ドラッグも取りこぼさない。
-                    seq: (window.dash_clientside.__relayout_seq =
-                        (window.dash_clientside.__relayout_seq || 0) + 1),
-                };
+        for (var k = 0; k < flat.length; k++) {
+            if (hasAnnotationMove(flat[k])) {
+                return signal(flat[k],
+                              triggered.length ? idFromPropId(triggered[0].prop_id)
+                                               : null);
             }
         }
         return NU;

@@ -433,6 +433,26 @@ def poll_preflight(n_intervals, store):
             status = check_process_completion(proc, status_file, log_fh)
         except Exception as e:
             logger.exception("check_process_completion failed: %s", e)
+    else:
+        # ver56.5 (C10-4): プロセスの控えが無い。以前はここでも no_update を
+        # 返していたため、**スピナーを出したまま 1.5 秒間隔のポーリングが
+        # 永久に止まらなかった**。控えが消えるのは
+        #   (a) 別タブ / 別セッションの poll が先に完了処理して共有状態を消した
+        #   (b) サーバが再起動した
+        # のいずれかで、どちらもこのタブから「実行中」に戻ることはない。
+        # 結果ファイルが出来ていれば表示し、無ければ理由を出して止める。
+        if (Path(store["out_dir"]) / "diagnostics.json").exists():
+            status = "done"
+        else:
+            return (
+                dbc.Alert(
+                    "診断の実行状況を追えなくなりました"
+                    "（別の画面で完了処理が済んだか、サーバが再起動した可能性があります）。"
+                    "結果が出ていない場合は、もう一度実行してください。",
+                    color="warning"),
+                {**store, "status": "unknown"},
+                True,   # ポーリング停止
+            )
 
     if status is None:
         # まだ実行中 → 次の interval を待つ

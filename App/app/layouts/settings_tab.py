@@ -10,6 +10,7 @@ import dash_bootstrap_components as dbc
 
 from app.config import (
     DEFAULT_DESI_DATA_FOLDER, OUTPUT_DATA_DIR,
+    adducts_for_ion_mode,
     DEFAULT_CALIBRATION_ENABLE, DEFAULT_CALIBRATION_MATRIX,
     DEFAULT_CALIBRATION_SEARCH_WINDOW, DEFAULT_CALIBRATION_MIN_PEAKS,
     DEFAULT_CALIBRATION_REGRESSION,
@@ -385,7 +386,12 @@ def _create_analysis_settings_subtab():
                                             {"label": "+K", "value": "+K"},
                                             {"label": "-H", "value": "-H"},
                                         ],
-                                        value=["+H", "+Na", "+NH4", "+K"],
+                                        # 復元したイオンモードに合わせる。固定値だと
+                                        # Negative 復元時に Positive 4 種のまま残る
+                                        # (自動切替は prevent_initial_call で働かない)
+                                        value=(ls.get("adduct_filter")
+                                               or adducts_for_ion_mode(
+                                                   ls.get("ion_mode", "Positive"))),
                                         inline=True,
                                     ),
                                     # --- m/z キャリブレーション ---
@@ -853,7 +859,10 @@ def _create_analysis_settings_subtab():
                                             {"label": "+K", "value": "+K"},
                                             {"label": "-H", "value": "-H"},
                                         ],
-                                        value=["+H", "+Na", "+NH4", "+K"],
+                                        value=(ls.get("reanalysis_adduct_filter")
+                                               or adducts_for_ion_mode(
+                                                   ls.get("reanalysis_ion_mode",
+                                                          "Positive"))),
                                         inline=True,
                                     ),
                                 ]),

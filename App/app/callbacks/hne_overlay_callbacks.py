@@ -535,9 +535,20 @@ def hne_image_figure(img, lm, polys, opacity, mode, draft, sample):
 # ---------------------------------------------------------------------------
 # 個体別 永続復元: 個体切替・解析ロードで、保存済み状態を各 store へ流し込む
 # ---------------------------------------------------------------------------
-# 回転スライダ(value)は出力しない（出力すると hne_update_rotation が発火し復元直後の
-# 対応点を消す恐れがあるため）。rotation_store を直接復元すれば図・割当は正しい
-# （スライダ表示のみ前の値が残る軽微な制限）。affine は landmarks 復元で自動再計算。
+# ★ ver56.5 (デバッグ総点検 §4.2 / C05-2): 回転スライダ・反転チェックの表示値も復元する。
+#
+#   従来はここで rotation_store だけを戻し、スライダ表示は「軽微な制限」として
+#   前の値のままにしていた（出力すると hne_update_rotation が発火して復元直後の
+#   対応点を消す、という懸念がその理由だった）。
+#
+#   しかしその結果 store（例: 90°）と画面（0°）が食い違ったままになり、次に利用者が
+#   反転チェックを 1 回触るだけで hne_update_rotation が **スライダ側の 0°** を読んで
+#   「回転が変わった」と判定し、**保存済みの対応点を全消去したうえ回転まで 0° へ
+#   巻き戻す**（保存ファイルも上書きされるので復旧できない）。軽微どころではなかった。
+#
+#   hne_update_rotation には「実質変化なしなら何もしない」同値ガードが既にあるため、
+#   スライダを store と同じ値へ戻せば復元由来の発火はそこで吸収され、対応点は消えない。
+#   affine は landmarks 復元で自動再計算。
 @callback(
     Output("hne_image_store", "data", allow_duplicate=True),
     Output("hne_landmarks_store", "data", allow_duplicate=True),
@@ -545,13 +556,15 @@ def hne_image_figure(img, lm, polys, opacity, mode, draft, sample):
     Output("hne_rotation_store", "data", allow_duplicate=True),
     Output("hne_polygon_draft_store", "data", allow_duplicate=True),
     Output("hne_polygon_table", "data", allow_duplicate=True),
+    Output("hne_rotation_angle", "value", allow_duplicate=True),
+    Output("hne_rotation_flip", "value", allow_duplicate=True),
     Input("hne_sample_select", "value"),
     Input("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
 def hne_restore_sample(sample, rds_path):
     if not sample or not rds_path:
-        return (no_update,) * 6
+        return (no_update,) * 8
     entry = hp.load_hne_sample(rds_path, sample)
     lm = entry.get("landmarks") or {"tic": [], "hne": []}
     rot = entry.get("rotation") or {"angle": 0, "flip_h": False, "flip_v": False}
@@ -567,7 +580,11 @@ def hne_restore_sample(sample, rds_path):
     # 表データも同時に復元（store と表を同一ラウンドで整合させ、前個体の古い行で
     # hne_polygon_table_to_store が復元ポリゴンを上書きするのを防ぐ）。
     rows = _polygon_rows(polys)
-    return image_store, lm, polys, rot, [], rows
+    # ★ スライダ表示も store と同じ値へ揃える（同値ガードに吸収されるので
+    #   ここでの発火が対応点を消すことはない）。
+    rot_angle = float(rot.get("angle", 0) or 0)
+    rot_flips = [k for k in ("flip_h", "flip_v") if rot.get(k)]
+    return image_store, lm, polys, rot, [], rows, rot_angle, rot_flips
 
 
 # ---------------------------------------------------------------------------

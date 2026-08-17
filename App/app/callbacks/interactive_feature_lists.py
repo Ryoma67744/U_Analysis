@@ -24,6 +24,34 @@ from app.utils.annotation_label import feature_display_label as _feature_display
 logger = logging.getLogger("msi.interactive.featurelists")
 
 
+def _expression_alignment_ok(cache_dir_str, df):
+    """発現量とスポットの並びが一致しているか（Feature plot と同じ検査）。
+
+    循環 import を避けるため関数内 import（このファイルの他所と同じ慣習）。
+    """
+    from app.callbacks.interactive_deg import (
+        _expression_alignment_ok as _check)
+    return _check(cache_dir_str, df)
+
+
+def _coexpression_guard(cache_dir_str, df):
+    """並びが食い違っていたら (図, メッセージ) を返す。問題なければ None。
+
+    ver56.6: 共発現散布図は行数しか見ておらず、発現量とスポットの並びが
+    食い違っても**何事も無かったかのように“もっともらしい別の図”を出して
+    いた**。Feature plot 側は同じ材料で「対応が取れませんでした」と止まるので、
+    片方にしか検査が無いという危険側の非対称になっていた。
+
+    一致(True)と判定不能(None)は従来どおり通す。止めるのは不一致と
+    分かったときだけで、そのときは黙って別の図を出すより出さないほうが良い。
+    """
+    if _expression_alignment_ok(cache_dir_str, df) is False:
+        return go.Figure(), _status(
+            "発現量とスポットの対応が取れませんでした"
+            "（キャッシュを作り直してください）。", "text-danger small")
+    return None
+
+
 def _status(msg, cls="text-muted small"):
     return html.Span(msg, className=cls)
 
@@ -234,6 +262,10 @@ def run_coexpression(n_clicks, lid_a, lid_b, agg, state, rds_path, cache_dir_str
             "text-warning small")
     if len(matrix) != len(df):
         return go.Figure(), _status("発現行列と座標データの行数が一致しません。", "text-danger small")
+    # ver56.6: 行数が合っていても**並び**が食い違っていれば別の図になる。
+    _misaligned = _coexpression_guard(cache_dir, df)
+    if _misaligned is not None:
+        return _misaligned
 
     present_set = set(present)
     pa = [f for f in map(str, feats_a) if f in present_set]

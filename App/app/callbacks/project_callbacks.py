@@ -34,6 +34,7 @@ from app.services.share_manager import (
     cleanup_expired,
 )
 from app.services.annotation_inspect import has_compound_names
+from app.utils.validation import param_default
 from app.services.persistent_share_manager import (
     create_persistent_share,
     build_persistent_view_url,
@@ -685,29 +686,53 @@ def sub_action_new_analysis(clicks, project):
     data_folder = sub.get("data_folder", "") or settings.get("data_folder", "")
     output_dir = sub.get("output_dir", "") or settings.get("output_dir", "")
 
+    # ★ ver56.5 (デバッグ総点検 §4.2 / C01-1): `x or no_update` をやめ、常に明示値を返す。
+    #   `no_update` は「画面を変更しない」なので、**切り替える前のサブプロジェクトの
+    #   データフォルダ / 出力先 / 閾値がそのまま残る**。current_sub_project_id だけは
+    #   必ず新しくなるため、
+    #       見出し・サブプロジェクト ID → B
+    #       データフォルダ / 出力先     → A のまま
+    #   という食い違いになり、そのまま実行すると **A のデータを解析して A の出力先に書き、
+    #   記録上は B の解析**になる (実ブラウザで再現済み)。解析画面には
+    #   「今どのサブプロジェクトを操作中か」の表示が無く、気づく手段が無い。
+    #
+    #   同じ修正は ver52.3 に `sub_action_interactive` (下の :747-755) で入っており、
+    #   **解析設定側にだけ適用されていなかった**。
+    #
+    #   既定値は発明せず `PARAM_BOUNDS` を単一出典とする (`param_default`、ver52.3 ⑤)。
+    #   `settings.get(k) or 既定` ではなく `is None` 判定にすること —
+    #   `0` (= 絞り込まない) や `False` は正当な保存値であり、falsy 判定だと既定へ化ける。
+    def _restored(key, default):
+        value = settings.get(key)
+        return default if value is None else value
+
     return (
         "analysis",                                             # current_page
         "settings",                                             # main_tabs
         sub_id,                                                 # current_sub_project_id
-        data_folder or no_update,                               # data_folder
-        output_dir or no_update,                                # output_dir
+        data_folder,                                            # data_folder
+        output_dir,                                             # output_dir
+        # ★ 解析手法だけは保存値が無ければ触らない。file_handlers.py:39 の
+        #   DESI/TIMS 相互クリア対と set_default_* が現在値を前提に連鎖するため、
+        #   ここで空にすると「どちらも未選択」に落ちうる。手法はラジオボタンとして
+        #   画面に明示されており、フォルダのように隠れた取り違えは起きない。
         settings.get("analysis_method") or no_update,           # analysis_method
         settings.get("analysis_method_tims") or no_update,      # analysis_method_tims
-        settings.get("annotation_path", settings.get("mrm_path", "")) if settings else no_update,  # annotation_path
-        settings.get("p_thresh") if settings else no_update,    # p_thresh
-        settings.get("logfc_thresh") if settings else no_update,  # logfc_thresh
-        settings.get("ion_mode") or no_update,                  # ion_mode
-        settings.get("tolerance_mz") if settings else no_update,  # tolerance_mz
-        settings.get("resume_rds") if settings else no_update,  # resume_rds
-        settings.get("rds_folder", "") if settings else no_update,  # rds_folder
-        settings.get("reanalysis_data_folder", "") if settings else no_update,
-        settings.get("rds_path", "") if settings else no_update,
-        settings.get("filter_mode") or no_update,               # filter_mode
-        settings.get("target_clusters", "") if settings else no_update,
-        settings.get("reanalysis_p_thresh") if settings else no_update,
-        settings.get("reanalysis_logfc_thresh") if settings else no_update,
-        settings.get("reanalysis_ion_mode") or no_update,
-        settings.get("reanalysis_tolerance_mz") if settings else no_update,
+        settings.get("annotation_path", settings.get("mrm_path", "")),  # annotation_path
+        _restored("p_thresh", param_default("p_thresh")),       # p_thresh
+        _restored("logfc_thresh", param_default("logfc_thresh")),  # logfc_thresh
+        _restored("ion_mode", "Positive"),                      # ion_mode
+        _restored("tolerance_mz", param_default("tolerance_mz")),  # tolerance_mz
+        _restored("resume_rds", False),                         # resume_rds
+        settings.get("rds_folder", ""),                         # rds_folder
+        settings.get("reanalysis_data_folder", ""),
+        settings.get("rds_path", ""),
+        _restored("filter_mode", "exclude"),                    # filter_mode
+        settings.get("target_clusters", ""),
+        _restored("reanalysis_p_thresh", param_default("reanalysis_p_thresh")),
+        _restored("reanalysis_logfc_thresh", param_default("reanalysis_logfc_thresh")),
+        _restored("reanalysis_ion_mode", "Positive"),
+        _restored("reanalysis_tolerance_mz", param_default("reanalysis_tolerance_mz")),
     )
 
 
@@ -1064,12 +1089,19 @@ def handle_edit_project(n_clicks, project_id, name, experiment_date, memo,
 @callback(
     Output("create_sub_project_modal", "is_open"),
     [Input("open_create_sub_project_modal", "n_clicks"),
-     Input("cancel_create_sub_project", "n_clicks"),
-     Input("confirm_create_sub_project", "n_clicks")],
-    State("create_sub_project_modal", "is_open"),
+     Input("cancel_create_sub_project", "n_clicks")],
     prevent_initial_call=True,
 )
-def toggle_create_sub_modal(open_clicks, cancel_clicks, confirm_clicks, is_open):
+def toggle_create_sub_modal(open_clicks, cancel_clicks):
+    """作成モーダルの open/cancel のみ制御。
+
+    ★ ver56.5 (§4.2 / C01-3): confirm を Input から外した。
+      以前は「作成」押下で**無条件にモーダルを閉じて**いたため、タイトル未入力だと
+      `handle_create_sub_project` が何もせずに終わり、モーダルだけ閉じて
+      サブプロジェクトは作られず、理由も表示されないという無音の失敗になっていた。
+      confirm 時の close は handle 側が検証を通してから行う
+      (プロジェクト版 `toggle_create_modal` が ver3.16 で採った形と同じ)。
+    """
     triggered = ctx.triggered_id
     if triggered == "open_create_sub_project_modal":
         return True
@@ -1090,7 +1122,10 @@ def toggle_create_sub_modal(open_clicks, cancel_clicks, confirm_clicks, is_open)
      Output("new_sub_data_folder", "value"),
      Output("new_sub_output_dir", "value"),
      Output("new_sub_memo", "value"),
-     Output("sub_project_list_refresh", "data")],
+     Output("sub_project_list_refresh", "data"),
+     # ★ ver56.5 (§4.2 / C01-3): 検証を通ってから閉じる + 失敗理由を出す
+     Output("create_sub_project_modal", "is_open", allow_duplicate=True),
+     Output("new_sub_error", "children")],
     Input("confirm_create_sub_project", "n_clicks"),
     [State("selected_project", "data"),
      State("new_sub_name", "value"),
@@ -1110,8 +1145,17 @@ def handle_create_sub_project(
     target_compound, ms_instrument, matrix, polarity,
     data_folder, output_dir, memo, refresh,
 ):
-    if not n_clicks or not name or not project:
-        return (no_update,) * 10
+    _n_out = 12
+    if not n_clicks:
+        return (no_update,) * _n_out
+    name = (name or "").strip()
+    if not name or not project:
+        # ★ ver56.5: 検証失敗 → モーダルは開いたままにし、理由を表示する。
+        #   以前はここで全 no_update を返し、一方 toggle 側が無条件に閉じていたため、
+        #   「モーダルは閉じたのに作成されず、理由も出ない」という無音の失敗だった。
+        msg = ("「タイトル」は必須です。" if not name
+               else "プロジェクトが選択されていません。")
+        return (no_update,) * 10 + (True, msg)
 
     project_id = project.get("id", "")
     create_sub_project(
@@ -1127,8 +1171,8 @@ def handle_create_sub_project(
         extra_fields={"matrix": matrix or ""},
     )
 
-    # フォーム入力をクリア + リフレッシュ
-    return "", None, "", "", "", [], "", "", "", (refresh or 0) + 1
+    # フォーム入力をクリア + リフレッシュ + モーダルを閉じる (検証を通った後)
+    return "", None, "", "", "", [], "", "", "", (refresh or 0) + 1, False, ""
 
 
 # =========================================================================
@@ -1208,20 +1252,26 @@ def handle_delete_sub_project(n_clicks, sub_id, project, refresh):
      Output("edit_sub_output_dir", "value"),
      Output("edit_sub_memo", "value")],
     [Input({"type": "edit_sub_btn", "index": ALL}, "n_clicks"),
-     Input("cancel_edit_sub_project", "n_clicks"),
-     Input("confirm_edit_sub_project", "n_clicks")],
+     Input("cancel_edit_sub_project", "n_clicks")],
     [State("edit_target_sub_project_id", "data"),
      State("selected_project", "data")],
     prevent_initial_call=True,
 )
-def toggle_edit_sub_modal(
-    edit_clicks, cancel_clicks, confirm_clicks, target_id, project,
-):
+def toggle_edit_sub_modal(edit_clicks, cancel_clicks, target_id, project):
+    """編集モーダルの open/cancel のみ制御。
+
+    ★ ver56.5 (§4.2 / C01-4): confirm を Input から外した。
+      以前は「保存」押下で**無条件に閉じて全 11 欄をクリア**していた。一方
+      `handle_edit_sub_project` はタイトルが空だと何も保存しないため、
+      タイトルを打ち直そうとして一瞬空にしたまま保存すると、
+      **メモやフォルダの編集内容が復旧不能に失われ、エラーも出ない**
+      (モーダルは閉じ、一覧のカードも元のままなので成功と区別がつかない)。
+      confirm 時の close/クリアは handle 側が検証を通してから行う。
+    """
     triggered = ctx.triggered_id
 
-    # キャンセル or 保存 → 閉じる
-    if (triggered == "cancel_edit_sub_project"
-            or triggered == "confirm_edit_sub_project"):
+    # キャンセル → 閉じる
+    if triggered == "cancel_edit_sub_project":
         return False, "", "", None, "", "", "", [], "", "", ""
 
     # 編集ボタン → モーダルを開いて既存値をセット
@@ -1253,7 +1303,10 @@ def toggle_edit_sub_modal(
 # =========================================================================
 
 @callback(
-    Output("sub_project_list_refresh", "data", allow_duplicate=True),
+    [Output("sub_project_list_refresh", "data", allow_duplicate=True),
+     # ★ ver56.5 (§4.2 / C01-4): 検証を通ってから閉じる + 失敗理由を出す
+     Output("edit_sub_project_modal", "is_open", allow_duplicate=True),
+     Output("edit_sub_error", "children")],
     Input("confirm_edit_sub_project", "n_clicks"),
     [State("selected_project", "data"),
      State("edit_target_sub_project_id", "data"),
@@ -1274,8 +1327,16 @@ def handle_edit_sub_project(
     target_compound, ms_instrument, matrix, polarity,
     data_folder, output_dir, memo, refresh,
 ):
-    if not n_clicks or not project or not sub_id or not name:
-        return no_update
+    if not n_clicks:
+        return no_update, no_update, no_update
+    name = (name or "").strip()
+    if not name or not project or not sub_id:
+        # ★ ver56.5: 検証失敗 → モーダルを開いたまま保ち、入力内容を守る。
+        #   以前は no_update を返すだけで、toggle 側が無条件に閉じて全欄を
+        #   クリアしていたため、編集内容が黙って消えていた。
+        msg = ("「タイトル」は必須です。空のままでは保存できません。" if not name
+               else "編集対象を特定できませんでした。開き直してください。")
+        return no_update, True, msg
 
     project_id = project.get("id", "")
     update_sub_project(project_id, sub_id, {
@@ -1290,7 +1351,8 @@ def handle_edit_sub_project(
         "output_dir": output_dir or "",
     })
 
-    return (refresh or 0) + 1
+    # 保存できたのでモーダルを閉じる (エラー表示はクリア)
+    return (refresh or 0) + 1, False, ""
 
 
 # =========================================================================

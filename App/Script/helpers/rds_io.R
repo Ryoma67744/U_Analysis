@@ -332,6 +332,14 @@ write_receipt_sidecar <- function(output_dir = NULL) {
     norm_mode             = g("NORM_MODE"),
     input_normalized      = g("INPUT_NORMALIZED"),
     batch_correction      = g("ANALYSIS_METHOD", g("BATCH_VAR")),
+    # [ver56.5] リトライで軽い設定へ落ちた場合の**実効値**(R3-RETRY)。
+    #   構成値(UI で指定した値)ではなく、実際に計算に使われた値。1 段目で
+    #   通ったときは構成値と同じになる。古い解析では変数が無く NULL になり、
+    #   受領書側は従来どおり構成値へフォールバックする。
+    n_var_features_effective = g("RETRY_N_VAR_FEATURES_EFFECTIVE"),
+    max_pcs_effective     = g("RETRY_MAX_PCS_EFFECTIVE"),
+    umap_dims_effective   = g("RETRY_UMAP_DIMS_EFFECTIVE"),
+    retry_tier_used       = g("RETRY_TIER_USED"),
     threads               = threads,
     package_versions      = pv,
     written_at            = format(Sys.time(), "%Y-%m-%dT%H:%M:%S")

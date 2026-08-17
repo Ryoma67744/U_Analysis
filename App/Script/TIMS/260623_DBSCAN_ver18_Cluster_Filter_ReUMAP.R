@@ -776,65 +776,16 @@ patch_v13_step2_pipeline <- function(code_vec) {
     }
   }
 
-  # --- 2) Retry Logic ブロックを置換（エラー表示を追加） ---
-  idx_retry_hdr <- grep("#\\s*Retry Logic", code_vec)
-  if (length(idx_retry_hdr) >= 1) {
-    hdr <- idx_retry_hdr[1]
-    s2 <- grep("^\\s*for\\s*\\(cfg\\s+in\\s+HARMONY_RETRY_GRID\\)", code_vec[(hdr+1):length(code_vec)])
-    if (length(s2) >= 1) {
-      s2 <- s2[1] + hdr
-      # ver6+ ベースでは Harmony ループが `if (!is.na(group_var)) { ... }` ガードで包まれている。
-      # 置換範囲がガードの閉じ `}` を巻き込むと開き `{` だけ残ってコピーが構文破綻するため、
-      # ガードを検出して「置換範囲」「置換テキスト」の両方で保持する（無ければ従来動作）。
-      has_guard <- (s2 > 1) &&
-        grepl("^\\s*if\\s*\\(\\s*!is\\.na\\(group_var\\)\\s*\\)\\s*\\{\\s*$", code_vec[s2 - 1])
-      start_idx <- if (has_guard) s2 - 1L else s2
-      e2 <- grep('^\\s*if\\s*\\(is\\.null\\(seu_harmony\\)\\)\\s*stop\\("All pipelines failed\\."\\)', code_vec[s2:length(code_vec)])
-      if (length(e2) >= 1) {
-        e2 <- e2[1] + s2 - 1
-        harmony_loop <- c(
-          '  for (cfg in HARMONY_RETRY_GRID) {',
-          '    ok <- tryCatch({',
-          '      seu_harmony <- run_pipeline(TRUE, cfg); TRUE',
-          '    }, error = function(e) {',
-          '      message("!! Harmony pipeline failed: ", e$message,',
-          '              " | n_var_features=", cfg$n_var_features,',
-          '              " max_pcs=", cfg$max_pcs,',
-          '              " umap_dims=", cfg$umap_dims)',
-          '      FALSE',
-          '    })',
-          '    if (ok) { REDUCTION_USED <- "harmony"; break }',
-          '  }'
-        )
-        # ガードがある場合は元の意味（group_var が NA なら Harmony スキップ）を保つよう包み直す
-        harmony_block <- if (has_guard) {
-          c('  if (!is.na(group_var)) {', paste0('  ', harmony_loop), '  }')
-        } else {
-          harmony_loop
-        }
-        new_retry <- c(
-          '  # Retry Logic (verbose)',
-          harmony_block,
-          '  if (is.null(seu_harmony)) {',
-          '    for (cfg in PCA_RETRY_GRID) {',
-          '      ok <- tryCatch({',
-          '        seu_harmony <- run_pipeline(FALSE, cfg); TRUE',
-          '      }, error = function(e) {',
-          '        message("!! PCA pipeline failed: ", e$message,',
-          '                " | n_var_features=", cfg$n_var_features,',
-          '                " max_pcs=", cfg$max_pcs,',
-          '                " umap_dims=", cfg$umap_dims)',
-          '        FALSE',
-          '      })',
-          '      if (ok) { REDUCTION_USED <- "pca"; break }',
-          '    }',
-          '  }',
-          '  if (is.null(seu_harmony)) stop("All pipelines failed.")'
-        )
-        code_vec <- c(code_vec[1:(start_idx-1)], new_retry, code_vec[(e2+1):length(code_vec)])
-      }
-    }
-  }
+  # --- 2) Retry Logic ---
+  # [ver56.5] かつてここで Retry Logic ブロックを丸ごと置換し、失敗理由を表示する
+  #   verbose 版へ差し替えていた。本体テンプレ(ver6 slim)が ver56.5 で
+  #   失敗理由の表示に加えて「採用した段と実効ハイパーパラメータ」の記録
+  #   (RETRY_*_EFFECTIVE / [retry] ログ) まで行うようになったため、この置換は
+  #   不要になった。置換を残すと **本体側の記録を消してしまう** うえ、
+  #   `for (cfg in HARMONY_RETRY_GRID)` という目印は本体から消えたので
+  #   無言で空振りする anchor になる（tests/test_r_patch_anchors.py が検出）。
+  #   よって置換は行わず、本体テンプレの実装をそのまま引き継ぐ。
+
   code_vec
 }
 

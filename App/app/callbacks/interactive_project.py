@@ -44,7 +44,17 @@ def auto_fill_interactive_from_analysis(active_tab, app_state, data_folder, entr
     if active_tab != "interactive" or current_page != "analysis":
         return (no_update,) * 5
     # sub_action_interactive から来た場合は既にセット済み → スキップ
-    if entry_mode in ("sub_project", "shared"):
+    #
+    # ver56.5: "standalone" を追加した。ランディングの「インタラクティブ解析」
+    # ボタンは entry_mode="standalone" (= 利用者が自分でプロジェクトを選ぶ) を
+    # 書いてタブを切り替えるが、同じタブ切替でこのコールバックも走り、直前の
+    # 解析の情報で後勝ち上書きしていた。entry_mode が "sub_project" になると
+    # プロジェクト選択欄に display:none が掛かるため、**選び直す UI ごと消える**。
+    # app_state は session Store でタブを閉じるまで残るので、ホームに戻って
+    # 押し直しても毎回同じ上書きが起き、復帰しなかった。
+    # さらに "sub_project" は auto_load_on_rds_ready の実行条件も満たすため、
+    # 「手動 standalone では自動実行しない」という宣言も破られていた。
+    if entry_mode in ("sub_project", "shared", "standalone"):
         return (no_update,) * 5
     # 解析が実行されていない場合はスキップ
     if not app_state or not app_state.get("full_output_dir"):
@@ -53,12 +63,18 @@ def auto_fill_interactive_from_analysis(active_tab, app_state, data_folder, entr
     if app_state.get("is_running"):
         return (no_update,) * 5
 
+    project_id = app_state.get("project_id") or ""
+    sub_project_id = app_state.get("sub_project_id") or ""
     return (
         app_state["full_output_dir"],
         data_folder or no_update,
-        "sub_project",
-        app_state.get("project_id") or no_update,
-        app_state.get("sub_project_id") or no_update,
+        # ver56.5: プロジェクトに紐づかない解析 (プロジェクト未選択で実行) では
+        # project_id が空になる。それでも "sub_project" を名乗ると、選択された
+        # プロジェクトが無いのに選択欄だけ消えて選び直せなくなる。
+        # 実際にプロジェクトが決まったときだけ名乗る。
+        "sub_project" if project_id else no_update,
+        project_id or no_update,
+        sub_project_id or no_update,
     )
 
 
@@ -115,28 +131,39 @@ def populate_interactive_sub_projects(project_id, entry_mode):
 
 
 @callback(
+    # ver56.7: `interactive_data_info` の Output を外した。
+    #   このコールバックとサブプロジェクト側の `set_interactive_folders_from_sub_project`
+    #   が**同じ表示欄を奪い合って**おり、どちらの応答が後に届くかは毎回変わるため、
+    #   「⚠ 結果フォルダが見つかりません」が**出る回と出ない回**があった。
+    #   出なかった回は、結果フォルダが失われていることに気づけないまま
+    #   「データ読込」を押すことになる。
+    #   表示欄の持ち主は「フォルダを実際に調べている側」に一本化する。
     [Output("interactive_viz_container", "style", allow_duplicate=True),
-     Output("interactive_data_info", "children", allow_duplicate=True),
      Output("sap_skip_reset", "data", allow_duplicate=True),
      Output("sap_btn_wrapper", "style", allow_duplicate=True)],
     Input("interactive_project_select", "value"),
-    State("sap_skip_reset", "data"),
+    [State("sap_skip_reset", "data"),
+     # ver56.6: 破棄したい state を**明示して渡す**。引数なしの `_drop_state()` は
+     #   「いまアクティブなプロジェクト」を対象にするが、それはリクエスト境界で
+     #   毎回 None に戻される (reset_active_key) ため、関数は先頭で何もせず戻る＝
+     #   宣言された破棄は一度も実行されていなかった。
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def reset_interactive_on_project_change(project_id, skip_reset):
+def reset_interactive_on_project_change(project_id, skip_reset, loaded_rds=None):
     """プロジェクト変更時にインタラクティブデータをリセット。
     sub_project_select の value が同一でも確実にクリアされる。
     sap_skip_reset=True の場合はリセットをスキップ（保存後の自動切替時）。"""
     if skip_reset:
-        return no_update, no_update, False, no_update
+        return no_update, False, no_update
 
-    # アクティブプロジェクトの state エントリを破棄（プロジェクト別キャッシュ対応）
-    _drop_state()
+    # いま読み込んでいるプロジェクトの state エントリを破棄
+    _drop_state(loaded_rds)
     _set_active_key(None)
 
-    if not project_id:
-        return {"display": "none"}, "", False, {"display": "none"}
-    return {"display": "none"}, "データを読み込んでください", False, {"display": "none"}
+    # 表示欄 (interactive_data_info) はここでは触らない。
+    # サブプロジェクト側が確定させる (ver56.7)。
+    return {"display": "none"}, False, {"display": "none"}
 
 
 @callback(
@@ -149,12 +176,38 @@ def reset_interactive_on_project_change(project_id, skip_reset):
      Output("sap_btn_wrapper", "style", allow_duplicate=True)],
     Input("interactive_sub_project_select", "value"),
     [State("interactive_project_select", "value"),
-     State("sap_skip_reset", "data")],
+     State("sap_skip_reset", "data"),
+     # ★ ver56.5 (§4 / C13-H8): 共有リンクが固定した結果フォルダを守るため
+     State("shared_session", "data"),
+     # ver56.6: 破棄対象を明示して渡す（引数なしでは何も破棄されなかった）
+     State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def set_interactive_folders_from_sub_project(sub_id, project_id, skip_reset):
+def set_interactive_folders_from_sub_project(sub_id, project_id, skip_reset,
+                                             shared_session=None,
+                                             loaded_rds=None):
     """サブプロジェクト選択時にフォルダパスを自動設定 + データリセット
     sap_skip_reset=True の場合はリセットをスキップ（保存後の自動切替時）。"""
+    # ★ ver56.5 (デバッグ総点検 §4 / C13-H8): 共有リンクで開いた場合は
+    #   結果フォルダを上書きしない。
+    #
+    #   共有ルート (share_callbacks.route_share_url) は、共有した時点の
+    #   result_dir を固定して interactive_result_folder に入れる。ところが
+    #   同時に interactive_sub_project_select も設定するため、その変化が
+    #   この callback を発火させ、`sub.get("last_result_dir")`（= **最新**の
+    #   解析結果）で共有先の表示を上書きしていた。
+    #
+    #   その結果、共有した後にそのサブプロジェクトを解析し直すと、
+    #   共有リンクを開いた人には「共有した時点の結果」ではなく最新結果が出る。
+    #   画面上は正しい共有を開いたように見え、警告も出ないため、送った側も
+    #   受け取った側も別の結果を見ていることに気づけない。
+    #
+    #   共有対象と同じサブプロジェクトを開いている間だけスキップする
+    #   （共有先の利用者が別のサブプロジェクトを明示的に選んだ場合は通常動作）。
+    if (shared_session and shared_session.get("active")
+            and sub_id and shared_session.get("sub_project_id") == sub_id):
+        return (no_update,) * 7
+
     if skip_reset:
         # ★ ver51.9 / C-4: 並びが 1 つずれていた。Output は
         #   [result_folder, msi_folder, data_info, ms_instrument,
@@ -166,15 +219,22 @@ def set_interactive_folders_from_sub_project(sub_id, project_id, skip_reset):
         return (no_update,) * 5 + (False, no_update)
 
     # 前のプロジェクトの state を破棄（複数プロジェクト同時閲覧時の混線防止）
-    _drop_state()
+    _drop_state(loaded_rds)
     _set_active_key(None)
 
+    # ver56.7: 表示欄 (interactive_data_info) の**唯一の持ち主**はここ。
+    #   以前はリセット側と奪い合っており、警告が出る回と出ない回があった。
+    #   サブプロ未選択の経路でも no_update ではなく確定値を返す
+    #   （返さないと前の表示が残り続ける）。
     if not sub_id or not project_id:
-        return no_update, no_update, no_update, no_update, {"display": "none"}, False, {"display": "none"}
+        _idle = "データを読み込んでください" if project_id else ""
+        return (no_update, no_update, _idle, no_update,
+                {"display": "none"}, False, {"display": "none"})
     from app.services.project_manager import get_sub_project
     sub = get_sub_project(project_id, sub_id)
     if not sub:
-        return no_update, no_update, no_update, no_update, {"display": "none"}, False, {"display": "none"}
+        return (no_update, no_update, "データを読み込んでください", no_update,
+                {"display": "none"}, False, {"display": "none"})
     result_dir = sub.get("last_result_dir") or sub.get("output_dir", "")
     data_folder = sub.get("data_folder", "")
     ms_instrument = sub.get("ms_instrument", "TIMS")

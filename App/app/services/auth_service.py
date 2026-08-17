@@ -26,7 +26,21 @@ def _default_auth_path() -> Path:
     env = os.environ.get("AUTH_CONFIG_PATH")
     if env:
         return Path(env)
-    return Path("/app/Data/Other/common/auth.json")
+    # ★ ver56.4: 既定パスを `/app/Data/Other/common/auth.json` の決め打ちから
+    #   `config.DATA_DIR` 由来へ変更する。決め打ちは Docker の中でしか成立せず、
+    #   Docker を使わない起動 (setup.bat / run_app.bat の手順) では
+    #   root なら FS 直下に `/app` を作って認証情報を書き、
+    #   一般ユーザーなら PermissionError で **起動できなかった**。
+    #   E2E も同じ経路のため「失敗」ではなく無言 skip になり、
+    #   ブラウザテストが動いていないことに気づけなかった。
+    #
+    #   Docker では WORKDIR=/app のため DATA_DIR は `/app/Data` に解決され、
+    #   このパスは **従来と完全に同一** になる。既存の named volume
+    #   (`msi-common:/app/Data/Other/common`) と保存済みパスワードはそのまま。
+    #   ディレクトリ名を `Common` (大文字) に変えると既存環境の auth.json を
+    #   見失うため、小文字 `common` を維持すること。
+    from app.config import DATA_DIR
+    return DATA_DIR / "Other" / "common" / "auth.json"
 
 
 AUTH_CONFIG_PATH: Path = _default_auth_path()
@@ -199,6 +213,13 @@ def init_from_env() -> None:
             "Set INITIAL_PASSWORD_B (共有用パスワード) in .env and restart. "
             "ログインは MASTER_PASSWORD を使用します。"
         )
+
+    # ★ ver56.4: ロックを取る前に親ディレクトリを用意する。
+    #   従来は `_ensure_parent()` が `_save()` の中でしか呼ばれず、
+    #   その手前の FileLock が先に走っていた (順序の誤り)。
+    #   現行の filelock は親を作るため表面化していないが、
+    #   ライブラリの実装詳細に依存した危うい状態だった。
+    _ensure_parent()
 
     with FileLock(str(_LOCK_PATH), timeout=10):
         data = _load()

@@ -1110,11 +1110,16 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
                          hne_mono, accumulated_positions,
                          session_id=None, marker_size=0, label_size=10,
                          hne_opacity=100, hne_marker_size=5):
+    from app.callbacks.interactive_callbacks import (
+        _set_active_key, accordion_toggle_is_noop, accordion_record_closed,
+        set_export_figures)
     active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
     if "acc_spatial" not in active_list:
+        # ★ ver56.5 (§4.3 / C04-1): 閉状態を記録してから抜ける。
+        #   記録しないと「開」のまま据え置かれ、開き直したときに
+        #   「変化なし」と誤判定されて古い図が残る。
+        accordion_record_closed("acc_spatial", session_id, rds_path)
         return no_update, no_update
-    from app.callbacks.interactive_callbacks import (
-        _set_active_key, accordion_toggle_is_noop, set_export_figures)
     # ver46.1: 他セクションの開閉だけで全タイルを作り直さない
     # （Feature Plot を開いただけで Spatial 全図が再構築されていた）。
     if accordion_toggle_is_noop("acc_spatial", session_id, rds_path,
@@ -1444,13 +1449,21 @@ def reflect_sample_rotation_lock(lock_state, comp_id, my_session_id):
 
 @callback(
     Output({"type": "cluster_color_lock_indicator", "index": ALL}, "id"),
-    Input({"type": "cluster_color_picker", "index": ALL}, "value"),
+    [Input({"type": "cluster_color_picker", "index": ALL}, "value"),
+     # ver56.6: 色見本(スウォッチ)からの選択も発火元にする。
+     #   スウォッチを押すと**全ピッカーの値が書き戻される**ため、ピッカーだけを
+     #   Input にしていると発火元が先頭のクラスタに解決されてしまい、
+     #   **触ってもいないクラスタがロックされ、触ったクラスタは無防備**になっていた。
+     #   利用者が実際に動かした prop が triggered の先頭に来るので、
+     #   スウォッチを並べておけば既存の `triggered.get("index")` がそのまま正しい。
+     Input({"type": "cluster_color_swatch", "index": ALL, "color": ALL},
+           "n_clicks")],
     [State("seurat_rds_path_store", "data"),
      State("session_id_store", "data"),
      State({"type": "cluster_color_lock_indicator", "index": ALL}, "id")],
     prevent_initial_call=True,
 )
-def acquire_cluster_color_lock(_vals, rds_path, session_id, ids):
+def acquire_cluster_color_lock(_vals, _swatch_clicks, rds_path, session_id, ids):
     from app.callbacks.edit_lock_callbacks import acquire_lock_for_callback
     triggered = ctx.triggered_id
     if not isinstance(triggered, dict) or not rds_path or not session_id:

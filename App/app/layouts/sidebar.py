@@ -51,6 +51,13 @@ def _path_input_row(input_id: str, btn_id: str, value: str, placeholder: str):
 def create_sidebar():
     ls = load_last_settings()  # 前回の設定を復元
     return html.Div(id="sidebar_content", className="sidebar", children=[
+        # ver56.7: 「適用」ボタンの結果を伝える欄。
+        #   欄が空のまま適用すると `x or no_update` で何も起きず、成功もエラーも
+        #   出ないため **ボタンが壊れているように見えていた**。
+        #   「空欄で既存の指定を潰さない」方針は正しいので変えず、
+        #   何が起きたかだけを必ず伝える。3 つの適用ボタンで共用する。
+        html.Div(id="apply_defaults_status",
+                 style={"fontSize": "0.8rem", "marginBottom": "5px"}),
         # 解析手法選択（「解析設定」タブ以外では非表示）
         html.Div(
             id="method_selector_section",

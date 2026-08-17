@@ -363,6 +363,37 @@ _accordion_seen_lock = threading.Lock()
 _MAX_ACCORDION_SEEN = 256
 
 
+def _accordion_key(section: str, session_id, rds_path) -> tuple:
+    return (str(section), str(session_id or "__nosession__"), str(rds_path or ""))
+
+
+def _accordion_remember(key: tuple, is_open: bool):
+    """開閉状態を記録し、前回値を返す（無ければ None）。"""
+    with _accordion_seen_lock:
+        prev = _accordion_seen.get(key)
+        _accordion_seen[key] = is_open
+        _accordion_seen.move_to_end(key)
+        while len(_accordion_seen) > _MAX_ACCORDION_SEEN:
+            _accordion_seen.popitem(last=False)
+    return prev
+
+
+def accordion_record_closed(section: str, session_id, rds_path) -> None:
+    """「今このセクションは閉じている」ことだけを記録する。
+
+    ★ ver56.5 (デバッグ総点検 §4.3 / C09-1・C04-1):
+      呼び出し元は「セクションが閉じていれば描画せず早期 return」する作りだが、
+      その経路では `accordion_toggle_is_noop` に到達しないため、
+      **閉じている間ずっと記録が「開」のまま**になっていた。
+      その結果、開き直したときに prev=True / is_open=True となり
+      「変化なし」と誤判定され、**畳んでいる間に行った改名・色変更・マージ切替が
+      画面にも一括保存にも反映されない**（古い図が成果物として保存される）。
+
+      早期 return の直前でこれを呼び、閉状態を必ず残すこと。
+    """
+    _accordion_remember(_accordion_key(section, session_id, rds_path), False)
+
+
 def accordion_toggle_is_noop(section: str, session_id, rds_path,
                              active_items, triggered_id) -> bool:
     """accordion の開閉だけが理由の発火で、当該セクションの状態が不変なら True。
@@ -372,14 +403,8 @@ def accordion_toggle_is_noop(section: str, session_id, rds_path,
     active_list = (active_items if isinstance(active_items, list)
                    else ([active_items] if active_items else []))
     is_open = section in active_list
-    key = (str(section), str(session_id or "__nosession__"), str(rds_path or ""))
-
-    with _accordion_seen_lock:
-        prev = _accordion_seen.get(key)
-        _accordion_seen[key] = is_open
-        _accordion_seen.move_to_end(key)
-        while len(_accordion_seen) > _MAX_ACCORDION_SEEN:
-            _accordion_seen.popitem(last=False)
+    prev = _accordion_remember(_accordion_key(section, session_id, rds_path),
+                               is_open)
 
     # accordion 以外がトリガー → 通常の再描画（表示内容が変わっている）
     if triggered_id != "interactive_accordion":
@@ -707,6 +732,24 @@ def _clear_cancel_event(token):
         _LOAD_CANCELS.pop(token, None)
 
 
+def _is_load_cancelled(token) -> bool:
+    """この読み込みがキャンセルされているか。
+
+    ver56.6: 読み込みは 4 段(A→B→C→D)の連鎖で進む。以前は合図(Event)を
+    段 B の `finally` で破棄し、しかも識別子(token)を段 C・D へ渡していなかった。
+    そのため段 B の途中でキャンセルしても段 C・D はそれを知らずに走り切り、
+    「読み込みをキャンセルしました。」の表示を後から上書きしていた
+    (利用者にはキャンセルが効いていないように見える)。
+
+    各段の冒頭でこれを見て、合図が立っていればその場で打ち切る。
+    """
+    if not token:
+        return False
+    with _LOAD_CANCELS_LOCK:
+        ev = _LOAD_CANCELS.get(token)
+    return bool(ev is not None and ev.is_set())
+
+
 @callback(
     Output("btn_cancel_load", "style"),
     Input("load_progress_container", "style"),
@@ -805,6 +848,10 @@ def load_stage_b_extract(trigger):
     derive_from = trigger.get("derive_from")
     cancel_event = _get_or_create_cancel_event(token)
     _set_active_key(rds_path)
+    # ver56.6: 以前は `finally: _clear_cancel_event(token)` で無条件に合図を捨てて
+    #   いたため、**段 C・D へ合図が届く前に消えて**いた。連鎖が続くときだけ
+    #   合図を残し、ここで終わる経路(異常系・キャンセル)では従来どおり片付ける。
+    chain_continues = False
     try:
         # 派生PCA（未補正）: 未生成なら Harmony RDS から UMAP を計算して生成（初回のみ）。
         if derive_from and not Path(rds_path).exists():
@@ -828,6 +875,7 @@ def load_stage_b_extract(trigger):
         state.pop("_deg_data", None)
         state.pop("_calib_warning", None)
         _set_active_key(rds_path)
+        chain_continues = True   # 連鎖が段 C へ進む → 合図はまだ残す
     except FileNotFoundError:
         return (no_update, no_update, _PROGRESS_HIDE,
                 _load_error_alert(
@@ -852,11 +900,21 @@ def load_stage_b_extract(trigger):
                 _load_error_alert(f"抽出データの読み込みに失敗しました: {e}"),
                 no_update)
     finally:
+        if not chain_continues:
+            _clear_cancel_event(token)
+
+    if _is_load_cancelled(token):
         _clear_cancel_event(token)
+        return (no_update, no_update, _PROGRESS_HIDE,
+                dbc.Alert("読み込みをキャンセルしました。", color="warning",
+                          className="mb-0"),
+                no_update)
     return (
         "マーカー(DEG)を読み込み中…", 55, no_update, no_update,
         {"rds_path": rds_path, "method": integration_method,
-         "result_folder": trigger["result_folder"], "n": trigger["n"]},
+         "result_folder": trigger["result_folder"], "n": trigger["n"],
+         # 段 C・D がキャンセルを確認できるよう合図の識別子を引き継ぐ
+         "token": token},
     )
 
 
@@ -892,6 +950,16 @@ def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
     rds_path = trigger["rds_path"]
     integration_method = trigger["method"]
     result_folder = trigger["result_folder"]
+    token = trigger.get("token")
+    # ver56.6: 前の段の途中でキャンセルされていたら、ここで打ち切る。
+    #   以前は合図が届いていなかったため、この段が走り切って
+    #   「読み込みをキャンセルしました。」の表示を上書きしていた。
+    if _is_load_cancelled(token):
+        _clear_cancel_event(token)
+        return (no_update, no_update, _PROGRESS_HIDE,
+                dbc.Alert("読み込みをキャンセルしました。", color="warning",
+                          className="mb-0"),
+                no_update)
     _set_active_key(rds_path)
     try:
         state = _get_state(rds_path)
@@ -978,10 +1046,17 @@ def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
         return (no_update, no_update, _PROGRESS_HIDE,
                 _load_error_alert(f"読み込みエラー: {e}"),
                 no_update)
+    if _is_load_cancelled(token):
+        _clear_cancel_event(token)
+        return (no_update, no_update, _PROGRESS_HIDE,
+                dbc.Alert("読み込みをキャンセルしました。", color="warning",
+                          className="mb-0"),
+                no_update)
     return (
         "設定を復元中…", 85, no_update, no_update,
         {"rds_path": rds_path, "method": integration_method,
-         "result_folder": result_folder, "n": trigger["n"]},
+         "result_folder": result_folder, "n": trigger["n"],
+         "token": token},   # 最終段 (D) までキャンセルの合図を引き継ぐ
     )
 
 
@@ -1066,6 +1141,21 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
     if not trigger:
         raise PreventUpdate
     rds_path = trigger.get("rds_path") or rds_map.get(integration_method)
+    token = trigger.get("token")
+    # ver56.6: 最終段。ここまで来る間にキャンセルされていたら打ち切り、
+    #   キャンセル表示を後から上書きしない。連鎖はここで終わるので、
+    #   合図の後片付け (_clear_cancel_event) もこの段で行う。
+    _cancelled = _is_load_cancelled(token)
+    _clear_cancel_event(token)
+    if _cancelled:
+        return (
+            dbc.Alert("読み込みをキャンセルしました。", color="warning",
+                      className="mb-0"),
+            {"display": "none"}, [], [], [], None, None, None,
+            {"display": "none"}, [], [], [], [],
+            {"display": "none"}, [],
+            no_update, no_update, no_update, no_update,
+        ) + _no_cal + _sap_hide + _no_label_clear + _td
 
     try:
         # 各リンクは別リクエスト = ContextVar がリセットされるため、ここで再確立

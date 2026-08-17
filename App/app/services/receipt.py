@@ -152,13 +152,29 @@ def build_receipt(params: dict,
         "calibration_regression_mode": params.get("calibration_regression_mode"),
         "calibration_coefficients": params.get("calibration_coefficients"),
         "calibration_r_squared": params.get("calibration_r_squared"),
+        # ver56.5 (R3-RETRY): メモリ不足で軽い設定へ落ちたときに実際に使われた値。
+        # サイドカーに無ければ（＝古い解析 / 縮退なし）構成値のまま。
+        "n_var_features": _first(r_sidecar.get("n_var_features_effective"),
+                                 params.get("n_var_features")),
+        "max_pcs": _first(r_sidecar.get("max_pcs_effective"),
+                          params.get("max_pcs")),
     }
+    # ver56.5 (R3-RETRY): R のリトライは可変特徴量 3000→1000→500 /
+    # 主成分 30→20→15 / UMAP 次元 30→20→15 と黙って縮退する。以前は構成値しか
+    # 記録されなかったため、**論文の Methods に実際とは違う次元数が載っていた**。
+    # 実効値があればそちらを本欄に載せ、構成値は dims_configured に併記する。
+    dims_configured = params.get("umap_dims_n")
+    dims_effective = _first(r_sidecar.get("umap_dims_effective"), dims_configured)
+    retry_tier = r_sidecar.get("retry_tier_used")
     umap = {
         "seed": r_sidecar.get("seed", params.get("umap_seed")),
         "n_neighbors": params.get("umap_n_neighbors"),
         "min_dist": params.get("umap_min_dist"),
         "metric": params.get("umap_metric"),
-        "dims": params.get("umap_dims_n"),
+        "dims": dims_effective,
+        "dims_configured": dims_configured,
+        "retry_tier_used": retry_tier,
+        "retry_degraded": bool(retry_tier and int(retry_tier) > 1),
         "threads": r_sidecar.get("threads", params.get("omp_num_threads")),
     }
     clustering = {

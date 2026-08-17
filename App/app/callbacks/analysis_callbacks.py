@@ -168,6 +168,39 @@ def _strip_hp_suffix(name: str) -> str:
     return _HP_SUFFIX_RE.sub("", name or "")
 
 
+def _resolved_output_dir(output_dir):
+    """出力先を正規化して返す。未設定・空白のみなら None。
+
+    ver56.6: `Path("")` は `.`（カレント）になるため、出力先が空欄のまま
+    実行すると **アプリの作業フォルダの下に解析結果が書き出されていた**。
+    「空欄」「空白のみ」「未設定」を等しく未設定として扱い、実行前に止める。
+    """
+    text = (output_dir or "").strip()
+    return text or None
+
+
+def _resolve_full_output_dir(output_dir, output_subfolder, *, downstream,
+                             umap_nn=None, umap_md=None, umap_dims=None,
+                             umap_metric=None):
+    """実際に書き込む出力先を決める。出力先が未設定なら None。
+
+    ver56.7 (C03-3): 「どのフォルダに書くか」を **1 か所に集約**する。
+    以前は上書き確認モーダルと実行本体がそれぞれ組み立てており、
+    片方だけ直すと **確認した先と実際に書く先が食い違う**。とくに ④
+    (reduction 再利用) は UMAP ハイパラからサフィックスを自動命名するため、
+    その危険が大きかった（実際、確認モーダル側は ④ を知らなかった）。
+    """
+    base = _resolved_output_dir(output_dir)
+    if not base:
+        return None
+    if downstream:
+        suffix = _umap_hp_suffix(umap_nn, umap_md, umap_dims, umap_metric)
+        if suffix:
+            stem = _strip_hp_suffix(output_subfolder or "umap")
+            return str(Path(base) / f"{stem}{suffix}")
+    return str(Path(base) / (output_subfolder or ""))
+
+
 def _output_has_existing_results(full_output_dir: str) -> bool:
     """出力先フォルダに既存の解析結果があるか判定（上書き警告ゲート用）。
 
@@ -219,21 +252,38 @@ def _output_has_existing_results(full_output_dir: str) -> bool:
      Output("overwrite_pending_mode", "data")],
     Input("run_analysis", "n_clicks"),
     Input("btn_make_reduction", "n_clicks"),
+    # ver56.7 (C03-3): ④ も確認対象にする。④ の出力先は UMAP ハイパラから
+    #   自動命名されるため、同じ条件でもう一度押すと前回と同じ名前になり、
+    #   **前回の ④ の結果が黙って上書きされて消えて**いた。
+    Input("btn_run_downstream", "n_clicks"),
     [State("output_dir", "value"),
-     State("output_subfolder", "value")],
+     State("output_subfolder", "value"),
+     # ④ の出力先を実行本体と同じ式で求めるために必要
+     State("umap_n_neighbors_input", "value"),
+     State("umap_min_dist_input", "value"),
+     State("umap_dims_input", "value"),
+     State("umap_metric_input", "value")],
     prevent_initial_call=True,
 )
-def open_overwrite_modal(run_clicks, reduction_clicks, output_dir, output_subfolder):
-    """フル/reductionのみ実行時、出力先に既存結果があれば上書き確認モーダルを開く。
+def open_overwrite_modal(run_clicks, reduction_clicks, downstream_clicks,
+                         output_dir, output_subfolder,
+                         umap_nn=None, umap_md=None, umap_dims=None,
+                         umap_metric=None):
+    """実行前に、出力先に既存結果があれば上書き確認モーダルを開く。
 
     既存結果が無ければモーダルは開かない（従来どおり即実行）。pending mode に
-    どちらのボタンだったか("run"/"reduction")を記録し、確認後の本実行で復元する。
+    どのボタンだったか("run"/"reduction"/"downstream")を記録し、
+    確認後の本実行で復元する。
     """
     trig = ctx.triggered_id
-    mode = "reduction" if trig == "btn_make_reduction" else "run"
-    if not output_dir:
+    mode = {"btn_make_reduction": "reduction",
+            "btn_run_downstream": "downstream"}.get(trig, "run")
+    target = _resolve_full_output_dir(
+        output_dir, output_subfolder, downstream=(mode == "downstream"),
+        umap_nn=umap_nn, umap_md=umap_md, umap_dims=umap_dims,
+        umap_metric=umap_metric)
+    if not target:
         return False, no_update, mode
-    target = str(Path(output_dir) / (output_subfolder or ""))
     if not _output_has_existing_results(target):
         return False, no_update, mode
     try:
@@ -398,14 +448,41 @@ def run_analysis(
     # 出力先に既存結果がある状態で「解析実行」/「reductionのみ」を押した場合は、
     # 確認モーダル（open_overwrite_modal が表示）で「実行する」が押されるまで本実行しない。
     if trig == "confirm_overwrite_results":
-        # 確認後の本実行: 元のモードを pending から復元（downstream は警告対象外）
+        # 確認後の本実行: 元のモードを pending から復元する。
+        # ver56.7 (C03-3): 以前は ④ を「警告対象外」として downstream_mode を
+        #   無条件に False へ潰していた。④ も確認対象にした以上、ここを直さないと
+        #   **確認を経ると ④ ではなく通常解析が走ってしまう**。
         reduction_only_mode = (overwrite_pending_mode == "reduction")
-        downstream_mode = False
+        downstream_mode = (overwrite_pending_mode == "downstream")
         if not confirm_overwrite_clicks:
             return (no_update,) * 10
-    elif trig in ("run_analysis", "btn_make_reduction") and output_dir:
-        _target = str(Path(output_dir) / (output_subfolder or ""))
-        if _output_has_existing_results(_target):
+    # ── 入力チェックのゲート (ver56.7 / C03-4) ──
+    # 以前はチェックが表示しかしておらず、赤いエラーと「解析を開始しました」の緑が
+    # **同時に出て解析が走って**いた。表示側と同じ `_collect_preflight_errors()` を
+    # ここでも呼んで、実行しても必ず失敗する入力なら起動しない。
+    # 「出力先の親フォルダが無い」は下の mkdir(parents=True) が自分で解消するので
+    # blocking には入らない（入れると正常な実行まで止まる）。
+    if trig != "confirm_overwrite_results":
+        _blocking, _ = _collect_preflight_errors(
+            desi_method, tims_method, data_folder, reanalysis_data_folder,
+            output_dir, p_thresh, logfc_thresh, tolerance_mz,
+            resume_rds, rds_folder, rds_folder_reanalysis)
+        if _blocking:
+            return (
+                app_state, True,
+                {"display": "none"}, {"display": "none"}, {"display": "none"},
+                no_update,
+                "入力チェックのエラーを解消してください: " + " / ".join(_blocking),
+                True,
+                no_update, no_update,
+            )
+
+    if trig in ("run_analysis", "btn_make_reduction", "btn_run_downstream"):
+        _target = _resolve_full_output_dir(
+            output_dir, output_subfolder, downstream=downstream_mode,
+            umap_nn=umap_n_neighbors_input, umap_md=umap_min_dist_input,
+            umap_dims=umap_dims_input, umap_metric=umap_metric_input)
+        if _target and _output_has_existing_results(_target):
             # 実行は止める（モーダル表示は open_overwrite_modal が担当）
             return (no_update,) * 10
 
@@ -431,6 +508,19 @@ def run_analysis(
             "reanalysis_logfc_thresh": reanalysis_logfc_thresh,
             "reanalysis_ion_mode": reanalysis_ion_mode,
             "reanalysis_tolerance_mz": reanalysis_tolerance_mz,
+            # ver56.5: 画面は復元しようとしていたのに、誰も保存していなかった項目。
+            # 保存経路が無いと `ls.get(...)` は常に既定値を返すため、
+            # 「設定して解析したのに次に開くと戻っている」になっていた。
+            "adduct_filter": adduct_filter,
+            "reanalysis_adduct_filter": reanalysis_adduct_filter,
+            "mz_align_ppm": mz_align_ppm,
+            "use_annotation_check": use_annotation_check,
+            "resume_reanalysis": resume_reanalysis,
+            "resume_reanalysis_dir": resume_reanalysis_dir,
+            "reanalysis_annotation_path": reanalysis_annotation_path,
+            "rds_folder_reanalysis": rds_folder_reanalysis,
+            "cluster_source": cluster_source,
+            "reanalysis_calibration_use_previous": reanalysis_cal_use_previous,
             "desi_v8_script_path": desi_v8_script,
             "desi_cluster_filter_script_path": desi_cluster_script,
             "tims_v8_script_path": tims_v8_script,
@@ -481,14 +571,25 @@ def run_analysis(
     # リマップする（last_result_dir の部分集合 reduction を④がロードして再UMAP）。
     if downstream_mode and analysis_type in ("desi_cluster_filter", "tims_cluster_filter"):
         analysis_type = "tims_v8" if analysis_type == "tims_cluster_filter" else "desi_v8"
-    full_output_dir = str(Path(output_dir) / output_subfolder)
-    if downstream_mode:
-        # ④: ハイパラ反復を上書きせず比較できるよう、UMAPハイパラ値で出力サブフォルダを自動命名
-        _suf = _umap_hp_suffix(umap_n_neighbors_input, umap_min_dist_input,
-                               umap_dims_input, umap_metric_input)
-        if _suf:
-            _base = _strip_hp_suffix(output_subfolder or "umap")
-            full_output_dir = str(Path(output_dir) / f"{_base}{_suf}")
+    # ver56.6: 出力先の空欄検査。`Path("")` は `.`（カレント）になるので、
+    #   空欄のまま実行するとアプリの作業フォルダへ結果が書き出される。
+    #   出力サブフォルダが未設定だと `Path(x) / None` が TypeError になり、
+    #   ここは try の外なのでボタンが死んだように見えていた。
+    # ver56.7 (C03-3): 出力先の決め方は上書き確認モーダルと共通の
+    #   `_resolve_full_output_dir()` に集約した（確認した先と実際に書く先が
+    #   食い違わないようにするため）。④ のサフィックス自動命名もそこで行う。
+    full_output_dir = _resolve_full_output_dir(
+        output_dir, output_subfolder, downstream=downstream_mode,
+        umap_nn=umap_n_neighbors_input, umap_md=umap_min_dist_input,
+        umap_dims=umap_dims_input, umap_metric=umap_metric_input)
+    if not full_output_dir:
+        return (
+            app_state, True,
+            {"display": "none"}, {"display": "none"}, {"display": "none"},
+            no_update,
+            "出力先を指定してください", True,
+            no_update, no_update,
+        )
     Path(full_output_dir).mkdir(parents=True, exist_ok=True)
 
     try:
@@ -523,8 +624,16 @@ def run_analysis(
                 #   テンプレートのハードコード値が生き残るため）。
                 "annotation_enable": ("db" in _use_annot),
                 "use_embedded_annotation": ("embedded" in _use_annot),
-                "p_thresh": float(p_thresh) if p_thresh else 0.05,
-                "logfc_thresh": float(logfc_thresh) if logfc_thresh else 0.25,
+                # ★ ver56.5 (§4.2 / C03-1): `float(x) if x else 既定` は
+                #   **0 を既定値に化けさせる**（0 は falsy）。`logfc_thresh=0`
+                #   （= 倍率で絞り込まない）や `p_thresh=0` は画面から入力できる
+                #   正当な指定で、min=0 も宣言されている。画面には 0 が表示された
+                #   まま 0.25 / 0.05 で計算されるため、利用者は指定どおり解析された
+                #   と信じてしまう。再解析側 (:754-756) は `is not None` で 0 を
+                #   正しく通しており、同じ入力欄が経路によって別解釈になっていた。
+                #   既定値は `PARAM_BOUNDS` を単一出典とする `coerce_number` に委ねる。
+                "p_thresh": float(coerce_number(p_thresh, "p_thresh")),
+                "logfc_thresh": float(coerce_number(logfc_thresh, "logfc_thresh")),
                 "resume_from_rds": bool(resume_rds),
                 "resume_rds_paths": [],
                 # 入力正規化ポリシー（UIトグル）: OFF=正規化済み入力 → INPUT_NORMALIZED=TRUE
@@ -583,7 +692,8 @@ def run_analysis(
             # TIMS固有パラメータ
             if analysis_type == "tims_v8":
                 params["ion_mode"] = ion_mode or "Positive"
-                params["tolerance_mz"] = float(tolerance_mz) if tolerance_mz else 0.01
+                # ★ ver56.5 (§4.2 / C03-1 と同型): 0 が既定値に化けないようにする
+                params["tolerance_mz"] = float(coerce_number(tolerance_mz, "tolerance_mz"))
                 if adduct_filter:
                     params["adduct_patterns"] = adduct_filter
                 # 解析シナリオ → 補正ポリシーを注入（ver6 の ANNOTATION_ROLE 等）
@@ -632,7 +742,12 @@ def run_analysis(
 
             # --- m/z アライメント (ppm) ---
             if analysis_type == "tims_v8":
-                params["mz_align_ppm"] = float(mz_align_ppm) if mz_align_ppm else 0
+                # ★ ver56.5 (§4.2 / C03-1 と同型): 既定値も 0 なので結果は同じだが、
+                #   `x if x else 定数` の形を残すと将来既定値が変わった瞬間に
+                #   「0 を指定したのに既定値で走る」に転落する。既定値の出典を
+                #   `PARAM_BOUNDS` に一本化しておく。
+                params["mz_align_ppm"] = float(
+                    coerce_number(mz_align_ppm, "mz_align_ppm"))
 
             # --- Annotation Filter（TIMS: Parquet内の切片選択） ---
             if analysis_type == "tims_v8" and annotation_filter_data:
@@ -2103,16 +2218,33 @@ def update_cal_sample_options(selected_samples):
      Output("cal_sample_selector_prev", "data")],
     Input("cal_sample_selector", "value"),
     [State("cal_sample_selector_prev", "data"),
-     State("calibration_table", "data"),
+     # ver56.6 (C13-H5): 切替前の表は **Store** から読む。
+     #   以前は DataTable (`calibration_table`) から読んでいたが、DataTable は
+     #   Store から `sync_calibration_store_to_table` 経由で同期される「写し」で、
+     #   同じ応答で Store が書き換わっても写しはまだ古いことがある。
+     #   手動編集は `recalculate_ppm_on_edit` が Store へ書き戻しているので、
+     #   Store を読めば手動編集も含めた最新値が得られる。
+     State("calibration_table_data", "data"),
      State("cal_per_sample_store", "data")],
     prevent_initial_call=True,
 )
 def switch_cal_sample(new_sample, prev_sample, current_table, store):
     """キャリブレーション対象サンプル切替時にテーブルを保存/復元
-    NOTE: State は calibration_table (DataTable) から読み取り（手動編集を含む最新値）、
+
     Output は calibration_table_data (Store) へ書き込み →
-    sync_calibration_store_to_table 経由で DataTable に反映
+    sync_calibration_store_to_table 経由で DataTable に反映される。
     """
+    # ver56.6 (C13-H5): 切替が起きていないなら何も書き換えない。
+    #   「プリセット読込」は 1 回の応答で較正表・サンプル別データ・セレクタ
+    #   (= "__all__") を同時に書く。3 つ目がこのコールバックを発火させるため、
+    #   以前は **読み込んだばかりの表を切替前の内容で上書き**し、プリセットの
+    #   サンプル別データごと消していた（利用者には「プリセットを選んだのに
+    #   前の較正表のまま」に見え、気づかずに解析すると別の補正が掛かる）。
+    #   読込側が cal_sample_selector_prev も "__all__" に揃えるので、
+    #   ここは「切替は起きていない」と判断できる。
+    if new_sample == prev_sample:
+        return no_update, no_update, no_update
+
     store = dict(store or {})
     # 現在のテーブルデータを前のサンプルキーに保存
     if prev_sample and current_table is not None:
@@ -2158,7 +2290,14 @@ def _cal_preset_options():
      Output("calibration_min_peaks", "value", allow_duplicate=True),
      Output("cal_preset_status", "children"),
      Output("cal_per_sample_store", "data", allow_duplicate=True),
-     Output("cal_sample_selector", "value", allow_duplicate=True)],
+     Output("cal_sample_selector", "value", allow_duplicate=True),
+     # ver56.6 (C13-H5): セレクタを "__all__" に戻すと switch_cal_sample が
+     #   発火し、「サンプルを切り替えた」とみなして**読み込んだばかりの表を
+     #   切替前の内容で上書き**していた。ここで「切替前も __all__ だった」と
+     #   宣言しておくと、switch_cal_sample は切替が起きていないと判断して
+     #   何も書き換えない。1 コールバックの全 Output は下流の発火前に
+     #   まとめて反映されるので、State は必ずこの値で届く。
+     Output("cal_sample_selector_prev", "data", allow_duplicate=True)],
     Input("cal_preset_select", "value"),
     State("ion_mode", "value"),
     prevent_initial_call=True,
@@ -2169,10 +2308,11 @@ def load_cal_preset(preset_name, current_ion_mode):
     update_calibration_table_on_matrix が発火しテーブルがリセットされるため）
     """
     if not preset_name:
-        return [no_update] * 4 + ["", no_update, no_update]
+        return [no_update] * 4 + ["", no_update, no_update, no_update]
     p = load_calibration_preset(preset_name)
     if not p:
-        return [no_update] * 4 + ["⚠ プリセットが見つかりません", no_update, no_update]
+        return ([no_update] * 4
+                + ["⚠ プリセットが見つかりません", no_update, no_update, no_update])
 
     matrix_info = p.get("matrix", "?")
     ion_info = p.get("ion_mode", "?")
@@ -2195,6 +2335,7 @@ def load_cal_preset(preset_name, current_ion_mode):
         status,
         per_sample,
         "__all__",
+        "__all__",   # cal_sample_selector_prev も揃える (C13-H5)
     ]
 
 
@@ -2344,65 +2485,58 @@ def validate_output_dir_input(folder):
     ])
 
 
-@callback(
-    Output("validation_summary", "children"),
-    Output("validation_summary", "style"),
-    Input("run_analysis", "n_clicks"),
-    [State("analysis_method", "value"),
-     State("analysis_method_tims", "value"),
-     State("data_folder", "value"),
-     State("reanalysis_data_folder", "value"),
-     State("output_dir", "value"),
-     State("p_thresh", "value"),
-     State("logfc_thresh", "value"),
-     State("tolerance_mz", "value"),
-     State("resume_rds", "value"),
-     State("rds_folder", "value"),
-     State("rds_folder_reanalysis", "value")],
-    prevent_initial_call=True,
-)
-def preflight_validation(
-    n_clicks, desi_method, tims_method,
-    data_folder, reanalysis_data_folder, output_dir,
-    p_thresh, logfc_thresh, tolerance_mz,
-    resume_rds, rds_folder, rds_folder_reanalysis,
-):
-    """解析実行ボタン押下時にプリフライトチェックを実行する。
-    問題がなければ非表示のまま。問題があればエラー一覧を表示。"""
-    if not n_clicks:
-        return "", {"display": "none"}
-
-    errors = []
+# ver56.7 (C03-4): 入力チェックを **表示側と実行側の共通関数**にする。
+#   以前はチェックが表示しかしておらず、実行本体はクリック数しか見ていなかったため、
+#   「入力チェックでエラーが見つかりました」の赤い枠と「解析を開始しました」の緑が
+#   **同時に出て解析が走って**いた。利用者はエラーなのか動いているのか判断できず、
+#   しばらく待たされた末に R 側のエラーログで失敗を知ることになる。
+#
+#   ★ 止めすぎないことが最重要:
+#     出力先の「親フォルダが見つかりません」は実行本体が mkdir(parents=True) で
+#     **自分で作って解消する**。これを止める対象に入れると、**今まで正常に
+#     動いていた実行まで止まる**。そこで結果を 2 つに分ける。
+#
+#       blocking … 実行しても必ず失敗する（データフォルダが無い / 書き込み権限が
+#                  無い / 数値が範囲外 / 出力先が未入力）→ 実行を止める
+#       advisory … 実行すれば解消する（出力先の親フォルダが無い）→ 知らせるだけ
+#
+#   実行本体が「別のコールバックが書いた Store」を読む形にしなかったのは、
+#   同じクリックで両方が走るため **前回の検査結果を読んでしまう**ため。
+#   両者がこの関数を自分で呼ぶ。
+def _collect_preflight_errors(desi_method, tims_method,
+                              data_folder, reanalysis_data_folder, output_dir,
+                              p_thresh, logfc_thresh, tolerance_mz,
+                              resume_rds, rds_folder, rds_folder_reanalysis):
+    """入力を検査して (blocking, advisory) の 2 つのリストを返す。"""
+    blocking, advisory = [], []
     analysis_type = desi_method or tims_method or "desi_v8"
     is_tims = bool(tims_method)
     is_reanalysis = analysis_type in ("desi_cluster_filter", "tims_cluster_filter")
 
     if is_reanalysis:
-        # 再解析: reanalysis_data_folder を検証
         r = validate_data_folder(reanalysis_data_folder, is_tims=is_tims)
         if not r["ok"]:
-            errors.append(f"データフォルダ: {r['msg']}")
-
-        # 再解析: RDSフォルダを検証
+            blocking.append(f"データフォルダ: {r['msg']}")
         r = validate_rds_folder(rds_folder_reanalysis)
         if not r["ok"]:
-            errors.append(f"RDSフォルダ: {r['msg']}")
+            blocking.append(f"RDSフォルダ: {r['msg']}")
     else:
-        # UMAP解析: data_folder を検証
         r = validate_data_folder(data_folder, is_tims=is_tims)
         if not r["ok"]:
-            errors.append(f"データフォルダ: {r['msg']}")
-
-        # RDSフォルダ (途中再開時のみ)
+            blocking.append(f"データフォルダ: {r['msg']}")
         if resume_rds:
             r = validate_rds_folder(rds_folder)
             if not r["ok"]:
-                errors.append(f"RDSフォルダ: {r['msg']}")
+                blocking.append(f"RDSフォルダ: {r['msg']}")
 
-    # 出力先
+    # 出力先: 「親フォルダが無い」だけは実行時に自動作成されるので止めない
     r = validate_output_dir(output_dir)
     if not r["ok"]:
-        errors.append(f"出力先: {r['msg']}")
+        if "親フォルダが見つかりません" in r["msg"]:
+            advisory.append(
+                f"出力先: {output_dir}（存在しないため、実行時に作成されます）")
+        else:
+            blocking.append(f"出力先: {r['msg']}")
 
     # 数値パラメータ
     # ★ ver52.3 ⑤: 範囲をここに直接書いていたので、`PARAM_BOUNDS`・レイアウトの
@@ -2417,21 +2551,80 @@ def preflight_validation(
     ]:
         ok, msg = validate_param(param_id, val)
         if not ok:
-            errors.append(msg)
+            blocking.append(msg)
 
-    if not errors:
+    return blocking, advisory
+
+
+def _preflight_alert(blocking, advisory):
+    """検査結果を画面表示用のアラートにする。問題が無ければ None。"""
+    if blocking:
+        return dbc.Alert(
+            children=[
+                html.Strong("入力チェックでエラーが見つかりました:"),
+                html.Ul([html.Li(e, style={"fontSize": "0.85rem"})
+                         for e in blocking],
+                        style={"marginBottom": 0, "marginTop": "5px"}),
+                html.Div("修正するまで解析は開始しません。",
+                         style={"fontSize": "0.8rem", "marginTop": "5px"}),
+            ],
+            color="danger", dismissable=True, style={"marginBottom": "10px"},
+        )
+    if advisory:
+        # 実行すれば解消する件。「エラー」とは言わない
+        # （赤いエラーと「開始しました」が同時に出る、が症状の本体だったため）
+        return dbc.Alert(
+            children=[
+                html.Strong("確認:"),
+                html.Ul([html.Li(e, style={"fontSize": "0.85rem"})
+                         for e in advisory],
+                        style={"marginBottom": 0, "marginTop": "5px"}),
+            ],
+            color="warning", dismissable=True, style={"marginBottom": "10px"},
+        )
+    return None
+
+
+@callback(
+    Output("validation_summary", "children"),
+    Output("validation_summary", "style"),
+    # ver56.7: ①④ でもチェックを走らせる（以前は「解析実行」だけだった）
+    Input("run_analysis", "n_clicks"),
+    Input("btn_make_reduction", "n_clicks"),
+    Input("btn_run_downstream", "n_clicks"),
+    [State("analysis_method", "value"),
+     State("analysis_method_tims", "value"),
+     State("data_folder", "value"),
+     State("reanalysis_data_folder", "value"),
+     State("output_dir", "value"),
+     State("p_thresh", "value"),
+     State("logfc_thresh", "value"),
+     State("tolerance_mz", "value"),
+     State("resume_rds", "value"),
+     State("rds_folder", "value"),
+     State("rds_folder_reanalysis", "value")],
+    prevent_initial_call=True,
+)
+def preflight_validation(
+    n_clicks, reduction_clicks, downstream_clicks,
+    desi_method, tims_method,
+    data_folder, reanalysis_data_folder, output_dir,
+    p_thresh, logfc_thresh, tolerance_mz,
+    resume_rds, rds_folder, rds_folder_reanalysis,
+):
+    """起動ボタン押下時にプリフライトチェックを実行する。
+
+    問題がなければ非表示のまま。止める問題はエラー、実行すれば解消する問題は
+    「確認」として色を分けて出す。実行を止めるかどうかは run_analysis が
+    同じ `_collect_preflight_errors()` を呼んで自分で判断する。
+    """
+    blocking, advisory = _collect_preflight_errors(
+        desi_method, tims_method, data_folder, reanalysis_data_folder,
+        output_dir, p_thresh, logfc_thresh, tolerance_mz,
+        resume_rds, rds_folder, rds_folder_reanalysis)
+    alert = _preflight_alert(blocking, advisory)
+    if alert is None:
         return "", {"display": "none"}
-
-    items = [html.Li(e, style={"fontSize": "0.85rem"}) for e in errors]
-    alert = dbc.Alert(
-        children=[
-            html.Strong("入力チェックでエラーが見つかりました:"),
-            html.Ul(items, style={"marginBottom": 0, "marginTop": "5px"}),
-        ],
-        color="danger",
-        dismissable=True,
-        style={"marginBottom": "10px"},
-    )
     return alert, {"display": "block"}
 
 

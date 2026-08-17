@@ -523,24 +523,35 @@ def _get_merged_label_positions(accumulated_positions=None,
      Input("umap_merge_toggle", "value"),
      Input("umap_merge_color_mode", "value"),
      Input("interactive_accordion", "active_item")],
-    State("accumulated_label_positions", "data"),
+    [State("accumulated_label_positions", "data"),
+     # ★ ver56.5 (§4.3 / C09-2): 開閉記録を利用者ごとに分けるための session_id。
+     #   隣の facet 版 (:662) と Spatial 版は渡していたが、統合 UMAP だけ
+     #   None を渡しており、全利用者が同じ鍵 (`__nosession__`) を共有していた。
+     State("session_id_store", "data")],
 )
 def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
                      display_mode, marker_size, exclude_clusters, label_size,
                      rds_path, _fs_trigger, custom_colors, cluster_name_map,
                      merge_toggle, merge_color_mode, active_items,
-                     accumulated_positions):
+                     accumulated_positions, session_id=None):
+    from app.callbacks.interactive_callbacks import (
+        _interactive_data, _set_active_key, accordion_toggle_is_noop,
+        accordion_record_closed)
     active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
     if "acc_umap" not in active_list:
+        # ★ ver56.5 (§4.3 / C09-1): 閉じている間も状態を記録する。
+        #   ここで記録せずに抜けると、記録は「開」のまま据え置かれ、
+        #   開き直したときに「変化なし」と誤判定されて再描画がスキップされる
+        #   （畳んでいる間の改名・色変更が画面にも一括保存にも反映されない）。
+        accordion_record_closed("acc_umap", session_id, rds_path)
         return no_update
-    from app.callbacks.interactive_callbacks import (
-        _interactive_data, _set_active_key, accordion_toggle_is_noop)
     # ver46.1: 他セクションの開閉だけで統合 UMAP を作り直さない
     # ★ ver51.9 / C-3: 節 id は `acc_umap`。`acc_umap_integrated` は実在せず、
     #   is_open が常に False → 記録も常に False → 「変化なし」と判定され、
-    #   アコーディオン操作では **一度も再描画しなかった**。UMAP を畳んだ状態で
-    #   改名や色変更をしてから開き直すと画面も一括保存も古いままになる。
-    if accordion_toggle_is_noop("acc_umap", None, rds_path,
+    #   アコーディオン操作では **一度も再描画しなかった**。
+    #   ただし当時の修正は綴りを直しただけで、上記の「閉状態を記録しない」
+    #   問題は残っていたため、症状（開き直しても古いまま）は変わっていなかった。
+    if accordion_toggle_is_noop("acc_umap", session_id, rds_path,
                                 active_items, ctx.triggered_id):
         return no_update
     _set_active_key(rds_path)
@@ -651,12 +662,14 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
                             facet_by, legend_hidden, accumulated_positions,
                             selection_groups, session_id=None):
     """表示モード「サンプル別」(=分割表示) の場合、facet_by 基準で分割表示する。"""
-    active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
-    if "acc_umap" not in active_list:
-        return no_update
     from app.callbacks.interactive_callbacks import (
         _interactive_data, _set_active_key, accordion_toggle_is_noop,
-        set_export_figures)
+        accordion_record_closed, set_export_figures)
+    active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
+    if "acc_umap" not in active_list:
+        # ★ ver56.5 (§4.3 / C09-1): 閉状態を記録してから抜ける
+        accordion_record_closed("acc_umap", session_id, rds_path)
+        return no_update
     # ver46.1: 他セクションの開閉だけで全図を作り直さない
     # ver51.9 / C-3: 同上（`acc_umap_facet` も実在しない）
     if accordion_toggle_is_noop("acc_umap", session_id, rds_path,

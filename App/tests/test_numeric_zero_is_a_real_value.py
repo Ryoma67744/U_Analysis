@@ -162,16 +162,19 @@ class TestPreflightAgreesWithParamBounds:
 
         以前は `(p_thresh, "p値閾値", 0, 1)` のような一覧を関数内に持っており、
         レイアウト・`PARAM_BOUNDS` と合わせて **3 つの独立した出典**があった。
+
+        ver56.7: 検査の本体は `_collect_preflight_errors` へ移った
+        (表示側と実行側で同じ検査を使うため)。見る先をそこへ移す。
         """
         src = (APP / "callbacks/analysis_callbacks.py").read_text(encoding="utf-8")
         tree = ast.parse(src)
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef)
-                  and n.name == "preflight_validation")
+                  and n.name == "_collect_preflight_errors")
         names = {n.func.id for n in ast.walk(fn)
                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
         assert "validate_param" in names, (
-            "preflight_validation が `PARAM_BOUNDS` を参照していない。"
+            "_collect_preflight_errors が `PARAM_BOUNDS` を参照していない。"
             "範囲の出典が再び 2 つに分かれている")
         assert "validate_numeric_param" not in names, (
             "範囲を関数内に持つ旧経路が残っている")

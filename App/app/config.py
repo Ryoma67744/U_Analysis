@@ -113,6 +113,25 @@ DEFAULT_TOLERANCE_MZ = 0.01
 DEFAULT_ADDUCT_POSITIVE = ["+H", "+Na", "+NH4", "+K"]
 DEFAULT_ADDUCT_NEGATIVE = ["-H"]
 
+
+def adducts_for_ion_mode(ion_mode):
+    """イオンモードに対応する付加イオンの既定値を返す。
+
+    ver56.5: 画面の初期値とイオンモード変更時の自動切替が別々に既定値を
+    持っていたため、**前回 Negative で終えて再起動すると
+    「イオンモード = Negative」なのに「付加イオン = Positive 4 種」**という
+    ありえない組み合わせが表示され、そのまま R へ注入されていた (R13-05)。
+    自動切替は `prevent_initial_call=True` なので初期表示では直してくれない。
+    R 側はこの不一致を無警告で受け入れ、DB 照合が 0 件になって m/z 文字列が
+    そのまま化合物名として残る。
+
+    既定値の出どころをこの 1 か所に集約し、画面初期値・自動切替の双方から
+    参照することで、片方だけが変わってずれることを防ぐ。
+    """
+    if ion_mode == "Negative":
+        return list(DEFAULT_ADDUCT_NEGATIVE)
+    return list(DEFAULT_ADDUCT_POSITIVE)
+
 # m/z キャリブレーション
 DEFAULT_CALIBRATION_ENABLE = False
 DEFAULT_CALIBRATION_MATRIX = "DHB"

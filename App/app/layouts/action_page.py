@@ -338,6 +338,10 @@ def _create_new_sub_project_modal():
                     placeholder="メモ（任意）",
                     style={"height": "80px"},
                 ),
+                # ★ ver56.5 (§4.2 / C01-3): 検証失敗の理由を出す場所。
+                #   以前は「作成」を押すとモーダルだけ閉じ、サブプロジェクトは
+                #   作られず、理由も表示されなかった (プロジェクト版は ver3.16 で修正済)。
+                html.Div(id="new_sub_error", className="text-danger mt-2"),
             ]),
             dbc.ModalFooter([
                 dbc.Button(
@@ -459,6 +463,10 @@ def _create_edit_sub_project_modal():
                     placeholder="メモ（任意）",
                     style={"height": "80px"},
                 ),
+                # ★ ver56.5 (§4.2 / C01-4): 検証失敗の理由を出す場所。
+                #   以前はタイトルを空にして「保存」を押すと、モーダルが閉じて
+                #   全欄がクリアされ、**編集内容が復旧不能に失われて**いた。
+                html.Div(id="edit_sub_error", className="text-danger mt-2"),
             ]),
             dbc.ModalFooter([
                 dbc.Button(

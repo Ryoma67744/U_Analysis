@@ -5,6 +5,11 @@ Data/TIMS/Data/*
 !Data/TIMS/Data/.gitkeep
 Data/Other/Common/*
 !Data/Other/Common/.gitkeep
+# ★ ver56.4: 認証情報 (bcrypt ハッシュ) は小文字 common/ に保存される。
+#   大文字 Common/ しか除外されておらず、Docker を使わない起動で生成された
+#   auth.json がバージョン管理に入りうる状態だった。
+Data/Other/common/*
+!Data/Other/common/.gitkeep
 Data/Other/sessions/*
 !Data/Other/sessions/.gitkeep
 Data/Other/shares/*

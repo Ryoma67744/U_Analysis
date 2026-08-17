@@ -50,6 +50,17 @@ logger = logging.getLogger("msi.interactive.fullscreen")
 # フルスクリーン拡大モーダル
 # ---------------------------------------------------------------------------
 
+# ver56.5 (C05-3): 拡大するものが無いときの戻り値。
+#   以前は `False, "", ""` を返していたが、モーダルは元々閉じているので
+#   これは「閉じたまま is_open=False を書き込む」ことになり、閉鎖ハンドラ
+#   (on_fullscreen_close) が発火する。そこではスナップショットが無いため
+#   「変更があった」と見なされ、**統合 UMAP・サンプル別 UMAP・Spatial 全タイル・
+#   Feature Plot の 5 つの重いコールバックが一斉に走る**。データが読めていない
+#   状態でボタンを押すたびに、何も起きないどころか裏で全再描画が走っていた。
+#   no_update = 「変えない」なので、閉鎖ハンドラは発火しない。
+_NOTHING_TO_EXPAND = (no_update, no_update, no_update)
+
+
 @callback(
     [Output("fullscreen_plot_modal", "is_open"),
      Output("fullscreen_modal_title", "children"),
@@ -84,7 +95,7 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
 
     trigger = ctx.triggered_id
     if not trigger:
-        return False, "", ""
+        return _NOTHING_TO_EXPAND
 
     fs_graph_style = {"height": "80vh"}
     fs_config = {
@@ -97,7 +108,7 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
     if trigger == "expand_umap_btn":
         df = _interactive_data.get("plot_data")
         if df is None:
-            return False, "", ""
+            return _NOTHING_TO_EXPAND
 
         clusters = sorted(df["Cluster"].unique(), key=_cluster_sort_key)
         cluster_opts = [{"label": _cluster_display_name(c, cluster_name_map), "value": str(c)} for c in clusters]
@@ -201,7 +212,7 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
     if trigger == "expand_spatial_btn":
         df = _interactive_data.get("plot_data")
         if df is None or "SpatialX" not in df.columns:
-            return False, "", ""
+            return _NOTHING_TO_EXPAND
 
         samples = sorted(df["Sample"].unique())
         name_map = _interactive_data.get("_name_map") or {}
@@ -390,7 +401,7 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
         ])
         return True, "DEG マーカー", fs_deg_body
 
-    return False, "", ""
+    return _NOTHING_TO_EXPAND
 
 
 # ---------------------------------------------------------------------------

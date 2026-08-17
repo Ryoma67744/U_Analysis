@@ -94,6 +94,121 @@ def test_relayout_filter_handles_pattern_matching_lists(page):
     assert ok
 
 
+def _call_with_context(page, triggered, args):
+    """callback_context を差し込んで filter_annotations を呼ぶ。
+
+    Dash の clientside コールバックでは dash-renderer が呼び出し直前に
+    `window.dash_clientside.callback_context` を組み立て、`triggered` の
+    各要素に `{prop_id, value}` を入れる（dash 2.18 の dash_renderer.dev.js
+    参照）。ここではその形をそのまま再現する。
+    """
+    return page.evaluate(
+        """([triggered, args]) => {
+            const dc = window.dash_clientside;
+            const f = dc.relayout.filter_annotations;
+            const NU = dc.no_update;
+            const saved = dc.callback_context;
+            dc.callback_context = {triggered: triggered};
+            let out;
+            try {
+                out = f.apply(null, args);
+            } finally {
+                if (saved === undefined) { delete dc.callback_context; }
+                else { dc.callback_context = saved; }
+            }
+            return out === NU ? {no_update: true} : out;
+        }""",
+        [triggered, args],
+    )
+
+
+def test_relayout_filter_uses_the_triggering_graph_only(page):
+    """★ 発火元のグラフの座標だけを通すこと（ラベル位置の誤保存を防ぐ）。
+
+    Plotly の `relayoutData` は発火後も値が残る。UMAP のラベルを一度
+    ドラッグすると `interactive_umap_plot.relayoutData` は
+    `annotations[N].x` を持ったままになる。その状態で Spatial のラベルを
+    ドラッグすると、
+
+      - 発火元 = spatial_graph
+      - 旧実装は Input を先頭から走査して「最初に見つかったアノテーション
+        移動」を返していた → 拾うのは **UMAP の古い座標**
+
+    となり、UMAP の座標（概ね ±15）が Spatial のラベル位置（ピクセル単位で
+    数千）として保存され、保存後に Spatial のラベルが画面外へ飛んでいた。
+    逆向き（Spatial → UMAP）も同様に起きる。
+    """
+    stale_umap = {"annotations[0].x": 3.5, "annotations[0].y": -2.5}
+    fresh_spatial = {"annotations[1].x": 4200.0, "annotations[1].y": 3100.0}
+    spatial_prop = ('{"index":"S1","type":"spatial_graph"}.relayoutData')
+
+    out = _call_with_context(
+        page,
+        [{"prop_id": spatial_prop, "value": fresh_spatial}],
+        # Input の並び: interactive_umap_plot / umap_per_sample_graph(ALL)
+        #             / spatial_graph(ALL)
+        [stale_umap, [], [fresh_spatial]],
+    )
+    assert not out.get("no_update"), "アノテーション移動が握りつぶされている"
+    assert out["relayout"] == fresh_spatial, (
+        "発火元でないグラフに残った古い座標を拾っている: "
+        f"{out['relayout']}")
+    assert out["triggered_id"] == {"index": "S1", "type": "spatial_graph"}
+
+    # 逆向き（Spatial の残骸がある状態で UMAP をドラッグ）も同じこと
+    out = _call_with_context(
+        page,
+        [{"prop_id": "interactive_umap_plot.relayoutData", "value": stale_umap}],
+        [stale_umap, [], [fresh_spatial]],
+    )
+    assert out["relayout"] == stale_umap
+    assert out["triggered_id"] == "interactive_umap_plot"
+
+
+def test_relayout_filter_ignores_stale_annotations_on_pan(page):
+    """★ 別グラフの残骸があっても、パン/ズームでは保存を起こさないこと。
+
+    発火元が「パンしただけ」なのに、他のグラフに残った古いアノテーション
+    座標を拾って Store を更新すると、触っていないラベルの位置が勝手に
+    書き換わり、しかも保存まで走ってしまう（`_auto_save_label_positions`）。
+    """
+    stale_umap = {"annotations[0].x": 3.5, "annotations[0].y": -2.5}
+    pan = {"xaxis.range[0]": 10, "xaxis.range[1]": 90}
+    out = _call_with_context(
+        page,
+        [{"prop_id": '{"index":"S1","type":"spatial_graph"}.relayoutData',
+          "value": pan}],
+        [stale_umap, [], [pan]],
+    )
+    assert out.get("no_update"), (
+        "パンなのに他グラフの古いアノテーション座標が通ってしまう: "
+        f"{out}")
+
+
+def test_relayout_filter_falls_back_without_callback_context(page):
+    """callback_context が無い環境では従来どおり引数を走査すること。
+
+    dash-renderer が `triggered[].value` を渡さなくなった場合でも、
+    「ラベルを動かしたのに保存されない」という無反応にはしない。
+    """
+    ok = page.evaluate(
+        """() => {
+            const dc = window.dash_clientside;
+            const saved = dc.callback_context;
+            delete dc.callback_context;
+            let out;
+            try {
+                out = dc.relayout.filter_annotations(
+                    null, [{"annotations[0].y": 7}], []);
+            } finally {
+                if (saved !== undefined) { dc.callback_context = saved; }
+            }
+            return out !== dc.no_update && out.relayout["annotations[0].y"] === 7;
+        }"""
+    )
+    assert ok
+
+
 def test_relayout_filter_seq_is_monotonic(page):
     """同じ座標へ戻しても Store の変化として検知できるよう seq が単調増加すること。"""
     a, b = page.evaluate(
