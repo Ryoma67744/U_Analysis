@@ -693,6 +693,16 @@ docker system prune -a --volumes  # ⚠ named volume も対象。実行前にバ
 
 ## 10. トラブルシューティング
 
+### 結果の保存・読み込みが遅い / .rds が大きい
+
+`.rds` は qs2 (zstd) で保存される。qs2 が使えないと `saveRDS`（gzip）に落ち、
+保存・読込とも数倍〜十数倍遅くなる。形式は解析ログの `[rds_io]` 行で分かる。
+診断と既存ファイルの一括変換は [RDS_FORMAT.md](RDS_FORMAT.md) を参照。
+
+```bash
+docker exec msi-analysis-app Rscript -e 'cat("qs2:", requireNamespace("qs2", quietly=TRUE), "\n")'
+```
+
 ### 解析が止まったか確認したい
 
 進捗が動かないとき、「本当に止まった」のか「重い工程を計算中」なのかは

@@ -12,6 +12,112 @@
 
 ---
 
+## 2026-08-18_ver57.1
+
+### 修正: 全 `.rds` が gzip で保存されていた（qs が R 4.6.1 でロードできない）
+
+#### 何が起きていたか
+
+本番の解析ログから、qs パッケージがロードできず `saveRDS`（gzip）に
+フォールバックし続けていることが判明した。
+
+    unable to load shared object '/usr/lib/R/site-library/qs/libs/qs.so':
+      undefined symbol: SET_CLOENV
+
+`SET_CLOENV` は R の C API シンボルで、新しい R が公開シンボルから外した。
+`qs.so` は **2025-03-12 ビルド**、R は **4.6.1 (2026-06-24)** で 15 か月の開きがある。
+`ldd` に欠落は無く、システムライブラリではなく純粋な R の ABI 不一致。
+
+**これは ver50.1 で記録済みの、未修正のまま残っていた問題。** ver50.1 がやったのは
+「無言フォールバックをやめて警告を出す」「フォールバックを xz → gzip に変える」
+「所要時間をログに出す」までで、qs 自体は直していない。以降ずっと gzip のままだった。
+
+本番実測（1.03GB の `Step2_HarmonyPCA_Result.rds`）:
+
+| | 現状 (gzip) | 想定 (qs2/zstd) |
+|---|---:|---:|
+| 保存 | **162.8 秒** | 10〜20 秒 |
+| 読込 | 29.1 秒 | 5〜15 秒 |
+
+1 回の解析で Step1 / Step2 / Step2_PCA_uncorrected / Step3 の 4 本を保存するため、
+シリアライズだけで毎回 10 分前後を失っていた。
+
+#### なぜ qs を直さず qs2 へ移したか
+
+r2u の apt バイナリ `r-cran-qs` は **Candidate = Installed = 0.27.3** で更新が来ない。
+イメージを作り直しても同じ壊れたバイナリが入るだけで解決しない。
+
+    r-cran-qs:   Installed 0.27.3-1.ca2404.1   Candidate 0.27.3-1.ca2404.1
+    r-cran-qs2:  Installed (none)              Candidate 0.2.2-1.ca2404.2
+
+後継の qs2 0.2.2 は apt バイナリで提供されており、**本番コンテナ (R 4.6.1) で
+`requireNamespace("qs2") == TRUE` を実機確認済み**。追加インストールのみで既存
+パッケージのアップグレード・削除を伴わないことも `apt-get install -s` で確認した。
+
+#### 変更点
+
+- **`rds_io.R`: 保存を qs2 → 旧 qs → `saveRDS` の順に試す**。第一候補を qs2 にした。
+  旧 qs を残すのは、qs2 が無い環境（配布版の手動セットアップ等）でいきなり gzip まで
+  落ちるのを避けるため
+- **`rds_io.R`: 読み込みは `.rds_io_read_qx()` が qs2 → 旧 qs の順に実際に読んで確定させる**。
+  マジックバイト判定は従来どおり消去法（既知の旧 `saveRDS` 形式でなければ qs 系）なので、
+  qs2 ファイルもそのまま非 legacy と判定される。形式ごとにマジックを増やす作りにすると、
+  未知の形式を「旧 saveRDS」と誤判定して `readRDS` に渡し、原因の分からない例外になる
+- **`rds_io.R`: どちらでも読めなかったときは両方の理由を添えて明示的に停止する**
+- **`rds_io.R`: スレッド数の決定を `.rds_io_nthreads()` に集約**。qs2 と qs で食い違わせない
+- **`rds_io.R`: `.rds_io_has_qs()` の警告から「gzip で保存します」という結論を外した**。
+  本関数は読み込み側からも呼ばれるため、読み込み中に「保存します」と出るのは事実に反する。
+  結論は `save_rds_compact` 側で出す
+- **`install_r_packages.R`: `qs` → `qs2`**。壊れたパッケージを入れ続けると、qs2 があっても
+  事故の再発に気づけない
+- **`docker-compose.yml` / `.env.docker`: `RDS_FALLBACK_COMPRESS` を中継**。
+  `rds_io.R` は以前からこの変数を読んでいたが `environment:` に列挙されておらず、
+  `.env` に書いてもコンテナへ届いていなかった（compose の `.env` は `${VAR}` 置換専用）
+- **`slim_existing_rds.R`: スキップ判定の文言を「既に qs/qs2 形式」に**。判定は消去法なので
+  qs2 も対象に入る
+
+#### 後方互換
+
+既存の `.rds` は**一切の変換なしで読める**。gzip / xz / bzip2 / 無圧縮 / 旧 qs のすべてを
+`load_rds_compact` が透過的に扱う。ver50.1 の調査で「現在読めない qs 形式のファイルは 0 件」と
+確認済みで、以降は全部 gzip なので、qs を install リストから外しても読めなくなるファイルは無い。
+
+#### テスト
+
+`App/tests/test_rds_io_qs2.py` を新設（23 件）。
+
+- 保存・読み込みとも **qs2 が qs より先に試されること**。
+  順序を戻すと `test_save_tries_qs2_before_qs` が落ちることを確認済み
+- qs2 も qs も無いときに `saveRDS` へ落ちて保存自体は成功すること
+- gzip / xz / bzip2 の既存ファイルを読めること（後方互換）
+- 非 legacy だが読めないファイルで、両方の理由を含む明示エラーになること
+- `install_r_packages.R` / `docker-compose.yml` との整合
+
+**今回から R を実際に動かして検証している。** 検証環境に R を導入し、
+`rds_io.R` の実挙動（フォールバック経路の往復一致、旧形式の読み込み、明示エラー）を
+確認した。qs2 は R>=4.4 が必要で検証環境の R 4.3.3 には入らないため、qs2 分岐は
+API シグネチャを本番から取得（`qs_save(object, file, compress_level, shuffle, nthreads)` /
+`qs_read(file, validate_checksum, nthreads)`）したうえでスタブパッケージを作り、
+**分岐の選択順と引数の受け渡しを実行して確認**した。
+`test_all_helper_scripts_parse` で `Script/helpers/*.R` 全 12 本の構文検査も入れた
+（ver50.1 は「R が無いため括弧の対応を機械的に確認」に留まっていた）。
+
+全体は **2051 passed / 0 failed / 4 skipped**（`-m "not e2e"`）。
+R を導入したことで、これまで R 不在でスキップされていた 6 件も実行されるようになった。
+
+#### 未実施
+
+本番イメージの再ビルドと、qs2 での実測値の取得。走行中の解析があるため見送った。
+再ビルド後は解析ログの `[rds_io] 保存開始: ... (qs2, nthreads=N)` で確認できる。
+
+#### ドキュメント
+
+- `App/docs/RDS_FORMAT.md` を新設。形式の見分け方・診断コマンド・既存ファイルの
+  一括変換手順・関連する環境変数
+- `DEPLOY.md` のトラブルシューティングから参照
+
+---
+
 ## 2026-08-18_ver57.0
 
 ### 解析が止まっているかを PowerShell から確認できるようにした

@@ -153,10 +153,12 @@ main <- function() {
     tag <- sprintf("[%d/%d] %s (%s)",
                    i, length(targets), basename(fp), .format_bytes(size_before))
 
-    # 既に qs 形式ならスキップ
+    # 既に qs / qs2 形式ならスキップ
+    # ver57.1: 判定は消去法（旧 saveRDS 形式でなければ qs 系）なので qs2 も TRUE。
+    #   どちらも zstd 系で既に軽いため、変換し直す意味がない。
     is_qs <- tryCatch(.rds_io_is_qs_file(fp), error = function(e) NA)
     if (isTRUE(is_qs)) {
-      cat(sprintf("%s -> skip (既に qs 形式)\n", tag))
+      cat(sprintf("%s -> skip (既に qs/qs2 形式)\n", tag))
       n_skipped <- n_skipped + 1L
       total_after <- total_after + size_before
       next

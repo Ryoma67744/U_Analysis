@@ -25,7 +25,12 @@ packages <- c(
   "readxl",
   "jsonlite",
   "arrow",
-  "qs",  # 高速・高圧縮 R オブジェクトシリアライザ (RDS 軽量化用)
+  # ver57.1: qs -> qs2。qs 0.27.3 は R 4.6.1 で `undefined symbol: SET_CLOENV`
+  #   により dlopen できず（r2u の apt バイナリが 2025-03 ビルドのまま
+  #   再ビルドされておらず、Candidate = Installed で更新も来ない）、
+  #   ver50.1 以降ずっと gzip の saveRDS にフォールバックしていた。
+  #   実測（本番, 1.03GB の Step2）: 保存 162.8 秒 / 読込 29.1 秒。
+  "qs2",  # 高速・高圧縮 R オブジェクトシリアライザ (RDS 軽量化用)
 
   # 可視化
   "ggplot2",
