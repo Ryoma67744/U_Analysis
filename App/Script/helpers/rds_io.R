@@ -72,16 +72,59 @@
   has_qs2
 }
 
+# ---- コンテナに割り当てられた CPU 数 ----------------------------------------
+# ★ ver57.4: cgroup の CPU クォータを読む。
+#   `parallel::detectCores()` は **ホストの**コア数を返すため、コンテナでは
+#   割り当てを超えるスレッドを立ててしまう。実際に本番（`cpus: '6'`）で
+#   `nthreads=7` が採用され、cgroup にスロットリングされていた。
+#   メモリ側は既に cgroup を読んでいる（analysis_runner._container_memory_limit_gb）
+#   ので、CPU も同じ方針に揃える。
+#   引数でパスを差し替えられるのは、テストが実ファイルなしで検証できるようにするため。
+.rds_io_cpu_quota <- function(
+    v2_path = "/sys/fs/cgroup/cpu.max",
+    v1_quota = "/sys/fs/cgroup/cpu/cpu.cfs_quota_us",
+    v1_period = "/sys/fs/cgroup/cpu/cpu.cfs_period_us") {
+  .num <- function(x) suppressWarnings(as.numeric(x))
+  # file.exists を先に見るのは、readLines が「ファイルが無い」を warning +
+  # error の両方で出し、tryCatch では warning を止められないため。
+  # cgroup の無い環境（開発機・素の Linux）で保存のたびに警告が出ると
+  # 解析ログが汚れる。
+  .first <- function(p) {
+    if (!file.exists(p)) return(NA_character_)
+    tryCatch(readLines(p, warn = FALSE)[1], error = function(e) NA_character_)
+  }
+  # cgroup v2: "<quota> <period>"。無制限なら quota が "max"。
+  raw <- .first(v2_path)
+  if (!is.na(raw) && nzchar(raw)) {
+    parts <- strsplit(trimws(raw), "[[:space:]]+")[[1]]
+    if (length(parts) >= 2 && !identical(parts[1], "max")) {
+      q <- .num(parts[1]); p <- .num(parts[2])
+      if (!is.na(q) && !is.na(p) && q > 0 && p > 0)
+        return(max(1L, as.integer(floor(q / p))))
+    }
+    return(NA_integer_)   # "max" = 無制限
+  }
+  # cgroup v1: 無制限は quota が -1
+  q <- .num(.first(v1_quota)); p <- .num(.first(v1_period))
+  if (!is.na(q) && !is.na(p) && q > 0 && p > 0)
+    return(max(1L, as.integer(floor(q / p))))
+  NA_integer_
+}
+
 # ---- 圧縮スレッド数 ---------------------------------------------------------
 # qs / qs2 で共通。QS_NTHREADS で上書きできる。
 #   ネイティブコードのマルチスレッド圧縮は、落ちるときに R のエラーを残さず
 #   プロセスごと終了する（＝ログが途切れる）。QS_NTHREADS=1 で切り分けられる。
-#   detectCores はコンテナの CPU 制限ではなくホストのコア数を返すことがあり、
-#   割り当て以上のスレッドを立てないためにも上書き手段が要る。
+# ★ ver57.4: cgroup のクォータでも頭打ちにする。UI と R の行列計算に 1 コア
+#   残す意図で -1 しているのは従来どおりで、上限だけをホスト基準から
+#   コンテナ基準に変えた（`cpus: '6'` なら 5 になる。OPENBLAS_NUM_THREADS と一致）。
 .rds_io_nthreads <- function() {
   .qn <- suppressWarnings(as.integer(Sys.getenv("QS_NTHREADS", unset = "")))
   if (!is.na(.qn) && .qn >= 1L) return(.qn)
-  max(1L, parallel::detectCores(logical = FALSE) - 1L)
+  n <- max(1L, parallel::detectCores(logical = FALSE) - 1L)
+  quota <- .rds_io_cpu_quota()
+  if (!is.na(quota)) n <- min(n, max(1L, quota - 1L))
+  n
 }
 
 # ---- マジックバイトから「非 saveRDS 形式」を判定 ---------------------------

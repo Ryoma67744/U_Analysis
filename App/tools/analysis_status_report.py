@@ -455,6 +455,13 @@ def render_text(report: dict) -> str:
     jobs = report["jobs"]
     if not jobs:
         out.append("")
+        # ★ ver57.4: 「1 件も無い」と「絞り込んだ結果ゼロ」を区別する。
+        #   --running-only で全部が完了済みだったときに「記録が見つかりません」
+        #   と出していたため、探索パスが違うのかと疑わせていた（実際に迷った）。
+        if report.get("running_only") and report.get("total_found"):
+            out.append(f"実行中の解析はありません"
+                       f"（完了済み {report['total_found']} 件）。")
+            return "\n".join(out)
         out.append("解析ジョブの記録が見つかりませんでした。")
         out.append("探索したフォルダ:")
         for r in report["roots"]:
@@ -535,6 +542,7 @@ def build_report(args) -> dict:
     jobs_raw.sort(key=lambda j: str(j.get("started_at") or ""), reverse=True)
     jobs_raw.sort(key=lambda j: bool(j.get("finalized")))
 
+    total_found = len(jobs_raw)
     if args.running_only:
         jobs_raw = [j for j in jobs_raw if not j.get("finalized")]
     if args.limit > 0:
@@ -551,6 +559,8 @@ def build_report(args) -> dict:
         "platform": platform.system(),
         "stall_minutes": args.stall_minutes,
         "roots": [str(r) for r in roots],
+        "total_found": total_found,
+        "running_only": bool(args.running_only),
         "jobs": jobs,
         "overall": overall_verdict(jobs),
     }
