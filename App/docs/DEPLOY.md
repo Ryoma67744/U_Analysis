@@ -693,6 +693,16 @@ docker system prune -a --volumes  # ⚠ named volume も対象。実行前にバ
 
 ## 10. トラブルシューティング
 
+### 解析が止まったか確認したい
+
+進捗が動かないとき、「本当に止まった」のか「重い工程を計算中」なのかは
+`check_analysis.ps1`（PowerShell）または以下で切り分ける。
+判定材料と原因特定の手順は [ANALYSIS_HEALTHCHECK.md](ANALYSIS_HEALTHCHECK.md) を参照。
+
+```bash
+docker exec msi-analysis-app python3 /app/App/tools/analysis_status_report.py
+```
+
 ### アプリが起動しない
 
 ```bash
