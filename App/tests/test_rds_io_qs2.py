@@ -34,6 +34,12 @@ def rds_io_src() -> str:
     return _RDS_IO.read_text(encoding="utf-8")
 
 
+@pytest.fixture(scope="module")
+def src() -> str:
+    """install_r_packages.R の中身"""
+    return _INSTALL_R.read_text(encoding="utf-8")
+
+
 def _function_body(src: str, name: str) -> str:
     """`name <- function(` から、次のトップレベル定義までを返す（粗いが十分）。
 
@@ -132,6 +138,50 @@ class TestPackagingIsConsistent:
         assert "qs/qs2" in src
 
 
+class TestInstallerVerifiesLoadability:
+    """★ ver57.2: 「入っているか」ではなく「ロードできるか」を検査すること。
+
+    qs 0.27.3 は **インストールされていた**（installed.packages() も dpkg も TRUE）。
+    壊れるのは dyn.load の瞬間だけで、そこを検査していなかったため数か月
+    気づけなかった。しかも既存パッケージは to_install から除外されるので
+    再インストールも試みられず、壊れたまま固定されていた。
+    """
+
+    def test_load_check_runs_over_every_package(self, src):
+        block = _load_check_block(src)
+        assert "requireNamespace" in block
+        assert "packages" in block
+
+    def test_build_fails_when_a_package_cannot_load(self, src):
+        """quit(status = 1) でないと Dockerfile の RUN が成功し、壊れたイメージが出る。"""
+        assert "quit(status = 1)" in _load_check_block(src)
+
+    def test_failure_message_names_the_package(self, src):
+        """どれが壊れたか出ないと、ビルドが落ちても原因を追えない。"""
+        block = _load_check_block(src)
+        assert "broken" in block and "loadNamespace" in block
+
+    def test_abi_hint_is_included(self, src):
+        """`undefined symbol` は ABI 不一致のサイン。次に見る場所まで書く。"""
+        block = _load_check_block(src)
+        assert "undefined symbol" in block
+        assert "apt-cache policy" in block
+
+
+_CHECK_START = 'cat("\\nパッケージが実際にロードできるか検査中...\\n")'
+_CHECK_END = 'cat("\\nR パッケージのインストールが完了しました。\\n")'
+
+
+def _load_check_block(src: str) -> str:
+    """install_r_packages.R のロード検査ブロックを切り出す。
+
+    文の途中ではなく行頭で切るので、取り出したものはそのまま R で実行できる。
+    """
+    start = src.index(_CHECK_START)
+    end = src.index(_CHECK_END, start)
+    return src[start:end]
+
+
 # ---------------------------------------------------------------------------
 # 実挙動（R がある環境のみ）
 # ---------------------------------------------------------------------------
@@ -207,3 +257,25 @@ def test_all_helper_scripts_parse():
     assert helpers, "ヘルパースクリプトが見つからない"
     paths = ", ".join(f'"{p.as_posix()}"' for p in helpers)
     _run_r(f"for (f in c({paths})) invisible(parse(f)); cat('OK\\n')")
+
+
+@_needs_r
+@pytest.mark.parametrize("pkg,expect_exit", [
+    ("stats", 0),                          # 確実にロードできる
+    ("zzz_not_a_real_package_57_2", 1),    # ロードできない → ビルドを止める
+])
+def test_load_check_block_exit_code(tmp_path, pkg, expect_exit):
+    """install_r_packages.R のロード検査ブロックを、そのまま R で実行する。
+
+    ブロックをファイルから切り出して走らせるので、スクリプト本体が変わると
+    このテストも追随する（検査ロジックのコピーを持たない）。
+    """
+    block = _load_check_block(_INSTALL_R.read_text(encoding="utf-8"))
+    script = tmp_path / "check.R"
+    script.write_text(f'packages <- c("{pkg}")\n' + block, encoding="utf-8")
+
+    proc = subprocess.run([_RSCRIPT, str(script)], capture_output=True,
+                          text=True, timeout=120)
+    assert proc.returncode == expect_exit, proc.stdout + proc.stderr
+    if expect_exit == 1:
+        assert pkg in proc.stdout

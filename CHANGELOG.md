@@ -12,6 +12,70 @@
 
 ---
 
+## 2026-08-18_ver57.2
+
+### 修正: R パッケージの検査が「入ったか」しか見ておらず、壊れたまま出荷できていた
+
+#### 何が問題だったか
+
+ver57.1 で qs → qs2 へ移したが、**同じ事故が再発しても同じだけ気づけない**構造が
+残っていた。`install_r_packages.R` の検査はこうなっていた。
+
+    installed <- installed.packages()[, "Package"]
+    to_install <- packages[!packages %in% installed]
+    ...
+    still_missing <- to_install[!to_install %in% installed.packages()[, "Package"]]
+
+見ているのは `installed.packages()` に名前があるかどうかだけ。
+**qs は確かにインストールされていた**（dpkg も `installed.packages()` も TRUE）。
+壊れるのは `dyn.load` の瞬間、つまり実際に読み込もうとしたときだけで、
+その差を誰も検査していなかった。
+
+さらに悪いことに、既にインストール済みのパッケージは `to_install` から除外されるため
+**再インストールも試みられず、壊れたまま固定されていた**。
+実際にロードして検証していたのは `presto` ただ 1 つだった。
+
+`R CMD INSTALL`（ソースビルド）は install 時にロード検査を行うが、
+**apt バイナリ（dpkg）は展開するだけで検査しない**。r2u からバイナリを取る本構成では、
+この検査を自前で持たない限り誰も気づけない。
+
+#### 変更点
+
+- **`install_r_packages.R`: インストール後に `requireNamespace()` を全パッケージへ通す**。
+  ロードできないものが 1 つでもあれば、パッケージ名と `loadNamespace()` の
+  エラー本文を並べて `quit(status = 1)` する。
+  Dockerfile の `RUN Rscript /app/App/install_r_packages.R` が非ゼロで終わるので、
+  **壊れたイメージが出荷される前にビルドが止まる**
+- エラー文に「`undefined symbol` は ABI 不一致」「`apt-cache policy r-cran-<name>` で
+  新しい候補を確認」という次の一手まで書いた。今回この特定に数往復かかったため
+- `App/docs/RDS_FORMAT.md` に再発防止の節を追加
+
+#### なぜビルドを止めるのか
+
+警告に留めると ver50.1 の繰り返しになる。あのときも警告は出ていたが、ログの奥に
+埋もれて誰も気づかず、数か月 gzip で保存され続けた。ロードできないパッケージがある
+イメージは壊れているので、出荷を止めるのが正しい。
+
+#### テスト
+
+`test_rds_io_qs2.py` に 6 件追加（計 29 件）。
+
+- 検査が全パッケージに対して走り、失敗時に `quit(status = 1)` すること
+- 失敗メッセージがパッケージ名と ABI 不一致のヒントを含むこと
+- **`install_r_packages.R` から検査ブロックを切り出してそのまま R で実行し**、
+  ロードできるパッケージで終了コード 0、できないもので 1 になること。
+  検査ロジックのコピーを持たないので、スクリプトを変えればテストも追随する
+
+`quit(status = 1)` を外すと 2 件が落ちることを確認済み。
+
+また、この失敗モード（インストールはされているがロードできない）を R のスタブ
+パッケージで再現し、`installed.packages()` が TRUE を返す一方で
+`requireNamespace()` が FALSE を返すことを実機で確認した。
+
+全体は **2057 passed / 0 failed / 4 skipped**（`-m "not e2e"`）。
+
+---
+
 ## 2026-08-18_ver57.1
 
 ### 修正: 全 `.rds` が gzip で保存されていた（qs が R 4.6.1 でロードできない）
