@@ -188,6 +188,36 @@ def _load_check_block(src: str) -> str:
     return src[start:end]
 
 
+class TestThreadsRespectContainerQuota:
+    """★ ver57.4: 圧縮スレッド数を cgroup の CPU 割り当てで頭打ちにする。
+
+    parallel::detectCores() は**ホストの**コア数を返すため、コンテナでは
+    割り当てを超えるスレッドを立てる。本番（`cpus: '6'`）で実際に
+    nthreads=7 が採用され、cgroup にスロットリングされていた。
+    """
+
+    def test_cpu_quota_reader_exists(self, rds_io_src):
+        assert ".rds_io_cpu_quota <- function(" in rds_io_src
+
+    def test_nthreads_uses_the_quota(self, rds_io_src):
+        body = _function_body(rds_io_src, ".rds_io_nthreads")
+        assert ".rds_io_cpu_quota()" in body
+
+    def test_env_override_still_wins(self, rds_io_src):
+        """QS_NTHREADS は切り分け用の逃げ道なので、cgroup より優先されること。"""
+        body = _function_body(rds_io_src, ".rds_io_nthreads")
+        assert body.index("QS_NTHREADS") < body.index(".rds_io_cpu_quota()")
+
+    def test_paths_are_injectable(self, rds_io_src):
+        """テストが実ファイル無しで検証できるよう、パスを引数にしてあること。"""
+        assert "v2_path =" in rds_io_src and "v1_quota =" in rds_io_src
+
+    def test_missing_files_do_not_warn(self, rds_io_src):
+        """cgroup の無い環境で保存のたびに警告が出ると解析ログが汚れる。"""
+        body = _function_body(rds_io_src, ".rds_io_cpu_quota")
+        assert "file.exists(p)" in body
+
+
 class TestSlimToolReportsGrowthCorrectly:
     """★ ver57.3: 書式に "-" を直書きしていたため、ファイルが増えたときに
     `--4.4%` と二重マイナスになっていた。
@@ -319,3 +349,48 @@ def test_load_check_block_exit_code(tmp_path, pkg, expect_exit):
     assert proc.returncode == expect_exit, proc.stdout + proc.stderr
     if expect_exit == 1:
         assert pkg in proc.stdout
+
+
+@_needs_r
+@pytest.mark.parametrize("content,expected", [
+    ("600000 100000", "6"),      # cgroup v2: 6 CPU 割り当て
+    ("400000 100000", "4"),
+    ("max 100000", "NA"),        # v2 の無制限
+    ("150000 100000", "1"),      # 1.5 CPU → 切り捨てて 1
+])
+def test_cpu_quota_parsing_v2(tmp_path, content, expected):
+    """rds_io.R の .rds_io_cpu_quota を実際に走らせて cgroup v2 の解釈を確かめる。"""
+    f = tmp_path / "cpu.max"
+    f.write_text(content + "\n", encoding="utf-8")
+    out = _run_r(
+        f'source("{_RDS_IO.as_posix()}")\n'
+        f'cat(.rds_io_cpu_quota(v2_path = "{f.as_posix()}", '
+        f'v1_quota = "{(tmp_path / "nope1").as_posix()}", '
+        f'v1_period = "{(tmp_path / "nope2").as_posix()}"))')
+    assert out.strip() == expected
+
+
+@_needs_r
+@pytest.mark.parametrize("quota,expected", [("600000", "6"), ("-1", "NA")])
+def test_cpu_quota_parsing_v1(tmp_path, quota, expected):
+    """cgroup v1 は quota=-1 が無制限。"""
+    q = tmp_path / "cpu.cfs_quota_us"; q.write_text(quota + "\n", encoding="utf-8")
+    per = tmp_path / "cpu.cfs_period_us"; per.write_text("100000\n", encoding="utf-8")
+    out = _run_r(
+        f'source("{_RDS_IO.as_posix()}")\n'
+        f'cat(.rds_io_cpu_quota(v2_path = "{(tmp_path / "nope").as_posix()}", '
+        f'v1_quota = "{q.as_posix()}", v1_period = "{per.as_posix()}"))')
+    assert out.strip() == expected
+
+
+@_needs_r
+def test_cpu_quota_is_silent_without_cgroup(tmp_path):
+    """cgroup が無くても警告を出さないこと（解析ログを汚さない）。"""
+    missing = [(tmp_path / n).as_posix() for n in ("a", "b", "c")]
+    proc = subprocess.run(
+        [_RSCRIPT, "-e",
+         f'source("{_RDS_IO.as_posix()}")\n'
+         f'cat(.rds_io_cpu_quota("{missing[0]}", "{missing[1]}", "{missing[2]}"))'],
+        capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    assert "Warning" not in proc.stderr and "警告" not in proc.stderr

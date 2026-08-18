@@ -254,6 +254,31 @@ class TestReportEndToEnd:
         assert data["jobs"] == []
         assert code == report.EXIT_NONE
 
+    def test_running_only_says_how_many_finished(self, tmp_path, capsys):
+        """★ ver57.4: 「1 件も無い」と「絞り込んだ結果ゼロ」を区別する。
+
+        全部が完了済みのときに「記録が見つかりませんでした」と出していたため、
+        探索パスが違うのかと疑わせていた（本番で実際に迷った）。
+        """
+        for i in range(2):
+            _make_job(tmp_path, pid=os.getpid(), finalized=True,
+                      status="finished", name=f"Analysis_done{i}")
+
+        _run(["--root", str(tmp_path), "--cpu-interval", "0", "--running-only"])
+        out = capsys.readouterr().out
+
+        assert "実行中の解析はありません" in out
+        assert "完了済み 2 件" in out
+        assert "見つかりませんでした" not in out
+
+    def test_genuinely_empty_still_says_not_found(self, tmp_path, capsys):
+        """本当に 1 件も無いときは、探索フォルダを示す従来の案内を出すこと。"""
+        _run(["--root", str(tmp_path), "--cpu-interval", "0", "--running-only"])
+        out = capsys.readouterr().out
+
+        assert "見つかりませんでした" in out
+        assert "探索したフォルダ" in out
+
     def test_exit_note_is_surfaced(self, tmp_path, capsys):
         """[EXIT] 行は「無言で消えた」と「エラーで落ちた」を分ける唯一の手掛かり。"""
         out_dir = _make_job(tmp_path, pid=0x7FFFFFFE)
