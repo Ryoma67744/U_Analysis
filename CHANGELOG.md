@@ -12,6 +12,69 @@
 
 ---
 
+## 2026-08-18_ver57.0
+
+### 解析が止まっているかを PowerShell から確認できるようにした
+
+進捗が動かないときに、それが「本当に止まった」のか「重い工程を計算中」なのかを
+切り分ける手段がアプリの外に無かった。この 2 つは画面上の見え方が同じなのに対処が
+正反対で、後者を前者と誤診すると**完走間近の解析を自分で潰す**ことになる。
+
+判断材料が 1 か所に無いのが原因だった。PID の生存はブラウザからは見えず、
+コンテナ再起動や OOM kill で R ごと消えた場合は `analysis_status.txt` が
+`running` のまま残る。一方 RPCA / UMAP / DEG は正常でも 30 分以上ログを出さない。
+
+#### 追加したもの
+
+- `App/tools/analysis_status_report.py` — 解析の生存確認レポート
+  - `<出力先>/log/analysis_job.json` を探し、次の 3 点をまとめて出す:
+    **PID の生存** / **プロセスツリーの CPU・メモリ** / **ログと出力ファイルの最終更新**
+  - 判定は 実行中 / 停滞の疑い / 停止 / 完了・エラー・停止済み の 4 系統。
+    終了コード（0 / 3 / 4 / 5）にも対応させ、監視から叩けるようにした
+  - CPU を食っていればログが無言でも「実行中」と判定する。ログだけを見ると
+    PNG・RDS 書き出し中の解析を停止と誤検出するため
+  - 出力フォルダ側の最終更新も見る。R はファイル生成時にログを出さない工程がある
+  - 生存判定は `job_registry.find_jobs` / 台帳をアプリと共有し、二重実装を避けた
+- `check_analysis.ps1`（リポジトリ直下） — PowerShell から一発で叩くラッパー
+  - 実行場所（Docker コンテナ内 / Windows ローカル）を自動判定する
+  - コンテナの `State.OOMKilled` / `RestartCount` / `StartedAt` も併せて表示する。
+    解析が無言で消える原因はほぼここに出るため
+  - Windows PowerShell 5.1 が既定の cp932 で UTF-8 出力を化けさせるので、
+    コンソールのエンコーディングを明示的に UTF-8 にする
+- `App/docs/ANALYSIS_HEALTHCHECK.md` — 判定材料・原因特定・素の PowerShell での見方
+  - `DEPLOY.md` のトラブルシューティングからも参照
+
+#### 併せて直したもの: 生存確認が解析を殺す経路（`job_registry.is_pid_alive`）
+
+psutil が無い環境向けのフォールバックが `os.kill(pid, 0)` を使っていた。
+**Windows の CPython では `os.kill` が `CTRL_C_EVENT` / `CTRL_BREAK_EVENT` 以外の
+シグナル値をすべて `TerminateProcess` にマップする**ため、シグナル 0 でも
+対象プロセスが強制終了される。`is_pid_alive` は UI のポーリングごとに
+`find_running_job` から呼ばれ、アプリ起動時の後始末でも呼ばれるので、
+psutil の入っていない Windows 実行環境では**進捗を見るたびに解析を落としていた**
+ことになる。`OpenProcess`（`PROCESS_QUERY_LIMITED_INFORMATION`）による
+読み取り専用の確認に置き換えた。POSIX ではシグナル 0 は本当に何も送らないので従来どおり。
+
+- プラットフォーム判定を `_is_windows()` に切り出した。テストが `os.name` を
+  グローバルに差し替えると `pathlib` が `WindowsPath` を作ろうとして
+  pytest 自体が落ちるため、差し替え可能な関数にしてある
+
+#### テスト
+
+- `App/tests/test_analysis_status_report.py`（31 件）
+  - 判定の分岐（実行中 / 停滞 / 停止 / 終了済み）と、CPU による停滞判定の打ち消し
+  - **回帰テスト**: Windows 経路で `os.kill` が呼ばれないこと。
+    修正を戻すと `test_does_not_call_os_kill_on_windows[app.services.job_registry]` が落ちる
+  - 既存の `test_job_registry.py`（76 件）も通ることを確認
+
+#### 配布物
+
+- `create_dist_zip.py` に `App/tools/` と `check_analysis.ps1` を追加
+  （片方だけ配ると PowerShell 側が動かない）
+- `.dockerignore` に `*.ps1` を追加（Windows ホスト側の道具なのでイメージには入れない）
+
+---
+
 ## 2026-08-17_ver56.10
 
 ### #154（デバッグ監査）を ver56.9 の後にマージするための採番調整

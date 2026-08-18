@@ -36,6 +36,8 @@ App/tests/
 App/docs/images/
 App/docs/take_screenshots*.py
 *.bat
+# ver57.0: check_analysis.ps1 は Windows ホストから叩く道具（中身は App/tools/ 側）
+*.ps1
 App/create_dist_zip.py
 
 # ローカル/配布用ランチャー (Docker は CMD で直接 run_app.py を起動)

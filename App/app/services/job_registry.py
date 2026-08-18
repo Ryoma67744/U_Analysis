@@ -161,6 +161,17 @@ def is_pid_alive(pid) -> bool:
         return proc.status() != psutil.STATUS_ZOMBIE
     except ImportError:
         # psutil が無い環境向けのフォールバック（ゾンビは判別できない）
+        #
+        # ★ ver57.0: Windows では os.kill を使わない。
+        #   CPython の os.kill は Windows だと CTRL_C_EVENT / CTRL_BREAK_EVENT 以外の
+        #   シグナル値をすべて TerminateProcess にマップする。つまり
+        #   os.kill(pid, 0) は「生存確認」ではなく**対象プロセスの強制終了**になる。
+        #   この関数は find_running_job / find_stale_jobs から UI のポーリングごとに
+        #   呼ばれ、起動時の後始末でも呼ばれる。psutil が入っていない Windows 実行環境
+        #   では、確認しただけで走っている解析を落としていたことになる。
+        #   POSIX ではシグナル 0 は本当に何も送らないので従来どおりで良い。
+        if _is_windows():
+            return _pid_alive_windows(pid)
         try:
             os.kill(pid, 0)
             return True
@@ -168,6 +179,47 @@ def is_pid_alive(pid) -> bool:
             return False
     except Exception as e:  # noqa: BLE001
         logger.debug("PID 生存確認に失敗: %s (%s)", pid, e)
+        return False
+
+
+def _is_windows() -> bool:
+    """実行中の OS が Windows か。
+
+    os.name を直接見ずに関数にしてあるのは、テストが os.name をグローバルに
+    差し替えると pathlib が WindowsPath を作ろうとして pytest 自体が壊れるため。
+    """
+    return os.name == "nt"
+
+
+def _pid_alive_windows(pid: int) -> bool:
+    """psutil が無い Windows 向けの生存確認。対象プロセスを一切変更しない。
+
+    PROCESS_QUERY_LIMITED_INFORMATION は「情報を読むだけ」の権限で、
+    終了させる権限を含まない。ハンドルが開けない = 既に居ない、と扱う。
+    取得に失敗した場合は「居る」側に倒す（生きている解析を誤って
+    停止扱いし、二重起動を許してしまう方が実害が大きい）。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            return False
+        try:
+            code = wintypes.DWORD()
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return code.value == STILL_ACTIVE
+            return True
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("PID 生存確認に失敗 (Windows): %s (%s)", pid, e)
         return False
 
 

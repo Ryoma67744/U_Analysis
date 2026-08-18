@@ -59,6 +59,9 @@ INCLUDE_DIRS = [
     "DB",
     "docs",
     "tests",
+    # ver57.0: 解析の生存確認レポート。check_analysis.ps1 がこれを呼ぶので、
+    # 片方だけ配ると Windows 側の確認スクリプトが動かない。
+    "tools",
 ]
 
 # プロジェクトルート直下で ZIP に含めるファイル (App と同階層に展開)
@@ -69,6 +72,8 @@ ROOT_INCLUDE_FILES = [
     "run_app.sh",
     "setup.bat",
     "setup.sh",
+    # ver57.0: 解析が止まっているかを PowerShell から確認するスクリプト
+    "check_analysis.ps1",
 ]
 
 # プロジェクトルート直下で ZIP に含めるディレクトリ (App と同階層に展開)
