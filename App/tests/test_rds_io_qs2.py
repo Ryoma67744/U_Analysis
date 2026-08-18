@@ -40,6 +40,12 @@ def src() -> str:
     return _INSTALL_R.read_text(encoding="utf-8")
 
 
+@pytest.fixture(scope="module")
+def slim_src() -> str:
+    """slim_existing_rds.R の中身"""
+    return _SLIM.read_text(encoding="utf-8")
+
+
 def _function_body(src: str, name: str) -> str:
     """`name <- function(` から、次のトップレベル定義までを返す（粗いが十分）。
 
@@ -180,6 +186,40 @@ def _load_check_block(src: str) -> str:
     start = src.index(_CHECK_START)
     end = src.index(_CHECK_END, start)
     return src[start:end]
+
+
+class TestSlimToolReportsGrowthCorrectly:
+    """★ ver57.3: 書式に "-" を直書きしていたため、ファイルが増えたときに
+    `--4.4%` と二重マイナスになっていた。
+
+    増えるのは qs2 の既定圧縮レベルが gzip -6 より軽いためで、小さく圧縮の
+    効きにくいオブジェクトでは実際に起こる（本番の dry-run で確認）。
+    気づくべきなのはまさにそのケースなのに、表示が壊れていて読めなかった。
+    """
+
+    def test_delta_formatter_exists(self, slim_src):
+        assert ".format_delta <- function(delta)" in slim_src
+
+    def test_no_hardcoded_minus_in_format(self, slim_src):
+        """`(-%.1f%%` が残っていると符号が二重になる。"""
+        assert "(-%.1f%%" not in slim_src
+
+
+@_needs_r
+@pytest.mark.parametrize("delta,expected", [
+    (47.6, "-47.6%"),    # 縮んだ
+    (29.1, "-29.1%"),
+    (-4.4, "+4.4%"),     # 増えた
+    (-39.0, "+39.0%"),
+])
+def test_format_delta_signs(delta, expected):
+    """slim_existing_rds.R の .format_delta をそのまま実行して符号を確かめる。"""
+    src = _SLIM.read_text(encoding="utf-8")
+    start = src.index(".format_delta <- function(delta)")
+    end = src.index("\n}\n", start) + 3
+    body = src[start:end]
+    out = _run_r(f"{body}\ncat(.format_delta({delta}))")
+    assert out.strip() == expected
 
 
 # ---------------------------------------------------------------------------

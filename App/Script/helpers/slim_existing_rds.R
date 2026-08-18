@@ -99,6 +99,17 @@ source(file.path(.this_dir, "rds_io.R"))
   sprintf("%.2f %s", x, units[i])
 }
 
+# ---- 増減率の表示 -----------------------------------------------------------
+# ★ ver57.3: 書式に "-" を直書きしていたため、**ファイルが増えた場合に
+#   `--4.4%` と二重マイナスになっていた**（delta は既に符号付き）。
+#   増えるのは qs2 の既定圧縮レベルが gzip -6 より軽いためで、小さく圧縮の
+#   効きにくいオブジェクトでは実際に起こる。**気づくべきなのはまさにその
+#   ケース**なのに、表示が壊れていて読み取れなかった。
+#   縮んだら "-47.6%"、増えたら "+4.4%" と読める形にする。
+.format_delta <- function(delta) {
+  sprintf("%s%.1f%%", if (delta >= 0) "-" else "+", abs(delta))
+}
+
 .match_any <- function(fname, patterns) {
   for (p in patterns) {
     # glob -> regex (basic: * -> .*, ? -> .)
@@ -191,8 +202,8 @@ main <- function() {
       if (ok) {
         size_new <- file.info(tmp)$size
         delta <- 100 * (1 - size_new / size_before)
-        cat(sprintf("%s -> %s (-%.1f%%, dry-run)\n",
-                    tag, .format_bytes(size_new), delta))
+        cat(sprintf("%s -> %s (%s, dry-run)\n",
+                    tag, .format_bytes(size_new), .format_delta(delta)))
         total_after <- total_after + size_new
         n_processed <- n_processed + 1L
       } else {
@@ -236,7 +247,8 @@ main <- function() {
     }
     size_after <- file.info(fp)$size
     delta <- 100 * (1 - size_after / size_before)
-    cat(sprintf("%s -> %s (-%.1f%%)\n", tag, .format_bytes(size_after), delta))
+    cat(sprintf("%s -> %s (%s)\n", tag, .format_bytes(size_after),
+                .format_delta(delta)))
     total_after <- total_after + size_after
     n_processed <- n_processed + 1L
 
