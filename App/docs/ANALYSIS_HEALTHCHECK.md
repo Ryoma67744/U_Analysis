@@ -82,12 +82,28 @@ powershell -ExecutionPolicy Bypass -File .\check_analysis.ps1
 | 5 | 実行中の解析が見つからない |
 | 1 | 確認自体に失敗 |
 
-コンテナ内・Linux サーバー上で直接動かす場合は、中身の Python を呼べばよい。
+### サーバーに SSH して使う場合
+
+本番を Linux サーバーで動かしている場合、`check_analysis.ps1` は使えない
+（ローカルに docker が居ることを前提にしているため）。SSH 先では中身の Python を
+直接呼ぶ。出力・判定・終了コードは同じ。
 
 ```bash
 docker exec msi-analysis-app python3 /app/App/tools/analysis_status_report.py
 docker exec msi-analysis-app python3 /app/App/tools/analysis_status_report.py --json
 ```
+
+イメージを再ビルドせずに試したいときは、ファイルを送り込むだけでよい
+（アプリの import には依存するが、コンテナ内で完結する）。
+
+```bash
+docker cp App/tools/analysis_status_report.py msi-analysis-app:/tmp/
+docker exec msi-analysis-app python3 /tmp/analysis_status_report.py
+```
+
+> Python のみの変更でも本番へ恒久的に反映するには再ビルドが要る
+> (`docker compose up -d --build`)。ただし**解析中の再ビルドはコンテナごと
+> R を殺す**ので、確認したい解析が走っている間はやらないこと。
 
 ---
 
@@ -123,17 +139,37 @@ docker logs --tail 200 msi-analysis-app
 
 ### Docker 運用の場合
 
+`Select-Object` は PowerShell のコマンドで、**SSH 先の Linux では動かない**。
+サーバー上では `head` に読み替えること。パイプより手前（`docker ...`）は共通。
+
 ```powershell
-# コンテナと R プロセス
+# Windows から docker を直接叩く場合 (PowerShell)
 docker inspect msi-analysis-app --format "{{.State.Status}} OOMKilled={{.State.OOMKilled}}"
 docker exec msi-analysis-app ps -eo pid,etime,pcpu,rss,args --sort=-pcpu | Select-Object -First 8
+```
 
-# 台帳と状態をまとめて
+```bash
+# サーバーに SSH している場合 (bash)
+docker inspect msi-analysis-app --format "{{.State.Status}} OOMKilled={{.State.OOMKilled}}"
+docker exec msi-analysis-app ps -eo pid,etime,pcpu,rss,args --sort=-pcpu | head -8
+
+# 台帳と状態をまとめて（PowerShell からでもそのまま動く）
 docker exec msi-analysis-app sh -c 'for f in $(find /app/Data -maxdepth 6 -name analysis_job.json); do d=$(dirname "$f"); echo "--- $d"; cat "$d/analysis_status.txt"; echo; tail -3 "$d/analysis_log.txt"; done'
+
+# running のものを 1 件掘り下げる（<log> は上で見つかった log フォルダ）
+docker exec msi-analysis-app sh -c '
+d=<log>
+date; cat "$d/analysis_job.json"; echo
+ls -l --time-style=full-iso "$d/analysis_log.txt"
+ps -eo pid,etime,pcpu,rss,args --sort=-pcpu | head -6
+tail -15 "$d/analysis_log.txt"'
 ```
 
 > Unix の `Rscript` は exec 後にプロセス名が `R` になる。`ps` で `rscript` を
 > 探しても見つからないのはそのため。`args` 列でスクリプト名を見ること。
+
+> `Calculating cluster N` は Seurat の `FindAllMarkers`（DEG）がクラスタごとに
+> 進んでいる表示。クラスタ数だけ繰り返すので、番号が増えていれば進行中。
 
 ### Windows ローカル実行の場合
 
