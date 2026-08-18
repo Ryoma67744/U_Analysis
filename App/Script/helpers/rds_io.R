@@ -4,7 +4,7 @@
 # 役割:
 #   Seurat / list(Seurat, ...) オブジェクトの保存と読み込みを、
 #   情報損失なし で大幅軽量化する共通ヘルパー。
-#   （DietSeurat により scale.data を落とし、qs により高圧縮保存）
+#   （DietSeurat により scale.data を落とし、qs2 (zstd) により高圧縮保存）
 #
 # 提供関数:
 #   - save_rds_compact(obj, path, diet = TRUE, keep_scale = FALSE,
@@ -14,12 +14,12 @@
 #
 # 後方互換性:
 #   load_rds_compact はファイル先頭のマジックバイトを判定し、
-#   旧 saveRDS 形式 (gzip / xz / bzip2) と qs 形式の両方を透過的に読む。
+#   旧 saveRDS 形式 (gzip / xz / bzip2) と qs / qs2 形式のいずれも透過的に読む。
 #   よって既存の .rds 資産は一切の変換なしでそのまま利用可能。
 #
 # 保存形式:
 #   拡張子は .rds のまま維持する (Python / config 側の副作用を避けるため)。
-#   qs バイナリを .rds という名前で保存し、読み込み側で自動判定する。
+#   qs2 バイナリを .rds という名前で保存し、読み込み側で自動判定する。
 # =============================================================================
 
 # ---- qs パッケージの可用性チェック (一度だけ) -----------------------------
@@ -38,17 +38,58 @@
     reason <- tryCatch({
       loadNamespace("qs"); ""
     }, error = function(e) paste0(" (", conditionMessage(e), ")"))
-    cat(sprintf(
-      "[rds_io] 警告: qs パッケージが使えないため %s 圧縮で保存します%s\n",
-      .RDS_IO_FALLBACK_COMPRESS, reason))
-    cat("[rds_io]   qs (zstd) に比べて読み込みが数倍〜十数倍遅くなります。",
-        "R のバージョンと qs の再インストールを確認してください。\n")
+    # ★ ver57.1: 「gzip で保存します」という結論をここから外した。
+    #   本関数は qs2 が使えないときの二番手判定としても、読み込み側の
+    #   旧 qs ファイル対応としても呼ばれる。読み込み中に「保存します」と
+    #   出るのは事実に反するので、結論は save_rds_compact 側で出す。
+    cat(sprintf("[rds_io] 情報: 旧 qs パッケージは使えません%s\n", reason))
     flush(stdout())
   }
   has_qs
 }
 
-# ---- マジックバイトから qs フォーマットを判定 -----------------------------
+# ---- qs2 パッケージの可用性チェック (一度だけ) ----------------------------
+# ★ ver57.1: 保存の第一候補を qs から qs2 へ移した。
+#   qs 0.27.3 は R 4.6.1 で `undefined symbol: SET_CLOENV` により dlopen できない。
+#   qs.so は 2025-03-12 ビルドで、R 4.6.1 (2026-06-24) が公開シンボルから外した
+#   API を参照しているため。r2u の apt バイナリ r-cran-qs は 0.27.3 のまま
+#   再ビルドされておらず（Candidate = Installed）、イメージを作り直しても直らない。
+#   その結果 ver50.1 以降ずっと gzip の saveRDS に落ちていた。
+#   実測（本番, 1.03GB の Step2）: 保存 162.8 秒 / 読込 29.1 秒。
+#   後継の qs2 (0.2.2) は同じ zstd 系で R 4.6.1 でも読み込めることを実機で確認済み。
+.rds_io_has_qs2 <- function() {
+  cached <- getOption("msi.rds_io.has_qs2", default = NA)
+  if (!is.na(cached)) return(isTRUE(cached))
+  has_qs2 <- requireNamespace("qs2", quietly = TRUE)
+  options(msi.rds_io.has_qs2 = has_qs2)
+  if (!has_qs2) {
+    reason <- tryCatch({
+      loadNamespace("qs2"); ""
+    }, error = function(e) paste0(" (", conditionMessage(e), ")"))
+    cat(sprintf("[rds_io] 警告: qs2 パッケージが使えません%s\n", reason))
+    flush(stdout())
+  }
+  has_qs2
+}
+
+# ---- 圧縮スレッド数 ---------------------------------------------------------
+# qs / qs2 で共通。QS_NTHREADS で上書きできる。
+#   ネイティブコードのマルチスレッド圧縮は、落ちるときに R のエラーを残さず
+#   プロセスごと終了する（＝ログが途切れる）。QS_NTHREADS=1 で切り分けられる。
+#   detectCores はコンテナの CPU 制限ではなくホストのコア数を返すことがあり、
+#   割り当て以上のスレッドを立てないためにも上書き手段が要る。
+.rds_io_nthreads <- function() {
+  .qn <- suppressWarnings(as.integer(Sys.getenv("QS_NTHREADS", unset = "")))
+  if (!is.na(.qn) && .qn >= 1L) return(.qn)
+  max(1L, parallel::detectCores(logical = FALSE) - 1L)
+}
+
+# ---- マジックバイトから「非 saveRDS 形式」を判定 ---------------------------
+# 判定は消去法（既知の旧 saveRDS 形式でなければ qs 系）なので、qs2 形式の
+# ファイルもそのまま TRUE になる。どちらであるかは .rds_io_read_qx が実際に
+# 読んで確定させる（qs2 と旧 qs のマジックを個別に持たないのは、形式が増える
+# たびにここを直す作りにすると、未知の形式を「旧 saveRDS」と誤判定して
+# readRDS に渡し、意味の分からないエラーになるため）。
 .rds_io_is_qs_file <- function(path) {
   if (!file.exists(path) || file.info(path)$size < 4) return(FALSE)
   con <- file(path, "rb")
@@ -187,47 +228,88 @@ save_rds_compact <- function(obj, path,
   }
   # 書き込みはまず一時ファイルに行い、成功後に rename するアトミック更新
   tmp_path <- paste0(path, ".tmp")
-  if (.rds_io_has_qs()) {
-    tryCatch({
-      # [ver45.8] スレッド数を環境変数 QS_NTHREADS で上書き可能にする（未設定なら従来どおり）。
-      #   qs のマルチスレッド圧縮はネイティブコードで動くため、ここでのクラッシュは R の
-      #   エラーメッセージを残さずプロセスごと落ちる（＝ログが途切れる）形になる。
-      #   QS_NTHREADS=1 で単スレッドにすると、その切り分けができる。
-      #   また detectCores はコンテナの CPU 制限ではなくホストのコア数を返すことがあり、
-      #   割り当て以上のスレッドを立ててしまう点でも上書き手段があった方がよい。
-      .qn <- suppressWarnings(as.integer(Sys.getenv("QS_NTHREADS", unset = "")))
-      nthreads <- if (!is.na(.qn) && .qn >= 1L) .qn else
-        max(1L, parallel::detectCores(logical = FALSE) - 1L)
+
+  # ★ ver57.1: qs2 → 旧 qs → saveRDS の順に試す。
+  #   第一候補を qs2 にした理由は .rds_io_has_qs2 のコメントを参照。
+  #   旧 qs を残すのは、qs2 が入っていない環境（配布版の手動セットアップ等）で
+  #   いきなり gzip まで落ちるのを避けるため。
+  .writers <- list(
+    list(name = "qs2", ok = .rds_io_has_qs2,
+         fn = function(o, f, n) qs2::qs_save(o, f, nthreads = n)),
+    list(name = "qs", ok = .rds_io_has_qs,
+         fn = function(o, f, n) qs::qsave(o, f, preset = "balanced", nthreads = n))
+  )
+  for (.w in .writers) {
+    if (!.w$ok()) next
+    .done <- tryCatch({
+      nthreads <- .rds_io_nthreads()
       # 保存の開始/完了を必ず残す。開始だけ出て完了が出なければ保存中に落ちたと分かる。
-      cat(sprintf("[rds_io] 保存開始: %s (qs, nthreads=%d)\n", basename(path), nthreads))
+      cat(sprintf("[rds_io] 保存開始: %s (%s, nthreads=%d)\n",
+                  basename(path), .w$name, nthreads))
       flush(stdout())
-      qs::qsave(obj, tmp_path, preset = "balanced", nthreads = nthreads)
+      .t0 <- Sys.time()
+      .w$fn(obj, tmp_path, nthreads)
       file.rename(tmp_path, path)
-      cat(sprintf("[rds_io] 保存完了: %s (%.2f GB)\n", basename(path),
-                  file.size(path) / 1024^3))
+      cat(sprintf("[rds_io] 保存完了: %s (%s, %.2f GB, %.1f 秒)\n",
+                  basename(path), .w$name, file.size(path) / 1024^3,
+                  as.numeric(difftime(Sys.time(), .t0, units = "secs"))))
       flush(stdout())
-      return(invisible(path))
+      TRUE
     }, error = function(e) {
-      message("[rds_io] qs::qsave failed, falling back to saveRDS: ",
+      message("[rds_io] ", .w$name, " での保存に失敗、次の方式へ: ",
               conditionMessage(e))
       if (file.exists(tmp_path)) try(file.remove(tmp_path), silent = TRUE)
+      FALSE
     })
+    if (isTRUE(.done)) return(invisible(path))
   }
+
   # フォールバック: saveRDS (既定 gzip)。qs 分岐と同様に開始/完了を必ず残す。
+  cat("[rds_io] 警告: qs2 も qs も使えないため saveRDS へフォールバックします。",
+      "読み書きが数倍〜十数倍遅くなります (install.packages('qs2') を確認)。\n")
   cat(sprintf("[rds_io] 保存開始: %s (saveRDS, compress=%s)\n",
               basename(path), .RDS_IO_FALLBACK_COMPRESS))
   flush(stdout())
   .t0 <- Sys.time()
   saveRDS(obj, tmp_path, compress = .rds_io_compress_arg())
   file.rename(tmp_path, path)
-  cat(sprintf("[rds_io] 保存完了: %s (%.2f GB, %.1f 秒)\n", basename(path),
+  cat(sprintf("[rds_io] 保存完了: %s (saveRDS/%s, %.2f GB, %.1f 秒)\n",
+              basename(path), .RDS_IO_FALLBACK_COMPRESS,
               file.size(path) / 1024^3,
               as.numeric(difftime(Sys.time(), .t0, units = "secs"))))
   flush(stdout())
   invisible(path)
 }
 
-# ---- 汎用読み込み (旧 saveRDS 形式 / 新 qs 形式を自動判定) -----------------
+# ---- qs2 / 旧 qs のどちらで書かれたかを、実際に読んで確定させる -------------
+# ★ ver57.1: 戻り値 list(obj =, fmt = "qs2" | "qs")。
+#   qs2 を先に試すのは、今後保存されるファイルが全部 qs2 になるため
+#   （毎回 qs で失敗してから qs2 に回る無駄を避ける）。
+#   どちらでも読めなかった場合は、両方の理由を添えて明示的に落とす。無言で
+#   readRDS に渡すと「unknown input format」という原因の分からない例外になる。
+.rds_io_read_qx <- function(path) {
+  reasons <- character()
+  readers <- list(
+    list(name = "qs2", ok = .rds_io_has_qs2, fn = function(f) qs2::qs_read(f)),
+    list(name = "qs",  ok = .rds_io_has_qs,  fn = function(f) qs::qread(f))
+  )
+  for (r in readers) {
+    if (!r$ok()) {
+      reasons <- c(reasons, paste0(r$name, ": 未インストール"))
+      next
+    }
+    got <- tryCatch(list(obj = r$fn(path), fmt = r$name),
+                    error = function(e) e)
+    if (!inherits(got, "error")) return(got)
+    reasons <- c(reasons, paste0(r$name, ": ", conditionMessage(got)))
+  }
+  stop("[rds_io] ", path,
+       " は qs / qs2 形式ですが読み込めませんでした (",
+       paste(reasons, collapse = " / "),
+       ")。install.packages('qs2') を実行してください。")
+}
+
+# ---- 汎用読み込み (旧 saveRDS 形式 / qs / qs2 形式を自動判定) ---------------
 #  ensure_scale = TRUE を渡すと、Seurat オブジェクトに対して
 #  読み込み直後に ScaleData() を 1 回走らせ、scale.data を復元する。
 load_rds_compact <- function(path, ensure_scale = FALSE) {
@@ -238,17 +320,15 @@ load_rds_compact <- function(path, ensure_scale = FALSE) {
   # [ver50.1] 読み込みの形式と所要時間を必ず残す。
   #   これが無かったため「抽出が遅い」の内訳を手作業で測るまで特定できなかった。
   .t0 <- Sys.time()
-  .fmt <- if (is_qs) "qs" else .rds_io_legacy_format(path)
   if (is_qs) {
-    if (!.rds_io_has_qs()) {
-      stop("[rds_io] ", path,
-           " は qs 形式で保存されていますが qs パッケージが",
-           " インストールされていません。",
-           " install.packages('qs') を実行してください。")
-    }
-    obj <- qs::qread(path)
+    # ★ ver57.1: qs2 と旧 qs のどちらで書かれたかはマジックバイトでは分けない。
+    #   実際に読んでみて成功した方を採用する（.rds_io_read_qx）。
+    .r <- .rds_io_read_qx(path)
+    obj <- .r$obj
+    .fmt <- .r$fmt
   } else {
     # 旧 saveRDS 形式 (gzip / xz / bzip2 / 無圧縮) は readRDS がそのまま読む
+    .fmt <- .rds_io_legacy_format(path)
     obj <- readRDS(path)
   }
   .dt <- as.numeric(difftime(Sys.time(), .t0, units = "secs"))

@@ -68,8 +68,13 @@ services:
       - DEG_WORKERS=${DEG_WORKERS:-}
       # 取り込み時の 1 ブロックあたり予算(MB)。未設定なら 256。
       - INGEST_BLOCK_MB=${INGEST_BLOCK_MB:-}
-      # qs 保存のスレッド数。未設定なら detectCores-1。1 で単スレッド。
+      # qs2/qs 保存のスレッド数。未設定なら detectCores-1。1 で単スレッド。
       - QS_NTHREADS=${QS_NTHREADS:-}
+      # ver57.1: qs2 も qs も使えないときの saveRDS 圧縮方式
+      # (gzip / bzip2 / xz / none)。未設定なら gzip。
+      # これまで rds_io.R が読むだけで compose に列挙されておらず、.env に書いても
+      # コンテナへ届かなかった。シリアライズが律速のときに none で切り分けられる。
+      - RDS_FALLBACK_COMPRESS=${RDS_FALLBACK_COMPRESS:-}
     volumes:
       # 永続化データ (Data/Other/ 配下のアプリ内部データ)
       - msi-sessions:/app/Data/Other/sessions
