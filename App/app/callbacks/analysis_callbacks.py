@@ -92,6 +92,17 @@ def _is_tier_a() -> bool:
 #                                    交絡下では条件差も縮小するが、技術差まみれで比較不能に
 #                                    なるより補正して共有埋め込み/クラスタを得たい場合に使う。
 #                                    DEG は reduction と独立に condition で算出されるため不変）。
+# DESI 用: 補正するか / しないか の 2 択。
+#   ★ ver58.0 (デバッグ総点検 A-1): DESI には補正の有無を選ぶ手段が無く、
+#     複数ファイルなら無条件に Harmony + RPCA が走っていた。
+#     DESI の補正は group.by.vars="sample" 固定で、TIMS のような切片(slice_id)
+#     単位の概念を実装していないため、シナリオ表は分けて「できること」だけを持つ。
+_DESI_SCENARIO_MAP = {
+    "correct": True,        # 既定＝従来挙動
+    "no_correct": False,
+}
+
+
 # (annotation_role, batch_var, allow_condition_correction, batch_correction_enable)
 #
 # ★ ver58.0 (デバッグ総点検 A-1): 4 つ目「そもそも補正するか」を足した。
@@ -390,6 +401,8 @@ def close_overwrite_modal(cancel_clicks, confirm_clicks):
      State("cal_per_sample_store", "data"),
      State("cal_sample_selector_prev", "data"),
      State("desi_use_roi_as_sample", "value"),
+     # ★ ver58.0 (A-1): DESI のバッチ補正の有無
+     State("desi_scenario", "value"),
      State("desi_roi_filter_store", "data"),
      State("normalize_input", "value"),
      State("norm_mode", "value"),
@@ -436,6 +449,7 @@ def run_analysis(
     cal_per_sample_store,
     cal_sample_selector_prev,
     desi_use_roi_as_sample,
+    desi_scenario,
     desi_roi_filter_list,
     normalize_input, norm_mode,
     normalize_input_reanalysis, norm_mode_reanalysis,
@@ -537,6 +551,8 @@ def run_analysis(
             "tims_v8_script_path": tims_v8_script,
             "tims_cluster_filter_script_path": tims_cluster_script,
             "desi_use_roi_as_sample": bool(desi_use_roi_as_sample),
+            # ★ ver58.0 (A-1): DESI のバッチ補正の有無も保存する
+            "desi_scenario": desi_scenario or "correct",
             "normalize_input": normalize_input,
             "norm_mode": norm_mode,
             "normalize_input_reanalysis": normalize_input_reanalysis,
@@ -752,6 +768,10 @@ def run_analysis(
                 params["use_roi_as_sample"] = bool(desi_use_roi_as_sample)
                 if desi_roi_filter_list:
                     params["roi_filter"] = list(desi_roi_filter_list)
+                # ★ ver58.0 (A-1): 「補正しない」を実処理へ届ける。
+                #   未指定 (旧セッション) は従来挙動＝補正する。
+                params["batch_correction_enable"] = _DESI_SCENARIO_MAP.get(
+                    desi_scenario or "correct", True)
 
             # --- m/z アライメント (ppm) ---
             if analysis_type == "tims_v8":

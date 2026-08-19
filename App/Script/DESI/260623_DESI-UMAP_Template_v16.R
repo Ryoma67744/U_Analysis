@@ -162,6 +162,15 @@ RESUME_FROM_RDS <- FALSE
 # 例: "C:/Users/you/.../RDS_Files" または "C:\\Users\\you\\...\\RDS_Files"
 RESUME_DIR_PATH <- "C:\\Users\\Cciia\\Biochem Dropbox\\Biochem's shared workspace\\Workspace\\UMAP\\DESI\\250924_Kizu_Dev_Brain\\250924_Kizu_Dev_Brain20251028"
 
+# バッチ補正を行うか。
+#   ★ ver58.0 (デバッグ総点検 A-1): DESI には補正の有無を選ぶ手段が無く、
+#     複数ファイルなら無条件に RunHarmony(group.by.vars = "sample") と RPCA 統合が
+#     走っていた。MSI では 1 ファイル＝1 切片＝多くの場合 1 個体・1 条件なので、
+#     sample 単位の補正は **除きたい機械差ではなく比較したい生物差** を削ることに
+#     直結する (Nygaard et al. 2016, doi:10.1093/biostatistics/kxv027)。
+#     既定 TRUE ＝従来挙動（後方互換）。FALSE で無補正 PCA を主結果にする。
+BATCH_CORRECTION_ENABLE <- TRUE
+
 # 背景除去 (Otsu) を飛ばすか。
 #   ★ ver57.5: 通常の解析では必ず背景除去を行うので既定は FALSE。
 #   クラスタを絞り込んだ**再解析**だけがここを TRUE に差し替える
@@ -2562,10 +2571,22 @@ if ((.stage_downstream && .has_single) || (!.stage_downstream && length(seu_list
   # Multi-sample mode
   # =========================
   
-  # ---- Harmony ----
-  message("Multi-sample mode: Harmony...")
-  od_harmony <- file.path(od, "Harmony"); dir.create(od_harmony, showWarnings = FALSE)
-  rds_filename_harmony <- "DESI_SeuratCombined_harmony.rds"
+  # ★ ver58.0 (A-1): 補正するかどうかで、使う reduction と出力先を切り替える。
+  #   補正しない結果を "Harmony" の名前で出すと実体と食い違い、かといって
+  #   新しい名前のフォルダにすると、マーカー表を探す側 (deg_utils) が
+  #   Harmony / RPCA / PCA / pca_uncorrected の 4 つしか知らないため
+  #   **マーカー表・Volcano・ヒートマップ・GPT がすべて空になる**。
+  #   そこで補正なしの出力は既知の "PCA" に寄せる。
+  .correct_multi <- isTRUE(BATCH_CORRECTION_ENABLE)
+  .red_multi     <- if (.correct_multi) "harmony" else "pca"
+  .tag_multi     <- if (.correct_multi) "harmony" else "pca"
+  .dir_multi     <- if (.correct_multi) "Harmony" else "PCA"
+
+  # ---- Harmony (または無補正 PCA) ----
+  message(if (.correct_multi) "Multi-sample mode: Harmony..."
+          else "Multi-sample mode: 補正なし（無補正 PCA を主結果にします）...")
+  od_harmony <- file.path(od, .dir_multi); dir.create(od_harmony, showWarnings = FALSE)
+  rds_filename_harmony <- if (.correct_multi) "DESI_SeuratCombined_harmony.rds" else "DESI_SeuratCombined_PCA.rds"
   rds_path_harmony_out <- file.path(rds_od, rds_filename_harmony)
   
   rds_path_harmony_in <- if (RESUME_FROM_RDS) file.path(RESUME_DIR_PATH, rds_filename_harmony) else ""
@@ -2607,18 +2628,23 @@ if ((.stage_downstream && .has_single) || (!.stage_downstream && length(seu_list
     npcs_h <- max(2, npcs_h)
 
     seu_harmony <- RunPCA(seu_harmony, npcs = npcs_h)
-    seu_harmony <- RunHarmony(object = seu_harmony, group.by.vars = "sample")
+    # ★ ver58.0 (A-1): 「補正なし」を選んだら Harmony を実行しない。
+    if (.correct_multi) {
+      seu_harmony <- RunHarmony(object = seu_harmony, group.by.vars = "sample")
+    } else {
+      message(">> [補正なし] Harmony を実行しません（PCA をそのまま使います）")
+    }
 
-    h_avail <- tryCatch(ncol(Embeddings(seu_harmony, "harmony")), error = function(e) NA_integer_)
+    h_avail <- tryCatch(ncol(Embeddings(seu_harmony, .red_multi)), error = function(e) NA_integer_)
     if (!is.finite(h_avail) || h_avail < 1) h_avail <- ncol(Embeddings(seu_harmony, "pca"))
     dims_use      <- seq_len(min(UMAP_DIMS_N, h_avail))
     dims_use_clst <- seq_len(min(CLUSTER_DIMS_N, h_avail))
 
     if (PIPELINE_STAGE != "reduction_only") {
-    seu_harmony <- RunUMAP(seu_harmony, reduction = "harmony", dims = dims_use,
+    seu_harmony <- RunUMAP(seu_harmony, reduction = .red_multi, dims = dims_use,
                            n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
                            metric = UMAP_METRIC, seed.use = UMAP_SEED)
-    seu_harmony <- FindNeighbors(seu_harmony, reduction = "harmony", dims = dims_use_clst,
+    seu_harmony <- FindNeighbors(seu_harmony, reduction = .red_multi, dims = dims_use_clst,
                                  k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
     seu_harmony <- FindClusters(seu_harmony, resolution = CLUSTER_RESOLUTION_HARMONY, algorithm = CLUSTER_ALGORITHM)
     Idents(seu_harmony) <- seu_harmony$seurat_clusters
@@ -2631,14 +2657,14 @@ if ((.stage_downstream && .has_single) || (!.stage_downstream && length(seu_list
   # ④: reduction だけの RDS を読み込んだ場合、UMAP/クラスタを後付けしてから下流へ。
   if (.stage_downstream && !is.null(seu_harmony) && !("umap" %in% names(seu_harmony@reductions))) {
     sample_names <- unique(as.character(seu_harmony$sample))  # ④: 下流が使う sample 名を実データに同期
-    h_avail <- tryCatch(ncol(Embeddings(seu_harmony, "harmony")), error = function(e) NA_integer_)
+    h_avail <- tryCatch(ncol(Embeddings(seu_harmony, .red_multi)), error = function(e) NA_integer_)
     if (!is.finite(h_avail) || h_avail < 1) h_avail <- ncol(Embeddings(seu_harmony, "pca"))
     dims_use      <- seq_len(min(UMAP_DIMS_N, h_avail))
     dims_use_clst <- seq_len(min(CLUSTER_DIMS_N, h_avail))
-    seu_harmony <- RunUMAP(seu_harmony, reduction = "harmony", dims = dims_use,
+    seu_harmony <- RunUMAP(seu_harmony, reduction = .red_multi, dims = dims_use,
                            n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
                            metric = UMAP_METRIC, seed.use = UMAP_SEED)
-    seu_harmony <- FindNeighbors(seu_harmony, reduction = "harmony", dims = dims_use_clst,
+    seu_harmony <- FindNeighbors(seu_harmony, reduction = .red_multi, dims = dims_use_clst,
                                  k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
     seu_harmony <- FindClusters(seu_harmony, resolution = CLUSTER_RESOLUTION_HARMONY, algorithm = CLUSTER_ALGORITHM)
     Idents(seu_harmony) <- seu_harmony$seurat_clusters
@@ -2653,21 +2679,21 @@ if ((.stage_downstream && .has_single) || (!.stage_downstream && length(seu_list
   my_colors <- .assign_cluster_colors(seu_harmony, seed = 42)
   
   
-  plot_umap_cluster_variants(seu_harmony, prefix = "harmony", outdir = od_harmony)
-  plot_umap_per_sample(seu_harmony, sample_names, prefix = "harmony", outdir = od_harmony)
+  plot_umap_cluster_variants(seu_harmony, prefix = .tag_multi, outdir = od_harmony)
+  plot_umap_per_sample(seu_harmony, sample_names, prefix = .tag_multi, outdir = od_harmony)
   
-  export_cluster_highlights(seu_harmony, prefix = "harmony", outdir = od, sample_names = sample_names,
+  export_cluster_highlights(seu_harmony, prefix = .tag_multi, outdir = od, sample_names = sample_names,
                             OUTPUT_UMAP_HIGHLIGHT_ALLCLUSTERS = FALSE)
   
   # 統合画像のコピー
   try(suppressWarnings(file.copy(
-    from = file.path(od, "PerCluster_Highlight", "harmony", "UMAP_per_sample_harmony_ALLclusters.png"),
-    to   = file.path(od_harmony, "UMAP_per_sample_harmony_ALLclusters.png"),
+    from = file.path(od, "PerCluster_Highlight", .tag_multi, paste0("UMAP_per_sample_", .tag_multi, "_ALLclusters.png")),
+    to   = file.path(od_harmony, paste0("UMAP_per_sample_", .tag_multi, "_ALLclusters.png")),
     overwrite = TRUE
   )), silent = TRUE)
   try(suppressWarnings(file.copy(
-    from = file.path(od, "PerCluster_Highlight", "harmony", "UMAPtop_TICoverlaybottom_harmony_ALLclusters.png"),
-    to   = file.path(od_harmony, "UMAPtop_TICoverlaybottom_harmony_ALLclusters.png"),
+    from = file.path(od, "PerCluster_Highlight", .tag_multi, paste0("UMAPtop_TICoverlaybottom_", .tag_multi, "_ALLclusters.png")),
+    to   = file.path(od_harmony, paste0("UMAPtop_TICoverlaybottom_", .tag_multi, "_ALLclusters.png")),
     overwrite = TRUE
   )), silent = TRUE)
   
@@ -2759,11 +2785,11 @@ if ((.stage_downstream && .has_single) || (!.stage_downstream && length(seu_list
     # pixel 単位の探索的ランキング（空間自己相関未補正・群間検定ではない）である旨を明記
     deg_markers_harmony$ranking_type   <- "exploratory_pixel_level"
     deg_markers_harmony$inference_note <- "Exploratory pixel-level ranking; spatial autocorrelation not modeled; NOT sample-level statistical inference"
-    write.csv(deg_markers_harmony, file.path(od_harmony, "analysis_deg_all_markers_harmony.csv"), row.names = FALSE)
+    write.csv(deg_markers_harmony, file.path(od_harmony, paste0("analysis_deg_all_markers_", .tag_multi, ".csv")), row.names = FALSE)
     
     top5_markers_harmony <- deg_markers_harmony %>% dplyr::group_by(cluster) %>% dplyr::top_n(n = 5, wt = avg_log2FC)
     top_genes_harmony <- unique(top5_markers_harmony$gene)
-    write.csv(top5_markers_harmony, file.path(od_harmony, "analysis_top5_markers_per_cluster_harmony.csv"), row.names = FALSE)
+    write.csv(top5_markers_harmony, file.path(od_harmony, paste0("analysis_top5_markers_per_cluster_", .tag_multi, ".csv")), row.names = FALSE)
     
     if (length(top_genes_harmony) > 0) {
       sampled_cells <- c()
@@ -2797,11 +2823,14 @@ if ((.stage_downstream && .has_single) || (!.stage_downstream && length(seu_list
   # Volcano & Top5 MSI (Harmony)
   # =========================
   if (!is.null(deg_markers_harmony) && is.data.frame(deg_markers_harmony) && nrow(deg_markers_harmony) > 0 && ("cluster" %in% colnames(deg_markers_harmony))) {
-    run_volcano_and_msi(seu_harmony, deg_markers_harmony, method_tag = "harmony",
+    run_volcano_and_msi(seu_harmony, deg_markers_harmony, method_tag = .tag_multi,
                         sample_names = sample_names, od = od, mrm_df = mrm_df, method_outdir = od_harmony)
   }
   }  # end if (PIPELINE_STAGE != "reduction_only")  [harmony downstream]
 
+  # ★ ver58.0 (A-1): RPCA 統合も「補正」なので、補正なしのときは丸ごと行わない。
+  #   Harmony だけ止めて RPCA を残すと、結局補正された結果が出てしまう。
+  if (.correct_multi) {
   # ---- RPCA ----
   message("Multi-sample mode: RPCA...")
   od_rpca <- file.path(od, "RPCA"); dir.create(od_rpca, showWarnings = FALSE)
@@ -3057,6 +3086,7 @@ dims_use_rpca <- get_safe_dims_for_rpca(seu_list_pca, max_dims = 30, reduction =
     }
   }
   }  # end if (PIPELINE_STAGE != "reduction_only")  [rpca downstream]
+  }  # end if (.correct_multi)  [RPCA セクション]
 }
 
 # ---- Cleanup: 中間RDS（解析完了後は不要） ----

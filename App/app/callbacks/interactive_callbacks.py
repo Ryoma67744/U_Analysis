@@ -506,6 +506,12 @@ def _detect_integration_methods(folder_path: str, include_derived: bool = False)
                 rds_map["Harmony"] = str(rds_file)
             elif "rpca" in name_lower and "RPCA" not in rds_map:
                 rds_map["RPCA"] = str(rds_file)
+            # ★ ver58.0 (A-1): DESI で「補正しない」を選んだときの主結果
+            #   (DESI_SeuratCombined_PCA.rds)。無補正 PCA コンパニオン
+            #   (Step2_PCA_uncorrected.rds) と取り違えないよう uncorrected を除く。
+            elif ("pca" in name_lower and "uncorrected" not in name_lower
+                  and "PCA" not in rds_map):
+                rds_map["PCA"] = str(rds_file)
 
     # rglob でサブフォルダも検索（上記で見つからない場合のフォールバック）
     if not rds_map:
@@ -532,6 +538,12 @@ def _detect_integration_methods(folder_path: str, include_derived: bool = False)
                     rds_map["Harmony"] = str(rds_file)
                 elif "rpca" in name_lower and "RPCA" not in rds_map:
                     rds_map["RPCA"] = str(rds_file)
+                # ★ ver58.0 (A-1): DESI で「補正しない」を選んだときの主結果
+                #   (DESI_SeuratCombined_PCA.rds)。無補正 PCA コンパニオン
+                #   (Step2_PCA_uncorrected.rds) と取り違えないよう uncorrected を除く。
+                elif ("pca" in name_lower and "uncorrected" not in name_lower
+                      and "PCA" not in rds_map):
+                    rds_map["PCA"] = str(rds_file)
 
     # --- マージ済みRDS優先検出（無効化中）---
     # パフォーマンス問題のため無効化。有効化するとマージRDS（~200MB）が
