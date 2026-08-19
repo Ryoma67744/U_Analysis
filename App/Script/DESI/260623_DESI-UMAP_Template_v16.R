@@ -2272,7 +2272,18 @@ if (RESUME_FROM_RDS && file.exists(rds_path1_in)) {
 }
 
 # ---- 空間平滑化処理 (Spatial Smoothing) ----
-SPATIAL_SMOOTH <- TRUE
+# ★ ver58.0 (デバッグ総点検 A-4): 既定を TRUE → FALSE にした。
+#   探索半径 (下の smooth_radius) が **座標の単位に対して固定値** のため、
+#   同じ設定でもデータセットによって前処理が別物になっていた:
+#     - 座標が画素番号 (1,2,3…) や µm (0,100,200…) → 近傍が自分だけ＝実質何もしない
+#     - 座標が 0.05 mm 刻み                        → 10〜12 近傍を平均する強い平滑化
+#   画面から強さを変えることも、効いたか確認することもできなかった。
+#   TIMS は元から既定オフ (SPATIAL_SMOOTH_ENABLE <- FALSE) で、これは DESI だけの非対称だった。
+#
+#   実装は残す（再検討と、平滑化ありで出した既存結果の再現のため）。
+#   **再解析は本テンプレートをコピーして使う**ので、ここを FALSE にすれば
+#   本解析と再解析の両方に同時に効く（片方だけ平滑化される状態を作らない）。
+SPATIAL_SMOOTH <- FALSE
 if(SPATIAL_SMOOTH){
   rds_filename2 <- "DESI_SeuratList2_smoothed.rds"
   rds_path2_out <- file.path(rds_od, rds_filename2)

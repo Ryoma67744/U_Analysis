@@ -175,6 +175,10 @@ def render_methods(conditions: dict, lang: str = "ja") -> str:
          _get(c, "analysis.preprocessing.batch_correction")),
         ("m/z alignment (ppm)" if lang == "en" else "m/z アライメント (ppm)",
          _get(c, "analysis.mz_align_ppm")),
+        # ★ ver58.0 (A-4): 空間平滑化の有無。中間ファイル名が *_smoothed.rds なので、
+        #   書かないと「平滑化した」と読まれてしまう。
+        ("Spatial smoothing" if lang == "en" else "空間平滑化",
+         _get(c, "analysis.preprocessing.spatial_smoothing")),
     ], lang))
 
     # --- 3. キャリブレーション / アノテーション ---
@@ -415,6 +419,8 @@ _FILL_WRAP = {"ja": ("〔要記入: ", "〕"), "en": ("[TO BE FILLED: ", "]")}
 # パス → 赤スロットに出す人間向けの項目名。ドットパスは出さない。
 _SLOT_LABELS = {
     "analysis.sample_selection.sample_names": ("試料名", "sample names"),
+    "analysis.preprocessing.spatial_smoothing": ("空間平滑化の有無",
+                                                "whether spatial smoothing was applied"),
     "analysis.preprocessing.norm_mode": ("正規化の方法", "normalization method"),
     "analysis.preprocessing.input_normalized": ("入力データの正規化状態",
                                                 "normalization state of the input"),
@@ -629,6 +635,20 @@ def _sec_preproc(c, lang):
             "各測定点のスペクトル強度を " if ja else "Spot-wise spectral intensities were normalized using ",
             _slot(c, "analysis.preprocessing.norm_mode", lang),
             " により正規化した。" if ja else ".",
+        ))
+
+    # ★ ver58.0 (A-4): 空間平滑化の有無を明記する。従来は一切書かれておらず、
+    #   中間ファイル名 (*_smoothed.rds) だけが「平滑化した」と主張していた。
+    smooth = _get(c, "analysis.preprocessing.spatial_smoothing")
+    if smooth is False:
+        paras.append(_para(
+            "空間平滑化は行わなかった。" if ja else
+            "No spatial smoothing was applied."
+        ))
+    elif smooth is True:
+        paras.append(_para(
+            "近傍測定点による空間平滑化を行った。" if ja else
+            "Spatial smoothing over neighbouring measurement points was applied."
         ))
 
     ppm = _get(c, "analysis.mz_align_ppm")
