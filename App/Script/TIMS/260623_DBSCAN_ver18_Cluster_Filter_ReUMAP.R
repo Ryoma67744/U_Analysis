@@ -202,6 +202,14 @@ V13_ALLOW_CONDITION_CORRECTION <- FALSE
 V13_DEG_P_THRESH_VAL <- 0.05
 V13_DEG_LOGFC_TH_VAL <- 0.25
 
+# 切片 (Annotation) フィルタ。
+#   ★ ver57.5 (デバッグ総点検 §5.3): 再解析画面の「Annotation（切片）選択」は
+#     Python 側が params["annotation_filter"] を組み立てていたのに、注入するのは
+#     本解析用の generate_v8_config だけで、再解析側には受け手も注入も無かった。
+#     チェックを外しても**その切片のスポットが再解析にそのまま入る**空振りだった。
+#     NULL のままなら ver6 側の既定（フィルタなし）を使う＝従来挙動。
+V13_ANNOTATION_FILTER <- NULL
+
 # (N) slice_id / condition を 1回目RDSから保存しておきたい場合（通常は不要）
 #     ver13 は入力Parquetの annotation から slice_id/condition を再現できるため、
 #     基本は FALSE 推奨です（Re-UMAP側でDBSCAN復元などはしない）。
@@ -866,6 +874,13 @@ make_v13_copy_with_settings <- function(v13_path, out_path,
   if (exists("V13_ALLOW_CONDITION_CORRECTION") && !is.na(V13_ALLOW_CONDITION_CORRECTION)) {
     code <- replace_assign_line(code, "ALLOW_CONDITION_CORRECTION",
       if (isTRUE(V13_ALLOW_CONDITION_CORRECTION)) "TRUE" else "FALSE", multiple = TRUE)
+  }
+
+  # 切片 (Annotation) フィルタ → ver6 copy へ伝播
+  #   ★ ver57.5: これが無いと、再解析画面で外した切片が解析に入ったままになる。
+  if (exists("V13_ANNOTATION_FILTER") && length(V13_ANNOTATION_FILTER) > 0) {
+    .af <- paste0("c(", paste(sprintf("\"%s\"", V13_ANNOTATION_FILTER), collapse = ", "), ")")
+    code <- replace_assign_line(code, "ANNOTATION_FILTER", .af, multiple = TRUE)
   }
 
   # DEG 閾値 → ver6 copy へ伝播（再解析の p/logFC を反映）

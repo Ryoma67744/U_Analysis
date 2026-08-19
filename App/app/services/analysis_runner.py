@@ -846,6 +846,20 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
             "V13_DEG_LOGFC_TH_VAL" if _is_tims_cf else "V8_DEG_LOGFC_TH_VAL",
             str(params["logfc_thresh"]),
         )
+    # --- 再解析の切片 (Annotation) フィルタ ---
+    #   ★ ver57.5 (デバッグ総点検 §5.3): ここが丸ごと欠けていた。
+    #     run_analysis は再解析でも params["annotation_filter"] を作っていたが、
+    #     注入していたのは本解析用の generate_v8_config だけで、
+    #     再解析側には受け手 (V13_ANNOTATION_FILTER) も注入も無かった。
+    #     そのため**チェックを外した切片のスポットが再解析にそのまま入り**、
+    #     画面にもログにも差が出なかった。DESI 再解析には切片選択の UI 自体が
+    #     無いので TIMS のみ対象（V13_ 系と同じ扱い）。
+    if _is_tims_cf and params.get("annotation_filter"):
+        _af = params["annotation_filter"]
+        lines = _replace_assign(
+            lines, "V13_ANNOTATION_FILTER",
+            "c(" + ", ".join(f'"{v}"' for v in _af) + ")",
+        )
     if _is_tims_cf and params.get("ion_mode"):
         lines = _replace_assign(lines, "V13_ION_MODE", _r_str(params["ion_mode"]))
     if _is_tims_cf and params.get("tolerance_mz") is not None:
