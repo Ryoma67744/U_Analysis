@@ -460,10 +460,20 @@ PCA_RETRY_GRID <- list(
 
 RPCA_NFEATURES_TRY <- c(500, 300, 200)
 
-# PreFlight: UI から dims が指定された場合のみ TIMS の UMAP 次元をその値に合わせる。
-# 既定(30)は override せず従来のグリッド(30→20→15)のまま＝挙動不変（後方互換）。
-# アプリは umap_dims_n→UMAP_DIMS_N を常に注入する設計のため、!=30 のときだけ反映する。
-if (is.numeric(UMAP_DIMS_N) && UMAP_DIMS_N > 0L && UMAP_DIMS_N != 30L) {
+# PreFlight: UI から指定された dims を TIMS の UMAP 次元に反映する。
+#
+# ★ ver58.0 (デバッグ総点検 A-8): 以前はここに `UMAP_DIMS_N != 30L` という
+#   後方互換のガードがあり、**既定値 30 のときだけ画面の指定を無視**していた。
+#   ところが単一サンプルの解析は補正を行わない経路に入り、その条件表
+#   (PCA_RETRY_GRID) の先頭は 1000 特徴量 / 20 主成分 / 20 次元である。
+#   つまり「画面に 30 と表示されているのに 20 次元で計算される」状態で、
+#   29 や 31 に変えたときだけ反映されるという分かりにくい挙動だった。
+#   （記録側は ver56.5 の実効値記録で既に実際の 20 を出していた＝挙動だけが残っていた）
+#
+#   下の .apply_ud が先頭エントリの主成分数を dims 以上へ引き上げるので、
+#   「次元数 > 主成分数」で RunUMAP が落ちることはない。
+#   特徴量数 (1000 対 3000) は画面に対応する設定が無いので変えない。
+if (is.numeric(UMAP_DIMS_N) && UMAP_DIMS_N > 0L) {
   .ud <- as.integer(UMAP_DIMS_N)
   UMAP_DIMS_MAX <- .ud                         # RPCA(Step3)・run_downstream_analysis が参照
   MAX_PCS       <- max(MAX_PCS, .ud)           # PCA が .ud 次元を確保できるように
