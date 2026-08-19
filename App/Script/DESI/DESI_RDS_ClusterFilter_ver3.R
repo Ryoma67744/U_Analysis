@@ -414,6 +414,8 @@ md_keep$PixelID_for_export <- use_pixel
 .stopif(any(is.finite(md_keep$PixelID_for_export)), "PixelIDが作れません（spot_index/rownamesの形式を確認）。")
 
 exported_files <- c()
+# ★ ver57.5: 再解析側のサンプル名 → 元の名前。マージのピクセル照合に使う。
+.merge_sample_map <- c()
 
 for (sn in SAMPLE_NAMES) {
   original_txt <- file.path(ORIGINAL_DATA_FOLDER, paste0(sn, ".txt"))
@@ -445,6 +447,16 @@ for (sn in SAMPLE_NAMES) {
   message(sprintf("   kept %d / %d lines", stat$n_kept, stat$n_total))
 
   exported_files <- c(exported_files, tools::file_path_sans_ext(basename(out_txt)))
+
+  # ★ ver57.5 (デバッグ総点検 §5.4): マージ用の対応表を貯める。
+  #   書き出したファイル名には `_KEEP_Cl_8` のような接尾辞が付くので、
+  #   再解析側のサンプル名は `<sample>_KEEP_Cl_8`、元データ側は `<sample>` になる。
+  #   マージはピクセルを `sample|spot_index` の鍵で照合するため、
+  #   接尾辞を外す対応表が無いと **1 点も一致せず**、整列に必要な 3 点を
+  #   満たせずに `stop()` する（UMAP もクラスタも DEG も計算し終えた最後の一歩で
+  #   赤いエラーになり、結果フォルダがプロジェクトに登録されない）。
+  #   TIMS 側 (ver18) は同じ形の対応表を作っていた。
+  .merge_sample_map[tools::file_path_sans_ext(basename(out_txt))] <- sn
 }
 
 .stopif(length(exported_files) > 0, "新規txtが1つも生成されませんでした（RDSの sample 名やクラスタ指定を確認してください）")
@@ -516,7 +528,10 @@ if (.should_merge && nzchar(MERGE_SCRIPT_PATH) && file.exists(MERGE_SCRIPT_PATH)
     RERUN_RDS_PATH      <- merge_rerun_rds
     MERGE_BASE_CLUSTERS <- TARGET_CLUSTERS
     SUBCLUSTER_NAMING   <- MERGE_SUBCLUSTER_NAMING
-    SAMPLE_NAME_MAP     <- NULL
+    # ★ ver57.5: 書き出し時に作った「再解析名 → 元の名前」の対応表を渡す。
+    #   従来はここが NULL 固定で、接尾辞付きの名前を元の名前へ寄せられず、
+    #   マージは必ず「対応点 3 点未満」で停止していた（TIMS 側は対応表を渡していた）。
+    SAMPLE_NAME_MAP     <- if (length(.merge_sample_map) > 0) .merge_sample_map else NULL
     MERGE_OUT_DIR       <- merge_out
     # MERGE_OUT_PREFIX は USER SETTINGS で定義済み
     BASE_REDUCTION      <- "umap"

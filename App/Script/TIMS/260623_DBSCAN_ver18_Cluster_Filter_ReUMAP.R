@@ -959,6 +959,16 @@ if (!is.null(sample_name_map) && length(sample_name_map) > 0) {
   si <- suppressWarnings(as.numeric(si))
   .stopif(any(is.finite(si)), "spot_index が数値として解釈できません。")
   key <- paste0(sn, "|", si)
+  # ★ ver57.5 (デバッグ総点検 §5.4): セル名で名前を付けて返す。
+  #   `.get_umap_df` は戻り値を `[emb$cell]` と**セル名で引く**が、
+  #   ここで名前を付けていなかったため R の仕様どおり **全て NA** になっていた
+  #   （名前の無いベクトルを文字列で添字すると NA）。
+  #   NA 同士の merge は既定で「一致」と見なされるので、元 N 行 × 再解析 M 行の
+  #   **総当り結合**に化け、大きなデータではメモリを食い潰し、小さいと
+  #   「何も貼り戻されていない成果物」が出る。しかもエラーは出ない。
+  #   共通マージスクリプト (Common/UMAP_Merge_Clusters_ver1.R) の同名関数には
+  #   元から names() があり、**こちらのコピーだけが欠けていた**。
+  names(key) <- rownames(md)
   key
 }
 
@@ -1340,11 +1350,18 @@ if (isTRUE(ENABLE_REUMAP_REPLACE) && !identical(RERUN_PIPELINE_STAGE, "reduction
   .stopif("umap" %in% names(.base_seu_original@reductions), "元データ側に 'umap' reduction がありません（RDSにUMAPが入っているStep2/Step3を指定してください）。")
   .stopif("umap" %in% names(rerun_seu@reductions), "ReUMAP側に 'umap' reduction がありません（ver13 rerun がUMAPまで完走しているか確認）。")
 
+  # ★ ver57.5 (デバッグ総点検 §5.4): 書き出し時に作った対応表を渡す。
+  #   再解析側のサンプル名は `<sample>_KEEP_Cl_8` のように接尾辞が付くため、
+  #   元データ側の `<sample>` とは鍵 (`sample|spot_index`) が一致しない。
+  #   マージスクリプト呼び出し (下の .should_merge 側) は既に
+  #   `.merge_sample_map` を使っていたのに、**こちらだけが生の
+  #   SAMPLE_NAME_MAP**（利用者が明示しない限り空）を渡しており、
+  #   接尾辞を吸収できず対応付けが原理的に不可能だった。
   apply_reumap_replace(
     base_seu = .base_seu_original,
     rerun_seu = rerun_seu,
     replace_base_clusters = REPLACE_BASE_CLUSTERS,
-    sample_name_map = SAMPLE_NAME_MAP,
+    sample_name_map = if (length(.merge_sample_map) > 0) .merge_sample_map else SAMPLE_NAME_MAP,
     base_reduction = "umap",
     rerun_reduction = "umap",
     out_dir = REPLACE_OUT_DIR,
