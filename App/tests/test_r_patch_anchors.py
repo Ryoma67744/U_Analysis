@@ -64,7 +64,10 @@ PATCHERS = {
 # 各再解析スクリプトから抽出できる anchor の実数（下限）。
 # 抽出ロジックが壊れると 0 個に近づくので、その検出に使う。
 EXPECTED_ANCHOR_COUNT = {
-    "DESI 再解析": 4,
+    # ver57.5: Otsu スキップの文字列手術を削除して 4 → 2。
+    #   （定数 SKIP_BACKGROUND_FILTER の差し替えに置き換えた。差し替えは
+    #     `replace_assign_line` = 0 件で停止する形なので anchor を持たない）
+    "DESI 再解析": 2,
     # ver56.5: Retry Logic 置換を削除して 4 → 3。
     "TIMS 再解析": 3,
 }
@@ -77,11 +80,12 @@ CODE_VARS = ("code_vec", "code")
 #   ver52.2 は「番人だけを入れて母数を測る版」。
 #   隠さず記録し、(a) これ以上増えないこと (b) 直ったら気付けること を担保する。
 KNOWN_DEAD_ANCHORS = {
-    ("DESI 再解析", r"seu_list\[\[ii\]\]\s*<-\s*filtering_result_otsu\$filtered_seurat"):
-        "Otsu スキップの終了 anchor。v16:2153 は "
-        "`seu_list[[length(seu_list) + 1]] <- …` なので一致しない。"
-        "★ 開始 anchor は当たるので『壊れている』ように見えないのが厄介。"
-        "結果、クラスタ絞り込み後の再 UMAP で **背景除去が再実行される**",
+    # ★ ver57.5: Otsu スキップの 2 anchor はここから外した。
+    #   終了 anchor が v16 の ROI 対応 (`seu_list[[length(seu_list) + 1]] <- …`)
+    #   と一致せず、クラスタ絞り込み後の再 UMAP で **背景除去が再実行**されていた。
+    #   文字列手術そのものをやめ、v16 の定数 `SKIP_BACKGROUND_FILTER` を
+    #   `replace_assign_line`（0 件で停止＝fail-closed）で差し替える形にした。
+    #   実際に飛ばせているかは `test_reanalysis_skips_background_removal.py` が見る。
     ("DESI 再解析", r"data_list\s*<-\s*vector\(\"list\",\s*length\(data_lines\)\)"):
         "短行パディングの開始 anchor。`data_list` は v16 に 1 つも存在しない",
     ("DESI 再解析", r"data_df\s*<-\s*as\.data\.frame\(data_matrix,\s*stringsAsFactors\s*=\s*FALSE\)"):
