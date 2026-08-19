@@ -65,18 +65,21 @@ def test_the_reader_really_depends_on_those_settings():
 def test_the_cache_stores_a_settings_fingerprint():
     """★ 取り置きの際に設定の指紋も一緒に保存すること。"""
     body = _cached_reader_body()
-    assert re.search(r"meta\s*=\s*list\([^)]*settings", body, re.S), (
-        "キャッシュの meta に設定の指紋が入っていない。"
+    save = re.search(r"saveRDS\(list\(meta\s*=\s*list\((.*?)\)\s*,\s*data", body, re.S)
+    assert save, "キャッシュの書き出しが見つからない"
+    assert "settings" in save.group(1), (
+        f"キャッシュの meta に設定の指紋が入っていない: {save.group(1)[:200]}。"
         "大きさと更新時刻だけでは、**設定を変えた再実行が旧データを掴む**")
 
 
 def test_the_cache_validates_the_settings_fingerprint():
     """★ 再利用の判定で指紋を突き合わせること。"""
     body = _cached_reader_body()
-    ok = re.search(r"ok\s*<-.*", body)
-    assert ok, "再利用判定の行が見つからない"
-    assert "settings" in ok.group(0), (
-        f"再利用判定が指紋を見ていない: {ok.group(0).strip()[:200]}")
+    # `ok <- ...` は複数行に続く（次の文が始まるまで）
+    m = re.search(r"\n\s*ok\s*<-(.*?)\n\s*if\s*\(ok\)", body, re.S)
+    assert m, "再利用判定 (`ok <- ...` → `if (ok)`) が見つからない"
+    assert "settings" in m.group(1), (
+        f"再利用判定が指紋を見ていない: {m.group(1).strip()[:250]}")
 
 
 def test_the_fingerprint_helper_exists():
