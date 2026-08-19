@@ -249,6 +249,42 @@ def _replace_sample_names_block(
 # m/z キャリブレーション回帰計算
 # ---------------------------------------------------------------------------
 
+def _cal_row_is_used(row: dict) -> bool:
+    """キャリブレーション表の 1 行を「使う」と読むかどうか。
+
+    ★ ver57.5 (デバッグ総点検 §5.2.1): 従来ここは `not row.get("use")` で
+      判定していた。しかし表の "use" 欄に実際に入るのは **文字列** の
+      `"Yes"` / `"No"` である（チェックの同期処理
+      `interactive_calibration.sync_int_cal_selection_to_use` /
+      `analysis_callbacks.sync_cal_selection_to_use` が
+      `"Yes" if 選択 else "No"` を書く）。
+      Python では **`not "No"` は False** なので、利用者が「使わない」に
+      外した行がそのまま回帰計算へ入っていた。空文字と欠損しか弾けない。
+
+      実測（4 点のうち 1 点を「使わない」にした表）では m/z 400 の補正量が
+      +0.04337 Da になった。正しくは +0.00120 Da で、差 0.042 Da は
+      化合物照合の既定許容値 0.01 Da の 4 倍にあたる。
+      しかも実行サマリー（analysis_callbacks の「使用ピーク」）は
+      `use == "Yes"` の行だけを出すため、**画面に出ていない点が計算に
+      入る**という、目視では気づけない形になっていた。
+
+      対話画面側（`interactive_calibration.py`）と表示側は
+      `== "Yes"` で判定しており、**実際に計算する 1 か所だけ**が
+      違う意味で読んでいた。ここを唯一の出どころにして揃える。
+
+      `use` キーが無い行は従来と逆に「使う」とする。この列は DataTable の
+      表示列ではなく（利用者が任意の値を打ち込む経路が無い）、
+      欠損は「まだ印を付けていない参照ピーク」を意味するため、
+      黙って全行を捨てるより使う方が意図に近い。
+    """
+    if "use" not in row:
+        return True                      # 旧い保存形式（印そのものが無い）
+    v = row["use"]
+    if isinstance(v, str):
+        return v.strip().lower() in ("yes", "true", "1")
+    return bool(v)                       # 真偽値で保存された表も読む
+
+
 def compute_calibration_coefficients(
     table_data: list,
     regression_mode: str,
@@ -275,7 +311,7 @@ def compute_calibration_coefficients(
     pairs = []
     unusable = 0
     for row in (table_data or []):
-        if not row.get("use"):
+        if not _cal_row_is_used(row):
             continue
         try:
             ref = float(row["ref_mz"])
@@ -809,6 +845,20 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
             lines,
             "V13_DEG_LOGFC_TH_VAL" if _is_tims_cf else "V8_DEG_LOGFC_TH_VAL",
             str(params["logfc_thresh"]),
+        )
+    # --- 再解析の切片 (Annotation) フィルタ ---
+    #   ★ ver57.5 (デバッグ総点検 §5.3): ここが丸ごと欠けていた。
+    #     run_analysis は再解析でも params["annotation_filter"] を作っていたが、
+    #     注入していたのは本解析用の generate_v8_config だけで、
+    #     再解析側には受け手 (V13_ANNOTATION_FILTER) も注入も無かった。
+    #     そのため**チェックを外した切片のスポットが再解析にそのまま入り**、
+    #     画面にもログにも差が出なかった。DESI 再解析には切片選択の UI 自体が
+    #     無いので TIMS のみ対象（V13_ 系と同じ扱い）。
+    if _is_tims_cf and params.get("annotation_filter"):
+        _af = params["annotation_filter"]
+        lines = _replace_assign(
+            lines, "V13_ANNOTATION_FILTER",
+            "c(" + ", ".join(f'"{v}"' for v in _af) + ")",
         )
     if _is_tims_cf and params.get("ion_mode"):
         lines = _replace_assign(lines, "V13_ION_MODE", _r_str(params["ion_mode"]))

@@ -835,6 +835,16 @@ def run_analysis(
                 from app.services.data_manager import list_msi_files
                 sample_names = list_msi_files(reanalysis_data_folder)
 
+            # ★ ver57.5 (デバッグ総点検 §5.3): サンプル選択のチェックを再解析でも効かせる。
+            #   本解析側 (:604 付近) は `selected_samples` で絞っているのに、
+            #   再解析だけがフォルダ全件を対象にしていた。画面には
+            #   「チェックを入れたサンプルが再解析対象になります」と書いてあるのに、
+            #   **外したサンプルがそのまま解析に入る**。
+            #   未選択 (空) のときは従来どおり全件＝挙動を変えない。
+            if selected_samples:
+                _sel = set(selected_samples)
+                sample_names = [s for s in sample_names if s in _sel]
+
             # RDSパス解決: 直接指定 > フォルダ+クラスタソースから構築
             resolved_rds_path = rds_path or ""
             resolved_cluster_source = cluster_source or "harmony"
@@ -888,7 +898,15 @@ def run_analysis(
             if analysis_type == "tims_cluster_filter":
                 from app.services.data_manager import build_tims_input_paths
                 src_folder = reanalysis_data_folder or data_folder
-                params["original_input_paths"] = build_tims_input_paths(src_folder)
+                _paths = build_tims_input_paths(src_folder)
+                # ★ ver57.5: サンプル名だけ絞ると、名前と実ファイルが食い違う。
+                #   R 側は ORIGINAL_INPUT_PATHS を一巡してフィルタ済み入力を
+                #   書き出すので、ここを絞らないと外したサンプルの再解析用
+                #   ファイルが作られ、そのまま次の解析対象になる。
+                if selected_samples:
+                    _sel_paths = set(selected_samples)
+                    _paths = [p for p in _paths if Path(p).stem in _sel_paths]
+                params["original_input_paths"] = _paths
                 params["export_data_dir"] = full_output_dir
                 # 入力正規化ポリシー（再解析UIのトグル → V13_INPUT_NORMALIZED/NORM_MODE 注入）
                 params["input_normalized"] = (normalize_input_reanalysis == "OFF")

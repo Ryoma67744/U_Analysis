@@ -202,6 +202,14 @@ V13_ALLOW_CONDITION_CORRECTION <- FALSE
 V13_DEG_P_THRESH_VAL <- 0.05
 V13_DEG_LOGFC_TH_VAL <- 0.25
 
+# 切片 (Annotation) フィルタ。
+#   ★ ver57.5 (デバッグ総点検 §5.3): 再解析画面の「Annotation（切片）選択」は
+#     Python 側が params["annotation_filter"] を組み立てていたのに、注入するのは
+#     本解析用の generate_v8_config だけで、再解析側には受け手も注入も無かった。
+#     チェックを外しても**その切片のスポットが再解析にそのまま入る**空振りだった。
+#     NULL のままなら ver6 側の既定（フィルタなし）を使う＝従来挙動。
+V13_ANNOTATION_FILTER <- NULL
+
 # (N) slice_id / condition を 1回目RDSから保存しておきたい場合（通常は不要）
 #     ver13 は入力Parquetの annotation から slice_id/condition を再現できるため、
 #     基本は FALSE 推奨です（Re-UMAP側でDBSCAN復元などはしない）。
@@ -868,6 +876,13 @@ make_v13_copy_with_settings <- function(v13_path, out_path,
       if (isTRUE(V13_ALLOW_CONDITION_CORRECTION)) "TRUE" else "FALSE", multiple = TRUE)
   }
 
+  # 切片 (Annotation) フィルタ → ver6 copy へ伝播
+  #   ★ ver57.5: これが無いと、再解析画面で外した切片が解析に入ったままになる。
+  if (exists("V13_ANNOTATION_FILTER") && length(V13_ANNOTATION_FILTER) > 0) {
+    .af <- paste0("c(", paste(sprintf("\"%s\"", V13_ANNOTATION_FILTER), collapse = ", "), ")")
+    code <- replace_assign_line(code, "ANNOTATION_FILTER", .af, multiple = TRUE)
+  }
+
   # DEG 閾値 → ver6 copy へ伝播（再解析の p/logFC を反映）
   if (exists("V13_DEG_P_THRESH_VAL") && !is.na(V13_DEG_P_THRESH_VAL)) {
     code <- replace_assign_line(code, "DEG_P_THRESH_VAL", as.character(V13_DEG_P_THRESH_VAL), multiple = TRUE)
@@ -944,6 +959,16 @@ if (!is.null(sample_name_map) && length(sample_name_map) > 0) {
   si <- suppressWarnings(as.numeric(si))
   .stopif(any(is.finite(si)), "spot_index が数値として解釈できません。")
   key <- paste0(sn, "|", si)
+  # ★ ver57.5 (デバッグ総点検 §5.4): セル名で名前を付けて返す。
+  #   `.get_umap_df` は戻り値を `[emb$cell]` と**セル名で引く**が、
+  #   ここで名前を付けていなかったため R の仕様どおり **全て NA** になっていた
+  #   （名前の無いベクトルを文字列で添字すると NA）。
+  #   NA 同士の merge は既定で「一致」と見なされるので、元 N 行 × 再解析 M 行の
+  #   **総当り結合**に化け、大きなデータではメモリを食い潰し、小さいと
+  #   「何も貼り戻されていない成果物」が出る。しかもエラーは出ない。
+  #   共通マージスクリプト (Common/UMAP_Merge_Clusters_ver1.R) の同名関数には
+  #   元から names() があり、**こちらのコピーだけが欠けていた**。
+  names(key) <- rownames(md)
   key
 }
 
@@ -1325,11 +1350,18 @@ if (isTRUE(ENABLE_REUMAP_REPLACE) && !identical(RERUN_PIPELINE_STAGE, "reduction
   .stopif("umap" %in% names(.base_seu_original@reductions), "元データ側に 'umap' reduction がありません（RDSにUMAPが入っているStep2/Step3を指定してください）。")
   .stopif("umap" %in% names(rerun_seu@reductions), "ReUMAP側に 'umap' reduction がありません（ver13 rerun がUMAPまで完走しているか確認）。")
 
+  # ★ ver57.5 (デバッグ総点検 §5.4): 書き出し時に作った対応表を渡す。
+  #   再解析側のサンプル名は `<sample>_KEEP_Cl_8` のように接尾辞が付くため、
+  #   元データ側の `<sample>` とは鍵 (`sample|spot_index`) が一致しない。
+  #   マージスクリプト呼び出し (下の .should_merge 側) は既に
+  #   `.merge_sample_map` を使っていたのに、**こちらだけが生の
+  #   SAMPLE_NAME_MAP**（利用者が明示しない限り空）を渡しており、
+  #   接尾辞を吸収できず対応付けが原理的に不可能だった。
   apply_reumap_replace(
     base_seu = .base_seu_original,
     rerun_seu = rerun_seu,
     replace_base_clusters = REPLACE_BASE_CLUSTERS,
-    sample_name_map = SAMPLE_NAME_MAP,
+    sample_name_map = if (length(.merge_sample_map) > 0) .merge_sample_map else SAMPLE_NAME_MAP,
     base_reduction = "umap",
     rerun_reduction = "umap",
     out_dir = REPLACE_OUT_DIR,

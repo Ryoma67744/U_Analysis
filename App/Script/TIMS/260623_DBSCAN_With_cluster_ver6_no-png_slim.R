@@ -1076,21 +1076,49 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
   list(count_matrix = as(count_matrix, "dgCMatrix"), coordinates = coordinates)
 }
 
+# ★ ver57.5 (デバッグ総点検 §5.3): 取り置きした中身を左右する設定の指紋。
+#   キャッシュの再利用判定は元ファイルの大きさと更新時刻だけを見ていたが、
+#   取り置きされる中身は **ANNOTATION_FILTER で行を間引き、
+#   USE_EMBEDDED_COMPOUND_NAMES で特徴量名を決めた後**のものである。
+#   元ファイルは変わらないので、切片の選択だけを変えて実行し直すと
+#   **変更前の選択のデータがそのまま使われた**。警告は出ず、結果に付く記録には
+#   新しく選んだ切片名が書かれるため、見た目には正常に見える。
+#   （出力フォルダ名を変えると直るのは、キャッシュ置き場が出力フォルダ配下だから）
+#   並べ替えに影響されないよう sort() してから連結する
+#   （同じ切片を順番違いで選んだだけで読み直すのは無駄なため）。
+.cache_settings_key <- function() {
+  af <- if (exists("ANNOTATION_FILTER") && !is.null(ANNOTATION_FILTER) && length(ANNOTATION_FILTER) > 0) {
+    paste(sort(as.character(ANNOTATION_FILTER)), collapse = "|")
+  } else ""
+  emb <- if (exists("USE_EMBEDDED_COMPOUND_NAMES")) {
+    as.character(isTRUE(USE_EMBEDDED_COMPOUND_NAMES))
+  } else "NA"
+  paste(af, emb, sep = "::")
+}
+
 read_desi_data_cached <- function(file_path, sample_prefix = NULL, cache_dir = RDS_CACHE_DIR, enable_cache = RDS_CACHE_ENABLE, force_rebuild = RDS_CACHE_FORCE_REBUILD) {
   sn <- sample_prefix %||% tools::file_path_sans_ext(basename(file_path))
   sn_safe <- gsub("[^A-Za-z0-9_\\-]", "_", sn)
   if (!dir.exists(cache_dir)) dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
   cache_fp <- file.path(cache_dir, paste0(sn_safe, ".rds"))
   fi <- file.info(file_path)
+  skey <- .cache_settings_key()
   if (enable_cache && !force_rebuild && file.exists(cache_fp)) {
     obj <- tryCatch(readRDS(cache_fp), error = function(e) NULL)
     if (!is.null(obj) && is.list(obj) && !is.null(obj$meta) && !is.null(obj$data)) {
-      ok <- isTRUE(all.equal(as.numeric(obj$meta$size), as.numeric(fi$size))) && isTRUE(all.equal(as.numeric(obj$meta$mtime), as.numeric(fi$mtime)))
+      # ★ ver57.5: 大きさ・更新時刻に加えて設定の指紋も一致すること。
+      #   指紋を持たない古いキャッシュ (NULL) は「別物」として読み直す。
+      ok <- isTRUE(all.equal(as.numeric(obj$meta$size), as.numeric(fi$size))) &&
+            isTRUE(all.equal(as.numeric(obj$meta$mtime), as.numeric(fi$mtime))) &&
+            identical(as.character(obj$meta$settings %||% ""), skey)
       if (ok) { return(obj$data) }
+      if (!identical(as.character(obj$meta$settings %||% ""), skey)) {
+        message(">> [cache] 設定が変わったため読み直します: ", basename(file_path))
+      }
     }
   }
   dat <- read_desi_data(file_path, sn)
-  if (enable_cache) try(saveRDS(list(meta = list(size = as.numeric(fi$size), mtime = as.numeric(fi$mtime)), data = dat), cache_fp), silent = TRUE)
+  if (enable_cache) try(saveRDS(list(meta = list(size = as.numeric(fi$size), mtime = as.numeric(fi$mtime), settings = skey), data = dat), cache_fp), silent = TRUE)
   dat
 }
 

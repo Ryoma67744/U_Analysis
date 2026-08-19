@@ -162,9 +162,31 @@ RESUME_FROM_RDS <- FALSE
 # 例: "C:/Users/you/.../RDS_Files" または "C:\\Users\\you\\...\\RDS_Files"
 RESUME_DIR_PATH <- "C:\\Users\\Cciia\\Biochem Dropbox\\Biochem's shared workspace\\Workspace\\UMAP\\DESI\\250924_Kizu_Dev_Brain\\250924_Kizu_Dev_Brain20251028"
 
+# 背景除去 (Otsu) を飛ばすか。
+#   ★ ver57.5: 通常の解析では必ず背景除去を行うので既定は FALSE。
+#   クラスタを絞り込んだ**再解析**だけがここを TRUE に差し替える
+#   (`DESI_RDS_ClusterFilter_ver3.R` の replace_assign_line)。
+#   1 回目で背景除去済みのデータに Otsu 法を再適用すると、
+#   閾値がその都度引き直されるため**残った中でさらに信号の弱い側**が
+#   切り捨てられる (脂肪・壊死部などが選択的に失われる)。
+SKIP_BACKGROUND_FILTER <- FALSE
+
 # 統計解析・MSI抽出の閾値設定
 DEG_P_THRESH_VAL <- 0.05  # 有意水準 (p-value)
-DEG_LOGFC_TH_VAL <- 0.10  # Log2 Fold Change の閾値
+# ★ ver57.5 (デバッグ総点検 §5.3): 既定を 0.10 → 0.25 に揃えた。
+#   ver57.5 でこの値を **検定 (FindAllMarkers) にも渡す**ようにしたが、
+#   従来の検定は 0.25 直書きだった。既定が 0.10 のままだと、
+#   アプリから値が注入されない使い方 (R を直接実行 / 再解析欄が空) で
+#   **閾値が黙って下がり、結果が変わってしまう**。
+#   画面の既定値 (settings_tab / PARAM_BOUNDS) も 0.25 なので、
+#   ここを 0.25 にすると「設定を触っていない解析の数値は変わらない」。
+DEG_LOGFC_TH_VAL <- 0.25  # Log2 Fold Change の閾値 (検定・volcano 共通)
+# ★ ver57.5: 検定前フィルタ (検出率) を定数にした。値は従来の直書きと同じ 0.25 で
+#   **計算は一切変わらない**。定数にする理由は記録のためで、従来は実行スクリプトから
+#   復元できず、受領書と Methods 文に TIMS の既定値 0.05 が書かれていた
+#   (provenance.BATCH_DE_FIXED_PARAMS のフォールバック)。
+#   DESI の実測は 0.25 なので、**Methods に実際と違う値が載っていた**。
+DEG_MIN_PCT_VAL  <- 0.25  # FindAllMarkers の min.pct (検定前フィルタ)
 VOLCANO_Y_CAP    <- 100   # Volcano PlotのY軸(-log10 p)の上限クリップ値
 LABEL_TOP_N_EACH <- 5     # MRMマッチング等でラベル表示する上位遺伝子数
 
@@ -2218,11 +2240,26 @@ if (RESUME_FROM_RDS && file.exists(rds_path1_in)) {
         seurat_obj$ROI <- sub_roi
       }
 
-      filtering_result_otsu <- filter_low_count_spots(
-        seurat_obj, method = "otsu", use_log_scale = TRUE,
-        n_bins = 256, plot_results = TRUE, sample_name = sub_name, outdir = od
-      )
-      seu_list[[length(seu_list) + 1]] <- filtering_result_otsu$filtered_seurat
+      # ★ ver57.5 (デバッグ総点検 §5.2.1): 背景除去を「飛ばす」経路を定数で持つ。
+      #   従来は再解析スクリプトが**このブロックを文字列として書き換えて**
+      #   Otsu をスキップさせていたが、その目印
+      #   (`seu_list[[ii]] <- filtering_result_otsu$filtered_seurat`) は
+      #   ROI 対応で追加方式へ書き換えた時点で**一致しなくなり無言で空振り**していた。
+      #   結果、背景除去済みのデータに Otsu 法がもう一度かかり、
+      #   残った中でさらに信号の弱い側 (脂肪・壊死部など) が切り捨てられていた。
+      #   定数の差し替えなら `replace_assign_line` が 0 件で停止するので、
+      #   将来ここを書き換えても**気づけずに空振りすることが無い**。
+      if (isTRUE(SKIP_BACKGROUND_FILTER)) {
+        message(">> [SKIP] 背景除去(Otsu)をスキップ: ", sub_name,
+                " (再解析: 1 回目で適用済みのため再適用しない)")
+        seu_list[[length(seu_list) + 1]] <- seurat_obj
+      } else {
+        filtering_result_otsu <- filter_low_count_spots(
+          seurat_obj, method = "otsu", use_log_scale = TRUE,
+          n_bins = 256, plot_results = TRUE, sample_name = sub_name, outdir = od
+        )
+        seu_list[[length(seu_list) + 1]] <- filtering_result_otsu$filtered_seurat
+      }
       expanded_sample_names <- c(expanded_sample_names, sub_name)
     }
   }
@@ -2387,7 +2424,7 @@ if ((.stage_downstream && .has_single) || (!.stage_downstream && length(seu_list
   cat("DEG計算中...\n")
   # ---- 並列化開始: FindAllMarkers用 ----
   plan(sequential)  # presto 導入済みのため逐次（multisession の 4 ワーカーが各々データを丸ごとコピーし OOM するため廃止）
-  deg_markers <- FindAllMarkers(seu_single, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "wilcox")
+  deg_markers <- FindAllMarkers(seu_single, only.pos = FALSE, min.pct = DEG_MIN_PCT_VAL, logfc.threshold = DEG_LOGFC_TH_VAL, test.use = "wilcox")
   # ---- 並列化終了: メモリ解放 ----
   plan(sequential)
   # BH/FDR補正に置換（Seuratデフォルトの Bonferroni は探索的解析に保守的すぎるため）
@@ -2695,7 +2732,7 @@ if ((.stage_downstream && .has_single) || (!.stage_downstream && length(seu_list
   # ---- 並列化開始: FindAllMarkers用 ----
   plan(sequential)  # presto 導入済みのため逐次（multisession の 4 ワーカーが各々データを丸ごとコピーし OOM するため廃止）
   deg_markers_harmony <- tryCatch({
-    FindAllMarkers(seu_harmony, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "wilcox")
+    FindAllMarkers(seu_harmony, only.pos = FALSE, min.pct = DEG_MIN_PCT_VAL, logfc.threshold = DEG_LOGFC_TH_VAL, test.use = "wilcox")
   }, error = function(e) {
     message("!! DEG(Harmony) failed: ", e$message)
     NULL
@@ -2924,10 +2961,21 @@ dims_use_rpca <- get_safe_dims_for_rpca(seu_list_pca, max_dims = 30, reduction =
   # DEG & Heatmap (RPCA)
   # ver3.8: Harmony と同じ tryCatch + NULL チェックパターンを採用。
   # FindAllMarkers が失敗しても解析全体が abort しないようにする。
+  #
+  # ★ ver57.5 (デバッグ総点検 §5.2.3): 検定の前に**測定値のアッセイへ戻す**。
+  #   従来は :2829 で `DefaultAssay(seu_rpca) <- "integrated"` にしたまま
+  #   ここへ来ていた。integrated はサンプル間の位置合わせのために
+  #   **作り直した値**（負値も取りうる）で、Seurat の公式見解でも
+  #   統合後の補正値での差次発現検定は推奨されない。
+  #   同じ v16 の Harmony 分岐 (:2712) は測定値へ戻してから検定しており、
+  #   TIMS 本解析 (ver6:1850) も同様。**RPCA 分岐だけが例外**だった。
+  assay_deg_rpca <- if ("Spatial" %in% Seurat::Assays(seu_rpca)) "Spatial" else DefaultAssay(seu_rpca)
+  DefaultAssay(seu_rpca) <- assay_deg_rpca
+  cat("DEG計算のアッセイ (RPCA): ", assay_deg_rpca, "\n", sep = "")
   # ---- 並列化開始: FindAllMarkers用 ----
   plan(sequential)  # presto 導入済みのため逐次（multisession の 4 ワーカーが各々データを丸ごとコピーし OOM するため廃止）
   deg_markers <- tryCatch({
-    FindAllMarkers(seu_rpca, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "wilcox")
+    FindAllMarkers(seu_rpca, only.pos = FALSE, min.pct = DEG_MIN_PCT_VAL, logfc.threshold = DEG_LOGFC_TH_VAL, test.use = "wilcox")
   }, error = function(e) {
     message("!! DEG(RPCA) failed: ", e$message)
     NULL

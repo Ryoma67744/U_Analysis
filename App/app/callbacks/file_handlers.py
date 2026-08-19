@@ -97,18 +97,42 @@ def toggle_settings_panels(desi_val, tims_val):
 
 @callback(
     Output("normalize_input", "value"),
+    Output("normalize_default_owner", "data"),
     Input("analysis_method", "value"),
     Input("analysis_method_tims", "value"),
+    State("normalize_input", "value"),
+    State("normalize_default_owner", "data"),
     prevent_initial_call=True,
 )
-def set_default_normalize(desi_val, tims_val):
-    """解析法に応じて正規化の既定を切替。
+def set_default_normalize(desi_val, tims_val, current, last_default):
+    """解析法に応じて正規化の既定を切替。**ただし手動変更は尊重する**。
+
     TIMS(SCiLS RMS等で正規化済み入力)は既定 OFF＝二重正規化を回避。
-    DESI(生データ)は既定 ON。ユーザーは手動で上書き可能。
+    DESI(生データ)は既定 ON。
     （active 判定は toggle_settings_panels と同じ desi 優先ロジック）
+
+    ★ ver57.5 (デバッグ総点検 §5.3): 従来は現在値を見ずに方式既定を
+      書き込んでいた。画面には「解析法に応じて自動切替（**手動変更可**）」と
+      書いてあるのに、**手動変更が一度も残らなかった**。
+      とくに「再解析へ送る」では、再解析は `tims_v8` ではないため
+      「生データ扱い」で ON に化け、正規化済みの入力へ二重正規化がかかる。
+      しかも書き戻された値は run_analysis の自動保存で last_settings.json に
+      保存し直されるので、再起動しても手動選択が戻らなかった。
+      （ver56.5 で直したのは「保存されない」側。書き戻しはこちら）
+
+      直前に自動で入れた既定値を控え、**現在値がその既定のままのときだけ**
+      切り替える。違っていれば利用者が選んだ値なので触らない。
     """
+    # ★ ver57.5: 既定の判定に TIMS 再解析を含める。従来は `== "tims_v8"` だけを
+    #   見ていたため、**再解析へ切り替えた瞬間に「生データ扱い」で ON へ化けて**
+    #   いた。同じファイルの update_sample_selector / toggle_settings_panels は
+    #   元から ("tims_v8", "tims_cluster_filter") で括っており、ここだけ漏れていた。
+    #   TIMS は SCiLS の RMS で正規化済みなので、再解析でも既定は OFF が正しい。
     active = desi_val or tims_val or "desi_v8"
-    return "OFF" if active == "tims_v8" else "ON"
+    new_default = "OFF" if active in ("tims_v8", "tims_cluster_filter") else "ON"
+    if current is not None and last_default is not None and current != last_default:
+        return no_update, no_update      # 手で選んだ値・復元した値は守る
+    return new_default, new_default
 
 
 @callback(

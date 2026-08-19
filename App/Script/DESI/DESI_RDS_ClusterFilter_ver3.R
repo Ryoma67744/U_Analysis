@@ -113,7 +113,11 @@ RERUN_PIPELINE_STAGE <- "full"
 
 # DEG 閾値（アプリの再解析設定から V8_ 経由で注入。未注入なら v16 既定）。
 V8_DEG_P_THRESH_VAL <- 0.05
-V8_DEG_LOGFC_TH_VAL <- 0.10
+# ★ ver57.5: 既定を 0.10 → 0.25 に揃えた（v16 側と同じ理由）。
+#   ver57.5 で v16 の検定がこの値を使うようになったため、再解析パネルの
+#   log2FC 欄を空にしたときだけ閾値が 0.10 に下がる、という食い違いを防ぐ。
+#   TIMS 側 (ver18 の V13_DEG_LOGFC_TH_VAL) は元から 0.25。
+V8_DEG_LOGFC_TH_VAL <- 0.25
 
 # マージスクリプトのパス（Python側から自動注入）
 MERGE_SCRIPT_PATH <- ""
@@ -261,33 +265,28 @@ make_v8_copy_with_settings <- function(v8_path, out_path,
   code <- readLines(v8_path, warn = FALSE)
   # ----------------------------------------------------------
   # [PATCH] Otsu背景除去をスキップ（クラスタ除外/抽出後の再UMAPでは実行しない）
-  #   v8内の以下の処理ブロックを置換:
-  #     filtering_result_otsu <- filter_low_count_spots(...)
+  #
+  # ★ ver57.5 (デバッグ総点検 §5.2.1): ここは以前、v8 のブロックを
+  #   文字列として探して置換する専用関数を持っていた。しかし終了側の目印
   #     seu_list[[ii]] <- filtering_result_otsu$filtered_seurat
-  #   ↓
-  #     seu_list[[ii]] <- seurat_obj
+  #   は、v16 が ROI 分割に対応して
+  #     seu_list[[length(seu_list) + 1]] <- filtering_result_otsu$filtered_seurat
+  #   へ変わった時点で**一致しなくなった**。開始側の目印は当たるため壊れて
+  #   見えず、置換関数は無言で元コードを返していた（0 件で `return(code_vec)`）。
+  #   その結果、背景除去済みのデータに Otsu 法がもう一度かかり、
+  #   **残った中でさらに信号の弱い側が切り捨てられて**いた。
+  #   Otsu は毎回その場のデータから閾値を引き直すため、脂肪・壊死部など
+  #   信号の低い組織が選択的に失われる。警告は一切出ない。
+  #
+  #   置換文 `seu_list[[ii]] <- seurat_obj` 自体も、現在の v16 では
+  #   **別の事故になる**。`ii` はファイルの番号なので、1 ファイルを複数 ROI に
+  #   分ける内側ループが同じ位置を上書きし合い、ROI が 1 つしか残らない。
+  #
+  #   そこで v16 側に `SKIP_BACKGROUND_FILTER` を置き、ここは値を差し替える
+  #   だけにした。`replace_assign_line` は対象行が 0 件なら `.stopif` で
+  #   **停止する**ので、将来 v16 を書き換えても空振りに気づける。
   # ----------------------------------------------------------
-  patch_v8_disable_otsu <- function(code_vec) {
-    start_idx <- grep("filtering_result_otsu\\s*<-\\s*filter_low_count_spots\\s*\\(", code_vec)
-    if (length(start_idx) == 0) return(code_vec)  # 見つからなければそのまま
-    s <- start_idx[1]
 
-    end_idx <- grep("seu_list\\[\\[ii\\]\\]\\s*<-\\s*filtering_result_otsu\\$filtered_seurat", code_vec)
-    end_idx <- end_idx[end_idx >= s]
-    if (length(end_idx) == 0) return(code_vec)
-
-    e <- end_idx[1]
-
-    # ブロック置換（インデント維持）
-    indent <- sub("^(\\s*).*$", "\\1", code_vec[s])
-    repl <- c(
-      paste0(indent, "## [PATCHED] Skip Otsu filtering for re-UMAP after cluster filtering"),
-      paste0(indent, "seu_list[[ii]] <- seurat_obj")
-    )
-    c(code_vec[1:(s-1)], repl, code_vec[(e+1):length(code_vec)])
-  }
-
-  
   # ----------------------------------------------------------
   # [PATCH] Waters txt のデータ行が「末尾の0を省略」して短くなるケースに対応
   #   - v8 の read_desi_data() は data_lines の列数(max_cols)に依存しており、
@@ -339,6 +338,10 @@ replace_assign_line <- function(code_vec, var, new_rhs) {
   code <- replace_assign_line(code, "PROJECT_NAME_PREFIX", r_str(project_prefix))
   code <- replace_assign_line(code, "RESUME_FROM_RDS", if (isTRUE(resume_from_rds)) "TRUE" else "FALSE")
 
+  # ★ ver57.5: 背景除去(Otsu)は 1 回目の解析で適用済み。再解析では飛ばす。
+  #   対象行が無ければ .stopif で停止する（無言の空振りを起こさない）。
+  code <- replace_assign_line(code, "SKIP_BACKGROUND_FILTER", "TRUE")
+
   if (!is.null(resume_dir_path)) {
     code <- replace_assign_line(code, "RESUME_DIR_PATH", r_str(resume_dir_path))
   }
@@ -370,7 +373,6 @@ replace_assign_line <- function(code_vec, var, new_rhs) {
   )
   code <- c(code[1:(s-1)], sn_lines, code[(end_idx+1):length(code)])
 
-  code <- patch_v8_disable_otsu(code)
   code <- patch_v8_pad_truncated_rows(code)
   writeLines(code, con = out_path, useBytes = TRUE)
   invisible(out_path)
@@ -412,6 +414,8 @@ md_keep$PixelID_for_export <- use_pixel
 .stopif(any(is.finite(md_keep$PixelID_for_export)), "PixelIDが作れません（spot_index/rownamesの形式を確認）。")
 
 exported_files <- c()
+# ★ ver57.5: 再解析側のサンプル名 → 元の名前。マージのピクセル照合に使う。
+.merge_sample_map <- c()
 
 for (sn in SAMPLE_NAMES) {
   original_txt <- file.path(ORIGINAL_DATA_FOLDER, paste0(sn, ".txt"))
@@ -443,6 +447,16 @@ for (sn in SAMPLE_NAMES) {
   message(sprintf("   kept %d / %d lines", stat$n_kept, stat$n_total))
 
   exported_files <- c(exported_files, tools::file_path_sans_ext(basename(out_txt)))
+
+  # ★ ver57.5 (デバッグ総点検 §5.4): マージ用の対応表を貯める。
+  #   書き出したファイル名には `_KEEP_Cl_8` のような接尾辞が付くので、
+  #   再解析側のサンプル名は `<sample>_KEEP_Cl_8`、元データ側は `<sample>` になる。
+  #   マージはピクセルを `sample|spot_index` の鍵で照合するため、
+  #   接尾辞を外す対応表が無いと **1 点も一致せず**、整列に必要な 3 点を
+  #   満たせずに `stop()` する（UMAP もクラスタも DEG も計算し終えた最後の一歩で
+  #   赤いエラーになり、結果フォルダがプロジェクトに登録されない）。
+  #   TIMS 側 (ver18) は同じ形の対応表を作っていた。
+  .merge_sample_map[tools::file_path_sans_ext(basename(out_txt))] <- sn
 }
 
 .stopif(length(exported_files) > 0, "新規txtが1つも生成されませんでした（RDSの sample 名やクラスタ指定を確認してください）")
@@ -514,7 +528,10 @@ if (.should_merge && nzchar(MERGE_SCRIPT_PATH) && file.exists(MERGE_SCRIPT_PATH)
     RERUN_RDS_PATH      <- merge_rerun_rds
     MERGE_BASE_CLUSTERS <- TARGET_CLUSTERS
     SUBCLUSTER_NAMING   <- MERGE_SUBCLUSTER_NAMING
-    SAMPLE_NAME_MAP     <- NULL
+    # ★ ver57.5: 書き出し時に作った「再解析名 → 元の名前」の対応表を渡す。
+    #   従来はここが NULL 固定で、接尾辞付きの名前を元の名前へ寄せられず、
+    #   マージは必ず「対応点 3 点未満」で停止していた（TIMS 側は対応表を渡していた）。
+    SAMPLE_NAME_MAP     <- if (length(.merge_sample_map) > 0) .merge_sample_map else NULL
     MERGE_OUT_DIR       <- merge_out
     # MERGE_OUT_PREFIX は USER SETTINGS で定義済み
     BASE_REDUCTION      <- "umap"

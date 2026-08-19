@@ -272,6 +272,15 @@ def _create_analysis_settings_subtab():
                                 ],
                                 value=ls.get("normalize_input", "OFF" if ls.get("analysis_method_tims") == "tims_v8" else "ON"),
                             ),
+                            # ★ ver57.5: 直前に「自動切替」で入れた既定値の控え。
+                            #   現在値がこれと違えば利用者が選んだ値なので、
+                            #   解析法を変えても書き戻さない (画面の「手動変更可」)。
+                            #   初期値は復元済みの解析法から決まる既定値。
+                            dcc.Store(
+                                id="normalize_default_owner",
+                                data=("OFF" if ls.get("analysis_method_tims") == "tims_v8"
+                                      else "ON"),
+                            ),
                             html.Div(style={"marginTop": "8px"}, children=[
                                 html.Small("OFF時の変換 (NORM_MODE)", className="fw-bold"),
                                 dbc.Select(
