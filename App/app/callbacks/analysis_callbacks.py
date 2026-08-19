@@ -92,14 +92,25 @@ def _is_tier_a() -> bool:
 #                                    交絡下では条件差も縮小するが、技術差まみれで比較不能に
 #                                    なるより補正して共有埋め込み/クラスタを得たい場合に使う。
 #                                    DEG は reduction と独立に condition で算出されるため不変）。
+# (annotation_role, batch_var, allow_condition_correction, batch_correction_enable)
+#
+# ★ ver58.0 (デバッグ総点検 A-1): 4 つ目「そもそも補正するか」を足した。
+#   従来は補正の要否を R 側が **列名から推測** しており、「補正なし」を選んでも
+#   batch_var="sample" が渡るため **ファイルが 2 つ以上あれば必ず Harmony が走って**いた。
+#   それでいて Methods 文には「バッチ補正は行わなかった」と書かれていた。
+#   MSI では 1 ファイル＝1 切片＝多くの場合 1 個体・1 条件なので、sample 単位の補正は
+#   比較したい生物差そのものを削ることに直結する (Nygaard 2016)。
+#
+#   連続切片 (serial_section) は「同一個体の技術反復」なのでサンプル間補正が妥当であり、
+#   ここは従来どおり補正する。
 _SCENARIO_MAP = {
-    "within_slice":      ("biological", "sample",   False),
+    "within_slice":      ("biological", "sample",   False, False),
     # condition_compare は within_slice と同一方針。UI ドロップダウンでは within_slice に
     # 統合済み（settings_tab._norm_scenario）。旧セッション値の後方互換のため写像は残す。
-    "condition_compare": ("biological", "sample",   False),
-    "serial_section":    ("section_id", "sample",   False),
-    "batch_correct":     ("biological", "slice_id", True),
-    "integrate_correct": ("section_id", "slice_id", True),
+    "condition_compare": ("biological", "sample",   False, False),
+    "serial_section":    ("section_id", "sample",   False, True),
+    "batch_correct":     ("biological", "slice_id", True,  True),
+    "integrate_correct": ("section_id", "slice_id", True,  True),
 }
 
 
@@ -697,11 +708,13 @@ def run_analysis(
                 if adduct_filter:
                     params["adduct_patterns"] = adduct_filter
                 # 解析シナリオ → 補正ポリシーを注入（ver6 の ANNOTATION_ROLE 等）
-                _role, _bv, _allow = _SCENARIO_MAP.get(
+                _role, _bv, _allow, _correct = _SCENARIO_MAP.get(
                     tims_scenario or "within_slice", _SCENARIO_MAP["within_slice"])
                 params["annotation_role"] = _role
                 params["batch_var"] = _bv
                 params["allow_condition_correction"] = _allow
+                # ★ ver58.0 (A-1): 「補正なし」を実処理へ届ける
+                params["batch_correction_enable"] = _correct
                 # INPUT_PATHS: 選択サンプルに対応するファイルのフルパスリスト
                 from app.services.data_manager import build_tims_input_paths_multi
                 all_folders = [data_folder] + (extra_data_folders or [])
@@ -912,11 +925,13 @@ def run_analysis(
                 params["input_normalized"] = (normalize_input_reanalysis == "OFF")
                 params["norm_mode"] = norm_mode_reanalysis or "log1p"
                 # 解析シナリオ → V13_ 経由で ver6 コピーへ伝播（subset の reduction に効かせる）
-                _r_role, _r_bv, _r_allow = _SCENARIO_MAP.get(
+                _r_role, _r_bv, _r_allow, _r_correct = _SCENARIO_MAP.get(
                     reanalysis_tims_scenario or "within_slice", _SCENARIO_MAP["within_slice"])
                 params["v13_annotation_role"] = _r_role
                 params["v13_batch_var"] = _r_bv
                 params["v13_allow_condition_correction"] = _r_allow
+                # ★ ver58.0 (A-1): 再解析でも「補正なし」を実処理へ届ける
+                params["v13_batch_correction_enable"] = _r_correct
                 # 再解析の m/z アノテーション（TIMS専用。ion/tolerance は V13_、adduct は env 経路で反映）
                 if reanalysis_ion_mode:
                     params["ion_mode"] = reanalysis_ion_mode

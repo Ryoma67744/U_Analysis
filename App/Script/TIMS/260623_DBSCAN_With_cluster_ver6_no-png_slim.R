@@ -241,6 +241,21 @@ ANNOTATION_ROLE <- "biological"
 # ALLOW_CONDITION_CORRECTION: TRUE で condition/slice_id による補正を明示的に許可（非推奨）。
 ALLOW_CONDITION_CORRECTION <- FALSE
 
+# BATCH_CORRECTION_ENABLE: そもそもバッチ補正を行うか。
+#   ★ ver58.0 (デバッグ総点検 A-1): 従来は「補正するかどうか」を **列名から推測** していた。
+#     画面で「同一切片のクラスタ／群比較：補正なし＝無補正PCA」を選んでも、
+#     渡されるのは BATCH_VAR="sample" であり、下の .bv_is_bio は偽になるため、
+#     **ファイルが 2 つ以上あれば必ず Harmony が走っていた**。
+#     補正を回避できるのは実質「ファイルが 1 つだけ」のときだけで、
+#     それでいて Methods 文にはシナリオ文言の「バッチ補正は行わなかった」が載っていた。
+#
+#     MSI では 1 ファイル＝1 切片＝多くの場合 1 個体・1 条件なので、
+#     sample 単位の補正は **除きたい機械差ではなく比較したい生物差** を削ることに直結する
+#     (Nygaard et al. 2016, doi:10.1093/biostatistics/kxv027)。
+#
+#     そこで要否を明示の旗にした。既定 TRUE ＝従来挙動（後方互換）。
+BATCH_CORRECTION_ENABLE <- TRUE
+
 # --- 入力正規化ポリシー ---
 # INPUT_NORMALIZED: 入力が既に SCiLS の RMS 等で正規化済みなら TRUE。
 #   TRUE のとき LogNormalize(=NormalizeData) を行わず、二重正規化を回避する。
@@ -2574,8 +2589,12 @@ if (!step2_done && !.stage_downstream) {
   .bv        <- if (BATCH_VAR %in% colnames(seu_merged@meta.data)) BATCH_VAR else "sample"
   .bv_levels <- length(unique(na.omit(seu_merged@meta.data[[.bv]])))
   .bv_is_bio <- (.bv %in% c("condition", "slice_id")) && !isTRUE(ALLOW_CONDITION_CORRECTION)
-  group_var  <- if (.bv_levels > 1 && !.bv_is_bio) .bv else NA_character_
+  # ★ ver58.0 (A-1): 明示の旗を最優先で見る。旗が偽なら列も件数も見ずに補正しない。
+  group_var  <- if (isTRUE(BATCH_CORRECTION_ENABLE) && .bv_levels > 1 && !.bv_is_bio) .bv else NA_character_
   if (is.na(group_var)) {
+    if (!isTRUE(BATCH_CORRECTION_ENABLE)) {
+      cat("[ver4] シナリオの指定によりバッチ補正を行いません -> 無補正PCAを使用\n")
+    } else
     cat(sprintf("[ver4] 技術的バッチが無いため補正をスキップ (BATCH_VAR='%s', levels=%d) -> 無補正PCAを使用\n", .bv, .bv_levels))
   } else {
     cat(sprintf("[ver4] バッチ補正変数: '%s' (levels=%d)\n", group_var, .bv_levels))

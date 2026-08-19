@@ -613,6 +613,14 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
             lines, "ALLOW_CONDITION_CORRECTION",
             "TRUE" if params["allow_condition_correction"] else "FALSE",
         )
+    # ★ ver58.0 (A-1): 「補正なし」シナリオを実処理へ届ける。
+    #   従来は補正の要否を R 側が列名から推測しており、「補正なし」を選んでも
+    #   batch_var="sample" が渡るためファイルが 2 つ以上あれば必ず補正が走っていた。
+    if "batch_correction_enable" in params:
+        lines = _replace_assign(
+            lines, "BATCH_CORRECTION_ENABLE",
+            "TRUE" if params["batch_correction_enable"] else "FALSE",
+        )
 
     # --- Annotation Filter ---
     if params.get("annotation_filter"):
@@ -823,6 +831,12 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
         lines = _replace_assign(lines, "V13_ANNOTATION_ROLE", _r_str(params["v13_annotation_role"]))
     if params.get("v13_batch_var"):
         lines = _replace_assign(lines, "V13_BATCH_VAR", _r_str(params["v13_batch_var"]))
+    # ★ ver58.0 (A-1): 再解析にも「補正なし」を届ける
+    if "v13_batch_correction_enable" in params:
+        lines = _replace_assign(
+            lines, "V13_BATCH_CORRECTION_ENABLE",
+            "TRUE" if params["v13_batch_correction_enable"] else "FALSE",
+        )
     if "v13_allow_condition_correction" in params:
         lines = _replace_assign(
             lines, "V13_ALLOW_CONDITION_CORRECTION",

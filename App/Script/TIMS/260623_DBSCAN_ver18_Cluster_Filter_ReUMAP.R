@@ -197,6 +197,9 @@ V13_NORM_MODE <- "log1p"
 V13_ANNOTATION_ROLE <- "biological"
 V13_BATCH_VAR <- "sample"
 V13_ALLOW_CONDITION_CORRECTION <- FALSE
+# ★ ver58.0 (デバッグ総点検 A-1): そもそも補正するか。NA で ver6 既定(TRUE)を使う。
+#   「補正なし」シナリオで再解析したのに補正が走る、という食い違いを防ぐ。
+V13_BATCH_CORRECTION_ENABLE <- NA
 
 # DEG 閾値（アプリの再解析設定から V13_ 経由で注入。未注入なら ver6 既定）。
 V13_DEG_P_THRESH_VAL <- 0.05
@@ -874,6 +877,11 @@ make_v13_copy_with_settings <- function(v13_path, out_path,
   if (exists("V13_ALLOW_CONDITION_CORRECTION") && !is.na(V13_ALLOW_CONDITION_CORRECTION)) {
     code <- replace_assign_line(code, "ALLOW_CONDITION_CORRECTION",
       if (isTRUE(V13_ALLOW_CONDITION_CORRECTION)) "TRUE" else "FALSE", multiple = TRUE)
+  }
+  # ★ ver58.0 (A-1): 補正の要否を ver6 コピーへ伝播
+  if (exists("V13_BATCH_CORRECTION_ENABLE") && !is.na(V13_BATCH_CORRECTION_ENABLE)) {
+    code <- replace_assign_line(code, "BATCH_CORRECTION_ENABLE",
+      if (isTRUE(V13_BATCH_CORRECTION_ENABLE)) "TRUE" else "FALSE", multiple = TRUE)
   }
 
   # 切片 (Annotation) フィルタ → ver6 copy へ伝播
