@@ -685,6 +685,12 @@ def _create_analysis_settings_subtab():
             style={"display": "none"},
             children=[
                 html.H4(className="card-title", children=["🔍 再解析設定"]),
+                # ★ ver58.0 (デバッグ総点検 A-6/A-7/A-10): この再解析で実際に使う条件。
+                #   正規化・UMAP・m/z アライメント・化合物名の由来を決める入力欄は
+                #   umap_settings_panel の中にあり、再解析中は画面から隠れる。
+                #   隠れた欄の値が黙って使われる状態を避けるため、
+                #   何が使われるのかをここに実値で出す（表示専用）。
+                html.Div(id="reanalysis_inherited_note", style={"display": "none"}),
                 dbc.Row([
                     dbc.Col(width=6, children=[
                         html.Div(className="param-group", children=[

@@ -119,6 +119,22 @@ V8_DEG_P_THRESH_VAL <- 0.05
 #   TIMS 側 (ver18 の V13_DEG_LOGFC_TH_VAL) は元から 0.25。
 V8_DEG_LOGFC_TH_VAL <- 0.25
 
+# 入力正規化ポリシー（★ ver58.0 / デバッグ総点検 A-6）
+#   従来 DESI 再解析には受け手が無く、画面で「正規化 OFF（正規化済み入力）」を
+#   選んでいても再解析だけ v16 既定（INPUT_NORMALIZED <- FALSE ＝ LogNormalize する）で
+#   走っていた。正規化済みの入力に **二重に正規化がかかる**。
+#   NA / "" なら上書きせず v16 既定を使う＝従来挙動。
+V8_INPUT_NORMALIZED <- NA
+V8_NORM_MODE <- ""
+
+# UMAP 条件（★ ver58.0 / A-7）
+#   PreFlight パネルは再解析中も画面に出ているのに受け手が無く、推奨値を入れても
+#   常に v16 既定で計算されていた。NA / "" なら v16 既定＝従来挙動。
+V8_UMAP_N_NEIGHBORS <- NA
+V8_UMAP_MIN_DIST <- NA
+V8_UMAP_METRIC <- ""
+V8_UMAP_DIMS_N <- NA
+
 # マージスクリプトのパス（Python側から自動注入）
 MERGE_SCRIPT_PATH <- ""
 
@@ -357,6 +373,32 @@ replace_assign_line <- function(code_vec, var, new_rhs) {
   # DEG 閾値 → v16 copy へ伝播（再解析の p/logFC を反映。既定は v16 同等で実質no-op）
   code <- replace_assign_line(code, "DEG_P_THRESH_VAL", as.character(V8_DEG_P_THRESH_VAL))
   code <- replace_assign_line(code, "DEG_LOGFC_TH_VAL", as.character(V8_DEG_LOGFC_TH_VAL))
+
+  # ★ ver58.0 (A-6): 正規化ポリシー → v16 copy へ伝播。
+  #   replace_assign_line は .stopif で 0 件なら停止する（無言の空振りを起こさない）。
+  if (exists("V8_INPUT_NORMALIZED") && !is.na(V8_INPUT_NORMALIZED)) {
+    code <- replace_assign_line(code, "INPUT_NORMALIZED",
+                                if (isTRUE(V8_INPUT_NORMALIZED)) "TRUE" else "FALSE")
+  }
+  if (exists("V8_NORM_MODE") && nzchar(V8_NORM_MODE)) {
+    code <- replace_assign_line(code, "NORM_MODE", r_str(V8_NORM_MODE))
+  }
+
+  # ★ ver58.0 (A-7): UMAP 条件 → v16 copy へ伝播（未指定なら触らない＝v16 既定）
+  if (exists("V8_UMAP_N_NEIGHBORS") && !is.na(V8_UMAP_N_NEIGHBORS)) {
+    code <- replace_assign_line(code, "UMAP_N_NEIGHBORS",
+                                paste0(as.integer(V8_UMAP_N_NEIGHBORS), "L"))
+  }
+  if (exists("V8_UMAP_MIN_DIST") && !is.na(V8_UMAP_MIN_DIST)) {
+    code <- replace_assign_line(code, "UMAP_MIN_DIST", as.character(V8_UMAP_MIN_DIST))
+  }
+  if (exists("V8_UMAP_METRIC") && nzchar(V8_UMAP_METRIC)) {
+    code <- replace_assign_line(code, "UMAP_METRIC", r_str(V8_UMAP_METRIC))
+  }
+  if (exists("V8_UMAP_DIMS_N") && !is.na(V8_UMAP_DIMS_N)) {
+    code <- replace_assign_line(code, "UMAP_DIMS_N",
+                                paste0(as.integer(V8_UMAP_DIMS_N), "L"))
+  }
 
   # sample_names ブロック差し替え
   start_pat <- "^\\s*sample_names\\s*<-\\s*c\\s*\\("

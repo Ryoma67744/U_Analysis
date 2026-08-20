@@ -927,6 +927,30 @@ def run_analysis(
             if analysis_type == "tims_cluster_filter" and annotation_filter_reanalysis_data:
                 params["annotation_filter"] = annotation_filter_reanalysis_data
 
+            # ★ ver58.0 (デバッグ総点検 A-6): DESI 再解析にも正規化ポリシーを渡す。
+            #   従来この 2 行は TIMS 限定ブロックの中にしか無く、DESI 再解析は
+            #   受け手ごと欠けていたため v16 既定（LogNormalize する）で走っていた。
+            #   正規化済みの入力に **二重に正規化がかかる**。
+            #   DESI 再解析パネルに正規化欄は無いので、本解析の画面値を使う
+            #   （隠れた欄の値が黙って使われないよう、実値は
+            #    reanalysis_inherited_note で画面に出す）。
+            if analysis_type == "desi_cluster_filter":
+                params["input_normalized"] = (normalize_input == "OFF")
+                params["norm_mode"] = norm_mode or "log1p"
+
+            # ★ ver58.0 (デバッグ総点検 A-7): UMAP 条件を再解析にも渡す。
+            #   PreFlight パネルは再解析中も画面に出ているのに受け手が無く、
+            #   推奨値を入れても常にテンプレ既定で計算されていた。
+            #   未指定なら params に載せない＝従来どおりテンプレ既定。
+            if umap_n_neighbors_input is not None:
+                params["umap_n_neighbors"] = int(umap_n_neighbors_input)
+            if umap_min_dist_input is not None:
+                params["umap_min_dist"] = float(umap_min_dist_input)
+            if umap_metric_input:
+                params["umap_metric"] = str(umap_metric_input)
+            if umap_dims_input is not None:
+                params["umap_dims_n"] = int(umap_dims_input)
+
             # TIMSクラスターフィルター固有パラメータ
             if analysis_type == "tims_cluster_filter":
                 from app.services.data_manager import build_tims_input_paths
@@ -944,6 +968,13 @@ def run_analysis(
                 # 入力正規化ポリシー（再解析UIのトグル → V13_INPUT_NORMALIZED/NORM_MODE 注入）
                 params["input_normalized"] = (normalize_input_reanalysis == "OFF")
                 params["norm_mode"] = norm_mode_reanalysis or "log1p"
+                # ★ ver58.0 (デバッグ総点検 A-10): m/z アライメントと化合物名の由来。
+                #   受け手も注入も無かったため、画面の指定が再解析にだけ届かず
+                #   ver6 既定（ppm=0＝無効／埋め込み名を使わない）で走っていた。
+                params["mz_align_ppm"] = float(
+                    coerce_number(mz_align_ppm, "mz_align_ppm"))
+                params["use_embedded_annotation"] = (
+                    "embedded" in list(use_annotation_check or []))
                 # 解析シナリオ → V13_ 経由で ver6 コピーへ伝播（subset の reduction に効かせる）
                 _r_role, _r_bv, _r_allow, _r_correct = _SCENARIO_MAP.get(
                     reanalysis_tims_scenario or "within_slice", _SCENARIO_MAP["within_slice"])
@@ -977,6 +1008,14 @@ def run_analysis(
                 if reanalysis_cal_use_previous and reanalysis_cal_data:
                     params["calibration_enable"] = True
                     params["calibration_coefficients"] = reanalysis_cal_data["coefficients"]
+                    # ★ ver58.0 (デバッグ総点検 A-10): サンプル別の回帰式も引き継ぐ。
+                    #   全体共通が未設定のとき本解析は共通係数を [0.0]
+                    #   （＝どの m/z でも補正量 0 = 無補正）に潰す。従来は
+                    #   サンプル別の係数を渡す経路が無かったため、画面に
+                    #   「✅ 前回の解析から回帰式を検出」と出ていても
+                    #   **実際には一切補正されない**まま走っていた。
+                    if reanalysis_cal_data.get("by_sample"):
+                        params["calibration_by_sample"] = reanalysis_cal_data["by_sample"]
 
             config_path = generate_cluster_filter_config(params, full_output_dir)
 
@@ -2730,6 +2769,11 @@ def load_calibration_from_first_analysis(rds_folder):
     # キャリブレーション情報を抽出
     cal_enable = params_data.get("calibration_enable", False)
     cal_coefficients = params_data.get("calibration_coefficients")
+    # ★ ver58.0 (デバッグ総点検 A-10): サンプル別の回帰式。
+    #   analysis_params.json には保存済みなのにここで拾っていなかったため、
+    #   再解析へ渡す手段が無く、全体共通が未設定のケースでは
+    #   共通係数 [0.0]（＝補正量ゼロ）だけが渡って **無補正**になっていた。
+    cal_by_sample = params_data.get("calibration_by_sample") or {}
 
     if not cal_enable or not cal_coefficients:
         return _no_data
@@ -2748,6 +2792,8 @@ def load_calibration_from_first_analysis(rds_folder):
         "requested_degree": params_data.get("calibration_requested_degree"),
         "ref_mz_min": params_data.get("calibration_ref_mz_min"),
         "ref_mz_max": params_data.get("calibration_ref_mz_max"),
+        # ★ ver58.0 (A-10): run_analysis が params["calibration_by_sample"] へ載せる。
+        "by_sample": cal_by_sample,
     }
 
     # 表示用テキスト
@@ -2770,6 +2816,21 @@ def load_calibration_from_first_analysis(rds_folder):
         html.Div(model_text),
         html.Div(f"R²: {r2_text}  |  マッチピーク数: {n_pts}"),
     ]
+    # ★ ver58.0 (デバッグ総点検 A-10): サンプル別の回帰式がある場合、
+    #   全体共通の係数は「補正量ゼロ」を意味する [0.0] に潰されていることがある。
+    #   それを伏せたまま「回帰式を検出」とだけ出すと、個別設定の無いサンプルが
+    #   無補正であることが画面から分からない。実態を書く。
+    if cal_by_sample:
+        _global_is_noop = (isinstance(cal_coefficients, list)
+                           and all(float(c) == 0.0 for c in cal_coefficients))
+        detail_children.append(html.Div(
+            f"サンプル別の回帰式 {len(cal_by_sample)} 件も引き継ぎます"
+            f"（{', '.join(sorted(cal_by_sample))}）。"))
+        if _global_is_noop:
+            detail_children.append(html.Div(
+                "全体共通の回帰式は設定されていないため、"
+                "個別設定の無いサンプルは補正しません。",
+                style={"fontSize": "0.85em", "color": "#856404"}))
     _lo, _hi = cal_data.get("ref_mz_min"), cal_data.get("ref_mz_max")
     if _lo is not None and _hi is not None:
         detail_children.append(html.Div(
