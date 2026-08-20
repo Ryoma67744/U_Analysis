@@ -181,6 +181,55 @@ BATCH_CORRECTION_ENABLE <- TRUE
 #     補正を行わなかった実行では主結果が既に無補正なので出さない。
 ALWAYS_OUTPUT_UNCORRECTED_PCA <- TRUE
 
+# ---- DEG まわりの共通処理 (ver58.0 / デバッグ総点検 A-3) ----
+#
+# ★ 多重比較の補正を「検定した全体」に対して行うようにした。
+#   従来は FindAllMarkers に min.pct / logfc.threshold を渡して**検定前に**
+#   ふるいをかけ、その通過分だけに p.adjust(BH) を当てていた。分母が小さいので
+#   補正後の値が本来より甘く出る。既定の p 値閾値 0.05 のままだと、
+#   CSV に出る分子は全部が自動的に「有意」と判定され、設定が実質効いていなかった。
+#
+#   さらに Seurat には `return.thresh`（既定 0.01）という**見えない足切り**があり、
+#   ふるいを 0 にするだけでは弱い結果が返らず、分母は今までと変わらない。
+#   そこで 3 か所とも min.pct=0 / logfc.threshold=0 / return.thresh=1 を明示する。
+#
+#   検定と補正は全体に対して行い、**CSV と図に出すのは閾値を通ったものだけ**にする
+#   （従来はエンジンが勝手に絞った結果をそのまま書いていたので、
+#     絞り込みの工程そのものが存在しなかった）。
+
+# p_val_adj = 0 の床置換（double 精度の限界で丸められた 0 を書き出し前に補正）。
+#   ★ ver58.0: 従来この処理は単一試料と RPCA にしか無く、**Harmony 分岐だけ
+#     抜けていた**。検定対象が増えるとゼロが出やすくなるため 3 分岐で共通化する。
+.floor_zero_padj <- function(df) {
+  if (is.null(df) || !is.data.frame(df) || !("p_val_adj" %in% colnames(df))) return(df)
+  if (any(df$p_val_adj == 0, na.rm = TRUE)) {
+    min_nz <- suppressWarnings(min(df$p_val_adj[df$p_val_adj > 0], na.rm = TRUE))
+    df$p_val_adj[df$p_val_adj == 0] <- if (is.finite(min_nz)) min_nz * 0.1 else .Machine$double.xmin
+  }
+  df
+}
+
+# 書き出し用の絞り込み。画面の閾値（p と log2FC）を通った行だけを返す。
+#   検定と補正は全体に対して行うが、CSV・図に出すのは従来どおり絞ったものにする。
+#   絞った結果が空になる場合は、**何も出さないより分かる**ので全行を返し理由を出す。
+.deg_for_export <- function(df) {
+  if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) return(df)
+  keep <- rep(TRUE, nrow(df))
+  if ("p_val_adj" %in% colnames(df))
+    keep <- keep & !is.na(df$p_val_adj) & df$p_val_adj < DEG_P_THRESH_VAL
+  if ("avg_log2FC" %in% colnames(df))
+    keep <- keep & !is.na(df$avg_log2FC) & abs(df$avg_log2FC) >= DEG_LOGFC_TH_VAL
+  out <- df[keep, , drop = FALSE]
+  cat(sprintf(">> DEG 書き出し: %d / %d 行 (p_val_adj < %s かつ |log2FC| >= %s)\n",
+              nrow(out), nrow(df), as.character(DEG_P_THRESH_VAL),
+              as.character(DEG_LOGFC_TH_VAL)))
+  if (nrow(out) == 0) {
+    message("!! 閾値を通る特徴量がありません。絞り込み前の全行を書き出します（判断材料を残すため）。")
+    return(df)
+  }
+  out
+}
+
 # 背景除去 (Otsu) を飛ばすか。
 #   ★ ver57.5: 通常の解析では必ず背景除去を行うので既定は FALSE。
 #   クラスタを絞り込んだ**再解析**だけがここを TRUE に差し替える
@@ -2454,26 +2503,21 @@ if ((.stage_downstream && .has_single) || (!.stage_downstream && length(seu_list
   cat("DEG計算中...\n")
   # ---- 並列化開始: FindAllMarkers用 ----
   plan(sequential)  # presto 導入済みのため逐次（multisession の 4 ワーカーが各々データを丸ごとコピーし OOM するため廃止）
-  deg_markers <- FindAllMarkers(seu_single, only.pos = FALSE, min.pct = DEG_MIN_PCT_VAL, logfc.threshold = DEG_LOGFC_TH_VAL, test.use = "wilcox")
+  deg_markers <- FindAllMarkers(seu_single, only.pos = FALSE, min.pct = 0, logfc.threshold = 0, return.thresh = 1, test.use = "wilcox")
   # ---- 並列化終了: メモリ解放 ----
   plan(sequential)
   # BH/FDR補正に置換（Seuratデフォルトの Bonferroni は探索的解析に保守的すぎるため）
   deg_markers$p_val_adj <- p.adjust(deg_markers$p_val, method = "BH")
-  # p_val_adj=0 補正（double精度の限界で丸められた0をCSV出力前に補正）
-  if (any(deg_markers$p_val_adj == 0, na.rm = TRUE)) {
-    min_nz <- suppressWarnings(min(deg_markers$p_val_adj[deg_markers$p_val_adj > 0], na.rm = TRUE))
-    if (is.finite(min_nz)) {
-      deg_markers$p_val_adj[deg_markers$p_val_adj == 0] <- min_nz * 0.1
-    } else {
-      deg_markers$p_val_adj[deg_markers$p_val_adj == 0] <- .Machine$double.xmin
-    }
-  }
+  # ★ ver58.0 (A-3): 床置換は 3 分岐共通のヘルパーへ集約した
+  deg_markers <- .floor_zero_padj(deg_markers)
   # pixel 単位の探索的ランキング（空間自己相関未補正・群間検定ではない）である旨を明記
   deg_markers$ranking_type   <- "exploratory_pixel_level"
   deg_markers$inference_note <- "Exploratory pixel-level ranking; spatial autocorrelation not modeled; NOT sample-level statistical inference"
-  write.csv(deg_markers, file.path(od_pca, "analysis_deg_all_markers_single.csv"), row.names = FALSE)
+  # ★ ver58.0 (A-3): 検定・補正は全体、書き出しは従来どおり閾値で絞る
+  .deg_out <- .deg_for_export(deg_markers)
+  write.csv(.deg_out, file.path(od_pca, "analysis_deg_all_markers_single.csv"), row.names = FALSE)
   
-  top5_markers <- deg_markers %>% dplyr::group_by(cluster) %>% dplyr::top_n(n = 5, wt = avg_log2FC)
+  top5_markers <- .deg_out %>% dplyr::group_by(cluster) %>% dplyr::top_n(n = 5, wt = avg_log2FC)
   top_genes <- unique(top5_markers$gene)
   
   if (length(top_genes) > 1) {
@@ -2807,7 +2851,7 @@ if ((.stage_downstream && .has_single) || (!.stage_downstream && length(seu_list
   # ---- 並列化開始: FindAllMarkers用 ----
   plan(sequential)  # presto 導入済みのため逐次（multisession の 4 ワーカーが各々データを丸ごとコピーし OOM するため廃止）
   deg_markers_harmony <- tryCatch({
-    FindAllMarkers(seu_harmony, only.pos = FALSE, min.pct = DEG_MIN_PCT_VAL, logfc.threshold = DEG_LOGFC_TH_VAL, test.use = "wilcox")
+    FindAllMarkers(seu_harmony, only.pos = FALSE, min.pct = 0, logfc.threshold = 0, return.thresh = 1, test.use = "wilcox")
   }, error = function(e) {
     message("!! DEG(Harmony) failed: ", e$message)
     NULL
@@ -2820,12 +2864,16 @@ if ((.stage_downstream && .has_single) || (!.stage_downstream && length(seu_list
   } else {
     # BH/FDR補正に置換（Seuratデフォルトの Bonferroni は探索的解析に保守的すぎるため）
     deg_markers_harmony$p_val_adj <- p.adjust(deg_markers_harmony$p_val, method = "BH")
+    # ★ ver58.0 (A-3): 従来この分岐だけ床置換が抜けていた
+    deg_markers_harmony <- .floor_zero_padj(deg_markers_harmony)
     # pixel 単位の探索的ランキング（空間自己相関未補正・群間検定ではない）である旨を明記
     deg_markers_harmony$ranking_type   <- "exploratory_pixel_level"
     deg_markers_harmony$inference_note <- "Exploratory pixel-level ranking; spatial autocorrelation not modeled; NOT sample-level statistical inference"
-    write.csv(deg_markers_harmony, file.path(od_harmony, paste0("analysis_deg_all_markers_", .tag_multi, ".csv")), row.names = FALSE)
+    # ★ ver58.0 (A-3): 検定・補正は全体、書き出しは従来どおり閾値で絞る
+    .deg_out_h <- .deg_for_export(deg_markers_harmony)
+    write.csv(.deg_out_h, file.path(od_harmony, paste0("analysis_deg_all_markers_", .tag_multi, ".csv")), row.names = FALSE)
     
-    top5_markers_harmony <- deg_markers_harmony %>% dplyr::group_by(cluster) %>% dplyr::top_n(n = 5, wt = avg_log2FC)
+    top5_markers_harmony <- .deg_out_h %>% dplyr::group_by(cluster) %>% dplyr::top_n(n = 5, wt = avg_log2FC)
     top_genes_harmony <- unique(top5_markers_harmony$gene)
     write.csv(top5_markers_harmony, file.path(od_harmony, paste0("analysis_top5_markers_per_cluster_", .tag_multi, ".csv")), row.names = FALSE)
     
@@ -3053,7 +3101,7 @@ dims_use_rpca <- get_safe_dims_for_rpca(seu_list_pca, max_dims = 30, reduction =
   # ---- 並列化開始: FindAllMarkers用 ----
   plan(sequential)  # presto 導入済みのため逐次（multisession の 4 ワーカーが各々データを丸ごとコピーし OOM するため廃止）
   deg_markers <- tryCatch({
-    FindAllMarkers(seu_rpca, only.pos = FALSE, min.pct = DEG_MIN_PCT_VAL, logfc.threshold = DEG_LOGFC_TH_VAL, test.use = "wilcox")
+    FindAllMarkers(seu_rpca, only.pos = FALSE, min.pct = 0, logfc.threshold = 0, return.thresh = 1, test.use = "wilcox")
   }, error = function(e) {
     message("!! DEG(RPCA) failed: ", e$message)
     NULL
@@ -3066,16 +3114,9 @@ dims_use_rpca <- get_safe_dims_for_rpca(seu_list_pca, max_dims = 30, reduction =
   } else {
     # BH/FDR補正に置換（Seuratデフォルトの Bonferroni は探索的解析に保守的すぎるため）
     deg_markers$p_val_adj <- p.adjust(deg_markers$p_val, method = "BH")
-    # p_val_adj=0 補正（double精度の限界で丸められた0をCSV出力前に補正）
-    if (any(deg_markers$p_val_adj == 0, na.rm = TRUE)) {
-      min_nz <- suppressWarnings(min(deg_markers$p_val_adj[deg_markers$p_val_adj > 0], na.rm = TRUE))
-      if (is.finite(min_nz)) {
-        deg_markers$p_val_adj[deg_markers$p_val_adj == 0] <- min_nz * 0.1
-      } else {
-        deg_markers$p_val_adj[deg_markers$p_val_adj == 0] <- .Machine$double.xmin
-      }
-    }
-    top5_markers <- deg_markers %>% dplyr::group_by(cluster) %>% dplyr::top_n(n = 5, wt = avg_log2FC)
+    # ★ ver58.0 (A-3): 床置換は 3 分岐共通のヘルパーへ集約した
+    deg_markers <- .floor_zero_padj(deg_markers)
+    top5_markers <- .deg_out_r %>% dplyr::group_by(cluster) %>% dplyr::top_n(n = 5, wt = avg_log2FC)
     top_genes <- unique(top5_markers$gene)
 
     if (length(top_genes) > 0) {
@@ -3111,7 +3152,9 @@ dims_use_rpca <- get_safe_dims_for_rpca(seu_list_pca, max_dims = 30, reduction =
     # pixel 単位の探索的ランキング（空間自己相関未補正・群間検定ではない）である旨を明記
     deg_markers$ranking_type   <- "exploratory_pixel_level"
     deg_markers$inference_note <- "Exploratory pixel-level ranking; spatial autocorrelation not modeled; NOT sample-level statistical inference"
-    write.csv(deg_markers, file.path(od_rpca, "analysis_deg_all_markers.csv"), row.names = FALSE)
+    # ★ ver58.0 (A-3): 検定・補正は全体、書き出しは従来どおり閾値で絞る
+    .deg_out_r <- .deg_for_export(deg_markers)
+    write.csv(.deg_out_r, file.path(od_rpca, "analysis_deg_all_markers.csv"), row.names = FALSE)
     write.csv(top5_markers, file.path(od_rpca, "analysis_top5_markers_per_cluster.csv"), row.names = FALSE)
 
     # Volcano & MSI (RPCA) — DEG 有効時のみ実行

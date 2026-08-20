@@ -888,15 +888,24 @@ def _sec_de(c, lang):
             "各クラスタに特徴的な代謝物は、Seurat の FindAllMarkers により、"
             f"当該クラスタの測定点とそれ以外の全測定点を比較する {test} 検定で抽出した。"
             "上昇・低下の双方を対象とした。",
-            (f"検定に先立ち、いずれかの群で {min_pct} 以上の測定点に検出される特徴量に"
-             "限定した。" if min_pct is not None else ""),
-            f"得られた p 値は {padj} 法により多重比較補正した。",
+            # ★ ver58.0 (デバッグ総点検 A-3): 足切りを 0 にした（＝全特徴量を検定）。
+            #   従来はここに「…に限定した」と書いていたが、限定した集合にだけ
+            #   補正を当てていたため補正の分母が小さく、記述としても実態としても
+            #   正しくなかった。0 のときは「限定しなかった」と書く。
+            ("検定前の絞り込みは行わず、全特徴量を検定対象とした。"
+             if min_pct in (0, 0.0, "0") else
+             (f"検定に先立ち、いずれかの群で {min_pct} 以上の測定点に検出される特徴量に"
+              "限定した。" if min_pct is not None else "")),
+            f"得られた p 値は {padj} 法により、**検定した全特徴量**を分母として"
+            "多重比較補正した。",
         ))
         paras.append(_para(
             "有意と判定する閾値は、補正後 p 値 < ",
             _slot(c, "analysis.thresholds.p", lang),
             " かつ |log2 fold-change| > ",
-            _slot(c, "analysis.thresholds.logfc", lang), " とした。",
+            _slot(c, "analysis.thresholds.logfc", lang),
+            " とした。書き出した一覧はこの閾値を通った特徴量に限る"
+            "（検定と補正は全特徴量に対して行っている）。",
         ))
     else:
         paras.append(_para(
@@ -904,9 +913,12 @@ def _sec_de(c, lang):
             f"FindAllMarkers in Seurat, using a {test} test comparing the pixels of each "
             "cluster against all remaining pixels. Both increased and decreased features "
             "were retained. ",
-            (f"Prior to testing, features were restricted to those detected in at least "
-             f"{min_pct} of pixels in either group. " if min_pct is not None else ""),
-            f"The resulting p-values were adjusted by the {padj} procedure.",
+            ("No pre-filtering was applied; all features were tested. "
+             if min_pct in (0, 0.0, "0") else
+             (f"Prior to testing, features were restricted to those detected in at least "
+              f"{min_pct} of pixels in either group. " if min_pct is not None else "")),
+            f"The resulting p-values were adjusted by the {padj} procedure over "
+            "all tested features.",
         ))
         paras.append(_para(
             "Features were considered significant at an adjusted p-value < ",

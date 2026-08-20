@@ -917,7 +917,13 @@ class SeuratBridge:
             return df
 
     def run_differential_expression(self, rds_path, ident1_ids, ident2_ids=None,
-                                    mode="global", min_pct=0.05, logfc=0.25,
+                                    # ★ ver58.0 (デバッグ総点検 A-3): 検定前の足切りを 0 にした。
+                                    #   従来は 0.05 / 0.25 で足切りした通過分だけに BH 補正を
+                                    #   当てていたため、補正の分母が小さく甘く出ていた。
+                                    #   R 側の既定だけ直してもここが上書きするので両方揃える。
+                                    #   バッチ解析と母集団を揃えないと、同じ画面に
+                                    #   2 つの補正母集団が混在する。
+                                    mode="global", min_pct=0.0, logfc=0.0,
                                     test_use="wilcox", assay=None,
                                     cancel_event=None, timeout=600):
         """選択範囲/群の on-the-fly DE を R (FindMarkers wilcox + BH) で実行する。

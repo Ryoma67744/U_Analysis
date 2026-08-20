@@ -147,7 +147,10 @@ def test_collect_conditions_includes_fixed_onthefly_params(tmp_path):
     c = pv.collect_conditions(rds_path=None)
     fixed = c["onthefly_de_fixed_params"]
     assert fixed["test"] == "wilcox"
-    assert fixed["min_pct"] == 0.05
+    # ★ ver58.0 (デバッグ総点検 A-3): 検定前の足切りを 0 にした。
+    #   足切り後の集合にだけ補正を当てると分母が小さく、補正後の値が
+    #   本来より甘く出る。記録される値も実態 (0) に合わせる。
+    assert fixed["min_pct"] == 0.0
     assert fixed["logfc_threshold"] == 0.25
 
 

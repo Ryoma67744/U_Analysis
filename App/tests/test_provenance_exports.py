@@ -189,7 +189,10 @@ def test_onthefly_de_csv_records_selection_and_thresholds(result_dir):
     assert payload["extra"]["n_selected_pixels"] == 3
     # GUI に出ていない固定値が必ず添付される
     assert payload["onthefly_de_fixed_params"]["test"] == "wilcox"
-    assert payload["onthefly_de_fixed_params"]["min_pct"] == 0.05
+    # ★ ver58.0 (デバッグ総点検 A-3): 検定前の足切りを 0 にした。
+    #   足切り後の集合にだけ補正を当てると分母が小さく、補正後の値が
+    #   本来より甘く出る。記録される値も実態 (0) に合わせる。
+    assert payload["onthefly_de_fixed_params"]["min_pct"] == 0.0
 
 
 def test_selection_groups_csv_records_conditions(result_dir):

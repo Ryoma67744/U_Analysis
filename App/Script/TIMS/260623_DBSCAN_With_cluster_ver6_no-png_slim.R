@@ -1931,11 +1931,36 @@ run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_onl
   
 cat("  Finding Markers...\n")
 
+# 書き出し用の絞り込み (ver58.0 / A-3)。
+#   検定と補正は全特徴量に対して行い、CSV に出すのは画面の閾値を通った行だけにする。
+#   絞った結果が空になる場合は、何も出さないより分かるので全行を返して理由を出す。
+.deg_for_export <- function(df) {
+  if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) return(df)
+  keep <- rep(TRUE, nrow(df))
+  if ("p_val_adj" %in% colnames(df))
+    keep <- keep & !is.na(df$p_val_adj) & df$p_val_adj < DEG_P_THRESH_VAL
+  if ("avg_log2FC" %in% colnames(df))
+    keep <- keep & !is.na(df$avg_log2FC) & abs(df$avg_log2FC) >= DEG_LOGFC_TH_VAL
+  out <- df[keep, , drop = FALSE]
+  cat(sprintf(">> DEG 書き出し: %d / %d 行 (p_val_adj < %s かつ |log2FC| >= %s)\n",
+              nrow(out), nrow(df), as.character(DEG_P_THRESH_VAL),
+              as.character(DEG_LOGFC_TH_VAL)))
+  if (nrow(out) == 0) {
+    message("!! 閾値を通る特徴量がありません。絞り込み前の全行を書き出します（判断材料を残すため）。")
+    return(df)
+  }
+  out
+}
+
 # (Add) Volcano/DEG resume: try reading saved DEG RDS first (requirement ②).
 # If available and readable, we reuse it to regenerate volcano plots without re-running FindAllMarkers.
 deg <- NULL
 if (exists("RESUME_FROM_RDS", envir = .GlobalEnv) && isTRUE(get("RESUME_FROM_RDS", envir = .GlobalEnv))) {
-  deg_rds_name <- paste0("deg_FindAllMarkers_raw_", prefix, ".rds")
+  # ★ ver58.0 (A-3): 取り置きの名前に検定条件を含める。
+  #   条件を変えても古いテーブルがそのまま再利用されると、
+  #   「直したのに結果が変わらない」になる。
+  .deg_cache_key <- paste0("mp", DEG_MIN_PCT_VAL, "_fc", DEG_LOGFC_TH_VAL, "_all")
+  deg_rds_name <- paste0("deg_FindAllMarkers_raw_", prefix, "_", .deg_cache_key, ".rds")
   cand <- c()
   if (exists("RESUME_DIR_PATH", envir = .GlobalEnv) && nzchar(get("RESUME_DIR_PATH", envir = .GlobalEnv))) {
     cand <- c(cand, file.path(get("RESUME_DIR_PATH", envir = .GlobalEnv), deg_rds_name))
@@ -1968,7 +1993,14 @@ if (is.null(deg)) {
     plan(multisession, workers = .deg_workers)
   }
   .mem_note_base("FindAllMarkers 前")
-  deg <- FindAllMarkers(obj, only.pos=FALSE, min.pct=DEG_MIN_PCT_VAL, logfc.threshold=DEG_LOGFC_TH_VAL, test.use="wilcox")
+  # ★ ver58.0 (デバッグ総点検 A-3): 検定前のふるいを外し、**全特徴量を検定**する。
+  #   従来は min.pct / logfc.threshold で足切りした通過分だけに p.adjust(BH) を
+  #   当てていたため、補正の分母が小さく、補正後の値が本来より甘く出ていた。
+  #   さらに Seurat の `return.thresh`（既定 0.01）という見えない足切りがあり、
+  #   ふるいを 0 にするだけでは弱い結果が返らず分母が変わらないので、
+  #   return.thresh=1 も明示する。
+  #   書き出しは従来どおり閾値で絞る（.deg_for_export）。
+  deg <- FindAllMarkers(obj, only.pos=FALSE, min.pct=0, logfc.threshold=0, return.thresh=1, test.use="wilcox")
   # ---- 並列化終了: メモリ解放 ----
   plan(sequential)
   invisible(gc(verbose = FALSE))
@@ -1988,7 +2020,9 @@ if (is.null(deg)) {
 if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
   tryCatch({
     saveRDS(deg, file.path(get("RDS_SAVE_DIR", envir = .GlobalEnv),
-                           paste0("deg_FindAllMarkers_raw_", prefix, ".rds")))
+                           paste0("deg_FindAllMarkers_raw_", prefix, "_",
+                                  paste0("mp", DEG_MIN_PCT_VAL, "_fc", DEG_LOGFC_TH_VAL, "_all"),
+                                  ".rds")))
   }, error = function(e) {
     message("!! saveRDS failed for deg: ", e$message)
   })
@@ -2002,7 +2036,8 @@ if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
     deg$annotation <- deg$gene
   }
   # ver4: マーカー表はピクセル単位の探索的ランキング（空間自己相関未補正・群間検定ではない）である旨を明記
-  deg_csv <- deg
+  # ★ ver58.0 (A-3): 検定・補正は全体、書き出しは従来どおり閾値で絞る
+  deg_csv <- .deg_for_export(deg)
   deg_csv$ranking_type   <- "exploratory_pixel_level"
   deg_csv$inference_note <- "Exploratory pixel-level ranking; spatial autocorrelation not modeled; NOT sample-level statistical inference"
   write.csv(deg_csv, file.path(sub_od, "markers_annotated.csv"), row.names=FALSE)

@@ -44,7 +44,7 @@ CONDITIONS_JSON = "analysis_conditions.json"
 # 一致させること（interactive_de.py は上書きしていない）。
 ONTHEFLY_DE_FIXED_PARAMS = {
     "test": "wilcox",
-    "min_pct": 0.05,
+    "min_pct": 0.0,
     "logfc_threshold": 0.25,
     "p_adjust_method": "BH",
 }
@@ -57,7 +57,7 @@ ONTHEFLY_DE_FIXED_PARAMS = {
 # min_pct は実行スクリプトから復元できれば上書きされる（DEG_MIN_PCT_VAL）。
 BATCH_DE_FIXED_PARAMS = {
     "test": "wilcox",
-    "min_pct": 0.05,
+    "min_pct": 0.0,
     "p_adjust_method": "BH",
     "only_positive": False,
 }
