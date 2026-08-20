@@ -491,7 +491,12 @@ def run_analysis(
         _blocking, _ = _collect_preflight_errors(
             desi_method, tims_method, data_folder, reanalysis_data_folder,
             output_dir, p_thresh, logfc_thresh, tolerance_mz,
-            resume_rds, rds_folder, rds_folder_reanalysis)
+            resume_rds, rds_folder, rds_folder_reanalysis,
+            # ★ ver58.1 (B-4): 切片 / ROI の全解除もここで止める。
+            annotation_filter=annotation_filter_data,
+            annotation_filter_reanalysis=annotation_filter_reanalysis_data,
+            roi_filter=desi_roi_filter_list,
+            use_roi_as_sample=bool(desi_use_roi_as_sample))
         if _blocking:
             return (
                 app_state, True,
@@ -2606,8 +2611,18 @@ def validate_output_dir_input(folder):
 def _collect_preflight_errors(desi_method, tims_method,
                               data_folder, reanalysis_data_folder, output_dir,
                               p_thresh, logfc_thresh, tolerance_mz,
-                              resume_rds, rds_folder, rds_folder_reanalysis):
-    """入力を検査して (blocking, advisory) の 2 つのリストを返す。"""
+                              resume_rds, rds_folder, rds_folder_reanalysis,
+                              annotation_filter=None,
+                              annotation_filter_reanalysis=None,
+                              roi_filter=None, use_roi_as_sample=False):
+    """入力を検査して (blocking, advisory) の 2 つのリストを返す。
+
+    ★ ver58.1 (デバッグ総点検 B-4): 切片 / ROI の Store を受け取る。
+      `None` は「選ぶ部品がそもそも無い」、`[]` は「部品はあるが 1 つも
+      選んでいない」。この 2 つを区別しないと、全部外したときに
+      **逆に全部が対象になる**（下流の truthy 判定が None を
+      「フィルタ指定なし＝全採用」と読むため）。
+    """
     blocking, advisory = [], []
     analysis_type = desi_method or tims_method or "desi_v8"
     is_tims = bool(tims_method)
@@ -2652,6 +2667,24 @@ def _collect_preflight_errors(desi_method, tims_method,
         ok, msg = validate_param(param_id, val)
         if not ok:
             blocking.append(msg)
+
+    # 切片 / ROI を 1 つも選んでいない場合（★ ver58.1 / B-4）
+    #   空リストは「部品はあるが全部外した」。従来はこれが None に潰れ、
+    #   「フィルタ指定なし＝全採用」として**外したはずのデータが全部入って**いた。
+    #   しかも 1 サンプル分だけ全解除すると R 側が「該当 spot なし」で落ちるので、
+    #   同じ操作が場合によって正反対の結果になっていた。
+    #   黙って反対のことをするより、意図を聞き返す。
+    _empty = "は 1 つも選ばれていません。"
+    _how = "全件を対象にするなら、すべてにチェックを入れてください。"
+    if annotation_filter is not None and len(annotation_filter) == 0 and not is_reanalysis:
+        blocking.append(f"切片 (Annotation){_empty}{_how}")
+    if (annotation_filter_reanalysis is not None
+            and len(annotation_filter_reanalysis) == 0 and is_reanalysis):
+        blocking.append(f"切片 (Annotation){_empty}{_how}")
+    # ROI フィルタは「ROI をサンプルとして扱う」ときにしか使われないので、
+    # OFF のときは止めない（止めすぎると正常な実行まで止まる）。
+    if roi_filter is not None and len(roi_filter) == 0 and use_roi_as_sample:
+        blocking.append(f"ROI{_empty}{_how}")
 
     return blocking, advisory
 
@@ -2702,7 +2735,13 @@ def _preflight_alert(blocking, advisory):
      State("tolerance_mz", "value"),
      State("resume_rds", "value"),
      State("rds_folder", "value"),
-     State("rds_folder_reanalysis", "value")],
+     State("rds_folder_reanalysis", "value"),
+     # ★ ver58.1 (B-4): 表示側も実行側と同じ材料で判断する。
+     #   片方だけ見ていると「赤いのに走る／白いのに止まる」に戻る。
+     State("annotation_filter_store", "data"),
+     State("annotation_filter_store_reanalysis", "data"),
+     State("desi_roi_filter_store", "data"),
+     State("desi_use_roi_as_sample", "value")],
     prevent_initial_call=True,
 )
 def preflight_validation(
@@ -2711,6 +2750,8 @@ def preflight_validation(
     data_folder, reanalysis_data_folder, output_dir,
     p_thresh, logfc_thresh, tolerance_mz,
     resume_rds, rds_folder, rds_folder_reanalysis,
+    annotation_filter=None, annotation_filter_reanalysis=None,
+    roi_filter=None, use_roi_as_sample=False,
 ):
     """起動ボタン押下時にプリフライトチェックを実行する。
 
@@ -2721,7 +2762,10 @@ def preflight_validation(
     blocking, advisory = _collect_preflight_errors(
         desi_method, tims_method, data_folder, reanalysis_data_folder,
         output_dir, p_thresh, logfc_thresh, tolerance_mz,
-        resume_rds, rds_folder, rds_folder_reanalysis)
+        resume_rds, rds_folder, rds_folder_reanalysis,
+        annotation_filter=annotation_filter,
+        annotation_filter_reanalysis=annotation_filter_reanalysis,
+        roi_filter=roi_filter, use_roi_as_sample=bool(use_roi_as_sample))
     alert = _preflight_alert(blocking, advisory)
     if alert is None:
         return "", {"display": "none"}

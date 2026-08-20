@@ -376,14 +376,21 @@ def update_annotation_selector(selected_samples, data_folder, desi_method,
     prevent_initial_call=True,
 )
 def sync_annotation_to_store(all_values):
-    """パターンマッチング: 全annotation_checkの選択値をStoreに集約"""
+    """パターンマッチング: 全annotation_checkの選択値をStoreに集約。
+
+    ★ ver58.1 (デバッグ総点検 B-4): 「部品が無い」と「部品はあるが全部外した」を
+      型で区別する。従来はどちらも None を返しており、下流の truthy 判定が
+      None を「フィルタ指定なし＝全採用」と読むため、**全部外すと逆に全部が
+      対象になっていた**。空リストは「1 つも選んでいない」を意味し、
+      実行前のチェックがこれを見て止める。
+    """
     if not all_values:
         return None
     merged = []
     for vals in all_values:
         if vals:
             merged.extend(vals)
-    return sorted(set(merged)) if merged else None
+    return sorted(set(merged))
 
 
 # ---------------------------------------------------------------------------
@@ -450,14 +457,21 @@ def update_desi_roi_selector(selected_samples, data_folder, desi_method):
     prevent_initial_call=True,
 )
 def sync_desi_roi_to_store(all_values):
-    """パターンマッチング: 全 desi_roi_check の選択値を Store に集約。"""
+    """パターンマッチング: 全 desi_roi_check の選択値を Store に集約。
+
+    ★ ver58.1 (デバッグ総点検 B-4): 「部品が無い」と「部品はあるが全部外した」を
+      型で区別する。従来はどちらも None を返しており、下流の truthy 判定が
+      None を「フィルタ指定なし＝全採用」と読むため、**全部外すと逆に全部が
+      対象になっていた**。空リストは「1 つも選んでいない」を意味し、
+      実行前のチェックがこれを見て止める。
+    """
     if not all_values:
         return None
     merged = []
     for vals in all_values:
         if vals:
             merged.extend(vals)
-    return sorted(set(merged)) if merged else None
+    return sorted(set(merged))
 
 
 @callback(
@@ -551,14 +565,21 @@ def update_reanalysis_annotation_selector(selected_samples, data_folder,
     prevent_initial_call=True,
 )
 def sync_reanalysis_annotation_to_store(all_values):
-    """再解析側: 全annotation_check_reanalysisの選択値をStoreに集約"""
+    """再解析側: 全annotation_check_reanalysisの選択値をStoreに集約。
+
+    ★ ver58.1 (デバッグ総点検 B-4): 「部品が無い」と「部品はあるが全部外した」を
+      型で区別する。従来はどちらも None を返しており、下流の truthy 判定が
+      None を「フィルタ指定なし＝全採用」と読むため、**全部外すと逆に全部が
+      対象になっていた**。空リストは「1 つも選んでいない」を意味し、
+      実行前のチェックがこれを見て止める。
+    """
     if not all_values:
         return None
     merged = []
     for vals in all_values:
         if vals:
             merged.extend(vals)
-    return sorted(set(merged)) if merged else None
+    return sorted(set(merged))
 
 
 # ---------------------------------------------------------------------------
