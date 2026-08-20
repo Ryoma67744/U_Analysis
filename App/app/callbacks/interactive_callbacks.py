@@ -458,6 +458,12 @@ def _save_interactive_settings(key, value):
 # 統合手法検出ヘルパー
 # ---------------------------------------------------------------------------
 
+# ★ ver58.0 (A-2): 派生 PCA の取り置きを無効化するための版番号。
+#   `helpers/derive_uncorrected_pca.R` の挙動を変えたら必ず上げること。
+#   上げないと、直したのに古い派生結果が返り続ける。
+_DERIVE_PCA_VERSION = "v58.0"
+
+
 def _detect_integration_methods(folder_path: str, include_derived: bool = False) -> dict:
     """結果フォルダ内のRDSファイルを検出し、統合手法→パスのマッピングを返す。
 
@@ -506,9 +512,14 @@ def _detect_integration_methods(folder_path: str, include_derived: bool = False)
                 rds_map["Harmony"] = str(rds_file)
             elif "rpca" in name_lower and "RPCA" not in rds_map:
                 rds_map["RPCA"] = str(rds_file)
+            # ★ ver58.0 (A-2): DESI の無補正 PCA コンパニオン
+            #   (DESI_SeuratCombined_PCA_uncorrected.rds)。
+            elif ("uncorrected" in name_lower
+                  and "PCA (uncorrected)" not in rds_map):
+                rds_map["PCA (uncorrected)"] = str(rds_file)
             # ★ ver58.0 (A-1): DESI で「補正しない」を選んだときの主結果
-            #   (DESI_SeuratCombined_PCA.rds)。無補正 PCA コンパニオン
-            #   (Step2_PCA_uncorrected.rds) と取り違えないよう uncorrected を除く。
+            #   (DESI_SeuratCombined_PCA.rds)。コンパニオンと取り違えないよう
+            #   uncorrected を含むものは上の分岐で先に拾っている。
             elif ("pca" in name_lower and "uncorrected" not in name_lower
                   and "PCA" not in rds_map):
                 rds_map["PCA"] = str(rds_file)
@@ -538,9 +549,14 @@ def _detect_integration_methods(folder_path: str, include_derived: bool = False)
                     rds_map["Harmony"] = str(rds_file)
                 elif "rpca" in name_lower and "RPCA" not in rds_map:
                     rds_map["RPCA"] = str(rds_file)
+                # ★ ver58.0 (A-2): DESI の無補正 PCA コンパニオン
+                #   (DESI_SeuratCombined_PCA_uncorrected.rds)。
+                elif ("uncorrected" in name_lower
+                      and "PCA (uncorrected)" not in rds_map):
+                    rds_map["PCA (uncorrected)"] = str(rds_file)
                 # ★ ver58.0 (A-1): DESI で「補正しない」を選んだときの主結果
-                #   (DESI_SeuratCombined_PCA.rds)。無補正 PCA コンパニオン
-                #   (Step2_PCA_uncorrected.rds) と取り違えないよう uncorrected を除く。
+                #   (DESI_SeuratCombined_PCA.rds)。コンパニオンと取り違えないよう
+                #   uncorrected を含むものは上の分岐で先に拾っている。
                 elif ("pca" in name_lower and "uncorrected" not in name_lower
                       and "PCA" not in rds_map):
                     rds_map["PCA"] = str(rds_file)
@@ -566,7 +582,13 @@ def _detect_integration_methods(folder_path: str, include_derived: bool = False)
             and "PCA" not in rds_map and "PCA (uncorrected)" not in rds_map):
         import hashlib
         from app.config import SEURAT_CACHE_DIR
-        h = hashlib.md5(rds_map["Harmony"].encode()).hexdigest()[:16]
+        # ★ ver58.0 (A-2): 鍵に補助スクリプトの版を含める。
+        #   従来は元ファイルのパスだけを鍵にしていたため、補助スクリプトを
+        #   直しても **以前の派生結果がそのまま返り続けていた**
+        #   （出力が既にあれば再生成しない冪等設計のため）。
+        h = hashlib.md5(
+            f'{rds_map["Harmony"]}|{_DERIVE_PCA_VERSION}'.encode()
+        ).hexdigest()[:16]
         derived = Path(SEURAT_CACHE_DIR) / "derived_pca" / f"{h}_pca_uncorrected.rds"
         rds_map["PCA"] = str(derived)
 

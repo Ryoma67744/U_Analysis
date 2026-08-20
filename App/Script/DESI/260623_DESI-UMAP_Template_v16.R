@@ -171,6 +171,16 @@ RESUME_DIR_PATH <- "C:\\Users\\Cciia\\Biochem Dropbox\\Biochem's shared workspac
 #     既定 TRUE ＝従来挙動（後方互換）。FALSE で無補正 PCA を主結果にする。
 BATCH_CORRECTION_ENABLE <- TRUE
 
+# 無補正 PCA の併走出力。
+#   ★ ver58.0 (デバッグ総点検 A-2): TIMS 側にはあった仕組みを DESI にも用意する。
+#     従来 DESI には R 側のコンパニオンが無く、画面が都度その場で作っていた。
+#     その補助スクリプトは **クラスタリングの条件 (近傍数・解像度など) を
+#     受け取る経路が無く**、しかも補正後のクラスタをそのまま引き継いでいたため、
+#     「無補正の座標 ＋ 補正後のクラスタ」という混成になっていた。
+#     本体側で出せば、本解析と同じ条件で無補正空間のクラスタを決められる。
+#     補正を行わなかった実行では主結果が既に無補正なので出さない。
+ALWAYS_OUTPUT_UNCORRECTED_PCA <- TRUE
+
 # 背景除去 (Otsu) を飛ばすか。
 #   ★ ver57.5: 通常の解析では必ず背景除去を行うので既定は FALSE。
 #   クラスタを絞り込んだ**再解析**だけがここを TRUE に差し替える
@@ -2670,6 +2680,34 @@ if ((.stage_downstream && .has_single) || (!.stage_downstream && length(seu_list
     Idents(seu_harmony) <- seu_harmony$seurat_clusters
     save_rds_compact(seu_harmony, rds_path_harmony_out)
     gc()
+
+    # ---- 無補正 PCA の併走出力 (ver58.0 / A-2) ----
+    #   補正した実行でのみ出す。座標もクラスタも **無補正の pca から決め直す**
+    #   ので、補正後とはクラスタ番号が対応しない（別々に決めたので当然）。
+    #   クラスタリングの条件は本解析と同じ定数を使う。
+    if (isTRUE(ALWAYS_OUTPUT_UNCORRECTED_PCA) && .correct_multi &&
+        "pca" %in% names(seu_harmony@reductions)) {
+      message(">> 無補正 PCA の併走出力を作成します（クラスタも無補正空間で決め直します）")
+      seu_unc <- seu_harmony
+      for (.rn in setdiff(names(seu_unc@reductions), "pca")) seu_unc[[.rn]] <- NULL
+      # 補正側のクラスタは引き継がない（引き継ぐと混成になる）
+      seu_unc@meta.data$seurat_clusters <- NULL
+      for (.c in grep("_snn_res", colnames(seu_unc@meta.data), value = TRUE))
+        seu_unc@meta.data[[.c]] <- NULL
+      .p_avail   <- ncol(Embeddings(seu_unc, "pca"))
+      .dims_unc  <- seq_len(min(UMAP_DIMS_N, .p_avail))
+      .dims_uncc <- seq_len(min(CLUSTER_DIMS_N, .p_avail))
+      seu_unc <- RunUMAP(seu_unc, reduction = "pca", dims = .dims_unc,
+                         n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
+                         metric = UMAP_METRIC, seed.use = UMAP_SEED)
+      seu_unc <- FindNeighbors(seu_unc, reduction = "pca", dims = .dims_uncc,
+                               k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
+      seu_unc <- FindClusters(seu_unc, resolution = CLUSTER_RESOLUTION_HARMONY,
+                              algorithm = CLUSTER_ALGORITHM)
+      Idents(seu_unc) <- seu_unc$seurat_clusters
+      save_rds_compact(seu_unc, file.path(rds_od, "DESI_SeuratCombined_PCA_uncorrected.rds"))
+      rm(seu_unc); gc()
+    }
   }
 
   # PIPELINE_STAGE: reduction_only なら以降（UMAP/作図/DEG）をスキップ（診断用に reduction だけ確定）

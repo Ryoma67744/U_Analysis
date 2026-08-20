@@ -1760,7 +1760,8 @@ assign_xy_grid <- function(seu, nx=NULL, ny=NULL){
   invisible(TRUE)
 }
 
-run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_only = TRUE) {
+run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_only = TRUE,
+                                    force_recluster = FALSE) {
   # PIPELINE_STAGE: "reduction_only" の場合は UMAP/クラスタリング/DEG/作図など
   # 下流処理を一切行わずに即終了する（PreFlight 診断用に reduction RDS だけ確定させる）。
   # reduction（Step2 Harmony/PCA・Step3 RPCA）は本関数の呼び出し前に既に保存済み。
@@ -1810,17 +1811,41 @@ run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_onl
   # ④/フル: クラスタが無ければ後付け。reduction-only RDS には seurat_clusters 列が
   #   無いので検出して FindNeighbors+FindClusters を実行（full/classic-resume では
   #   既に列があるため no-op）。④では完成(umap+cluster付き)RDSを新フォルダに再保存。
-  if (!("seurat_clusters" %in% colnames(obj@meta.data))) {
+  # ★ ver58.0 (デバッグ総点検 A-2): force_recluster=TRUE なら、クラスタ列があっても
+  #   取り直す。無補正 PCA のコンパニオンは補正済みオブジェクトの複製から作るため
+  #   seurat_clusters 列を持っており、従来はこの分岐に入らず
+  #   **「無補正の座標 ＋ 補正後のクラスタ」という混成**になっていた。
+  #   クラスタ番号・マーカー一覧・空間マップ・GPT 解釈まで補正後の定義で作られ、
+  #   「補正の有無でクラスタがどう変わるか」を見る目的には使えなかった。
+  if (isTRUE(force_recluster) || !("seurat_clusters" %in% colnames(obj@meta.data))) {
+    if (isTRUE(force_recluster)) {
+      # 取り直す前に、補正側から引き継いだクラスタを必ず捨てる
+      obj@meta.data$seurat_clusters <- NULL
+      for (.c in grep("_snn_res", colnames(obj@meta.data), value = TRUE))
+        obj@meta.data[[.c]] <- NULL
+    }
     .red_for_clust <- if (prefix %in% names(obj@reductions)) prefix
+                      else if (isTRUE(force_recluster) && "pca" %in% names(obj@reductions)) "pca"
                       else if ("harmony" %in% names(obj@reductions)) "harmony"
                       else if ("rpca" %in% names(obj@reductions)) "rpca"
                       else "pca"
     .dims_clust <- 1:min(UMAP_DIMS_MAX, MAX_PCS, ncol(Embeddings(obj, .red_for_clust)))
+    cat(sprintf(">> クラスタリング (%s): reduction=%s / dims=%d / k=%d / resolution=%s\n",
+                prefix, .red_for_clust, length(.dims_clust), CLUSTER_K_PARAM,
+                as.character(CLUSTER_RESOLUTION)))
     obj <- FindNeighbors(obj, reduction = .red_for_clust, dims = .dims_clust,
                          k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
     obj <- FindClusters(obj, resolution = CLUSTER_RESOLUTION, algorithm = CLUSTER_ALGORITHM)
     Idents(obj) <- obj$seurat_clusters
-    if (identical(PIPELINE_STAGE, "downstream_from_reduction")) {
+    # ★ ver58.0 (A-2): 取り直したクラスタを RDS へ書き戻す。
+    #   従来この分岐は "downstream_from_reduction" のときだけ、しかも
+    #   harmony/pca/rpca しか対象にしていなかった。無補正コンパニオンを
+    #   取り直しても保存されないため、**画面 (RDS の Idents) は旧クラスタ、
+    #   マーカー表 (CSV) は新クラスタ**という食い違いが起きる。
+    if (identical(prefix, "pca_uncorrected")) {
+      save_rds_compact(list(obj = obj, reduction = "pca"),
+                       file.path(RDS_SAVE_DIR, "Step2_PCA_uncorrected.rds"), keep_counts = FALSE)
+    } else if (identical(PIPELINE_STAGE, "downstream_from_reduction")) {
       if (identical(prefix, "rpca")) {
         save_rds_compact(list(obj = obj), file.path(RDS_SAVE_DIR, "Step3_RPCA_Result.rds"), keep_counts = FALSE)
       } else if (prefix %in% c("harmony", "pca")) {
@@ -2708,6 +2733,12 @@ if (!step2_done && !.stage_downstream) {
       seu_unc <- seu_harmony                                   # copy-on-write（即時複製しない）
       for (.rn in setdiff(names(seu_unc@reductions), "pca"))   # 補正系 reduction を除去し pca のみ残す
         seu_unc[[.rn]] <- NULL                                 # 既存 RPCA 部と同じ除去イディオム
+      # ★ ver58.0 (A-2): 補正側のクラスタを引き継がない。
+      #   引き継ぐと「無補正の座標＋補正後のクラスタ」という混成になる。
+      #   下流 (run_downstream_analysis) が force_recluster=TRUE で取り直す。
+      seu_unc@meta.data$seurat_clusters <- NULL
+      for (.c in grep("_snn_res", colnames(seu_unc@meta.data), value = TRUE))
+        seu_unc@meta.data[[.c]] <- NULL
       save_rds_compact(list(obj=seu_unc, reduction="pca"),
                        file.path(RDS_SAVE_DIR, "Step2_PCA_uncorrected.rds"), keep_counts=FALSE)
       rm(seu_unc); gc()
@@ -2729,7 +2760,8 @@ if (!is.null(seu_harmony)) {
 if (isTRUE(ALWAYS_OUTPUT_UNCORRECTED_PCA) && file.exists(.unc_rds_path)) {
   .unc_obj <- tryCatch(load_rds_compact(.unc_rds_path)$obj, error=function(e) NULL)
   if (!is.null(.unc_obj)) {
-    run_downstream_analysis(.unc_obj, "pca_uncorrected", od, ann_db, generate_mz_only = FALSE)
+    run_downstream_analysis(.unc_obj, "pca_uncorrected", od, ann_db, generate_mz_only = FALSE,
+                            force_recluster = TRUE)
     rm(.unc_obj); gc()
   }
 }

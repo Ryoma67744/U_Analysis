@@ -456,6 +456,17 @@ _WARNING_TEXTS = {
         "This embedding exists only in a temporary cache and is not linked to a result "
         "folder; it cannot be reproduced once the cache is evicted.",
     ),
+    # ★ ver58.0 (A-2): 無補正側はクラスタを取り直している。番号が補正後と
+    #   対応しないのは別々に決めたので当然だが、**知らないと番号で突き合わせて
+    #   しまう**ため明記する。
+    "uncorrected_clusters_recomputed": (
+        "「PCA (uncorrected)」のクラスタは無補正の空間で改めて決め直したものです。"
+        "補正後のクラスタ番号とは対応しません（別々に決めているため）。"
+        "番号での突き合わせはできません。",
+        "Clusters for \"PCA (uncorrected)\" were computed independently in the "
+        "uncorrected space. Their numbering does not correspond to the clusters of "
+        "the corrected result; they cannot be matched by cluster number.",
+    ),
     "derived_pca_not_persisted": (
         "PCA (uncorrected) の UMAP 埋め込みは実行時に派生生成され、結果フォルダには"
         "保存されません。",
