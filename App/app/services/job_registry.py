@@ -63,6 +63,8 @@ def write_job(output_dir, *, pid: int, analysis_type: str = "",
         "analyst": analyst or "",
         "started_at": started_at or datetime.now().isoformat(),
         "finalized": False,
+        # ★ ver58.2: どこで走っているか（PID の名前空間を見分けるため）
+        "host": host_id(),
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -73,6 +75,23 @@ def write_job(output_dir, *, pid: int, analysis_type: str = "",
     except Exception as e:  # noqa: BLE001
         logger.warning("ジョブ台帳の書き込みに失敗（解析は続行）: %s", e)
         return None
+
+
+def host_id() -> str:
+    """解析がどこで走っているかの目印。
+
+    ★ ver58.2 (デバッグ総点検 §7.7(b)): PID だけでは足りない。
+      アプリが Docker コンテナ内、状況確認をホストで走らせると、台帳の PID は
+      **別の名前空間の番号**になる。同じ番号のプロセスがホストに居るかどうかは
+      まったくの偶然で、居なければ「停止しています」、居れば「実行中」と
+      嘘をつく。実行場所を残しておけば、確認する側が「判断できない」と言える。
+      コンテナ内では node 名がコンテナ ID になるので、これで区別できる。
+    """
+    try:
+        import platform
+        return platform.node() or "unknown"
+    except Exception:  # noqa: BLE001 - 目印が取れなくても解析は止めない
+        return "unknown"
 
 
 def read_job(output_dir) -> Optional[dict]:

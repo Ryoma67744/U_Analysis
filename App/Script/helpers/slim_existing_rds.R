@@ -107,6 +107,11 @@ source(file.path(.this_dir, "rds_io.R"))
 #   ケース**なのに、表示が壊れていて読み取れなかった。
 #   縮んだら "-47.6%"、増えたら "+4.4%" と読める形にする。
 .format_delta <- function(delta) {
+  # ★ ver58.2 (デバッグ総点検 §7.7(b)): NA を先に弾く。
+  #   file.info()$size は取得できないと NA を返し、R では `if (NA >= 0)` が
+  #   **警告ではなくエラーで停止する**。従来はここで軽量化のループごと落ちて
+  #   いたので、1 ファイル分のサイズが取れないだけで残りが処理されなかった。
+  if (length(delta) != 1L || !is.finite(delta)) return("?%")
   sprintf("%s%.1f%%", if (delta >= 0) "-" else "+", abs(delta))
 }
 
@@ -264,8 +269,12 @@ main <- function() {
   cat(sprintf("[slim] Size before: %s\n", .format_bytes(total_before)))
   cat(sprintf("[slim] Size after : %s\n", .format_bytes(total_after)))
   if (total_before > 0) {
-    cat(sprintf("[slim] Reduction  : %.1f%%\n",
-                100 * (1 - total_after / total_before)))
+    # ★ ver58.2 (デバッグ総点検 §7.7(b)): 個別行と同じ書式に揃える。
+    #   従来は "Reduction : 47.6%"（縮小＝プラス）で、個別行の "-47.6%"
+    #   （縮小＝マイナス）と **同じログの中で同じ数字の符号が逆を向いて**いた。
+    #   個別行の向き（ver57.3 で決めた「サイズの増減」）に合わせる。
+    cat(sprintf("[slim] Size delta : %s\n",
+                .format_delta(100 * (1 - total_after / total_before))))
   }
   cat(sprintf("[slim] Elapsed    : %.1f sec\n", dt))
   if (length(errors) > 0) {

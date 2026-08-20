@@ -54,6 +54,11 @@ if str(_APP_DIR) not in sys.path:
 
 EXIT_OK = 0
 EXIT_FAILED = 1
+# ★ ver58.2 (デバッグ総点検 §7.7(b)): エラーで終わった解析に専用の番号を与える。
+#   従来は EXIT_OK に落としていたため、呼び出し側 (check_analysis.ps1) が
+#   **緑で「正常に終了済み」** と表示していた。「確認としては正常応答」でも、
+#   利用者が読むのは結論の 1 行なので、そこが嘘になっていた。
+EXIT_ERROR = 2
 EXIT_DEAD = 3
 EXIT_STALLED = 4
 EXIT_NONE = 5
@@ -101,6 +106,15 @@ def pid_alive(pid) -> bool:
         return True
     except (OSError, ProcessLookupError):
         return False
+
+
+def host_id() -> str:
+    """この確認ツールが動いている場所の目印（job_registry.host_id と同じ規則）。"""
+    try:
+        import platform
+        return platform.node() or "unknown"
+    except Exception:  # noqa: BLE001
+        return "unknown"
 
 
 def _is_windows() -> bool:
@@ -248,7 +262,7 @@ def read_text_first_line(path: Path) -> str:
 # 判定
 # ---------------------------------------------------------------------------
 
-def classify(*, finalized: bool, alive: bool, status: str,
+def classify(*, finalized: bool, alive, status: str,
              idle_sec, stall_sec: float, cpu_percent=None,
              cpu_busy_percent: float = 5.0) -> str:
     """1 件のジョブの状態を決める。
@@ -261,11 +275,34 @@ def classify(*, finalized: bool, alive: bool, status: str,
 
     idle_sec は「ログと出力ファイルのうち、より最近に書かれた方」からの経過秒。
     どちらか一方でも動いていれば解析は進んでいる。
+
+    alive は True / False のほか **None（判断できない）** を取る。
+    アプリと確認ツールが別の場所で動いていると PID の名前空間が違うため、
+    生死を断定できない（★ ver58.2 / §7.7(b)）。
+
+    ★ ver58.2 (§7.7(b)): 優先順位をアプリ本体に合わせた。
+      アプリ (`job_registry`) は finalized と PID だけで判断し、status ファイルを
+      読まない。従来ここだけが status ファイルを PID 生存より**先に**見ていたため、
+      古い status が残っていると **同じ状況で 2 つのツールが逆の結論**を出した。
+      アプリが後始末を終えた印 (finalized) は引き続き最優先。
     """
     status = (status or "").strip()
-    if finalized or status in TERMINAL_STATUSES:
+    if finalized:
+        # 後始末が済んでいるなら、終了理由が書かれていればそれを使う。
+        # ここで "finished" に潰すと、エラー終了が「完了」に化けて
+        # 終了コードまで正常 (0) になる（§7.7(b) の直しが無効になる）。
         return status if status in TERMINAL_STATUSES else "finished"
-    if not alive:
+    if alive:
+        # プロセスが生きているなら、古い status ファイルより実態を優先する
+        pass
+    elif status in TERMINAL_STATUSES:
+        return status
+    elif alive is None:
+        # 生死が分からない。停止とは断定せず、更新の有無だけで判断する
+        if idle_sec is not None and idle_sec >= stall_sec:
+            return "stalled"
+        return "running"
+    else:
         return "dead"
 
     # CPU を食っているなら、ログが伸びていなくても計算中。
@@ -303,7 +340,7 @@ VERDICT_ADVICE = {
 _EXIT_BY_VERDICT = {
     "dead": EXIT_DEAD,
     "stalled": EXIT_STALLED,
-    "error": EXIT_OK,      # 終了済みなので確認としては正常応答
+    "error": EXIT_ERROR,   # ★ ver58.2: 終了済みでも「正常」ではない
     "stopped": EXIT_OK,
     "finished": EXIT_OK,
     "running": EXIT_OK,
@@ -367,7 +404,14 @@ def inspect_job(job: dict, *, stall_sec: float, tail: int,
     status_file = log_dir / "analysis_status.txt"
 
     pid = job.get("pid")
-    alive = pid_alive(pid)
+    # ★ ver58.2 (デバッグ総点検 §7.7(b)): アプリと確認ツールが別の場所で
+    #   動いているなら、台帳の PID は**別の名前空間の番号**なので生死を
+    #   判断できない。同じ番号のホストプロセスが居るかどうかは偶然でしかなく、
+    #   居なければ「停止しています」、居れば「実行中」と嘘をつく。
+    #   台帳に host が無い（ver58.2 より前の記録）ときは従来どおり判定する。
+    job_host = str(job.get("host") or "").strip()
+    pid_trusted = (not job_host) or job_host == host_id()
+    alive = pid_alive(pid) if pid_trusted else None
     finalized = bool(job.get("finalized"))
     status = read_text_first_line(status_file)
 
@@ -408,6 +452,8 @@ def inspect_job(job: dict, *, stall_sec: float, tail: int,
         "analyst": job.get("analyst") or "",
         "pid": pid,
         "pid_alive": alive,
+        "pid_trusted": pid_trusted,
+        "job_host": job_host,
         "finalized": finalized,
         "status_file": status or "(なし)",
         "started_at": started_at,
@@ -482,8 +528,18 @@ def render_text(report: dict) -> str:
             out.append(f"  実行者        : {j['analyst']}")
         out.append(f"  開始          : {j['started_at'] or '不明'}"
                    f"（経過 {_fmt_duration(j['elapsed_sec'])}）")
-        out.append(f"  PID           : {j['pid']}"
-                   f"（{'生存しています' if j['pid_alive'] else '存在しません'}）")
+        if j.get("pid_trusted", True):
+            out.append(f"  PID           : {j['pid']}"
+                       f"（{'生存しています' if j['pid_alive'] else '存在しません'}）")
+        else:
+            # ★ ver58.2 (§7.7(b)): 別の場所の PID は生死を判断できない。
+            #   断定せず、そのことを書く（誤った断定より役に立つ）。
+            out.append(f"  PID           : {j['pid']}"
+                       f"（判断できません: 解析は {j.get('job_host') or '別の場所'}、"
+                       f"この確認は {host_id()} で動いています）")
+            out.append("                  → 解析と同じ場所で実行してください "
+                       "（例: docker exec msi-analysis-app python3 "
+                       "/app/App/tools/analysis_status_report.py）")
         if j["cpu_percent"] is not None:
             out.append(f"  CPU / メモリ  : {j['cpu_percent']}% / "
                        f"{j['rss_mb']} MB（プロセス {j['n_procs']} 個の合計）")
