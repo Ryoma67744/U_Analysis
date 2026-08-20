@@ -218,10 +218,18 @@ for folder, files in sorted(tims.items()):
         if not bad:
             print("      → 突合 OK")
         elif len(bad) == len(ann):
-            print("      → ★★ 全 annotation が突合失敗 = このファイルの行は全部空欄")
+            # ver58.3 以降は annotation が全滅したときだけファイル名で引き直す。
+            stem_m, stem_why = match_sample_name(p.stem, all_samples)
             for a, why in bad[:3]:
-                print(f"           '{a}' → {why}")
-            _mark(3)
+                print(f"      annotation 不一致: '{a}' → {why}")
+            if stem_m is not None:
+                print(f"      → ファイル名で引き直し: {stem_m!r} ({stem_why})")
+                print("        ver58.3 以降なら埋まります。"
+                      "空欄のままならアプリのバージョンを確認してください")
+            else:
+                print("      → ★★ ファイル名でも引けません "
+                      f"({stem_why}) = このファイルの行は全部空欄")
+                _mark(3)
         else:
             print(f"      → ★ 一部が突合失敗: {[a for a, _ in bad[:5]]}")
             _mark(4)
@@ -249,10 +257,10 @@ for folder, files in sorted(desi.items()):
         if n_header == 5:
             print("      ヘッダ行数    : 5")
         else:
-            # _export_desi は rows[5:] を決め打ちしている（ver55.2 の自動判定漏れ）。
-            print(f"      ヘッダ行数    : {n_header}  ★ エクスポータは 5 行決め打ちのため"
-                  f" 先頭 {5 - n_header if n_header else '?'} 画素が空欄になります")
-            _mark(4)
+            # ver58.2 以前の _export_desi は rows[5:] 決め打ちだった。
+            print(f"      ヘッダ行数    : {n_header}"
+                  f"  （ver58.2 以前は先頭 {5 - n_header if n_header else '?'} 画素が"
+                  "空欄になります。ver58.3 以降は自動判定）")
         if all_samples:
             m, why = match_sample_name(p.stem, all_samples)
             print(f"      サンプル名突合: {m!r} ({why})")
@@ -267,13 +275,11 @@ print("判定")
 print("=" * 78)
 if worst == 3:
     print("  ★★ 全行が空欄になる原因を検出しました。よくある形:")
-    print("    - TIMS の annotation が ['Unannotated'] だけ")
-    print("        → 変換時に領域アノテーション CSV を渡していない (ver55.0 の回帰)")
-    print("    - TIMS の annotation が plot_data の Sample と食い違う")
-    print("        → extract_seurat_data.R の Sample 列選択が同数のとき"
-          "ファイル名側を採るため")
+    print("    - TIMS の annotation もファイル名も解析のサンプル名と一致しない")
+    print("        → 結果フォルダと生データフォルダの組み合わせが違う可能性")
     print("    - DESI の突合が None（候補が曖昧）")
     print("        → 「ROI 列があれば各 ROI を別サンプルとして解析」ON のとき")
+    print("    - 入力が parquet でなく x/y 列が取れない")
 elif worst == 4:
     print("  ★ 一部の行だけ空欄になる原因を検出しました（上記 ★ の行）。")
 else:
