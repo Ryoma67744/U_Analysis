@@ -84,8 +84,23 @@ meta <- obj@meta.data
 cell_ids <- rownames(meta)
 
 # --- Sample identification ---
-# 最もユニーク数が多い列を Sample として採用する
-# 優先順: slice_id > condition > sample > orig.ident
+# 最もユニーク数が多い列を Sample として採用する。
+#
+# ★ ver58.3: コメントが実装と逆だった。「優先順: slice_id > condition > sample >
+#   orig.ident」と書いてあったが、実際は候補を sample → condition → slice_id の順に
+#   見て **厳密に多いときだけ** 置き換えるので、同数なら先に見た sample が勝つ。
+#   起点も orig.ident なので、全候補が 1 種類なら orig.ident が残る
+#   (Seurat の既定でセル名 `<ステム>_Spot_<n>` の第 1 トークン = ファイル名側)。
+#
+#   **この挙動は意図どおりなので変えない。** コメントどおりの優先順に直すと、
+#   領域アノテーション CSV 無しのデータ (annotation が全 spot 'Unannotated') で
+#   slice_id が勝ってしまい、画面のサンプル一覧が全部 'Unannotated' になる。
+#   Sample 名は H&E オーバーレイの保存キー (hne_overlay_state.json) でもあるため、
+#   ここを変えると既存プロジェクトの ROI 割当が丸ごと参照できなくなる。
+#
+#   なお、この「ファイル名側が採用される」ことと、データ出力が annotation 列で
+#   突合していたことが噛み合わず、クラスタ列が全行空欄になっていた。
+#   そちらは export_transform.py 側の stem フォールバックで解消済み (ver58.3)。
 sample_col <- as.character(meta$orig.ident)
 best_n <- length(unique(sample_col))
 

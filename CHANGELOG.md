@@ -12,6 +12,93 @@
 
 ---
 
+## 2026-08-20_ver58.3
+
+### 修正: データ出力の「UMAP cluster」列が全行空欄になる
+
+利用者報告「エクスポートした UMAP Cluster の列にクラスター番号が入っていない」の調査結果。
+**座標のズレではなく、サンプル名の突合が外れていた。**
+
+エクスポートはクラスタ値を完全一致の辞書引きで埋めている。
+
+| | 辞書（値）側 | 引く（生データ）側 |
+|---|---|---|
+| キー | `(サンプル名, round(x,4), round(y,4))` | — |
+| TIMS | `plot_data` の `Sample`/`SpatialX`/`SpatialY`/`Cluster` | parquet の **`annotation` 列** + `x`,`y` |
+| DESI | 同上 | **ファイル名 stem** + `.txt` の 2・3 列目 |
+
+1 件も当たらなくても `export_transform.py` の `fillna("")` が全部を空文字に潰すため、
+例外もログも出ず `✅ 生成しました` で終わる。画面上は成功と区別が付かず、出力を見ても
+「クラスタに属さない spot」と見分けが付かない。**この無音さが、症状が長く残った理由。**
+
+#### 1. annotation が解決できないときファイル名で引き直す（主因）
+
+`app/services/export_transform.py`
+
+SCiLS 変換 parquet は `annotation` 列を**必ず**書く。領域アノテーション CSV を
+渡さない場合、ver55.0 (`2181ec2`) 以降は全 spot が `"Unannotated"` になる
+（それ以前は Spot CSV 名由来のラベル ＝ parquet の stem と一致していた）。
+
+一方 `plot_data` の `Sample` は `extract_seurat_data.R` が「ユニーク数が最大の列」を
+採るため、値が 1 種類しかない `"Unannotated"` は**絶対に採用されず**ファイル名側になる。
+結果、突合が 1 件も成立せず全行空欄になっていた。
+annotation ラベル名がファイル名と違う運用（1 ファイル = 1 切片など）でも同じ。
+
+→ annotation が **1 件も**解決できなかったときに限り stem で引き直す。
+一部でも解決できたときは戻さない（サンプルを取り違えるより空欄の方が安全 = ver51.8 の方針）。
+
+#### 2. 一致 0 件を「成功」で終わらせない
+
+`summarize_coverage()` を追加し、埋まらなかった行数・理由・一致しなかった実際の値を
+ステータス文に載せる。DESI 側の "Skipped" シート（ver52.5）は csv/parquet では使えないため、
+出力形式に依らず出せる場所へ載せた。GUI 経路と API 経路の両方に付ける。
+
+#### 3. DESI のヘッダ行数を自動判定する
+
+`_export_desi` だけ「ヘッダ 5 行」決め打ちのまま残っていた。ヘッダは 5 行（装置の実データ）
+のほかに 4 行（`desi_converter` の組み替え / 化合物名を持たない形）が実在し、4 行のファイルでは
+**データ 1 行目がヘッダー扱い**されてその画素だけ空欄になっていた。
+ver55.2 は R と `desi_header.py` を自動判定に直したが、このエクスポータが取り残されていた。
+
+#### 4. legacy SCiLS Transform CSV を R と同じ読み方で読む
+
+データフォルダに parquet が 1 本も無いと `build_tims_input_paths` は CSV/TSV を返すが、
+`_read_tims_file` は `pd.read_csv`（既定＝カンマ・1 行目ヘッダ）で読んでいた。
+ヘッダ 4 行を読み飛ばさないので **データ 1 行目が列名になり** `x`/`y` 列が存在せず、
+座標キーを 1 つも作れなかった（列名も 1 行分ずれた無意味なものになる）。
+annotation 列を後付けしたファイルでは列数不揃いで `ParserError` になり出力自体が落ちていた。
+→ R の Case 2 と同じ規約（ヘッダ 4 行 / 位置で x,y / 3 行目から m/z 名）で読み直す。
+
+#### 5. `extract_seurat_data.R` のコメントが実装と逆だったのを直す
+
+「優先順: slice_id > condition > sample > orig.ident」と書いてあったが、実際は
+sample → condition → slice_id の順に見て**厳密に多いときだけ**置き換えるので同数なら
+sample が勝つ。**挙動は意図どおりなので変えていない** — コメントどおりに直すと
+アノテーション無しのデータでサンプル一覧が全部 `Unannotated` になり、さらに `Sample` は
+H&E オーバーレイの保存キー (`hne_overlay_state.json`) でもあるため既存プロジェクトの
+ROI 割当が参照できなくなる。コメント側を実態に合わせ、変えない理由も書いた。
+
+#### 回帰テスト
+
+`App/tests/test_data_export_sample_match.py` (16 件) を追加。既存の
+`test_export_transform.py` は fixture が `annotation == Sample` という**成立している前提**
+しか置かず、しかも本番の `_match_sample_name` ではなくテスト内の緩い自作関数を渡していたため、
+上記のどれも検出できなかった。新テストは本番の関数をそのまま使う。
+1・3・4 はそれぞれ修正を戻すと該当テストが落ちることを確認済み。
+
+#### 切り分け用ツール
+
+`App/tools/diag_umap_cluster_export.py` — `plot_data` の `Sample` と生データ側の
+`annotation` / ファイル名を実際に読み出し、本体と同じ判定を掛けて
+「どのファイルのどの値が当たらないのか」を名指しする。読み取り専用。
+コンテナを再ビルドせずに使える:
+
+```
+docker compose exec -T msi-app python3 - < App/tools/diag_umap_cluster_export.py
+```
+
+---
+
 ## 2026-08-20_ver58.2
 
 ### 修正: 運用ツールが事実と違うことを言う 6 件（デバッグ総点検 §7.7(b)）

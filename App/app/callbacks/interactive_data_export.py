@@ -30,8 +30,10 @@ from app.services.data_manager import (
     build_tims_input_paths,
     list_msi_files,
 )
+from app.services.desi_header import is_data_line as _is_data_line
 from app.services.export_transform import (
     append_cluster_region_columns as _append_cluster_region_columns,
+    summarize_coverage as _summarize_coverage,
 )
 
 logger = logging.getLogger(__name__)
@@ -467,13 +469,14 @@ def _unique_sheet_name(stem: str, used: dict) -> str:
 def _export_desi(
     data_folder: str, method_lookups: OrderedDict, region_lookup: dict | None = None,
     progress_cb=None, base: int = 0, span: int = 0, conditions: dict | None = None,
-    roi_failed: list | None = None,
+    roi_failed: list | None = None, report: list | None = None,
 ) -> tuple[bytes, str]:
     """DESI .txt → Excel バイト列（サンプル別シート + 手法別クラスター列）。
 
     複数手法の場合は手法名を列ヘッダーにして横並びで配置する。
     単一手法の場合は従来通り「UMAP cluster」列1つ。
     region_lookup を渡すと最終列に「領域名」(ROI) を付与する（未割当は空欄）。
+    report にリストを渡すとシート別の突合内訳（summarize_coverage 用）を追記する。
 
     Returns (excel_bytes, filename)
     """
@@ -556,8 +559,21 @@ def _export_desi(
 
             output_rows: list[list[str]] = []
 
-            # ヘッダー行（先頭5行）
-            for i in range(min(5, len(rows))):
+            # ★ ver58.3: ヘッダー行数を自動判定する。
+            #   従来は 5 行決め打ちだった。ヘッダは 5 行 (装置の実データ) のほかに
+            #   4 行 (`desi_converter` が組み替えたもの / 化合物名を持たない形) が
+            #   実在し、4 行のファイルでは **データ 1 行目がヘッダー扱いされて**
+            #   その画素だけクラスタ列が空欄のまま出ていた。
+            #   ver55.2 は R と `desi_header.py` を自動判定に直したが、
+            #   このエクスポータだけ取り残されていた。判定基準は同じ
+            #   (列1 が整数の PixelID・列2/3 が数値)。
+            _hit = next((i for i, ln in enumerate(raw_lines[:12])
+                         if _is_data_line(ln)), None)
+            n_header = _hit if (_hit is not None and _hit >= 1) else 5
+            n_header = min(n_header, len(rows))
+
+            # ヘッダー行
+            for i in range(n_header):
                 padded = rows[i] + [""] * (max_cols - len(rows[i]))
                 if i == 0:
                     # 行1: ラベル行 → 最右に手法名を列ヘッダーとして追加
@@ -568,14 +584,15 @@ def _export_desi(
                     if add_region:
                         padded.append("領域名")  # 最終列に ROI
                 else:
-                    # 行2〜5: ヘッダー行 → 空セル
+                    # 2 行目以降のヘッダー行 → 空セル
                     padded.extend([""] * len(method_names) if is_multi else [""])
                     if add_region:
                         padded.append("")
                 output_rows.append(padded)
 
-            # データ行（行5以降）— 各行に全手法のクラスター値を横並びで追加
-            data_rows = rows[5:] if len(rows) > 5 else []
+            # データ行 — 各行に全手法のクラスター値を横並びで追加
+            data_rows = rows[n_header:] if len(rows) > n_header else []
+            n_matched = 0
 
             for row in data_rows:
                 padded = row + [""] * (max_cols - len(row))
@@ -590,12 +607,17 @@ def _export_desi(
                         pass
 
                 # 各手法のクラスター値を列として追加
+                _hit_row = False
                 for method_name in method_names:
                     cluster_val = ""
                     if x_val is not None and y_val is not None:
                         key = (matched_sample, x_val, y_val)
                         cluster_val = method_lookups[method_name].get(key, "")
+                    if cluster_val != "":
+                        _hit_row = True
                     padded.append(cluster_val)
+                if _hit_row:
+                    n_matched += 1
 
                 # 最終列に領域名(ROI)
                 if add_region:
@@ -605,6 +627,16 @@ def _export_desi(
                     padded.append(region_val)
 
                 output_rows.append(padded)
+
+            if report is not None:
+                report.append({
+                    "stem": stem,
+                    "rows": len(data_rows),
+                    "keyed": len(data_rows) if matched_sample else 0,
+                    "matched": n_matched,
+                    "resolver": "stem" if matched_sample else "no-sample",
+                    "unresolved_samples": [] if matched_sample else [stem],
+                })
 
             df_out = pd.DataFrame(output_rows)
 
@@ -656,16 +688,122 @@ def _export_desi(
 # TIMS エクスポート
 # ---------------------------------------------------------------------------
 
+def _make_unique(names: list[str]) -> list[str]:
+    """R の make.unique 相当（2 個目以降に .1 / .2 … を付ける）。"""
+    seen: dict = {}
+    out = []
+    for n in names:
+        if n in seen:
+            seen[n] += 1
+            out.append(f"{n}.{seen[n]}")
+        else:
+            seen[n] = 0
+            out.append(n)
+    return out
+
+
+def _read_tims_transform_csv(p: Path) -> pd.DataFrame | None:
+    """SCiLS Transform CSV (legacy) を R の読み方に合わせて読む。
+
+    R 側 `read_desi_data` の Case 2（TIMS スクリプト）と同じ規約:
+      - 先頭 4 行がヘッダ。区切りは 1 行目に `,` があればカンマ、無ければタブ
+      - 特徴量名は 3 行目の 4 列目以降にある m/z を `m/z %.5f` にしたもの
+      - x/y は**列名ではなく位置**。末尾に annotation 列があるかで 1 つずれる
+          annotation 有: … 強度 …, x, y, annotation
+          annotation 無: … 強度 …, x, y
+
+    ★ ver58.3: 従来はこの形式でも `pd.read_csv`（既定＝カンマ・1 行目ヘッダ）で
+      読んでいた。ヘッダ行を読み飛ばさないので **データ 1 行目が列名になり**、
+      `x` / `y` という列は 1 つも現れない。その結果 `append_cluster_region_columns`
+      が座標キーを 1 つも作れず、クラスタ列が全行空欄になっていた（列名も 1 行分
+      ずれた無意味なものになる）。判定できなければ None を返し、呼び出し側が
+      従来どおりの読み方に戻す。
+    """
+    try:
+        with open(p, "r", encoding="utf-8", errors="replace") as fh:
+            hdr = [fh.readline() for _ in range(4)]
+        if not hdr[2].strip():
+            return None
+        sep = "," if "," in hdr[0] else "\t"
+        tok3 = [t.strip() for t in hdr[2].rstrip("\r\n").split(sep)]
+        if len(tok3) < 6:
+            return None
+        # 4 列目以降の「先頭から連続して数値として読める分」を m/z とみなす。
+        # R は `tokens3[4:(length-2)]` と位置で切っているが、annotation 列を
+        # 後付けしたファイルはヘッダ行の列数がデータ行と揃わないことがある。
+        # 先頭からの連続で取れば、どちらの体裁でも同じ列に対応する。
+        mz_vals = []
+        for t in tok3[3:]:
+            v = pd.to_numeric(t, errors="coerce")
+            if pd.isna(v):
+                break
+            mz_vals.append(float(v))
+        if not mz_vals:
+            return None
+        names = _make_unique([f"m/z {v:.5f}" for v in mz_vals])
+
+        df = pd.read_csv(p, sep=sep, skiprows=4, header=None)
+        ncol = df.shape[1]
+        if ncol < 6:
+            return None
+        # 末尾が数値化できない列なら annotation（R は colClasses="numeric" で
+        # 読んで NA 率 >0.9 を見ている。ここでは同じことを直接判定する）。
+        last_nan = pd.to_numeric(df.iloc[:, -1], errors="coerce").isna().mean()
+        has_ann = bool(last_nan > 0.90)
+        if has_ann:
+            x_i, y_i, feat_end = ncol - 3, ncol - 2, ncol - 4
+        else:
+            x_i, y_i, feat_end = ncol - 2, ncol - 1, ncol - 3
+        if feat_end < 3:
+            return None
+
+        feats = df.iloc[:, 3:feat_end + 1].copy()
+        # ヘッダから取れた名前が足りない/多い場合に落とさない（多い分は捨て、
+        # 足りない分は位置で名前を作る）。R も長さ違いを切り詰めて続行する。
+        cols = list(names[:feats.shape[1]])
+        cols += [f"feature_{i}" for i in range(len(cols), feats.shape[1])]
+        feats.columns = cols
+        out = pd.DataFrame({
+            "id": df.iloc[:, 0].to_numpy(),
+            "x": pd.to_numeric(df.iloc[:, x_i], errors="coerce").to_numpy(),
+            "y": pd.to_numeric(df.iloc[:, y_i], errors="coerce").to_numpy(),
+        })
+        out = pd.concat([out, feats.reset_index(drop=True)], axis=1)
+        if has_ann:
+            out["annotation"] = df.iloc[:, -1].astype(str).to_numpy()
+        return out
+    except Exception as e:  # noqa: BLE001 — 判定できなければ従来の読み方へ戻す
+        logger.warning("[DataExport] Transform CSV として読めませんでした (%s): %s",
+                       p.name, e)
+        return None
+
+
 def _read_tims_file(file_path: str) -> pd.DataFrame:
-    """TIMS 入力ファイルを読み込む（Parquet/CSV/TSV 自動判定）。"""
+    """TIMS 入力ファイルを読み込む（Parquet/CSV/TSV 自動判定）。
+
+    見出し付き CSV（`x` / `y` 列を持つ）は従来どおりそのまま読む。
+    そうでなければ legacy SCiLS Transform CSV として読み直す（★ ver58.3）。
+    ヘッダ行がデータ行より狭い（annotation 列を後付けした）ファイルは
+    既定の `pd.read_csv` が ParserError で落ちるため、その場合も読み直す。
+    """
     p = Path(file_path)
     ext = p.suffix.lower()
     if ext in (".parquet", ".pq"):
         return pd.read_parquet(file_path)
-    elif ext == ".tsv":
-        return pd.read_csv(file_path, sep="\t")
-    else:
-        return pd.read_csv(file_path)
+    sep = "\t" if ext == ".tsv" else ","
+    try:
+        df = pd.read_csv(file_path, sep=sep)
+    except Exception as e:  # noqa: BLE001 — 列数不揃い等。legacy として読み直す
+        alt = _read_tims_transform_csv(p)
+        if alt is None:
+            raise
+        logger.info("[DataExport] %s を Transform CSV として読み直しました (%s)",
+                    p.name, e)
+        return alt
+    if "x" in df.columns and "y" in df.columns:
+        return df
+    alt = _read_tims_transform_csv(p)
+    return alt if alt is not None else df
 
 
 def _apply_feature_annotation_columns(df: pd.DataFrame, data_folder: str) -> pd.DataFrame:
@@ -723,12 +861,14 @@ def _export_tims(
     data_folder: str, method_lookups: OrderedDict, fmt: str,
     region_lookup: dict | None = None,
     progress_cb=None, base: int = 0, span: int = 0, conditions: dict | None = None,
+    report: list | None = None,
 ) -> tuple[bytes, str]:
     """TIMS 入力ファイルに手法別クラスター列を追加してエクスポート。
 
     複数手法の場合は手法名を列名にして横並びで配置する。
     単一手法の場合は従来通り「UMAP cluster」列1つ。
     region_lookup を渡すと最終列に「領域名」(ROI) を付与する（未割当は空欄）。
+    report にリストを渡すとファイル別の突合内訳（summarize_coverage 用）を追記する。
 
     Returns (file_bytes, filename)
     """
@@ -754,9 +894,17 @@ def _export_tims(
         df = _apply_feature_annotation_columns(df, data_folder)
         stem = Path(fp).stem
         # 右端に手法別クラスタ列・領域名列をベクトル付与（iterrows 撤廃＝軽い）。
+        # ★ ver58.3: 突合の内訳を stats で受け取り、呼び出し側から利用者へ報告する。
+        stats: dict = {}
         df = _append_cluster_region_columns(
             df, method_lookups, region_lookup, all_sample_list, is_multi, stem,
-            _match_sample_name)
+            _match_sample_name, stats=stats)
+        if stats.get("matched", 0) < stats.get("rows", 0):
+            logger.warning("[DataExport] %s: クラスタ突合 %s/%s 行 (resolver=%s, 未一致=%s)",
+                           stem, stats.get("matched"), stats.get("rows"),
+                           stats.get("resolver"), stats.get("unresolved_samples"))
+        if report is not None:
+            report.append(stats)
         dfs_out.append(df)
 
     df_all = (
@@ -890,16 +1038,18 @@ def _do_export(
             logger.warning("[DataExport] 条件記録に失敗: %s", e)
 
         # ファイル書き込み: 進捗 58→98%
+        report: list = []
         if is_desi:
             file_bytes, filename = _export_desi(
                 data_folder, method_lookups, region_lookup,
                 progress_cb=progress_cb, base=58, span=40, conditions=conditions,
-                roi_failed=roi_failed)
+                roi_failed=roi_failed, report=report)
         else:
             fmt = export_format or "xlsx"
             file_bytes, filename = _export_tims(
                 data_folder, method_lookups, fmt, region_lookup,
-                progress_cb=progress_cb, base=58, span=40, conditions=conditions)
+                progress_cb=progress_cb, base=58, span=40, conditions=conditions,
+                report=report)
         _p(99, "仕上げ中…")
 
         # ステータスメッセージ
@@ -908,6 +1058,11 @@ def _do_export(
         msg = f"✅ {filename} を生成しました"
         if n_methods > 1:
             msg += f" ({methods_str})"
+        # ★ ver58.3: 突合が成立しなかったら「成功」で終わらせない。
+        #   出力自体は返す（生データ部分は使えるため）が、なぜ空欄なのかを必ず言う。
+        warn = _summarize_coverage(report)
+        if warn:
+            msg += "  " + warn
 
         return file_bytes, filename, msg
 
@@ -1029,21 +1184,27 @@ def build_interactive_export_for_project(
                                 "data_export_api", conditions)
         except Exception as e:  # noqa: BLE001
             logger.warning("[APIExport] 条件記録に失敗: %s", e)
+        report: list = []
         if is_desi:
             file_bytes, filename = _export_desi(
                 data_folder, method_lookups, region_lookup,
                 progress_cb=progress_cb, base=58, span=40, conditions=conditions,
-                roi_failed=roi_failed)
+                roi_failed=roi_failed, report=report)
         else:
             fmt = export_format or "parquet"
             file_bytes, filename = _export_tims(
                 data_folder, method_lookups, fmt, region_lookup,
-                progress_cb=progress_cb, base=58, span=40, conditions=conditions)
+                progress_cb=progress_cb, base=58, span=40, conditions=conditions,
+                report=report)
         _p(99, "仕上げ中…")
 
         msg = f"✅ {filename} を生成しました"
         if len(method_lookups) > 1:
             msg += " (" + " / ".join(method_lookups.keys()) + ")"
+        # ★ ver58.3: GUI 経路と同じく、突合が成立しなかったことを必ず伝える。
+        warn = _summarize_coverage(report)
+        if warn:
+            msg += "  " + warn
         return file_bytes, filename, msg
 
     except Exception as e:  # noqa: BLE001
