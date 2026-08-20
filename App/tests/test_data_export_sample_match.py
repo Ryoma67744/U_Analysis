@@ -23,7 +23,7 @@ from app.callbacks.interactive_data_export import (  # noqa: E402
     _export_desi, _match_sample_name, _read_tims_file,
 )
 from app.services.export_transform import (  # noqa: E402
-    append_cluster_region_columns, summarize_coverage,
+    append_cluster_region_columns, summarize_coverage, summarize_exclusions,
 )
 
 
@@ -350,3 +350,253 @@ def test_export_desi_reports_unmatched_sheet(tmp_path):
     assert report[0]["matched"] == 0
     assert report[0]["resolver"] == "no-sample"
     assert summarize_coverage(report) is not None
+
+
+# ---------------------------------------------------------------------------
+# ③ 解析に使っていない切片を出力から除外する (ver59.0)
+# ---------------------------------------------------------------------------
+
+from app.callbacks.interactive_data_export import _export_tims  # noqa: E402
+from app.services.export_transform import unanalyzed_groups  # noqa: E402
+
+
+def _stats(by_group, ambiguous=0):
+    return {"stem": "f", "by_group": by_group, "ambiguous": ambiguous}
+
+
+def test_unanalyzed_groups_picks_the_slice_that_was_not_analysed():
+    """切片 2 枚のうち 1 枚だけ解析した = もう 1 枚を除外してよい。"""
+    assert unanalyzed_groups(
+        _stats({"01": (110031, 110031), "02": (0, 109817)})) == ["02"]
+
+
+def test_unanalyzed_groups_needs_a_fully_matched_slice():
+    """全部が部分一致 / 全滅なら、名前の付け方が違うだけの可能性 → 何も除外しない。
+
+    ここを緩めると「直すべき不具合」の証拠が黙って消える。
+    """
+    assert unanalyzed_groups(_stats({"01": (0, 100), "02": (0, 100)})) == []
+    assert unanalyzed_groups(_stats({"01": (50, 100), "02": (0, 100)})) == []
+
+
+def test_unanalyzed_groups_skips_when_coordinates_are_ambiguous():
+    """座標重複で意図的に空けた行があるときは状況が綺麗でないので触らない。"""
+    assert unanalyzed_groups(
+        _stats({"01": (60, 60), "02": (0, 40)}, ambiguous=5)) == []
+
+
+def test_unanalyzed_groups_never_drops_everything():
+    assert unanalyzed_groups(_stats({"01": (0, 40)})) == []
+    assert unanalyzed_groups(_stats({"01": (0, 40), "02": (0, 40)})) == []
+
+
+def _tims_folder(tmp_path, n1=6, n2=4):
+    """切片 01 (n1 spot) と 02 (n2 spot) を 1 本の parquet に入れる。"""
+    pytest.importorskip("pyarrow")
+    df = pd.DataFrame({
+        "id": list(range(n1 + n2)),
+        "x": [float(i) for i in range(n1)] + [float(1000 + i) for i in range(n2)],
+        "y": [0.0] * (n1 + n2),
+        "611.1439": [1.0] * (n1 + n2),
+        "annotation": ["01"] * n1 + ["02"] * n2,
+    })
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(tmp_path / "260816_Kizu_P5_SCiLS_9AA.parquet", index=False)
+    # plot_data の Sample はファイル名側の 1 種類（実データと同じ形）
+    lk = {"Harmony": {_rk("260816", i, 0.0): str(i % 3) for i in range(n1)}}
+    return lk
+
+
+def test_export_tims_excludes_unanalysed_slice(tmp_path):
+    """★ 本丸: 解析に使っていない切片 '02' の行が出力から消えること。"""
+    lk = _tims_folder(tmp_path / "d")
+    report = []
+    data, name = _export_tims(str(tmp_path / "d"), lk, "csv", None,
+                              report=report, exclude_unused=True)
+    # dtype=str: CSV 往復で '01' が数値 1 に化けるのを避ける（読み方の都合）
+    out = pd.read_csv(io.BytesIO(data), dtype=str)
+
+    assert name == "UMAP_cluster_TIMS.csv"
+    assert len(out) == 6                                  # 4 行落ちた
+    assert set(out["annotation"].astype(str)) == {"01"}
+    assert (out["UMAP cluster"].astype(str) != "").all()   # 空欄が残らない
+    assert report[0]["excluded"] == {"02": 4}
+    # 落とした後の姿に直っていること（直さないと空欄の警告が嘘になる）
+    assert report[0]["rows"] == 6 and "02" not in report[0]["by_group"]
+
+
+def test_export_tims_keeps_everything_when_option_is_off(tmp_path):
+    """既定 OFF（関数シグネチャ側）では従来どおり全行出る。"""
+    lk = _tims_folder(tmp_path / "d")
+    report = []
+    data, _ = _export_tims(str(tmp_path / "d"), lk, "csv", None, report=report)
+    out = pd.read_csv(io.BytesIO(data))
+    assert len(out) == 10
+    assert "excluded" not in report[0]
+
+
+def test_export_tims_never_drops_every_slice(tmp_path):
+    """除外は全ての切片には及ばない（及ぶと出力が空になる）。
+
+    `unanalyzed_groups` が「全部は返さない」契約なので、片方しか一致していなくても
+    一致した側は必ず残る。
+    """
+    pytest.importorskip("pyarrow")
+    folder = tmp_path / "d"
+    folder.mkdir()
+    pd.DataFrame({
+        "id": [0, 1], "x": [0.0, 1.0], "y": [0.0, 0.0],
+        "611.1439": [1.0, 2.0], "annotation": ["01", "02"],
+    }).to_parquet(folder / "s.parquet", index=False)
+    lk = {"Harmony": {_rk("s", 0.0, 0.0): "0"}}
+    data, _ = _export_tims(str(folder), lk, "csv", None, exclude_unused=True)
+    out = pd.read_csv(io.BytesIO(data), dtype=str)
+    assert len(out) == 1 and out.loc[0, "UMAP cluster"] == "0"
+
+
+def test_export_tims_raises_instead_of_header_only_file(tmp_path):
+    """出力行が 0 になったら止める。
+
+    0 行でも to_csv / to_parquet / to_excel は例外を出さず
+    「ヘッダだけの成功したファイル」を返してしまう（ver58.3 が潰した
+    「無音の成功」に戻る）ため、明示的に止める必要がある。
+    """
+    pytest.importorskip("pyarrow")
+    folder = tmp_path / "d"
+    folder.mkdir()
+    pd.DataFrame({"id": [], "x": [], "y": [], "611.1439": [],
+                  "annotation": []}).to_parquet(folder / "empty.parquet",
+                                                index=False)
+    with pytest.raises(ValueError, match="出力する行がありません"):
+        _export_tims(str(folder), {"Harmony": {}}, "csv", None)
+
+
+# --- DESI ------------------------------------------------------------------
+
+def _desi_folder(tmp_path, stems):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    for st in stems:
+        _write_desi_txt(tmp_path / f"{st}.txt", 5)
+    return tmp_path
+
+
+def test_export_desi_drops_the_sheet_of_an_unused_sample(tmp_path):
+    """解析に使っていない .txt はシートを作らず、Skipped に理由を残す。"""
+    folder = _desi_folder(tmp_path / "d", ["slice_A", "slice_B"])
+    lk = {"Harmony": {_rk("slice_A", 10.0 + i, 5.0): str(i) for i in range(3)}}
+
+    report = []
+    data, _ = _export_desi(str(folder), lk, None, report=report,
+                           exclude_unused=True)
+    wb = openpyxl.load_workbook(io.BytesIO(data))
+
+    assert "slice_A" in wb.sheetnames and "slice_B" not in wb.sheetnames
+    rows = list(wb["Skipped"].iter_rows(min_row=2, values_only=True))
+    hit = [r for r in rows if "slice_B" in str(r[0])]
+    assert hit and "除外" in str(hit[0][1]), rows
+    # 除外したシートは rows=0 で積む: summarize_coverage の集計・⚠️ 判定には
+    # 影響させず（積み方を誤ると「意図的に除外したのに不具合のように報告」される）、
+    # summarize_exclusions だけがこれを拾ってステータスに出す。
+    assert summarize_coverage(report) is None
+    note = summarize_exclusions(report)
+    assert note is not None and "slice_B" in note
+
+
+def test_export_desi_keeps_unmatched_sheet_when_nothing_matches(tmp_path):
+    """1 つも一致しないなら除外しない（名前の付け方が違うだけかもしれない）。
+
+    ver52.5 が可視化した照合ミスを、この機能で黙って消さないための番人。
+    """
+    folder = _desi_folder(tmp_path / "d", ["wt_liver_01"])
+    lk = {"Harmony": {_rk("別のサンプル", 10.0, 5.0): "0"}}
+    data, _ = _export_desi(str(folder), lk, None, exclude_unused=True)
+    wb = openpyxl.load_workbook(io.BytesIO(data))
+    assert "wt_liver_01" in wb.sheetnames
+    rows = list(wb["Skipped"].iter_rows(min_row=2, values_only=True))
+    assert any("一致せず" in str(r[1]) for r in rows), rows
+
+
+def test_export_desi_excludes_only_the_unused_sheets(tmp_path):
+    """一致したサンプルだけが残る（複数除外でも全滅しない）。"""
+    folder = _desi_folder(tmp_path / "d", ["slice_A", "zzz1", "zzz2"])
+    lk = {"Harmony": {_rk("slice_A", 10.0, 5.0): "0"}}
+    # slice_A だけ一致 → zzz1/zzz2 が除外対象。全部ではないので通る
+    data, _ = _export_desi(str(folder), lk, None, exclude_unused=True)
+    wb = openpyxl.load_workbook(io.BytesIO(data))
+    assert [s for s in wb.sheetnames
+            if s not in ("Skipped", "Conditions")] == ["slice_A"]
+
+
+def test_summarize_exclusions_message():
+    msg = summarize_exclusions([{"rows": 110031, "excluded": {"02": 109817}}])
+    assert msg is not None
+    assert "'02'" in msg and "109,817" in msg and "110,031" in msg
+    assert summarize_exclusions([{"rows": 10}]) is None
+
+
+# ---------------------------------------------------------------------------
+# ③-2 「解析済みなのに突合していないサンプル」があるときは除外しない (ver59.0)
+# ---------------------------------------------------------------------------
+
+from app.services.export_transform import (  # noqa: E402
+    plan_exclusions, unanalyzed_stems,
+)
+
+
+def test_does_not_exclude_when_an_analysed_sample_is_unaccounted_for():
+    """★ 番人: 切片 2 枚とも解析済みで、片方が別サンプル名で登録されている形。
+
+    by_group の見た目は「1 枚だけ解析した」本命ケースと**完全に同一**なので、
+    解析サンプルの取りこぼしでしか区別できない。ここが落ちると、
+    解析済みの 109,817 行が「使っていない」という嘘の説明とともに消える。
+    """
+    stats = {"by_group": {"01": (60, 60), "02": (0, 40)}, "ambiguous": 0,
+             "matched_samples": ["260816"]}
+    drops, blocked = plan_exclusions([stats], all_samples=["260816", "260817"])
+    assert drops == [[]] and blocked == ["260817"]
+
+
+def test_still_excludes_the_real_case():
+    """過剰修正の番人: 解析サンプルが全て説明できているなら従来どおり除外する。"""
+    stats = {"by_group": {"01": (60, 60), "02": (0, 40)}, "ambiguous": 0,
+             "matched_samples": ["260816"]}
+    drops, blocked = plan_exclusions([stats], all_samples=["260816"])
+    assert drops == [["02"]] and blocked == []
+
+
+def test_typo_in_annotation_is_not_swept_under_the_rug():
+    """'SecX' は 'Sec_X' の打ち間違い。ver52.5 が可視化した照合ミスを消さないこと。"""
+    stats = {"by_group": {"Brain_WT": (2, 2), "SecX": (0, 1)}, "ambiguous": 0,
+             "matched_samples": ["Brain_WT"]}
+    drops, blocked = plan_exclusions([stats], all_samples=["Brain_WT", "Sec_X"])
+    assert drops == [[]] and blocked == ["Sec_X"]
+
+
+def test_partially_matched_group_blocks_exclusion():
+    """中途半端に当たった切片があるなら「絞っただけ」ではないので触らない。"""
+    stats = {"by_group": {"01": (60, 60), "02": (0, 40), "03": (5, 40)},
+             "ambiguous": 0, "matched_samples": ["s"]}
+    assert plan_exclusions([stats], all_samples=["s"])[0] == [[]]
+
+
+def test_blocked_message_explains_why_nothing_was_excluded():
+    msg = summarize_exclusions([{"rows": 100}], blocked_samples=["260817"])
+    assert msg is not None and msg.startswith("⚠️") and "260817" in msg
+
+
+def test_unanalyzed_stems_blocks_on_a_case_mismatch():
+    """DESI: 3 本とも解析済みで 1 本だけ大文字小文字違い → 除外しない。"""
+    m = {"WT_liver_01": "WT_liver_01", "WT_liver_02": "WT_liver_02",
+         "wt_liver_03": None}
+    drop, blocked = unanalyzed_stems(
+        m, ["WT_liver_01", "WT_liver_02", "WT_liver_03"])
+    assert drop == [] and blocked == ["WT_liver_03"]
+
+
+def test_unanalyzed_stems_excludes_when_everything_is_accounted_for():
+    m = {"slice_A": "slice_A", "slice_B": None}
+    assert unanalyzed_stems(m, ["slice_A"]) == (["slice_B"], [])
+
+
+def test_unanalyzed_stems_does_nothing_when_nothing_resolves():
+    assert unanalyzed_stems({"a": None, "b": None}, ["x"]) == ([], [])

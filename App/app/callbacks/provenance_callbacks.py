@@ -270,18 +270,21 @@ def save_hne_export_settings(method, intensity, unit, qea, rds_path):
      Input("export_include_deg", "value"),
      Input("data_export_format", "value"),
      Input("data_export_method_selector", "value"),
+     Input("data_export_exclude_unused", "value"),
      Input("marker_table_top_n", "value")],
     State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
 def save_export_settings(report_top_n, report_methods, include_deg,
-                         data_format, data_methods, marker_top_n, rds_path):
+                         data_format, data_methods, data_exclude_unused,
+                         marker_top_n, rds_path):
     return _save("export_options", {
         "report_top_n": report_top_n,
         "report_methods": report_methods,
         "report_include_deg": bool(include_deg),
         "data_format": data_format,
         "data_methods": data_methods,
+        "data_exclude_unused_annotations": bool(data_exclude_unused),
         "marker_table_top_n": marker_top_n,
     }, rds_path)
 

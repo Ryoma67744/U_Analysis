@@ -668,6 +668,19 @@ def create_interactive_tab():
                                     className="small d-inline-block",
                                 ),
                             ]),
+                            # ★ ver59.0: 解析に使っていない切片(annotation)を出力から外す。
+                            #   OFF だと「クラスタ未割当」と「そもそも解析していない」が
+                            #   出力を見ただけでは区別できない（仕様を知らないと読めない）。
+                            dbc.Row(className="align-items-center mt-2", children=[
+                                dbc.Col(width="auto", children=[
+                                    dbc.Checkbox(
+                                        id="data_export_exclude_unused",
+                                        label="UMAP 解析に使っていない切片(annotation)を除外",
+                                        value=True,
+                                        className="small",
+                                    ),
+                                ]),
+                            ]),
                             html.Div(
                                 id="div_data_export_status",
                                 className="mt-1 text-muted",

@@ -33,7 +33,10 @@ from app.services.data_manager import (
 from app.services.desi_header import is_data_line as _is_data_line
 from app.services.export_transform import (
     append_cluster_region_columns as _append_cluster_region_columns,
+    plan_exclusions as _plan_exclusions,
     summarize_coverage as _summarize_coverage,
+    summarize_exclusions as _summarize_exclusions,
+    unanalyzed_stems as _unanalyzed_stems,
 )
 
 logger = logging.getLogger(__name__)
@@ -470,6 +473,7 @@ def _export_desi(
     data_folder: str, method_lookups: OrderedDict, region_lookup: dict | None = None,
     progress_cb=None, base: int = 0, span: int = 0, conditions: dict | None = None,
     roi_failed: list | None = None, report: list | None = None,
+    exclude_unused: bool = False,
 ) -> tuple[bytes, str]:
     """DESI .txt → Excel バイト列（サンプル別シート + 手法別クラスター列）。
 
@@ -477,6 +481,10 @@ def _export_desi(
     単一手法の場合は従来通り「UMAP cluster」列1つ。
     region_lookup を渡すと最終列に「領域名」(ROI) を付与する（未割当は空欄）。
     report にリストを渡すとシート別の突合内訳（summarize_coverage 用）を追記する。
+    exclude_unused=True で「UMAP 解析に使っていないサンプル」のシートを作らない。
+
+    ★ ver59.0: 既定は False。既存の呼び出し（テスト含む）の挙動を変えないため、
+      既定 ON は UI / API 側で持つ。
 
     Returns (excel_bytes, filename)
     """
@@ -517,10 +525,44 @@ def _export_desi(
     # ★ ver52.5: 解析のサンプル名と照合できなかった stem（下のループで集める）。
     unmatched_stems: list[str] = []
 
+    # ★ ver59.0: サンプル名の突合は stem だけで決まる（.txt の中身は要らない）ので、
+    #   ループより前にまとめて解決する。除外の全滅ガードを ExcelWriter に入る前へ
+    #   置けるようにするため。ループ内はこの dict を引くだけにして二度呼びを避ける
+    #   （`_match_sample_name` は曖昧なとき warning を出すので、二度呼ぶと二重に出る）。
+    _writable = [s_ for s_ in file_stems if s_ not in set(skipped_stems)]
+    matched_by_stem = {s_: _match_sample_name(s_, sample_names) for s_ in _writable}
+
+    # 「UMAP 解析に使っていない」と判断してよいサンプル。
+    #   TIMS 側 `unanalyzed_groups` と同じ思想:
+    #     - 少なくとも 1 つの stem が一致していること（= 解析対象を絞っただけの署名）
+    #     - 解析サンプルが 1 つも無いときは何もしない
+    #     - 全部を除外することにはならない
+    #   1 つも一致しないのは「解析対象を絞った」ではなく **サンプル名の付け方が違う**
+    #   （＝直すべき不具合）可能性が高いので、その場合は除外せず従来どおり
+    #   Skipped シートで報告する。黙って消すとバグの証拠が消える。
+    excluded_stems: list[str] = []
+    blocked_samples: list[str] = []
+    if exclude_unused and sample_names:
+        excluded_stems, blocked_samples = _unanalyzed_stems(
+            matched_by_stem, sample_names)
+        if blocked_samples:
+            logger.warning("[DataExport] 解析サンプル %s に対応する .txt が"
+                           "見つからないため除外を見送りました", blocked_samples)
+    if excluded_stems and len(set(skipped_stems) | set(excluded_stems)) >= len(file_stems):
+        # ExcelWriter に入ってしまうと Conditions / Skipped シートだけで保存が
+        # 成功し、「データシートが 1 枚も無いのに ✅ で返る xlsx」になる。
+        raise ValueError(
+            "出力するサンプルがありません。"
+            "「解析に使っていない切片を除外」で全てのサンプルが除外されました。"
+            "チェックを外すか、解析対象のサンプルを確認してください。")
+
     n_files = max(1, len(file_stems))
     buf = io.BytesIO()
-    # "Conditions" は最後に必ず 1 枚追加するので、先に予約して奪われないようにする
-    used_sheet_names = {"conditions": 1}
+    # "Conditions" と "Skipped" は後から必ず追加し得るので、先に予約して奪われないようにする。
+    # ★ ver59.0: 従来 "skipped" は予約されておらず、`Skipped.txt` という生ファイルが
+    #   あると `_unique_sheet_name` が "Skipped" を返して報告シートと**無言で混ざる**
+    #   （openpyxl は同名シートへの to_excel を例外にせず上書きする）。
+    used_sheet_names = {"conditions": 1, "skipped": 1}
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         for i_f, stem in enumerate(file_stems):
             if progress_cb:
@@ -529,6 +571,18 @@ def _export_desi(
             txt_path = Path(data_folder) / f"{stem}.txt"
             if not txt_path.exists():
                 continue        # 上で列挙・記録済み (ver51.9 / B-9)
+            if stem in excluded_stems:
+                # ★ ver59.0: 解析に使っていないサンプル。シートを作らない。
+                #   report にも積まない — 積むと summarize_coverage が
+                #   resolver="no-sample" として ⚠️ を出し、意図的に除外したのに
+                #   不具合のように報告されてしまう。
+                logger.info("[DataExport] %s: 解析に使っていないため出力から除外", stem)
+                if report is not None:
+                    # rows=0 なので summarize_coverage の集計・⚠️ 判定には影響せず、
+                    # summarize_exclusions だけがこれを拾う。
+                    report.append({"stem": stem, "rows": 0, "matched": 0,
+                                   "excluded": {stem: 0}})
+                continue
 
             # 行単位で読み込み（ヘッダー20列/データ21列の不一致に対応）
             with open(txt_path, "r", encoding="utf-8", errors="replace") as fh:
@@ -539,7 +593,7 @@ def _export_desi(
 
             rows = [line.rstrip("\r\n").split("\t") for line in raw_lines]
             max_cols = max(len(r) for r in rows)
-            matched_sample = _match_sample_name(stem, sample_names)
+            matched_sample = matched_by_stem.get(stem)
             # ★ ver52.5: 一致しないと下の座標引きが丸ごと飛ばされ、
             #   **そのシートの全行でクラスタ列と領域名列が空**になる。
             #   従来はどこにも報告されず、出力された Excel は一見完全なので、
@@ -670,6 +724,15 @@ def _export_desi(
             _skip_names.append(_s)
             _skip_reasons.append(
                 "解析のサンプル名と一致せず — クラスタ列・領域名は空欄")
+        # ★ ver59.0: オプションで意図的に外したサンプル。「一致せず」とは
+        #   別物なので、オプションで落としたと分かる文言にする。
+        for _s in excluded_stems:
+            _skip_names.append(_s)
+            _skip_reasons.append(
+                "UMAP 解析に使っていないため出力から除外（オプション指定）")
+        if blocked_samples and report is not None:
+            report.append({"stem": None, "rows": 0, "matched": 0,
+                           "blocked_samples": blocked_samples})
         if _skip_names:
             try:
                 # 見出しは「未出力」ではなく「注意」。出力はされたが列が空、
@@ -861,7 +924,7 @@ def _export_tims(
     data_folder: str, method_lookups: OrderedDict, fmt: str,
     region_lookup: dict | None = None,
     progress_cb=None, base: int = 0, span: int = 0, conditions: dict | None = None,
-    report: list | None = None,
+    report: list | None = None, exclude_unused: bool = False,
 ) -> tuple[bytes, str]:
     """TIMS 入力ファイルに手法別クラスター列を追加してエクスポート。
 
@@ -869,6 +932,10 @@ def _export_tims(
     単一手法の場合は従来通り「UMAP cluster」列1つ。
     region_lookup を渡すと最終列に「領域名」(ROI) を付与する（未割当は空欄）。
     report にリストを渡すとファイル別の突合内訳（summarize_coverage 用）を追記する。
+    exclude_unused=True で「UMAP 解析に使っていない切片」の行を出力から除く。
+
+    ★ ver59.0: 既定は False。既存の呼び出し（テスト含む）の挙動を変えないため、
+      既定 ON は UI / API 側で持つ。
 
     Returns (file_bytes, filename)
     """
@@ -885,7 +952,9 @@ def _export_tims(
     all_sample_list = sorted(all_sample_names)
 
     n_files = max(1, len(input_paths))
-    dfs_out = []
+    add_region_col = "領域名"
+    dfs_out: list = []
+    stats_out: list = []
     for i_f, fp in enumerate(input_paths):
         if progress_cb:
             progress_cb(int(base + span * i_f / n_files),
@@ -903,13 +972,66 @@ def _export_tims(
             logger.warning("[DataExport] %s: クラスタ突合 %s/%s 行 (resolver=%s, 未一致=%s)",
                            stem, stats.get("matched"), stats.get("rows"),
                            stats.get("resolver"), stats.get("unresolved_samples"))
+
+        stats_out.append(stats)
         if report is not None:
             report.append(stats)
         dfs_out.append(df)
 
+    # ★ ver59.0: 解析に使っていない切片の行を落とす。
+    #   判定は **全ファイルを見終わってから**（`plan_exclusions`）。1 ファイルだけ見ると
+    #   「解析済みのサンプルがこの出力のどこにも現れない」を検出できず、
+    #   解析済みの切片を「使っていない」と誤判定して消してしまう。
+    #   落とすのは行フィルタで行う。ファイルを丸ごと飛ばすと全ファイル除外時に
+    #   下の `dfs_out[0]` が IndexError になり、意味不明な例外として出る。
+    if exclude_unused and all_sample_list:
+        plan, blocked = _plan_exclusions(stats_out, all_sample_list)
+        if blocked:
+            logger.warning("[DataExport] 解析サンプル %s が生データに見つからないため"
+                           "除外を見送りました", blocked)
+            if report is not None and report:
+                report[0]["blocked_samples"] = blocked
+        for i_d, drop in enumerate(plan):
+            if not drop or "annotation" not in dfs_out[i_d].columns:
+                continue
+            d, st = dfs_out[i_d], stats_out[i_d]
+            # 値が入っている行は絶対に落とさない（手法ごとに lookup が違い得るため、
+            # 代表 1 手法の一致状況だけで消すと別手法の値ごと消える）。
+            new_cols = [c for c in (list(method_lookups.keys()) if is_multi
+                                    else ["UMAP cluster"]) if c in d.columns]
+            if add_region_col in d.columns:
+                new_cols.append(add_region_col)
+            blank = (d[new_cols].astype(str) == "").all(axis=1) if new_cols else True
+            kill = d["annotation"].astype(str).isin(set(drop)) & blank
+            if not bool(kill.any()):
+                continue
+            st["excluded"] = {g: int(n) for g, n in
+                              d.loc[kill, "annotation"].astype(str)
+                              .value_counts().items()}
+            dfs_out[i_d] = d[~kill].reset_index(drop=True)
+            # 落としたら stats も落とした後の姿に直す。直さないと
+            # summarize_coverage が「もう出力に無い行」を空欄として報告し続ける。
+            by_group = dict(st.get("by_group") or {})
+            for g in drop:
+                by_group.pop(g, None)
+            st["by_group"] = by_group
+            st["rows_before_exclude"] = st.get("rows")
+            st["rows"] = len(dfs_out[i_d])
+            logger.info("[DataExport] %s: 解析対象外の切片を除外: %s",
+                        st.get("stem"), st["excluded"])
+
     df_all = (
         pd.concat(dfs_out, ignore_index=True) if len(dfs_out) > 1 else dfs_out[0]
     )
+
+    # ★ ver59.0: 0 行になったら止める。to_excel / to_csv / to_parquet はいずれも
+    #   例外を出さず **「ヘッダだけの、成功したファイル」** を返すため
+    #   （実測確認済み）、ここで止めないと ver58.3 が潰した「無音の成功」に戻る。
+    if df_all.empty:
+        raise ValueError(
+            "出力する行がありません。"
+            "「解析に使っていない切片を除外」で全ての行が除外されました。"
+            "チェックを外すか、解析対象の切片を確認してください。")
 
     # 出力形式に応じてバイト列を生成
     buf = io.BytesIO()
@@ -950,7 +1072,8 @@ def _export_tims(
 def _do_export(
     data_folder, ms_instrument, export_format,
     rds_map, current_method, result_folder, project_id, sub_project_id,
-    loaded_rds, cluster_name_map=None, selected_methods=None, progress_cb=None,
+    loaded_rds, cluster_name_map=None, selected_methods=None,
+    exclude_unused=False, progress_cb=None,
 ):
     """データ出力の本体。開いている(読み込み済みの)プロジェクトにスコープを固定して、
     元データに UMAP cluster 列を付与したファイルを生成する。
@@ -1031,7 +1154,8 @@ def _do_export(
                 extra={"export_format": export_format,
                        "exported_methods": list(method_lookups.keys()),
                        "ms_instrument": ms_instrument,
-                       "data_folder": data_folder})
+                       "data_folder": data_folder,
+                       "exclude_unused_annotations": bool(exclude_unused)})
             write_export_record(results_dir_for_rds(loaded_rds, result_folder),
                                 "data_export", conditions)
         except Exception as e:  # noqa: BLE001
@@ -1043,13 +1167,14 @@ def _do_export(
             file_bytes, filename = _export_desi(
                 data_folder, method_lookups, region_lookup,
                 progress_cb=progress_cb, base=58, span=40, conditions=conditions,
-                roi_failed=roi_failed, report=report)
+                roi_failed=roi_failed, report=report,
+                exclude_unused=exclude_unused)
         else:
             fmt = export_format or "xlsx"
             file_bytes, filename = _export_tims(
                 data_folder, method_lookups, fmt, region_lookup,
                 progress_cb=progress_cb, base=58, span=40, conditions=conditions,
-                report=report)
+                report=report, exclude_unused=exclude_unused)
         _p(99, "仕上げ中…")
 
         # ステータスメッセージ
@@ -1060,6 +1185,12 @@ def _do_export(
             msg += f" ({methods_str})"
         # ★ ver58.3: 突合が成立しなかったら「成功」で終わらせない。
         #   出力自体は返す（生データ部分は使えるため）が、なぜ空欄なのかを必ず言う。
+        # ★ ver59.0: 除外した行は「空欄」ではなくなり summarize_coverage の
+        #   対象から外れる。黙って行が消えたように見えないよう必ず言う。
+        blocked = [b for s_ in report for b in (s_.get("blocked_samples") or [])]
+        note = _summarize_exclusions(report, blocked)
+        if note:
+            msg += "  " + note
         warn = _summarize_coverage(report)
         if warn:
             msg += "  " + warn
@@ -1090,7 +1221,7 @@ def _pick_primary_rds(rds_map: dict):
 def build_interactive_export_for_project(
     data_folder, ms_instrument, export_format,
     rds_map, result_folder, project_id, sub_project_id,
-    selected_methods=None, progress_cb=None,
+    selected_methods=None, exclude_unused=False, progress_cb=None,
 ):
     """ライブ session に依存せず UMAP_cluster エクスポートを生成する（API / バッチ用）。
 
@@ -1179,7 +1310,8 @@ def build_interactive_export_for_project(
                 extra={"export_format": export_format,
                        "exported_methods": list(method_lookups.keys()),
                        "ms_instrument": ms_instrument,
-                       "driver": "api"})
+                       "driver": "api",
+                       "exclude_unused_annotations": bool(exclude_unused)})
             write_export_record(results_dir_for_rds(primary_rds, result_folder),
                                 "data_export_api", conditions)
         except Exception as e:  # noqa: BLE001
@@ -1189,19 +1321,24 @@ def build_interactive_export_for_project(
             file_bytes, filename = _export_desi(
                 data_folder, method_lookups, region_lookup,
                 progress_cb=progress_cb, base=58, span=40, conditions=conditions,
-                roi_failed=roi_failed, report=report)
+                roi_failed=roi_failed, report=report,
+                exclude_unused=exclude_unused)
         else:
             fmt = export_format or "parquet"
             file_bytes, filename = _export_tims(
                 data_folder, method_lookups, fmt, region_lookup,
                 progress_cb=progress_cb, base=58, span=40, conditions=conditions,
-                report=report)
+                report=report, exclude_unused=exclude_unused)
         _p(99, "仕上げ中…")
 
         msg = f"✅ {filename} を生成しました"
         if len(method_lookups) > 1:
             msg += " (" + " / ".join(method_lookups.keys()) + ")"
         # ★ ver58.3: GUI 経路と同じく、突合が成立しなかったことを必ず伝える。
+        blocked = [b for s_ in report for b in (s_.get("blocked_samples") or [])]
+        note = _summarize_exclusions(report, blocked)
+        if note:
+            msg += "  " + note
         warn = _summarize_coverage(report)
         if warn:
             msg += "  " + warn
@@ -1282,20 +1419,23 @@ def _run_export_job(job_id, args):
      State("interactive_sub_project_select", "value"),
      State("seurat_rds_path_store", "data"),
      State("cluster_name_map_store", "data"),
-     State("data_export_method_selector", "value")],
+     State("data_export_method_selector", "value"),
+     State("data_export_exclude_unused", "value")],
     prevent_initial_call=True,
 )
 def data_export_start(n_clicks, data_folder, ms_instrument, export_format,
                       rds_map, current_method, result_folder,
                       project_id, sub_project_id, loaded_rds, cluster_name_map,
-                      selected_methods):
+                      selected_methods, exclude_unused):
     """出力開始: 作業スレッドを起動し、進捗UI(0%)表示・ボタン無効・Interval 有効化。"""
     if not n_clicks:
         raise PreventUpdate
     job_id = _new_job()
+    # 並びは `_do_export` の位置引数と 1:1（`_run_export_job` が *args で展開する）。
+    # ここを崩すと progress_cb に別の値が入って静かに壊れるので、足す位置に注意。
     args = (data_folder, ms_instrument, export_format, rds_map, current_method,
             result_folder, project_id, sub_project_id, loaded_rds, cluster_name_map,
-            selected_methods)
+            selected_methods, bool(exclude_unused))
     # 親コンテキスト(ContextVar の active key 等)を引き継いでスレッド実行。
     ctx = contextvars.copy_context()
     threading.Thread(

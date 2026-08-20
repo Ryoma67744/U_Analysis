@@ -1084,7 +1084,11 @@ def build_openapi_spec(base_url: str = "") -> dict:
                                _p("methods",
                                   desc=("カンマ区切り手法名。省略で全手法。"
                                         "この結果に無い手法を含めると 409"
-                                        "（別手法で代用はしない）。"))],
+                                        "（別手法で代用はしない）。")),
+                               _p("exclude_unused", "boolean", default=True,
+                                  desc=("UMAP 解析に使っていない切片(annotation)の行を"
+                                        "出力から除く。既定 true（画面と同じ）。"
+                                        "false で生データの全行を出す。"))],
                 "responses": {"200": {"description": "生成ジョブを開始（job_id/status_url）",
                                       "content": {"application/json": {"schema": obj}}}}}},
             "/api/gpt/exports/jobs/{job_id}": {"get": {
@@ -1505,7 +1509,8 @@ def _run_warmup(job_id: str, resolved: dict, methods, with_expression: bool):
         _GPT_EXPORT_SEM.release()
 
 
-def _run_interactive_export(job_id: str, resolved: dict, methods, fmt: str):
+def _run_interactive_export(job_id: str, resolved: dict, methods, fmt: str,
+                            exclude_unused: bool = True):
     """作業スレッド本体: セッション非依存ドライバで Export を生成し一時ファイルへ保存。
 
     生成バイト列は base64 でチャットに載せず、GPT_EXPORT_TMP_DIR に保存して
@@ -1526,6 +1531,7 @@ def _run_interactive_export(job_id: str, resolved: dict, methods, fmt: str):
             (resolved.get("project") or {}).get("id"),
             (resolved.get("sub") or {}).get("id"),
             selected_methods=methods,
+            exclude_unused=exclude_unused,
             progress_cb=lambda p, l="": ep.update_job(job_id, p, l),
         )
         if not file_bytes or not filename:
@@ -1943,6 +1949,12 @@ def register_gpt_api(server) -> None:
             request.args.get("methods"), r["rds_map"])
         if err is not None:
             return _fail_api(err)
+        # ★ ver59.0: 既定は画面と揃えて true。ChatGPT から頼んだときと
+        #   画面から出したときで中身が変わると、行数差を不具合と誤解される。
+        exclude_unused, err = parse_bool_flag(
+            request.args.get("exclude_unused"), "exclude_unused", default=True)
+        if err is not None:
+            return _fail_api(err)
 
         # ★ ver52.1: admission を **thread 生成前**に行う。従来は必ず thread を
         #   作ってから semaphore を最大 3600 秒待っており、待機中の job は
@@ -1959,7 +1971,7 @@ def register_gpt_api(server) -> None:
         job_id = ep.new_job()
         threading.Thread(
             target=_run_interactive_export,
-            args=(job_id, r, methods, fmt), daemon=True,
+            args=(job_id, r, methods, fmt, exclude_unused), daemon=True,
         ).start()
         return _ok({
             "job_id": job_id,
