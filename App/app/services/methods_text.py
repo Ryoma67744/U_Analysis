@@ -12,8 +12,10 @@
 # 意図的に強調している 2 点（Methods の誤記が最も起きやすいところ）:
 #   1. Volcano / Heatmap の閾値は「表示用」であって統計的閾値ではない。
 #      実際に検定へ渡ったのは解析設定タブの p_thresh / logfc_thresh。
-#   2. on-the-fly DE は GUI に出ていない固定値（Wilcoxon, min.pct=0.05,
-#      logfc.threshold=0.25, BH）で走っている。
+#   2. on-the-fly DE は GUI に出ていない固定値（Wilcoxon, BH）で走っている。
+#      ★ ver58.0 (A-3): 検定前の足切りは min.pct=0 / logfc.threshold=0 に変えた
+#      （足切り後の集合にだけ補正を当てると分母が小さく甘く出るため）。
+#      実値は provenance.ONTHEFLY_DE_FIXED_PARAMS を単一の出典とする。
 #
 # 依存は標準ライブラリ + app.services.caveats のみ。
 # =============================================================================
@@ -175,6 +177,10 @@ def render_methods(conditions: dict, lang: str = "ja") -> str:
          _get(c, "analysis.preprocessing.batch_correction")),
         ("m/z alignment (ppm)" if lang == "en" else "m/z アライメント (ppm)",
          _get(c, "analysis.mz_align_ppm")),
+        # ★ ver58.0 (A-4): 空間平滑化の有無。中間ファイル名が *_smoothed.rds なので、
+        #   書かないと「平滑化した」と読まれてしまう。
+        ("Spatial smoothing" if lang == "en" else "空間平滑化",
+         _get(c, "analysis.preprocessing.spatial_smoothing")),
     ], lang))
 
     # --- 3. キャリブレーション / アノテーション ---
@@ -415,6 +421,8 @@ _FILL_WRAP = {"ja": ("〔要記入: ", "〕"), "en": ("[TO BE FILLED: ", "]")}
 # パス → 赤スロットに出す人間向けの項目名。ドットパスは出さない。
 _SLOT_LABELS = {
     "analysis.sample_selection.sample_names": ("試料名", "sample names"),
+    "analysis.preprocessing.spatial_smoothing": ("空間平滑化の有無",
+                                                "whether spatial smoothing was applied"),
     "analysis.preprocessing.norm_mode": ("正規化の方法", "normalization method"),
     "analysis.preprocessing.input_normalized": ("入力データの正規化状態",
                                                 "normalization state of the input"),
@@ -449,6 +457,17 @@ _WARNING_TEXTS = {
         "キャッシュが破棄されると再現できません。",
         "This embedding exists only in a temporary cache and is not linked to a result "
         "folder; it cannot be reproduced once the cache is evicted.",
+    ),
+    # ★ ver58.0 (A-2): 無補正側はクラスタを取り直している。番号が補正後と
+    #   対応しないのは別々に決めたので当然だが、**知らないと番号で突き合わせて
+    #   しまう**ため明記する。
+    "uncorrected_clusters_recomputed": (
+        "「PCA (uncorrected)」のクラスタは無補正の空間で改めて決め直したものです。"
+        "補正後のクラスタ番号とは対応しません（別々に決めているため）。"
+        "番号での突き合わせはできません。",
+        "Clusters for \"PCA (uncorrected)\" were computed independently in the "
+        "uncorrected space. Their numbering does not correspond to the clusters of "
+        "the corrected result; they cannot be matched by cluster number.",
     ),
     "derived_pca_not_persisted": (
         "PCA (uncorrected) の UMAP 埋め込みは実行時に派生生成され、結果フォルダには"
@@ -629,6 +648,20 @@ def _sec_preproc(c, lang):
             "各測定点のスペクトル強度を " if ja else "Spot-wise spectral intensities were normalized using ",
             _slot(c, "analysis.preprocessing.norm_mode", lang),
             " により正規化した。" if ja else ".",
+        ))
+
+    # ★ ver58.0 (A-4): 空間平滑化の有無を明記する。従来は一切書かれておらず、
+    #   中間ファイル名 (*_smoothed.rds) だけが「平滑化した」と主張していた。
+    smooth = _get(c, "analysis.preprocessing.spatial_smoothing")
+    if smooth is False:
+        paras.append(_para(
+            "空間平滑化は行わなかった。" if ja else
+            "No spatial smoothing was applied."
+        ))
+    elif smooth is True:
+        paras.append(_para(
+            "近傍測定点による空間平滑化を行った。" if ja else
+            "Spatial smoothing over neighbouring measurement points was applied."
         ))
 
     ppm = _get(c, "analysis.mz_align_ppm")
@@ -857,15 +890,24 @@ def _sec_de(c, lang):
             "各クラスタに特徴的な代謝物は、Seurat の FindAllMarkers により、"
             f"当該クラスタの測定点とそれ以外の全測定点を比較する {test} 検定で抽出した。"
             "上昇・低下の双方を対象とした。",
-            (f"検定に先立ち、いずれかの群で {min_pct} 以上の測定点に検出される特徴量に"
-             "限定した。" if min_pct is not None else ""),
-            f"得られた p 値は {padj} 法により多重比較補正した。",
+            # ★ ver58.0 (デバッグ総点検 A-3): 足切りを 0 にした（＝全特徴量を検定）。
+            #   従来はここに「…に限定した」と書いていたが、限定した集合にだけ
+            #   補正を当てていたため補正の分母が小さく、記述としても実態としても
+            #   正しくなかった。0 のときは「限定しなかった」と書く。
+            ("検定前の絞り込みは行わず、全特徴量を検定対象とした。"
+             if min_pct in (0, 0.0, "0") else
+             (f"検定に先立ち、いずれかの群で {min_pct} 以上の測定点に検出される特徴量に"
+              "限定した。" if min_pct is not None else "")),
+            f"得られた p 値は {padj} 法により、**検定した全特徴量**を分母として"
+            "多重比較補正した。",
         ))
         paras.append(_para(
             "有意と判定する閾値は、補正後 p 値 < ",
             _slot(c, "analysis.thresholds.p", lang),
             " かつ |log2 fold-change| > ",
-            _slot(c, "analysis.thresholds.logfc", lang), " とした。",
+            _slot(c, "analysis.thresholds.logfc", lang),
+            " とした。書き出した一覧はこの閾値を通った特徴量に限る"
+            "（検定と補正は全特徴量に対して行っている）。",
         ))
     else:
         paras.append(_para(
@@ -873,9 +915,12 @@ def _sec_de(c, lang):
             f"FindAllMarkers in Seurat, using a {test} test comparing the pixels of each "
             "cluster against all remaining pixels. Both increased and decreased features "
             "were retained. ",
-            (f"Prior to testing, features were restricted to those detected in at least "
-             f"{min_pct} of pixels in either group. " if min_pct is not None else ""),
-            f"The resulting p-values were adjusted by the {padj} procedure.",
+            ("No pre-filtering was applied; all features were tested. "
+             if min_pct in (0, 0.0, "0") else
+             (f"Prior to testing, features were restricted to those detected in at least "
+              f"{min_pct} of pixels in either group. " if min_pct is not None else "")),
+            f"The resulting p-values were adjusted by the {padj} procedure over "
+            "all tested features.",
         ))
         paras.append(_para(
             "Features were considered significant at an adjusted p-value < ",

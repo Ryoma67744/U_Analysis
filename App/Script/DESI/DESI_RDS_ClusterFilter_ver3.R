@@ -119,6 +119,31 @@ V8_DEG_P_THRESH_VAL <- 0.05
 #   TIMS 側 (ver18 の V13_DEG_LOGFC_TH_VAL) は元から 0.25。
 V8_DEG_LOGFC_TH_VAL <- 0.25
 
+# 入力正規化ポリシー（★ ver58.0 / デバッグ総点検 A-6）
+#   従来 DESI 再解析には受け手が無く、画面で「正規化 OFF（正規化済み入力）」を
+#   選んでいても再解析だけ v16 既定（INPUT_NORMALIZED <- FALSE ＝ LogNormalize する）で
+#   走っていた。正規化済みの入力に **二重に正規化がかかる**。
+#   NA / "" なら上書きせず v16 既定を使う＝従来挙動。
+V8_INPUT_NORMALIZED <- NA
+V8_NORM_MODE <- ""
+
+# UMAP 条件（★ ver58.0 / A-7）
+#   PreFlight パネルは再解析中も画面に出ているのに受け手が無く、推奨値を入れても
+#   常に v16 既定で計算されていた。NA / "" なら v16 既定＝従来挙動。
+V8_UMAP_N_NEIGHBORS <- NA
+V8_UMAP_MIN_DIST <- NA
+V8_UMAP_METRIC <- ""
+V8_UMAP_DIMS_N <- NA
+
+# ROI をサンプルとして扱うか（★ ver58.0 / デバッグ総点検 A-5）
+#   本解析の v16 は ROI ごとに `<元名>_<ROI>` というサンプル名を作る。
+#   再解析側にはこの 2 つの受け手が無く、Python は注入コードを持っていたのに
+#   _replace_assign が 0 件一致でも成功扱いで返るため**完全な空振り**だった。
+#   その結果、再解析だけ ROI 分割をやり直さなかった。
+#   NA / NULL なら v16 既定（FALSE / フィルタなし）＝従来挙動。
+V8_USE_ROI_AS_SAMPLE <- NA
+V8_ROI_FILTER <- NULL
+
 # マージスクリプトのパス（Python側から自動注入）
 MERGE_SCRIPT_PATH <- ""
 
@@ -185,6 +210,33 @@ get_cells_to_keep <- function(seu, filter_mode, target_clusters,
     stop("FILTER_MODE は 'exclude' か 'keep' を指定してください。", call. = FALSE)
   }
   rownames(md)[keep]
+}
+
+# ---------- RDS のサンプル名を元 .txt の名前へ逆引きする ----------
+#   ★ ver58.0 (デバッグ総点検 A-5): ROI モードで解析した RDS の sample は
+#     `<元名>_<ROI>` になる。再解析は元 .txt を `<元名>.txt` で探すため、
+#     `<元名>` のまま照合していた従来は **1 行も一致せず**、
+#     `.. skip (no remaining spots)` として**サンプルが丸ごと黙って消えて**いた。
+#
+#   戻り値:
+#     NULL                          … RDS に対応するサンプルが 1 つも無い（＝止める）
+#     list(names=character(0), ...) … ROI フィルタで全 ROI が外れた（＝正当なスキップ）
+#     list(names=..., rois=...)     … 該当した RDS 側サンプル名と ROI 名
+.resolve_rds_samples <- function(sn, rds_samples, roi_filter = NULL) {
+  s <- as.character(rds_samples)
+  if (sn %in% s) return(list(names = sn, rois = character(0)))
+  # sn に含まれる正規表現メタ文字（"." など）をエスケープする。
+  # しないと `s.A` が `sXA_Brain` に当たり、別サンプルを取り込む。
+  pat <- paste0("^", gsub("([][{}()+*^$|\\?.])", "\\\\\\1", sn), "_(.+)$")
+  hit <- grepl(pat, s)
+  if (!any(hit)) return(NULL)
+  nm <- unique(s[hit])
+  rois <- sub(pat, "\\1", nm)
+  if (!is.null(roi_filter) && length(roi_filter) > 0) {
+    keep <- rois %in% roi_filter
+    nm <- nm[keep]; rois <- rois[keep]
+  }
+  list(names = nm, rois = rois)
 }
 
 # ---------- 元txtから、指定PixelIDの行だけを抜き出してtxtを書き出す ----------
@@ -358,6 +410,44 @@ replace_assign_line <- function(code_vec, var, new_rhs) {
   code <- replace_assign_line(code, "DEG_P_THRESH_VAL", as.character(V8_DEG_P_THRESH_VAL))
   code <- replace_assign_line(code, "DEG_LOGFC_TH_VAL", as.character(V8_DEG_LOGFC_TH_VAL))
 
+  # ★ ver58.0 (A-6): 正規化ポリシー → v16 copy へ伝播。
+  #   replace_assign_line は .stopif で 0 件なら停止する（無言の空振りを起こさない）。
+  if (exists("V8_INPUT_NORMALIZED") && !is.na(V8_INPUT_NORMALIZED)) {
+    code <- replace_assign_line(code, "INPUT_NORMALIZED",
+                                if (isTRUE(V8_INPUT_NORMALIZED)) "TRUE" else "FALSE")
+  }
+  if (exists("V8_NORM_MODE") && nzchar(V8_NORM_MODE)) {
+    code <- replace_assign_line(code, "NORM_MODE", r_str(V8_NORM_MODE))
+  }
+
+  # ★ ver58.0 (A-7): UMAP 条件 → v16 copy へ伝播（未指定なら触らない＝v16 既定）
+  if (exists("V8_UMAP_N_NEIGHBORS") && !is.na(V8_UMAP_N_NEIGHBORS)) {
+    code <- replace_assign_line(code, "UMAP_N_NEIGHBORS",
+                                paste0(as.integer(V8_UMAP_N_NEIGHBORS), "L"))
+  }
+  if (exists("V8_UMAP_MIN_DIST") && !is.na(V8_UMAP_MIN_DIST)) {
+    code <- replace_assign_line(code, "UMAP_MIN_DIST", as.character(V8_UMAP_MIN_DIST))
+  }
+  if (exists("V8_UMAP_METRIC") && nzchar(V8_UMAP_METRIC)) {
+    code <- replace_assign_line(code, "UMAP_METRIC", r_str(V8_UMAP_METRIC))
+  }
+  if (exists("V8_UMAP_DIMS_N") && !is.na(V8_UMAP_DIMS_N)) {
+    code <- replace_assign_line(code, "UMAP_DIMS_N",
+                                paste0(as.integer(V8_UMAP_DIMS_N), "L"))
+  }
+
+  # ★ ver58.0 (A-5): ROI 設定 → v16 copy へ伝播。
+  #   書き出した txt は元の行をそのまま写しているので ROI 列も残っている。
+  #   ここを伝播しないと、再解析だけ ROI 分割をやり直さず 1 サンプルに戻る。
+  if (exists("V8_USE_ROI_AS_SAMPLE") && !is.na(V8_USE_ROI_AS_SAMPLE)) {
+    code <- replace_assign_line(code, "USE_ROI_AS_SAMPLE",
+                                if (isTRUE(V8_USE_ROI_AS_SAMPLE)) "TRUE" else "FALSE")
+  }
+  if (exists("V8_ROI_FILTER") && length(V8_ROI_FILTER) > 0) {
+    code <- replace_assign_line(code, "ROI_FILTER",
+      paste0("c(", paste(sprintf("\"%s\"", V8_ROI_FILTER), collapse = ", "), ")"))
+  }
+
   # sample_names ブロック差し替え
   start_pat <- "^\\s*sample_names\\s*<-\\s*c\\s*\\("
   start_idx <- grep(start_pat, code)
@@ -417,11 +507,41 @@ exported_files <- c()
 # ★ ver57.5: 再解析側のサンプル名 → 元の名前。マージのピクセル照合に使う。
 .merge_sample_map <- c()
 
+# ★ ver58.0 (デバッグ総点検 A-5): RDS が持つサンプル名の一覧。
+#   ROI モードで解析した RDS では `<元名>_<ROI>` になっているため、
+#   元 .txt の名前 (`<元名>`) との照合には逆引きが要る。
+.rds_samples_all <- unique(as.character(seu@meta.data$sample))
+
 for (sn in SAMPLE_NAMES) {
   original_txt <- file.path(ORIGINAL_DATA_FOLDER, paste0(sn, ".txt"))
   .stopif(file.exists(original_txt), paste0("元txtが見つかりません: ", original_txt))
 
-  rows_sn <- md_keep[as.character(md_keep$sample) == as.character(sn), , drop = FALSE]
+  # ★ ver58.0 (A-5): `<元名>` で 1 行も当たらないとき、従来は `next` で
+  #   飛ばしていた。ROI 別サンプルはここに落ちるので、**サンプルが丸ごと
+  #   黙って消える**。名前自体が RDS に無いのは設定の取り違え（別解析の RDS を
+  #   参照している等）なので、理由を出して止める。
+  .res <- .resolve_rds_samples(
+    sn, .rds_samples_all,
+    if (isTRUE(V8_USE_ROI_AS_SAMPLE)) V8_ROI_FILTER else NULL)
+  if (is.null(.res)) {
+    stop(paste0(
+      "再解析: RDS の中に '", sn, "' に対応するサンプルがありません。\n",
+      "  RDS のサンプル名: ", paste(utils::head(.rds_samples_all, 20), collapse = ", "),
+      if (length(.rds_samples_all) > 20) " ..." else "", "\n",
+      "  ROI 別サンプル ('", sn, "_<ROI>') としての一致も試しましたが該当なし。\n",
+      "  → 参照している RDS が別の解析のものか、データフォルダが違う可能性があります。"),
+      call. = FALSE)
+  }
+  if (length(.res$names) == 0) {
+    message(".. skip (ROI フィルタで全 ROI が除外): ", sn)
+    next
+  }
+  if (length(.res$rois) > 0) {
+    message(">> ROI 別サンプルを検出: ", sn, " → ",
+            paste(.res$names, collapse = ", "))
+  }
+
+  rows_sn <- md_keep[as.character(md_keep$sample) %in% .res$names, , drop = FALSE]
   if (nrow(rows_sn) == 0) {
     message(".. skip (no remaining spots): ", sn)
     next
@@ -456,7 +576,14 @@ for (sn in SAMPLE_NAMES) {
   #   満たせずに `stop()` する（UMAP もクラスタも DEG も計算し終えた最後の一歩で
   #   赤いエラーになり、結果フォルダがプロジェクトに登録されない）。
   #   TIMS 側 (ver18) は同じ形の対応表を作っていた。
-  .merge_sample_map[tools::file_path_sans_ext(basename(out_txt))] <- sn
+  .stem_out <- tools::file_path_sans_ext(basename(out_txt))
+  .merge_sample_map[.stem_out] <- sn
+  # ★ ver58.0 (A-5): ROI モードでは v16 が再解析側にも `<stem>_<ROI>` を作る。
+  #   元側は `<元名>_<ROI>` なので、ROI 単位の対応が無いとマージが 1 点も
+  #   一致しない（ver57.5 で直した接尾辞の問題と同じ形）。
+  for (.r in .res$rois) {
+    .merge_sample_map[paste0(.stem_out, "_", .r)] <- paste0(sn, "_", .r)
+  }
 }
 
 .stopif(length(exported_files) > 0, "新規txtが1つも生成されませんでした（RDSの sample 名やクラスタ指定を確認してください）")

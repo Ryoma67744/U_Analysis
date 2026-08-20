@@ -92,14 +92,36 @@ def _is_tier_a() -> bool:
 #                                    交絡下では条件差も縮小するが、技術差まみれで比較不能に
 #                                    なるより補正して共有埋め込み/クラスタを得たい場合に使う。
 #                                    DEG は reduction と独立に condition で算出されるため不変）。
+# DESI 用: 補正するか / しないか の 2 択。
+#   ★ ver58.0 (デバッグ総点検 A-1): DESI には補正の有無を選ぶ手段が無く、
+#     複数ファイルなら無条件に Harmony + RPCA が走っていた。
+#     DESI の補正は group.by.vars="sample" 固定で、TIMS のような切片(slice_id)
+#     単位の概念を実装していないため、シナリオ表は分けて「できること」だけを持つ。
+_DESI_SCENARIO_MAP = {
+    "correct": True,        # 既定＝従来挙動
+    "no_correct": False,
+}
+
+
+# (annotation_role, batch_var, allow_condition_correction, batch_correction_enable)
+#
+# ★ ver58.0 (デバッグ総点検 A-1): 4 つ目「そもそも補正するか」を足した。
+#   従来は補正の要否を R 側が **列名から推測** しており、「補正なし」を選んでも
+#   batch_var="sample" が渡るため **ファイルが 2 つ以上あれば必ず Harmony が走って**いた。
+#   それでいて Methods 文には「バッチ補正は行わなかった」と書かれていた。
+#   MSI では 1 ファイル＝1 切片＝多くの場合 1 個体・1 条件なので、sample 単位の補正は
+#   比較したい生物差そのものを削ることに直結する (Nygaard 2016)。
+#
+#   連続切片 (serial_section) は「同一個体の技術反復」なのでサンプル間補正が妥当であり、
+#   ここは従来どおり補正する。
 _SCENARIO_MAP = {
-    "within_slice":      ("biological", "sample",   False),
+    "within_slice":      ("biological", "sample",   False, False),
     # condition_compare は within_slice と同一方針。UI ドロップダウンでは within_slice に
     # 統合済み（settings_tab._norm_scenario）。旧セッション値の後方互換のため写像は残す。
-    "condition_compare": ("biological", "sample",   False),
-    "serial_section":    ("section_id", "sample",   False),
-    "batch_correct":     ("biological", "slice_id", True),
-    "integrate_correct": ("section_id", "slice_id", True),
+    "condition_compare": ("biological", "sample",   False, False),
+    "serial_section":    ("section_id", "sample",   False, True),
+    "batch_correct":     ("biological", "slice_id", True,  True),
+    "integrate_correct": ("section_id", "slice_id", True,  True),
 }
 
 
@@ -379,6 +401,8 @@ def close_overwrite_modal(cancel_clicks, confirm_clicks):
      State("cal_per_sample_store", "data"),
      State("cal_sample_selector_prev", "data"),
      State("desi_use_roi_as_sample", "value"),
+     # ★ ver58.0 (A-1): DESI のバッチ補正の有無
+     State("desi_scenario", "value"),
      State("desi_roi_filter_store", "data"),
      State("normalize_input", "value"),
      State("norm_mode", "value"),
@@ -425,6 +449,7 @@ def run_analysis(
     cal_per_sample_store,
     cal_sample_selector_prev,
     desi_use_roi_as_sample,
+    desi_scenario,
     desi_roi_filter_list,
     normalize_input, norm_mode,
     normalize_input_reanalysis, norm_mode_reanalysis,
@@ -526,6 +551,8 @@ def run_analysis(
             "tims_v8_script_path": tims_v8_script,
             "tims_cluster_filter_script_path": tims_cluster_script,
             "desi_use_roi_as_sample": bool(desi_use_roi_as_sample),
+            # ★ ver58.0 (A-1): DESI のバッチ補正の有無も保存する
+            "desi_scenario": desi_scenario or "correct",
             "normalize_input": normalize_input,
             "norm_mode": norm_mode,
             "normalize_input_reanalysis": normalize_input_reanalysis,
@@ -697,11 +724,13 @@ def run_analysis(
                 if adduct_filter:
                     params["adduct_patterns"] = adduct_filter
                 # 解析シナリオ → 補正ポリシーを注入（ver6 の ANNOTATION_ROLE 等）
-                _role, _bv, _allow = _SCENARIO_MAP.get(
+                _role, _bv, _allow, _correct = _SCENARIO_MAP.get(
                     tims_scenario or "within_slice", _SCENARIO_MAP["within_slice"])
                 params["annotation_role"] = _role
                 params["batch_var"] = _bv
                 params["allow_condition_correction"] = _allow
+                # ★ ver58.0 (A-1): 「補正なし」を実処理へ届ける
+                params["batch_correction_enable"] = _correct
                 # INPUT_PATHS: 選択サンプルに対応するファイルのフルパスリスト
                 from app.services.data_manager import build_tims_input_paths_multi
                 all_folders = [data_folder] + (extra_data_folders or [])
@@ -739,6 +768,10 @@ def run_analysis(
                 params["use_roi_as_sample"] = bool(desi_use_roi_as_sample)
                 if desi_roi_filter_list:
                     params["roi_filter"] = list(desi_roi_filter_list)
+                # ★ ver58.0 (A-1): 「補正しない」を実処理へ届ける。
+                #   未指定 (旧セッション) は従来挙動＝補正する。
+                params["batch_correction_enable"] = _DESI_SCENARIO_MAP.get(
+                    desi_scenario or "correct", True)
 
             # --- m/z アライメント (ppm) ---
             if analysis_type == "tims_v8":
@@ -894,6 +927,38 @@ def run_analysis(
             if analysis_type == "tims_cluster_filter" and annotation_filter_reanalysis_data:
                 params["annotation_filter"] = annotation_filter_reanalysis_data
 
+            # ★ ver58.0 (デバッグ総点検 A-6): DESI 再解析にも正規化ポリシーを渡す。
+            #   従来この 2 行は TIMS 限定ブロックの中にしか無く、DESI 再解析は
+            #   受け手ごと欠けていたため v16 既定（LogNormalize する）で走っていた。
+            #   正規化済みの入力に **二重に正規化がかかる**。
+            #   DESI 再解析パネルに正規化欄は無いので、本解析の画面値を使う
+            #   （隠れた欄の値が黙って使われないよう、実値は
+            #    reanalysis_inherited_note で画面に出す）。
+            if analysis_type == "desi_cluster_filter":
+                params["input_normalized"] = (normalize_input == "OFF")
+                params["norm_mode"] = norm_mode or "log1p"
+                # ★ ver58.0 (デバッグ総点検 A-5): ROI 分割の設定も渡す。
+                #   従来は本解析の分岐でしか組み立てておらず、しかも注入先の
+                #   受け手が再解析スクリプトに無かったため二重に空振りしていた。
+                #   その結果、ROI 別サンプルは再解析で丸ごと落ちていた。
+                #   OFF も明示的に渡す（未指定＝テンプレ既定に化けさせない）。
+                params["use_roi_as_sample"] = bool(desi_use_roi_as_sample)
+                if desi_roi_filter_list:
+                    params["roi_filter"] = list(desi_roi_filter_list)
+
+            # ★ ver58.0 (デバッグ総点検 A-7): UMAP 条件を再解析にも渡す。
+            #   PreFlight パネルは再解析中も画面に出ているのに受け手が無く、
+            #   推奨値を入れても常にテンプレ既定で計算されていた。
+            #   未指定なら params に載せない＝従来どおりテンプレ既定。
+            if umap_n_neighbors_input is not None:
+                params["umap_n_neighbors"] = int(umap_n_neighbors_input)
+            if umap_min_dist_input is not None:
+                params["umap_min_dist"] = float(umap_min_dist_input)
+            if umap_metric_input:
+                params["umap_metric"] = str(umap_metric_input)
+            if umap_dims_input is not None:
+                params["umap_dims_n"] = int(umap_dims_input)
+
             # TIMSクラスターフィルター固有パラメータ
             if analysis_type == "tims_cluster_filter":
                 from app.services.data_manager import build_tims_input_paths
@@ -911,12 +976,21 @@ def run_analysis(
                 # 入力正規化ポリシー（再解析UIのトグル → V13_INPUT_NORMALIZED/NORM_MODE 注入）
                 params["input_normalized"] = (normalize_input_reanalysis == "OFF")
                 params["norm_mode"] = norm_mode_reanalysis or "log1p"
+                # ★ ver58.0 (デバッグ総点検 A-10): m/z アライメントと化合物名の由来。
+                #   受け手も注入も無かったため、画面の指定が再解析にだけ届かず
+                #   ver6 既定（ppm=0＝無効／埋め込み名を使わない）で走っていた。
+                params["mz_align_ppm"] = float(
+                    coerce_number(mz_align_ppm, "mz_align_ppm"))
+                params["use_embedded_annotation"] = (
+                    "embedded" in list(use_annotation_check or []))
                 # 解析シナリオ → V13_ 経由で ver6 コピーへ伝播（subset の reduction に効かせる）
-                _r_role, _r_bv, _r_allow = _SCENARIO_MAP.get(
+                _r_role, _r_bv, _r_allow, _r_correct = _SCENARIO_MAP.get(
                     reanalysis_tims_scenario or "within_slice", _SCENARIO_MAP["within_slice"])
                 params["v13_annotation_role"] = _r_role
                 params["v13_batch_var"] = _r_bv
                 params["v13_allow_condition_correction"] = _r_allow
+                # ★ ver58.0 (A-1): 再解析でも「補正なし」を実処理へ届ける
+                params["v13_batch_correction_enable"] = _r_correct
                 # 再解析の m/z アノテーション（TIMS専用。ion/tolerance は V13_、adduct は env 経路で反映）
                 if reanalysis_ion_mode:
                     params["ion_mode"] = reanalysis_ion_mode
@@ -942,6 +1016,14 @@ def run_analysis(
                 if reanalysis_cal_use_previous and reanalysis_cal_data:
                     params["calibration_enable"] = True
                     params["calibration_coefficients"] = reanalysis_cal_data["coefficients"]
+                    # ★ ver58.0 (デバッグ総点検 A-10): サンプル別の回帰式も引き継ぐ。
+                    #   全体共通が未設定のとき本解析は共通係数を [0.0]
+                    #   （＝どの m/z でも補正量 0 = 無補正）に潰す。従来は
+                    #   サンプル別の係数を渡す経路が無かったため、画面に
+                    #   「✅ 前回の解析から回帰式を検出」と出ていても
+                    #   **実際には一切補正されない**まま走っていた。
+                    if reanalysis_cal_data.get("by_sample"):
+                        params["calibration_by_sample"] = reanalysis_cal_data["by_sample"]
 
             config_path = generate_cluster_filter_config(params, full_output_dir)
 
@@ -2695,6 +2777,11 @@ def load_calibration_from_first_analysis(rds_folder):
     # キャリブレーション情報を抽出
     cal_enable = params_data.get("calibration_enable", False)
     cal_coefficients = params_data.get("calibration_coefficients")
+    # ★ ver58.0 (デバッグ総点検 A-10): サンプル別の回帰式。
+    #   analysis_params.json には保存済みなのにここで拾っていなかったため、
+    #   再解析へ渡す手段が無く、全体共通が未設定のケースでは
+    #   共通係数 [0.0]（＝補正量ゼロ）だけが渡って **無補正**になっていた。
+    cal_by_sample = params_data.get("calibration_by_sample") or {}
 
     if not cal_enable or not cal_coefficients:
         return _no_data
@@ -2713,6 +2800,8 @@ def load_calibration_from_first_analysis(rds_folder):
         "requested_degree": params_data.get("calibration_requested_degree"),
         "ref_mz_min": params_data.get("calibration_ref_mz_min"),
         "ref_mz_max": params_data.get("calibration_ref_mz_max"),
+        # ★ ver58.0 (A-10): run_analysis が params["calibration_by_sample"] へ載せる。
+        "by_sample": cal_by_sample,
     }
 
     # 表示用テキスト
@@ -2735,6 +2824,21 @@ def load_calibration_from_first_analysis(rds_folder):
         html.Div(model_text),
         html.Div(f"R²: {r2_text}  |  マッチピーク数: {n_pts}"),
     ]
+    # ★ ver58.0 (デバッグ総点検 A-10): サンプル別の回帰式がある場合、
+    #   全体共通の係数は「補正量ゼロ」を意味する [0.0] に潰されていることがある。
+    #   それを伏せたまま「回帰式を検出」とだけ出すと、個別設定の無いサンプルが
+    #   無補正であることが画面から分からない。実態を書く。
+    if cal_by_sample:
+        _global_is_noop = (isinstance(cal_coefficients, list)
+                           and all(float(c) == 0.0 for c in cal_coefficients))
+        detail_children.append(html.Div(
+            f"サンプル別の回帰式 {len(cal_by_sample)} 件も引き継ぎます"
+            f"（{', '.join(sorted(cal_by_sample))}）。"))
+        if _global_is_noop:
+            detail_children.append(html.Div(
+                "全体共通の回帰式は設定されていないため、"
+                "個別設定の無いサンプルは補正しません。",
+                style={"fontSize": "0.85em", "color": "#856404"}))
     _lo, _hi = cal_data.get("ref_mz_min"), cal_data.get("ref_mz_max")
     if _lo is not None and _hi is not None:
         detail_children.append(html.Div(

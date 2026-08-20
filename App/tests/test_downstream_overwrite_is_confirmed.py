@@ -180,7 +180,9 @@ _RUN_ARGS = {
     "annotation_filter_data": None, "annotation_filter_reanalysis_data": None,
     "extra_data_folders": [], "mz_align_ppm": 0, "selected_samples": [],
     "cal_per_sample_store": {}, "cal_sample_selector_prev": "__all__",
-    "desi_use_roi_as_sample": False, "desi_roi_filter_list": None,
+    "desi_use_roi_as_sample": False,
+    # ver58.0 (A-1): DESI のバッチ補正の有無
+    "desi_scenario": "correct", "desi_roi_filter_list": None,
     "normalize_input": "OFF", "norm_mode": "log1p",
     "normalize_input_reanalysis": "OFF", "norm_mode_reanalysis": "log1p",
     "umap_n_neighbors_input": 15, "umap_min_dist_input": 0.3,

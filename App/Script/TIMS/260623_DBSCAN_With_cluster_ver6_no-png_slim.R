@@ -241,6 +241,21 @@ ANNOTATION_ROLE <- "biological"
 # ALLOW_CONDITION_CORRECTION: TRUE で condition/slice_id による補正を明示的に許可（非推奨）。
 ALLOW_CONDITION_CORRECTION <- FALSE
 
+# BATCH_CORRECTION_ENABLE: そもそもバッチ補正を行うか。
+#   ★ ver58.0 (デバッグ総点検 A-1): 従来は「補正するかどうか」を **列名から推測** していた。
+#     画面で「同一切片のクラスタ／群比較：補正なし＝無補正PCA」を選んでも、
+#     渡されるのは BATCH_VAR="sample" であり、下の .bv_is_bio は偽になるため、
+#     **ファイルが 2 つ以上あれば必ず Harmony が走っていた**。
+#     補正を回避できるのは実質「ファイルが 1 つだけ」のときだけで、
+#     それでいて Methods 文にはシナリオ文言の「バッチ補正は行わなかった」が載っていた。
+#
+#     MSI では 1 ファイル＝1 切片＝多くの場合 1 個体・1 条件なので、
+#     sample 単位の補正は **除きたい機械差ではなく比較したい生物差** を削ることに直結する
+#     (Nygaard et al. 2016, doi:10.1093/biostatistics/kxv027)。
+#
+#     そこで要否を明示の旗にした。既定 TRUE ＝従来挙動（後方互換）。
+BATCH_CORRECTION_ENABLE <- TRUE
+
 # --- 入力正規化ポリシー ---
 # INPUT_NORMALIZED: 入力が既に SCiLS の RMS 等で正規化済みなら TRUE。
 #   TRUE のとき LogNormalize(=NormalizeData) を行わず、二重正規化を回避する。
@@ -460,10 +475,20 @@ PCA_RETRY_GRID <- list(
 
 RPCA_NFEATURES_TRY <- c(500, 300, 200)
 
-# PreFlight: UI から dims が指定された場合のみ TIMS の UMAP 次元をその値に合わせる。
-# 既定(30)は override せず従来のグリッド(30→20→15)のまま＝挙動不変（後方互換）。
-# アプリは umap_dims_n→UMAP_DIMS_N を常に注入する設計のため、!=30 のときだけ反映する。
-if (is.numeric(UMAP_DIMS_N) && UMAP_DIMS_N > 0L && UMAP_DIMS_N != 30L) {
+# PreFlight: UI から指定された dims を TIMS の UMAP 次元に反映する。
+#
+# ★ ver58.0 (デバッグ総点検 A-8): 以前はここに `UMAP_DIMS_N != 30L` という
+#   後方互換のガードがあり、**既定値 30 のときだけ画面の指定を無視**していた。
+#   ところが単一サンプルの解析は補正を行わない経路に入り、その条件表
+#   (PCA_RETRY_GRID) の先頭は 1000 特徴量 / 20 主成分 / 20 次元である。
+#   つまり「画面に 30 と表示されているのに 20 次元で計算される」状態で、
+#   29 や 31 に変えたときだけ反映されるという分かりにくい挙動だった。
+#   （記録側は ver56.5 の実効値記録で既に実際の 20 を出していた＝挙動だけが残っていた）
+#
+#   下の .apply_ud が先頭エントリの主成分数を dims 以上へ引き上げるので、
+#   「次元数 > 主成分数」で RunUMAP が落ちることはない。
+#   特徴量数 (1000 対 3000) は画面に対応する設定が無いので変えない。
+if (is.numeric(UMAP_DIMS_N) && UMAP_DIMS_N > 0L) {
   .ud <- as.integer(UMAP_DIMS_N)
   UMAP_DIMS_MAX <- .ud                         # RPCA(Step3)・run_downstream_analysis が参照
   MAX_PCS       <- max(MAX_PCS, .ud)           # PCA が .ud 次元を確保できるように
@@ -1735,7 +1760,8 @@ assign_xy_grid <- function(seu, nx=NULL, ny=NULL){
   invisible(TRUE)
 }
 
-run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_only = TRUE) {
+run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_only = TRUE,
+                                    force_recluster = FALSE) {
   # PIPELINE_STAGE: "reduction_only" の場合は UMAP/クラスタリング/DEG/作図など
   # 下流処理を一切行わずに即終了する（PreFlight 診断用に reduction RDS だけ確定させる）。
   # reduction（Step2 Harmony/PCA・Step3 RPCA）は本関数の呼び出し前に既に保存済み。
@@ -1785,17 +1811,41 @@ run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_onl
   # ④/フル: クラスタが無ければ後付け。reduction-only RDS には seurat_clusters 列が
   #   無いので検出して FindNeighbors+FindClusters を実行（full/classic-resume では
   #   既に列があるため no-op）。④では完成(umap+cluster付き)RDSを新フォルダに再保存。
-  if (!("seurat_clusters" %in% colnames(obj@meta.data))) {
+  # ★ ver58.0 (デバッグ総点検 A-2): force_recluster=TRUE なら、クラスタ列があっても
+  #   取り直す。無補正 PCA のコンパニオンは補正済みオブジェクトの複製から作るため
+  #   seurat_clusters 列を持っており、従来はこの分岐に入らず
+  #   **「無補正の座標 ＋ 補正後のクラスタ」という混成**になっていた。
+  #   クラスタ番号・マーカー一覧・空間マップ・GPT 解釈まで補正後の定義で作られ、
+  #   「補正の有無でクラスタがどう変わるか」を見る目的には使えなかった。
+  if (isTRUE(force_recluster) || !("seurat_clusters" %in% colnames(obj@meta.data))) {
+    if (isTRUE(force_recluster)) {
+      # 取り直す前に、補正側から引き継いだクラスタを必ず捨てる
+      obj@meta.data$seurat_clusters <- NULL
+      for (.c in grep("_snn_res", colnames(obj@meta.data), value = TRUE))
+        obj@meta.data[[.c]] <- NULL
+    }
     .red_for_clust <- if (prefix %in% names(obj@reductions)) prefix
+                      else if (isTRUE(force_recluster) && "pca" %in% names(obj@reductions)) "pca"
                       else if ("harmony" %in% names(obj@reductions)) "harmony"
                       else if ("rpca" %in% names(obj@reductions)) "rpca"
                       else "pca"
     .dims_clust <- 1:min(UMAP_DIMS_MAX, MAX_PCS, ncol(Embeddings(obj, .red_for_clust)))
+    cat(sprintf(">> クラスタリング (%s): reduction=%s / dims=%d / k=%d / resolution=%s\n",
+                prefix, .red_for_clust, length(.dims_clust), CLUSTER_K_PARAM,
+                as.character(CLUSTER_RESOLUTION)))
     obj <- FindNeighbors(obj, reduction = .red_for_clust, dims = .dims_clust,
                          k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
     obj <- FindClusters(obj, resolution = CLUSTER_RESOLUTION, algorithm = CLUSTER_ALGORITHM)
     Idents(obj) <- obj$seurat_clusters
-    if (identical(PIPELINE_STAGE, "downstream_from_reduction")) {
+    # ★ ver58.0 (A-2): 取り直したクラスタを RDS へ書き戻す。
+    #   従来この分岐は "downstream_from_reduction" のときだけ、しかも
+    #   harmony/pca/rpca しか対象にしていなかった。無補正コンパニオンを
+    #   取り直しても保存されないため、**画面 (RDS の Idents) は旧クラスタ、
+    #   マーカー表 (CSV) は新クラスタ**という食い違いが起きる。
+    if (identical(prefix, "pca_uncorrected")) {
+      save_rds_compact(list(obj = obj, reduction = "pca"),
+                       file.path(RDS_SAVE_DIR, "Step2_PCA_uncorrected.rds"), keep_counts = FALSE)
+    } else if (identical(PIPELINE_STAGE, "downstream_from_reduction")) {
       if (identical(prefix, "rpca")) {
         save_rds_compact(list(obj = obj), file.path(RDS_SAVE_DIR, "Step3_RPCA_Result.rds"), keep_counts = FALSE)
       } else if (prefix %in% c("harmony", "pca")) {
@@ -1881,11 +1931,36 @@ run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_onl
   
 cat("  Finding Markers...\n")
 
+# 書き出し用の絞り込み (ver58.0 / A-3)。
+#   検定と補正は全特徴量に対して行い、CSV に出すのは画面の閾値を通った行だけにする。
+#   絞った結果が空になる場合は、何も出さないより分かるので全行を返して理由を出す。
+.deg_for_export <- function(df) {
+  if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) return(df)
+  keep <- rep(TRUE, nrow(df))
+  if ("p_val_adj" %in% colnames(df))
+    keep <- keep & !is.na(df$p_val_adj) & df$p_val_adj < DEG_P_THRESH_VAL
+  if ("avg_log2FC" %in% colnames(df))
+    keep <- keep & !is.na(df$avg_log2FC) & abs(df$avg_log2FC) >= DEG_LOGFC_TH_VAL
+  out <- df[keep, , drop = FALSE]
+  cat(sprintf(">> DEG 書き出し: %d / %d 行 (p_val_adj < %s かつ |log2FC| >= %s)\n",
+              nrow(out), nrow(df), as.character(DEG_P_THRESH_VAL),
+              as.character(DEG_LOGFC_TH_VAL)))
+  if (nrow(out) == 0) {
+    message("!! 閾値を通る特徴量がありません。絞り込み前の全行を書き出します（判断材料を残すため）。")
+    return(df)
+  }
+  out
+}
+
 # (Add) Volcano/DEG resume: try reading saved DEG RDS first (requirement ②).
 # If available and readable, we reuse it to regenerate volcano plots without re-running FindAllMarkers.
 deg <- NULL
 if (exists("RESUME_FROM_RDS", envir = .GlobalEnv) && isTRUE(get("RESUME_FROM_RDS", envir = .GlobalEnv))) {
-  deg_rds_name <- paste0("deg_FindAllMarkers_raw_", prefix, ".rds")
+  # ★ ver58.0 (A-3): 取り置きの名前に検定条件を含める。
+  #   条件を変えても古いテーブルがそのまま再利用されると、
+  #   「直したのに結果が変わらない」になる。
+  .deg_cache_key <- paste0("mp", DEG_MIN_PCT_VAL, "_fc", DEG_LOGFC_TH_VAL, "_all")
+  deg_rds_name <- paste0("deg_FindAllMarkers_raw_", prefix, "_", .deg_cache_key, ".rds")
   cand <- c()
   if (exists("RESUME_DIR_PATH", envir = .GlobalEnv) && nzchar(get("RESUME_DIR_PATH", envir = .GlobalEnv))) {
     cand <- c(cand, file.path(get("RESUME_DIR_PATH", envir = .GlobalEnv), deg_rds_name))
@@ -1918,7 +1993,14 @@ if (is.null(deg)) {
     plan(multisession, workers = .deg_workers)
   }
   .mem_note_base("FindAllMarkers 前")
-  deg <- FindAllMarkers(obj, only.pos=FALSE, min.pct=DEG_MIN_PCT_VAL, logfc.threshold=DEG_LOGFC_TH_VAL, test.use="wilcox")
+  # ★ ver58.0 (デバッグ総点検 A-3): 検定前のふるいを外し、**全特徴量を検定**する。
+  #   従来は min.pct / logfc.threshold で足切りした通過分だけに p.adjust(BH) を
+  #   当てていたため、補正の分母が小さく、補正後の値が本来より甘く出ていた。
+  #   さらに Seurat の `return.thresh`（既定 0.01）という見えない足切りがあり、
+  #   ふるいを 0 にするだけでは弱い結果が返らず分母が変わらないので、
+  #   return.thresh=1 も明示する。
+  #   書き出しは従来どおり閾値で絞る（.deg_for_export）。
+  deg <- FindAllMarkers(obj, only.pos=FALSE, min.pct=0, logfc.threshold=0, return.thresh=1, test.use="wilcox")
   # ---- 並列化終了: メモリ解放 ----
   plan(sequential)
   invisible(gc(verbose = FALSE))
@@ -1938,7 +2020,9 @@ if (is.null(deg)) {
 if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
   tryCatch({
     saveRDS(deg, file.path(get("RDS_SAVE_DIR", envir = .GlobalEnv),
-                           paste0("deg_FindAllMarkers_raw_", prefix, ".rds")))
+                           paste0("deg_FindAllMarkers_raw_", prefix, "_",
+                                  paste0("mp", DEG_MIN_PCT_VAL, "_fc", DEG_LOGFC_TH_VAL, "_all"),
+                                  ".rds")))
   }, error = function(e) {
     message("!! saveRDS failed for deg: ", e$message)
   })
@@ -1952,7 +2036,8 @@ if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
     deg$annotation <- deg$gene
   }
   # ver4: マーカー表はピクセル単位の探索的ランキング（空間自己相関未補正・群間検定ではない）である旨を明記
-  deg_csv <- deg
+  # ★ ver58.0 (A-3): 検定・補正は全体、書き出しは従来どおり閾値で絞る
+  deg_csv <- .deg_for_export(deg)
   deg_csv$ranking_type   <- "exploratory_pixel_level"
   deg_csv$inference_note <- "Exploratory pixel-level ranking; spatial autocorrelation not modeled; NOT sample-level statistical inference"
   write.csv(deg_csv, file.path(sub_od, "markers_annotated.csv"), row.names=FALSE)
@@ -2564,8 +2649,12 @@ if (!step2_done && !.stage_downstream) {
   .bv        <- if (BATCH_VAR %in% colnames(seu_merged@meta.data)) BATCH_VAR else "sample"
   .bv_levels <- length(unique(na.omit(seu_merged@meta.data[[.bv]])))
   .bv_is_bio <- (.bv %in% c("condition", "slice_id")) && !isTRUE(ALLOW_CONDITION_CORRECTION)
-  group_var  <- if (.bv_levels > 1 && !.bv_is_bio) .bv else NA_character_
+  # ★ ver58.0 (A-1): 明示の旗を最優先で見る。旗が偽なら列も件数も見ずに補正しない。
+  group_var  <- if (isTRUE(BATCH_CORRECTION_ENABLE) && .bv_levels > 1 && !.bv_is_bio) .bv else NA_character_
   if (is.na(group_var)) {
+    if (!isTRUE(BATCH_CORRECTION_ENABLE)) {
+      cat("[ver4] シナリオの指定によりバッチ補正を行いません -> 無補正PCAを使用\n")
+    } else
     cat(sprintf("[ver4] 技術的バッチが無いため補正をスキップ (BATCH_VAR='%s', levels=%d) -> 無補正PCAを使用\n", .bv, .bv_levels))
   } else {
     cat(sprintf("[ver4] バッチ補正変数: '%s' (levels=%d)\n", group_var, .bv_levels))
@@ -2679,6 +2768,12 @@ if (!step2_done && !.stage_downstream) {
       seu_unc <- seu_harmony                                   # copy-on-write（即時複製しない）
       for (.rn in setdiff(names(seu_unc@reductions), "pca"))   # 補正系 reduction を除去し pca のみ残す
         seu_unc[[.rn]] <- NULL                                 # 既存 RPCA 部と同じ除去イディオム
+      # ★ ver58.0 (A-2): 補正側のクラスタを引き継がない。
+      #   引き継ぐと「無補正の座標＋補正後のクラスタ」という混成になる。
+      #   下流 (run_downstream_analysis) が force_recluster=TRUE で取り直す。
+      seu_unc@meta.data$seurat_clusters <- NULL
+      for (.c in grep("_snn_res", colnames(seu_unc@meta.data), value = TRUE))
+        seu_unc@meta.data[[.c]] <- NULL
       save_rds_compact(list(obj=seu_unc, reduction="pca"),
                        file.path(RDS_SAVE_DIR, "Step2_PCA_uncorrected.rds"), keep_counts=FALSE)
       rm(seu_unc); gc()
@@ -2700,7 +2795,8 @@ if (!is.null(seu_harmony)) {
 if (isTRUE(ALWAYS_OUTPUT_UNCORRECTED_PCA) && file.exists(.unc_rds_path)) {
   .unc_obj <- tryCatch(load_rds_compact(.unc_rds_path)$obj, error=function(e) NULL)
   if (!is.null(.unc_obj)) {
-    run_downstream_analysis(.unc_obj, "pca_uncorrected", od, ann_db, generate_mz_only = FALSE)
+    run_downstream_analysis(.unc_obj, "pca_uncorrected", od, ann_db, generate_mz_only = FALSE,
+                            force_recluster = TRUE)
     rm(.unc_obj); gc()
   }
 }

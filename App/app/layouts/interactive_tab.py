@@ -1773,6 +1773,24 @@ def create_interactive_tab():
                                                     dcc.Dropdown(id="onthefly_de_target", multi=True,
                                                                  placeholder="ident.2 のクラスタ"),
                                                 ]),
+                                                # ★ ver58.0 (デバッグ総点検 A-9):
+                                                #   選択範囲 (A) と比較対象 (B) が重なったときの扱い。
+                                                #   従来は連結して R へ渡していたため、重なった画素は
+                                                #   **無言で B 側として検定**されていた（R が後勝ちで
+                                                #   上書きするため）。どちらに入れるかは科学的な判断
+                                                #   なので、実行前に選ばせる。
+                                                dbc.Col(width=3, children=[
+                                                    dbc.Label("重なりの扱い (Locally)", className="small mb-0"),
+                                                    dbc.RadioItems(
+                                                        id="onthefly_de_overlap",
+                                                        options=[
+                                                            {"label": "重なりを除く", "value": "exclude"},
+                                                            {"label": "選択 (A) を優先", "value": "a"},
+                                                            {"label": "比較対象 (B) を優先", "value": "b"},
+                                                        ],
+                                                        value="exclude",
+                                                    ),
+                                                ]),
                                                 dbc.Col(width="auto", className="d-flex align-items-end", children=[
                                                     dbc.Button("DE 実行", id="btn_run_onthefly_de",
                                                                size="sm", color="primary", className="mb-1"),

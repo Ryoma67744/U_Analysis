@@ -43,6 +43,11 @@ RUNTIME_VAR_MAP: list[tuple[str, str]] = [
     ("CLUSTER_METRIC", "analysis.clustering.neighbor_metric"),
     # バッチ DEG の検定前フィルタ（GUI に出ていない）
     ("DEG_MIN_PCT_VAL", "analysis.de.min_pct"),
+    # ★ ver58.0 (A-4): 空間平滑化の有無。従来はどこにも記録されておらず、
+    #   中間ファイル名が *_smoothed.rds なので「平滑化した」と読めてしまった。
+    #   DESI は SPATIAL_SMOOTH、TIMS は SPATIAL_SMOOTH_ENABLE と名前が違う。
+    ("SPATIAL_SMOOTH", "analysis.preprocessing.spatial_smoothing"),
+    ("SPATIAL_SMOOTH_ENABLE", "analysis.preprocessing.spatial_smoothing"),
     ("NORM_MODE", "analysis.preprocessing.norm_mode"),
     ("INPUT_NORMALIZED", "analysis.preprocessing.input_normalized"),
     ("BATCH_VAR", "analysis.preprocessing.batch_correction"),

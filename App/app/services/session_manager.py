@@ -42,6 +42,8 @@ _AUTO_SAVE_KEYS = [
     "mz_align_ppm", "use_annotation_check",
     "resume_reanalysis", "resume_reanalysis_dir",
     # 正規化設定は run_analysis が渡していたのに、ここに無いので毎回既定へ戻っていた
+    # ★ ver58.0 (A-1): DESI のバッチ補正の有無
+    "desi_scenario",
     "normalize_input", "norm_mode",
     "normalize_input_reanalysis", "norm_mode_reanalysis",
     # 解析シナリオ（切片アノテーションの意味 → 補正ポリシー）

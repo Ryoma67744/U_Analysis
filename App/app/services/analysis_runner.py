@@ -613,6 +613,14 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
             lines, "ALLOW_CONDITION_CORRECTION",
             "TRUE" if params["allow_condition_correction"] else "FALSE",
         )
+    # ★ ver58.0 (A-1): 「補正なし」シナリオを実処理へ届ける。
+    #   従来は補正の要否を R 側が列名から推測しており、「補正なし」を選んでも
+    #   batch_var="sample" が渡るためファイルが 2 つ以上あれば必ず補正が走っていた。
+    if "batch_correction_enable" in params:
+        lines = _replace_assign(
+            lines, "BATCH_CORRECTION_ENABLE",
+            "TRUE" if params["batch_correction_enable"] else "FALSE",
+        )
 
     # --- Annotation Filter ---
     if params.get("annotation_filter"):
@@ -794,12 +802,29 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
     # --- DESI ROI 設定の注入 (USE_ROI_AS_SAMPLE / ROI_FILTER) ---
     # ROI 列があれば各 ROI を別サンプルとして Multi-sample mode (Harmony/RPCA) で
     # 統合解析する設定。analysis_callbacks.py で DESI 通常解析時のみセットされる。
-    if "use_roi_as_sample" in params:
-        flag = "TRUE" if params["use_roi_as_sample"] else "FALSE"
-        lines = _replace_assign(lines, "USE_ROI_AS_SAMPLE", flag)
-    if params.get("roi_filter"):
-        roi_r = "c(" + ", ".join(_r_str(x) for x in params["roi_filter"]) + ")"
-        lines = _replace_assign(lines, "ROI_FILTER", roi_r)
+    # 再解析テンプレは TIMS / DESI で接頭辞が違う（V13_ / V8_）。
+    #   ★ ver58.0 (A-6): 判定をここへ繰り上げた。従来は DEG 閾値の直前で作って
+    #     いたため、それより上にある正規化の注入が **V13_ 決め打ち**になっており、
+    #     DESI 再解析では書き換え先が存在せず無言で捨てられていた。
+    _is_tims_cf = ("DBSCAN" in Path(template_path).stem
+                   or "tims" in Path(template_path).stem.lower())
+
+    # --- ROI をサンプルとして扱うか（DESI のみ。TIMS に ROI の概念は無い） ---
+    #   ★ ver58.0 (デバッグ総点検 A-5): 従来は接頭辞なしの USE_ROI_AS_SAMPLE /
+    #     ROI_FILTER へ書こうとしていたが、再解析テンプレに受け手が無く、
+    #     `_replace_assign` は 0 件一致でも成功扱いで返るため**完全な空振り**
+    #     だった（test_r_injection_completeness の KNOWN_DEAD に記録されていた）。
+    if not _is_tims_cf:
+        if "use_roi_as_sample" in params:
+            lines = _replace_assign(
+                lines, "V8_USE_ROI_AS_SAMPLE",
+                "TRUE" if params["use_roi_as_sample"] else "FALSE",
+            )
+        if params.get("roi_filter"):
+            lines = _replace_assign(
+                lines, "V8_ROI_FILTER",
+                "c(" + ", ".join(_r_str(x) for x in params["roi_filter"]) + ")",
+            )
 
     # --- m/z キャリブレーション（再解析） ---
     if params.get("calibration_enable"):
@@ -809,20 +834,73 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
             lines, "V13_CALIBRATION_COEFFICIENTS",
             "c(" + ", ".join(str(c) for c in coefs) + ")",
         )
+        # ★ ver58.0 (デバッグ総点検 A-10): サンプル別の回帰式。
+        #   全体共通が未設定のとき run_analysis は共通係数を [0.0]（＝どの m/z でも
+        #   補正量 0）に潰す。従来はサンプル別の係数を再解析へ渡す経路が無かったため、
+        #   画面に「✅ 前回の解析から回帰式を検出」と出ていても **実際には一切
+        #   補正されない**状態で走っていた。
+        if _is_tims_cf and params.get("calibration_by_sample"):
+            _entries = [
+                f'  "{sname}" = c(' + ", ".join(str(c) for c in scoefs) + ")"
+                for sname, scoefs in params["calibration_by_sample"].items()
+            ]
+            lines = _replace_assign(
+                lines, "V13_CALIBRATION_BY_SAMPLE",
+                "list(\n" + ",\n".join(_entries) + "\n)",
+            )
 
-    # --- 入力正規化ポリシー（TIMS再解析: 二重正規化の回避。V13_* を ReUMAP.R が参照） ---
+    # --- 入力正規化ポリシー（二重正規化の回避。V13_/V8_ をそれぞれの再解析が参照） ---
     if "input_normalized" in params:
         lines = _replace_assign(
-            lines, "V13_INPUT_NORMALIZED",
+            lines,
+            "V13_INPUT_NORMALIZED" if _is_tims_cf else "V8_INPUT_NORMALIZED",
             "TRUE" if params["input_normalized"] else "FALSE",
         )
     if params.get("norm_mode"):
-        lines = _replace_assign(lines, "V13_NORM_MODE", _r_str(params["norm_mode"]))
+        lines = _replace_assign(
+            lines, "V13_NORM_MODE" if _is_tims_cf else "V8_NORM_MODE",
+            _r_str(params["norm_mode"]),
+        )
+
+    # --- UMAP 条件（★ ver58.0 / A-7） ---
+    #   PreFlight パネルは再解析中も画面に出ているのに、再解析には受け手も注入も
+    #   無く、推奨値を入れても常にテンプレ既定で計算されていた。
+    #   **未指定なら注入しない**＝従来どおりテンプレ既定で走る。
+    _pre = "V13_" if _is_tims_cf else "V8_"
+    if params.get("umap_n_neighbors") is not None:
+        lines = _replace_assign(lines, f"{_pre}UMAP_N_NEIGHBORS",
+                                f"{int(params['umap_n_neighbors'])}L")
+    if params.get("umap_min_dist") is not None:
+        lines = _replace_assign(lines, f"{_pre}UMAP_MIN_DIST",
+                                repr(float(params["umap_min_dist"])))
+    if params.get("umap_metric"):
+        lines = _replace_assign(lines, f"{_pre}UMAP_METRIC",
+                                _r_str(str(params["umap_metric"])))
+    if params.get("umap_dims_n") is not None:
+        lines = _replace_assign(lines, f"{_pre}UMAP_DIMS_N",
+                                f"{int(params['umap_dims_n'])}L")
+
+    # --- m/z アライメント / 化合物名の由来（★ ver58.0 / A-10。TIMS のみ） ---
+    #   DESI v16 には受け手が無いので TIMS 限定（V13_ANNOTATION_FILTER と同じ扱い）。
+    if _is_tims_cf and params.get("mz_align_ppm") is not None:
+        lines = _replace_assign(lines, "V13_MZ_ALIGN_PPM",
+                                str(float(params["mz_align_ppm"])))
+    if _is_tims_cf and "use_embedded_annotation" in params:
+        lines = _replace_assign(
+            lines, "V13_USE_EMBEDDED_COMPOUND_NAMES",
+            "TRUE" if params["use_embedded_annotation"] else "FALSE",
+        )
     # --- 解析シナリオ → V13_ 経由で ver6 コピーへ伝播（make_v13_copy_with_settings） ---
     if params.get("v13_annotation_role"):
         lines = _replace_assign(lines, "V13_ANNOTATION_ROLE", _r_str(params["v13_annotation_role"]))
     if params.get("v13_batch_var"):
         lines = _replace_assign(lines, "V13_BATCH_VAR", _r_str(params["v13_batch_var"]))
+    # ★ ver58.0 (A-1): 再解析にも「補正なし」を届ける
+    if "v13_batch_correction_enable" in params:
+        lines = _replace_assign(
+            lines, "V13_BATCH_CORRECTION_ENABLE",
+            "TRUE" if params["v13_batch_correction_enable"] else "FALSE",
+        )
     if "v13_allow_condition_correction" in params:
         lines = _replace_assign(
             lines, "V13_ALLOW_CONDITION_CORRECTION",
@@ -832,8 +910,6 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
     # --- 再解析の DEG 閾値 / m/z アノテーション（フル解析と同じ値を再解析にも反映） ---
     #   DEG は両モード（TIMS=V13_DEG_*, DESI=V8_DEG_* 経由でメインテンプレ copy に伝播）。
     #   ion/tolerance は TIMS のみ（V13_ は既に伝播実装あり）。adduct は env 経路（ANNOT_ADDUCTS）。
-    _is_tims_cf = ("DBSCAN" in Path(template_path).stem
-                   or "tims" in Path(template_path).stem.lower())
     if params.get("p_thresh") is not None:
         lines = _replace_assign(
             lines,

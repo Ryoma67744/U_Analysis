@@ -31,8 +31,13 @@ get_opt <- function(flag, default = NULL) {
   default
 }
 assay_arg <- get_opt("--assay", NULL)
-min_pct   <- as.numeric(get_opt("--min-pct", "0.05"))
-logfc_th  <- as.numeric(get_opt("--logfc", "0.25"))
+# ★ ver58.0 (デバッグ総点検 A-3): 既定の足切りを 0 にした。
+#   従来は 0.05 / 0.25 で足切りした通過分だけに BH 補正を当てていたため、
+#   補正の分母が小さく、補正後の値が本来より甘く出ていた。
+#   バッチ解析側 (DESI/TIMS 本解析) と揃えないと、**同じ画面に 2 つの
+#   補正母集団が混在**する。呼び出し側が明示すればその値が使われる。
+min_pct   <- as.numeric(get_opt("--min-pct", "0"))
+logfc_th  <- as.numeric(get_opt("--logfc", "0"))
 test_use  <- get_opt("--test", "wilcox")
 
 if (!file.exists(rds_path))   stop("RDS file not found: ", rds_path)
@@ -82,6 +87,18 @@ if (!all(c("CellID", "Group") %in% colnames(groups))) {
   stop("groups_csv must have columns: CellID, Group")
 }
 
+# ★ ver58.0 (デバッグ総点検 A-9): 同じ CellID が 2 行あると、下の
+#   `ident_vec[idx[keep]] <- groups$Group[keep]` は**後に書いた方が勝つ**。
+#   A と B が重なっていると、重なった画素が無言で B 側として検定されていた。
+#   重なりの解決は呼び出し側 (seurat_bridge.resolve_group_overlap) の責任に
+#   したので、ここへ重複が来ること自体が不具合。上書き順に結果を委ねない。
+if (any(duplicated(groups$CellID))) {
+  .dup <- unique(groups$CellID[duplicated(groups$CellID)])
+  stop(sprintf(
+    "groups_csv に重複した CellID が %d 件あります (例: %s)。\n  グループの重なりは呼び出し側で解決してください。",
+    length(.dup), paste(utils::head(.dup, 5), collapse = ", ")))
+}
+
 # --- CellID → cell 列に対応付けて Idents を設定（非対象は "__bg__"） ---
 all_cells <- colnames(obj)
 ident_vec <- rep("__bg__", length(all_cells))
@@ -101,13 +118,15 @@ if (mode == "local") {
   if (n_b < 3) stop("ident.2 (B) has too few cells: ", n_b)
   markers <- FindMarkers(obj, ident.1 = "A", ident.2 = "B",
                          test.use = test_use, min.pct = min_pct,
-                         logfc.threshold = logfc_th, only.pos = FALSE)
+                         logfc.threshold = logfc_th, only.pos = FALSE,
+                         return.thresh = 1)
   cl_label <- "A_vs_B"
 } else {
   # global: A vs それ以外すべて（ident.2 = NULL）
   markers <- FindMarkers(obj, ident.1 = "A", ident.2 = NULL,
                          test.use = test_use, min.pct = min_pct,
-                         logfc.threshold = logfc_th, only.pos = FALSE)
+                         logfc.threshold = logfc_th, only.pos = FALSE,
+                         return.thresh = 1)
   cl_label <- "A_vs_rest"
 }
 

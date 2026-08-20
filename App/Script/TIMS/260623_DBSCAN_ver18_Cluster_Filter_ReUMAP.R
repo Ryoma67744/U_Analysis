@@ -184,6 +184,27 @@ V13_ANNOTATION_ENABLE <- FALSE  # NA にすると上書きしない
 # Python が analysis_params.json から復元した回帰係数を注入する
 V13_CALIBRATION_ENABLE <- FALSE
 V13_CALIBRATION_COEFFICIENTS <- c(0)
+# ★ ver58.0 (デバッグ総点検 A-10): サンプル別の回帰式。
+#   従来は全体共通の係数 1 本しか渡せなかった。全体共通が未設定のとき
+#   アプリ側は共通係数を c(0)（＝どの m/z でも補正量 0 = 無補正）に潰すため、
+#   画面が「✅ 前回の解析から回帰式を検出」と出していても、再解析では
+#   **一切補正されない**まま走っていた。list() のままなら ver6 既定。
+V13_CALIBRATION_BY_SAMPLE <- list()
+
+# (M2b) m/z アライメント / 化合物名の由来（★ ver58.0 / A-10）
+#   受け手が無かったため、画面で ppm を指定しても再解析だけ ver6 既定 (0=無効) で
+#   走り、化合物名の由来も同様に既定のままだった。NA なら ver6 既定を使う。
+V13_MZ_ALIGN_PPM <- NA
+V13_USE_EMBEDDED_COMPOUND_NAMES <- NA
+
+# (M2c) UMAP 条件（★ ver58.0 / A-7）
+#   PreFlight パネルは再解析中も画面に出ているのに受け手が無く、推奨値を入れても
+#   常に ver6 既定で計算されていた（画面の指定が無言で捨てられていた）。
+#   NA / "" なら ver6 既定＝従来挙動。
+V13_UMAP_N_NEIGHBORS <- NA
+V13_UMAP_MIN_DIST <- NA
+V13_UMAP_METRIC <- ""
+V13_UMAP_DIMS_N <- NA
 
 # (M3) 入力正規化ポリシー（二重正規化の回避・アプリのトグルから注入）
 #   V13_INPUT_NORMALIZED=TRUE で LogNormalize を行わず NORM_MODE のみ適用。
@@ -197,6 +218,9 @@ V13_NORM_MODE <- "log1p"
 V13_ANNOTATION_ROLE <- "biological"
 V13_BATCH_VAR <- "sample"
 V13_ALLOW_CONDITION_CORRECTION <- FALSE
+# ★ ver58.0 (デバッグ総点検 A-1): そもそも補正するか。NA で ver6 既定(TRUE)を使う。
+#   「補正なし」シナリオで再解析したのに補正が走る、という食い違いを防ぐ。
+V13_BATCH_CORRECTION_ENABLE <- NA
 
 # DEG 閾値（アプリの再解析設定から V13_ 経由で注入。未注入なら ver6 既定）。
 V13_DEG_P_THRESH_VAL <- 0.05
@@ -854,6 +878,41 @@ make_v13_copy_with_settings <- function(v13_path, out_path,
     code <- replace_assign_line(code, "CALIBRATION_ENABLE", "TRUE", multiple = TRUE)
     coef_str <- paste0("c(", paste(V13_CALIBRATION_COEFFICIENTS, collapse = ", "), ")")
     code <- replace_assign_line(code, "CALIBRATION_COEFFICIENTS", coef_str, multiple = TRUE)
+    # ★ ver58.0 (A-10): サンプル別の回帰式も ver6 copy へ伝播する。
+    #   共通係数だけを渡していた従来は、共通が未設定＝c(0) のとき無補正になっていた。
+    if (exists("V13_CALIBRATION_BY_SAMPLE") && length(V13_CALIBRATION_BY_SAMPLE) > 0) {
+      .by_s <- paste0("  \"", names(V13_CALIBRATION_BY_SAMPLE), "\" = c(",
+                      vapply(V13_CALIBRATION_BY_SAMPLE,
+                             function(v) paste(v, collapse = ", "), character(1)),
+                      ")", collapse = ",\n")
+      code <- replace_assign_line(code, "CALIBRATION_BY_SAMPLE",
+                                  paste0("list(\n", .by_s, "\n)"), multiple = TRUE)
+    }
+  }
+
+  # ★ ver58.0 (A-10): m/z アライメント / 化合物名の由来を ver6 copy へ伝播
+  if (exists("V13_MZ_ALIGN_PPM") && !is.na(V13_MZ_ALIGN_PPM)) {
+    code <- replace_assign_line(code, "MZ_ALIGN_PPM", as.character(V13_MZ_ALIGN_PPM), multiple = TRUE)
+  }
+  if (exists("V13_USE_EMBEDDED_COMPOUND_NAMES") && !is.na(V13_USE_EMBEDDED_COMPOUND_NAMES)) {
+    code <- replace_assign_line(code, "USE_EMBEDDED_COMPOUND_NAMES",
+      if (isTRUE(V13_USE_EMBEDDED_COMPOUND_NAMES)) "TRUE" else "FALSE", multiple = TRUE)
+  }
+
+  # ★ ver58.0 (A-7): UMAP 条件を ver6 copy へ伝播（未指定なら触らない＝ver6 既定）
+  if (exists("V13_UMAP_N_NEIGHBORS") && !is.na(V13_UMAP_N_NEIGHBORS)) {
+    code <- replace_assign_line(code, "UMAP_N_NEIGHBORS",
+      paste0(as.integer(V13_UMAP_N_NEIGHBORS), "L"), multiple = TRUE)
+  }
+  if (exists("V13_UMAP_MIN_DIST") && !is.na(V13_UMAP_MIN_DIST)) {
+    code <- replace_assign_line(code, "UMAP_MIN_DIST", as.character(V13_UMAP_MIN_DIST), multiple = TRUE)
+  }
+  if (exists("V13_UMAP_METRIC") && nzchar(V13_UMAP_METRIC)) {
+    code <- replace_assign_line(code, "UMAP_METRIC", r_str(V13_UMAP_METRIC), multiple = TRUE)
+  }
+  if (exists("V13_UMAP_DIMS_N") && !is.na(V13_UMAP_DIMS_N)) {
+    code <- replace_assign_line(code, "UMAP_DIMS_N",
+      paste0(as.integer(V13_UMAP_DIMS_N), "L"), multiple = TRUE)
   }
 
   # 入力正規化ポリシー（二重正規化の回避: アプリのトグルから注入。ver4 の apply_input_norm が参照）
@@ -874,6 +933,11 @@ make_v13_copy_with_settings <- function(v13_path, out_path,
   if (exists("V13_ALLOW_CONDITION_CORRECTION") && !is.na(V13_ALLOW_CONDITION_CORRECTION)) {
     code <- replace_assign_line(code, "ALLOW_CONDITION_CORRECTION",
       if (isTRUE(V13_ALLOW_CONDITION_CORRECTION)) "TRUE" else "FALSE", multiple = TRUE)
+  }
+  # ★ ver58.0 (A-1): 補正の要否を ver6 コピーへ伝播
+  if (exists("V13_BATCH_CORRECTION_ENABLE") && !is.na(V13_BATCH_CORRECTION_ENABLE)) {
+    code <- replace_assign_line(code, "BATCH_CORRECTION_ENABLE",
+      if (isTRUE(V13_BATCH_CORRECTION_ENABLE)) "TRUE" else "FALSE", multiple = TRUE)
   }
 
   # 切片 (Annotation) フィルタ → ver6 copy へ伝播

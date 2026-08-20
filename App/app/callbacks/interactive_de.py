@@ -103,10 +103,12 @@ def fill_onthefly_target_options(rds_path):
     [State("selected_cell_ids_store", "data"),
      State("onthefly_de_mode", "value"),
      State("onthefly_de_target", "value"),
+     State("onthefly_de_overlap", "value"),
      State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
-def run_onthefly_de(n_clicks, selected_ids, mode, target_clusters, rds_path):
+def run_onthefly_de(n_clicks, selected_ids, mode, target_clusters, overlap,
+                    rds_path):
     if not n_clicks:
         raise PreventUpdate
     if not rds_path:
@@ -129,12 +131,48 @@ def run_onthefly_de(n_clicks, selected_ids, mode, target_clusters, rds_path):
         if len(ident2) < 3:
             return no_update, _err("比較対象クラスタの細胞が少なすぎます")
 
+    # ★ ver58.0 (デバッグ総点検 A-9): 実行**前**に重なりを解決して知らせる。
+    #   従来は A と B を連結して R へ渡し、R が後勝ちで上書きするため
+    #   重なった画素が無言で B 側として検定されていた。
+    #   A ⊂ B のときは A が空になり「too few cells: 0」という原因を
+    #   指さないエラーで落ちていたので、ここで理由を出して止める。
+    overlap = overlap or "exclude"
+    from app.services.seurat_bridge import resolve_group_overlap
+    _a, _b, n_overlap = resolve_group_overlap(selected_ids, ident2, overlap)
+    _how = {"a": "選択 (A) に残しました",
+            "b": "比較対象 (B) に残しました"}.get(overlap, "両方から除きました")
+    _ovl_msg = (f"重なり {n_overlap} ピクセル → {_how}" if n_overlap
+                else "重なり 0 ピクセル")
+    if len(_a) < 3:
+        return no_update, _err(
+            f"{_ovl_msg}。選択範囲が 3 ピクセル未満になるため実行しません"
+            "（重なりの扱いを変えるか、選択をやり直してください）")
+    if mode == "local" and len(_b) < 3:
+        return no_update, _err(
+            f"{_ovl_msg}。比較対象が 3 ピクセル未満になるため実行しません"
+            "（重なりの扱いを変えるか、比較対象クラスタを見直してください）")
+
     try:
         result_df = _bridge.run_differential_expression(
-            rds_path, selected_ids, ident2_ids=ident2, mode=mode, timeout=600)
+            rds_path, selected_ids, ident2_ids=ident2, mode=mode,
+            overlap_policy=overlap, timeout=600)
     except Exception as e:
         logger.warning("on-the-fly DE failed: %s", e)
         return no_update, _err(f"DE 失敗: {e}")
+
+    # 解析条件として残す（Methods の「実行時の選択条件」がこれを読む）
+    try:
+        from app.utils.label_persistence import save_interactive_settings
+        save_interactive_settings("onthefly_de", {
+            "mode": mode,
+            "target_clusters": target_clusters,
+            "overlap_policy": overlap,
+            "n_overlap": n_overlap,
+            "n_selected": len(_a),
+            "n_comparison": len(_b),
+        }, rds_path)
+    except Exception as e:  # noqa: BLE001 - 記録の失敗で解析結果を捨てない
+        logger.debug("on-the-fly DE の条件記録に失敗: %s", e)
 
     records = _standardize_deg_df(result_df) or []
     # 空 annotation を annotation_map から補完（表・Volcano で化合物名を表示）
@@ -151,8 +189,10 @@ def run_onthefly_de(n_clicks, selected_ids, mode, target_clusters, rds_path):
         except (TypeError, ValueError):
             pass
     label = "選択 vs 全体" if mode == "global" else "選択 vs 指定群"
+    # 重なりは 0 でも必ず出す（「知らせなかった」状態を作らない）
     msg = html.Span(
-        f"完了: {label} — {len(records)} features（有意 p_adj<0.05: {n_sig}）",
+        f"完了: {label} — {len(records)} features"
+        f"（有意 p_adj<0.05: {n_sig}） / {_ovl_msg}",
         className="text-success small")
     return records, msg
 
@@ -189,6 +229,7 @@ def render_onthefly_de(records, fc_th, p_th):
      State("onthefly_de_table", "filter_query"),
      State("onthefly_de_mode", "value"),
      State("onthefly_de_target", "value"),
+     State("onthefly_de_overlap", "value"),
      State("selected_cell_ids_store", "data"),
      State("seurat_rds_path_store", "data"),
      State("interactive_result_folder", "value"),
@@ -196,7 +237,7 @@ def render_onthefly_de(records, fc_th, p_th):
     prevent_initial_call=True,
 )
 def export_onthefly_de(n_clicks, virtual_data, top_n, sort_by, filter_query,
-                       mode, target_clusters, selected_ids, rds_path,
+                       mode, target_clusters, overlap, selected_ids, rds_path,
                        result_folder, method):
     if not n_clicks or not virtual_data:
         raise PreventUpdate
@@ -216,6 +257,8 @@ def export_onthefly_de(n_clicks, virtual_data, top_n, sort_by, filter_query,
         "de_mode": mode,
         "de_target_clusters": target_clusters,
         "n_selected_pixels": len(selected_ids or []),
+        # ★ ver58.0 (A-9): 重なりをどう扱ったかは結果を変える条件なので残す。
+        "de_overlap_policy": overlap or "exclude",
     })
     return dcc.send_data_frame(df.to_csv, "onthefly_DE.csv", index=False)
 

@@ -103,24 +103,41 @@ def test_desi_rpca_branch_does_not_test_on_the_integrated_assay():
 _FINDALL = r"FindAllMarkers\("
 
 
-def test_tims_passes_the_ui_threshold_to_the_test():
-    """基準となる実装（TIMS）は画面の値を検定へ渡している。"""
-    for _n, ln in _find_calls(_lines(TIMS_V6), _FINDALL):
-        if "logfc.threshold" in ln:
-            assert "DEG_LOGFC_TH_VAL" in ln, (
-                f"TIMS が閾値を直書きするようになった: {ln.strip()}")
+# ★ ver58.0 (デバッグ総点検 A-3) による契約の変更:
+#   ver57.5 では「画面の log2FC 閾値が **検定** に届くこと」を求めていた。
+#   しかしその形だと、閾値を通った分子だけに多重比較補正がかかり、
+#   **補正の分母が画面の設定で動く**（統計的に妥当でない）。
+#   A-3 で「検定と補正は全特徴量に対して行い、画面の閾値は **書き出しの絞り込み**
+#   に効かせる」形へ変えた。したがってここで求めるものも変わる:
+#     旧: FindAllMarkers(logfc.threshold = DEG_LOGFC_TH_VAL)
+#     新: FindAllMarkers(logfc.threshold = 0) かつ 書き出しが DEG_LOGFC_TH_VAL を見る
+#   「設定を変えても一覧が変わらない」という元の症状が再発しないことは、
+#   下の test_the_screen_threshold_still_changes_the_output が引き続き見張る。
 
-
-def test_desi_passes_the_ui_threshold_to_every_test():
-    """★ 本丸: DESI の 3 か所すべてが画面の値を使うこと。"""
+def test_no_branch_pre_filters_before_testing():
+    """★ どの分岐も検定前に足切りしないこと（補正の分母を守る）。"""
     offenders = []
-    for n, ln in _find_calls(_lines(DESI_V16), _FINDALL):
-        m = re.search(r"logfc\.threshold\s*=\s*([^,\)]+)", ln)
-        if m and "DEG_LOGFC_TH_VAL" not in m.group(1):
-            offenders.append(f"v16:{n}  logfc.threshold = {m.group(1).strip()}")
+    for path, label in ((DESI_V16, "DESI"), (TIMS_V6, "TIMS")):
+        for n, ln in _find_calls(_lines(path), _FINDALL):
+            m = re.search(r"logfc\.threshold\s*=\s*([^,\)]+)", ln)
+            if m and m.group(1).strip() not in ("0", "0L", "0.0"):
+                offenders.append(f"{label}:{n}  logfc.threshold = {m.group(1).strip()}")
     assert not offenders, (
-        "画面の log2FC 閾値が検定に届いていない（直書きのまま）。"
-        "設定を変えても特徴分子の一覧が変わらない:\n  " + "\n  ".join(offenders))
+        "検定前に足切りしている。補正の分母が小さくなる:\n  " + "\n  ".join(offenders))
+
+
+def test_the_screen_threshold_still_changes_the_output():
+    """★ 元の症状の再発防止: 画面の閾値が出力に効くこと。
+
+    検定には届かなくなったが、**書き出しの絞り込み**には効かなければならない。
+    効かないと「設定を変えても一覧が変わらない」という元の症状に戻る。
+    """
+    for path, label in ((DESI_V16, "DESI"), (TIMS_V6, "TIMS")):
+        src = path.read_text(encoding="utf-8")
+        i = src.index(".deg_for_export <- function")
+        body = src[i:i + 900]
+        assert "DEG_LOGFC_TH_VAL" in body, (
+            f"{label}: 書き出しの絞り込みが画面の log2FC 閾値を見ていない")
 
 
 def test_the_threshold_constant_still_exists():
@@ -181,11 +198,13 @@ def test_the_min_pct_constant_matches_what_the_test_uses():
     assert m, "DEG_MIN_PCT_VAL の定義が無い"
     assert float(m.group(1)) == 0.25, (
         f"既定が {m.group(1)}。従来の直書き値 0.25 と違うと**結果が変わる**")
+    # ★ ver58.0 (A-3): 検定は足切りなし (0) に変えたので、呼び出し側は 0 でよい。
+    #   定数は「記録のため」に残す（受領書・Methods が実効値を書けるように）。
     for n, ln in _find_calls(_lines(DESI_V16), _FINDALL):
         mm = re.search(r"min\.pct\s*=\s*([^,\)]+)", ln)
         if mm:
-            assert "DEG_MIN_PCT_VAL" in mm.group(1), (
-                f"v16:{n} が min.pct を直書きしている: {mm.group(1).strip()}")
+            assert mm.group(1).strip() in ("0", "0L", "0.0"), (
+                f"v16:{n} が検定前に足切りしている: {mm.group(1).strip()}")
 
 
 def test_the_default_keeps_todays_numbers():

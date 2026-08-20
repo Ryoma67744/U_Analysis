@@ -92,6 +92,79 @@ def toggle_settings_panels(desi_val, tims_val):
 
 
 # ---------------------------------------------------------------------------
+# 再解析で実際に使う条件の表示
+# ---------------------------------------------------------------------------
+
+@callback(
+    [Output("reanalysis_inherited_note", "children"),
+     Output("reanalysis_inherited_note", "style")],
+    [Input("analysis_method", "value"),
+     Input("analysis_method_tims", "value"),
+     Input("normalize_input", "value"),
+     Input("norm_mode", "value"),
+     Input("mz_align_ppm", "value"),
+     Input("use_annotation_check", "value"),
+     Input("desi_use_roi_as_sample", "value"),
+     Input("desi_roi_filter_store", "data")],
+)
+def update_reanalysis_inherited_note(desi_val, tims_val, normalize_input,
+                                     norm_mode, mz_align_ppm,
+                                     use_annotation_check,
+                                     desi_use_roi_as_sample=False,
+                                     desi_roi_filter=None):
+    """再解析で実際に使われる前処理・UMAP 条件を再解析パネルに出す。
+
+    ★ ver58.0 (デバッグ総点検 A-6/A-7/A-10): これらを決める入力欄は
+      `umap_settings_panel` の中にあり、**再解析中は画面から隠れる**。
+      隠れた欄の値がそのまま計算に使われるので、何が使われるのかを
+      ここに実値で出す。表示専用（value を持たない）ため保存経路は不要。
+
+      正規化の行は DESI 再解析のときだけ出す。TIMS 再解析には専用の
+      正規化欄（`normalize_input_reanalysis`）があり、両方を出すと
+      画面に矛盾する 2 つの主張が並ぶため。
+    """
+    active = desi_val or tims_val or "desi_v8"
+    if active not in ("desi_cluster_filter", "tims_cluster_filter"):
+        return "", {"display": "none"}
+
+    rows = ["この再解析で使う条件（画面の値がそのまま使われます）"]
+    if active == "desi_cluster_filter":
+        if normalize_input == "OFF":
+            rows.append(f"正規化: OFF（正規化済み入力）／変換: {norm_mode or 'log1p'}")
+        else:
+            rows.append("正規化: ON（LogNormalize を実行）")
+        # ★ ver58.0 (A-5): ROI 分割は再解析でもやり直す。何が使われるかを出す。
+        if desi_use_roi_as_sample:
+            _roi = list(desi_roi_filter or [])
+            rows.append("ROI: ROI ごとに別サンプルとして分割し直す"
+                        + (f"（対象: {', '.join(_roi)}）" if _roi else "（全 ROI）"))
+        else:
+            rows.append("ROI: 分割しない（ファイル全体を 1 サンプルとする）")
+    else:
+        # `x or 0` にしない: 0 は「無効」という正当な指定で、既定値と区別が要る
+        # （既定も 0 なので結果は同じだが、この型を広げないこと自体が規約）。
+        _ppm = mz_align_ppm if mz_align_ppm is not None else 0
+        rows.append(f"m/z アライメント: {_ppm} ppm"
+                    + ("（0 = 無効）" if not _ppm else ""))
+        rows.append("化合物名: "
+                    + ("変換元 CSV 由来を使う"
+                       if "embedded" in list(use_annotation_check or [])
+                       else "変換元 CSV 由来は使わない"))
+
+    children = [
+        html.Div(rows[0], style={"fontWeight": "600"}),
+        *[html.Div(t) for t in rows[1:]],
+        html.Div("UMAP: 上の「PreFlight 診断 / UMAP ハイパーパラメータ」の値"
+                 "（n.neighbors / min.dist / metric=cosine 等）を使います。",
+                 style={"fontSize": "0.85em"}),
+    ]
+    style = {"background": "#eef5ff", "padding": "8px 10px",
+             "borderRadius": "5px", "marginBottom": "10px",
+             "fontSize": "0.85rem"}
+    return children, style
+
+
+# ---------------------------------------------------------------------------
 # 正規化トグルの既定切替・NORM_MODE有効化
 # ---------------------------------------------------------------------------
 

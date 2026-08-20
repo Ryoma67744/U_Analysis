@@ -150,6 +150,38 @@ def _create_analysis_settings_subtab():
                             html.Div(id="sample_selector"),
                             dcc.Store(id="selected_samples_store", data=[]),
                             dbc.FormText("チェックを入れたサンプルが解析対象になります"),
+                            # --- DESI: バッチ補正の有無 (ver58.0 / A-1) ---
+                            #   DESI の補正は group.by.vars="sample" 固定で、TIMS の
+                            #   ような切片(slice_id)単位の概念を実装していない。
+                            #   そこで「DESI が実際にできること」だけを 2 択で出す。
+                            #   従来は選択肢が無く、複数ファイルなら必ず補正が走っていた。
+                            html.Div(
+                                style={"marginTop": "10px"},
+                                children=[
+                                    html.Hr(className="my-2"),
+                                    html.H6("バッチ補正 (複数ファイルのとき)",
+                                            className="fw-bold"),
+                                    dbc.Select(
+                                        id="desi_scenario",
+                                        options=[
+                                            {"label": "補正する：Harmony＋RPCA（従来どおり）",
+                                             "value": "correct"},
+                                            {"label": "補正しない：無補正 PCA を主結果にする",
+                                             "value": "no_correct"},
+                                        ],
+                                        value=ls.get("desi_scenario", "correct"),
+                                    ),
+                                    dbc.FormText(
+                                        "「補正しない」を選ぶと Harmony も RPCA も実行せず、"
+                                        "無補正 PCA の結果を PCA フォルダに出します。"
+                                        "MSI では 1 ファイル＝1 切片＝多くの場合 1 個体・1 条件なので、"
+                                        "サンプル単位の補正は比較したい生物差そのものを"
+                                        "縮めることがあります。ファイルが 1 つだけのときは"
+                                        "どちらを選んでも補正は行われません。",
+                                        className="text-muted small",
+                                    ),
+                                ],
+                            ),
                             # --- DESI ROI 設定 (TIMS の annotation_selector と同じ ---
                             #     pattern-matching 構造。データフォルダとサンプルから
                             #     ROI 候補を自動列挙、チェックボックスで選択。
@@ -653,6 +685,12 @@ def _create_analysis_settings_subtab():
             style={"display": "none"},
             children=[
                 html.H4(className="card-title", children=["🔍 再解析設定"]),
+                # ★ ver58.0 (デバッグ総点検 A-6/A-7/A-10): この再解析で実際に使う条件。
+                #   正規化・UMAP・m/z アライメント・化合物名の由来を決める入力欄は
+                #   umap_settings_panel の中にあり、再解析中は画面から隠れる。
+                #   隠れた欄の値が黙って使われる状態を避けるため、
+                #   何が使われるのかをここに実値で出す（表示専用）。
+                html.Div(id="reanalysis_inherited_note", style={"display": "none"}),
                 dbc.Row([
                     dbc.Col(width=6, children=[
                         html.Div(className="param-group", children=[
