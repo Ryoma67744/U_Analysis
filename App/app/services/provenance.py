@@ -45,7 +45,13 @@ CONDITIONS_JSON = "analysis_conditions.json"
 ONTHEFLY_DE_FIXED_PARAMS = {
     "test": "wilcox",
     "min_pct": 0.0,
-    "logfc_threshold": 0.25,
+    # ★ ver58.0 (デバッグ総点検 A-3 の取りこぼし): 0.25 のまま残っていた。
+    #   検定前の足切りを外したとき min_pct だけ直し、こちらを見落としたため、
+    #   実際は logfc=0.0（倍率で絞らない）で走るのに、受領書と Methods だけが
+    #   「|log2FC| ≥ 0.25 に限定して検定した」と主張していた。
+    #   多重比較補正の分母が変わる話なので、結果の解釈を直接誤らせる。
+    #   tests/test_recorded_de_params_match_the_run.py がシグネチャと突き合わせる。
+    "logfc_threshold": 0.0,
     "p_adjust_method": "BH",
 }
 

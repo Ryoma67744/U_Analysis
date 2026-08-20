@@ -151,7 +151,11 @@ def test_collect_conditions_includes_fixed_onthefly_params(tmp_path):
     #   足切り後の集合にだけ補正を当てると分母が小さく、補正後の値が
     #   本来より甘く出る。記録される値も実態 (0) に合わせる。
     assert fixed["min_pct"] == 0.0
-    assert fixed["logfc_threshold"] == 0.25
+    # ★ ver58.0: logfc も同じ理由で 0（＝倍率で足切りしない）。A-3 のとき
+    #   min_pct だけ直して**ここだけ 0.25 のまま残っていた**ので、
+    #   実処理は 0 なのに受領書だけが 0.25 と主張していた。
+    #   シグネチャとの突き合わせは tests/test_recorded_de_params_match_the_run.py。
+    assert fixed["logfc_threshold"] == 0.0
 
 
 # ---------------------------------------------------------------------------
