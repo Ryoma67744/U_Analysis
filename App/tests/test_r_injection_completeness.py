@@ -59,10 +59,14 @@ TEMPLATES = {
 #   `analysis_callbacks` の再解析 params にキーが入らないので今は無害。
 #   キーを足した瞬間に無言で効かなくなるため、既知として記録し、
 #   **これ以上増えないこと**を担保する。
-KNOWN_DEAD = {
-    ("generate_cluster_filter_config", "USE_ROI_AS_SAMPLE"),
-    ("generate_cluster_filter_config", "ROI_FILTER"),
-}
+#
+#   ★ ver58.0 (デバッグ総点検 A-5): USE_ROI_AS_SAMPLE / ROI_FILTER の 2 件を外した。
+#     再解析テンプレに V8_USE_ROI_AS_SAMPLE / V8_ROI_FILTER の受け手を新設し、
+#     注入先をそちらへ向けたので、もうデッドではない。
+#     （この 2 件は「キーを足した瞬間に無言で効かなくなる」という、
+#       ここに書いてあったとおりの罠がそのまま実害になっていた例。
+#       ROI 別サンプルの再解析でデータが丸ごと消えていた。）
+KNOWN_DEAD = set()
 
 # ★ 実害があると確認済みだが **まだ直していない**もの（監査 R-01 / R-02）。
 #   隠さず記録し、(a) これ以上増えないこと (b) 直ったら気付けること を担保する。

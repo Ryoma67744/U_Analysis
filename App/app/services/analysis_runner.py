@@ -802,19 +802,29 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
     # --- DESI ROI 設定の注入 (USE_ROI_AS_SAMPLE / ROI_FILTER) ---
     # ROI 列があれば各 ROI を別サンプルとして Multi-sample mode (Harmony/RPCA) で
     # 統合解析する設定。analysis_callbacks.py で DESI 通常解析時のみセットされる。
-    if "use_roi_as_sample" in params:
-        flag = "TRUE" if params["use_roi_as_sample"] else "FALSE"
-        lines = _replace_assign(lines, "USE_ROI_AS_SAMPLE", flag)
-    if params.get("roi_filter"):
-        roi_r = "c(" + ", ".join(_r_str(x) for x in params["roi_filter"]) + ")"
-        lines = _replace_assign(lines, "ROI_FILTER", roi_r)
-
     # 再解析テンプレは TIMS / DESI で接頭辞が違う（V13_ / V8_）。
     #   ★ ver58.0 (A-6): 判定をここへ繰り上げた。従来は DEG 閾値の直前で作って
     #     いたため、それより上にある正規化の注入が **V13_ 決め打ち**になっており、
     #     DESI 再解析では書き換え先が存在せず無言で捨てられていた。
     _is_tims_cf = ("DBSCAN" in Path(template_path).stem
                    or "tims" in Path(template_path).stem.lower())
+
+    # --- ROI をサンプルとして扱うか（DESI のみ。TIMS に ROI の概念は無い） ---
+    #   ★ ver58.0 (デバッグ総点検 A-5): 従来は接頭辞なしの USE_ROI_AS_SAMPLE /
+    #     ROI_FILTER へ書こうとしていたが、再解析テンプレに受け手が無く、
+    #     `_replace_assign` は 0 件一致でも成功扱いで返るため**完全な空振り**
+    #     だった（test_r_injection_completeness の KNOWN_DEAD に記録されていた）。
+    if not _is_tims_cf:
+        if "use_roi_as_sample" in params:
+            lines = _replace_assign(
+                lines, "V8_USE_ROI_AS_SAMPLE",
+                "TRUE" if params["use_roi_as_sample"] else "FALSE",
+            )
+        if params.get("roi_filter"):
+            lines = _replace_assign(
+                lines, "V8_ROI_FILTER",
+                "c(" + ", ".join(_r_str(x) for x in params["roi_filter"]) + ")",
+            )
 
     # --- m/z キャリブレーション（再解析） ---
     if params.get("calibration_enable"):

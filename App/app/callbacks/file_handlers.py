@@ -103,11 +103,15 @@ def toggle_settings_panels(desi_val, tims_val):
      Input("normalize_input", "value"),
      Input("norm_mode", "value"),
      Input("mz_align_ppm", "value"),
-     Input("use_annotation_check", "value")],
+     Input("use_annotation_check", "value"),
+     Input("desi_use_roi_as_sample", "value"),
+     Input("desi_roi_filter_store", "data")],
 )
 def update_reanalysis_inherited_note(desi_val, tims_val, normalize_input,
                                      norm_mode, mz_align_ppm,
-                                     use_annotation_check):
+                                     use_annotation_check,
+                                     desi_use_roi_as_sample=False,
+                                     desi_roi_filter=None):
     """再解析で実際に使われる前処理・UMAP 条件を再解析パネルに出す。
 
     ★ ver58.0 (デバッグ総点検 A-6/A-7/A-10): これらを決める入力欄は
@@ -129,6 +133,13 @@ def update_reanalysis_inherited_note(desi_val, tims_val, normalize_input,
             rows.append(f"正規化: OFF（正規化済み入力）／変換: {norm_mode or 'log1p'}")
         else:
             rows.append("正規化: ON（LogNormalize を実行）")
+        # ★ ver58.0 (A-5): ROI 分割は再解析でもやり直す。何が使われるかを出す。
+        if desi_use_roi_as_sample:
+            _roi = list(desi_roi_filter or [])
+            rows.append("ROI: ROI ごとに別サンプルとして分割し直す"
+                        + (f"（対象: {', '.join(_roi)}）" if _roi else "（全 ROI）"))
+        else:
+            rows.append("ROI: 分割しない（ファイル全体を 1 サンプルとする）")
     else:
         # `x or 0` にしない: 0 は「無効」という正当な指定で、既定値と区別が要る
         # （既定も 0 なので結果は同じだが、この型を広げないこと自体が規約）。

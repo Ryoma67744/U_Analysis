@@ -937,6 +937,14 @@ def run_analysis(
             if analysis_type == "desi_cluster_filter":
                 params["input_normalized"] = (normalize_input == "OFF")
                 params["norm_mode"] = norm_mode or "log1p"
+                # ★ ver58.0 (デバッグ総点検 A-5): ROI 分割の設定も渡す。
+                #   従来は本解析の分岐でしか組み立てておらず、しかも注入先の
+                #   受け手が再解析スクリプトに無かったため二重に空振りしていた。
+                #   その結果、ROI 別サンプルは再解析で丸ごと落ちていた。
+                #   OFF も明示的に渡す（未指定＝テンプレ既定に化けさせない）。
+                params["use_roi_as_sample"] = bool(desi_use_roi_as_sample)
+                if desi_roi_filter_list:
+                    params["roi_filter"] = list(desi_roi_filter_list)
 
             # ★ ver58.0 (デバッグ総点検 A-7): UMAP 条件を再解析にも渡す。
             #   PreFlight パネルは再解析中も画面に出ているのに受け手が無く、
