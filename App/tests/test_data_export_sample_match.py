@@ -166,6 +166,87 @@ def test_summarize_coverage_explains_missing_xy():
 
 
 # ---------------------------------------------------------------------------
+# ②-2 解析に含めなかった切片と、本当の不一致を区別する (ver58.4)
+# ---------------------------------------------------------------------------
+
+def _two_slices(n1, n2, overlap=0):
+    """切片 01 (n1 spot) と 02 (n2 spot)。overlap 個だけ座標を共有させる。"""
+    x1 = list(range(n1))
+    x2 = list(range(overlap)) + list(range(10_000, 10_000 + n2 - overlap))
+    return pd.DataFrame({
+        "id": list(range(n1 + n2)),
+        "x": [float(v) for v in x1 + x2],
+        "y": [0.0] * (n1 + n2),
+        "611.1439": [1.0] * (n1 + n2),
+        "annotation": ["01"] * n1 + ["02"] * n2,
+    })
+
+
+def _slice1_lookup(n1, sample="260816"):
+    return {"Harmony": {_rk(sample, i, 0.0): str(i % 3) for i in range(n1)}}
+
+
+def test_unanalyzed_slice_is_reported_as_fact_not_warning():
+    """切片 2 枚のうち 1 枚だけ UMAP を掛けた場合。
+
+    もう 1 枚が空欄になるのは**正しい出力**なので、⚠️ ではなく事実として伝える。
+    """
+    df = _two_slices(60, 40)
+    stats = {}
+    out = append_cluster_region_columns(
+        df, _slice1_lookup(60), None, ["260816"], False,
+        "260816_Kizu_P5_SCiLS_9AA", _match_sample_name, stats=stats)
+
+    assert int((out["UMAP cluster"] != "").sum()) == 60
+    assert stats["by_group"] == {"01": (60, 60), "02": (0, 40)}
+    assert stats["ambiguous"] == 0
+
+    msg = summarize_coverage([stats])
+    assert msg.startswith("ℹ️")
+    assert "解析に含めなかった annotation" in msg and "'02'" in msg
+    # 誤誘導になる汎用理由は出さない
+    assert "座標が一致しません" not in msg
+
+
+def test_overlapping_slice_coordinates_are_left_blank():
+    """切片間で座標が重複する行は、取り違えを避けて空欄にする。
+
+    ファイル名フォールバックは全 annotation を 1 つのサンプル名に潰すため、
+    重複座標に値を入れると「黙って別の切片のクラスタ番号」が入ってしまう。
+    """
+    df = _two_slices(60, 40, overlap=10)
+    stats = {}
+    out = append_cluster_region_columns(
+        df, _slice1_lookup(60), None, ["260816"], False,
+        "260816_Kizu_P5_SCiLS_9AA", _match_sample_name, stats=stats)
+
+    # 重複した 10 座標 = 切片 01 側 10 行 + 切片 02 側 10 行の計 20 行を空欄にする
+    assert stats["ambiguous"] == 20
+    assert int((out["UMAP cluster"] != "").sum()) == 50
+    # 重複座標 (x=0..9) は 01 側も空欄
+    assert out.loc[0, "UMAP cluster"] == ""
+    assert out.loc[10, "UMAP cluster"] != ""
+
+    msg = summarize_coverage([stats])
+    assert msg.startswith("⚠️") and "座標が重複" in msg
+
+
+def test_no_collision_check_when_annotation_resolves():
+    """annotation が解決できるときは重複を気にしない（潰していないので安全）。"""
+    df = _two_slices(3, 3, overlap=3)
+    lk = {"Harmony": {_rk("01", 0.0, 0.0): "A", _rk("02", 0.0, 0.0): "B"}}
+    stats = {}
+    out = append_cluster_region_columns(
+        df, lk, None, ["01", "02"], False, "whatever",
+        _match_sample_name, stats=stats)
+    assert stats["resolver"] == "annotation"
+    assert stats["ambiguous"] == 0
+    # 同じ (0,0) でも切片ごとに別の値が入る
+    assert out.loc[0, "UMAP cluster"] == "A"
+    assert out.loc[3, "UMAP cluster"] == "B"
+
+
+# ---------------------------------------------------------------------------
 # ③ legacy SCiLS Transform CSV を R と同じ読み方で読む
 # ---------------------------------------------------------------------------
 
