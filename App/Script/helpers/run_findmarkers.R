@@ -87,6 +87,18 @@ if (!all(c("CellID", "Group") %in% colnames(groups))) {
   stop("groups_csv must have columns: CellID, Group")
 }
 
+# ★ ver58.0 (デバッグ総点検 A-9): 同じ CellID が 2 行あると、下の
+#   `ident_vec[idx[keep]] <- groups$Group[keep]` は**後に書いた方が勝つ**。
+#   A と B が重なっていると、重なった画素が無言で B 側として検定されていた。
+#   重なりの解決は呼び出し側 (seurat_bridge.resolve_group_overlap) の責任に
+#   したので、ここへ重複が来ること自体が不具合。上書き順に結果を委ねない。
+if (any(duplicated(groups$CellID))) {
+  .dup <- unique(groups$CellID[duplicated(groups$CellID)])
+  stop(sprintf(
+    "groups_csv に重複した CellID が %d 件あります (例: %s)。\n  グループの重なりは呼び出し側で解決してください。",
+    length(.dup), paste(utils::head(.dup, 5), collapse = ", ")))
+}
+
 # --- CellID → cell 列に対応付けて Idents を設定（非対象は "__bg__"） ---
 all_cells <- colnames(obj)
 ident_vec <- rep("__bg__", length(all_cells))

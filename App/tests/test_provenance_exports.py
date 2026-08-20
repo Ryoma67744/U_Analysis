@@ -178,6 +178,9 @@ def test_onthefly_de_csv_records_selection_and_thresholds(result_dir):
     export_onthefly_de(
         1, rows, top_n=50, sort_by=None, filter_query=None,
         mode="local", target_clusters=["3", "4"],
+        # ★ ver58.0 (デバッグ総点検 A-9): 重なりの扱いは結果を変える条件なので
+        #   出力の記録にも残す（従来は無言で「比較対象 (B) 優先」だった）。
+        overlap="exclude",
         selected_ids=["c1", "c2", "c3"], rds_path=str(rds),
         result_folder=None, method="Harmony")
 
@@ -193,6 +196,7 @@ def test_onthefly_de_csv_records_selection_and_thresholds(result_dir):
     #   足切り後の集合にだけ補正を当てると分母が小さく、補正後の値が
     #   本来より甘く出る。記録される値も実態 (0) に合わせる。
     assert payload["onthefly_de_fixed_params"]["min_pct"] == 0.0
+    assert payload["extra"]["de_overlap_policy"] == "exclude"
 
 
 def test_selection_groups_csv_records_conditions(result_dir):

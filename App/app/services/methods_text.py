@@ -12,8 +12,10 @@
 # 意図的に強調している 2 点（Methods の誤記が最も起きやすいところ）:
 #   1. Volcano / Heatmap の閾値は「表示用」であって統計的閾値ではない。
 #      実際に検定へ渡ったのは解析設定タブの p_thresh / logfc_thresh。
-#   2. on-the-fly DE は GUI に出ていない固定値（Wilcoxon, min.pct=0.05,
-#      logfc.threshold=0.25, BH）で走っている。
+#   2. on-the-fly DE は GUI に出ていない固定値（Wilcoxon, BH）で走っている。
+#      ★ ver58.0 (A-3): 検定前の足切りは min.pct=0 / logfc.threshold=0 に変えた
+#      （足切り後の集合にだけ補正を当てると分母が小さく甘く出るため）。
+#      実値は provenance.ONTHEFLY_DE_FIXED_PARAMS を単一の出典とする。
 #
 # 依存は標準ライブラリ + app.services.caveats のみ。
 # =============================================================================

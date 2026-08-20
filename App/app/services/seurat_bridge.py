@@ -274,6 +274,50 @@ def _evict_seurat_cache_lru(cache_base: Path, max_entries: int) -> int:
         return 0
 
 
+# ★ ver58.0 (デバッグ総点検 A-9): 選択範囲 (A) と比較対象 (B) の重なりの解決。
+#   従来は A と B の CellID を単純に連結して R へ渡していた。R 側は 1 行ずつ
+#   Idents を書き込むだけなので、同じ CellID が 2 行あると**後に書いた方 (B) が
+#   勝つ**。つまり投げ縄で選んだ範囲が比較対象クラスタと重なっていると、
+#   重なった画素は無言で B 側として検定されていた。
+#   A ⊂ B のときは A が空になり「too few cells: 0」という原因を指さない
+#   エラーで落ちる。
+def resolve_group_overlap(ident1_ids, ident2_ids, policy="exclude"):
+    """重なりを解決し、(A の ID, B の ID, 重なりの件数) を返す。
+
+    policy:
+      "exclude" … 重なりを両方から除く（既定・安全側）
+      "a"       … 選択 (A) を優先し、B から除く
+      "b"       … 比較対象 (B) を優先し、A から除く
+    未知の指定は "exclude" に倒す（黙って従来の B 優先へ戻さない）。
+
+    同じ側の重複も 1 つにまとめる（順序は保つ）。R へ重複の無い表を渡し、
+    上書き順への依存をやめるのがこの関数の役目。
+    """
+    def _uniq(seq):
+        seen, out = set(), []
+        for x in (seq or []):
+            x = str(x)
+            if x not in seen:
+                seen.add(x)
+                out.append(x)
+        return out
+
+    a = _uniq(ident1_ids)
+    b = _uniq(ident2_ids)
+    dup = set(a) & set(b)
+    n_overlap = len(dup)
+    if not dup:
+        return a, b, 0
+    if policy == "a":
+        b = [x for x in b if x not in dup]
+    elif policy == "b":
+        a = [x for x in a if x not in dup]
+    else:
+        a = [x for x in a if x not in dup]
+        b = [x for x in b if x not in dup]
+    return a, b, n_overlap
+
+
 class SeuratBridge:
     """Seurat RDS ファイルを R ヘルパースクリプト経由で
     Parquet/CSV に変換し、pandas で読み込む。
@@ -925,7 +969,10 @@ class SeuratBridge:
                                     #   2 つの補正母集団が混在する。
                                     mode="global", min_pct=0.0, logfc=0.0,
                                     test_use="wilcox", assay=None,
-                                    cancel_event=None, timeout=600):
+                                    cancel_event=None, timeout=600,
+                                    # ★ ver58.0 (A-9): 重なりの扱い。既定は安全側
+                                    #   （除く）。従来は無言で B 優先だった。
+                                    overlap_policy="exclude"):
         """選択範囲/群の on-the-fly DE を R (FindMarkers wilcox + BH) で実行する。
 
         mode="global": ident1_ids (選択) vs 残り全体（ident2 無視）。
@@ -939,10 +986,18 @@ class SeuratBridge:
         from app.utils.file_locks import get_or_create_lock
         ident1_ids = [str(c) for c in (ident1_ids or [])]
         ident2_ids = [str(c) for c in (ident2_ids or [])] if mode == "local" else []
+        # ★ ver58.0 (A-9): R へ渡す前に重なりを解決する。R 側の上書き順に
+        #   結果を委ねない（後に書いた B が黙って勝つ形をやめる）。
+        ident1_ids, ident2_ids, n_overlap = resolve_group_overlap(
+            ident1_ids, ident2_ids, overlap_policy)
+        _ovl = (f"（重なり {n_overlap} ピクセルを"
+                + {"a": "選択側に残しました", "b": "比較対象側に残しました"}.get(
+                    overlap_policy, "両方から除きました") + "）") if n_overlap else ""
         if len(ident1_ids) < 3:
-            raise RuntimeError("選択範囲が小さすぎます (3 ピクセル以上を選択してください)")
+            raise RuntimeError(
+                "選択範囲が小さすぎます (3 ピクセル以上を選択してください)" + _ovl)
         if mode == "local" and len(ident2_ids) < 3:
-            raise RuntimeError("比較対象の群が小さすぎます (3 ピクセル以上)")
+            raise RuntimeError("比較対象の群が小さすぎます (3 ピクセル以上)" + _ovl)
 
         cache_dir = self._get_cache_dir(rds_path)
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -951,6 +1006,9 @@ class SeuratBridge:
             ",".join(sorted(ident1_ids)),
             ",".join(sorted(ident2_ids)),
             str(min_pct), str(logfc), test_use,
+            # ★ ver58.0 (A-9): 扱いを変えたら別の結果になる。鍵に含めないと
+            #   前の扱いで作った表がそのまま返る。
+            f"ovl={overlap_policy}",
         ]).encode()).hexdigest()[:16]
         out_csv = cache_dir / f"de_{h}.csv"
         groups_csv = cache_dir / f"de_groups_{h}.csv"
