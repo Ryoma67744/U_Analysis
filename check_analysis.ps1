@@ -206,7 +206,17 @@ if ($resolvedMode -eq 'docker') {
 Write-Host ''
 switch ($exitCode) {
     0 {
-        Write-Host '結論: 解析は止まっていません（実行中、または正常に終了済み）。' -ForegroundColor Green
+        # ver58.2: 以前はここに「または正常に終了済み」と書いていたが、
+        #   エラーで終わった解析も exit 0 に落ちていたため、
+        #   **失敗した解析を緑で「正常に終了済み」と表示**していた。
+        #   エラー終了は exit 2 に分けたので、ここは素直に書ける。
+        Write-Host '結論: 解析は止まっていません（実行中、または完了しています）。' -ForegroundColor Green
+    }
+    2 {
+        Write-Host '結論: 解析はエラーで終了しています。' -ForegroundColor Red
+        Write-Host '  次に見るもの:' -ForegroundColor Yellow
+        Write-Host '    上のログ末尾のエラー行と [EXIT] 行。' -ForegroundColor Yellow
+        Write-Host '    原因を直してから再実行してください。' -ForegroundColor Yellow
     }
     3 {
         Write-Host '結論: 解析は停止しています。' -ForegroundColor Red
