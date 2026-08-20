@@ -1052,6 +1052,15 @@ def _create_analysis_settings_subtab():
         ),
         html.Hr(),
 
+        # ★ ver58.1 (デバッグ総点検 B-1〜B-3): 「いま復元している最中」の目印。
+        #   プリセット読込・サブプロジェクトの「解析」・「再解析へ送る」は、
+        #   保存値を書き戻すのと同じレスポンスで analysis_method や ion_mode も書く。
+        #   すると**それを Input に持つ自動切替コールバックが発火し、復元された
+        #   ばかりの値を既定値で塗り潰す**（Dash は同じ値を書いても下流を発火させる）。
+        #   復元中はその自動切替を黙らせる。同型の対処が
+        #   `int_cal_restore_pending` (interactive_calibration.py) に既にある。
+        dcc.Store(id="settings_restore_pending", data=False),
+
         # プリフライトバリデーション結果
         html.Div(id="validation_summary", children="", style={"display": "none"}),
 

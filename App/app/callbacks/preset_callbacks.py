@@ -105,20 +105,28 @@ def save_preset_cb(n_clicks, name, *param_values):
     Output("reanalysis_adduct_filter", "value", allow_duplicate=True),
     Output("reanalysis_p_thresh", "value", allow_duplicate=True),
     Output("reanalysis_logfc_thresh", "value", allow_duplicate=True),
+    # ★ ver58.1 (デバッグ総点検 B-1/B-2/B-3): 「いま復元している」と宣言する。
+    #   PRESET_KEYS は ion_mode を常に含むので、読み込むと必ず
+    #   auto_switch_adduct が発火し、保存しておいた付加イオンの組み合わせを
+    #   既定で塗り潰していた。analysis_method も書くので、同じ機序で
+    #   再解析のイオンモード・許容誤差・データフォルダも既定へ戻っていた。
+    Output("settings_restore_pending", "data", allow_duplicate=True),
     Input("preset_load_btn", "n_clicks"),
     State("preset_select", "value"),
     prevent_initial_call=True,
 )
 def load_preset_cb(n_clicks, selected):
     if not n_clicks or not selected:
-        return (no_update,) * (1 + len(PRESET_KEYS))
+        return (no_update,) * (2 + len(PRESET_KEYS))
 
     params = load_preset(selected)
     if params is None:
-        return ("プリセットが見つかりません",) + (no_update,) * len(PRESET_KEYS)
+        # 復元していないので旗は立てない（自動切替を無駄に黙らせない）
+        return (("プリセットが見つかりません",) + (no_update,) * len(PRESET_KEYS)
+                + (no_update,))
 
     values = [params.get(k, no_update) for k in PRESET_KEYS]
-    return (f"✅ 「{selected}」を読み込みました", *values)
+    return (f"✅ 「{selected}」を読み込みました", *values, True)
 
 
 # ---------------------------------------------------------------------------

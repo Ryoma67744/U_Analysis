@@ -570,10 +570,21 @@ def sync_reanalysis_annotation_to_store(all_values):
      Output("reanalysis_tolerance_mz", "value", allow_duplicate=True)],
     [Input("analysis_method", "value"),
      Input("analysis_method_tims", "value")],
+    State("settings_restore_pending", "data"),
     prevent_initial_call=True,
 )
-def reset_reanalysis_defaults(desi_val, tims_val):
-    """TIMS/DESIモード切替時に再解析パラメータをデフォルトにリセット"""
+def reset_reanalysis_defaults(desi_val, tims_val, restore_pending=False):
+    """TIMS/DESIモード切替時に再解析パラメータをデフォルトにリセット。
+
+    ★ ver58.1 (デバッグ総点検 B-2): 復元中は何もしない。
+      サブプロジェクトの「解析」やプリセット読込は、保存値を書き戻すのと
+      同じレスポンスで analysis_method も書く。従来はここにガードが無く、
+      **再解析のイオンモードと m/z 許容誤差だけが既定 (Positive / 0.01) に
+      戻っていた**。他の項目は正しく戻るので、この 2 つだけ戻っていることに
+      気づかないまま、保存時と違う条件で再解析が走る。
+    """
+    if restore_pending:
+        return no_update, no_update
     from app.config import DEFAULT_ION_MODE, DEFAULT_TOLERANCE_MZ
     return DEFAULT_ION_MODE, DEFAULT_TOLERANCE_MZ
 
@@ -587,10 +598,23 @@ def reset_reanalysis_defaults(desi_val, tims_val):
     [Input("analysis_method", "value"),
      Input("analysis_method_tims", "value")],
     [State("default_desi_data_folder", "value"),
-     State("default_tims_data_folder", "value")],
+     State("default_tims_data_folder", "value"),
+     State("settings_restore_pending", "data")],
     prevent_initial_call=True,
 )
-def auto_switch_data_folder(desi_val, tims_val, desi_default, tims_default):
+def auto_switch_data_folder(desi_val, tims_val, desi_default, tims_default,
+                            restore_pending=False):
+    """解析手法に応じてデータフォルダを既定へ振り直す。
+
+    ★ ver58.1 (デバッグ総点検 B-3): 復元中は何もしない。
+      サブプロジェクトの「解析」・プリセット読込・「再解析へ送る」は
+      analysis_method を書くため、従来はここが必ず発火して
+      **復元されたデータフォルダをサイドバーの既定で上書き**していた。
+      出力先やしきい値は正しく戻るので気づきにくく、そのまま実行すると
+      **別の場所のデータを解析してしまう**。
+    """
+    if restore_pending:
+        return no_update
     active = desi_val or tims_val
     if active in ("desi_v8", "desi_cluster_filter"):
         return desi_default or DEFAULT_DESI_DATA_FOLDER
@@ -606,9 +630,20 @@ def auto_switch_data_folder(desi_val, tims_val, desi_default, tims_default):
 @callback(
     Output("adduct_filter", "value"),
     Input("ion_mode", "value"),
+    State("settings_restore_pending", "data"),
     prevent_initial_call=True,
 )
-def auto_switch_adduct(ion_mode):
+def auto_switch_adduct(ion_mode, restore_pending=False):
+    """イオンモードに応じて付加イオンの既定を入れ直す。
+
+    ★ ver58.1 (デバッグ総点検 B-1): 復元中は何もしない。
+      プリセットは ion_mode を必ず含むので、読み込むと必ずここが発火し、
+      **保存しておいた付加イオンの組み合わせが既定で塗り潰されていた**。
+      画面には「✅ 読み込みました」と出るため、違う条件で m/z 照合が
+      行われていることに気づけない。
+    """
+    if restore_pending:
+        return no_update
     from app.config import adducts_for_ion_mode
     return adducts_for_ion_mode(ion_mode)
 
@@ -616,11 +651,37 @@ def auto_switch_adduct(ion_mode):
 @callback(
     Output("reanalysis_adduct_filter", "value"),
     Input("reanalysis_ion_mode", "value"),
+    State("settings_restore_pending", "data"),
     prevent_initial_call=True,
 )
-def auto_switch_reanalysis_adduct(ion_mode):
+def auto_switch_reanalysis_adduct(ion_mode, restore_pending=False):
+    """再解析側も同じ（★ ver58.1 / B-1）。"""
+    if restore_pending:
+        return no_update
     from app.config import adducts_for_ion_mode
     return adducts_for_ion_mode(ion_mode)
+
+
+# ---------------------------------------------------------------------------
+# 復元中フラグを降ろす
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("settings_restore_pending", "data", allow_duplicate=True),
+    Input("settings_restore_pending", "data"),
+    prevent_initial_call=True,
+)
+def clear_settings_restore_pending(pending):
+    """復元の直後にフラグを降ろす。
+
+    ★ ver58.1: 降ろし忘れると、以後の**手動の**イオンモード変更や
+      解析法の切替まで効かなくなる（復元を守るつもりで手動操作を殺す）。
+      復元は 1 レスポンスで終わる一過性の出来事なので、その次の周回で降ろす。
+      降りている旗に False を書き直すと往復し続けるため no_update を返す。
+    """
+    if pending:
+        return False
+    return no_update
 
 
 # ---------------------------------------------------------------------------

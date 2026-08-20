@@ -662,14 +662,22 @@ _ANALYSIS_SETTINGS_KEYS = [
      Output("reanalysis_p_thresh", "value", allow_duplicate=True),
      Output("reanalysis_logfc_thresh", "value", allow_duplicate=True),
      Output("reanalysis_ion_mode", "value", allow_duplicate=True),
-     Output("reanalysis_tolerance_mz", "value", allow_duplicate=True)],
+     Output("reanalysis_tolerance_mz", "value", allow_duplicate=True),
+     # ★ ver58.1 (デバッグ総点検 B-1〜B-3): 「いま復元している」と宣言する。
+     #   ここは analysis_method と ion_mode を同一レスポンスで書くため、
+     #   従来は auto_switch_data_folder / auto_switch_adduct /
+     #   reset_reanalysis_defaults が発火し、復元したばかりの
+     #   **データフォルダ・付加イオン・再解析のイオンモードと許容誤差**を
+     #   既定値で塗り潰していた。とくにデータフォルダは、そのまま実行すると
+     #   別の場所のデータを解析してしまう。
+     Output("settings_restore_pending", "data", allow_duplicate=True)],
     Input({"type": "sub_action_analysis", "index": ALL}, "n_clicks"),
     State("selected_project", "data"),
     prevent_initial_call=True,
 )
 def sub_action_new_analysis(clicks, project):
     """サブプロジェクト「解析」→ 解析設定画面に遷移 + 前回設定を復元"""
-    _n_outputs = 22
+    _n_outputs = 23   # ver58.1: settings_restore_pending を追加
     if not ctx.triggered_id or not any(c for c in clicks if c):
         return (no_update,) * _n_outputs
 
@@ -733,6 +741,7 @@ def sub_action_new_analysis(clicks, project):
         _restored("reanalysis_logfc_thresh", param_default("reanalysis_logfc_thresh")),
         _restored("reanalysis_ion_mode", "Positive"),
         _restored("reanalysis_tolerance_mz", param_default("reanalysis_tolerance_mz")),
+        True,                                                   # settings_restore_pending
     )
 
 

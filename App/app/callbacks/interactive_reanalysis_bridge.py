@@ -47,7 +47,11 @@ def fill_bridge_cluster_options(rds_path):
      Output("analysis_method", "value", allow_duplicate=True),
      Output("analysis_method_tims", "value", allow_duplicate=True),
      Output("main_tabs", "active_tab", allow_duplicate=True),
-     Output("reanalysis_bridge_status", "children")],
+     Output("reanalysis_bridge_status", "children"),
+     # ★ ver58.1 (デバッグ総点検 B-3): 転記も analysis_method を書くので、
+     #   auto_switch_data_folder が発火して**それまで指定していた
+     #   データフォルダが既定に戻る**。復元中と宣言して黙らせる。
+     Output("settings_restore_pending", "data", allow_duplicate=True)],
     Input("btn_send_to_reanalysis", "n_clicks"),
     [State("reanalysis_bridge_mode", "value"),
      State("reanalysis_bridge_clusters", "value"),
@@ -60,7 +64,8 @@ def send_to_reanalysis(n_clicks, mode, clusters, rds_path, ms_instrument):
         raise PreventUpdate
     if not clusters:
         return (no_update, no_update, no_update, no_update, no_update, no_update,
-                html.Span("対象クラスタを選択してください", className="text-warning small"))
+                html.Span("対象クラスタを選択してください", className="text-warning small"),
+                no_update)
     target = ", ".join(str(c) for c in clusters)
     fm = mode if mode in ("keep", "exclude") else "keep"
     folder = str(Path(rds_path).parent) if rds_path else ""
@@ -76,4 +81,4 @@ def send_to_reanalysis(n_clicks, mode, clusters, rds_path, ms_instrument):
         f"{inst} 再解析フォームに転記しました（対象クラスタ・モード・RDSフォルダ）。"
         "設定タブで「再解析データフォルダ」等を確認して ▶解析実行 してください。",
         className="text-success small")
-    return target, fm, folder, desi_method, tims_method, "settings", msg
+    return target, fm, folder, desi_method, tims_method, "settings", msg, True
