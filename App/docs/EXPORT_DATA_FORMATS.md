@@ -204,7 +204,10 @@ TIMS インタラクティブ出力の元になる変換済み parquet（`<BASE>
 - **列名**: peak list があれば `化合物名_<m/z 4桁> | データベース | アダクト`、
   無ければ m/z を小数 6 桁で文字列化した `419.257200` 形式。
   重複した場合は末尾に ` #2`, ` #3` … を付けて一意化する。
-- **圧縮**: zstd（pyarrow の他オプションは既定のまま）
+- **圧縮**: zstd
+- **エンコード**: 強度列・`id`/`x`/`y` は PLAIN、`annotation` のみ辞書エンコード
+  （`use_dictionary=["annotation"]`）。強度は連続量なので辞書にすると書き込みが 3.2 倍
+  遅くなり、ファイルも大きくなる（ver60.0 で変更。値は不変）
 - **row group**: 全行 1 つ（下記「row group レイアウト」参照）
 
 スキーマ key-value メタデータ（3 キー。いずれもキー・値とも bytes）:
@@ -217,7 +220,8 @@ TIMS インタラクティブ出力の元になる変換済み parquet（`<BASE>
 
 #### 中間ファイルと副産物
 
-- **Phase A の一時ファイル** `<BASE>_temp.parquet`（snappy、512 行/row group、全列 float64）。
+- **Phase A の一時ファイル** `<BASE>_temp.parquet`（snappy、1024 行/row group、
+  m/z 列は float64・強度列は出力と同じ幅（既定 float32））。
   CSV をストリーミングで一旦 parquet 化し、Phase B で転置しながら最終ファイルへ書く。
   変換成功後に削除される。
 - **注釈サイドカー** `<BASE>_feature_annotations.parquet`（1 行 = 1 m/z）。

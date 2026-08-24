@@ -673,7 +673,17 @@ _TEMP_PARQUET_COMPRESSION = "snappy"
 # (= ceil(n_mz / この値)) を決め、Phase B の間ずっと常駐するフッタ量に直結するため、
 # メモリ見積り (_phase_a_footer_bytes) と Phase A の書き込みで**同じ定数**を参照する。
 # 片方だけ変えると見積りが黙って外れる。
-_TEMP_PARQUET_ROW_GROUP_SIZE = 512
+#
+# ★ ver60.0: 512 → 1024。フッタ常駐量と open 時間は row group 数にほぼ比例するので、
+#   倍にすると両方が半分になる（60,000 spot × 2,000 m/z で実測: フッタ 22.6MB → 13.8MB、
+#   open 2.4s → 1.8s、sink 自体も 15.5s/21.1s → 11.2s/14.3s と 2 回とも速い）。
+#   ver49.0 の CHANGELOG は「行数が n_mz しかないため単一 row group ＝全データの
+#   バッファリングになり polars のストリーミングが壊れる」として引き上げを見送っていたが、
+#   polars 1.33 で rg=512/1024/2000（= n_mz と同じ＝単一 row group）を**別プロセスで**
+#   実測すると、ピーク RSS は 3.41 / 3.20 / 3.23 GB とほぼ横ばいで差が出なかった。
+#   それでも n_mz と同数まで上げるのは避け、実データ規模 (n_mz 2,700〜4,566) で
+#   row group が 3 個以上残る 1024 に留める（ストリーミングの前提を壊さない範囲）。
+_TEMP_PARQUET_ROW_GROUP_SIZE = 1024
 # pyarrow フォールバック時に CSV を 1 度に読むバイト数。1 行が「spot 数 × 約 11 バイト」
 # なので、実データ規模ではこのブロックに十数行しか入らない（＝バッチが大量に出る）。
 # テストから小さくして「バッチを束ねて row group にする」経路を検証できるよう定数化する。
@@ -686,8 +696,22 @@ def _csv_to_temp_parquet(
     delim: str,
     skip: int,
     temp_parquet: Path,
+    *,
+    store_float32: bool = True,
 ) -> None:
-    """Phase A: Intensity CSV を一時 Parquet にストリーミング変換"""
+    """Phase A: Intensity CSV を一時 Parquet にストリーミング変換
+
+    ★ ver60.0: 強度列を **出力と同じ型**で読むようにした。以前は `store_float32`
+      （既定 True）で出力が float32 になる場合でも、一時 Parquet だけは常に float64
+      で書いていた。捨てるだけの中間ファイルに 2 倍のバイト数を払い、その 2 倍を
+      Phase A で圧縮し、Phase B で展開し、`to_numpy` と `column_stack` で 2 回
+      コピーしてから、最後に float32 へ落として捨てていた。
+      値は変わらない — 出力がどのみち float32 なので、丸めが 1 段早まるだけ。
+      polars/pyarrow の 10 進パーサはどちらの幅でも正しく丸めるため、
+      「直接 float32」と「float64 経由」の結果は一致する（小数 17 桁まで実測）。
+      m/z 列（先頭）だけは float64 のまま — 列名と `mz_sorted` メタデータの
+      精度を決めるのはこの列で、float32 に落とすと m/z が丸まる。
+    """
     # SCILS_NO_POLARS=1 で polars を使わず pyarrow 経路を強制（CPU 非互換などの保険）。
     _use_polars = False
     if os.environ.get("SCILS_NO_POLARS"):
@@ -713,7 +737,13 @@ def _csv_to_temp_parquet(
         #        (schema_inference の `schema_overwrite.len() == headers.len()` 分岐)
         #   つまり dict は位置指定の上位互換で、Phase B が名前で spot 列を読む
         #   (`pf.read(columns=...)`) ための名前正規化まで担保する。
-        schema_overrides = {h: pl.Float64 for h in int_headers}
+        # 先頭 = m/z 列は必ず Float64、残り = spot 列は出力と同じ幅。
+        # 列数と同数の dict である性質は保つ（上のコメントの index フォールバック論拠）。
+        value_dtype = pl.Float32 if store_float32 else pl.Float64
+        schema_overrides = {
+            h: (pl.Float64 if i == 0 else value_dtype)
+            for i, h in enumerate(int_headers)
+        }
         lf = pl.scan_csv(
             str(intensity_path),
             separator=delim,
@@ -737,13 +767,20 @@ def _csv_to_temp_parquet(
         import pyarrow.csv as pacsv
         import pyarrow.parquet as pq
 
-        column_types = {h: pa.float64() for h in int_headers}
+        value_type = pa.float32() if store_float32 else pa.float64()
+        column_types = {
+            h: (pa.float64() if i == 0 else value_type)
+            for i, h in enumerate(int_headers)
+        }
         read_opts = pacsv.ReadOptions(block_size=_CSV_READ_BLOCK_BYTES, skip_rows=skip)
         parse_opts = pacsv.ParseOptions(delimiter=delim)
         convert_opts = pacsv.ConvertOptions(column_types=column_types)
         reader = pacsv.open_csv(str(intensity_path), read_opts, parse_opts, convert_opts)
         first_batch = reader.read_next_batch()
-        arrow_schema = pa.schema([(n, pa.float64()) for n in first_batch.schema.names])
+        arrow_schema = pa.schema([
+            (n, pa.float64() if i == 0 else value_type)
+            for i, n in enumerate(first_batch.schema.names)
+        ])
         # ★ ver56.8: 以前は `w.write_batch(batch)` を素で繰り返していたが、pyarrow は
         #   **1 回の write_batch = 1 row group** として書き出す。ReadOptions(block_size=32MB)
         #   に対し 1 行は「spot 数 × 約 11 バイト」なので、実データ規模では 1 バッチが
@@ -998,7 +1035,8 @@ def _phase_a_footer_bytes(*, n_spots: int, n_mz: int) -> float:
     Phase B は `pf = pq.ParquetFile(temp_parquet)` を握ったまま chunk 読みするので、
     このフッタは最後まで解放されない。column chunk 数は
     `ceil(n_mz / _TEMP_PARQUET_ROW_GROUP_SIZE) × (n_spots + 1)` で、実データ規模
-    （203,078 spot × 2,700 m/z）では約 120 万 chunk = 約 1.2GB になる。
+    （203,078 spot × 2,700 m/z）では約 61 万 chunk = 約 0.58GB になる
+    （ver59 以前は _TEMP_PARQUET_ROW_GROUP_SIZE が 512 だったため約 122 万 chunk = 約 1.2GB）。
 
     ★ ver56.8: 以前は `_PHASE_A_FOOTER_MARGIN_GB = 1.5` という**固定値**だった。
     実データ規模ではたまたま近い値だが、この量は n_mz にほぼ比例するので、m/z 数の
@@ -1320,11 +1358,18 @@ def convert_scils_to_parquet(
     pf = None
     try:
         # Phase A も try 内で実行し、失敗時も finally で一時ファイルを確実に削除する
-        _csv_to_temp_parquet(intensity_path, int_headers, delim, skip, temp_parquet)
+        _csv_to_temp_parquet(intensity_path, int_headers, delim, skip, temp_parquet,
+                             store_float32=store_float32)
         logger.info("Phase A 完了: %.1f 秒", time.perf_counter() - phase_a_start)
 
         # 4) m/z 列読込 + ソート
-        pf = pq.ParquetFile(str(temp_parquet))
+        # ★ ver60.0: `pre_buffer=True` を足した。既定の False では column chunk ごとに
+        #   細切れの read が飛ぶ（実データ規模で 1.2M 回）。1 回の `pf.read` が要求する
+        #   chunk をまとめて読ませる。
+        #   `memory_map=True` は使わない — 読み出した配列が mmap 領域に依存して元ファイル
+        #   を掴んだままになり、finally の `temp_parquet.unlink()` と衝突する
+        #   （parquet_repack.py が同じ理由で False を明示している）。
+        pf = pq.ParquetFile(str(temp_parquet), pre_buffer=True)
         # ★ ver51.9: m/z 列は **位置**で解決する。`int_headers[0]` で引くと、
         #   CSV 本体を読むエンジンが BOM を剥がなかったとき一時 Parquet の
         #   1 列目が `﻿m/z` のままで名前が一致せず、BOM 付き CSV の変換が丸ごと落ちる。
@@ -1473,7 +1518,14 @@ def convert_scils_to_parquet(
         #   buf[j, :k] は連続ビューになるため pa.array がゼロコピーで包む（= 列 1 本ぶん）。
         #   軸を逆順 (rg_rows, n_mz) にすると buf[:, j] が非連続になり pyarrow が黙って
         #   コピーし、ピークメモリが 2 倍になる。**軸順は絶対に変えないこと。**
+        #
+        #   buf の行は **一時 Parquet の m/z 並び（＝ CSV の並び）のまま**で、
+        #   m/z 昇順への並べ替えは書き出し側の行選択 `buf[order_mz[j]]` が担う
+        #   （下の ★ ver60.0 参照）。
         buf = np.empty((n_mz, rg_rows), dtype=intensity_dtype)
+        # 書き出しループから numpy スカラ索引を消すため Python int にしておく
+        # （row group ごとに n_mz 回引くので、ここだけで数千回×row group 数になる）。
+        order_mz_rows = order_mz.tolist()
 
         # 失敗時に壊れた出力を残さないよう、いったん同じフォルダの一時パスへ書いてから
         # 検証して os.replace で差し替える。ParquetWriter は close() 時に「完了した
@@ -1481,7 +1533,17 @@ def convert_scils_to_parquet(
         # 途中終了で「有効だが行数が足りない parquet」が既存の正常ファイルを上書きする。
         tmp_out = _unique_path(out_path.parent / f"{out_path.stem}.writing{out_path.suffix}")
         try:
-            with pq.ParquetWriter(str(tmp_out), schema, compression="zstd") as pq_writer:
+            # ★ ver60.0: `use_dictionary` を明示した。pyarrow の既定は **全列 True** で、
+            #   m/z 列（連続量の float32、spot ごとにほぼ相異なる）にも辞書エンコードが
+            #   掛かっていた。強度のような連続量では辞書は
+            #     - 値ごとにハッシュを引くので **書き込みが遅くなり**（実測 3.2 倍）
+            #     - 辞書本体 + インデックスを両方持つので **ファイルが大きくなる**
+            #       （実測 0.92x → 0.67x、raw float32 比）
+            #   という二重の損になる。値には一切影響しない物理エンコードの選択で、
+            #   PLAIN は Parquet で最も基本的な符号化なので読み手側の互換も広がる。
+            #   `annotation` だけは列挙値（領域ラベル数個）なので辞書が正しく効く。
+            with pq.ParquetWriter(str(tmp_out), schema, compression="zstd",
+                                  use_dictionary=["annotation"]) as pq_writer:
                 for rg_start in range(0, n_spots, rg_rows):
                     rg_end = min(n_spots, rg_start + rg_rows)
                     n_this = rg_end - rg_start
@@ -1497,10 +1559,16 @@ def convert_scils_to_parquet(
                         ])
                         if vals.shape[0] != n_mz:
                             raise RuntimeError(f"行数不一致: 期待 {n_mz}, 実際 {vals.shape[0]}")
-                        # m/z 並べ替えと目的 dtype へのキャストを「代入 1 回」で同時に行う。
-                        # numpy の代入キャストは casting='unsafe'（= astype の既定）と同一
-                        # 挙動なので、オーバーフローが inf になる点まで従来と一致する。
-                        buf[:, start - rg_start:end - rg_start] = vals[order_mz, :]
+                        # ★ ver60.0: ここは `vals[order_mz, :]` と書いて m/z 並べ替えを
+                        #   **ブロックごとに** やり直していた。並べ替えは全ブロックで同一
+                        #   なのに、spot_block 単位で全サイズの fancy-index コピーが
+                        #   1 回ずつ発生する（実データ規模で 1,016 回）。しかも行方向の
+                        #   gather なのでキャッシュにも当たらない。
+                        #   並べ替えは書き出し側の行選択 1 回に移した（下の
+                        #   `buf[order_mz_rows[j]]`）。行の置換とキャストは可換なので
+                        #   値は完全に一致する。代入キャストが casting='unsafe'
+                        #   （= astype の既定）でオーバーフローが inf になる点も従来どおり。
+                        buf[:, start - rg_start:end - rg_start] = vals
                         del vals, table_block
                         _report(15 + int(78 * end / n_spots),
                                 f"読込中… {end:,}/{n_spots:,} spot")
@@ -1514,7 +1582,12 @@ def convert_scils_to_parquet(
                         pa.array(x_sorted[rg_start:rg_end].astype(np.float64, copy=False)),
                         pa.array(y_sorted[rg_start:rg_end].astype(np.float64, copy=False)),
                     ]
-                    arrays.extend(pa.array(buf[j, :n_this]) for j in range(n_mz))
+                    # buf の行は CSV の m/z 並びのままなので、出力列 j には
+                    # `order_mz[j]` 行目を渡す（mz_sorted[j] == mz_num[order_mz[j]]）。
+                    # buf は C 連続なので行スライスは連続ビューのままで、
+                    # pa.array のゼロコピーは維持される。
+                    arrays.extend(
+                        pa.array(buf[order_mz_rows[j], :n_this]) for j in range(n_mz))
                     arrays.append(
                         pa.array(annotation_sorted[rg_start:rg_end], type=pa.string()))
                     table = pa.Table.from_arrays(arrays, schema=schema)
