@@ -586,6 +586,33 @@ class TestRowGroupLayout:
             assert cost < sc._row_group_cost_bytes(
                 other, n_spots=n_spots, n_mz=n_mz, itemsize=itemsize)
 
+    def test_intensity_columns_are_not_dictionary_encoded(self, tmp_path):
+        """★ ver60.0: 強度列に辞書エンコードを掛けない。annotation にだけ掛ける。
+
+        pyarrow の `use_dictionary` 既定は**全列 True**。連続量である強度に辞書を
+        掛けると、値ごとにハッシュを引くので書き込みが 3.2 倍遅くなり、辞書本体と
+        インデックスを両方持つのでファイルも大きくなる（raw float32 比 0.92x → 0.67x）。
+        `annotation` は領域ラベル数個の列挙値なので辞書が正しく効く。
+
+        既定に戻すと（`use_dictionary` を外すと）強度列に RLE_DICTIONARY が現れて
+        このテストが落ちる。
+        """
+        data_dir = tmp_path / "scils"
+        _make_basic_pair(data_dir, add_annotation=True)
+        result = sc.convert_scils_to_parquet(
+            str(data_dir), str(tmp_path / "out" / "sample.parquet"), organize=False)
+
+        pf = pq.ParquetFile(result.output_path)
+        names = pf.schema_arrow.names
+        rg = pf.metadata.row_group(0)
+        dict_encoded = {
+            names[i] for i in range(len(names))
+            if any("DICTIONARY" in e for e in rg.column(i).encodings)
+        }
+        assert dict_encoded == {"annotation"}, (
+            f"辞書エンコードされている列が想定と違う: {sorted(dict_encoded)}"
+        )
+
     def test_buffer_row_is_zero_copy(self):
         """軸順 (n_mz, rg_rows) を反転すると pa.array が黙ってコピーする。その回帰ガード。"""
         import pyarrow as pa

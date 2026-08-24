@@ -14,7 +14,7 @@
 
 ## 2026-08-24_ver60.0
 
-### 改善: SCiLS 変換を高速化し、出力 Parquet を 37% 小さくした（値は 1 ビットも変わらない）
+### 改善: SCiLS 変換を高速化し出力を 37% 小さくした ＋ サブプロセス化して600 秒の壁と進捗表示を解消（値は 1 ビットも変わらない）
 
 実データ規模（203,078 spot × 2,700〜4,566 m/z / Intensity CSV 9.5 GB）の変換は
 Dash コールバック内で**同期実行**されるため、Caddy の `read_timeout 600s` を超えると
@@ -86,6 +86,52 @@ Phase B は `vals[order_mz, :]` を **spot_block ごとに**実行していた�
 なり、`finally` の `temp_parquet.unlink()` と衝突する（`parquet_repack.py` が同じ理由で
 False を明示している）。
 
+### 併せて: 変換をサブプロセス化し、進捗表示と同時実行ガードを入れた
+
+高速化しても**同期実行のままでは上限が残る**ため、同じ痛みの根をまとめて閉じた。
+それまで変換は Dash コールバック内で同期実行しており、次の 3 つが同時に起きていた。
+
+1. Caddy の `read_timeout 600s` を超える変換が **HTTP 側で打ち切られる**
+   （変換自体は走り続けるので、利用者には「固まった」ようにしか見えない）
+2. `convert_scils_to_parquet` は `progress_cb` を実装済みで `_report` を 7 箇所で
+   呼んでいるのに、**呼び出し側が一度も渡しておらず死んでいた**
+   （ver4.22 で入れ、DiskcacheManager の `expire=300` 問題で ver4.23 に撤回されたまま）
+3. 同時実行ガードが無く、1 変換あたり数 GB なので複数人が同時に押すと 12GB
+   コンテナを圧迫した（ver49.0 の CHANGELOG が「既知の課題」として挙げていた）
+
+ver4.23 の CHANGELOG 自身が代替案として「サブプロセス＋ポーリング」を挙げており、
+**Parquet 再パックで既に動いている方式**（`parquet_maintenance_callbacks.py`）を写した。
+
+- **新規 `App/tools/convert_scils_cli.py`** — 変換のエントリポイント。`progress_cb` から
+  `進捗: NN% <ラベル>` を出し、結果を `ConversionResult` の JSON で書き出す。
+  進捗は spot_block ごとに来る（実データ規模で 1,000 回以上）ので、**% か作業種別が
+  変わったときだけ**出す。終了コードは 0 / 1（引数エラー）/ 2（変換失敗）。
+- **`scils_converter_callbacks.py`** — `start_analysis_process` で起動し、
+  `dcc.Interval` (1.5s) でログを読んで進捗バーを更新、`check_process_completion` で
+  完了を判定する。同じ枠組みに乗せたので**同時実行ブロック・空きメモリ/ディスク
+  チェック・ログ退避・watchdog がそのまま効く**。変換同士の二重起動は
+  `start_analysis_process` のガード（ジョブ台帳に載る解析しか見ない）では止まらないため、
+  コールバック側で `proc.poll()` を見て弾く。
+- **モーダル** に進捗バー・実行ログ・停止ボタンを追加（`dcc.Loading` は置き換え）。
+- 失敗時は、変換器の `ValueError` に入っている**利用者が直せる指示**
+  （「SCiLS Lab で再エクスポートしてください」等）を traceback ではなくそちらを抜き出して出す。
+
+出力 Parquet の内容・スキーマ・メタデータはこの変更でも一切変わらない。
+
+#### この経路のテスト
+
+新規 `tests/test_scils_convert_subprocess.py`（14 件）。GUI と CLI をまたいで壊れる
+種類の欠陥だけを狙っている。Playwright を立てずに CLI を実プロセスとして起動すれば
+同じ経路を通せる。
+
+- **CLI が出す進捗行とコールバックの正規表現が対であること**。ここが噛み合わないと
+  進捗バーは例外を出さずに 0% のまま止まる（CLI 側の接頭辞を変えると落ちる）。
+- CLI が書く結果 JSON が `ConversionResult` に**過不足なく**戻せること。
+- 失敗時に利用者向けの説明が抜き出せ、traceback が混ざらないこと。
+- **各コールバックの return 要素数が Output 数と一致すること**。ずれても Dash は
+  起動時に検出せず、ボタンを押した瞬間に落ちる（Output を 1 つ削ると落ちる）。
+- 二重起動が止まること / 終了済みプロセスが次回を妨げないこと。
+
 ### 計測して**やめた**もの
 
 提案時点では有望に見えたが、実測で根拠が無かったため入れていない。次に同じことを
@@ -108,7 +154,11 @@ False を明示している）。
 ### テスト
 
 `tests/test_scils_converter.py` / `test_scils_bom_conversion.py` /
-`test_scils_bom_headers.py` / `test_scils_section_coords.py` = **95 passed**。
+`test_scils_bom_headers.py` / `test_scils_section_coords.py` /
+`test_scils_convert_subprocess.py` = **110 passed**。
+全体は `2,332 passed / 11 failed`。11 件は numpy・pyarrow の上限ピンが無いことによる
+**変更していない main でも落ちる既知の失敗**（`test_hne_overlay` 3 / `test_peak_annotation` 2 /
+`test_render_payload` 6）で、同一であることを実際に main で確認済み。
 
 - `TestPolarsPathActuallyRuns::test_mz_column_is_float` を `store_float32` で
   パラメトライズし、「m/z 列は必ず float64 / 強度列は指定どおりの幅」を固定した。
@@ -120,6 +170,12 @@ False を明示している）。
   守りたいのは「chunk 数から算出していること」であって特定の GB 値ではない。
 - BOM テストの `_csv_to_temp_parquet` 差し替えを `*args/**kwargs` 受けにした。
   本物のシグネチャに引数が増えるたび BOM と無関係な TypeError で赤くなるため。
+- `test_intensity_columns_are_not_dictionary_encoded` を追加し、
+  「強度列は辞書エンコードしない / `annotation` にだけ掛ける」を固定した。
+
+上記のうち退行ガードとして意図したものは、**変更を戻すと実際に落ちること**を
+1 件ずつ確認済み（辞書エンコード / Phase A の float32 / 進捗行の接頭辞 /
+書き出し側の m/z 行選択 / コールバックの Output 数）。
 
 ---
 
