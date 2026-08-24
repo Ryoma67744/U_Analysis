@@ -120,8 +120,12 @@ class TestEngineMayKeepTheBom:
 
         real = SC._csv_to_temp_parquet
 
-        def _bom_keeping(intensity_path, int_headers, delim, skip, temp_parquet):
-            real(intensity_path, int_headers, delim, skip, temp_parquet)
+        # 差し替えは *args/**kwargs で受ける。本物のシグネチャに引数が増えるたび
+        # （ver60.0 の store_float32 など）ここが TypeError で落ちると、
+        # BOM とは無関係な理由でこのテストが赤くなる。
+        def _bom_keeping(*args, **kwargs):
+            real(*args, **kwargs)
+            temp_parquet = args[4]
             t = pq.read_table(str(temp_parquet))
             names = list(t.schema.names)
             names[0] = BOM + names[0]          # エンジンが剥がなかった状況
@@ -156,6 +160,11 @@ class TestPolarsPathActuallyRuns:
     守りたい不変条件は 2 つ:
       1. polars 経路が例外なく完走する（= scan_csv が受け付ける形で渡している）
       2. m/z 列が String に推論されず Float64 になる（BOM の有無に依存しない）
+      3. 強度列が `store_float32` の指定どおりの幅になる（★ ver60.0）
+
+    3 は 1・2 より強い踏み絵になっている。dtype 指定が丸ごと無視されると
+    polars の推論で全列 Float64 になり、m/z 列だけを見ても気づけないが、
+    強度列が float32 にならないことで検出できる。
     """
 
     @pytest.fixture(autouse=True)
@@ -163,12 +172,14 @@ class TestPolarsPathActuallyRuns:
         """モジュール全体の `_force_pyarrow` を打ち消し、polars 経路を通す。"""
         monkeypatch.delenv("SCILS_NO_POLARS", raising=False)
 
+    @pytest.mark.parametrize("store_float32", [True, False])
     @pytest.mark.parametrize("bom_in_file,bom_in_headers", [
         (True, False),   # ファイルに BOM。int_headers は utf-8-sig 読みなのでクリーン
         (False, True),   # 逆向き: int_headers 側だけ BOM 付き（列名キー実装の踏み絵）
         (False, False),
     ])
-    def test_mz_column_is_float(self, tmp_path, bom_in_file, bom_in_headers):
+    def test_mz_column_is_float(self, tmp_path, bom_in_file, bom_in_headers,
+                                store_float32):
         pytest.importorskip("polars")
         import pyarrow.parquet as pq
         from app.services import scils_converter as SC
@@ -181,14 +192,20 @@ class TestPolarsPathActuallyRuns:
             headers = [BOM + headers[0]] + headers[1:]
 
         temp = tmp_path / "temp.parquet"
-        SC._csv_to_temp_parquet(intensity, headers, delim, skip, temp)
+        SC._csv_to_temp_parquet(intensity, headers, delim, skip, temp,
+                                store_float32=store_float32)
 
         schema = pq.read_schema(str(temp))
+        # m/z 列は store_float32 に関わらず必ず float64。列名と mz_sorted メタデータの
+        # 精度がこの列で決まるので、float32 に落とすと m/z そのものが丸まる。
         assert str(schema.field(0).type) == "double", (
             f"m/z 列が {schema.field(0).type} になっている。dtype 指定が効いていない"
         )
-        assert all(str(f.type) == "double" for f in schema), (
-            "強度列も含め全列 float64 でなければならない"
+        want = "float" if store_float32 else "double"
+        bad = [f.name for f in list(schema)[1:] if str(f.type) != want]
+        assert not bad, (
+            f"強度列は store_float32={store_float32} なら全て {want} のはず。"
+            f"違う型の列: {bad[:5]}"
         )
         # Phase B は spot 列を **名前で** 読む (`pf.read(columns=spot_cols)`) ので、
         # 一時 Parquet の列名が int_headers と一致することが要件。

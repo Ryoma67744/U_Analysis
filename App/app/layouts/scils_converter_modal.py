@@ -8,6 +8,24 @@ import dash_bootstrap_components as dbc
 
 from app.config import TIMS_DATA_DIR
 
+# ★ ver60.0: 変換をサブプロセス化したので、実行中の表示先が要る。
+# html.Pre / dbc.Progress のスタイル。コールバック側が display を block にした複製を
+# 持つため、両者は同期を保つこと（parquet_maintenance_modal.py と同じ約束）。
+LOG_STYLE = {
+    "backgroundColor": "#111",
+    "color": "#d0d0d0",
+    "padding": "8px",
+    "borderRadius": "4px",
+    "fontSize": "11px",
+    "fontFamily": "Consolas, monospace",
+    "maxHeight": "220px",
+    "overflowY": "auto",
+    "whiteSpace": "pre-wrap",
+    "wordBreak": "break-all",
+    "display": "none",
+}
+BAR_STYLE = {"height": "18px", "display": "none"}
+
 
 def create_scils_converter_modal():
     """SCiLS データ変換モーダルのレイアウト"""
@@ -161,10 +179,33 @@ def create_scils_converter_modal():
                     ],
                 ),
 
+                # ---------- 実行状況エリア ----------
+                # ★ ver60.0: 変換はサブプロセスで走り、dcc.Interval のポーリングで
+                #   ここを更新する。同期実行のままでは Caddy の read_timeout 600s を
+                #   超える変換が HTTP 側で打ち切られていた。
                 html.Hr(),
-                dcc.Loading(html.Div(id="scils_conversion_result", className="small")),
+                dbc.Progress(
+                    id="scils_progress_bar",
+                    value=0,
+                    max=100,
+                    striped=True,
+                    animated=True,
+                    label="",
+                    style=dict(BAR_STYLE),
+                    className="mb-2",
+                ),
+                html.Pre(id="scils_conversion_log", style=dict(LOG_STYLE)),
+                html.Div(id="scils_conversion_result", className="small"),
+
+                # ---------- 非表示要素 (状態保持・ポーリング) ----------
+                dcc.Interval(id="scils_progress_interval", interval=1500, disabled=True),
+                dcc.Store(id="scils_conversion_state", data={}),
             ]),
             dbc.ModalFooter([
+                dbc.Button(
+                    "停止", id="scils_stop_btn",
+                    color="danger", size="sm", disabled=True,
+                ),
                 dbc.Button("キャンセル", id="scils_cancel_btn", color="secondary", size="sm"),
                 dbc.Button(
                     "変換実行", id="scils_run_btn", color="primary", size="sm",

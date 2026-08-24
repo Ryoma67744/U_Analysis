@@ -586,6 +586,33 @@ class TestRowGroupLayout:
             assert cost < sc._row_group_cost_bytes(
                 other, n_spots=n_spots, n_mz=n_mz, itemsize=itemsize)
 
+    def test_intensity_columns_are_not_dictionary_encoded(self, tmp_path):
+        """★ ver60.0: 強度列に辞書エンコードを掛けない。annotation にだけ掛ける。
+
+        pyarrow の `use_dictionary` 既定は**全列 True**。連続量である強度に辞書を
+        掛けると、値ごとにハッシュを引くので書き込みが 3.2 倍遅くなり、辞書本体と
+        インデックスを両方持つのでファイルも大きくなる（raw float32 比 0.92x → 0.67x）。
+        `annotation` は領域ラベル数個の列挙値なので辞書が正しく効く。
+
+        既定に戻すと（`use_dictionary` を外すと）強度列に RLE_DICTIONARY が現れて
+        このテストが落ちる。
+        """
+        data_dir = tmp_path / "scils"
+        _make_basic_pair(data_dir, add_annotation=True)
+        result = sc.convert_scils_to_parquet(
+            str(data_dir), str(tmp_path / "out" / "sample.parquet"), organize=False)
+
+        pf = pq.ParquetFile(result.output_path)
+        names = pf.schema_arrow.names
+        rg = pf.metadata.row_group(0)
+        dict_encoded = {
+            names[i] for i in range(len(names))
+            if any("DICTIONARY" in e for e in rg.column(i).encodings)
+        }
+        assert dict_encoded == {"annotation"}, (
+            f"辞書エンコードされている列が想定と違う: {sorted(dict_encoded)}"
+        )
+
     def test_buffer_row_is_zero_copy(self):
         """軸順 (n_mz, rg_rows) を反転すると pa.array が黙ってコピーする。その回帰ガード。"""
         import pyarrow as pa
@@ -737,10 +764,16 @@ class TestConversionMemoryGuard:
         """一時 Parquet のフッタは n_mz に比例する。旧実装の固定 1.5GB では追えない。"""
         small = sc._phase_a_footer_bytes(n_spots=203_078, n_mz=2_700)
         large = sc._phase_a_footer_bytes(n_spots=203_078, n_mz=27_000)
-        # 実データ規模ではモジュール注記どおり約 1.15GB になる
-        assert 1.0 < small / _GB < 1.4
+        # ★ ver60.0: 実データ規模の絶対値は _TEMP_PARQUET_ROW_GROUP_SIZE から導く。
+        #   ここに GB の直値を書くと、あの定数を触るたびに「実装は正しいのに落ちる」
+        #   テストになる（512 → 1024 にした ver60.0 で実際にそうなった）。
+        #   守りたいのは「chunk 数から算出していること」であって特定の GB 値ではない。
+        n_rg = -(-2_700 // sc._TEMP_PARQUET_ROW_GROUP_SIZE)
+        assert small == pytest.approx(n_rg * (203_078 + 1) * sc._PER_CHUNK_META_BYTES)
         # 10 倍の m/z ではおよそ 10 倍（固定 1.5GB なら見逃していた領域）
         assert 8 < large / small < 12
+        # 固定値に戻す退行のガード: 定数を倍にすればフッタは半分になる
+        assert large > small
 
     def test_footer_is_counted_in_row_group_cost(self):
         """フッタ項がコストに乗っていること（予算から引く旧方式に戻さない）。"""

@@ -12,6 +12,190 @@
 
 ---
 
+## 2026-08-24_ver60.0
+
+### 改善: SCiLS 変換を高速化し出力を 37% 小さくした ＋ サブプロセス化して600 秒の壁と進捗表示を解消（値は 1 ビットも変わらない）
+
+実データ規模（203,078 spot × 2,700〜4,566 m/z / Intensity CSV 9.5 GB）の変換は
+Dash コールバック内で**同期実行**されるため、Caddy の `read_timeout 600s` を超えると
+HTTP 側で打ち切られる。変換時間の短縮はそのまま「変換が成立する上限データサイズ」に効く。
+
+計測できる形にしてから直した。新規 `App/tools/bench_scils_convert.py` が合成データで
+Phase A / Phase B / 合計 / ピーク RSS を出し、`--verify-against` で旧出力との
+**全列ビット比較**もできる。これまで変換には性能テストも実データ fixture も無く
+（テストの最大でも 2,000 m/z × 6 spot）、退行を検出する手段が一つも無かった。
+
+#### 実測（60,000 spot × 2,000 m/z、同一マシンで交互に 2 巡）
+
+| | Phase A | Phase B | 合計 | ピーク RSS | 出力サイズ |
+|---|---|---|---|---|---|
+| ver59 | 12.7 / 14.3 s | 18.7 / 19.4 s | 33.7 / 36.2 s | 4.65 GB | 596 MB |
+| ver60 | 11.6 / 11.0 s | **9.5 / 9.4 s** | **22.8 / 22.1 s** | 3.96 GB | **375 MB** |
+
+polars 経路・pyarrow フォールバック経路の両方で、出力を旧版と**全列ビット比較して一致**を
+確認済み（`Table.equals` は NaN を含むと必ず False になるので使っていない）。
+
+#### 1. 出力 Parquet の辞書エンコードをやめた ← 効果の大半はこれ
+
+pyarrow の `ParquetWriter` は `use_dictionary` の既定が**全列 True**で、強度の m/z 列
+（連続量の float32、spot ごとにほぼ相異なる）にも辞書エンコードが掛かっていた。
+連続量に対する辞書は
+
+- 値ごとにハッシュを引くので**書き込みが遅くなり**（実測 3.2 倍）
+- 辞書本体とインデックスを両方持つので**ファイルが大きくなる**（raw float32 比 0.92x → 0.67x）
+
+という二重の損になる。`use_dictionary=["annotation"]` として、列挙値である `annotation`
+だけに限定した。**値に影響しない物理エンコードの選択**で、PLAIN は Parquet で最も基本的な
+符号化なので読み手側の互換はむしろ広がる。Phase B が 19s → 9.5s、出力が 596MB → 375MB。
+
+#### 2. Phase A の一時 Parquet を出力と同じ型で書くようにした
+
+`store_float32`（既定 True）で出力が float32 になる場合でも、一時 Parquet だけは常に
+float64 で書いていた。捨てるだけの中間ファイルに 2 倍のバイト数を払い、その 2 倍を
+Phase A で圧縮し Phase B で展開し、`to_numpy` と `column_stack` で 2 回コピーしてから、
+最後に float32 へ落として捨てていた。m/z 列（先頭）だけは float64 のまま
+（列名と `mz_sorted` メタデータの精度がこの列で決まる）。
+
+値は変わらない。polars の 10 進パーサはどちらの幅でも正しく丸めるため「直接 float32」と
+「float64 経由」の結果は一致する（小数 4〜17 桁 × 200 万値で不一致 0 件を実測）。
+
+#### 3. 一時 Parquet の row group を 512 → 1024 行に
+
+フッタ常駐量と open 時間は row group 数にほぼ比例するので、倍にすると両方が半分になる
+（実測: フッタ 22.6MB → 13.8MB、open 2.4s → 1.8s、sink 自体も 2 回とも速い）。
+実データ規模のフッタ常駐は約 1.15GB → 約 0.58GB。
+
+ver49.0 は「行数が n_mz しかないため単一 row group ＝全データのバッファリングになり
+polars のストリーミングが壊れる」として引き上げを見送っていたが、polars 1.33 で
+rg=512/1024/2000（= n_mz と同じ＝単一 row group）を**別プロセスで**実測すると
+ピーク RSS は 3.41 / 3.20 / 3.23 GB とほぼ横ばいで差が出なかった。それでも n_mz と
+同数まで上げるのは避け、実データ規模で row group が 3 個以上残る 1024 に留めた。
+
+#### 4. m/z 並べ替えをブロックごとにやり直すのをやめた
+
+Phase B は `vals[order_mz, :]` を **spot_block ごとに**実行していた。並べ替えは全ブロックで
+同一なのに、全サイズの fancy-index コピーが 1 回ずつ発生する（実データ規模で 1,016 回）。
+しかも行方向の gather なのでキャッシュにも当たらない。並べ替えを書き出し側の行選択
+`buf[order_mz[j]]` 1 回に移した。`buf` は C 連続なので行スライスは連続ビューのままで、
+`pa.array` のゼロコピー（`test_buffer_row_is_zero_copy` が守っている性質）は維持される。
+
+#### 5. 一時 Parquet の読みに `pre_buffer=True`
+
+既定の False では column chunk ごとに細切れの read が飛ぶ（実データ規模で 1.2M 回）。
+`memory_map=True` は使わない — 読み出した配列が mmap 領域に依存して元ファイルを掴んだままに
+なり、`finally` の `temp_parquet.unlink()` と衝突する（`parquet_repack.py` が同じ理由で
+False を明示している）。
+
+### 併せて: 変換をサブプロセス化し、進捗表示と同時実行ガードを入れた
+
+高速化しても**同期実行のままでは上限が残る**ため、同じ痛みの根をまとめて閉じた。
+それまで変換は Dash コールバック内で同期実行しており、次の 3 つが同時に起きていた。
+
+1. Caddy の `read_timeout 600s` を超える変換が **HTTP 側で打ち切られる**
+   （変換自体は走り続けるので、利用者には「固まった」ようにしか見えない）
+2. `convert_scils_to_parquet` は `progress_cb` を実装済みで `_report` を 7 箇所で
+   呼んでいるのに、**呼び出し側が一度も渡しておらず死んでいた**
+   （ver4.22 で入れ、DiskcacheManager の `expire=300` 問題で ver4.23 に撤回されたまま）
+3. 同時実行ガードが無く、1 変換あたり数 GB なので複数人が同時に押すと 12GB
+   コンテナを圧迫した（ver49.0 の CHANGELOG が「既知の課題」として挙げていた）
+
+ver4.23 の CHANGELOG 自身が代替案として「サブプロセス＋ポーリング」を挙げており、
+**Parquet 再パックで既に動いている方式**（`parquet_maintenance_callbacks.py`）を写した。
+
+- **新規 `App/tools/convert_scils_cli.py`** — 変換のエントリポイント。`progress_cb` から
+  `進捗: NN% <ラベル>` を出し、結果を `ConversionResult` の JSON で書き出す。
+  進捗は spot_block ごとに来る（実データ規模で 1,000 回以上）ので、**% か作業種別が
+  変わったときだけ**出す。終了コードは 0 / 1（引数エラー）/ 2（変換失敗）。
+- **`scils_converter_callbacks.py`** — `start_analysis_process` で起動し、
+  `dcc.Interval` (1.5s) でログを読んで進捗バーを更新、`check_process_completion` で
+  完了を判定する。同じ枠組みに乗せたので**同時実行ブロック・空きメモリ/ディスク
+  チェック・ログ退避・watchdog がそのまま効く**。変換同士の二重起動は
+  `start_analysis_process` のガード（ジョブ台帳に載る解析しか見ない）では止まらないため、
+  コールバック側で `proc.poll()` を見て弾く。
+- **モーダル** に進捗バー・実行ログ・停止ボタンを追加（`dcc.Loading` は置き換え）。
+- 失敗時は、変換器の `ValueError` に入っている**利用者が直せる指示**
+  （「SCiLS Lab で再エクスポートしてください」等）を traceback ではなくそちらを抜き出して出す。
+
+出力 Parquet の内容・スキーマ・メタデータはこの変更でも一切変わらない。
+
+#### この経路のテスト
+
+新規 `tests/test_scils_convert_subprocess.py`（18 件）。GUI と CLI をまたいで壊れる
+種類の欠陥だけを狙っている。Playwright を立てずに CLI を実プロセスとして起動すれば
+同じ経路を通せる。
+
+- **CLI が出す進捗行とコールバックの正規表現が対であること**。ここが噛み合わないと
+  進捗バーは例外を出さずに 0% のまま止まる（CLI 側の接頭辞を変えると落ちる）。
+- CLI が書く結果 JSON が `ConversionResult` に**過不足なく**戻せること。
+- 失敗時に利用者向けの説明が抜き出せ、traceback が混ざらないこと。
+- **各コールバックの return 要素数が Output 数と一致すること**。ずれても Dash は
+  起動時に検出せず、ボタンを押した瞬間に落ちる（Output を 1 つ削ると落ちる）。
+- 二重起動が止まること / 終了済みプロセスが次回を妨げないこと。
+
+#### 自己レビューで見つけて直した 2 点（この経路の実装時）
+
+- **完了後も永久にポーリングし続ける** — poll は完了処理で
+  `_convert_process_state["process"] = None` にするが、そのとき既に飛んでいた次の
+  `dcc.Interval` tick がもう 1 回入ってくる。素直に書くとそこで
+  「プロセスが無い → まだ実行中」と誤判定して **interval を再開**し、
+  完了後も回り続ける（run ボタンも無効のまま戻らない）。アプリが変換中に再起動して
+  状態を見失った場合も同じ経路。`proc is None` を終端として扱い、結果欄は
+  `no_update` で触らずに止める（直前の tick が描いた成功パネルを消さないため）。
+- **エラー本文に traceback が混ざる** — `start_analysis_process` は
+  stderr を stdout へ合流させる（`stderr=subprocess.STDOUT`）ので、CLI が出す
+  エラー本文の直後に traceback が続く。traceback のコード行も字下げされているため
+  「字下げ行を拾う」だけでは混ざり、利用者に読めないものを見せてしまう。
+  **最初の非字下げ行で打ち切る**ようにした。
+
+どちらも変更を戻すと該当テストが落ちることを確認済み。
+
+### 計測して**やめた**もの
+
+提案時点では有望に見えたが、実測で根拠が無かったため入れていない。次に同じことを
+考える人が測り直さずに済むよう残す。
+
+- **`spot_block` 既定の引き上げ（200 → 1,000）** — Phase B は 8.5 / 8.1 / 8.7 秒
+  （200 / 1,000 / 3,000）でノイズの範囲。`pf.read` は Phase B 16.3 秒のうち 1.06 秒しか
+  占めておらず、そもそも伸びしろが無い。利用者に見える既定値なので、根拠なしには変えない。
+- **一時 Parquet を廃して CSV を raw memmap へ直接流す案** — 「CSV の 1 行 = 出力の 1 列」
+  なので転置は不要、という設計自体は正しい。しかし Phase B の内訳は
+  `write_table` 11.9s / `read` 1.06s / `column_stack` 0.23s / `open` 2.38s で、
+  **一時 Parquet の往復は支配的ではなかった**（重かったのは辞書エンコードで、上記 1 で解決）。
+  Phase A も sink 15.5 秒のうちパースが 10.8 秒を占める。置き換え先の
+  `np.fromstring` による行ごとパースは単一スレッドで 15.5 秒と polars の 10.8 秒より遅く、
+  **パースが悪化する**。プロセス並列版なら勝てる可能性はあるが、実データ規模で
+  検証する手段が無いままリスクを取る価値は無いと判断した。
+- **`use_byte_stream_split`** — 辞書を切った後では size 46.0MB → 46.8MB、速度もほぼ同じで
+  利点が無い。対応する読み手が辞書/PLAIN より狭いぶん不利。
+
+### テスト
+
+`tests/test_scils_converter.py` / `test_scils_bom_conversion.py` /
+`test_scils_bom_headers.py` / `test_scils_section_coords.py` /
+`test_scils_convert_subprocess.py` = **114 passed**。
+全体は `2,336 passed / 11 failed`。11 件は numpy・pyarrow の上限ピンが無いことによる
+**変更していない main でも落ちる既知の失敗**（`test_hne_overlay` 3 / `test_peak_annotation` 2 /
+`test_render_payload` 6）で、同一であることを実際に main で確認済み。
+
+- `TestPolarsPathActuallyRuns::test_mz_column_is_float` を `store_float32` で
+  パラメトライズし、「m/z 列は必ず float64 / 強度列は指定どおりの幅」を固定した。
+  dtype 指定が丸ごと無視されると polars の推論で全列 float64 になるため、
+  **強度列の幅を見るほうが従来の「全列 float64」より強い踏み絵**になっている。
+- `test_phase_a_footer_scales_with_n_mz` の GB 直値を
+  `_TEMP_PARQUET_ROW_GROUP_SIZE` からの導出に置き換えた。直値のままだとあの定数を
+  触るたびに「実装は正しいのに落ちる」テストになる（今回 実際にそうなった）。
+  守りたいのは「chunk 数から算出していること」であって特定の GB 値ではない。
+- BOM テストの `_csv_to_temp_parquet` 差し替えを `*args/**kwargs` 受けにした。
+  本物のシグネチャに引数が増えるたび BOM と無関係な TypeError で赤くなるため。
+- `test_intensity_columns_are_not_dictionary_encoded` を追加し、
+  「強度列は辞書エンコードしない / `annotation` にだけ掛ける」を固定した。
+
+上記のうち退行ガードとして意図したものは、**変更を戻すと実際に落ちること**を
+1 件ずつ確認済み（辞書エンコード / Phase A の float32 / 進捗行の接頭辞 /
+書き出し側の m/z 行選択 / コールバックの Output 数）。
+
+---
+
 ## 2026-08-20_ver59.0
 
 ### 追加: 解析に使っていない切片を出力から除外できるようにする
