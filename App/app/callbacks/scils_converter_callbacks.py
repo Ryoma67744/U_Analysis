@@ -274,13 +274,22 @@ def poll_scils_conversion(n, store):
             pct, bar_label = v, m.group(2)
 
     proc = _convert_process_state.get("process")
+    if proc is None:
+        # プロセスを見失っている。2 通りある:
+        #   1. 直前の tick が完了処理を終えて None にした（interval を止める要求は
+        #      出しているが、既に飛んでいた次の tick がここへ来る）
+        #   2. アプリが変換中に再起動して、モジュール変数の状態が消えた
+        # どちらも「実行中」と答えてはいけない。答えると interval が**再開**され、
+        # 完了後も永久にポーリングし続ける（run ボタンも無効のまま戻らない）。
+        # 結果欄は触らずに（1 で描いた成功パネルを消さないよう no_update）止める。
+        return log_text, no_update, no_update, False, no_update, True, True, False
+
     status = None
-    if proc is not None:
-        try:
-            status = check_process_completion(
-                proc, store["status_file"], _convert_process_state.get("log_file_handle"))
-        except Exception as e:
-            logger.exception("check_process_completion failed: %s", e)
+    try:
+        status = check_process_completion(
+            proc, store["status_file"], _convert_process_state.get("log_file_handle"))
+    except Exception as e:
+        logger.exception("check_process_completion failed: %s", e)
 
     if status is None:
         return log_text, pct, bar_label, True, no_update, False, False, True
@@ -318,12 +327,22 @@ def _error_excerpt(log_text: str, max_lines: int = 12) -> str:
     """
     lines = log_text.splitlines()
     for i, line in enumerate(lines):
-        if line.startswith("変換エラー:"):
-            body = [ln.strip() for ln in lines[i + 1:i + 1 + max_lines]
-                    if ln.startswith("  ") and not ln.startswith("  File ")]
-            if body:
-                return "\n".join(body)
-            break
+        if not line.startswith("変換エラー:"):
+            continue
+        # 字下げが続く間だけを本文とする。`start_analysis_process` は
+        # stderr を stdout へ合流させる (`stderr=subprocess.STDOUT`) ので、
+        # 本文の直後には traceback が続く。traceback のコード行も字下げされて
+        # いるため「字下げ行を拾う」だけでは混ざる。**最初の非字下げ行で打ち切る**。
+        body = []
+        for ln in lines[i + 1:]:
+            if not ln.startswith("  ") or ln.lstrip().startswith(("File \"", "Traceback")):
+                break
+            body.append(ln.strip())
+            if len(body) >= max_lines:
+                break
+        if body:
+            return "\n".join(body)
+        break
     return "\n".join(lines[-max_lines:])
 
 

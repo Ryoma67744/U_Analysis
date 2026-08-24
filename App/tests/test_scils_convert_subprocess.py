@@ -174,6 +174,73 @@ class TestCallbackArity:
         assert len(out) == self._n_outputs("poll_scils_conversion")
 
 
+class TestPollTermination:
+    """完了後もポーリングし続けない / 結果表示を消さないこと。
+
+    poll は完了処理で `_convert_process_state["process"] = None` にするが、
+    そのとき既に飛んでいた次の `dcc.Interval` tick がもう 1 回入ってくる。
+    ここで「まだ実行中」と答えると **interval が再開され、完了後も永久に
+    ポーリングし続ける**（run ボタンも無効のまま戻らない）。
+    アプリが変換中に再起動して状態を見失った場合も同じ経路を通る。
+    """
+
+    def test_lost_process_stops_the_interval(self, tmp_path, monkeypatch):
+        from app.callbacks import scils_converter_callbacks as cb
+
+        log = tmp_path / "log.txt"
+        log.write_text("進捗: 100% 完了\n", encoding="utf-8")
+        monkeypatch.setattr(cb, "_convert_process_state", {"process": None})
+
+        out = cb.poll_scils_conversion(
+            1, {"log_file": str(log), "status_file": str(tmp_path / "st.txt")})
+        interval_disabled, stop_disabled, run_disabled = out[5], out[6], out[7]
+        assert interval_disabled is True, "完了後も interval が回り続ける"
+        assert stop_disabled is True
+        assert run_disabled is False, "run ボタンが無効のまま戻らない"
+
+    def test_lost_process_does_not_wipe_the_result_panel(self, tmp_path, monkeypatch):
+        """直前の tick が描いた成功パネルを消さない（no_update で触らない）。"""
+        from dash import no_update
+        from app.callbacks import scils_converter_callbacks as cb
+
+        log = tmp_path / "log.txt"
+        log.write_text("進捗: 100% 完了\n", encoding="utf-8")
+        monkeypatch.setattr(cb, "_convert_process_state", {"process": None})
+        out = cb.poll_scils_conversion(
+            1, {"log_file": str(log), "status_file": str(tmp_path / "st.txt")})
+        assert out[4] is no_update
+
+
+class TestErrorExcerpt:
+    def test_traceback_is_not_mixed_into_the_message(self):
+        """stderr は stdout へ合流するので、本文の直後に traceback が続く。
+
+        traceback のコード行も字下げされているため「字下げ行を拾う」だけでは
+        混ざる。利用者に読めないものを見せないこと。
+        """
+        from app.callbacks.scils_converter_callbacks import _error_excerpt
+
+        log = (
+            "Phase A 開始\n"
+            "変換エラー:\n"
+            "  Intensity と Spot テーブルの spot 番号が一致しません。\n"
+            "  SCiLS Lab で両ファイルの spot 番号が一致するよう再エクスポートしてください。\n"
+            "Traceback (most recent call last):\n"
+            '  File "/app/App/app/services/scils_converter.py", line 391, in convert\n'
+            "    raise ValueError(chr(10).join(msg))\n"
+            "ValueError: Intensity と Spot テーブルの spot 番号が一致しません。\n"
+        )
+        got = _error_excerpt(log)
+        assert "再エクスポート" in got
+        assert "Traceback" not in got
+        assert "File \"" not in got
+        assert "raise ValueError" not in got
+
+    def test_falls_back_to_log_tail_when_no_marker(self):
+        from app.callbacks.scils_converter_callbacks import _error_excerpt
+        assert "最後の行" in _error_excerpt("a\nb\n最後の行\n")
+
+
 class TestConcurrencyGuard:
     """★ ver60.0: 変換の二重起動を止める。
 

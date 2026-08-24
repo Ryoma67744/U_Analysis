@@ -120,7 +120,7 @@ ver4.23 の CHANGELOG 自身が代替案として「サブプロセス＋ポー�
 
 #### この経路のテスト
 
-新規 `tests/test_scils_convert_subprocess.py`（14 件）。GUI と CLI をまたいで壊れる
+新規 `tests/test_scils_convert_subprocess.py`（18 件）。GUI と CLI をまたいで壊れる
 種類の欠陥だけを狙っている。Playwright を立てずに CLI を実プロセスとして起動すれば
 同じ経路を通せる。
 
@@ -131,6 +131,23 @@ ver4.23 の CHANGELOG 自身が代替案として「サブプロセス＋ポー�
 - **各コールバックの return 要素数が Output 数と一致すること**。ずれても Dash は
   起動時に検出せず、ボタンを押した瞬間に落ちる（Output を 1 つ削ると落ちる）。
 - 二重起動が止まること / 終了済みプロセスが次回を妨げないこと。
+
+#### 自己レビューで見つけて直した 2 点（この経路の実装時）
+
+- **完了後も永久にポーリングし続ける** — poll は完了処理で
+  `_convert_process_state["process"] = None` にするが、そのとき既に飛んでいた次の
+  `dcc.Interval` tick がもう 1 回入ってくる。素直に書くとそこで
+  「プロセスが無い → まだ実行中」と誤判定して **interval を再開**し、
+  完了後も回り続ける（run ボタンも無効のまま戻らない）。アプリが変換中に再起動して
+  状態を見失った場合も同じ経路。`proc is None` を終端として扱い、結果欄は
+  `no_update` で触らずに止める（直前の tick が描いた成功パネルを消さないため）。
+- **エラー本文に traceback が混ざる** — `start_analysis_process` は
+  stderr を stdout へ合流させる（`stderr=subprocess.STDOUT`）ので、CLI が出す
+  エラー本文の直後に traceback が続く。traceback のコード行も字下げされているため
+  「字下げ行を拾う」だけでは混ざり、利用者に読めないものを見せてしまう。
+  **最初の非字下げ行で打ち切る**ようにした。
+
+どちらも変更を戻すと該当テストが落ちることを確認済み。
 
 ### 計測して**やめた**もの
 
@@ -155,8 +172,8 @@ ver4.23 の CHANGELOG 自身が代替案として「サブプロセス＋ポー�
 
 `tests/test_scils_converter.py` / `test_scils_bom_conversion.py` /
 `test_scils_bom_headers.py` / `test_scils_section_coords.py` /
-`test_scils_convert_subprocess.py` = **110 passed**。
-全体は `2,332 passed / 11 failed`。11 件は numpy・pyarrow の上限ピンが無いことによる
+`test_scils_convert_subprocess.py` = **114 passed**。
+全体は `2,336 passed / 11 failed`。11 件は numpy・pyarrow の上限ピンが無いことによる
 **変更していない main でも落ちる既知の失敗**（`test_hne_overlay` 3 / `test_peak_annotation` 2 /
 `test_render_payload` 6）で、同一であることを実際に main で確認済み。
 
