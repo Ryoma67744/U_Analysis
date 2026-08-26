@@ -221,3 +221,90 @@ def test_reading_does_not_consume_the_whole_progress_range(tims_parquet, lookups
     assert read_pcts, "読み込みの進捗が無い"
     assert max(read_pcts) <= 92, (
         f"読み込みだけで {max(read_pcts)}% まで進んでいる（書き出しの幅が無い）")
+
+
+# ---------------------------------------------------------------------------
+# 5. 書き込み途中のファイルが見えない（PR #169 のレビュー指摘 P1）
+# ---------------------------------------------------------------------------
+# ChatGPT API の状態窓口は `<job_id>__*` の glob が当たるだけで、ジョブ記録を
+# 見る前に status: done を返す（レジストリが上限掃除で消えても解決できるよう、
+# 仕様として意図的に残されている）。バイト列を 1 回で書いていた頃は窓が数ミリ秒
+# だったが、pandas が数分かけて書くようになると、その間のポーリングが
+# **切り詰められた CSV / 壊れた Parquet** をダウンロードさせてしまう。
+_GLOB_PREFIX = "job123__"
+
+
+def test_pandas_never_writes_to_the_api_visible_name(tims_parquet, lookups,
+                                                     tmp_path, monkeypatch):
+    """pandas に渡す書き込み先が `<job_id>__*` に当たらない。
+
+    「書き込み中にディレクトリを覗く」形の検査は、覗く瞬間の取り方で結果が変わり
+    退行を取り逃がす（実際に取り逃がした）。**pandas が受け取るパスそのもの**を
+    見れば、書き込みの進み具合に関係なく性質を固定できる。
+    """
+    import fnmatch
+    targets = []
+    real = pd.DataFrame.to_csv
+
+    def spy(self, path_or_buf=None, *a, **kw):
+        targets.append(Path(str(path_or_buf)))
+        return real(self, path_or_buf, *a, **kw)
+
+    monkeypatch.setattr(pd.DataFrame, "to_csv", spy, raising=True)
+    out, _ = de._export_tims(str(tims_parquet), lookups, "csv",
+                             out_dir=tmp_path, prefix=_GLOB_PREFIX)
+
+    assert targets, "to_csv が呼ばれていない"
+    for t in targets:
+        assert not fnmatch.fnmatch(t.name, f"{_GLOB_PREFIX}*"), (
+            f"書き込み先が API の glob に当たる: {t.name}")
+    # 差し替え後は最終名で見える
+    assert [q.name for q in tmp_path.glob(f"{_GLOB_PREFIX}*")] == [out.name]
+
+
+def test_failed_serialization_leaves_no_file(tims_parquet, lookups, tmp_path,
+                                             monkeypatch):
+    """直列化が途中まで書いて失敗しても、ファイルを一切残さない。
+
+    残すと「存在＝完了」の窓口が壊れたファイルを成功として配信する。
+    途中まで書いてから落ちる実際の失敗を模す（何も書かずに落ちるだけだと
+    後始末が働いているのか、そもそも書いていないだけなのか区別が付かない）。
+    """
+    def boom(self, path_or_buf=None, *a, **kw):
+        Path(str(path_or_buf)).write_text("途中まで書いた", encoding="utf-8")
+        raise RuntimeError("書き込み失敗")
+
+    monkeypatch.setattr(pd.DataFrame, "to_csv", boom, raising=True)
+    with pytest.raises(RuntimeError):
+        de._export_tims(str(tims_parquet), lookups, "csv",
+                        out_dir=tmp_path, prefix=_GLOB_PREFIX)
+
+    assert list(tmp_path.glob(f"{_GLOB_PREFIX}*")) == [], "最終名のファイルが残った"
+    assert list(tmp_path.glob(".*")) == [], "一時ファイルが残った"
+
+
+def test_temp_name_cannot_match_the_api_glob(tmp_path):
+    """一時ファイル名が API の glob に当たらない（先頭 `.` で始まる）。"""
+    final = tmp_path / f"{_GLOB_PREFIX}UMAP_cluster_TIMS.csv"
+    with de._atomic_output(final) as tmp:
+        tmp.write_text("x", encoding="utf-8")
+        during = [q.name for q in tmp_path.glob(f"{_GLOB_PREFIX}*")]
+    assert during == [], f"一時名が glob に当たっている: {during}"
+    assert tmp.name.startswith("."), tmp.name
+    assert tmp.suffix == ".csv", "拡張子が温存されていない（形式推測が壊れる）"
+    assert final.exists() and final.read_text(encoding="utf-8") == "x"
+
+
+@pytest.mark.parametrize("fmt", ["csv", "parquet", "xlsx"])
+def test_all_formats_go_through_atomic_replace(tims_parquet, lookups, tmp_path, fmt):
+    """3 形式とも最終的に完全なファイルが 1 つだけ残る。"""
+    out, _ = de._export_tims(str(tims_parquet), lookups, fmt,
+                             out_dir=tmp_path, prefix=_GLOB_PREFIX)
+    assert out.exists()
+    assert list(tmp_path.glob("*.partial*")) == [], "一時ファイルが残った"
+    if fmt == "csv":
+        assert len(pd.read_csv(out)) == 8
+    elif fmt == "parquet":
+        assert len(pd.read_parquet(out)) == 8
+    else:
+        assert len(pd.read_excel(out, sheet_name="Data")) == 8

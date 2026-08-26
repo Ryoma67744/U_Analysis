@@ -58,6 +58,28 @@ openpyxl は実測で **約 19 秒・0.30 GB / 百万セル**（252K / 1.0M / 4.
   API 経路（`build_interactive_export_for_project`）は以前から parquet 既定で、
   そちらに揃えた形
 
+#### 1b. 書き込み途中のファイルを見せない（原子的差し替え）
+
+パスへ直接書くようにした副作用で、**書き込み途中のファイルが最終ファイル名で
+見えてしまう**問題が出た（PR #169 のレビュー指摘 P1）。
+
+ChatGPT API の状態窓口 `gpt_api._export_job_status` は `_find_export_job_file`
+（`<job_id>__*` の glob）が当たるだけで、**ジョブ記録を見る前に `status: done` を
+返す**（レジストリが上限掃除で消えてもファイルから解決できるよう、仕様として
+意図的に残されている）。従来は完成済みのバイト列を 1 回で書いていたので窓は数ミリ秒
+だったが、pandas が数分かけて書くようになると、その間のポーリングが
+**切り詰められた CSV / 壊れた Parquet をダウンロードさせる**。
+直列化が途中で失敗して部分ファイルが残れば、それが「成功」に見える。
+
+そこで先頭に `.` を付けた別名で書き、書き終えてから `os.replace` で差し替える
+（同一ディレクトリなので原子的）。glob `<job_id>__*` は名前が `<job_id>__` で
+始まることを要求するので、`.` 始まりの名前には当たらない。失敗時は部分ファイルを
+消す。**成功したファイルだけが最終名で存在する**。拡張子は温存する（pandas /
+openpyxl が拡張子から形式を推測する経路を壊さないため）。
+
+GUI 経路（`main._data_export_download`）はジョブ記録の `filepath` で解決しており、
+`_finish_job` は完了後にしか呼ばれないので元から安全だった。影響は API 経路のみ。
+
 #### 3. 直列化中も進捗を出す
 
 `progress_cb` は読み込みループでしか呼ばれておらず、読み終えた時点で 98% に達して
@@ -82,7 +104,7 @@ HDF5 最大の利点である「既存ファイルに列を安く追記できる
 - `App/app/callbacks/interactive_data_export.py`: パス直接書き、`_guard_xlsx_size`、進捗
 - `App/app/services/gpt_api.py`: API 経路も同じく出力先を渡す
 - `App/app/layouts/interactive_tab.py`: 既定を parquet に、選択肢に速度の目安を併記
-- `App/tests/test_data_export_streaming.py`: 新規 14 件
+- `App/tests/test_data_export_streaming.py`: 新規 20 件
 - 既存のエクスポートテスト 5 ファイル: `io.BytesIO(data)` → `data`（パス）へ。
   戻り値の契約が変わったため。出力の中身は不変
 

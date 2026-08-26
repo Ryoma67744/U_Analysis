@@ -7,6 +7,7 @@ TIMS: Parquet/CSV → 選択形式（Excel / CSV / Parquet）
 1つのファイルにまとめて出力する（Method 列 + UMAP cluster 列）。
 """
 
+import contextlib
 import contextvars
 import io
 import logging
@@ -542,6 +543,43 @@ def _unique_sheet_name(stem: str, used: dict) -> str:
 XLSX_MAX_CELLS = int(os.environ.get("EXPORT_XLSX_MAX_CELLS", 5_000_000))
 
 
+@contextlib.contextmanager
+def _atomic_output(final_path: Path):
+    """書き込み中のファイルが見えないよう、別名で書いてから原子的に差し替える。
+
+    ★ ver62.1: パスへ直接書くようにした副作用で、**書き込み途中のファイルが
+      最終ファイル名で見えてしまう**問題が出た（PR #169 のレビューで指摘）。
+
+      ChatGPT API の状態窓口 `gpt_api._export_job_status` は
+      `_find_export_job_file`（`<job_id>__*` の glob）が当たるだけで
+      **ジョブ記録を見る前に `status: done` を返す**（仕様として意図的に残されている:
+      レジストリが上限掃除で消えてもファイルから解決できるようにするため）。
+      従来は完成済みのバイト列を 1 回で書いていたので窓は数ミリ秒だったが、
+      pandas が数分かけて書くようになると、その間のポーリングが
+      **切り詰められた CSV / 壊れた Parquet をダウンロードさせる**。
+
+      さらに、直列化が途中で失敗して部分ファイルが残ると、それが「成功」に見える。
+
+      そこで先頭に `.` を付けた別名で書く。glob `<job_id>__*` は名前が
+      `<job_id>__` で始まることを要求するので、`.` 始まりの名前には当たらない。
+      書き終えてから `os.replace` で差し替える（同一ディレクトリなので原子的）。
+      失敗時は部分ファイルを消す。**成功したファイルだけが最終名で存在する**。
+
+      拡張子は温存する（pandas / openpyxl が拡張子から形式を推測する経路を壊さない）。
+    """
+    tmp = final_path.with_name(
+        f".{final_path.stem}.partial{final_path.suffix}")
+    try:
+        yield tmp
+        os.replace(tmp, final_path)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def _resolve_out_path(out_dir, prefix: str, filename: str) -> Path:
     """出力先の実パスを決める。out_dir が None なら一時ディレクトリを作る。
 
@@ -854,7 +892,8 @@ def _export_desi(
     # ★ ver62.1: バイト列を返さずパスへ直接書く（メモリ 4 重複製の解消）。
     filename = "UMAP_cluster_DESI.xlsx"
     out_path = _resolve_out_path(out_dir, prefix, filename)
-    out_path.write_bytes(buf.getvalue())
+    with _atomic_output(out_path) as tmp:
+        tmp.write_bytes(buf.getvalue())
     return out_path, filename
 
 
@@ -1071,19 +1110,20 @@ def _write_mz_list_only(mz_df: pd.DataFrame, fmt: str,
     ext = {"xlsx": "xlsx", "parquet": "parquet"}.get(fmt, "csv")
     filename = f"mz_list_TIMS.{ext}"
     out_path = _resolve_out_path(out_dir, prefix, filename)
-    if ext == "xlsx":
-        with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-            mz_df.to_excel(writer, index=False, sheet_name=_mzlist.SHEET_NAME)
-            if conditions is not None:
-                try:
-                    _conditions_sheet_df(conditions).to_excel(
-                        writer, sheet_name="Conditions", index=False)
-                except Exception:
-                    logger.warning("Conditions シートの追加に失敗", exc_info=True)
-    elif ext == "parquet":
-        mz_df.to_parquet(out_path, index=False)
-    else:
-        mz_df.to_csv(out_path, index=False)
+    with _atomic_output(out_path) as tmp:
+        if ext == "xlsx":
+            with pd.ExcelWriter(tmp, engine="openpyxl") as writer:
+                mz_df.to_excel(writer, index=False, sheet_name=_mzlist.SHEET_NAME)
+                if conditions is not None:
+                    try:
+                        _conditions_sheet_df(conditions).to_excel(
+                            writer, sheet_name="Conditions", index=False)
+                    except Exception:
+                        logger.warning("Conditions シートの追加に失敗", exc_info=True)
+        elif ext == "parquet":
+            mz_df.to_parquet(tmp, index=False)
+        else:
+            mz_df.to_csv(tmp, index=False)
     return out_path, filename
 
 
@@ -1372,25 +1412,27 @@ def _export_tims(
 
     # ★ ver62.1: バイト列を組み立てずパスへ直接書く。pandas がチャンクで書くので
     #   巨大な中間オブジェクトを作らない（実測で RSS 増分 +1.94 GB → +0.00 GB）。
-    if ext == "xlsx":
-        with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-            df_all.to_excel(writer, index=False, sheet_name="Data")
-            # ★ ver62.0: m/z 一覧は別シート。行の単位が違う（1 行 = 1 m/z）ので
-            #   同じシートには入れられない。
-            if mz_df is not None and not mz_df.empty:
-                mz_df.to_excel(writer, index=False,
-                               sheet_name=_mzlist.SHEET_NAME)
-            # 解析条件シート（論文の Methods 用）
-            if conditions is not None:
-                try:
-                    _conditions_sheet_df(conditions).to_excel(
-                        writer, sheet_name="Conditions", index=False)
-                except Exception:
-                    logger.warning("Conditions シートの追加に失敗", exc_info=True)
-    elif ext == "parquet":
-        df_all.to_parquet(out_path, index=False)
-    else:
-        df_all.to_csv(out_path, index=False)
+    with _atomic_output(out_path) as tmp:
+        if ext == "xlsx":
+            with pd.ExcelWriter(tmp, engine="openpyxl") as writer:
+                df_all.to_excel(writer, index=False, sheet_name="Data")
+                # ★ ver62.0: m/z 一覧は別シート。行の単位が違う（1 行 = 1 m/z）ので
+                #   同じシートには入れられない。
+                if mz_df is not None and not mz_df.empty:
+                    mz_df.to_excel(writer, index=False,
+                                   sheet_name=_mzlist.SHEET_NAME)
+                # 解析条件シート（論文の Methods 用）
+                if conditions is not None:
+                    try:
+                        _conditions_sheet_df(conditions).to_excel(
+                            writer, sheet_name="Conditions", index=False)
+                    except Exception:
+                        logger.warning("Conditions シートの追加に失敗",
+                                       exc_info=True)
+        elif ext == "parquet":
+            df_all.to_parquet(tmp, index=False)
+        else:
+            df_all.to_csv(tmp, index=False)
 
     return out_path, filename
 
