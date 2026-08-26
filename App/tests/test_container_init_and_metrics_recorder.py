@@ -25,12 +25,12 @@ docker / コンテナは CI に無いので、`docker` コマンドを PATH 上�
 """
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
 
 # App/tests/test_container_init_and_metrics_recorder.py → リポジトリルート
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -44,12 +44,53 @@ _APP_SERVICE = "msi-app"
 # ---------------------------------------------------------------------------
 # 1. PID 1 問題
 # ---------------------------------------------------------------------------
-def _app_service() -> dict:
-    compose = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
-    assert _APP_SERVICE in compose["services"], (
-        f"docker-compose.yml に {_APP_SERVICE} サービスが無い"
-    )
-    return compose["services"][_APP_SERVICE]
+# compose の読み取りに PyYAML を使わない。requirements.txt にも pyproject の dev
+# extras にも PyYAML は無く、`import yaml` を書くとクリーン環境では本モジュール全体が
+# collection error になり **6 件が 1 件も走らない**（PR #166 のレビューで指摘され実機確認）。
+# 番人のつもりのテストが黙って走らないのが最悪の失敗なので、依存を持たない形にする。
+#
+# これは test_version_consistency.py と同じ方針:
+#   「重い依存を持ち込まずに CI の軽量ジョブで動かすため」
+# version-guard.yml は `pytest numpy pandas` しか入れないので、本テストを将来
+# あの workflow に足すときも install 行を触らずに済む。
+#
+# 手書きの読み取りは「本来落ちるべきときに通る」と番人の役目を失うため、
+# 読み取り関数自体を合成データで両方向テストする（下の TestServiceBlockReader）。
+def _service_block(compose_text: str, service: str) -> list[str]:
+    """`services:` 配下から 1 サービス分のキー行（strip 済み）を返す。
+
+    インデントだけを見る。コメント行と空行は捨てる。
+    """
+    lines = [ln for ln in compose_text.splitlines()
+             if ln.strip() and not ln.strip().startswith("#")]
+    try:
+        i0 = next(i for i, ln in enumerate(lines)
+                  if ln.strip() == "services:" and not ln.startswith(" "))
+    except StopIteration:
+        return []
+    rest = lines[i0 + 1:]
+    if not rest:
+        return []
+    # services: 直下の最初の行のインデント = サービス名の階層
+    svc_indent = len(rest[0]) - len(rest[0].lstrip())
+    block: list[str] = []
+    collecting = False
+    for ln in rest:
+        indent = len(ln) - len(ln.lstrip())
+        if indent == 0:            # services: セクションが終わった
+            break
+        if indent == svc_indent:   # サービス名の行
+            collecting = (ln.strip() == f"{service}:")
+            continue
+        if collecting:
+            block.append(ln.strip())
+    return block
+
+
+def _declares_init_true(compose_text: str, service: str) -> bool:
+    """指定サービスが `init: true` を宣言しているか。"""
+    return any(re.fullmatch(r"init:\s*true", b, re.IGNORECASE)
+               for b in _service_block(compose_text, service))
 
 
 def test_app_service_declares_init():
@@ -57,12 +98,69 @@ def test_app_service_declares_init():
 
     この修正を戻すとゾンビが再び溜まる。
     """
-    svc = _app_service()
-    assert svc.get("init") is True, (
+    assert _declares_init_true(
+        _COMPOSE.read_text(encoding="utf-8"), _APP_SERVICE), (
         "docker-compose.yml の msi-app に `init: true` が無い。\n"
         "これが無いと PID 1 が `python3 run_app.py` になり、R の孤児プロセスが\n"
         "永久にゾンビとして残る（2026-08-25 の本番障害で 8 個 / 19 時間放置）。"
     )
+
+
+class TestServiceBlockReader:
+    """読み取り関数そのものの検証。
+
+    番人テストが「本来落ちるべきときに通る」(false green) と、修正を戻しても
+    誰も気付かない。PyYAML を捨てた代わりにここで正しさを担保する。
+    """
+
+    _WITH = (
+        "services:\n"
+        "  msi-app:\n"
+        "    build: .\n"
+        "    init: true\n"
+        "    mem_limit: 12g\n"
+    )
+    _WITHOUT = (
+        "services:\n"
+        "  msi-app:\n"
+        "    build: .\n"
+        "    mem_limit: 12g\n"
+    )
+    # 別サービスにだけ init がある。ここを取り違えると false green になる。
+    _OTHER_ONLY = (
+        "services:\n"
+        "  msi-app:\n"
+        "    build: .\n"
+        "    mem_limit: 12g\n"
+        "  caddy:\n"
+        "    image: caddy:2\n"
+        "    init: true\n"
+    )
+
+    def test_detects_declared_init(self):
+        assert _declares_init_true(self._WITH, "msi-app") is True
+
+    def test_detects_missing_init(self):
+        assert _declares_init_true(self._WITHOUT, "msi-app") is False
+
+    def test_does_not_borrow_init_from_another_service(self):
+        assert _declares_init_true(self._OTHER_ONLY, "msi-app") is False
+        assert _declares_init_true(self._OTHER_ONLY, "caddy") is True
+
+    def test_comments_and_blank_lines_are_ignored(self):
+        noisy = (
+            "# 先頭コメント\n"
+            "\n"
+            "services:\n"
+            "  msi-app:\n"
+            "    # ★ ver60.1: 理由の説明\n"
+            "\n"
+            "    init: true\n"
+        )
+        assert _declares_init_true(noisy, "msi-app") is True
+
+    def test_unknown_service_is_false(self):
+        assert _declares_init_true(self._WITH, "does-not-exist") is False
 
 
 def test_dockerfile_has_no_entrypoint_wrapper():

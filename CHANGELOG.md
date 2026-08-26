@@ -100,7 +100,18 @@ autoheal が無いので誰も再起動しない。今回まさにこれが起�
 - `docker-compose.yml`: `msi-app` に `init: true` を追加
 - `record_metrics.sh`: 新規。`/metrics` を cron で定期記録する
 - `App/docs/DEPLOY.md`: 「アプリが重い / 開かない」節を追加
-- `App/tests/test_container_init_and_metrics_recorder.py`: 新規 6 件
+- `App/tests/test_container_init_and_metrics_recorder.py`: 新規 11 件
+
+compose の読み取りに PyYAML は使わない。`requirements.txt` にも pyproject の
+`dev` extras にも PyYAML は無く、`import yaml` を書くとクリーン環境では
+**モジュール全体が collection error になりテストが 1 件も走らない**
+（PR #166 のレビューで指摘され、PyYAML を落とした環境で再現を確認した）。
+番人のつもりのテストが黙って走らないのが最悪の失敗なので依存を持たない形にした。
+これは `test_version_consistency.py` と同じ方針で、`version-guard.yml` が
+`pytest numpy pandas` しか入れないため、将来この workflow に足すときも
+install 行を触らずに済む。手書きの読み取りが false green を出さないよう、
+読み取り関数自体を合成データで両方向テストしている（別サービスの `init` を
+誤って拾わないことを含む）。
 
 イメージの再ビルドは不要（`docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d` で反映）。
 
