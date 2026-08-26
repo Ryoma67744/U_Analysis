@@ -150,7 +150,7 @@ class TestDesiExportDoesNotMixSamples:
 
         data, _fn = _export_desi(str(folder), lookups)
         import io
-        wb = openpyxl.load_workbook(io.BytesIO(data))
+        wb = openpyxl.load_workbook(data)
 
         assert len(wb.sheetnames) == 2, (
             f"サンプル 2 つに対しシートが {len(wb.sheetnames)} 枚しかない。"
@@ -179,7 +179,7 @@ class TestDesiExportDoesNotMixSamples:
 
         import io
         data, _ = _export_desi(str(folder), lookups)
-        wb = openpyxl.load_workbook(io.BytesIO(data))
+        wb = openpyxl.load_workbook(data)
 
         seen = set()
         for sn in wb.sheetnames:
@@ -208,7 +208,7 @@ class TestDesiExportDoesNotMixSamples:
 
         import io
         data, _ = _export_desi(str(folder), lookups)
-        wb = openpyxl.load_workbook(io.BytesIO(data))
+        wb = openpyxl.load_workbook(data)
         # ★ ver52.5: 検査対象は「両方のサンプルがシートとして出ること」。
         #   従来は `len(sheetnames) == 2` と書いていたが、これは総数を
         #   数えているだけで、このテストの名前が言っている性質ではない。

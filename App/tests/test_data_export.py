@@ -69,7 +69,7 @@ def test_export_desi_appends_cluster_column(tmp_path):
     excel_bytes, filename = de._export_desi(str(tmp_path), lookups)
     assert filename == "UMAP_cluster_DESI.xlsx"
 
-    df = pd.read_excel(io.BytesIO(excel_bytes), sheet_name="S1", header=None)
+    df = pd.read_excel(excel_bytes, sheet_name="S1", header=None)
     # "UMAP cluster" 列を特定
     header_row = list(df.iloc[0])
     col = header_row.index("UMAP cluster")

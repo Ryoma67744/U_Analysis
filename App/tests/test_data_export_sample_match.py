@@ -329,7 +329,7 @@ def test_export_desi_detects_header_rows(tmp_path, n_header):
 
     report = []
     data, _ = _export_desi(str(tmp_path), lk, None, report=report)
-    wb = openpyxl.load_workbook(io.BytesIO(data))
+    wb = openpyxl.load_workbook(data)
     ws = wb["Brain01"]
     header = [c.value for c in ws[1]]
     col = header.index("UMAP cluster") + 1
@@ -414,7 +414,7 @@ def test_export_tims_excludes_unanalysed_slice(tmp_path):
     data, name = _export_tims(str(tmp_path / "d"), lk, "csv", None,
                               report=report, exclude_unused=True)
     # dtype=str: CSV 往復で '01' が数値 1 に化けるのを避ける（読み方の都合）
-    out = pd.read_csv(io.BytesIO(data), dtype=str)
+    out = pd.read_csv(data, dtype=str)
 
     assert name == "UMAP_cluster_TIMS.csv"
     assert len(out) == 6                                  # 4 行落ちた
@@ -430,7 +430,7 @@ def test_export_tims_keeps_everything_when_option_is_off(tmp_path):
     lk = _tims_folder(tmp_path / "d")
     report = []
     data, _ = _export_tims(str(tmp_path / "d"), lk, "csv", None, report=report)
-    out = pd.read_csv(io.BytesIO(data))
+    out = pd.read_csv(data)
     assert len(out) == 10
     assert "excluded" not in report[0]
 
@@ -450,7 +450,7 @@ def test_export_tims_never_drops_every_slice(tmp_path):
     }).to_parquet(folder / "s.parquet", index=False)
     lk = {"Harmony": {_rk("s", 0.0, 0.0): "0"}}
     data, _ = _export_tims(str(folder), lk, "csv", None, exclude_unused=True)
-    out = pd.read_csv(io.BytesIO(data), dtype=str)
+    out = pd.read_csv(data, dtype=str)
     assert len(out) == 1 and out.loc[0, "UMAP cluster"] == "0"
 
 
@@ -488,7 +488,7 @@ def test_export_desi_drops_the_sheet_of_an_unused_sample(tmp_path):
     report = []
     data, _ = _export_desi(str(folder), lk, None, report=report,
                            exclude_unused=True)
-    wb = openpyxl.load_workbook(io.BytesIO(data))
+    wb = openpyxl.load_workbook(data)
 
     assert "slice_A" in wb.sheetnames and "slice_B" not in wb.sheetnames
     rows = list(wb["Skipped"].iter_rows(min_row=2, values_only=True))
@@ -510,7 +510,7 @@ def test_export_desi_keeps_unmatched_sheet_when_nothing_matches(tmp_path):
     folder = _desi_folder(tmp_path / "d", ["wt_liver_01"])
     lk = {"Harmony": {_rk("別のサンプル", 10.0, 5.0): "0"}}
     data, _ = _export_desi(str(folder), lk, None, exclude_unused=True)
-    wb = openpyxl.load_workbook(io.BytesIO(data))
+    wb = openpyxl.load_workbook(data)
     assert "wt_liver_01" in wb.sheetnames
     rows = list(wb["Skipped"].iter_rows(min_row=2, values_only=True))
     assert any("一致せず" in str(r[1]) for r in rows), rows
@@ -522,7 +522,7 @@ def test_export_desi_excludes_only_the_unused_sheets(tmp_path):
     lk = {"Harmony": {_rk("slice_A", 10.0, 5.0): "0"}}
     # slice_A だけ一致 → zzz1/zzz2 が除外対象。全部ではないので通る
     data, _ = _export_desi(str(folder), lk, None, exclude_unused=True)
-    wb = openpyxl.load_workbook(io.BytesIO(data))
+    wb = openpyxl.load_workbook(data)
     assert [s for s in wb.sheetnames
             if s not in ("Skipped", "Conditions")] == ["slice_A"]
 
