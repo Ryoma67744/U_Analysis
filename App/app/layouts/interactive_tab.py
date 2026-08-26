@@ -657,7 +657,26 @@ def create_interactive_tab():
                                         ),
                                     ],
                                 ),
+                                # ★ ver61.0: 出力内容（列カテゴリ・集計単位）の設定。
+                                #   項目数が多くパネルに直置きすると窮屈なので
+                                #   モーダルに寄せる（既存の *_modal.py と同じ流儀）。
+                                dbc.Col(width="auto", children=[
+                                    dbc.Button(
+                                        "⚙ 出力内容の設定",
+                                        id="btn_export_options",
+                                        color="secondary",
+                                        outline=True,
+                                        size="sm",
+                                    ),
+                                ]),
                             ]),
+                            # 現在の設定の要約。開かなくても分かるようにする。
+                            html.Div(
+                                id="div_data_export_options_summary",
+                                className="mt-1 text-muted",
+                                style={"fontSize": "0.8rem"},
+                                children="既定（従来どおり全項目・1 ピクセル単位）",
+                            ),
                             # 出力手法（UMAP cluster）の選択。既定=全手法。
                             html.Div(className="mt-1", children=[
                                 html.Span("出力手法 (UMAP): ",

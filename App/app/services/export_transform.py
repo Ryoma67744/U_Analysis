@@ -42,8 +42,12 @@ def append_cluster_region_columns(
     stem: "str | None",
     match_sample_fn,
     stats: "dict | None" = None,
+    extra_lookups: "dict | None" = None,
 ) -> "pd.DataFrame":
     """df に手法別 UMAP クラスタ列（＋領域名列）をベクトル辞書引きで付与して返す。
+
+    extra_lookups: `{列名: {(sample, rx, ry): 値}}`。plot_data 由来の追加列
+        （UMAP 座標・品質指標）をクラスタと同じ突合結果に載せるために使う（ver61.0）。
 
     lookup のキーは (sample, round(x,4), round(y,4))。丸めは lookup 構築側と同一の
     Python round を用い、キー完全一致を保証する（未一致は空欄）。
@@ -146,6 +150,16 @@ def append_cluster_region_columns(
         df[col_name] = mapped.fillna("").to_numpy()
     if region_lookup is not None:
         df["領域名"] = keys_ser.map(region_lookup).fillna("").to_numpy()
+
+    # ★ ver61.0: plot_data 由来の追加列（UMAP 座標・品質指標）。
+    #   クラスタ・領域名と **同じ keys_ser** に載せる。別経路で突合し直すと、
+    #   annotation → stem のフォールバックや ver58.4 の座標衝突判定を取りこぼし、
+    #   「クラスタは切片 A なのに UMAP 座標は切片 B」という行が静かにできる。
+    #   数値列なので未一致は空文字ではなく NaN のままにする（空文字を入れると
+    #   列全体が object になり、Excel でも数値として扱われなくなる）。
+    if extra_lookups:
+        for col_name, lookup in extra_lookups.items():
+            df[col_name] = keys_ser.map(lookup).to_numpy()
 
     if stats is not None:
         # ★ ver58.4: annotation ごとの一致数を残す。
