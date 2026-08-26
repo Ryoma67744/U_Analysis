@@ -53,8 +53,8 @@ def lookups():
 
 def _read(data, filename):
     if filename.endswith(".parquet"):
-        return pd.read_parquet(io.BytesIO(data))
-    return pd.read_csv(io.BytesIO(data))
+        return pd.read_parquet(data)
+    return pd.read_csv(data)
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +371,7 @@ def test_mzlist_becomes_a_separate_sheet_in_xlsx(tims_parquet, lookups):
         options={"categories": ["coords", "cluster", "mzlist"]})
     assert filename == "UMAP_cluster_TIMS.xlsx"
 
-    sheets = pd.read_excel(io.BytesIO(data), sheet_name=None)
+    sheets = pd.read_excel(data, sheet_name=None)
     assert "Data" in sheets and "m_z" in sheets
     assert list(sheets["Data"].columns) == ["x", "y", "UMAP cluster"]
     assert len(sheets["m_z"]) == 3
@@ -388,8 +388,8 @@ def test_mzlist_unchanged_by_group_mode(tims_parquet, lookups):
         str(tims_parquet), lookups, "xlsx",
         options={"categories": ["intensity", "mzlist"], "mode": MODE_GROUP,
                  "group_keys": ["section", "cluster"]})
-    a = pd.read_excel(io.BytesIO(pixel), sheet_name="m_z")
-    b = pd.read_excel(io.BytesIO(grouped), sheet_name="m_z")
+    a = pd.read_excel(pixel, sheet_name="m_z")
+    b = pd.read_excel(grouped, sheet_name="m_z")
     pd.testing.assert_frame_equal(a, b)
 
 

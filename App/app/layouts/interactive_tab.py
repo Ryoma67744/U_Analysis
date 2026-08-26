@@ -642,16 +642,25 @@ def create_interactive_tab():
                                             className="d-flex align-items-center gap-2",
                                             children=[
                                                 dbc.Label("出力形式:", className="small mb-0"),
+                                                # ★ ver62.1: 既定を parquet にした。
+                                                #   実測で openpyxl は約 19 秒・0.3 GB / 百万セル。
+                                                #   実データ規模(9.28 億セル)なら約 4.9 時間・278 GB で
+                                                #   完走しない。同じ出力が parquet なら約 2 分で済む
+                                                #   (CSV の 12 倍速・ファイルも 55%)。
+                                                #   API 経路(build_interactive_export_for_project)は
+                                                #   以前から parquet 既定で、そちらに揃えた形。
                                                 dbc.Select(
                                                     id="data_export_format",
-                                                    value="xlsx",
+                                                    value="parquet",
                                                     size="sm",
                                                     options=[
-                                                        {"label": "Excel (.xlsx)", "value": "xlsx"},
+                                                        {"label": "Parquet (.parquet) — 最速・推奨",
+                                                         "value": "parquet"},
                                                         {"label": "CSV (.csv)", "value": "csv"},
-                                                        {"label": "Parquet (.parquet)", "value": "parquet"},
+                                                        {"label": "Excel (.xlsx) — 小さい出力のみ",
+                                                         "value": "xlsx"},
                                                     ],
-                                                    style={"width": "180px"},
+                                                    style={"width": "230px"},
                                                 ),
                                             ],
                                         ),

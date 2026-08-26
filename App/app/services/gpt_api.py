@@ -1525,24 +1525,25 @@ def _run_interactive_export(job_id: str, resolved: dict, methods, fmt: str,
             build_interactive_export_for_project,
         )
         from app.config import GPT_EXPORT_TMP_DIR
-        file_bytes, filename, msg = build_interactive_export_for_project(
+        # ★ ver62.1: 出力先を渡して pandas に直接書かせる。従来はバイト列を
+        #   受け取ってからここで write_bytes していたため、直列化した出力が
+        #   丸ごとメモリに乗っていた（GUI 経路と同じ問題）。
+        GPT_EXPORT_TMP_DIR.mkdir(parents=True, exist_ok=True)
+        ep.sweep_old_files(GPT_EXPORT_TMP_DIR, max_age_sec=3600)  # 古い一時ファイル掃除
+        file_path, filename, msg = build_interactive_export_for_project(
             resolved.get("data_folder"), resolved.get("ms_instrument"), fmt,
             resolved.get("rds_map"), resolved.get("result_dir"),
             (resolved.get("project") or {}).get("id"),
             (resolved.get("sub") or {}).get("id"),
             selected_methods=methods,
             exclude_unused=exclude_unused,
+            out_dir=GPT_EXPORT_TMP_DIR, prefix=f"{job_id}__",
             progress_cb=lambda p, l="": ep.update_job(job_id, p, l),
         )
-        if not file_bytes or not filename:
+        if not file_path or not filename:
             ep.fail_job(job_id, msg or "出力に失敗しました")
             return
-        GPT_EXPORT_TMP_DIR.mkdir(parents=True, exist_ok=True)
-        ep.sweep_old_files(GPT_EXPORT_TMP_DIR, max_age_sec=3600)  # 古い一時ファイル掃除
-        safe = re.sub(r'[\\/:*?"<>|]+', "_", str(filename)) or "export.bin"
-        path = Path(GPT_EXPORT_TMP_DIR) / f"{job_id}__{safe}"
-        path.write_bytes(file_bytes)
-        ep.finish_job(job_id, str(path), filename, msg)
+        ep.finish_job(job_id, str(file_path), filename, msg)
     except Exception as e:  # noqa: BLE001
         logger.exception("[GPT] インタラクティブ Export ジョブ失敗")
         ep.fail_job(job_id, f"❌ エラー: {e}")

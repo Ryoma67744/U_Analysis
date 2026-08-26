@@ -21,8 +21,22 @@
 ```text
 【MSI解析アプリ 出力ファイル形式：TIMS / インタラクティブ画面「データ出力」】
 
-ファイル名: UMAP_cluster_TIMS.xlsx / UMAP_cluster_TIMS.csv / UMAP_cluster_TIMS.parquet
-           （出力時に xlsx / csv / parquet から選択。xlsx はシート名 "Data"）
+ファイル名: UMAP_cluster_TIMS.parquet / .csv / .xlsx
+           （出力時に選択。**既定は Parquet**。xlsx はシート名 "Data"）
+
+■ 出力形式の選び方（ver62.1 の実測）
+  Parquet が最速で、ファイルも最小。特別な理由が無ければ Parquet を使う。
+
+  | 形式 | 20,000 spot × 2,000 m/z | 実データ規模(9.28 億セル)への外挿 |
+  |---|---|---|
+  | Parquet | 4.8 秒 / 0.22 GB | 約 2 分 |
+  | CSV     | 58.7 秒 / 0.40 GB | 約 23 分 |
+  | xlsx    | 約 19 秒・0.30 GB / 百万セル | **約 4.9 時間・約 278 GB（完走しない）** |
+
+  xlsx はセル数が `EXPORT_XLSX_MAX_CELLS`（既定 500 万）を超えると、走り出す前に
+  エラーで止まり Parquet / CSV を案内する。従来は列数(16,384)しか見ておらず、
+  4,566 m/z はガードを通り抜けて終わらないまま走り続けていた。
+  R や Python で読むなら Parquet、Excel で開きたい小さな出力だけ xlsx にする。
 概要: TIMS の元MSIデータ（全スポット × 全m/z強度）に、UMAPクラスタ列と領域名(ROI)列を付加した
       1つの表。全切片(セクション)を縦に連結した単一テーブル。
 

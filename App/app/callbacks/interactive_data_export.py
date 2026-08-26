@@ -7,10 +7,13 @@ TIMS: Parquet/CSV → 選択形式（Excel / CSV / Parquet）
 1つのファイルにまとめて出力する（Method 列 + UMAP cluster 列）。
 """
 
+import contextlib
 import contextvars
 import io
 import logging
+import os
 import re
+import tempfile
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -513,12 +516,110 @@ def _unique_sheet_name(stem: str, used: dict) -> str:
         n += 1
 
 
+# ---------------------------------------------------------------------------
+# 出力先の解決とサイズガード（★ ver62.1）
+# ---------------------------------------------------------------------------
+# 従来は各書き出し関数が **バイト列を返し**、呼び出し側が `path.write_bytes()` して
+# いた。これだと直列化した出力が丸ごとメモリに乗る。しかも
+#   to_csv() の str → .encode() の bytes → BytesIO → getvalue()
+# と 4 重に複製される。実測（20,000 spot × 2,000 m/z）:
+#
+#   現行チェーン : 62.1 秒 / RSS 増分 +1.94 GB  ← DataFrame 実体 0.15 GB の 13 倍
+#   パス直接書き : 58.7 秒 / RSS 増分 +0.00 GB
+#
+# 実データ規模（203,078 spot × 4,566 m/z）へ外挿すると増分だけで 45 GB になり、
+# `mem_limit: 12g` に対してほぼ全部がホストスワップへ落ちる。待ち時間の正体はこれ。
+#
+# そこで **出力先のパスを渡して pandas に直接書かせる**。pandas はチャンクで
+# 書くので巨大な中間オブジェクトを作らない。
+
+# xlsx のセル数上限。超えたら走り出す前に止めて CSV / Parquet を案内する。
+#
+# 実測: openpyxl は約 19 秒/百万セル・0.30 GB/百万セル（252K / 1.0M / 4.0M セルの
+# 3 点で線形を確認）。既定 500 万セルで約 95 秒・約 1.5 GB。
+# 実データ規模の 9.28 億セルなら **約 4.9 時間・約 278 GB** で完走しない。
+# 従来は列数(16,384)しか見ておらず、4,566 m/z はガードを通り抜けて
+# 「終わらないまま走り続ける」状態になっていた。
+XLSX_MAX_CELLS = int(os.environ.get("EXPORT_XLSX_MAX_CELLS", 5_000_000))
+
+
+@contextlib.contextmanager
+def _atomic_output(final_path: Path):
+    """書き込み中のファイルが見えないよう、別名で書いてから原子的に差し替える。
+
+    ★ ver62.1: パスへ直接書くようにした副作用で、**書き込み途中のファイルが
+      最終ファイル名で見えてしまう**問題が出た（PR #169 のレビューで指摘）。
+
+      ChatGPT API の状態窓口 `gpt_api._export_job_status` は
+      `_find_export_job_file`（`<job_id>__*` の glob）が当たるだけで
+      **ジョブ記録を見る前に `status: done` を返す**（仕様として意図的に残されている:
+      レジストリが上限掃除で消えてもファイルから解決できるようにするため）。
+      従来は完成済みのバイト列を 1 回で書いていたので窓は数ミリ秒だったが、
+      pandas が数分かけて書くようになると、その間のポーリングが
+      **切り詰められた CSV / 壊れた Parquet をダウンロードさせる**。
+
+      さらに、直列化が途中で失敗して部分ファイルが残ると、それが「成功」に見える。
+
+      そこで先頭に `.` を付けた別名で書く。glob `<job_id>__*` は名前が
+      `<job_id>__` で始まることを要求するので、`.` 始まりの名前には当たらない。
+      書き終えてから `os.replace` で差し替える（同一ディレクトリなので原子的）。
+      失敗時は部分ファイルを消す。**成功したファイルだけが最終名で存在する**。
+
+      拡張子は温存する（pandas / openpyxl が拡張子から形式を推測する経路を壊さない）。
+    """
+    tmp = final_path.with_name(
+        f".{final_path.stem}.partial{final_path.suffix}")
+    try:
+        yield tmp
+        os.replace(tmp, final_path)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _resolve_out_path(out_dir, prefix: str, filename: str) -> Path:
+    """出力先の実パスを決める。out_dir が None なら一時ディレクトリを作る。
+
+    None を許すのはテストとアドホック実行のため。本番（`_run_export_job`）は
+    必ず `DATA_EXPORT_TMP_DIR` と job_id 由来の prefix を渡す。
+    """
+    d = Path(out_dir) if out_dir is not None else Path(tempfile.mkdtemp(
+        prefix="msi_export_"))
+    d.mkdir(parents=True, exist_ok=True)
+    safe = re.sub(r'[\\/:*?"<>|]+', "_", str(filename)) or "export.bin"
+    return d / f"{prefix}{safe}"
+
+
+def _guard_xlsx_size(n_rows: int, n_cols: int) -> None:
+    """xlsx が現実的な規模に収まるか検査する。超えたら理由を添えて止める。
+
+    黙って走らせると「終わらない」だけで理由が分からない。何が超えたかと、
+    どうすればよいかを必ず言う。
+    """
+    if n_cols > 16384:
+        raise ValueError(
+            f"xlsx は列数上限(16,384)を超えます（{n_cols:,} 列）。"
+            "出力形式で CSV または Parquet を選択してください。")
+    cells = n_rows * n_cols
+    if cells > XLSX_MAX_CELLS:
+        raise ValueError(
+            f"xlsx には大きすぎます（{n_rows:,} 行 × {n_cols:,} 列 = "
+            f"{cells:,} セル / 上限 {XLSX_MAX_CELLS:,}）。"
+            "この規模の Excel 書き出しは実測で約 19 秒・0.3 GB / 百万セルかかり、"
+            "現実的な時間で終わりません。"
+            "出力形式を Parquet（最速）または CSV にするか、"
+            "「出力内容の設定」で強度(m/z 全列)を外してください。")
+
+
 def _export_desi(
     data_folder: str, method_lookups: OrderedDict, region_lookup: dict | None = None,
     progress_cb=None, base: int = 0, span: int = 0, conditions: dict | None = None,
     roi_failed: list | None = None, report: list | None = None,
-    exclude_unused: bool = False,
-) -> tuple[bytes, str]:
+    exclude_unused: bool = False, out_dir=None, prefix: str = "",
+) -> tuple[Path, str]:
     """DESI .txt → Excel バイト列（サンプル別シート + 手法別クラスター列）。
 
     複数手法の場合は手法名を列ヘッダーにして横並びで配置する。
@@ -530,7 +631,7 @@ def _export_desi(
     ★ ver59.0: 既定は False。既存の呼び出し（テスト含む）の挙動を変えないため、
       既定 ON は UI / API 側で持つ。
 
-    Returns (excel_bytes, filename)
+    Returns (out_path, filename)。★ ver62.1: バイト列ではなくパスを返す。
     """
     add_region = region_lookup is not None
     file_stems = list_msi_files(data_folder)
@@ -788,7 +889,12 @@ def _export_desi(
                 logger.warning("Skipped シートの追加に失敗", exc_info=True)
 
     buf.seek(0)
-    return buf.getvalue(), "UMAP_cluster_DESI.xlsx"
+    # ★ ver62.1: バイト列を返さずパスへ直接書く（メモリ 4 重複製の解消）。
+    filename = "UMAP_cluster_DESI.xlsx"
+    out_path = _resolve_out_path(out_dir, prefix, filename)
+    with _atomic_output(out_path) as tmp:
+        tmp.write_bytes(buf.getvalue())
+    return out_path, filename
 
 
 # ---------------------------------------------------------------------------
@@ -987,7 +1093,8 @@ def _apply_feature_annotation_columns(df: pd.DataFrame, data_folder: str) -> pd.
 
 
 def _write_mz_list_only(mz_df: pd.DataFrame, fmt: str,
-                        conditions: dict | None) -> tuple[bytes, str]:
+                        conditions: dict | None,
+                        out_dir=None, prefix: str = "") -> tuple[Path, str]:
     """m/z 一覧だけを出力する（★ ver62.0）。
 
     スポット単位の項目が 1 つも選ばれていないときの経路。表が 1 つしかないので
@@ -998,25 +1105,26 @@ def _write_mz_list_only(mz_df: pd.DataFrame, fmt: str,
             "m/z 列が 1 つも見つかりませんでした。"
             "MSI データフォルダに変換済みの parquet があるか確認してください。")
 
-    buf = io.BytesIO()
-    if fmt == "xlsx":
-        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-            mz_df.to_excel(writer, index=False, sheet_name=_mzlist.SHEET_NAME)
-            if conditions is not None:
-                try:
-                    _conditions_sheet_df(conditions).to_excel(
-                        writer, sheet_name="Conditions", index=False)
-                except Exception:
-                    logger.warning("Conditions シートの追加に失敗", exc_info=True)
-        filename = "mz_list_TIMS.xlsx"
-    elif fmt == "parquet":
-        mz_df.to_parquet(buf, index=False)
-        filename = "mz_list_TIMS.parquet"
-    else:
-        buf.write(mz_df.to_csv(index=False).encode("utf-8"))
-        filename = "mz_list_TIMS.csv"
-    buf.seek(0)
-    return buf.getvalue(), filename
+    # 一覧表は数千行しかないのでサイズガードは要らない。それでも
+    # パスへ直接書くのは、経路を 1 つに揃えて分岐を減らすため。
+    ext = {"xlsx": "xlsx", "parquet": "parquet"}.get(fmt, "csv")
+    filename = f"mz_list_TIMS.{ext}"
+    out_path = _resolve_out_path(out_dir, prefix, filename)
+    with _atomic_output(out_path) as tmp:
+        if ext == "xlsx":
+            with pd.ExcelWriter(tmp, engine="openpyxl") as writer:
+                mz_df.to_excel(writer, index=False, sheet_name=_mzlist.SHEET_NAME)
+                if conditions is not None:
+                    try:
+                        _conditions_sheet_df(conditions).to_excel(
+                            writer, sheet_name="Conditions", index=False)
+                    except Exception:
+                        logger.warning("Conditions シートの追加に失敗", exc_info=True)
+        elif ext == "parquet":
+            mz_df.to_parquet(tmp, index=False)
+        else:
+            mz_df.to_csv(tmp, index=False)
+    return out_path, filename
 
 
 def _tims_header_columns(file_path: str) -> list:
@@ -1117,7 +1225,8 @@ def _export_tims(
     progress_cb=None, base: int = 0, span: int = 0, conditions: dict | None = None,
     report: list | None = None, exclude_unused: bool = False,
     options=None, extra_lookups: dict | None = None,
-) -> tuple[bytes, str]:
+    out_dir=None, prefix: str = "",
+) -> tuple[Path, str]:
     """TIMS 入力ファイルに手法別クラスター列を追加してエクスポート。
 
     複数手法の場合は手法名を列名にして横並びで配置する。
@@ -1129,7 +1238,7 @@ def _export_tims(
     ★ ver59.0: 既定は False。既存の呼び出し（テスト含む）の挙動を変えないため、
       既定 ON は UI / API 側で持つ。
 
-    Returns (file_bytes, filename)
+    Returns (out_path, filename)。★ ver62.1: バイト列ではなくパスを返す。
     """
     input_paths = build_tims_input_paths(data_folder)
     if not input_paths:
@@ -1151,7 +1260,7 @@ def _export_tims(
     mz_df = (_build_mz_list_table(input_paths, data_folder) if want_mz else None)
 
     if not want_spot:
-        return _write_mz_list_only(mz_df, fmt, conditions)
+        return _write_mz_list_only(mz_df, fmt, conditions, out_dir, prefix)
 
     # csv / parquet は 1 ファイルに 1 表しか入らない。黙って片方を落とすと、
     # 利用者は選んだはずの表が無い理由を追えない。xlsx を案内して止める
@@ -1175,8 +1284,11 @@ def _export_tims(
     stats_out: list = []
     for i_f, fp in enumerate(input_paths):
         if progress_cb:
-            progress_cb(int(base + span * i_f / n_files),
-                        f"書き込み中… {i_f + 1}/{n_files} ({Path(fp).stem})")
+            # ★ ver62.1: 読み込みには span の 0.8 までしか使わない。従来は読み終えた
+            #   時点で 98% に達し、**最も長い直列化の間バーが動かなかった**ため
+            #   「止まった」ように見えていた。残りを書き出しに割り当てる。
+            progress_cb(int(base + span * 0.8 * i_f / n_files),
+                        f"読み込み中… {i_f + 1}/{n_files} ({Path(fp).stem})")
         # ★ ver61.0: 「出力内容の設定」で強度を外したら m/z 列を読まない。
         #   読んでから捨てるのでは意味がない（実データは m/z が数千列あり、
         #   float32 の実体だけで数 GB になる）。x/y/annotation は突合に要るので
@@ -1281,41 +1393,48 @@ def _export_tims(
     stem_name = ("UMAP_cluster_TIMS_grouped" if _eo.is_group_mode(options)
                  else "UMAP_cluster_TIMS")
 
-    # 出力形式に応じてバイト列を生成
-    buf = io.BytesIO()
-    if fmt == "xlsx" and df_all.shape[1] > 16384:
-        # Excel の列上限。MSI は m/z 列が多く超過し得る → CSV/Parquet を案内。
-        raise ValueError(
-            f"xlsx は列数上限(16,384)を超えます（{df_all.shape[1]} 列）。"
-            "出力形式で CSV または Parquet を選択してください。")
+    # ★ ver62.1: 走り出す前に xlsx の規模を検査する。従来は列数しか見ておらず、
+    #   4,566 m/z はガードを通り抜けて「終わらないまま走り続ける」状態になっていた。
     if fmt == "xlsx":
-        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-            df_all.to_excel(writer, index=False, sheet_name="Data")
-            # ★ ver62.0: m/z 一覧は別シート。行の単位が違う（1 行 = 1 m/z）ので
-            #   同じシートには入れられない。
-            if mz_df is not None and not mz_df.empty:
-                mz_df.to_excel(writer, index=False,
-                               sheet_name=_mzlist.SHEET_NAME)
-            # 解析条件シート（論文の Methods 用）
-            if conditions is not None:
-                try:
-                    _conditions_sheet_df(conditions).to_excel(
-                        writer, sheet_name="Conditions", index=False)
-                except Exception:
-                    logger.warning("Conditions シートの追加に失敗", exc_info=True)
-        filename = f"{stem_name}.xlsx"
-    elif fmt == "csv":
-        buf.write(df_all.to_csv(index=False).encode("utf-8"))
-        filename = f"{stem_name}.csv"
-    elif fmt == "parquet":
-        df_all.to_parquet(buf, index=False)
-        filename = f"{stem_name}.parquet"
-    else:
-        buf.write(df_all.to_csv(index=False).encode("utf-8"))
-        filename = f"{stem_name}.csv"
+        _guard_xlsx_size(df_all.shape[0], df_all.shape[1])
 
-    buf.seek(0)
-    return buf.getvalue(), filename
+    ext = {"xlsx": "xlsx", "parquet": "parquet"}.get(fmt, "csv")
+    filename = f"{stem_name}.{ext}"
+    out_path = _resolve_out_path(out_dir, prefix, filename)
+
+    # ★ ver62.1: ここが最も長い工程なのに、従来は進捗を 1 度も報告していなかった。
+    #   読み込みが終わった時点でバーが 98% に達し、そのまま動かないので
+    #   「止まった」ように見えていた。せめて工程名は出す。
+    if progress_cb:
+        hint = "（Excel は時間がかかります）" if ext == "xlsx" else ""
+        progress_cb(int(base + span * 0.9),
+                    f"ファイルを書き出し中… {filename}{hint}")
+
+    # ★ ver62.1: バイト列を組み立てずパスへ直接書く。pandas がチャンクで書くので
+    #   巨大な中間オブジェクトを作らない（実測で RSS 増分 +1.94 GB → +0.00 GB）。
+    with _atomic_output(out_path) as tmp:
+        if ext == "xlsx":
+            with pd.ExcelWriter(tmp, engine="openpyxl") as writer:
+                df_all.to_excel(writer, index=False, sheet_name="Data")
+                # ★ ver62.0: m/z 一覧は別シート。行の単位が違う（1 行 = 1 m/z）ので
+                #   同じシートには入れられない。
+                if mz_df is not None and not mz_df.empty:
+                    mz_df.to_excel(writer, index=False,
+                                   sheet_name=_mzlist.SHEET_NAME)
+                # 解析条件シート（論文の Methods 用）
+                if conditions is not None:
+                    try:
+                        _conditions_sheet_df(conditions).to_excel(
+                            writer, sheet_name="Conditions", index=False)
+                    except Exception:
+                        logger.warning("Conditions シートの追加に失敗",
+                                       exc_info=True)
+        elif ext == "parquet":
+            df_all.to_parquet(tmp, index=False)
+        else:
+            df_all.to_csv(tmp, index=False)
+
+    return out_path, filename
 
 
 # ---------------------------------------------------------------------------
@@ -1326,13 +1445,15 @@ def _do_export(
     data_folder, ms_instrument, export_format,
     rds_map, current_method, result_folder, project_id, sub_project_id,
     loaded_rds, cluster_name_map=None, selected_methods=None,
-    exclude_unused=False, options=None, progress_cb=None,
+    exclude_unused=False, options=None, out_dir=None, prefix="",
+    progress_cb=None,
 ):
     """データ出力の本体。開いている(読み込み済みの)プロジェクトにスコープを固定して、
     元データに UMAP cluster 列を付与したファイルを生成する。
 
     progress_cb: progress_cb(pct:int, label:str) を渡すと 0-100 の進捗を報告する（任意）。
-    Returns: (file_bytes|None, filename|None, status_message)。失敗時は (None, None, msg)。
+    Returns: (out_path|None, filename|None, status_message)。失敗時は (None, None, msg)。
+    ★ ver62.1: バイト列ではなく **書き出し済みファイルのパス** を返す。
     """
     def _p(pct, label=""):
         if progress_cb:
@@ -1424,21 +1545,22 @@ def _do_export(
         # ファイル書き込み: 進捗 58→98%
         report: list = []
         if is_desi:
-            file_bytes, filename = _export_desi(
+            file_path, filename = _export_desi(
                 data_folder, method_lookups, region_lookup,
                 progress_cb=progress_cb, base=58, span=40, conditions=conditions,
                 roi_failed=roi_failed, report=report,
-                exclude_unused=exclude_unused)
+                exclude_unused=exclude_unused, out_dir=out_dir, prefix=prefix)
         else:
             fmt = export_format or "xlsx"
             # ★ ver61.0: plot_data 由来の追加列（UMAP 座標・品質指標）。
             #   選ばれていなければ空 dict で、従来と同じ列構成のまま。
             extra_lookups = _build_extra_lookups(plot_data, options)
-            file_bytes, filename = _export_tims(
+            file_path, filename = _export_tims(
                 data_folder, method_lookups, fmt, region_lookup,
                 progress_cb=progress_cb, base=58, span=40, conditions=conditions,
                 report=report, exclude_unused=exclude_unused,
-                options=options, extra_lookups=extra_lookups)
+                options=options, extra_lookups=extra_lookups,
+                out_dir=out_dir, prefix=prefix)
         _p(99, "仕上げ中…")
 
         # ステータスメッセージ
@@ -1459,7 +1581,7 @@ def _do_export(
         if warn:
             msg += "  " + warn
 
-        return file_bytes, filename, msg
+        return file_path, filename, msg
 
     except Exception as e:
         logger.exception("データ出力エラー")
@@ -1485,7 +1607,8 @@ def _pick_primary_rds(rds_map: dict):
 def build_interactive_export_for_project(
     data_folder, ms_instrument, export_format,
     rds_map, result_folder, project_id, sub_project_id,
-    selected_methods=None, exclude_unused=False, progress_cb=None,
+    selected_methods=None, exclude_unused=False, out_dir=None, prefix="",
+    progress_cb=None,
 ):
     """ライブ session に依存せず UMAP_cluster エクスポートを生成する（API / バッチ用）。
 
@@ -1494,7 +1617,8 @@ def build_interactive_export_for_project(
     （current_method=None のとき同関数は `_interactive_data` を一切参照しない）。
     ROI(領域名) は primary RDS の plot_data + `hne_overlay_state.json`（ディスク）から割り当てる。
 
-    Returns: ``(file_bytes|None, filename|None, message)``。失敗時は ``(None, None, msg)``。
+    Returns: ``(out_path|None, filename|None, message)``。失敗時は ``(None, None, msg)``。
+    ★ ver62.1: バイト列ではなく **書き出し済みファイルのパス** を返す。
     抽出キャッシュが cold の場合は内部で R 抽出が走り得る（＝重い処理）。
     """
     def _p(pct, label=""):
@@ -1582,17 +1706,18 @@ def build_interactive_export_for_project(
             logger.warning("[APIExport] 条件記録に失敗: %s", e)
         report: list = []
         if is_desi:
-            file_bytes, filename = _export_desi(
+            file_path, filename = _export_desi(
                 data_folder, method_lookups, region_lookup,
                 progress_cb=progress_cb, base=58, span=40, conditions=conditions,
                 roi_failed=roi_failed, report=report,
-                exclude_unused=exclude_unused)
+                exclude_unused=exclude_unused, out_dir=out_dir, prefix=prefix)
         else:
             fmt = export_format or "parquet"
-            file_bytes, filename = _export_tims(
+            file_path, filename = _export_tims(
                 data_folder, method_lookups, fmt, region_lookup,
                 progress_cb=progress_cb, base=58, span=40, conditions=conditions,
-                report=report, exclude_unused=exclude_unused)
+                report=report, exclude_unused=exclude_unused,
+                out_dir=out_dir, prefix=prefix)
         _p(99, "仕上げ中…")
 
         msg = f"✅ {filename} を生成しました"
@@ -1606,7 +1731,7 @@ def build_interactive_export_for_project(
         warn = _summarize_coverage(report)
         if warn:
             msg += "  " + warn
-        return file_bytes, filename, msg
+        return file_path, filename, msg
 
     except Exception as e:  # noqa: BLE001
         logger.exception("[APIExport] エクスポート生成エラー")
@@ -1643,22 +1768,24 @@ def update_data_export_method_options(rds_map):
 def _run_export_job(job_id, args):
     """作業スレッド本体: _do_export を実行し、出力を一時ファイルへ保存して進捗を反映する。
 
-    base64 でブラウザに載せる（＝タブ落ちの原因）代わりに、生成バイト列を
+    base64 でブラウザに載せる（＝タブ落ちの原因）代わりに、
     DATA_EXPORT_TMP_DIR に保存し、Flask の send_file ルートでストリーム配信する。
+
+    ★ ver62.1: 出力先を `_do_export` へ渡し、**書き出しを pandas に直接やらせる**。
+      従来はバイト列を受け取ってからここで `write_bytes` していたため、直列化した
+      出力が丸ごとメモリに乗っていた（実測で DataFrame 実体の 13 倍）。
     """
     try:
-        file_bytes, filename, msg = _do_export(
-            *args, progress_cb=lambda p, l="": _update_job(job_id, p, l))
-        if not file_bytes or not filename:
-            _fail_job(job_id, msg or "出力に失敗しました")
-            return
         from app.config import DATA_EXPORT_TMP_DIR
         DATA_EXPORT_TMP_DIR.mkdir(parents=True, exist_ok=True)
         _sweep_old_files(DATA_EXPORT_TMP_DIR, max_age_sec=3600)  # 古い一時ファイルを掃除
-        safe = re.sub(r'[\\/:*?"<>|]+', "_", str(filename)) or "export.bin"
-        path = DATA_EXPORT_TMP_DIR / f"{job_id}__{safe}"
-        path.write_bytes(file_bytes)
-        _finish_job(job_id, str(path), filename, msg)
+        file_path, filename, msg = _do_export(
+            *args, out_dir=DATA_EXPORT_TMP_DIR, prefix=f"{job_id}__",
+            progress_cb=lambda p, l="": _update_job(job_id, p, l))
+        if not file_path or not filename:
+            _fail_job(job_id, msg or "出力に失敗しました")
+            return
+        _finish_job(job_id, str(file_path), filename, msg)
     except Exception as e:  # noqa: BLE001
         logger.exception("[DataExport] ジョブ実行エラー")
         _fail_job(job_id, f"❌ エラー: {e}")

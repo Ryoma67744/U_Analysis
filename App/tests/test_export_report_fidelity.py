@@ -143,7 +143,7 @@ class TestDesiSkippedSamplesAreVisible:
 
         folder = self._folder(tmp_path / "d", with_txt=True)
         data, _ = _export_desi(str(folder), OrderedDict({"Harmony": {}}))
-        wb = openpyxl.load_workbook(io.BytesIO(data))
+        wb = openpyxl.load_workbook(data)
 
         assert "Skipped" in wb.sheetnames, (
             f"飛ばしたサンプルが資料に残っていない: {wb.sheetnames}")
@@ -163,7 +163,7 @@ class TestDesiSkippedSamplesAreVisible:
             "name\tx\ty\tv\nok_p1\t1.0\t1.0\t1\n", encoding="utf-8")
 
         data, _ = _export_desi(str(folder), OrderedDict({"Harmony": {}}))
-        wb = openpyxl.load_workbook(io.BytesIO(data))
+        wb = openpyxl.load_workbook(data)
         assert "Skipped" not in wb.sheetnames, wb.sheetnames
 
 
@@ -532,7 +532,7 @@ class TestUnmatchedSampleNamesAreVisible:
 
         from app.callbacks.interactive_data_export import _export_desi
         data, _ = _export_desi(str(folder), self._lookup("WT_liver_01"))
-        return openpyxl.load_workbook(io.BytesIO(data))
+        return openpyxl.load_workbook(data)
 
     def test_the_matching_case_produces_no_sheet(self):
         """★ 前提の固定: 一致するときは Skipped シートを出さない。
@@ -584,5 +584,5 @@ class TestUnmatchedSampleNamesAreVisible:
         with tempfile.TemporaryDirectory() as d:
             folder = self._folder(pathlib.Path(d) / "x", "anything")
             data, _ = _export_desi(str(folder), OrderedDict({"Harmony": {}}))
-            wb = openpyxl.load_workbook(io.BytesIO(data))
+            wb = openpyxl.load_workbook(data)
             assert "Skipped" not in wb.sheetnames, wb.sheetnames
