@@ -59,6 +59,19 @@ def create_export_options_modal():
                     "結果は変わりません。",
                     className="text-muted small",
                 ),
+                # ★ ver62.0: m/z 一覧は行の単位が違う（1 行 = 1 m/z）ので、
+                #   単一表しか持てない csv/parquet では併用できない。
+                #   実行してから弾かれるより、選ぶ時点で分かる方がよい。
+                dbc.Alert(
+                    [
+                        html.Div("「m/z 一覧」は 1 行 = 1 m/z の別表です（他の項目は "
+                                 "1 行 = 1 スポット）。"),
+                        html.Div("・単独で選ぶ → どの形式でも一覧表だけが出ます"),
+                        html.Div("・他の項目と併用 → Excel (.xlsx) が必要です"
+                                 "（別シートになります）"),
+                    ],
+                    color="light", className="small mt-2 mb-0 py-2",
+                ),
 
                 html.Hr(className="my-3"),
 

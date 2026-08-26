@@ -24,6 +24,8 @@ from app.services.export_options import (
     resolve_group_columns,
     select_output_columns,
     wants,
+    wants_mzlist,
+    wants_spot_table,
 )
 
 # 変換済み parquet の典型的な列並び
@@ -232,3 +234,42 @@ def test_describe_warns_when_group_keys_missing():
 def test_wants_reads_categories():
     assert wants(None, "intensity") is True
     assert wants({"categories": ["coords"]}, "intensity") is False
+
+
+# ---------------------------------------------------------------------------
+# m/z 一覧（強度とは独立した選択肢）
+# ---------------------------------------------------------------------------
+def test_mzlist_is_off_by_default():
+    """既定 OFF。ON にすると既存の出力に別表が付いて挙動が変わる。"""
+    assert wants(None, "mzlist") is False
+    assert "mzlist" not in LEGACY_CATEGORIES
+
+
+@pytest.mark.parametrize("cats,mz,spot", [
+    (["intensity"],                     False, True),   # 従来どおり
+    (["mzlist"],                        True,  False),  # 一覧だけ
+    (["intensity", "mzlist"],           True,  True),   # 両方
+    (["coords", "cluster"],             False, True),   # どちらも無し
+    (["mzlist", "coords"],              True,  True),   # 一覧 + スポット項目
+])
+def test_intensity_and_mzlist_are_independent(cats, mz, spot):
+    """強度と m/z 一覧は独立。4 通りとも意味を持つ。"""
+    opts = {"categories": cats}
+    assert wants_mzlist(opts) is mz
+    assert wants_spot_table(opts) is spot
+
+
+def test_mzlist_alone_means_no_spot_table():
+    """m/z 一覧だけなら、1 行 = 1 スポットの表は出さない。
+
+    行の単位が違う（1 行 = 1 m/z）ので、同じ表には入らない。
+    """
+    assert wants_spot_table({"categories": ["mzlist"]}) is False
+
+
+def test_mzlist_is_not_a_spot_column():
+    """m/z 一覧は列選択に混ざらない（スポット表の列にはならない）。"""
+    cols = select_output_columns(
+        _FULL_COLS, {"categories": ["coords", "mzlist"]}, ["UMAP cluster"])
+    assert cols == ["x", "y"]
+    assert "mzlist" not in cols
