@@ -12,6 +12,111 @@
 
 ---
 
+## 2026-08-25_ver60.1
+
+### 修正: R のゾンビが永久に残る PID 1 問題を直し、メモリの増え方を実測できるようにした
+
+2026-08-25 に本番 (さくら VPS) で「UMAP が開かない」という障害が起きた。調査の結果
+**アプリは一度も落ちていなかった**。落ちたのではなく、遅すぎて開けなかった。
+
+#### 何が起きていたか
+
+| 確認項目 | 実測 |
+|---|---|
+| コンテナ | `msi-analysis-app` 22 時間 **healthy** / `msi-caddy` 6 週間稼働 |
+| 再起動・OOM kill | `restarts=0` `OOMKilled=false`、dmesg に痕跡なし |
+| `/healthz` | 200 |
+| Caddy | 502 は 0 件。実ユーザーに 200 / 204 を返却中 |
+| アプリ本体の RSS | **11.8 GB**（`mem_limit: 12g` の 99.95%） |
+| コールバック応答 | `/_dash-update-component` に **8.7 秒 / 12.9 秒** |
+| waitress | `Task queue depth is 12`（スレッド既定 8 本が全て塞がる） |
+| ゾンビ | R が **8 個、19 時間** 放置 |
+
+つまり「メモリが上限に張り付いてスワップを掘り、waitress の 8 スレッドが埋まって
+画面が無反応になった」。ユーザーからは「落ちて開かない」と区別が付かない。
+
+`docker compose restart msi-app` で 11.99 GiB → 90.94 MiB に戻り即座に復旧したが、
+これは対症療法でしかない。
+
+#### 1. ゾンビの原因は PID 1 問題だった（原因確定）
+
+`Dockerfile` は `CMD ["python3", "run_app.py"]` で ENTRYPOINT を持たず、
+`docker-compose.yml` に `init:` の指定も無かった。つまり **コンテナの PID 1 は
+Dash アプリ本体**だった。
+
+Linux では親を失った子プロセスは PID 1 に再ペアレントされ、PID 1 には `wait()` で
+回収する義務がある。ところが Python は自分が起動していない子を回収しないため、
+R が fork した並列ワーカーの孤児が永久にゾンビとして残る。ゾンビの親 PID が
+`python3 run_app.py` だったのは、アプリが直接起動した子だからではなく PID 1 だったため。
+
+`init: true` を追加して Docker に tini を挟ませ、孤児を確実に回収するようにした。
+
+ゾンビ自体はメモリを食わないため今回の遅延の直接原因ではない。ただし
+「解析は全て終わっているのに R の子プロセスが 8 個残っている」という状態が
+**ハングした解析が犯人だという誤診を生み**、原因究明を遅らせた。実際の犯人が
+アプリ本体だと分かったのは `ps -o rss` で親 PID の正体を確認した後だった。
+
+#### 2. メモリリークの犯人は特定できていない（計測手段を追加）
+
+障害後にプロセス内キャッシュを全て確認したが、いずれも件数上限付きで、素直に
+足しても GB 級には届かなかった。
+
+| キャッシュ | 上限 | 場所 |
+|---|---|---|
+| `_project_states` | 8 件 + 30 分 TTL | `interactive_callbacks.py:102` |
+| `_HNE_IMG_CACHE` | 12 件 | `interactive_hne_bg.py:59` |
+| `_FEATURE_COL_CACHE` | 16 件 (≈26MB) | `seurat_bridge.py:66` |
+| `_PARQUET_FILE_CACHE` | 4 件 | `seurat_bridge.py:53` |
+
+**静的にコードを読むだけでは犯人を特定できない**ため、推測で直すのではなく実測する
+手段を用意した。`/metrics` (`main.py:141`) は既に `rss_bytes` / `num_fds` /
+`num_threads` / `project_states_size` / `diskcache_mb` を返していたが、
+定期的に記録する仕組みが無く、増え方の時系列が残っていなかった。
+
+新規 `record_metrics.sh` を cron から回すと 1 行 1 レコードで追記される。
+RSS と一緒に何が増えるかで切り分かる:
+
+- `project_states_size` が張り付いたまま RSS だけ伸びる → キャッシュ以外のリーク
+- `num_fds` が単調増加 → FD / パイプの取りこぼし
+- `num_threads` が単調増加 → スレッドの回収漏れ
+
+取得失敗も `ERROR` 行として必ず記録する。コンテナ停止・ハング中は「値が取れないこと
+自体」が最重要の情報で、無言でスキップすると障害の時間帯だけログが歯抜けになるため。
+ログは既定 10MB で自動的に切り詰める（再発防止の仕組みが新たなディスク圧迫源に
+なっては本末転倒なため）。
+
+#### 未解決: 構成上「落ちないまま遅くなり続ける」ことが保証されている
+
+`mem_limit: 12g` に対し `memswap_limit: 40g` のため、コンテナは上限を超えても
+OOM kill されず 28GB 分スワップし続けられる。プロセスが死なないので
+`restart: unless-stopped` は永久に発動せず、healthcheck が unhealthy になっても
+autoheal が無いので誰も再起動しない。今回まさにこれが起きた。
+
+これを変えると「意図的に OOM させて自動再起動に倒す」ことになり本番の挙動が変わる
+ため、本リリースには含めていない。`record_metrics.sh` の計測結果を見てから判断する。
+
+#### 変更点
+
+- `docker-compose.yml`: `msi-app` に `init: true` を追加
+- `record_metrics.sh`: 新規。`/metrics` を cron で定期記録する
+- `App/docs/DEPLOY.md`: 「アプリが重い / 開かない」節を追加
+- `App/tests/test_container_init_and_metrics_recorder.py`: 新規 11 件
+
+compose の読み取りに PyYAML は使わない。`requirements.txt` にも pyproject の
+`dev` extras にも PyYAML は無く、`import yaml` を書くとクリーン環境では
+**モジュール全体が collection error になりテストが 1 件も走らない**
+（PR #166 のレビューで指摘され、PyYAML を落とした環境で再現を確認した）。
+番人のつもりのテストが黙って走らないのが最悪の失敗なので依存を持たない形にした。
+これは `test_version_consistency.py` と同じ方針で、`version-guard.yml` が
+`pytest numpy pandas` しか入れないため、将来この workflow に足すときも
+install 行を触らずに済む。手書きの読み取りが false green を出さないよう、
+読み取り関数自体を合成データで両方向テストしている（別サービスの `init` を
+誤って拾わないことを含む）。
+
+イメージの再ビルドは不要（`docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d` で反映）。
+
+---
+
 ## 2026-08-24_ver60.0
 
 ### 改善: SCiLS 変換を高速化し出力を 37% 小さくした ＋ サブプロセス化して600 秒の壁と進捗表示を解消（値は 1 ビットも変わらない）

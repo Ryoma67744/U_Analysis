@@ -713,6 +713,95 @@ docker exec msi-analysis-app Rscript -e 'cat("qs2:", requireNamespace("qs2", qui
 docker exec msi-analysis-app python3 /app/App/tools/analysis_status_report.py
 ```
 
+### アプリが重い / 開かない（落ちていないのに開けない）
+
+「サイトが開かない」と報告されたとき、**アプリが落ちている**のか
+**遅すぎて開けない**のかを最初に切り分ける。2026-08-25 の障害では後者だったが、
+ユーザーからの見え方は同じだった。
+
+まず外形を確認する。
+
+```bash
+cd ~/UMAP-WebApp-ClaudeCode
+DC="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
+
+docker ps -a --filter name=msi- --format 'table {{.Names}}\t{{.Status}}'
+docker inspect msi-analysis-app --format 'status={{.State.Status}} OOMKilled={{.State.OOMKilled}} restarts={{.RestartCount}}'
+# Caddy を挟まずアプリ本体を直接叩く（最も重要な切り分け）
+docker exec msi-analysis-app python3 -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:3838/healthz',timeout=10).status)"
+```
+
+| 結果 | 意味 | 対処 |
+|---|---|---|
+| healthz が 200 なのに開けない | **アプリは生きている。遅いだけ** | 下記のメモリ確認へ |
+| healthz が無応答 | アプリのハング | `$DC restart msi-app` |
+| コンテナが無い | 誰かが `down` した | `$DC up -d` |
+| `OOMKilled=true` | メモリ超過で落ちた | `mem_limit` の見直し |
+
+> **本番でホストから `curl http://127.0.0.1:3838/...` は届かない。**
+> `docker-compose.prod.yml` の `ports: !override []` で 3838 を公開せず
+> Caddy 経由のみにしているため。必ず `docker exec` でコンテナ内から叩く。
+
+#### 遅い場合: メモリが上限に張り付いていないか
+
+```bash
+docker stats --no-stream msi-analysis-app
+$DC logs --tail=50 msi-app | grep -c "Task queue depth"
+```
+
+`MEM %` が 99% 前後で、ログに `waitress.queue: Task queue depth` が並んでいれば
+**メモリ張り付き → スワップ → waitress のスレッド枯渇**が起きている。
+本番は waitress のスレッドプール既定 8 本なので、コールバック 1 本が 10 秒かかると
+8 本すぐに埋まり、画面は完全に無反応になる。
+
+**再起動する前に、走っている解析が無いことを必ず確認する。**
+RPCA / UMAP / DEG は無言で 30 分以上かかることがあり、誤って潰すと数時間を失う
+（[ANALYSIS_HEALTHCHECK.md](ANALYSIS_HEALTHCHECK.md)）。
+
+```bash
+docker exec msi-analysis-app python3 /app/App/tools/analysis_status_report.py
+# 全件が「完了」かつ PID が「存在しません」なら再起動して安全
+$DC restart msi-app
+```
+
+#### メモリの増え方を記録しておく（ver60.1）
+
+張り付いてから調べても手遅れなので、`/metrics` を定期記録しておく。
+
+```bash
+crontab -e
+# 5 分おきに ~/msi-metrics.log へ追記
+*/5 * * * * /home/ubuntu/UMAP-WebApp-ClaudeCode/record_metrics.sh
+```
+
+RSS と一緒に何が増えるかで原因が切り分かる。
+
+| 一緒に増えるもの | 疑うところ |
+|---|---|
+| `project_states_size` は一定、`rss_bytes` だけ増える | 件数上限付きキャッシュ以外のリーク |
+| `num_fds` が単調増加 | ファイル / パイプの取りこぼし |
+| `num_threads` が単調増加 | スレッドの回収漏れ |
+| `diskcache_mb` だけ増える | ディスク側（メモリとは別問題） |
+
+`/metrics` は認証不要なのでブラウザからも見える（`https://<ドメイン>/metrics`）。
+中身は RSS やスレッド数などの運用値のみで解析データは含まれないが、外部に見せたく
+なければ Caddyfile で内部からのみに制限する。
+
+#### R のゾンビが残っている場合
+
+```bash
+ps -eo pid,ppid,stat,etime,comm | awk '$3 ~ /Z/'
+```
+
+ver60.1 で `docker-compose.yml` に `init: true` を入れ、Docker が挟む tini が
+孤児を回収するようにした。それ以前は PID 1 が `python3 run_app.py`（アプリ本体）
+だったため、R の孤児が永久にゾンビとして残っていた。ゾンビが見えたら
+`init: true` が効いているか確認する。
+
+```bash
+docker inspect msi-analysis-app --format '{{.HostConfig.Init}}'   # true なら有効
+```
+
 ### アプリが起動しない
 
 ```bash
