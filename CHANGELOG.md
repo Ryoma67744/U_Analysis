@@ -12,6 +12,58 @@
 
 ---
 
+## 2026-08-26_ver62.0
+
+### 機能追加: m/z 一覧を強度とは別の選択肢にした
+
+ver61.0 で列選択を入れたが、m/z に関わる選択肢が「強度 (m/z 全列)」の 1 つしか
+なかった。これは m/z 列を**値ごと**出すもので、「このデータにどの m/z が入っているか
+知りたいだけ」に答えられない。実データは 4,566 m/z × 203,078 spot あるため、
+m/z の顔ぶれを確認するためだけに数 GB のファイルを出す羽目になっていた。
+
+「このデータにどの m/z が入っているか知りたいだけ」なのに、これまでは強度を出す
+以外に手が無く、4,566 m/z × 203,078 spot で数 GB のファイルが出ていた。
+
+「m/z 一覧」を選ぶと **1 行 = 1 m/z** の別表が出る（数千行）。
+列は `mz` / `列名` / `compound` / `adduct` / `formula` / `ppm` / `lipid_class` / `database`。
+
+- **強度とは独立した選択肢**。両方 ON / 片方だけ / 両方 OFF の 4 通りとも意味を持つ。
+- `列名` は強度行列の見出しと**文字列一致**する。両方出したときの突き合わせの鍵。
+- 化合物名はサイドカー `*_feature_annotations.parquet` から引くが、
+  **サイドカーが無くても m/z 一覧は出す**（注釈列が空欄になるだけ）。
+  分子情報を登録していないデータで「m/z が 1 つも出ない」のでは機能ごと使えない。
+- 突合の許容差は 0.005 Da。`_apply_feature_annotation_columns` が列名リネームで
+  使う値と**同一**。ずれると同じ m/z に別の化合物名が付いた 2 つの出力ができる。
+
+出力先は形式で変わる。
+
+| 選択 | 出力 |
+|---|---|
+| m/z 一覧だけ | どの形式でも一覧表が本体（`mz_list_TIMS.*`）。**スポットの行を 1 行も読まない** |
+| 他の項目と併用・xlsx | 別シート `m_z`（本体は `Data`） |
+| 他の項目と併用・csv/parquet | **エラー**。1 ファイルに 1 表しか持てないため xlsx を案内する |
+
+csv/parquet で黙って片方を落とさないのは、利用者が「選んだはずの表が無い」理由を
+追えなくなるため。xlsx の列数上限超過時に CSV/Parquet を案内するのと同じ流儀。
+
+「m/z 列と intensity 列を並べた縦持ち」は採らなかった。1 ピクセル単位だと
+203,078 × 4,566 ≒ 9.3 億行になり、どの形式でも実用にならない。
+
+
+#### 変更点
+
+- `App/app/services/export_mzlist.py`: 新規。m/z 一覧表の生成
+- `App/app/services/export_options.py`: `mzlist` カテゴリと `wants_spot_table` を追加
+- `App/app/callbacks/interactive_data_export.py`: 出力先の分岐（別シート / 単独 / エラー）
+- `App/app/layouts/export_options_modal.py` / `callbacks/export_options_callbacks.py`: UI と警告
+- `App/docs/EXPORT_DATA_FORMATS.md`: ブロック 1b に追記
+- テスト: 新規 34 件（`test_export_mzlist` 16 / `test_export_column_selection` +10 /
+  `test_export_options` +8）
+
+`options` 未指定なら従来と完全に同じ。既定 OFF なので ver61.0 の出力も変わらない。
+
+---
+
 ## 2026-08-26_ver61.0
 
 ### 機能追加: データ出力で「何を出すか」と「どの単位でまとめるか」を選べるようにした

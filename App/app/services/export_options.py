@@ -44,11 +44,20 @@ CATEGORIES = (
     ("quality",   "品質指標",               "TotalCount / nFeature（既定 OFF・ある場合のみ）"),
     ("cluster",   "クラスタ",               "手法別の UMAP クラスタ番号"),
     ("roi",       "領域名 (ROI)",           "H&E オーバーレイで割り当てた領域"),
+    # ★ ver62.0: 強度とは独立した選択肢。1 行 = 1 m/z の別表になる。
+    #   「どの m/z が入っているか知りたいだけ」なのに、強度を出すと
+    #   4,566 m/z × 203,078 spot で数 GB になってしまうため。
+    ("mzlist",    "m/z 一覧",               "1 行 = 1 m/z の別表（化合物名・アダクト付き・既定 OFF）"),
 )
 CATEGORY_KEYS = tuple(k for k, _, _ in CATEGORIES)
 
 # 従来の出力に含まれていたカテゴリ。`options=None` のときの既定。
 LEGACY_CATEGORIES = ("id", "coords", "intensity", "section", "cluster", "roi")
+
+# 「1 行 = 1 スポット」の表に列として現れるカテゴリ。
+# `mzlist` だけは行の単位が違う（1 行 = 1 m/z）ので別扱いになる。
+# csv / parquet は 1 ファイルに 1 表しか持てないため、この区別が要る。
+SPOT_CATEGORIES = tuple(k for k in CATEGORY_KEYS if k != "mzlist")
 
 # parquet 側の非強度列。ここに無い列を強度(m/z)列とみなす。
 # `interactive_data_export._apply_feature_annotation_columns` と同じ集合。
@@ -152,6 +161,19 @@ def wants(options, category: str) -> bool:
 
 def is_group_mode(options) -> bool:
     return normalize(options)["mode"] == MODE_GROUP
+
+
+def wants_mzlist(options) -> bool:
+    """m/z 一覧（1 行 = 1 m/z の別表）を出すか。"""
+    return "mzlist" in normalize(options)["categories"]
+
+
+def wants_spot_table(options) -> bool:
+    """1 行 = 1 スポットの表を出すか（＝スポット単位の項目が 1 つでも選ばれているか）。
+
+    m/z 一覧だけを選んだ場合は False。このとき出力は m/z 一覧そのものになる。
+    """
+    return bool(normalize(options)["categories"] & set(SPOT_CATEGORIES))
 
 
 def resolve_group_columns(options, cluster_columns: list) -> list:

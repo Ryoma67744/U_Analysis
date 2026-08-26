@@ -20,6 +20,8 @@ from app.services.export_options import (
     MODE_GROUP,
     MODE_PIXEL,
     describe,
+    wants_mzlist,
+    wants_spot_table,
 )
 
 logger = logging.getLogger(__name__)
@@ -89,6 +91,12 @@ def store_export_options(categories, mode, group_keys):
         warnings.append("出力する列が 1 つも選ばれていません。")
     if mode == MODE_GROUP and not group_keys:
         warnings.append("まとめるキーが 1 つも選ばれていません。")
+    # ★ ver62.0: m/z 一覧を他の項目と併用すると csv/parquet では出せない。
+    #   出力ボタンを押してから弾かれるより、選んだ時点で分かる方がよい。
+    if wants_mzlist(opts) and wants_spot_table(opts):
+        warnings.append(
+            "「m/z 一覧」を他の項目と併用する場合、出力形式に Excel (.xlsx) が"
+            "必要です（CSV / Parquet は 1 ファイルに 1 表しか持てません）。")
     if mode == MODE_GROUP and "roi" in (group_keys or []):
         warnings.append(
             "「領域名」をキーにすると、H&E で ROI を割り当てていないスポットは"

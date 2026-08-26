@@ -32,6 +32,7 @@ from app.services.data_manager import (
 )
 from app.services.desi_header import is_data_line as _is_data_line
 from app.services import export_aggregate as _agg
+from app.services import export_mzlist as _mzlist
 from app.services import export_options as _eo
 from app.services.export_transform import (
     append_cluster_region_columns as _append_cluster_region_columns,
@@ -985,6 +986,82 @@ def _apply_feature_annotation_columns(df: pd.DataFrame, data_folder: str) -> pd.
     return df
 
 
+def _write_mz_list_only(mz_df: pd.DataFrame, fmt: str,
+                        conditions: dict | None) -> tuple[bytes, str]:
+    """m/z 一覧だけを出力する（★ ver62.0）。
+
+    スポット単位の項目が 1 つも選ばれていないときの経路。表が 1 つしかないので
+    csv / parquet でも問題なく出せる。
+    """
+    if mz_df is None or mz_df.empty:
+        raise ValueError(
+            "m/z 列が 1 つも見つかりませんでした。"
+            "MSI データフォルダに変換済みの parquet があるか確認してください。")
+
+    buf = io.BytesIO()
+    if fmt == "xlsx":
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            mz_df.to_excel(writer, index=False, sheet_name=_mzlist.SHEET_NAME)
+            if conditions is not None:
+                try:
+                    _conditions_sheet_df(conditions).to_excel(
+                        writer, sheet_name="Conditions", index=False)
+                except Exception:
+                    logger.warning("Conditions シートの追加に失敗", exc_info=True)
+        filename = "mz_list_TIMS.xlsx"
+    elif fmt == "parquet":
+        mz_df.to_parquet(buf, index=False)
+        filename = "mz_list_TIMS.parquet"
+    else:
+        buf.write(mz_df.to_csv(index=False).encode("utf-8"))
+        filename = "mz_list_TIMS.csv"
+    buf.seek(0)
+    return buf.getvalue(), filename
+
+
+def _tims_header_columns(file_path: str) -> list:
+    """入力ファイルの列名だけを安価に取る（★ ver62.0）。
+
+    m/z 一覧はスポットの行を 1 行も要らないので、ここで実データを読まない。
+    parquet はフッタだけ、CSV/TSV は `nrows=0` でヘッダだけ読む。
+    """
+    cols = _tims_available_columns(file_path)
+    if cols is not None:
+        return cols
+    p = Path(file_path)
+    sep = "\t" if p.suffix.lower() == ".tsv" else ","
+    try:
+        return list(pd.read_csv(file_path, sep=sep, nrows=0).columns)
+    except Exception as e:  # noqa: BLE001 — legacy CSV は読み直しが要る
+        logger.debug("[DataExport] ヘッダ取得に失敗: %s (%s)", p.name, e)
+        alt = _read_tims_transform_csv(p)
+        return list(alt.columns) if alt is not None else []
+
+
+def _build_mz_list_table(input_paths: list, data_folder: str) -> pd.DataFrame:
+    """m/z 一覧表を作る（★ ver62.0）。スポットの行は 1 行も読まない。
+
+    列名は `_apply_feature_annotation_columns` を通した**後**のものを渡す。
+    そうしないと `列名` が実際の出力の見出しと食い違い、強度行列と
+    突き合わせられなくなる。実データは読まず、空の DataFrame の列名だけを
+    リネームさせている。
+    """
+    from app.services.annotation_inspect import find_annotation_sidecar
+
+    names: list = []
+    seen: set = set()
+    for fp in input_paths:
+        for c in _tims_header_columns(fp):
+            if c not in seen:
+                seen.add(c)
+                names.append(c)
+
+    renamed = _apply_feature_annotation_columns(
+        pd.DataFrame(columns=names), data_folder)
+    sidecar = find_annotation_sidecar([Path(data_folder)])
+    return _mzlist.build_mz_list(list(renamed.columns), sidecar_path=sidecar)
+
+
 def _tims_cluster_columns(method_lookups: OrderedDict) -> list:
     """この出力に現れるクラスタ列名。単一手法なら "UMAP cluster"、複数なら手法名。
 
@@ -1059,6 +1136,32 @@ def _export_tims(
         raise ValueError("TIMS 入力ファイルが見つかりません")
 
     is_multi = len(method_lookups) > 1
+
+    # ★ ver62.0: m/z 一覧（1 行 = 1 m/z）はスポットの表とは行の単位が違う。
+    #   スポット単位の項目が 1 つも選ばれていなければ、**スポットを 1 行も読まずに**
+    #   一覧表だけを出す。「どの m/z が入っているか知りたいだけ」で数 GB を読むのは
+    #   本末転倒なため。
+    want_spot = _eo.wants_spot_table(options)
+    want_mz = _eo.wants_mzlist(options)
+    if not want_spot and not want_mz:
+        raise ValueError(
+            "出力する項目が 1 つもありません。"
+            "「出力内容の設定」で列か m/z 一覧を選んでください。")
+
+    mz_df = (_build_mz_list_table(input_paths, data_folder) if want_mz else None)
+
+    if not want_spot:
+        return _write_mz_list_only(mz_df, fmt, conditions)
+
+    # csv / parquet は 1 ファイルに 1 表しか入らない。黙って片方を落とすと、
+    # 利用者は選んだはずの表が無い理由を追えない。xlsx を案内して止める
+    # （列数上限超過時に CSV/Parquet を案内するのと同じ流儀）。
+    if want_mz and fmt in ("csv", "parquet"):
+        raise ValueError(
+            f"{fmt} は 1 ファイルに 1 つの表しか持てないため、"
+            "スポット単位の列と「m/z 一覧」を同時に出力できません。"
+            "出力形式で Excel (.xlsx) を選ぶ（別シートになります）か、"
+            "「m/z 一覧」だけを選んでください。")
 
     # 全手法の Sample 名を統合
     all_sample_names: set[str] = set()
@@ -1188,6 +1291,11 @@ def _export_tims(
     if fmt == "xlsx":
         with pd.ExcelWriter(buf, engine="openpyxl") as writer:
             df_all.to_excel(writer, index=False, sheet_name="Data")
+            # ★ ver62.0: m/z 一覧は別シート。行の単位が違う（1 行 = 1 m/z）ので
+            #   同じシートには入れられない。
+            if mz_df is not None and not mz_df.empty:
+                mz_df.to_excel(writer, index=False,
+                               sheet_name=_mzlist.SHEET_NAME)
             # 解析条件シート（論文の Methods 用）
             if conditions is not None:
                 try:

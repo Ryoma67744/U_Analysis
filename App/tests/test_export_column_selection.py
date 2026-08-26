@@ -270,3 +270,139 @@ def test_group_mode_ignores_method_when_cluster_not_a_key(tims_parquet):
     got = _read(data, fn)
     assert len(got) == 2, "切片 2 つ分だけ。手法の数だけ重複しない"
     assert "Method" not in got.columns
+
+
+# ---------------------------------------------------------------------------
+# m/z 一覧（1 行 = 1 m/z の別表）
+# ---------------------------------------------------------------------------
+def _sidecar_in(folder):
+    """データフォルダにサイドカーを置く。"""
+    pd.DataFrame({
+        "mz": [100.0001, 200.0002],
+        "compound": ["Glutathione", "PC(34:1)"],
+        "adduct": ["[M-H]-", "[M+H]+"],
+        "formula": ["C10H17N3O6S", "C42H82NO8P"],
+        "ppm": [1.2, -0.8],
+        "lipid_class": ["", "PC"],
+        "database": ["HMDB", "LIPIDMAPS"],
+        "raw": ["Glutathione | [M-H]-", "PC(34:1) | [M+H]+"],
+    }).to_parquet(folder / "S_feature_annotations.parquet", index=False)
+
+
+def test_mzlist_is_off_by_default(tims_parquet, lookups):
+    """既定では m/z 一覧を出さない（従来の出力を変えない）。"""
+    data, filename = de._export_tims(str(tims_parquet), lookups, "csv")
+    assert filename == "UMAP_cluster_TIMS.csv"
+    assert "mz" not in _read(data, filename).columns
+
+
+def test_mzlist_only_outputs_the_list(tims_parquet, lookups):
+    """m/z 一覧だけを選ぶと、1 行 = 1 m/z の小さな表が出る。"""
+    data, filename = de._export_tims(
+        str(tims_parquet), lookups, "csv", options={"categories": ["mzlist"]})
+    assert filename == "mz_list_TIMS.csv", "一覧表が本体のときは別のファイル名"
+
+    got = _read(data, filename)
+    assert len(got) == 3, "m/z 3 件"
+    assert list(got["mz"]) == sorted(got["mz"])
+    for col in ("mz", "列名", "compound", "adduct", "formula"):
+        assert col in got.columns
+
+
+def test_mzlist_only_does_not_read_spot_rows(tims_parquet, lookups, monkeypatch):
+    """m/z 一覧だけなら parquet の行を 1 行も読まない。
+
+    「どの m/z が入っているか知りたいだけ」で数 GB を読むのは本末転倒。
+    """
+    called = []
+    real = de.pd.read_parquet
+
+    def spy(path, columns=None, **kw):
+        called.append(str(path))
+        return real(path, columns=columns, **kw)
+
+    monkeypatch.setattr(de.pd, "read_parquet", spy)
+    de._export_tims(str(tims_parquet), lookups, "csv",
+                    options={"categories": ["mzlist"]})
+    # サイドカーは無いので read_parquet は 1 度も呼ばれない（スキーマ読みのみ）
+    assert not [c for c in called if c.endswith("S.parquet")], \
+        f"スポットの parquet を読んでしまっている: {called}"
+
+
+def test_mzlist_picks_up_annotations(tims_parquet, lookups):
+    """サイドカーがあれば化合物名・アダクト・組成式が付く。"""
+    _sidecar_in(tims_parquet)
+    data, filename = de._export_tims(
+        str(tims_parquet), lookups, "csv", options={"categories": ["mzlist"]})
+    got = _read(data, filename).set_index("mz")
+    assert got.loc[100.0001, "compound"] == "Glutathione"
+    assert got.loc[200.0002, "adduct"] == "[M+H]+"
+    # 注釈の無い m/z は空欄のまま（無理に埋めない）
+    assert pd.isna(got.loc[300.0003, "compound"]) or got.loc[300.0003, "compound"] == ""
+
+
+def test_mzlist_works_without_sidecar(tims_parquet, lookups):
+    """サイドカーが無くても一覧は出る。注釈列が空欄になるだけ。"""
+    data, filename = de._export_tims(
+        str(tims_parquet), lookups, "csv", options={"categories": ["mzlist"]})
+    got = _read(data, filename)
+    assert len(got) == 3
+    assert list(got["mz"]) == [100.0001, 200.0002, 300.0003]
+
+
+def test_mzlist_with_spot_columns_errors_on_csv(tims_parquet, lookups):
+    """csv でスポット列と併用したら、黙って片方を落とさず xlsx を案内する。"""
+    with pytest.raises(ValueError, match="xlsx|Excel"):
+        de._export_tims(str(tims_parquet), lookups, "csv",
+                        options={"categories": ["coords", "cluster", "mzlist"]})
+
+
+def test_mzlist_with_spot_columns_errors_on_parquet(tims_parquet, lookups):
+    with pytest.raises(ValueError, match="xlsx|Excel"):
+        de._export_tims(str(tims_parquet), lookups, "parquet",
+                        options={"categories": ["coords", "mzlist"]})
+
+
+def test_mzlist_becomes_a_separate_sheet_in_xlsx(tims_parquet, lookups):
+    """xlsx なら本体と m/z 一覧の 2 シートになる。"""
+    _sidecar_in(tims_parquet)
+    data, filename = de._export_tims(
+        str(tims_parquet), lookups, "xlsx",
+        options={"categories": ["coords", "cluster", "mzlist"]})
+    assert filename == "UMAP_cluster_TIMS.xlsx"
+
+    sheets = pd.read_excel(io.BytesIO(data), sheet_name=None)
+    assert "Data" in sheets and "m_z" in sheets
+    assert list(sheets["Data"].columns) == ["x", "y", "UMAP cluster"]
+    assert len(sheets["m_z"]) == 3
+    assert sheets["m_z"]["compound"].iloc[0] == "Glutathione"
+
+
+def test_mzlist_unchanged_by_group_mode(tims_parquet, lookups):
+    """集計モードと併用しても m/z 一覧の中身は変わらない。"""
+    _sidecar_in(tims_parquet)
+    pixel, _ = de._export_tims(
+        str(tims_parquet), lookups, "xlsx",
+        options={"categories": ["coords", "cluster", "mzlist"]})
+    grouped, _ = de._export_tims(
+        str(tims_parquet), lookups, "xlsx",
+        options={"categories": ["intensity", "mzlist"], "mode": MODE_GROUP,
+                 "group_keys": ["section", "cluster"]})
+    a = pd.read_excel(io.BytesIO(pixel), sheet_name="m_z")
+    b = pd.read_excel(io.BytesIO(grouped), sheet_name="m_z")
+    pd.testing.assert_frame_equal(a, b)
+
+
+def test_unknown_categories_fall_back_to_legacy_output(tims_parquet, lookups):
+    """知らないカテゴリしか入っていない設定は、例外ではなく従来の出力に倒す。
+
+    `normalize()` の設計どおりの挙動。設定 UI の不具合や古い Store の値で
+    出力が静かに変わるより、既定に戻る方が安全なため。
+    ここが例外になると、壊れた Store 値ひとつで出力ができなくなる。
+    """
+    data, filename = de._export_tims(
+        str(tims_parquet), lookups, "csv",
+        options={"categories": ["存在しないカテゴリ"]})
+    assert filename == "UMAP_cluster_TIMS.csv"
+    assert list(_read(data, filename).columns) == [
+        "id", "x", "y", *_MZ, "annotation", "UMAP cluster"]
