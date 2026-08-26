@@ -31,6 +31,8 @@ from app.services.data_manager import (
     list_msi_files,
 )
 from app.services.desi_header import is_data_line as _is_data_line
+from app.services import export_aggregate as _agg
+from app.services import export_options as _eo
 from app.services.export_transform import (
     append_cluster_region_columns as _append_cluster_region_columns,
     plan_exclusions as _plan_exclusions,
@@ -96,6 +98,47 @@ def _build_cluster_lookup(plot_data: pd.DataFrame, cluster_name_map: dict | None
             key = (sample, round(float(sx), 4), round(float(sy), 4))
             lookup[key] = cluster_display_name(cluster, cluster_name_map)
     return lookup
+
+
+def _build_extra_lookups(plot_data: pd.DataFrame, options) -> dict:
+    """plot_data 由来の追加列を `{列名: {(sample, rx, ry): 値}}` にする（★ ver61.0）。
+
+    対象は UMAP 座標 (UMAP_1 / UMAP_2) と品質指標 (TotalCount / nFeature)。
+    いずれも `extract_seurat_data.R` が plot_data に入れているのに、これまで
+    データ出力には含まれていなかった。列選択を作るなら同時に出せるのが自然。
+
+    キーの作り方は `_build_cluster_lookup` と**同一**（元 SpatialX/Y を Python の
+    round で 4 桁）。ここがずれると同じ行に別々の値が乗る。
+
+    `_build_cluster_lookup` は iterrows を使っているが、ここでは使わない。
+    20 万行 × 複数列で iterrows は桁違いに遅く、`append_cluster_region_columns` が
+    「iterrows 撤廃＝軽い」としているのと同じ理由。
+    """
+    out: dict = {}
+    if plot_data is None or plot_data.empty:
+        return out
+    if not all(c in plot_data.columns for c in ("SpatialX", "SpatialY", "Sample")):
+        return out
+
+    import numpy as np
+
+    need: list = []
+    if _eo.wants(options, "umap"):
+        need += [c for c in _eo.UMAP_COLUMNS if c in plot_data.columns]
+    if _eo.wants(options, "quality"):
+        need += [c for c in _eo.QUALITY_COLUMNS if c in plot_data.columns]
+    if not need:
+        return out
+
+    sx = pd.to_numeric(plot_data["SpatialX"], errors="coerce").to_numpy(dtype=float)
+    sy = pd.to_numeric(plot_data["SpatialY"], errors="coerce").to_numpy(dtype=float)
+    samples = plot_data["Sample"].astype(str).to_numpy()
+    ok = ~(np.isnan(sx) | np.isnan(sy))
+    keys = [(s, round(float(x), 4), round(float(y), 4))
+            for s, x, y in zip(samples[ok], sx[ok], sy[ok])]
+    for col in need:
+        out[col] = dict(zip(keys, plot_data[col].to_numpy()[ok]))
+    return out
 
 
 def _build_region_lookup(plot_data: pd.DataFrame, rds_path):
@@ -841,18 +884,40 @@ def _read_tims_transform_csv(p: Path) -> pd.DataFrame | None:
         return None
 
 
-def _read_tims_file(file_path: str) -> pd.DataFrame:
+def _tims_available_columns(file_path: str) -> "list | None":
+    """parquet のフッタ（スキーマ）だけを読んで列名を返す。
+
+    ★ ver61.0: 「出力内容の設定」で強度を外したときに m/z 列を **読まずに済ませる**
+      ために、先に列名だけ知る必要がある。フッタだけなので実データは読まない。
+      CSV/TSV は事前に列名を知る安価な手段が無いので None（＝絞らない）。
+    """
+    p = Path(file_path)
+    if p.suffix.lower() not in (".parquet", ".pq"):
+        return None
+    try:
+        import pyarrow.parquet as pq
+        return list(pq.read_schema(str(p)).names)
+    except Exception as e:  # noqa: BLE001 — 読めなければ従来どおり全列読む
+        logger.debug("[DataExport] スキーマ取得に失敗（全列読みで継続）: %s", e)
+        return None
+
+
+def _read_tims_file(file_path: str, columns: "list | None" = None) -> pd.DataFrame:
     """TIMS 入力ファイルを読み込む（Parquet/CSV/TSV 自動判定）。
 
     見出し付き CSV（`x` / `y` 列を持つ）は従来どおりそのまま読む。
     そうでなければ legacy SCiLS Transform CSV として読み直す（★ ver58.3）。
     ヘッダ行がデータ行より狭い（annotation 列を後付けした）ファイルは
     既定の `pd.read_csv` が ParserError で落ちるため、その場合も読み直す。
+
+    columns: parquet のとき読む列を絞る（★ ver61.0）。None なら従来どおり全列。
+        CSV 経路には効かない（行を全部パースする必要があるため）。呼び出し側が
+        読み込み後に列を落とす。
     """
     p = Path(file_path)
     ext = p.suffix.lower()
     if ext in (".parquet", ".pq"):
-        return pd.read_parquet(file_path)
+        return pd.read_parquet(file_path, columns=columns)
     sep = "\t" if ext == ".tsv" else ","
     try:
         df = pd.read_csv(file_path, sep=sep)
@@ -920,11 +985,61 @@ def _apply_feature_annotation_columns(df: pd.DataFrame, data_folder: str) -> pd.
     return df
 
 
+def _tims_cluster_columns(method_lookups: OrderedDict) -> list:
+    """この出力に現れるクラスタ列名。単一手法なら "UMAP cluster"、複数なら手法名。
+
+    `append_cluster_region_columns` の `col_name = method_name if is_multi else
+    "UMAP cluster"` と同じ規則。強度列の判定と集計キーの解決で使う。
+    手法名は任意の文字列を取り得るので、推測せずここで一元的に決める。
+    """
+    return (list(method_lookups.keys()) if len(method_lookups) > 1
+            else [_eo.SINGLE_METHOD_CLUSTER_COLUMN])
+
+
+def _aggregate_tims(dfs: list, method_lookups: OrderedDict,
+                    options) -> pd.DataFrame:
+    """ピクセル行を集計してグループ平均の表にする（★ ver61.0）。
+
+    クラスタを集計キーに含める場合だけ手法ごとに集計し、`Method` 列を持つ
+    **縦持ち**にする。手法ごとに列を横へ並べる（ピクセル出力の流儀）と、
+    手法間で意味の違うクラスタ番号が 1 行に同居して読めなくなるうえ、
+    csv / parquet では 1 表に収まらない。
+
+    クラスタをキーに含めないなら手法によって結果が変わらないので 1 回だけ集計する。
+    手法の数だけ同じ表を繰り返しても情報が増えない。
+    """
+    cluster_cols = _tims_cluster_columns(method_lookups)
+    all_cols = dfs[0].columns if dfs else []
+    value_cols = (_eo.intensity_columns(all_cols, cluster_columns=cluster_cols)
+                  if _eo.wants(options, "intensity") else [])
+
+    if "cluster" not in _eo.normalize(options)["group_keys"]:
+        group_cols = _eo.resolve_group_columns(options, [])
+        partials = [_agg.accumulate_partial(d, group_cols, value_cols) for d in dfs]
+        return _agg.combine_partials(partials, group_cols)
+
+    frames = []
+    for col in cluster_cols:
+        group_cols = _eo.resolve_group_columns(options, [col])
+        partials = [_agg.accumulate_partial(d, group_cols, value_cols) for d in dfs]
+        out = _agg.combine_partials(partials, group_cols)
+        if out.empty:
+            continue
+        # クラスタ列名は手法ごとに違うので、縦持ちのために共通名へ寄せる。
+        out = out.rename(columns={col: "Cluster"})
+        out.insert(0, "Method", col)
+        frames.append(out)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
 def _export_tims(
     data_folder: str, method_lookups: OrderedDict, fmt: str,
     region_lookup: dict | None = None,
     progress_cb=None, base: int = 0, span: int = 0, conditions: dict | None = None,
     report: list | None = None, exclude_unused: bool = False,
+    options=None, extra_lookups: dict | None = None,
 ) -> tuple[bytes, str]:
     """TIMS 入力ファイルに手法別クラスター列を追加してエクスポート。
 
@@ -959,7 +1074,13 @@ def _export_tims(
         if progress_cb:
             progress_cb(int(base + span * i_f / n_files),
                         f"書き込み中… {i_f + 1}/{n_files} ({Path(fp).stem})")
-        df = _read_tims_file(fp)
+        # ★ ver61.0: 「出力内容の設定」で強度を外したら m/z 列を読まない。
+        #   読んでから捨てるのでは意味がない（実データは m/z が数千列あり、
+        #   float32 の実体だけで数 GB になる）。x/y/annotation は突合に要るので
+        #   出力に出さなくても必ず読む（`export_options.parquet_columns`）。
+        avail = _tims_available_columns(fp)
+        read_cols = _eo.parquet_columns(avail, options) if avail else None
+        df = _read_tims_file(fp, columns=read_cols)
         df = _apply_feature_annotation_columns(df, data_folder)
         stem = Path(fp).stem
         # 右端に手法別クラスタ列・領域名列をベクトル付与（iterrows 撤廃＝軽い）。
@@ -967,7 +1088,7 @@ def _export_tims(
         stats: dict = {}
         df = _append_cluster_region_columns(
             df, method_lookups, region_lookup, all_sample_list, is_multi, stem,
-            _match_sample_name, stats=stats)
+            _match_sample_name, stats=stats, extra_lookups=extra_lookups)
         if stats.get("matched", 0) < stats.get("rows", 0):
             logger.warning("[DataExport] %s: クラスタ突合 %s/%s 行 (resolver=%s, 未一致=%s)",
                            stem, stats.get("matched"), stats.get("rows"),
@@ -1020,9 +1141,28 @@ def _export_tims(
             logger.info("[DataExport] %s: 解析対象外の切片を除外: %s",
                         st.get("stem"), st["excluded"])
 
-    df_all = (
-        pd.concat(dfs_out, ignore_index=True) if len(dfs_out) > 1 else dfs_out[0]
-    )
+    # ★ ver61.0: 集計 / 列選択。既定 (options=None) は素通しで従来と完全に同じ。
+    if _eo.is_group_mode(options):
+        # 集計は「除外」を済ませた後に行う。先に集計すると、解析に使っていない切片の
+        # 行が平均に混ざったまま消せなくなる（n も水増しされる）。
+        df_all = _aggregate_tims(dfs_out, method_lookups, options)
+        dfs_out = None                                   # 元の行はもう要らない
+        if df_all.empty:
+            raise ValueError(
+                "集計した結果が 0 行になりました。"
+                "集計キー（切片 / 領域名 / クラスタ）の選択を確認してください。")
+    else:
+        df_all = (
+            pd.concat(dfs_out, ignore_index=True) if len(dfs_out) > 1 else dfs_out[0]
+        )
+        keep = _eo.select_output_columns(
+            list(df_all.columns), options, _tims_cluster_columns(method_lookups))
+        if keep != list(df_all.columns):
+            if not keep:
+                raise ValueError(
+                    "出力する列が 1 つもありません。"
+                    "「出力内容の設定」で項目を 1 つ以上選んでください。")
+            df_all = df_all[keep]
 
     # ★ ver59.0: 0 行になったら止める。to_excel / to_csv / to_parquet はいずれも
     #   例外を出さず **「ヘッダだけの、成功したファイル」** を返すため
@@ -1032,6 +1172,11 @@ def _export_tims(
             "出力する行がありません。"
             "「解析に使っていない切片を除外」で全ての行が除外されました。"
             "チェックを外すか、解析対象の切片を確認してください。")
+
+    # ★ ver61.0: 集計した出力は別のファイル名にする。中身が「1 行 = 1 スポット」から
+    #   「1 行 = 1 グループ」に変わるのに同じ名前だと、取り違えたまま解析に回される。
+    stem_name = ("UMAP_cluster_TIMS_grouped" if _eo.is_group_mode(options)
+                 else "UMAP_cluster_TIMS")
 
     # 出力形式に応じてバイト列を生成
     buf = io.BytesIO()
@@ -1050,16 +1195,16 @@ def _export_tims(
                         writer, sheet_name="Conditions", index=False)
                 except Exception:
                     logger.warning("Conditions シートの追加に失敗", exc_info=True)
-        filename = "UMAP_cluster_TIMS.xlsx"
+        filename = f"{stem_name}.xlsx"
     elif fmt == "csv":
         buf.write(df_all.to_csv(index=False).encode("utf-8"))
-        filename = "UMAP_cluster_TIMS.csv"
+        filename = f"{stem_name}.csv"
     elif fmt == "parquet":
         df_all.to_parquet(buf, index=False)
-        filename = "UMAP_cluster_TIMS.parquet"
+        filename = f"{stem_name}.parquet"
     else:
         buf.write(df_all.to_csv(index=False).encode("utf-8"))
-        filename = "UMAP_cluster_TIMS.csv"
+        filename = f"{stem_name}.csv"
 
     buf.seek(0)
     return buf.getvalue(), filename
@@ -1073,7 +1218,7 @@ def _do_export(
     data_folder, ms_instrument, export_format,
     rds_map, current_method, result_folder, project_id, sub_project_id,
     loaded_rds, cluster_name_map=None, selected_methods=None,
-    exclude_unused=False, progress_cb=None,
+    exclude_unused=False, options=None, progress_cb=None,
 ):
     """データ出力の本体。開いている(読み込み済みの)プロジェクトにスコープを固定して、
     元データに UMAP cluster 列を付与したファイルを生成する。
@@ -1155,7 +1300,14 @@ def _do_export(
                        "exported_methods": list(method_lookups.keys()),
                        "ms_instrument": ms_instrument,
                        "data_folder": data_folder,
-                       "exclude_unused_annotations": bool(exclude_unused)})
+                       "exclude_unused_annotations": bool(exclude_unused),
+                       # ★ ver61.0: 何を出したのかを来歴に残す。集計した出力は
+                       #   ファイルを見ただけでは「どのキーで平均したか」が分からず、
+                       #   後から論文の Methods を書き起こせなくなる。
+                       "export_options": _eo.describe(options),
+                       "export_categories": sorted(
+                           _eo.normalize(options)["categories"]),
+                       "export_group_keys": _eo.normalize(options)["group_keys"]})
             write_export_record(results_dir_for_rds(loaded_rds, result_folder),
                                 "data_export", conditions)
         except Exception as e:  # noqa: BLE001
@@ -1171,10 +1323,14 @@ def _do_export(
                 exclude_unused=exclude_unused)
         else:
             fmt = export_format or "xlsx"
+            # ★ ver61.0: plot_data 由来の追加列（UMAP 座標・品質指標）。
+            #   選ばれていなければ空 dict で、従来と同じ列構成のまま。
+            extra_lookups = _build_extra_lookups(plot_data, options)
             file_bytes, filename = _export_tims(
                 data_folder, method_lookups, fmt, region_lookup,
                 progress_cb=progress_cb, base=58, span=40, conditions=conditions,
-                report=report, exclude_unused=exclude_unused)
+                report=report, exclude_unused=exclude_unused,
+                options=options, extra_lookups=extra_lookups)
         _p(99, "仕上げ中…")
 
         # ステータスメッセージ
@@ -1420,22 +1576,25 @@ def _run_export_job(job_id, args):
      State("seurat_rds_path_store", "data"),
      State("cluster_name_map_store", "data"),
      State("data_export_method_selector", "value"),
-     State("data_export_exclude_unused", "value")],
+     State("data_export_exclude_unused", "value"),
+     State("data_export_options", "data")],
     prevent_initial_call=True,
 )
 def data_export_start(n_clicks, data_folder, ms_instrument, export_format,
                       rds_map, current_method, result_folder,
                       project_id, sub_project_id, loaded_rds, cluster_name_map,
-                      selected_methods, exclude_unused):
+                      selected_methods, exclude_unused, export_options):
     """出力開始: 作業スレッドを起動し、進捗UI(0%)表示・ボタン無効・Interval 有効化。"""
     if not n_clicks:
         raise PreventUpdate
     job_id = _new_job()
     # 並びは `_do_export` の位置引数と 1:1（`_run_export_job` が *args で展開する）。
     # ここを崩すと progress_cb に別の値が入って静かに壊れるので、足す位置に注意。
+    # ★ ver61.0: 「出力内容の設定」は **dict 1 個を末尾に** 足す。項目ごとに引数を
+    #   足していくと、この 1:1 の並びが増えるたびに崩れやすくなる。
     args = (data_folder, ms_instrument, export_format, rds_map, current_method,
             result_folder, project_id, sub_project_id, loaded_rds, cluster_name_map,
-            selected_methods, bool(exclude_unused))
+            selected_methods, bool(exclude_unused), export_options)
     # 親コンテキスト(ContextVar の active key 等)を引き継いでスレッド実行。
     ctx = contextvars.copy_context()
     threading.Thread(

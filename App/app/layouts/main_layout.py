@@ -16,6 +16,9 @@ from app.layouts.annotation_preview_modal import create_annotation_preview_modal
 from app.layouts.add_molinfo_modal import create_add_molinfo_modal
 from app.layouts.env_settings_modal import create_env_settings_modal
 from app.layouts.rds_maintenance_modal import create_rds_maintenance_modal
+from app.layouts.export_options_modal import (
+    create_export_options_modal, create_export_options_store,
+)
 from app.layouts.parquet_maintenance_modal import create_parquet_maintenance_modal
 from app.layouts.landing_page import create_landing_page
 from app.layouts.action_page import create_action_page
@@ -375,6 +378,12 @@ def create_main_layout():
 
                         # RDS 軽量化モーダル
                         create_rds_maintenance_modal(),
+
+                        # ★ ver61.0: データ出力の「出力内容の設定」モーダルと保管。
+                        #   Store はモーダルの外（データ出力の callback）から読むので
+                        #   モーダル本体とは別に置く。
+                        create_export_options_modal(),
+                        create_export_options_store(),
 
                         # Parquet 再パックモーダル
                         create_parquet_maintenance_modal(),
