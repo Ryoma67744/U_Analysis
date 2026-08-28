@@ -167,6 +167,38 @@ def _read_json(path) -> dict:
     return {}
 
 
+def recorded_data_folder(result_dir) -> "str | None":
+    """解析が実際に読んだ生データフォルダを、結果フォルダの記録から取り出す。
+
+    ★ ver62.8: サブプロジェクト台帳の `data_folder` は壊れることがある
+      （ver62.4 で塞いだ経路。再解析では使われない入力欄の値が書き込まれ、
+      それがサイドバー既定の `/app/Data/DESI/Data` に戻っていた）。
+      一方、**同じ実行が結果フォルダには正しい値を残している**。
+      `analysis_callbacks` の `_params_to_save` は
+      `reanalysis_data_folder if _is_reanalysis else data_folder` という
+      正しい規則で `analysis_params.json` を書いており、`receipt.json` にも
+      同じ値が入る。台帳より記録の方が信用できる。
+
+      実機の監査では 10 プロジェクト・15 サブプロジェクトで台帳の値が
+      使えない状態だった（既定値に化けた 1 / 未設定 11 / 実体が消えた 3）。
+      台帳を直して回るより、記録から引ける方が確実で範囲も広い。
+
+    優先順は `_analysis_block` と同じ（receipt.json → analysis_params.json）。
+    読めない・書かれていない場合は None。例外は投げない
+    （`write_export_record` と同じで、出力本体を壊さないため）。
+    """
+    if not result_dir:
+        return None
+    base = Path(result_dir)
+    receipt = _read_json(base / "receipt.json")
+    folder = _dig(receipt, "object.data_folder")
+    if not folder:
+        params = _read_json(base / "analysis_params.json")
+        folder = params.get("data_folder")
+    folder = str(folder).strip() if folder else ""
+    return folder or None
+
+
 def _dig(d: dict, dotted: str):
     cur = d
     for part in dotted.split("."):

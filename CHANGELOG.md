@@ -12,6 +12,148 @@
 
 ---
 
+## 2026-08-28_ver62.8
+
+### 修正: 壊れた登録値を、解析自身の記録から復旧する
+
+ver62.7 で「MSIデータフォルダ」欄が見えるようになり、`2608analyzed_selected` の
+登録値が `/app/Data/DESI/Data` に化けていることが画面で確認できた。
+そのうえで、**正しい値が最初から結果フォルダに書き残されていた**ことが分かった。
+
+```console
+$ python3 -m json.tool /app/Data/Other/output/Analysis_20260827_092631/analysis_params.json
+    "data_folder": "/app/Data/TIMS/Data/260423_Maeda_Uterus/260824",
+```
+
+#### これはアプリ側の欠陥（解析者の設定ミスではない）
+
+台帳が壊れた経路は ver62.4 の差分ではっきりしている。
+
+```python
+-            "data_folder": data_folder or "",          # 再解析では使われない欄
++            "data_folder": _effective_data_folder(     # ver62.4 で修正
++                analysis_type, data_folder, reanalysis_data_folder),
+```
+
+この解析は `tims_cluster_filter`。再解析が実際に読むのは `reanalysis_data_folder`
+で、`data_folder` 欄は使われない。その使われない欄が `auto_switch_data_folder` で
+サイドバー既定の `/app/Data/DESI/Data` に戻され、それが台帳へ書き込まれていた。
+**同じ実行が `analysis_params.json` には正しい値を記録している**（そちらは
+`reanalysis_data_folder if _is_reanalysis else data_folder` と正しい規則を使っていた）。
+アプリが同じ画面の値を、片方は正しく片方は誤って記録していた。しかもその欄は
+ver62.7 まで `display:none` で、利用者には見ることも直すこともできなかった。
+
+原因そのものは ver62.4 で止まっている。本版は
+**ver62.4 より前に壊れた記録の後始末**と、解析後にデータを移動した場合の耐性。
+
+#### 被害の範囲
+
+アプリ自身の `has_msi_data` で全サブプロジェクトを走査したところ、
+**10 プロジェクト・15 サブプロジェクト**で登録値が使えない状態だった。
+
+| 種別 | 件数 | 例 |
+|---|---|---|
+| 既定値に化けた | 1 | `2608analyzed_selected` → `/app/Data/DESI/Data` |
+| 未設定（空） | 11 | `900_NEG` ほか |
+| パスはあるが生データが無い | 3 | `…/A_Transform` ほか（改名・移動） |
+
+監査に使ったコマンド（読むだけ）:
+
+```bash
+docker exec msi-analysis-app python3 -c "
+import sys; sys.path.insert(0, '/app')
+from app.services.project_manager import list_projects, list_sub_projects
+from app.services.data_manager import has_msi_data
+bad = []
+for p in list_projects():
+    for s in list_sub_projects(p['id']):
+        f = s.get('data_folder') or ''
+        if not f or not has_msi_data(f):
+            bad.append((p.get('name'), s.get('name'), f or '(未設定)'))
+print('登録値に生データが無いサブプロジェクト:', len(bad), '件')
+for n in bad: print('  ', n)
+"
+```
+
+#### なぜ ver62.7 の走査では足りなかったか
+
+ver62.7 は「登録値に生データが無ければ**結果フォルダの兄弟**を走査する」。
+これは結果フォルダが生データの隣にあるレイアウトでしか効かない。
+
+| | 結果フォルダ | 兄弟走査 |
+|---|---|---|
+| 通っていた方 | `/app/Data/TIMS/Data/260820_…/P5_POS_1_nn10_…` | 親に生データ → 効く |
+| 落ちていた方 | `/app/Data/Other/output/Analysis_20260827_092631` | 親は他の解析結果だけ → 効かない |
+
+`Data/Other/output/` は**既定の出力先**なので、既定の運用ほど自力復帰できないという
+逆立ちした状態だった。解析記録を見ればレイアウトに関係なく引ける。
+
+#### 修正 1: `provenance.recorded_data_folder()`
+
+`receipt.json` の `object.data_folder` → `analysis_params.json` の `data_folder` の順に
+読む軽量ヘルパー。優先順は既存の `_analysis_block` と揃えた。
+読めなければ `None`。例外は投げない（`write_export_record` と同じ方針）。
+
+#### 修正 2: `_resolve_data_folder` に段を 1 つ挟む
+
+ver62.7 で新設した 1 箇所を直すだけで、画面の出力と API の両経路に効く。
+
+| 順 | 判断 |
+|---|---|
+| 1 | 登録値に生データがある → そのまま使う（**挙動不変**） |
+| 2 | **解析記録の `data_folder` に生データがある → 使う（今回追加）** |
+| 3 | 兄弟走査 `_infer_data_folder`（ver62.7。推測） |
+| 4 | 全滅 → 登録値を残す（エラー文が名指しできるように） |
+
+2 を 3 より先にするのは記録 > 推測 だから。1 より後にするのは、利用者が明示的に
+入れた値を勝手に巻き戻さないため。
+
+#### 修正 3: 台帳へは書き戻さず、使った先を完了メッセージに明示する
+
+復旧した値をサブプロジェクトに自動保存することはしない。
+**今回の一連の事故がそもそも「台帳への自動書き込み」発だった**（ver62.4）。
+もう 1 本増やすと、次に値がおかしくなったとき「どちらが書いたのか」の切り分けが
+また増える。復旧のコストは `receipt.json` を 1 回読むだけなので、書き戻して
+節約できるものも無い。「台帳が壊れている」という事実自体が診断材料でもある。
+
+ただし黙って解決してはいけない。書き戻さないと、画面の欄には壊れた値が出たままで
+出力は別のフォルダを使う、という食い違いを抱える。そこで完了時に事実を述べる。
+
+> 登録された MSIデータフォルダではなく解析記録のフォルダを使いました: /app/Data/TIMS/Data/…
+
+ver62.3 が DESI 経路で採った「先回りして画面を変えるのではなく、実際にそうしたときに
+事実を述べる」と同じ方針。登録値をそのまま使ったときは何も出さない。
+
+#### テスト
+
+`App/tests/test_export_data_folder_resolution.py`（ver62.7 の 9 件に +10 件）
+
+- 登録値が壊れていても解析記録から復旧する（本番で起きていたそのもの）
+- 登録値が空でも補える（監査で最多の 11 件のケース）
+- `receipt.json` が `analysis_params.json` より優先される
+- 登録値に生データがあれば記録を見ない（明示指定が勝つ）
+- 記録のパスも死んでいれば両方を名指しして止まる（監査の 3 件）
+- 壊れた JSON でも例外にならない
+- 再解析 (`tims_cluster_filter`) の記録からも復旧できる
+- **台帳を書き換えない**（`update_sub_project` が呼ばれないことを固定）
+- 復旧したときだけ使ったフォルダを述べる
+- `recorded_data_folder()` の単体
+
+**3 つの修正それぞれについて、戻すと対応するテストが落ちることを確認した。**
+
+```
+2600 passed, 49 skipped, 2 xfailed
+```
+
+各テストファイルの単独実行でも通ることを確認済み。
+
+#### 保留
+
+ポーリングの積み上げ（`dcc.Interval(interval=400)`。応答を 3 秒に遅くして測ると
+12 秒で 29 要求・11 件が未応答）。機構は実測できているが実害の証明ができていない。
+
+---
+
 ## 2026-08-28_ver62.7
 
 ### 修正: 図は正常なのにデータ出力だけ落ちる理由が、画面から分からない

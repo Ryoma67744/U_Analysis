@@ -401,6 +401,26 @@ def _match_sample_name(file_stem: str, sample_names: list[str]) -> str | None:
     return None
 
 
+# 復旧して出力したときに完了メッセージへ添える一文を作る。
+# `_resolve_data_folder` が返す note を見て、登録値をそのまま使ったときは何も出さない。
+#
+# ★ ver62.8: 復旧した値を台帳へ書き戻さないと決めたので、**画面の欄には壊れた値が
+#   出たまま、出力は別のフォルダを使う**という食い違いが残る。黙って解決すると
+#   「表示と実際が違う」ことに誰も気づけない（このリポジトリが繰り返し戒めている
+#   静かな不一致）。台帳を自動で書き換える代わりに、実際にそうしたときに事実を述べる。
+#   ver62.3 が DESI 経路で採ったのと同じ方針。
+_RECOVERED_NOTES = ("解析記録", "推定")
+
+
+def _folder_note_message(folder, note: str) -> str:
+    """復旧して出力したときだけ、使ったフォルダを述べる一文を返す。"""
+    if not note or not any(note.startswith(k) for k in _RECOVERED_NOTES):
+        return ""
+    src = "解析記録" if note.startswith("解析記録") else "結果フォルダ周辺の走査"
+    return (f"登録された MSIデータフォルダではなく{src}のフォルダを使いました: "
+            f"{folder}")
+
+
 def _resolve_data_folder(data_folder, result_folder, project_id, sub_project_id,
                          ms_instrument, tag: str = "DataExport"):
     """出力に使う MSI データフォルダを確定する。GUI / API の両経路から呼ぶ。
@@ -423,10 +443,43 @@ def _resolve_data_folder(data_folder, result_folder, project_id, sub_project_id,
       `_no_input_message` が「どのフォルダを見て何があったか」を出せなくなる。
       診断に効くのは後者なので、登録値を残す。
 
+    ★ ver62.8: 登録値が使えないとき、兄弟走査（推測）の**前に解析記録**を見る。
+
+      ver62.7 の兄弟走査は「結果フォルダの隣に生データがある」レイアウトでしか
+      効かない。ところが既定の出力先は `Data/Other/output/Analysis_*` で、
+      その隣には他の解析結果しか無い。**既定の運用ほど自力復帰できない**という
+      逆立ちした状態だった。
+
+      一方、解析は自分が読んだフォルダを結果フォルダに書き残している
+      （`provenance.recorded_data_folder`）。推測ではなく記録された事実なので、
+      レイアウトに関係なく引ける。記録 > 推測 の順に並べる。
+
+      登録値より後にするのは、利用者が明示的に入れた値を尊重するため
+      （データを意図的に移した場合に勝手に巻き戻さない）。
+      記録も空振りなら兄弟走査へ落ちる（データを改名・移動した場合）。
+
     二重に持たず 1 箇所に置くのは、同じ判断を 2 経路に書くと必ず片方だけ直るため
     （ver62.2 の `_resolve_instrument` で実際にそうなりかけた）。
     """
+    def _from_record():
+        """解析記録に書かれたフォルダ。生データが実在するときだけ返す。"""
+        from app.services.provenance import recorded_data_folder
+        rec = recorded_data_folder(result_folder)
+        if rec and _has_any_msi_files(Path(rec)):
+            return rec
+        if rec:
+            logger.warning(
+                "[%s] 解析記録の data_folder にも生データがありません: %s", tag, rec)
+        return None
+
     if not data_folder:
+        # ★ ver62.8: 未指定は実機の監査で最多（15 件中 11 件）だった。
+        #   ここでも記録を先に見る。
+        recorded = _from_record()
+        if recorded:
+            logger.info("[%s] data_folder 未指定のため解析記録から補完: %s",
+                        tag, recorded)
+            return recorded, "解析記録(登録値なし)"
         inferred = _infer_data_folder(
             result_folder, project_id, sub_project_id, ms_instrument)
         logger.info("[%s] data_folder 未指定のため自動推定: %s", tag, inferred)
@@ -434,6 +487,14 @@ def _resolve_data_folder(data_folder, result_folder, project_id, sub_project_id,
 
     if _has_any_msi_files(Path(data_folder)):
         return data_folder, "登録値"
+
+    # ★ ver62.8: 推測（兄弟走査）より先に、記録された事実を見る。
+    recorded = _from_record()
+    if recorded and str(recorded) != str(data_folder):
+        logger.warning(
+            "[%s] 登録された data_folder に生データが無いため解析記録の値を使います: "
+            "%s → %s", tag, data_folder, recorded)
+        return recorded, "解析記録(登録値に生データ無し)"
 
     inferred = _infer_data_folder(
         result_folder, project_id, sub_project_id, ms_instrument)
@@ -1861,6 +1922,10 @@ def _do_export(
         if is_desi:
             msg += ("  DESI 出力のため、出力形式（Excel 固定）と"
                     "「出力内容の設定」は適用していません。")
+        # ★ ver62.8: 登録値以外を使ったときは必ず言う（`_folder_note_message` 参照）。
+        folder_msg = _folder_note_message(data_folder, folder_note)
+        if folder_msg:
+            msg += "  " + folder_msg
 
         return file_path, filename, msg
 
@@ -2026,6 +2091,11 @@ def build_interactive_export_for_project(
         warn = _summarize_coverage(report)
         if warn:
             msg += "  " + warn
+        # ★ ver62.8: 画面経路と同じ一文。API から使った側も、どのフォルダを
+        #   読んだのかが分からないと成果物の由来を追えない。
+        folder_msg = _folder_note_message(data_folder, folder_note)
+        if folder_msg:
+            msg += "  " + folder_msg
         return file_path, filename, msg
 
     except Exception as e:  # noqa: BLE001
