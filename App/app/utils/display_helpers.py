@@ -18,6 +18,37 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# フルスクリーンの「除外クラスタ」ドロップダウン
+# ---------------------------------------------------------------------------
+# `interactive_fullscreen.accumulate_annotation_positions_fs` は UMAP 側と
+# Spatial 側の除外ドロップダウンを **両方** State に取る。存在しない State は
+# ReferenceError になるため、この 2 つは**常に両方**レイアウトに居なければ
+# ならない。作る側は 2 箇所ある（モーダル本体の初期値と、開いたあとの各分岐）ので、
+# id と生成をここ 1 箇所に置く。
+#
+# ★ ver62.6: callbacks 側 (`interactive_fullscreen`) に置いたままだと、
+#   レイアウト (`layouts/interactive_tab`) から使うのに callbacks を import する
+#   ことになり、レイアウト読み込みの時点で callback 登録が走ってしまう。
+#   どちらからも安全に import できる utils へ移した。
+FS_EXCLUDE_IDS = ("fs_umap_exclude_cluster", "fs_spatial_exclude_cluster")
+
+
+def fs_exclude_placeholders(*present_ids):
+    """`present_ids` に含まれない除外ドロップダウンを、非表示で返す。
+
+    値は `None` のまま。`interactive_fullscreen._excl_set(None)` は空集合を
+    返すので「表示していないモダリティの除外は無い」という正しい意味になり、
+    挙動は変わらない。
+    """
+    keep = set(present_ids)
+    return [
+        dcc.Dropdown(id=i, options=[], multi=True, value=None,
+                     style={"display": "none"})
+        for i in FS_EXCLUDE_IDS if i not in keep
+    ]
+
+
+# ---------------------------------------------------------------------------
 # サンプル別/分割表示: 共有クラスタ凡例 + タイル枠ヘルパー (ver28.0)
 # 各図の個別凡例・枠を廃し、上部に共有凡例1つ＋各図を縦線で区切るための部品。
 # ---------------------------------------------------------------------------

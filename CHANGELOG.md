@@ -12,6 +12,222 @@
 
 ---
 
+## 2026-08-28_ver62.6
+
+### 修正: データ出力が「準備中… 0%」から永久に戻らない（＋ログが届いていなかった）
+
+「データ出力を押すと『準備中… 0%』から進まない」という報告の**真の原因**。
+ver62.5 では ReferenceError が原因だと書いたが、それは誤りだった（後述）。
+
+#### 原因: ジョブが見つからないときに、画面を固めて理由も出していなかった
+
+進捗ジョブは `export_progress._JOBS`（モジュールグローバルの dict）で持っている。
+つまり**アプリのプロセスが替われば消える**。ブラウザのタブは開いたままなので
+`data_export_job` ストアには前プロセスの job_id が残り、次のポーリングで
+「見つからない」に落ちる。そこが次を返していた。
+
+```python
+if job is None:
+    # 既に配信済み or 不明 → ポーリング停止のみ
+    return (no_update,) * 7 + (True,)
+```
+
+8 つの Output のうち 7 つが `no_update`、最後がポーリング停止。実測すると:
+
+| Output | 値 | 画面の見え方 |
+|---|---|---|
+| ラベル | `no_update` | 押した直後の「準備中… 0%」が残り続ける |
+| 進捗バー | `no_update` | 出たまま＝まだ動いているように見える |
+| ボタン | `no_update` | **無効のまま＝押し直せない** |
+| ステータス | `no_update` | 理由がどこにも出ない |
+| ポーリング | `True` | **停止＝二度と更新されない** |
+
+「進まない」のではなく、**もう誰も更新しに来ない**状態だった。報告された画面と
+完全に一致する。ジョブが消える主因はプロセスの再起動で、実際の本番ログにも
+17:07:41 のアプリ起動が残っていた。
+
+修正: 起きたことを述べて操作を戻す（ボタンを有効化・進捗を畳む・
+「出力ジョブの情報が失われました（アプリが再起動した可能性があります）。
+もう一度実行してください」を表示）。
+
+あわせて `error` のジョブを `_pop_job` しないようにした。停止を返しても
+**既に飛んでいるポーリング**が 1 回遅れて届くことがあり、そのときジョブが
+消えていると上の「情報が失われました」に落ちて、**本当のエラー文言を上書き**
+してしまうため。`done` 側は元々 pop していない。上限 32 件を超えれば
+`new_job` が running 以外から掃除するので溜まり続けない。
+
+#### 原因（切り分けが長引いた側）: `[DataExport]` のログが 1 行も残らなかった
+
+本番で `grep "\[DataExport\]" msi_app.log` が 0 件だったため、
+「処理がそこまで到達していない」と読んだ。**これが誤りだった。**
+
+`setup_logging` はハンドラを logger `"msi"` にしか付けていない。ところが
+`interactive_data_export` など **16 モジュール**は `logging.getLogger(__name__)`
+を使うので logger 名が `app.callbacks.…` になり、"msi" を通らない。さらに
+`"app"` にも root にもレベル指定が無いので実効レベルが既定の WARNING になり、
+INFO は emit すらされていなかった（`isEnabledFor(INFO)` が `False`）。
+
+つまり `[DataExport]` の INFO は**どのバージョンでも msi_app.log に届かない**。
+「出ていない」を証拠として使ってしまったのは、計器が壊れていたため。
+
+修正: `"app"` にも同じハンドラとレベルを付ける。個々の logger 名を `"msi.*"` へ
+書き換える案は、今後 `__name__` を使うモジュールが増えたときにまた漏れるので
+採らない。パッケージの根に付ければ漏れない。
+
+#### 押下直後とポーリング結果を、画面で区別できるようにした
+
+`data_export_start` が返す初期ラベルは `"準備中…  0%"`、`data_export_poll` が
+running のジョブに対して返すのも `f"{job['label']}  {pct}%"` = `"準備中…  0%"` で、
+**1 バイトも違わなかった**。そのため画面を見ても「ポーリングが返ってきて 0% を
+描いている」のか「一度も返ってきていない」のか区別できず、実際にこの 2 つを
+取り違えて別の原因を追いかけた。押下直後は `"開始しています…"` にする。
+
+#### ver62.5 の因果は誤りだった（実測で反証）
+
+ver62.5 は「フルスクリーンの ReferenceError がレンダラを巻き込み、データ出力の
+ポーリングごと止まる」と書いていた。検証した結果:
+
+1. `dash_renderer` (2.18.2) の `executeCallback` は callback ごとに `try/catch` し、
+   エラーを `executionPromise` に載せて通常の executed 経路へ流す。
+   他の callback の配送は止まらない（ソースで確認）。
+2. 実アプリを Chromium で起動して「データ出力」を押した計測では、
+   **同じ ReferenceError が出ている状態で**ラベルが 0.26 秒で「準備中… 0%」、
+   0.53 秒で「失敗」に変わり、エラー文言まで正しく表示された。
+
+ver62.5 の修正自体（ラベル位置が蓄積されない不具合）は実在するので残し、
+CHANGELOG とテストの docstring から誤った因果の記述を削除した。
+
+#### ついでに: ver62.5 の ReferenceError は塞ぎ切れていなかった
+
+ver62.5 は「フルスクリーンの中身を組み立てる 4 分岐すべてに、使わない方の除外
+ドロップダウンを非表示で置く」修正だった。実機で確認したところ、
+**修正後もページを開いた直後に同じ ReferenceError が出ていた**。
+
+`fullscreen_modal_body` は初期状態で中身が空なので、**フルスクリーンを一度も
+開いていない間は 2 つとも存在しない**。分岐だけ見ていると気づけない穴だった。
+
+修正: モーダル本体の初期値にも同じプレースホルダを置く。id の生成は
+`utils/display_helpers.fs_exclude_placeholders()` に集約した（レイアウトから
+callbacks を import するとレイアウト読み込みの時点で callback 登録が走るため）。
+静的検査にも「開く前のレイアウトに両方あること」「id が重複しないこと」を足した。
+
+実機計測: 修正前はページ読み込み +4.75 秒で ReferenceError、修正後は出ない。
+
+#### テスト
+
+- `tests/test_export_poll_recovery.py`（新規 5 件）— ジョブが消えても
+  ボタンが戻ること / 理由が出ること / 遅れて届いたポーリングがエラー文言を
+  上書きしないこと / 押下直後とポーリングのラベルが区別できること
+- `tests/test_logging_reaches_file.py`（新規 7 件）— `__name__` logger の INFO が
+  msi_app.log に届くこと・実効レベルが INFO を落とさないこと・
+  既存の `"msi.*"` が壊れていないこと・ハンドラが二重に付かないこと
+- `tests/test_fullscreen_callback_ids.py`（+2 件）— 開く前のレイアウトにも
+  除外ドロップダウンが両方あること・id が重複しないこと
+
+5 つの修正それぞれについて、**戻すと対応するテストが落ちる**ことを確認した。
+加えて、実アプリを Chromium で起動して「データ出力」を押す往復も計測している。
+
+---
+
+## 2026-08-28_ver62.5
+
+### 修正: フルスクリーンでラベルを動かすと ReferenceError で位置が保存されない
+
+ブラウザのコンソールに次が出ていた。
+
+```
+ReferenceError: A nonexistent object was used in an `State` of a Dash callback.
+The id of this object is `fs_umap_exclude_cluster` and the property is `value`.
+```
+
+ver62.4 のデータフォルダの件とは**別の既存バグ**。該当コードは ver46.1
+(`1b3f13f`) で入ったもので、今回のシリーズでは一度も触っていない。
+
+> **訂正 (ver62.6)**: この版では「このエラーが原因でデータ出力が
+> 『準備中… 0%』から進まない」と書いていたが、**それは誤り**だった。
+> ver62.6 で実機のアプリを Chromium で操作して計測したところ、
+> この ReferenceError が出ている状態でもデータ出力は 0.53 秒で正常に
+> 進み、エラー文言まで表示された。データ出力が止まった原因は別
+> (ver62.6 参照)。ここで直しているのは
+> **フルスクリーンのラベル位置が蓄積されない**という、それ自体は実在する不具合。
+
+#### 原因: 同時に存在し得ない 2 つの id を 1 つの callback が要求していた
+
+`accumulate_annotation_positions_fs` は UMAP 側と Spatial 側の除外ドロップダウンを
+**両方** State に取っていた。
+
+```python
+State("fs_umap_exclude_cluster", "value"),      # UMAP 分岐でしか作られない
+State("fs_spatial_exclude_cluster", "value"),   # Spatial 分岐でしか作られない
+```
+
+ところがフルスクリーンの中身は**相互排他の 4 分岐**（UMAP / Feature /
+Spatial / DEG）のどれか 1 つで組み立てられる。
+
+| 押したボタン | 生成される除外ドロップダウン |
+|---|---|
+| `expand_umap_btn` | `fs_umap_exclude_cluster` のみ |
+| `expand_spatial_btn` | `fs_spatial_exclude_cluster` のみ |
+| `expand_feature_btn` / `expand_deg_btn` | どちらも無し |
+
+**2 つが同時に存在することは無い。** フルスクリーンでラベルをドラッグすると
+clientside が `fs_annotation_relayout_signal` を書いてこの callback が発火し、
+無い方の State で ReferenceError になる。`suppress_callback_exceptions=True`
+(`main.py`) なので登録時には弾かれず、実行時に初めて出る。
+
+このとき `accumulate_annotation_positions_fs` は実行されないので、
+**ドラッグしたラベル位置が `accumulated_label_positions` に溜まらない**。
+これがこの版で直す不具合。
+
+影響はこの callback 1 つに閉じる。`dash_renderer` の `executeCallback` は
+callback ごとに `try/catch` で包み、エラーを `executionPromise` に載せて
+通常の executed 経路へ流すため、**他の callback の配送は止まらない**
+(dash 2.18.2 のソースで確認。ver62.6 で実機計測でも確認)。
+
+#### 修正: 使わない方を非表示で置いて必ず共存させる
+
+`_fs_exclude_placeholders()` を追加し、**4 分岐すべて**で足りない方を
+非表示のドロップダウンとして置く。値は `None` のままで `_excl_set(None)` は
+空集合を返す＝「表示していないモダリティの除外は無い」という正しい意味になり、
+挙動は変わらない。
+
+別案として「信号ストアを UMAP 用 / Spatial 用に分けて callback も 2 つにする」も
+検討した。筋は良いが「存在しない **Input** は許容されるが **State** は
+エラーになる」という Dash の挙動差を前提にしており、そこを検証できていない。
+前提が違えば不具合が移動するだけなので採らなかった。
+
+#### 同じ種類の事故を静的に捕まえる
+
+`test_callback_wiring.py`（ver51.6、デコレータと引数の数を AST で照合）と
+同じ系統で、**分岐をまたぐ id 参照**を検出する検査を新設した。
+
+- body ビルダを AST で見つけ、`if trigger == "expand_*"` の分岐ごとに
+  そこで作られる id を集める
+- 全分岐が `_fs_exclude_placeholders()` を呼んでいる id だけを「常に存在する」と
+  みなす（1 つでも補い漏れがあれば、その時点で違反として検出される）
+- 各 `@callback` が 2 つ以上の分岐から id を要求していれば失敗
+
+これがあれば ver46.1 の時点で落ちていた。単体 2,540 件も E2E も
+1 件も検出できなかった種類の欠陥で、「どの分岐で作られる id か」を見ている
+テストが無かったのが理由。
+
+#### 網羅性
+
+`fs_*` を参照する箇所は全部数えた。分岐をまたぐのは
+`accumulate_annotation_positions_fs` **ただ 1 つ**だった
+（`interactive_fullscreen.py:459-468` は UMAP 分岐内、`:548-556` は Spatial 分岐内、
+`interactive_spatial.py:1038-1042` は Spatial 分岐内、
+`interactive_facet_legend.py` は id ごとに 1 callback で自分の id だけ参照）。
+
+#### 変更点
+
+- `App/app/callbacks/interactive_fullscreen.py`: `_fs_exclude_placeholders()` と
+  4 分岐への適用
+- `App/tests/test_fullscreen_callback_ids.py`: 新規 6 件。
+  **4 分岐それぞれについて、プレースホルダを外すと落ちることを確認済み**
+
+---
+
 ## 2026-08-28_ver62.4
 
 ### 修正: サブプロジェクトに「生データの無いフォルダ」が記録され、データ出力が失敗する

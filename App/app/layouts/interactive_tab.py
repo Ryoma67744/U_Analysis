@@ -11,6 +11,7 @@ from app.layouts.tooltips import help_badge
 from app.services.session_manager import load_last_settings
 from app.services.caveats import banner_text as _caveat_banner
 from app.utils.validation import param_default
+from app.utils.display_helpers import fs_exclude_placeholders
 
 
 
@@ -1903,7 +1904,17 @@ def create_interactive_tab():
             id="fullscreen_plot_modal", size="xl", fullscreen=True, centered=True,
             children=[
                 dbc.ModalHeader(dbc.ModalTitle(id="fullscreen_modal_title"), close_button=True),
-                dbc.ModalBody(id="fullscreen_modal_body", style={"padding": "10px"}),
+                # ★ ver62.6: 中身の初期値に除外ドロップダウンのプレースホルダを置く。
+                #   `accumulate_annotation_positions_fs` は
+                #   `fs_umap_exclude_cluster` / `fs_spatial_exclude_cluster` を
+                #   **両方** State に取るが、フルスクリーンを一度も開いていない間は
+                #   ここが空なので 2 つとも存在せず、ページを開いた直後に
+                #   ReferenceError が出ていた（ver62.5 は「開いたあと」の分岐にしか
+                #   プレースホルダを置いておらず、この状態を塞げていなかった）。
+                #   開いたあとは各分岐が children を差し替えるので id は重複しない。
+                dbc.ModalBody(id="fullscreen_modal_body",
+                              children=fs_exclude_placeholders(),
+                              style={"padding": "10px"}),
             ],
         ),
 

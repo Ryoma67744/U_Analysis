@@ -58,7 +58,6 @@ from app.services.export_progress import (  # noqa: E402
     finish_job as _finish_job,
     fail_job as _fail_job,
     get_job as _get_job,
-    pop_job as _pop_job,
     sweep_old_files as _sweep_old_files,
 )
 
@@ -1984,6 +1983,16 @@ def build_interactive_export_for_project(
 _PROG_SHOW = {"display": "block", "marginTop": "8px"}
 _PROG_HIDE = {"display": "none"}
 
+# ★ ver62.6: ボタン押下直後に出すラベル。`data_export_poll` が running の
+#   ジョブに対して出す文字列 (`f"{job['label']}  {pct}%"` = "準備中…  0%") と
+#   **必ず違う文字列**にする。
+#   従来はどちらも "準備中…  0%" で 1 バイトも違わなかった。そのため画面を見ても
+#   「ポーリングが返ってきて 0% を描いている」のか「ポーリングが一度も返って
+#   きていない」のかが区別できず、実際に**この 2 つを取り違えて別の原因を
+#   追いかける**ことになった。画面は切り分けの一次情報なので、
+#   別の状態は別の文字で出す。
+_START_LABEL = "開始しています…"
+
 
 @callback(
     [Output("data_export_method_selector", "options"),
@@ -2067,7 +2076,7 @@ def data_export_start(n_clicks, data_folder, ms_instrument, export_format,
     if not selected_methods:
         _fail_job(job_id, "❌ 出力手法が 1 つも選ばれていません。"
                           "「出力手法 (UMAP)」で 1 つ以上チェックしてください。")
-        return (_PROG_SHOW, "準備中…  0%", 0, False, True, {"job": job_id}, False)
+        return (_PROG_SHOW, _START_LABEL, 0, False, True, {"job": job_id}, False)
     # 並びは `_do_export` の位置引数と 1:1（`_run_export_job` が *args で展開する）。
     # ここを崩すと progress_cb に別の値が入って静かに壊れるので、足す位置に注意。
     # ★ ver61.0: 「出力内容の設定」は **dict 1 個を末尾に** 足す。項目ごとに引数を
@@ -2080,7 +2089,7 @@ def data_export_start(n_clicks, data_folder, ms_instrument, export_format,
     threading.Thread(
         target=ctx.run, args=(_run_export_job, job_id, args), daemon=True
     ).start()
-    return (_PROG_SHOW, "準備中…  0%", 0, False, True, {"job": job_id}, False)
+    return (_PROG_SHOW, _START_LABEL, 0, False, True, {"job": job_id}, False)
 
 
 @callback(
@@ -2108,8 +2117,26 @@ def data_export_poll(n_intervals, job_store):
         raise PreventUpdate
     job = _get_job(job_id)
     if job is None:
-        # 既に配信済み or 不明 → ポーリング停止のみ
-        return (no_update,) * 7 + (True,)
+        # ★ ver62.6: ジョブが見つからない = **アプリのプロセスが再起動した**
+        #   （`export_progress._JOBS` はモジュールグローバルなので、プロセスが
+        #   替われば消える。ブラウザのタブは開いたままなので、`data_export_job`
+        #   ストアには前プロセスの job_id が残る）。
+        #
+        #   従来はここで `(no_update,) * 7 + (True,)` を返していた。つまり
+        #     - ラベル … no_update  → 「準備中…  0%」のまま
+        #     - 進捗バー … no_update → 出したまま
+        #     - ボタン … no_update  → **無効のまま**
+        #     - ポーリング … 停止
+        #   となり、**画面が永久に固まって理由もどこにも出ない**。押し直すことも
+        #   できない。実際にこの状態が「準備中… 0% から進まない」として報告され、
+        #   原因の切り分けに何日もかかった。
+        #   起きたことを述べて、操作を戻す。
+        return ("", html.Span(
+                    "⚠ 出力ジョブの情報が失われました"
+                    "（アプリが再起動した可能性があります）。"
+                    "もう一度「データ出力」を実行してください。",
+                    className="text-warning"),
+                _PROG_HIDE, "中断", no_update, False, False, True)
     status = job["status"]
     if status == "running":
         pct = job["pct"]
@@ -2125,7 +2152,12 @@ def data_export_poll(n_intervals, job_store):
         return (url, status_children, _PROG_HIDE, "完了", 100,
                 False, False, True)
     # error
-    _pop_job(job_id)
+    # ★ ver62.6: 従来はここで `_pop_job` していた。しかし停止指示を出しても
+    #   **既に飛んでいるポーリング**が 1 回遅れて到着することがあり、そのときには
+    #   ジョブが消えているので上の「情報が失われました」に落ちて、**本当のエラー
+    #   文言を上書きしてしまう**。done 側は元々 pop していない（配信ルートが使う）。
+    #   error も残す。上限 32 件を超えれば `new_job` が running でないものから
+    #   掃除するので溜まり続けない。
     return ("", job["msg"], _PROG_HIDE, "失敗", no_update,
             False, False, True)
 
