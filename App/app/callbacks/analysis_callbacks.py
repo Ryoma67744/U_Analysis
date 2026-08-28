@@ -332,6 +332,26 @@ def close_overwrite_modal(cancel_clicks, confirm_clicks):
     return False
 
 
+def _effective_data_folder(analysis_type, data_folder, reanalysis_data_folder) -> str:
+    """その解析が**実際に読んだ**生データフォルダを返す。
+
+    ★ ver62.4: ジョブ台帳 (`_job_meta`) はこれまで解析の種類にかかわらず
+      メインの「データフォルダ」欄をそのまま記録していた。ところが再解析
+      (`*_cluster_filter`) が読むのは「再解析データフォルダ」欄の方で、
+      メイン欄は**使われないまま**。しかもメイン欄は解析手法の切替で
+      サイドバーの既定値に戻る (`file_handlers.auto_switch_data_folder`) ため、
+      台帳には**利用者が一度も指定していないフォルダ**が載り得た。
+      その値は完了時に `analysis_finalizer` がサブプロジェクトへ書き戻すので、
+      それまで正しかった登録が塗り潰される。
+
+      解析側は既に `params["original_data_folder"] = reanalysis_data_folder or
+      data_folder` として正しい値を持っている。台帳も同じ規則にそろえる。
+    """
+    if str(analysis_type or "").endswith("_cluster_filter"):
+        return reanalysis_data_folder or data_folder or ""
+    return data_folder or ""
+
+
 @callback(
     [Output("app_state", "data", allow_duplicate=True),
      Output("progress_interval", "disabled", allow_duplicate=True),
@@ -1045,7 +1065,11 @@ def run_analysis(
             "analysis_type": analysis_type or "",
             "project_id": selected_project.get("id", "") if selected_project else "",
             "sub_project_id": current_sub_project_id or "",
-            "data_folder": data_folder or "",
+            # ★ ver62.4: 「実際に読んだフォルダ」を記録する（`_effective_data_folder`）。
+            #   従来はメイン欄そのままで、再解析では使っていない欄の値
+            #   （= 既定値に戻り得る）が台帳→サブプロジェクトへ流れていた。
+            "data_folder": _effective_data_folder(
+                analysis_type, data_folder, reanalysis_data_folder),
             # [ver51.2] 停止を本人だけに許すための所有者。
             "analyst": _owner_name(),
         }

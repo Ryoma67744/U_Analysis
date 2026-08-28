@@ -633,10 +633,32 @@ def auto_switch_data_folder(desi_val, tims_val, desi_default, tims_default,
       **復元されたデータフォルダをサイドバーの既定で上書き**していた。
       出力先やしきい値は正しく戻るので気づきにくく、そのまま実行すると
       **別の場所のデータを解析してしまう**。
+
+    ★ ver62.4: どちらが選ばれているかを `active = desi_val or tims_val` で
+      決めていた。しかし選択欄の既定値は非対称で、DESI 側 (`analysis_method`) は
+      `"desi_v8"`、TIMS 側 (`analysis_method_tims`) は `None`（`sidebar.py`）。
+      DESI は常に真なので、**両方に値が入っている瞬間は必ず DESI が勝つ**。
+      排他クリア (`clear_desi_on_tims_select`) は別の callback なので、
+      TIMS を選んだ直後の 1 周目ではまだ DESI 側が残っており、
+      **TIMS の作業中に DESI のデータフォルダが書き込まれる**。
+      訂正は排他クリア後の 2 周目に入るが、`settings_restore_pending` が
+      立っているとその 2 周目は上の分岐で降りるため、誤った値が残る。
+      正しい値になるかどうかが callback の実行順に依存していた。
+
+      発火元 (`ctx.triggered_id`) で「利用者がどちらを触ったか」を決めれば
+      順序に依存しない。排他クリアで相手が `None` になって再発火しても
+      `active` は `None` になり `no_update` を返すので、正しい値を壊さない。
     """
     if restore_pending:
         return no_update
-    active = desi_val or tims_val
+    trig = ctx.triggered_id
+    if trig == "analysis_method":
+        active = desi_val
+    elif trig == "analysis_method_tims":
+        active = tims_val
+    else:
+        # 起動直後など発火元が特定できないとき。従来どおりの解釈に倒す。
+        active = desi_val or tims_val
     if active in ("desi_v8", "desi_cluster_filter"):
         return desi_default or DEFAULT_DESI_DATA_FOLDER
     elif active in ("tims_v8", "tims_cluster_filter"):

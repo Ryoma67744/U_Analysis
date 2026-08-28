@@ -37,6 +37,34 @@ def list_msi_files(data_folder: str) -> list[str]:
     return sorted(txt_stems | extra_stems)
 
 
+def has_msi_data(data_folder) -> bool:
+    """装置を問わず、解析に使える生データがそのフォルダにあるか。
+
+    DESI (.txt/.csv/.xlsx) と TIMS (.parquet/.csv/.tsv/.txt) の**どちらか**として
+    読める入力が 1 つでもあれば True。サブフォルダしか無い / 空 / 存在しない
+    パスは False。
+
+    ★ ver62.4: 判定の出典をここ 1 本にする。同じ判定が
+      `interactive_data_export._has_any_msi_files` にもあったが、あちらは
+      callbacks 層で dash に依存するため、サービス層（`analysis_finalizer`）から
+      呼べなかった。呼べないので `analysis_finalizer` は**検証せずに**
+      サブプロジェクトの `data_folder` を上書きしており、正しかった値が
+      生データの無いフォルダ（サイドバーの既定値＝装置別データのルート）で
+      塗り潰されていた。
+    """
+    if not data_folder:
+        return False
+    folder = Path(data_folder)
+    if not folder.is_dir():
+        return False
+    try:
+        return bool(list_msi_files(str(folder))) or bool(
+            build_tims_input_paths(str(folder)))
+    except OSError as e:  # noqa: BLE001 — 読めないフォルダは「無い」に倒す
+        logger.debug("has_msi_data: フォルダを読めません %s (%s)", folder, e)
+        return False
+
+
 def find_msi_txt(data_folder: str, stem: str) -> "Optional[Path]":
     """`<stem>.txt` を大文字小文字を問わず解決する。無ければ None。
 
