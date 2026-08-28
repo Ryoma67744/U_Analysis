@@ -188,6 +188,41 @@ def test_unknown_trigger_falls_back_to_the_old_reading(monkeypatch):
                    "desi_v8", None) == "/app/Data/DESI/Data"
 
 
+def test_direct_call_outside_a_callback_does_not_raise():
+    """callback の外から直接呼んでも例外にならないこと。
+
+    ★ PR #172 のレビュー指摘。`ctx.triggered_id` は callback 実行中以外では
+    `MissingCallbackContextException` を投げる。この関数はテストから直接
+    呼ばれる契約があり（`test_restore_is_not_overwritten_by_defaults`）、
+    素で参照すると**その契約を壊す**。しかも全件実行では他のテストが張った
+    コンテキストに救われて通ってしまい、単独実行でしか落ちなかった。
+    """
+    import app.callbacks.file_handlers as fh
+    # ctx を差し替えず、素の状態で呼ぶ（＝ callback コンテキストが無い）
+    assert fh.auto_switch_data_folder(
+        "desi_v8", None, "/defaults/desi", "/defaults/tims",
+        False) == "/defaults/desi"
+
+
+def test_trigger_id_is_read_defensively():
+    """コンテキストが無ければ None を返し、例外を投げないこと。"""
+    from app.callbacks.file_handlers import _current_trigger_id
+    assert _current_trigger_id() is None
+
+
+@pytest.mark.parametrize("trigger,desi,tims,expected", [
+    ("analysis_method_tims", "desi_v8", "tims_v8", "tims_v8"),
+    ("analysis_method", "desi_v8", "tims_v8", "desi_v8"),
+    ("analysis_method", None, "tims_v8", None),
+    (None, "desi_v8", None, "desi_v8"),          # 発火元不明 → 従来の解釈
+    (None, None, "tims_v8", "tims_v8"),
+])
+def test_selected_analysis_method(trigger, desi, tims, expected):
+    """判定そのものは純関数として単独で確かめられること。"""
+    from app.callbacks.file_handlers import _selected_analysis_method
+    assert _selected_analysis_method(desi, tims, trigger) == expected
+
+
 # ---------------------------------------------------------------------------
 # _effective_data_folder — 台帳には「実際に読んだフォルダ」を載せる
 # ---------------------------------------------------------------------------

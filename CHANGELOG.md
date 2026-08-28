@@ -82,6 +82,23 @@ dash に依存していてサービス層から import できず、そのため�
 台帳も同じ規則にそろえた（`_effective_data_folder`）。判定は
 `run_analysis`（巨大な callback で直接テストできない）から小さな関数へ切り出した。
 
+#### レビュー指摘の反映 (PR #172 / codex)
+
+**`ctx.triggered_id` を素で参照して、直接呼び出しの契約を壊していた**
+
+`ctx.triggered_id` は callback 実行中以外では `MissingCallbackContextException` を
+投げる。`auto_switch_data_folder` はテストから直接呼ばれる契約があり
+（`test_restore_is_not_overwritten_by_defaults`）、素で参照するとその契約を壊す。
+
+**しかも全件実行では通ってしまい、単独実行でしか落ちなかった。** 他のテストが
+張った callback コンテキストに救われていたためで、順序依存で隠れる形になっていた。
+
+- `_current_trigger_id()`: 読めなければ `None` を返す（従来の解釈へフォールバック）
+- `_selected_analysis_method()`: 判定そのものは純関数に切り出し、
+  callback を経由せず単独で検査できるようにした
+- 回帰テストとして「callback 外から直接呼んでも例外にならない」ことを固定し、
+  各テストファイルの**単独実行**でも通ることを確認した
+
 #### 既存プロジェクトについて
 
 この 3 件は**再発防止**であり、すでに壊れている登録は直らない。
@@ -101,8 +118,8 @@ dash に依存していてサービス層から import できず、そのため�
 - `App/app/callbacks/file_handlers.py`: 発火元で装置を決める
 - `App/app/callbacks/analysis_callbacks.py`: `_effective_data_folder` と台帳への受け渡し
 - `App/app/callbacks/interactive_data_export.py`: `_has_any_msi_files` を委譲に
-- `App/tests/test_data_folder_recording.py`: 新規 18 件。
-  **4 つの修正それぞれについて、戻すとテストが落ちることを確認済み**
+- `App/tests/test_data_folder_recording.py`: 新規 25 件。
+  **5 つの修正それぞれについて、戻すとテストが落ちることを確認済み**
 - `App/tests/test_job_registry.py`: 門番が入ったため、実在するフォルダを使うよう更新
   （見たいのは「台帳から取ること」なのでそこは不変）
 
