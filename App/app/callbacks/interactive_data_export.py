@@ -213,7 +213,17 @@ def _no_input_message(data_folder, instrument: str, reason: str = "") -> str:
            f"（{_describe_folder_contents(folder)}）。")
     if reason:
         msg += f"{inst} と判断した根拠: {reason}。"
-    return msg + ("MSIデータフォルダの指定（1 階層ずれていないか）と、"
+    # ★ ver62.7: 「図は出ているのに、なぜフォルダを直せと言われるのか」が
+    #   分からない、という報告があった。画面の図は**結果フォルダの RDS だけ**で
+    #   描いていて（`interactive_callbacks` の `_bridge.extract_data`）、
+    #   この生データフォルダを一切見ない。一方データ出力はクラスタ番号を
+    #   生データの強度に結合し直すので必須になる。この非対称が画面のどこにも
+    #   書かれておらず、利用者は「表示が正常＝データは揃っている」と読む。
+    #   直す場所も併せて名指しする（ver62.7 で欄を表示するようにした）。
+    return msg + ("なお画面の図は結果フォルダの解析結果 (RDS) だけで描いているため、"
+                  "図が正常に見えていてもこの出力だけ失敗します。"
+                  "インタラクティブ画面の「MSIデータフォルダ」欄"
+                  "（1 階層ずれていないか）と、"
                   "サブプロジェクトの「装置」設定を確認してください。")
 
 
@@ -389,6 +399,54 @@ def _match_sample_name(file_stem: str, sample_names: list[str]) -> str | None:
             "サンプル名の部分一致が曖昧です (%s -> %s)。対応付けません。",
             file_stem, partial)
     return None
+
+
+def _resolve_data_folder(data_folder, result_folder, project_id, sub_project_id,
+                         ms_instrument, tag: str = "DataExport"):
+    """出力に使う MSI データフォルダを確定する。GUI / API の両経路から呼ぶ。
+
+    Returns: (folder|None, note) — note は採用理由（ログとテスト用の短い文字列）。
+
+    ★ ver62.7: 従来は両経路とも `if not data_folder:` のときだけ推定していた。
+      つまり**登録値が入ってさえいれば中身を見ずに使って**いた。
+      ところが `_infer_data_folder` の branch (a) には
+      「登録済み data_folder に生データが無ければ (b) の走査へ落とす」という
+      判断が既に書いてある（ver62.2）。呼び出し側が短絡するのでそこへ到達せず、
+      **書いてあるのに働かない**状態だった。
+
+      実害: 台帳の `data_folder` が壊れると（ver62.4 で塞いだ経路で実際に起きた）、
+      結果フォルダの隣に生データがあっても自力で復帰できない。
+      登録値の中身を見て、空振りなら推定へ落とす。
+
+      推定も空振りしたときは**登録値をそのまま返す**。None にすると
+      「MSIデータフォルダが見つかりません」という一般論になってしまい、
+      `_no_input_message` が「どのフォルダを見て何があったか」を出せなくなる。
+      診断に効くのは後者なので、登録値を残す。
+
+    二重に持たず 1 箇所に置くのは、同じ判断を 2 経路に書くと必ず片方だけ直るため
+    （ver62.2 の `_resolve_instrument` で実際にそうなりかけた）。
+    """
+    if not data_folder:
+        inferred = _infer_data_folder(
+            result_folder, project_id, sub_project_id, ms_instrument)
+        logger.info("[%s] data_folder 未指定のため自動推定: %s", tag, inferred)
+        return inferred, ("推定" if inferred else "見つからず")
+
+    if _has_any_msi_files(Path(data_folder)):
+        return data_folder, "登録値"
+
+    inferred = _infer_data_folder(
+        result_folder, project_id, sub_project_id, ms_instrument)
+    if inferred and str(inferred) != str(data_folder):
+        logger.warning(
+            "[%s] 登録された data_folder に生データが無いため推定へ切り替えます: "
+            "%s → %s", tag, data_folder, inferred)
+        return inferred, "推定(登録値に生データ無し)"
+
+    logger.warning(
+        "[%s] 登録された data_folder に生データが無く、推定でも見つかりません: %s",
+        tag, data_folder)
+    return data_folder, "登録値(生データ無し)"
 
 
 def _has_msi_files(folder: Path, ms_instrument: str | None) -> bool:
@@ -1680,12 +1738,13 @@ def _do_export(
         ms_instrument = _resolve_instrument(ms_instrument, data_folder, result_folder)
         _p(5, "準備中…")
 
-        # MSI データフォルダの自動推定（当該プロジェクト内に限定して推定する）
-        if not data_folder:
-            data_folder = _infer_data_folder(
-                result_folder, project_id, sub_project_id, ms_instrument
-            )
-            logger.info("[DataExport] 自動推定結果: %s", data_folder)
+        # MSI データフォルダを確定する（当該プロジェクト内に限定して推定する）。
+        # ★ ver62.7: 登録値の**中身**も見る。`_resolve_data_folder` の docstring 参照。
+        data_folder, folder_note = _resolve_data_folder(
+            data_folder, result_folder, project_id, sub_project_id,
+            ms_instrument, tag="DataExport")
+        logger.info("[DataExport] data_folder 確定: %s (根拠=%s)",
+                    data_folder, folder_note)
         if not data_folder:
             return None, None, (
                 "❌ MSIデータフォルダが見つかりません。"
@@ -1857,9 +1916,12 @@ def build_interactive_export_for_project(
         ms_instrument = _resolve_instrument(ms_instrument, data_folder, result_folder)
         _p(5, "準備中…")
 
-        if not data_folder:
-            data_folder = _infer_data_folder(
-                result_folder, project_id, sub_project_id, ms_instrument)
+        # ★ ver62.7: GUI 経路と同じヘルパーを通す（判断を 2 箇所に書かない）。
+        data_folder, folder_note = _resolve_data_folder(
+            data_folder, result_folder, project_id, sub_project_id,
+            ms_instrument, tag="APIExport")
+        logger.info("[APIExport] data_folder 確定: %s (根拠=%s)",
+                    data_folder, folder_note)
         if not data_folder:
             return None, None, (
                 "❌ MSIデータフォルダが見つかりません。"
