@@ -305,6 +305,7 @@ def test_no_method_selected_fails_with_a_reason():
 # ---------------------------------------------------------------------------
 
 def test_desi_hides_both_format_and_options():
+    """プロジェクト設定で明示的に DESI を選んでいる場合は隠す（従来どおり）。"""
     fmt, opts, summary = de.toggle_format_selector("DESI", None)
     assert fmt == {"display": "none"}
     assert opts == {"display": "none"}, (
@@ -427,13 +428,97 @@ def test_controls_follow_the_resolved_instrument_not_stale_metadata(tmp_path):
     assert opts == {"display": "block"}
 
 
-def test_controls_hide_for_a_real_desi_project_with_empty_metadata(tmp_path):
-    """逆に、metadata が空でも中身/パスが DESI なら隠すこと。"""
-    d = _desi_txt_folder(tmp_path)
+def test_controls_hide_when_the_folder_contents_say_desi(tmp_path):
+    """中身が DESI 固有 (.xlsx) なら断定できるので隠すこと。"""
+    d = tmp_path / "raw"
+    d.mkdir()
+    pd.DataFrame({"a": [1]}).to_excel(d / "s1.xlsx", index=False)
     fmt, opts, summary = de.toggle_format_selector("", None, str(d), "")
     assert fmt == {"display": "none"}
     assert opts == {"display": "none"}
     assert "Excel 固定" in summary
+
+
+# ---------------------------------------------------------------------------
+# ver62.3: 推測で機能を消さない（利用者からの報告）
+# ---------------------------------------------------------------------------
+
+def test_controls_stay_visible_when_desi_is_only_a_path_guess(tmp_path):
+    """パスに DESI があるだけでは隠さないこと。
+
+    ver62.2 はここで隠していたため、`Data/DESI/…` に置かれた TIMS
+    プロジェクトで**出力形式と「出力内容の設定」が画面から消え**、
+    利用者が形式も列も選べなくなった。判定を外したときの損害が
+    「効かない設定が見える」と「作業が止まる」で釣り合っていない。
+    """
+    d = _desi_txt_folder(tmp_path)          # .txt のみ = 中身では断定できない
+    assert de._decide_instrument("", str(d), "")[0] == "DESI"   # 判定自体は DESI
+    fmt, opts, summary = de.toggle_format_selector("", None, str(d), "")
+    assert fmt == {"display": "block"}
+    assert opts == {"display": "block"}
+    assert "Excel 固定" not in summary
+
+
+def test_controls_stay_visible_when_nothing_identifies_the_instrument(tmp_path):
+    """根拠が「既定」しかないときも隠さないこと。"""
+    fmt, opts, _summary = de.toggle_format_selector("", None, "", "")
+    assert fmt == {"display": "block"}
+    assert opts == {"display": "block"}
+
+
+def test_desi_export_says_the_settings_were_not_applied(tmp_path, monkeypatch):
+    """隠さない代わりに、実際に無視したときは結果にそう書くこと。"""
+    from app.callbacks.interactive_callbacks import (
+        _interactive_data, _set_active_key)
+
+    proj = tmp_path / "proj"
+    result = proj / "result"
+    result.mkdir(parents=True)
+    raw = _desi_txt_folder(proj, "raw")
+    rds = str(result / "seu.rds")
+    monkeypatch.setattr("app.services.project_manager.get_sub_project",
+                        lambda pid, sid: {"data_folder": str(raw)})
+    try:
+        _set_active_key(rds)
+        _interactive_data["plot_data"] = pd.DataFrame({
+            "SpatialX": [1.0, 2.0], "SpatialY": [1.0, 2.0],
+            "Sample": ["s1", "s1"], "Cluster": [1, 2]})
+        _interactive_data["method"] = "Harmony"
+        _, filename, msg = de._do_export(
+            str(raw), "DESI", "parquet", {"Harmony": rds}, "Harmony",
+            str(result), "p1", "s1", rds, out_dir=tmp_path / "out")
+    finally:
+        _set_active_key(None)
+
+    assert filename == "UMAP_cluster_DESI.xlsx", msg
+    assert "適用していません" in msg
+
+
+def test_tims_export_does_not_add_the_desi_note(tmp_path, monkeypatch):
+    from app.callbacks.interactive_callbacks import (
+        _interactive_data, _set_active_key)
+
+    proj = tmp_path / "proj"
+    result = proj / "result"
+    result.mkdir(parents=True)
+    raw = _parquet_folder(proj, "raw")
+    rds = str(result / "seu.rds")
+    monkeypatch.setattr("app.services.project_manager.get_sub_project",
+                        lambda pid, sid: {"data_folder": str(raw)})
+    try:
+        _set_active_key(rds)
+        _interactive_data["plot_data"] = pd.DataFrame({
+            "SpatialX": [1.0, 2.0], "SpatialY": [1.0, 2.0],
+            "Sample": ["s1", "s1"], "Cluster": [1, 2]})
+        _interactive_data["method"] = "Harmony"
+        _, filename, msg = de._do_export(
+            str(raw), "TIMS", "parquet", {"Harmony": rds}, "Harmony",
+            str(result), "p1", "s1", rds, out_dir=tmp_path / "out")
+    finally:
+        _set_active_key(None)
+
+    assert filename == "UMAP_cluster_TIMS.parquet", msg
+    assert "適用していません" not in msg
 
 
 def test_export_of_parquet_under_desi_path_produces_a_tims_file(
