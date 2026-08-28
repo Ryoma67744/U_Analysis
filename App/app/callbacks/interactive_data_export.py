@@ -156,6 +156,13 @@ def _decide_instrument(ms_instrument, data_folder, result_folder) -> tuple:
     return path_based, "既定"
 
 
+# `_decide_instrument` の根拠のうち、**推測ではない**もの。
+# ★ ver62.3: 画面から機能を消してよいのはこの 2 つのときだけ。
+#   「フォルダのパス」「既定」は当て推量で、外すと利用者が形式も列も
+#   選べなくなる（ver62.2 で実際に起きた）。
+_DESI_HIDE_REASONS = ("データフォルダの中身", "プロジェクト設定の ms_instrument")
+
+
 def _describe_folder_contents(folder: Path, limit: int = 6) -> str:
     """フォルダ直下にあるものを「拡張子 × 件数」で要約する。
 
@@ -1782,6 +1789,14 @@ def _do_export(
         warn = _summarize_coverage(report)
         if warn:
             msg += "  " + warn
+        # ★ ver62.3: DESI 経路は `options` も `export_format` も使わない。
+        #   ver62.2 は画面から設定を隠すことで辻褄を合わせようとしたが、
+        #   隠す判断が当て推量になり得るので**先回りして消すのをやめた**
+        #   （`toggle_format_selector` 参照）。代わりに、実際に無視したときだけ
+        #   ここで事実を述べる。設定した本人が結果を見て気づける。
+        if is_desi:
+            msg += ("  DESI 出力のため、出力形式（Excel 固定）と"
+                    "「出力内容の設定」は適用していません。")
 
         return file_path, filename, msg
 
@@ -2147,17 +2162,24 @@ def toggle_format_selector(ms_instrument, options=None,
       DESI 出力は元 `.txt` のレイアウトをそのまま保つ形式なので、
       選べないことを見せる方が正しい。
 
-      判定は出力と**同じ** `_decide_instrument`（中身 → metadata → パス）で行う。
-      metadata だけで隠すと、中身が parquet なのに設定が古く "DESI" の
-      プロジェクトで、出力は TIMS 経路へ行くのに**形式も列も選べない**
-      （隠れた既定値のまま出る）という食い違いになる。逆に、metadata が空の
-      DESI プロジェクトでは効かない設定が見えたままになる。
-      入力欄はここの Input ではないので、装置が変わる場面
-      （プロジェクト / サブプロジェクトの読み込み）で評価される。
+    ★ ver62.3: **確信があるときだけ隠す**。ver62.2 は `_decide_instrument` の
+      結果だけを見ていたが、その判定には「フォルダのパスに `DESI` という階層が
+      ある」「既定」という**推測**が混ざっている。推測を「隠す」方向に使ったのが
+      誤りで、パスにたまたま `DESI` が入っている TIMS プロジェクトで
+      **形式も列も選べなくなった**（実際に報告があった）。
+
+      外したときの損害が釣り合っていない:
+        - 推測を外して表示 … 効かない設定が見えるだけで、出力自体はできる
+        - 推測を外して非表示 … 利用者の作業が止まる
+
+      そこで判断**根拠**で振り分ける。断定できるもの（データフォルダの中身）と
+      利用者の明示（プロジェクト設定の ms_instrument）だけを隠す理由にし、
+      パス由来・既定では隠さない。隠さなかった結果 DESI 経路に入った場合は、
+      `_do_export` が出力後に「適用していません」と事実を述べる
+      （先回りして機能を消すより、無視したときに言う方が害が小さい）。
     """
-    ms_instrument, _reason = _decide_instrument(
-        ms_instrument, data_folder, result_folder)
-    if (ms_instrument or "").upper() == "DESI":
+    inst, reason = _decide_instrument(ms_instrument, data_folder, result_folder)
+    if (inst or "").upper() == "DESI" and reason in _DESI_HIDE_REASONS:
         return ({"display": "none"}, {"display": "none"},
                 "DESI は元データ (.txt) の形をそのまま保つため、"
                 "出力形式は Excel 固定・列の選択はできません。")
