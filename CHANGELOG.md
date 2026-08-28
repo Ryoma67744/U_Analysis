@@ -119,6 +119,28 @@ ver62.1 の「バイト列を組み立てずパスへ直接書く」が DESI 側
 ブック実体の約 2 倍が常駐していた。TIMS 側と同じく `_atomic_output` の一時パスへ
 openpyxl に直接書かせる。**出力の中身は変えていない。**
 
+#### レビュー指摘の反映 (PR #170 / codex)
+
+**(1) フォルダ推定を暫定装置で絞り込まない**
+
+MSI データフォルダ欄が空のとき、`_infer_data_folder` は**暫定**装置（＝この修正で
+直しているパス由来の判定）で走る。上の 4 の「中身を検査する」を素直に入れると、
+`Data/DESI/…` に登録された parquet フォルダを「DESI の入力が無い」と弾き、
+`_decide_instrument` が中身で訂正する前に「MSIデータフォルダが見つかりません」で
+終わる — **直したはずの経路が別のエラーに化けるだけ**になっていた。
+
+装置は後段で確定するので、推定の段階では「生データがあるか」だけを見る
+(`_has_any_msi_files`)。兄弟走査は 2 周にし、1 周目は暫定装置に一致するフォルダ
+（従来どおり。DESI と TIMS が同居していても取り違えない）、2 周目は装置を問わない。
+
+**(2) 画面の表示も出力と同じ根拠で決める**
+
+`toggle_format_selector` は metadata だけで形式・出力内容の設定を隠していた。
+中身が parquet なのに設定が古く `"DESI"` のプロジェクトでは、出力は TIMS 経路へ
+行くのに**形式も列も選べない**（隠れた既定値のまま出る）という食い違いになる。
+逆に metadata が空の DESI プロジェクトでは、効かない設定が見えたままだった。
+表示も `_decide_instrument` で決めるようにした。
+
 #### 未対応（記録）
 
 `int_cal_annotation_section`（DESI 専用のアノテーション欄）は
@@ -135,8 +157,9 @@ DESI プロジェクトでは**出るべき欄が出ない**。装置 metadata �
 - `App/app/services/data_manager.py`: `list_msi_files` の大文字小文字・`find_msi_txt`
 - `App/app/callbacks/interactive_project.py`: `link_existing` で `data_folder` も更新
 - `App/app/layouts/interactive_tab.py`: 「出力内容の設定」に id を付与
-- `App/tests/test_export_instrument_routing.py`: 新規 31 件。
-  **9 つの修正それぞれについて、戻すとテストが落ちることを確認済み**
+- `App/tests/test_export_instrument_routing.py`: 新規 37 件（報告された不具合を
+  出力ファイルまで通して確認する結合テストを含む）。
+  **12 の修正それぞれについて、戻すとテストが落ちることを確認済み**
 - `App/tests/test_restore_is_not_overwritten_by_defaults.py`: 差す先を
   `_decide_instrument` に更新（見ているのは旗であって装置判定ではないため）
 

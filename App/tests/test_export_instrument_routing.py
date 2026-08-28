@@ -354,3 +354,126 @@ def test_link_existing_does_not_clear_data_folder_when_blank(monkeypatch):
         1, "link_existing", None, None, "p1", None, None, None, None, None,
         "s1", "/res", "")
     assert "data_folder" not in seen
+
+
+# ---------------------------------------------------------------------------
+# PR #170 レビュー指摘 (codex): 暫定装置でフォルダ推定を絞り込まないこと
+# ---------------------------------------------------------------------------
+
+def test_infer_returns_registered_parquet_folder_under_desi_path(
+        tmp_path, monkeypatch):
+    """MSI データフォルダ欄が空のときも、登録済み parquet フォルダを返すこと。
+
+    推定は**暫定**装置（パス由来なので誤り得る）で走る。パスが /DESI/ だと
+    暫定 DESI になり、登録済みの parquet フォルダを「DESI の入力が無い」と
+    弾いてしまう。すると `_decide_instrument` が中身で TIMS へ訂正する前に
+    「MSIデータフォルダが見つかりません」で終わる — 直したはずの経路が
+    別のエラーに化けるだけになる。
+    """
+    proj = tmp_path / "Data" / "DESI" / "Data" / "proj"
+    raw = _parquet_folder(proj, "raw")
+    monkeypatch.setattr(
+        "app.services.project_manager.get_sub_project",
+        lambda pid, sid: {"data_folder": str(raw)})
+
+    # 結果フォルダが失われている状況（移動・コンテナ再作成）にして、
+    # 兄弟走査に救われないようにする。登録済みフォルダだけが頼り。
+    got = de._infer_data_folder(str(proj / "gone"), "p1", "s1", "DESI")
+    assert got == str(raw)
+
+
+def test_infer_scans_siblings_for_parquet_even_when_provisional_is_desi(
+        tmp_path, monkeypatch):
+    """登録が無い場合の兄弟走査でも、暫定装置で取りこぼさないこと。"""
+    proj = tmp_path / "Data" / "DESI" / "Data" / "proj"
+    (proj / "result").mkdir(parents=True)
+    raw = _parquet_folder(proj, "raw")
+    monkeypatch.setattr("app.services.project_manager.get_sub_project",
+                        lambda pid, sid: None)
+    monkeypatch.setattr(de, "_project_root_for", lambda p: proj)
+
+    got = de._infer_data_folder(str(proj / "result"), "p1", "s1", "DESI")
+    assert got == str(raw)
+
+
+def test_infer_still_prefers_the_folder_matching_the_instrument(
+        tmp_path, monkeypatch):
+    """暫定装置に一致するフォルダがあれば、そちらを優先すること。"""
+    proj = tmp_path / "proj"
+    (proj / "result").mkdir(parents=True)
+    _parquet_folder(proj, "a_parquet")          # 名前順では先
+    txt = _desi_txt_folder(proj, "b_txt")
+    monkeypatch.setattr("app.services.project_manager.get_sub_project",
+                        lambda pid, sid: None)
+    monkeypatch.setattr(de, "_project_root_for", lambda p: proj)
+
+    assert de._infer_data_folder(str(proj / "result"), "p1", "s1", "DESI") == str(txt)
+
+
+# ---------------------------------------------------------------------------
+# PR #170 レビュー指摘 (codex): 表示の判定も中身に合わせること
+# ---------------------------------------------------------------------------
+
+def test_controls_follow_the_resolved_instrument_not_stale_metadata(tmp_path):
+    """metadata が古く "DESI" でも、中身が parquet なら操作できること。
+
+    出力は中身で TIMS 経路へ行くのに、形式と出力内容の設定だけが
+    metadata で隠れると、利用者は形式も列も選べないまま TIMS の出力を
+    受け取ることになる。
+    """
+    d = _parquet_folder(tmp_path)
+    fmt, opts, _summary = de.toggle_format_selector("DESI", None, str(d), "")
+    assert fmt == {"display": "block"}
+    assert opts == {"display": "block"}
+
+
+def test_controls_hide_for_a_real_desi_project_with_empty_metadata(tmp_path):
+    """逆に、metadata が空でも中身/パスが DESI なら隠すこと。"""
+    d = _desi_txt_folder(tmp_path)
+    fmt, opts, summary = de.toggle_format_selector("", None, str(d), "")
+    assert fmt == {"display": "none"}
+    assert opts == {"display": "none"}
+    assert "Excel 固定" in summary
+
+
+def test_export_of_parquet_under_desi_path_produces_a_tims_file(
+        tmp_path, monkeypatch):
+    """報告された不具合そのものを、出力ファイルまで通して確認する。
+
+    MSI データフォルダ欄が空・登録済みは `Data/DESI/…` の parquet フォルダ・
+    metadata は "TIMS"。従来はパス判定が metadata を上書きして DESI 経路へ入り、
+    `list_msi_files` が parquet を拾わないため
+    「DESI .txt ファイルが見つかりません」で終わっていた。
+    """
+    from app.callbacks.interactive_callbacks import (
+        _interactive_data, _set_active_key)
+
+    proj = tmp_path / "Data" / "DESI" / "Data" / "proj"
+    result = proj / "result"
+    result.mkdir(parents=True)
+    raw = _parquet_folder(proj, "raw")
+    rds = str(result / "seu.rds")
+
+    monkeypatch.setattr("app.services.project_manager.get_sub_project",
+                        lambda pid, sid: {"data_folder": str(raw)})
+    try:
+        _set_active_key(rds)
+        _interactive_data["plot_data"] = pd.DataFrame({
+            "SpatialX": [1.0, 2.0], "SpatialY": [1.0, 2.0],
+            "Sample": ["s1", "s1"], "Cluster": [1, 2]})
+        _interactive_data["method"] = "Harmony"
+
+        out_path, filename, msg = de._do_export(
+            "",                          # MSI データフォルダ欄は空
+            "TIMS",                      # metadata（パス判定に負けていた）
+            "parquet", {"Harmony": rds}, "Harmony",
+            str(result), "p1", "s1", rds,
+            out_dir=tmp_path / "out")
+    finally:
+        _set_active_key(None)
+
+    assert filename == "UMAP_cluster_TIMS.parquet", msg
+    df = pd.read_parquet(out_path)
+    assert "UMAP cluster" in df.columns
+    assert (df["UMAP cluster"].astype(str) != "").all(), (
+        f"クラスタが 1 件も突合していない: {df['UMAP cluster'].tolist()}")

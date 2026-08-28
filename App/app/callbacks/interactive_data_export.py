@@ -402,6 +402,19 @@ def _has_msi_files(folder: Path, ms_instrument: str | None) -> bool:
     return bool(build_tims_input_paths(str(folder)))
 
 
+def _has_any_msi_files(folder: Path) -> bool:
+    """装置を問わず MSI 入力を持つか。
+
+    ★ ver62.2: フォルダの推定は**暫定**装置で走る（パス由来なので誤り得る —
+      それがこの修正で直している不具合そのもの）。暫定装置で絞り込むと、
+      `Data/DESI/…` に置かれた parquet フォルダを「DESI の入力が無い」と弾き、
+      `_decide_instrument` が中身で訂正する前に「データフォルダが
+      見つかりません」で終わる。装置は後段で確定するので、推定の段階では
+      「生データがあるか」だけを見ればよい。
+    """
+    return _has_msi_files(folder, "DESI") or _has_msi_files(folder, "TIMS")
+
+
 def _is_within(path: Path, root: Path) -> bool:
     """path が root と等しい、または root の配下にあるか。"""
     try:
@@ -465,12 +478,14 @@ def _infer_data_folder(
                 #   いると、正しい兄弟フォルダを覆い隠して**しまう。
                 #   （フォルダごと移した / 別データで解析し直した場合に起きる。）
                 #   中身が無ければ握り潰さず (b) の走査へ落とす。
+                # 利用者が明示的に登録したフォルダなので、装置では絞らない
+                # （暫定装置は誤り得る。`_has_any_msi_files` 参照）。
                 if candidate.is_dir():
-                    if _has_msi_files(candidate, ms_instrument):
+                    if _has_any_msi_files(candidate):
                         return str(candidate)
                     logger.warning(
-                        "[DataExport] 登録済み data_folder に %s の入力が無いため"
-                        "推定へ切り替えます: %s", ms_instrument, candidate)
+                        "[DataExport] 登録済み data_folder に生データが無いため"
+                        "推定へ切り替えます: %s", candidate)
         except Exception:
             pass
 
@@ -491,24 +506,30 @@ def _infer_data_folder(
     if project_root and project_root.is_dir() and project_root != result_path.parent:
         search_roots.append(project_root)
 
-    for root in search_roots:
-        # プロジェクトルートが判明している場合、その配下以外は走査しない
-        if project_root is not None and not _is_within(root, project_root):
-            continue
-        # 生データが「データセットフォルダ直下」にあるケース（結果フォルダの親に .txt 等を
-        # 直接置く運用）。サブフォルダだけでなくルート自身も MSI データの有無を確認する。
-        if root != result_path and _has_msi_files(root, ms_instrument):
-            return str(root)
-        for child in sorted(root.iterdir()):
-            if not child.is_dir():
+    # ★ ver62.2: 走査は 2 周する。1 周目は暫定装置に一致するフォルダ（従来どおり。
+    #   DESI と TIMS の生データが同居していても取り違えない）、2 周目は装置を問わず
+    #   生データを持つフォルダ。1 周目で見つからないことを「生データが無い」と
+    #   決めつけないため（暫定装置はパス由来で誤り得る）。どちらで見つけても、
+    #   装置は後段の `_decide_instrument` が中身で確定する。
+    for accepts in (lambda f: _has_msi_files(f, ms_instrument), _has_any_msi_files):
+        for root in search_roots:
+            # プロジェクトルートが判明している場合、その配下以外は走査しない
+            if project_root is not None and not _is_within(root, project_root):
                 continue
-            if child == result_path or child.name in _skip:
-                continue
-            # 別プロジェクトのディレクトリは除外
-            if project_root is not None and not _is_within(child, project_root):
-                continue
-            if _has_msi_files(child, ms_instrument):
-                return str(child)
+            # 生データが「データセットフォルダ直下」にあるケース（結果フォルダの親に
+            # .txt 等を直接置く運用）。サブフォルダだけでなくルート自身も確認する。
+            if root != result_path and accepts(root):
+                return str(root)
+            for child in sorted(root.iterdir()):
+                if not child.is_dir():
+                    continue
+                if child == result_path or child.name in _skip:
+                    continue
+                # 別プロジェクトのディレクトリは除外
+                if project_root is not None and not _is_within(child, project_root):
+                    continue
+                if accepts(child):
+                    return str(child)
 
     return None
 
@@ -2108,10 +2129,14 @@ clientside_callback(
      Output("div_data_export_options_summary", "children", allow_duplicate=True)],
     Input("int_cal_ms_instrument", "data"),
     # DESI から TIMS へ切り替えたとき、要約行を「DESI は固定」のまま残さない。
-    State("data_export_options", "data"),
+    [State("data_export_options", "data"),
+     # ★ ver62.2: 表示も出力と同じ根拠で決める（下の docstring 参照）。
+     State("interactive_msi_folder", "value"),
+     State("interactive_result_folder", "value")],
     prevent_initial_call=True,
 )
-def toggle_format_selector(ms_instrument, options=None):
+def toggle_format_selector(ms_instrument, options=None,
+                           data_folder=None, result_folder=None):
     """DESI → フォーマット/出力内容の設定を非表示 / TIMS → 表示。
 
     ★ ver62.2: 従来は形式セレクタしか隠していなかった。しかし DESI 経路
@@ -2121,7 +2146,17 @@ def toggle_format_selector(ms_instrument, options=None):
       設定したつもりの出力が出ない理由が画面のどこにも無い。
       DESI 出力は元 `.txt` のレイアウトをそのまま保つ形式なので、
       選べないことを見せる方が正しい。
+
+      判定は出力と**同じ** `_decide_instrument`（中身 → metadata → パス）で行う。
+      metadata だけで隠すと、中身が parquet なのに設定が古く "DESI" の
+      プロジェクトで、出力は TIMS 経路へ行くのに**形式も列も選べない**
+      （隠れた既定値のまま出る）という食い違いになる。逆に、metadata が空の
+      DESI プロジェクトでは効かない設定が見えたままになる。
+      入力欄はここの Input ではないので、装置が変わる場面
+      （プロジェクト / サブプロジェクトの読み込み）で評価される。
     """
+    ms_instrument, _reason = _decide_instrument(
+        ms_instrument, data_folder, result_folder)
     if (ms_instrument or "").upper() == "DESI":
         return ({"display": "none"}, {"display": "none"},
                 "DESI は元データ (.txt) の形をそのまま保つため、"
