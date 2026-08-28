@@ -181,3 +181,186 @@ def test_参照ボタンが配線されている():
 
     assert _BROWSE_BUTTONS.get("browse_interactive_msi") == (
         "folder", "interactive_msi_folder")
+
+
+# ---------------------------------------------------------------------------
+# ver62.8: 解析自身の記録から復旧する
+# ---------------------------------------------------------------------------
+# サブプロジェクト台帳の `data_folder` は壊れることがある（ver62.4 で塞いだ経路）。
+# 一方、**同じ実行が結果フォルダには正しい値を残している**
+# （`analysis_params.json` / `receipt.json`）。実機の監査では 10 プロジェクト・
+# 15 サブプロジェクトで台帳の値が使えず（既定値に化けた 1 / 未設定 11 /
+# 実体が消えた 3）、台帳を直して回るより記録から引く方が確実で範囲も広かった。
+#
+# ver62.7 の兄弟走査は「結果フォルダの隣に生データがある」レイアウトでしか効かない。
+# 既定の出力先 `Data/Other/output/Analysis_*` の隣には他の解析結果しか無いので、
+# **既定の運用ほど自力復帰できない**という逆立ちした状態だった。
+
+import json
+
+
+def _write_record(result_dir, *, receipt=None, params=None):
+    """結果フォルダに解析記録を置く。"""
+    result_dir.mkdir(parents=True, exist_ok=True)
+    if receipt is not None:
+        (result_dir / "receipt.json").write_text(
+            json.dumps(receipt, ensure_ascii=False), encoding="utf-8")
+    if params is not None:
+        (result_dir / "analysis_params.json").write_text(
+            json.dumps(params, ensure_ascii=False), encoding="utf-8")
+
+
+@pytest.fixture
+def isolated_result_dir(tmp_path):
+    """生データの隣に無い結果フォルダ（本番の Data/Other/output/Analysis_* と同じ形）。"""
+    d = tmp_path / "output" / "Analysis_20260827_092631"
+    d.mkdir(parents=True)
+    return d
+
+
+def test_登録値が壊れていても解析記録から復旧する(tims_folder, empty_folder,
+                                                  isolated_result_dir):
+    """本番で起きていたそのもの。兄弟走査では救えない配置で記録から引く。"""
+    _write_record(isolated_result_dir,
+                  params={"data_folder": str(tims_folder)})
+
+    folder, note = ide._resolve_data_folder(
+        str(empty_folder), str(isolated_result_dir), None, None, "TIMS")
+
+    assert folder == str(tims_folder)
+    assert note.startswith("解析記録")
+
+
+def test_登録値が空でも解析記録から補える(tims_folder, isolated_result_dir):
+    """監査で 15 件中 11 件と最多だったケース。"""
+    _write_record(isolated_result_dir,
+                  params={"data_folder": str(tims_folder)})
+
+    folder, note = ide._resolve_data_folder(
+        "", str(isolated_result_dir), None, None, "TIMS")
+
+    assert folder == str(tims_folder)
+    assert note.startswith("解析記録")
+
+
+def test_receipt_が_analysis_params_より優先される(tmp_path, empty_folder,
+                                                    isolated_result_dir):
+    """`provenance._analysis_block` と同じ優先順であること。"""
+    good = tmp_path / "from_receipt"
+    good.mkdir()
+    (good / "a.parquet").write_bytes(b"PAR1")
+    stale = tmp_path / "from_params"
+    stale.mkdir()
+    (stale / "b.parquet").write_bytes(b"PAR1")
+
+    _write_record(isolated_result_dir,
+                  receipt={"object": {"data_folder": str(good)}},
+                  params={"data_folder": str(stale)})
+
+    folder, _note = ide._resolve_data_folder(
+        str(empty_folder), str(isolated_result_dir), None, None, "TIMS")
+    assert folder == str(good)
+
+
+def test_登録値に生データがあれば記録を見ない(tims_folder, tmp_path,
+                                              isolated_result_dir):
+    """利用者が明示的に入れた値を勝手に巻き戻さない（データを意図的に移した場合）。"""
+    other = tmp_path / "recorded_but_old"
+    other.mkdir()
+    (other / "c.parquet").write_bytes(b"PAR1")
+    _write_record(isolated_result_dir, params={"data_folder": str(other)})
+
+    folder, note = ide._resolve_data_folder(
+        str(tims_folder), str(isolated_result_dir), None, None, "TIMS")
+
+    assert folder == str(tims_folder)
+    assert note == "登録値"
+
+
+def test_記録のパスも死んでいれば両方を名指しして止まる(tmp_path, empty_folder,
+                                                        isolated_result_dir):
+    """データを改名・移動した場合（監査の 3 件）。推測も空振りなら登録値を残す。"""
+    dead = tmp_path / "moved_away"          # 作らない = 実体が無い
+    _write_record(isolated_result_dir, params={"data_folder": str(dead)})
+
+    folder, note = ide._resolve_data_folder(
+        str(empty_folder), str(isolated_result_dir), None, None, "TIMS")
+
+    assert folder == str(empty_folder), "登録値を残さないとエラー文が一般論になる"
+    assert "生データ無し" in note
+    msg = ide._validate_data_folder(folder, "TIMS", "フォルダのパス")
+    assert msg and str(empty_folder) in msg
+
+
+def test_記録が壊れたJSONでも例外にならない(empty_folder, isolated_result_dir):
+    (isolated_result_dir / "receipt.json").write_text("{壊れ", encoding="utf-8")
+    (isolated_result_dir / "analysis_params.json").write_text("", encoding="utf-8")
+
+    folder, note = ide._resolve_data_folder(
+        str(empty_folder), str(isolated_result_dir), None, None, "TIMS")
+    assert folder == str(empty_folder)
+    assert "生データ無し" in note
+
+
+def test_再解析の記録からも復旧できる(tims_folder, empty_folder, isolated_result_dir):
+    """今回の実データは tims_cluster_filter（クラスタフィルタ再解析）だった。
+
+    `_params_to_save` は再解析時 `reanalysis_data_folder` を `data_folder` キーに
+    入れて保存するので、経路が違っても同じキーで読める。
+    """
+    _write_record(isolated_result_dir,
+                  receipt={"object": {"analysis_type": "tims_cluster_filter",
+                                      "data_folder": str(tims_folder)}})
+
+    folder, note = ide._resolve_data_folder(
+        str(empty_folder), str(isolated_result_dir), None, None, "TIMS")
+    assert folder == str(tims_folder)
+    assert note.startswith("解析記録")
+
+
+def test_台帳を書き換えない(tims_folder, empty_folder, isolated_result_dir,
+                            monkeypatch):
+    """復旧しても登録値は直さない。
+
+    今回の一連の事故がそもそも「台帳への自動書き込み」発 (ver62.4) だったので、
+    同じ台帳へ自動で書く経路をもう 1 本増やさない。
+    """
+    from app.services import project_manager
+
+    called = []
+    monkeypatch.setattr(project_manager, "update_sub_project",
+                        lambda *a, **k: called.append(a))
+    _write_record(isolated_result_dir, params={"data_folder": str(tims_folder)})
+
+    ide._resolve_data_folder(str(empty_folder), str(isolated_result_dir),
+                             None, None, "TIMS")
+    assert not called, "台帳を書き換えている"
+
+
+def test_復旧したときだけ使ったフォルダを述べる():
+    """登録値をそのまま使ったときに毎回出ると、注意書きの意味が薄れる。"""
+    assert ide._folder_note_message("/x/y", "登録値") == ""
+    assert ide._folder_note_message("/x/y", "登録値(生データ無し)") == ""
+
+    m = ide._folder_note_message("/x/y", "解析記録(登録値に生データ無し)")
+    assert "解析記録" in m and "/x/y" in m
+    m2 = ide._folder_note_message("/x/y", "推定(登録値に生データ無し)")
+    assert "走査" in m2 and "/x/y" in m2
+
+
+def test_recorded_data_folder_単体(tmp_path):
+    from app.services.provenance import recorded_data_folder
+
+    d = tmp_path / "res"
+    d.mkdir()
+    assert recorded_data_folder(d) is None          # 記録が無い
+    assert recorded_data_folder(None) is None
+
+    _write_record(d, params={"data_folder": "  /a/b  "})
+    assert recorded_data_folder(d) == "/a/b"        # 前後の空白は落とす
+
+    _write_record(d, receipt={"object": {"data_folder": "/c/d"}})
+    assert recorded_data_folder(d) == "/c/d"        # receipt 優先
+
+    _write_record(d, receipt={"object": {}})        # 空なら params へ落ちる
+    assert recorded_data_folder(d) == "/a/b"
