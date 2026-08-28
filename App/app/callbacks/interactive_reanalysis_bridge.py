@@ -56,10 +56,14 @@ def fill_bridge_cluster_options(rds_path):
     [State("reanalysis_bridge_mode", "value"),
      State("reanalysis_bridge_clusters", "value"),
      State("seurat_rds_path_store", "data"),
-     State("int_cal_ms_instrument", "data")],
+     State("int_cal_ms_instrument", "data"),
+     # ★ ver62.2: 装置は生データフォルダの中身でしか確実に決まらない
+     #   （`interactive_data_export._instrument_from_folder` 参照）。
+     State("interactive_msi_folder", "value")],
     prevent_initial_call=True,
 )
-def send_to_reanalysis(n_clicks, mode, clusters, rds_path, ms_instrument):
+def send_to_reanalysis(n_clicks, mode, clusters, rds_path, ms_instrument,
+                       data_folder=None):
     if not n_clicks:
         raise PreventUpdate
     if not clusters:
@@ -70,9 +74,14 @@ def send_to_reanalysis(n_clicks, mode, clusters, rds_path, ms_instrument):
     fm = mode if mode in ("keep", "exclude") else "keep"
     folder = str(Path(rds_path).parent) if rds_path else ""
     # 読込済み結果の計測種別（DESI/TIMS）を確定し、該当モダリティの「再解析」を選ぶ。
-    # 既存ヘルパーを再利用（明示 DESI 優先 / パス規約 /DESI/・/TIMS/ で補正 / 既定 TIMS）。
-    from app.callbacks.interactive_data_export import _resolve_instrument
-    inst = _resolve_instrument(ms_instrument, rds_path)
+    # ★ ver62.2: 従来は `_resolve_instrument(ms_instrument, rds_path)` だけで、
+    #   データ出力と**同じ誤判定**をしていた。RDS のパスに `DESI` という階層が
+    #   あるだけで TIMS データが DESI 用テンプレート (`desi_cluster_filter`) に
+    #   転記される。しかもエラーにならず、利用者は違うフォームが開いたことに
+    #   気づけない（データ出力は少なくとも赤字で止まる）。
+    #   生データフォルダの中身を根拠に確定し直す。
+    from app.callbacks.interactive_data_export import _decide_instrument
+    inst, _reason = _decide_instrument(ms_instrument, data_folder, rds_path)
     if inst == "DESI":
         desi_method, tims_method = "desi_cluster_filter", None
     else:

@@ -12,6 +12,136 @@
 
 ---
 
+## 2026-08-28_ver62.2
+
+### 修正: TIMS のデータ出力が DESI 経路に入り「DESI .txt ファイルが見つかりません」で失敗する
+
+利用者から「データ出力 (UMAP cluster) を押すと
+`❌ エラー: DESI .txt ファイルが見つかりません` が出る」と報告があった。
+**データは TIMS（parquet）で、エクスポートが DESI 用の経路に入っていた。**
+
+#### 原因: 装置をパス文字列だけで決めていた
+
+`_resolve_instrument` はパスに `DESI` という階層があると DESI と判定する。
+
+| ms_instrument | data_folder | 判定 |
+|---|---|---|
+| `""` | `/app/Data/DESI/Data/proj`（中身は parquet） | **DESI** |
+| `"TIMS"` | `/app/Data/DESI/Data/proj`（中身は parquet） | **DESI** |
+| `""` | `/mnt/share/desi/2026/proj` | TIMS（小文字は当たらない） |
+
+**metadata の明示 `"TIMS"` すら上書きされる。** DESI 経路の `_export_desi` は
+`list_msi_files`（`.txt/.csv/.xlsx` のみ）で入力を探すので parquet は 0 件になり、
+出力そのものができなかった。
+
+これは ver4.9（2026-06-04）で「DESI が既定の "TIMS" に落ちて TIMS 経路に入る」を
+直したときの裏返し。逆方向のガードが無いまま残っていた。
+
+#### metadata も根拠として弱い
+
+- `create_sub_project` の既定は `""`。`sub.get("ms_instrument", "TIMS")` は
+  キーが存在するので既定に落ちず、`""` がそのまま store に入る
+- 「プロジェクトとして保存」の装置ドロップダウン `sap_ms_instrument` は
+  **既定が `"TIMS"`**。DESI 利用者が触らずに保存すると `"TIMS"` が入る
+
+→ `"TIMS"` は「利用者が選んだ」とも「既定のまま」とも判別できない。
+「明示 TIMS を尊重する」修正は ver4.9 の再発になるので採れない。
+
+#### 1. データフォルダの**中身**で装置を確定する
+
+`_instrument_from_folder` / `_decide_instrument` を追加した。断定できるものだけを
+断定する（断定できないものを断定すると逆向きの誤判定を静かに固定する）:
+
+- parquet がある → TIMS（DESI に parquet 入力は存在しない）
+- `.xlsx/.xls` がある → DESI（TIMS の入力候補に Excel は無い）
+- `.txt` / `.csv` / `.tsv` は両者で使われるので判定せず、従来の metadata → パス判定に委ねる
+
+parquet の判定は `build_tims_input_paths` を通す（注釈サイドカー
+`*_feature_annotations.parquet` の除外規則を二重に書かないため）。
+GUI 経路 (`_do_export`) と API 経路 (`build_interactive_export_for_project`) の
+両方に適用した。フォルダの推定が暫定装置に依存するため、確定は
+**データフォルダが決まった後**に行う。
+
+#### 2. 「再解析へ送る」も同じ誤判定をしていた
+
+`send_to_reanalysis` も同じ `_resolve_instrument` を使っており、RDS のパスに
+`DESI` があるだけで TIMS データが DESI 用テンプレート (`desi_cluster_filter`) へ
+転記されていた。**しかもエラーにならない**ので、利用者は違うフォームが開いた
+ことに気づけない（データ出力は少なくとも赤字で止まる）。
+生データフォルダを State に足し、同じ確定手順を通すようにした。
+
+#### 3. 原因の分かるエラーにする
+
+従来の `"DESI .txt ファイルが見つかりません"` は、**どのフォルダを見たのか・
+そこに何があったのか・なぜその装置だと判断したのか**を言わない。
+「フォルダが消えた」「パスが 1 階層ずれている」「装置判定を誤った」の
+すべてで同じ一行が出るため、利用者もログも原因にたどり着けなかった。
+
+`_do_export` / API 経路は分岐前に `_validate_data_folder` で検査し、
+探した場所・実際にあった拡張子と件数・装置の判断根拠を出す。
+`_export_desi` / `_export_tims` の裸の `raise` も同じ文面にそろえた。
+
+#### 4. 推定と存在判定の穴
+
+- `_infer_data_folder`: 登録済み `data_folder` を `is_dir()` だけで返していた。
+  中身を見る走査と非対称で、**生データが 1 つも無い古いパスが登録に残っていると
+  正しい兄弟フォルダを覆い隠す**。中身が無ければ推定へ落とす
+- `_has_msi_files`: DESI は `glob("*.txt")` だけで `.csv`/`.xlsx` 登録の DESI を
+  見落とし、TIMS は ext 集合に `.txt` が無く `_filter_tims_candidates` と
+  食い違っていた。判定の出典を `data_manager` の 1 本にそろえた
+- `list_msi_files`: `glob("*.txt")` は Linux で大文字小文字を区別するため
+  `SAMPLE.TXT` が**存在しないものとして扱われて**いた（変換元 `.csv`/`.xlsx` 側は
+  最初から `suffix.lower()`）。あわせて `find_msi_txt` を追加し、一覧を作る側と
+  読む側で同じ規則を使う（組み立て直すと「.txt が未生成」と誤報していた）
+- `execute_save_as_project` の `link_existing` は `last_result_dir` しか更新せず、
+  別の生データで解析し直して紐付けても**古い `data_folder` が残って**いた
+
+#### 5. DESI で「出力内容の設定」が黙って無視されるのをやめる
+
+`_export_desi` は `options` を受け取っていないため、DESI では列選択・集計単位・
+m/z 一覧・出力形式が**すべて無視**される。形式セレクタだけは隠していたが、
+設定ボタンと要約行は出たままで、選んだ設定が効かない理由が画面のどこにも
+無かった。DESI 出力は元 `.txt` のレイアウトをそのまま保つ形式なので、
+選べないことを見せる方が正しい（`toggle_format_selector` が両方を隠し、
+要約行に理由を出す）。
+
+#### 6. 出力手法を全部外すと全手法が出ていた
+
+`_build_all_method_lookups` は「空 = 全指定」なので、チェックを全部外すと
+**外したはずの手法まで出て**いた。列カテゴリ側は空のとき理由付きで止まるのに、
+ここだけ黙って逆の結果になる。ジョブ記録に理由を載せて止めるようにした
+（「空 = 全部」自体は手法を指定しない API 経路の既定として残す）。
+
+#### 7. DESI 出力のメモリ二重複製（ver62.1 の取りこぼし）
+
+ver62.1 の「バイト列を組み立てずパスへ直接書く」が DESI 側に届いていなかった。
+`io.BytesIO` に全量を組み立て、さらに `getvalue()` でもう 1 部複製していたので、
+ブック実体の約 2 倍が常駐していた。TIMS 側と同じく `_atomic_output` の一時パスへ
+openpyxl に直接書かせる。**出力の中身は変えていない。**
+
+#### 未対応（記録）
+
+`int_cal_annotation_section`（DESI 専用のアノテーション欄）は
+`int_cal_ms_instrument` が `"DESI"` のときだけ出るため、`ms_instrument` が `""` の
+DESI プロジェクトでは**出るべき欄が出ない**。装置 metadata そのものの問題で
+校正パネルまで範囲が広がるため、今回は手を入れていない。
+
+#### 変更点
+
+- `App/app/callbacks/interactive_data_export.py`: 中身による装置確定・フォルダ検証・
+  エラーメッセージ・`_infer_data_folder`/`_has_msi_files`・手法未選択ガード・
+  `_export_desi` の書き出し・設定 UI の表示制御
+- `App/app/callbacks/interactive_reanalysis_bridge.py`: 再解析転記も中身で確定
+- `App/app/services/data_manager.py`: `list_msi_files` の大文字小文字・`find_msi_txt`
+- `App/app/callbacks/interactive_project.py`: `link_existing` で `data_folder` も更新
+- `App/app/layouts/interactive_tab.py`: 「出力内容の設定」に id を付与
+- `App/tests/test_export_instrument_routing.py`: 新規 31 件。
+  **9 つの修正それぞれについて、戻すとテストが落ちることを確認済み**
+- `App/tests/test_restore_is_not_overwritten_by_defaults.py`: 差す先を
+  `_decide_instrument` に更新（見ているのは旗であって装置判定ではないため）
+
+---
+
 ## 2026-08-26_ver62.1
 
 ### 修正: 「クラスタ列と ROI 列を足すだけ」の出力に何時間もかかっていた
