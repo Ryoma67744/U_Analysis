@@ -12,6 +12,97 @@
 
 ---
 
+## 2026-08-28_ver62.5
+
+### 修正: フルスクリーンでラベルを動かすと Dash が止まり、無関係な機能まで固まる
+
+データ出力を押しても「準備中… 0%」から進まない、という報告。ブラウザの
+コンソールには次が出ていた。
+
+```
+ReferenceError: A nonexistent object was used in an `State` of a Dash callback.
+The id of this object is `fs_umap_exclude_cluster` and the property is `value`.
+```
+
+ver62.4 のデータフォルダの件とは**別の既存バグ**。該当コードは ver46.1
+(`1b3f13f`) で入ったもので、今回のシリーズでは一度も触っていない。
+
+#### 原因: 同時に存在し得ない 2 つの id を 1 つの callback が要求していた
+
+`accumulate_annotation_positions_fs` は UMAP 側と Spatial 側の除外ドロップダウンを
+**両方** State に取っていた。
+
+```python
+State("fs_umap_exclude_cluster", "value"),      # UMAP 分岐でしか作られない
+State("fs_spatial_exclude_cluster", "value"),   # Spatial 分岐でしか作られない
+```
+
+ところがフルスクリーンの中身は**相互排他の 4 分岐**（UMAP / Feature /
+Spatial / DEG）のどれか 1 つで組み立てられる。
+
+| 押したボタン | 生成される除外ドロップダウン |
+|---|---|
+| `expand_umap_btn` | `fs_umap_exclude_cluster` のみ |
+| `expand_spatial_btn` | `fs_spatial_exclude_cluster` のみ |
+| `expand_feature_btn` / `expand_deg_btn` | どちらも無し |
+
+**2 つが同時に存在することは無い。** フルスクリーンでラベルをドラッグすると
+clientside が `fs_annotation_relayout_signal` を書いてこの callback が発火し、
+無い方の State で ReferenceError になる。`suppress_callback_exceptions=True`
+(`main.py`) なので登録時には弾かれず、実行時に初めて出る。
+
+しかもレンダラ側のエラーなので、**以降のコールバック配送が巻き込まれる**。
+進捗ラベルが `data_export_start` の返した初期値「準備中… 0%」のままだったのは、
+`data_export_poll` が一度も配送されていないことを意味する（サーバ側が動いて
+いれば `_do_export` の `_p(5, "準備中…")` で 5% 以上になる）。
+
+> **未確定**: Dash レンダラがこのエラーで以後の配送を本当に止めるかは
+> 検証していない。状況証拠からの推定であって断定ではない。
+
+#### 修正: 使わない方を非表示で置いて必ず共存させる
+
+`_fs_exclude_placeholders()` を追加し、**4 分岐すべて**で足りない方を
+非表示のドロップダウンとして置く。値は `None` のままで `_excl_set(None)` は
+空集合を返す＝「表示していないモダリティの除外は無い」という正しい意味になり、
+挙動は変わらない。
+
+別案として「信号ストアを UMAP 用 / Spatial 用に分けて callback も 2 つにする」も
+検討した。筋は良いが「存在しない **Input** は許容されるが **State** は
+エラーになる」という Dash の挙動差を前提にしており、そこを検証できていない。
+前提が違えば不具合が移動するだけなので採らなかった。
+
+#### 同じ種類の事故を静的に捕まえる
+
+`test_callback_wiring.py`（ver51.6、デコレータと引数の数を AST で照合）と
+同じ系統で、**分岐をまたぐ id 参照**を検出する検査を新設した。
+
+- body ビルダを AST で見つけ、`if trigger == "expand_*"` の分岐ごとに
+  そこで作られる id を集める
+- 全分岐が `_fs_exclude_placeholders()` を呼んでいる id だけを「常に存在する」と
+  みなす（1 つでも補い漏れがあれば、その時点で違反として検出される）
+- 各 `@callback` が 2 つ以上の分岐から id を要求していれば失敗
+
+これがあれば ver46.1 の時点で落ちていた。単体 2,540 件も E2E も
+1 件も検出できなかった種類の欠陥で、「どの分岐で作られる id か」を見ている
+テストが無かったのが理由。
+
+#### 網羅性
+
+`fs_*` を参照する箇所は全部数えた。分岐をまたぐのは
+`accumulate_annotation_positions_fs` **ただ 1 つ**だった
+（`interactive_fullscreen.py:459-468` は UMAP 分岐内、`:548-556` は Spatial 分岐内、
+`interactive_spatial.py:1038-1042` は Spatial 分岐内、
+`interactive_facet_legend.py` は id ごとに 1 callback で自分の id だけ参照）。
+
+#### 変更点
+
+- `App/app/callbacks/interactive_fullscreen.py`: `_fs_exclude_placeholders()` と
+  4 分岐への適用
+- `App/tests/test_fullscreen_callback_ids.py`: 新規 6 件。
+  **4 分岐それぞれについて、プレースホルダを外すと落ちることを確認済み**
+
+---
+
 ## 2026-08-28_ver62.4
 
 ### 修正: サブプロジェクトに「生データの無いフォルダ」が記録され、データ出力が失敗する

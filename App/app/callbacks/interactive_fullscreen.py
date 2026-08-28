@@ -61,6 +61,46 @@ logger = logging.getLogger("msi.interactive.fullscreen")
 _NOTHING_TO_EXPAND = (no_update, no_update, no_update)
 
 
+# フルスクリーンの中身が「どの分岐で組み立てられても」存在していなければ
+# ならない除外ドロップダウンの id。
+_FS_EXCLUDE_IDS = ("fs_umap_exclude_cluster", "fs_spatial_exclude_cluster")
+
+
+def _fs_exclude_placeholders(*present_ids):
+    """その分岐が作らない除外ドロップダウンを、非表示で置く。
+
+    ★ ver62.5: `accumulate_annotation_positions_fs` は UMAP 側と Spatial 側の
+      除外ドロップダウンを **両方** State に取る。ところがフルスクリーンの中身は
+      相互排他の分岐（UMAP / Feature / Spatial / DEG）で組み立てられるため、
+      **2 つが同時に存在することは無い**。フルスクリーンでラベルをドラッグすると
+      clientside が `fs_annotation_relayout_signal` を書いてこの callback が
+      発火し、無い方の State で
+
+        ReferenceError: A nonexistent object was used in an `State` of a
+        Dash callback. The id of this object is `fs_umap_exclude_cluster`
+
+      になる。`suppress_callback_exceptions=True`（`main.py`）なので登録時には
+      弾かれず、実行時に初めて出る。しかもレンダラ側のエラーなので、
+      **これ以降のコールバック配送が巻き込まれる**（データ出力の進捗が
+      「準備中 0%」から動かなくなる、という形で表面化した）。
+
+      無い方を非表示で置いて必ず共存させる。値は `None` のままで、
+      `_excl_set(None)` は空集合を返す＝**表示していないモダリティの除外は無い**
+      という意味になるので、挙動は変わらない。
+
+      別案として「信号ストアを UMAP 用 / Spatial 用に分ける」も考えたが、
+      それは「存在しない Input は許容されるが State はエラーになる」という
+      Dash の挙動差を前提にする。そこを検証できていないため採らない。
+      こちらは前提を置かずに済む。
+    """
+    keep = set(present_ids)
+    return [
+        dcc.Dropdown(id=i, options=[], multi=True, value=None,
+                     style={"display": "none"})
+        for i in _FS_EXCLUDE_IDS if i not in keep
+    ]
+
+
 @callback(
     [Output("fullscreen_plot_modal", "is_open"),
      Output("fullscreen_modal_title", "children"),
@@ -199,13 +239,16 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
             ]),
             html.Div(id="fs_umap_graph_container", children=[init_graph]),
         ])
+        body.children.extend(
+            _fs_exclude_placeholders("fs_umap_exclude_cluster"))
         return True, "UMAP", body
 
     # ===== Feature Plot (コンテナごと拡大) =====
     if trigger == "expand_feature_btn" and feat_container_children:
         return (
             True, "Feature Plot",
-            html.Div(feat_container_children),
+            html.Div([*feat_container_children,
+                      *_fs_exclude_placeholders()]),
         )
 
     # ===== Spatial Mapping (インタラクティブ) =====
@@ -378,6 +421,8 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
             ),
             html.Div(id="fs_spatial_graph_container", children=[init_container]),
         ])
+        body.children.extend(
+            _fs_exclude_placeholders("fs_spatial_exclude_cluster"))
         return True, "Spatial Mapping", body
 
     # ===== DEG テーブル + Volcano + Heatmap =====
@@ -399,7 +444,8 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                        className="text-muted small mt-2"),
             ]),
         ])
-        return True, "DEG マーカー", fs_deg_body
+        return True, "DEG マーカー", html.Div(
+            [fs_deg_body, *_fs_exclude_placeholders()])
 
     return _NOTHING_TO_EXPAND
 
