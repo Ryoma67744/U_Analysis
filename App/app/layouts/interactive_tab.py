@@ -65,8 +65,21 @@ def create_interactive_tab():
                     ]),
                 ]),
                 dbc.Col(width=6, children=[
-                    html.Div(className="param-group", style={"display": "none"}, children=[
-                        html.H5("MSIデータフォルダ (オプション)"),
+                    # ★ ver62.7: この欄は `display: none` で恒久的に隠されていた。
+                    #   値はサブプロジェクトの登録値から入り、データ出力の装置判定と
+                    #   生スペクトル読み出しが**それを使う**のに、利用者は確認も修正も
+                    #   できなかった。
+                    #
+                    #   実害: 登録値が壊れると「画面の図は正常なのにデータ出力だけ
+                    #   落ちる」状態になる。図は結果フォルダの RDS だけで描いていて
+                    #   （`interactive_callbacks` の `_bridge.extract_data`）、
+                    #   このフォルダを一切見ないため。利用者から見ると
+                    #   「UMAP は普通に見えているのに、なぜフォルダを直せと言われるのか」
+                    #   が分からず、しかも直す欄が画面に無い。
+                    #   （ver62.3 で「記録: MSIデータフォルダ欄が見えない」として
+                    #   保留していた件。今回表示すると決めた。）
+                    html.Div(className="param-group", children=[
+                        html.H5("MSIデータフォルダ"),
                         html.Div(
                             style={"display": "flex", "gap": "5px"},
                             children=[
@@ -74,6 +87,14 @@ def create_interactive_tab():
                                 dbc.Button("参照...", id="browse_interactive_msi",
                                            size="sm", color="secondary"),
                             ],
+                        ),
+                        # 見出しは元は「(オプション)」だった。表示にとってはオプション、
+                        # データ出力にとっては必須、という非対称がどこにも書かれておらず
+                        # 誤解の元だったので、括弧書きをやめて下に事実を書く。
+                        dbc.FormText(
+                            "図の表示には要りません（結果フォルダの RDS だけで描くため）。"
+                            "データ出力・再解析では生データを読むので必須です。",
+                            className="text-muted small",
                         ),
                     ]),
                 ]),
