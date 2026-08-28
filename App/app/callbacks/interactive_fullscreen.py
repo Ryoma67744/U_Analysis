@@ -26,6 +26,8 @@ from app.utils.display_helpers import (
     display_name as _display_name,
     transform_uirevision as _transform_uirevision,
     facet_block as _facet_block,
+    FS_EXCLUDE_IDS,
+    fs_exclude_placeholders,
 )
 from app.utils.label_persistence import (
     extract_annotation_positions_by_name as _extract_annotation_positions_by_name,
@@ -62,8 +64,9 @@ _NOTHING_TO_EXPAND = (no_update, no_update, no_update)
 
 
 # フルスクリーンの中身が「どの分岐で組み立てられても」存在していなければ
-# ならない除外ドロップダウンの id。
-_FS_EXCLUDE_IDS = ("fs_umap_exclude_cluster", "fs_spatial_exclude_cluster")
+# ならない除外ドロップダウン。id と生成は `utils/display_helpers` に置いてある
+# （レイアウト側からも使うため。下の ver62.6 の注記を参照）。
+_FS_EXCLUDE_IDS = FS_EXCLUDE_IDS
 
 
 def _fs_exclude_placeholders(*present_ids):
@@ -72,33 +75,29 @@ def _fs_exclude_placeholders(*present_ids):
     ★ ver62.5: `accumulate_annotation_positions_fs` は UMAP 側と Spatial 側の
       除外ドロップダウンを **両方** State に取る。ところがフルスクリーンの中身は
       相互排他の分岐（UMAP / Feature / Spatial / DEG）で組み立てられるため、
-      **2 つが同時に存在することは無い**。フルスクリーンでラベルをドラッグすると
-      clientside が `fs_annotation_relayout_signal` を書いてこの callback が
-      発火し、無い方の State で
+      **2 つが同時に存在することは無い**。無い方の State を参照した時点で
 
         ReferenceError: A nonexistent object was used in an `State` of a
         Dash callback. The id of this object is `fs_umap_exclude_cluster`
 
-      になる。`suppress_callback_exceptions=True`（`main.py`）なので登録時には
-      弾かれず、実行時に初めて出る。しかもレンダラ側のエラーなので、
-      **これ以降のコールバック配送が巻き込まれる**（データ出力の進捗が
-      「準備中 0%」から動かなくなる、という形で表面化した）。
+      になり、この callback は実行されない＝**ドラッグしたラベル位置が
+      蓄積されない**。`suppress_callback_exceptions=True`（`main.py`）なので
+      登録時には弾かれず、実行時に初めて出る。
+      無い方を非表示で置いて必ず共存させる。
 
-      無い方を非表示で置いて必ず共存させる。値は `None` のままで、
-      `_excl_set(None)` は空集合を返す＝**表示していないモダリティの除外は無い**
-      という意味になるので、挙動は変わらない。
+      （ver62.5 ではここに「レンダラ側のエラーなので以降のコールバック配送が
+      巻き込まれ、データ出力が『準備中 0%』から動かなくなる」と書いていたが、
+      **それは誤り**だった。dash 2.18.2 の `executeCallback` は callback ごとに
+      try/catch するので影響はこの callback 1 つに閉じる。実機計測でも、この
+      エラーが出ている状態でデータ出力は正常に完了した。ver62.6 で訂正。）
 
-      別案として「信号ストアを UMAP 用 / Spatial 用に分ける」も考えたが、
-      それは「存在しない Input は許容されるが State はエラーになる」という
-      Dash の挙動差を前提にする。そこを検証できていないため採らない。
-      こちらは前提を置かずに済む。
+    ★ ver62.6: **分岐に置くだけでは足りなかった**。フルスクリーンを一度も
+      開いていない間、`fullscreen_modal_body` は中身が空なので、
+      2 つとも存在しない。実測すると ver62.5 の修正後も**ページを開いた直後に
+      同じ ReferenceError が出ていた**。モーダル本体の初期値にも同じ
+      プレースホルダを置いて塞ぐ（`layouts/interactive_tab.py`）。
     """
-    keep = set(present_ids)
-    return [
-        dcc.Dropdown(id=i, options=[], multi=True, value=None,
-                     style={"display": "none"})
-        for i in _FS_EXCLUDE_IDS if i not in keep
-    ]
+    return fs_exclude_placeholders(*present_ids)
 
 
 @callback(

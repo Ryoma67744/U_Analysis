@@ -192,10 +192,18 @@ class TestCallbackTargetsExist:
         全画面モーダルの部品は起動時レイアウトには無く、callback 内で
         生成されるので、その差が取れていることを確認する。
         """
+        # ★ ver62.6: 見張り対象を `fs_umap_exclude_cluster` から
+        #   `fs_umap_label_size` に差し替えた。前者は「常に存在しなければ
+        #   ならない部品」になり、起動時レイアウトにも置いたため
+        #   （`layouts/interactive_tab.py` の `fullscreen_modal_body` 初期値。
+        #   理由は同ファイルの ver62.6 の注記）、
+        #   「動的生成のみ」の見本として使えなくなった。
+        #   `fs_umap_label_size` は UMAP 分岐でしか作られない本来の動的 id。
+        sentinel = "fs_umap_label_size"
         constructed = _constructed_ids()
-        assert "fs_umap_exclude_cluster" in constructed, (
+        assert sentinel in constructed, (
             "callback 内で生成される id を収集できていない")
-        assert "fs_umap_exclude_cluster" not in layout_ids, (
+        assert sentinel not in layout_ids, (
             "この id は起動時レイアウトには現れないはず"
             "(現れるなら本テストの前提が変わったので見直すこと)")
         assert len(constructed) > 500, f"収集数が少なすぎる ({len(constructed)})"

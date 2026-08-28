@@ -16,8 +16,16 @@ UMAP 側と Spatial 側の除外ドロップダウンを **両方** State に取
     callback. The id of this object is `fs_umap_exclude_cluster`
 
 になる。`suppress_callback_exceptions=True` なので登録時には弾かれず、
-実行時に初めて出る。しかもレンダラ側のエラーなので **以降のコールバック配送が
-巻き込まれ**、無関係なデータ出力の進捗が「準備中 0%」から動かなくなった。
+実行時に初めて出る。この callback が実行されないので、**ドラッグしたラベル位置が
+蓄積されない**。
+
+★ ver62.6 での訂正: ver62.5 ではここに「レンダラ側のエラーなので以降の
+コールバック配送が巻き込まれ、データ出力の進捗が『準備中 0%』から動かなく
+なった」と書いていたが、**それは誤り**だった。実機を Chromium で操作した
+計測では、この ReferenceError が出ていてもデータ出力は 0.53 秒で正常に進む。
+dash 2.18.2 の `executeCallback` は callback ごとに try/catch するので、
+影響はこの callback 1 つに閉じる。データ出力が止まった原因は別
+(`test_export_poll_recovery.py` 参照)。
 
 ver46.1 で入ってから見つかるまで、単体テストも E2E も 1 件も検出していない。
 「どの分岐で作られる id か」を見ているテストが無かったため。
@@ -220,3 +228,51 @@ def test_placeholder_value_means_no_exclusion():
     for c in fs._fs_exclude_placeholders():
         assert c.value is None
     assert fs._excl_set(None) == set()
+
+
+# ---------------------------------------------------------------------------
+# ver62.6: 「開く前」も塞がっていること
+# ---------------------------------------------------------------------------
+# ver62.5 は各分岐にプレースホルダを置いたが、**フルスクリーンを一度も開いて
+# いない間**は `fullscreen_modal_body` の中身が空なので 2 つとも存在しない。
+# 実測すると ver62.5 の修正後もページを開いた直後に同じ ReferenceError が
+# 出ていた。分岐だけ見ていると気づけないので、初期レイアウトも検査する。
+
+
+def _walk(node):
+    """Dash コンポーネント木を再帰的に辿る。"""
+    yield node
+    children = getattr(node, "children", None)
+    if children is None:
+        return
+    if not isinstance(children, (list, tuple)):
+        children = [children]
+    for c in children:
+        if hasattr(c, "children") or hasattr(c, "id"):
+            yield from _walk(c)
+
+
+def test_開く前のレイアウトにも除外ドロップダウンが両方ある():
+    from app.layouts.interactive_tab import create_interactive_tab
+    from app.utils.display_helpers import FS_EXCLUDE_IDS
+
+    ids = {getattr(n, "id", None) for n in _walk(create_interactive_tab())}
+    missing = [i for i in FS_EXCLUDE_IDS if i not in ids]
+    assert not missing, (
+        f"フルスクリーンを開く前のレイアウトに {missing} が無い。"
+        "この状態で accumulate_annotation_positions_fs が発火すると "
+        "ReferenceError になり、ラベル位置が蓄積されない")
+
+
+def test_除外ドロップダウンのidが重複しない():
+    """初期値と、開いたあとの各分岐で id が二重にならないこと。
+
+    重複すると Dash は
+    「Multiple objects were found for an `Input` of a callback」で落ちる。
+    """
+    from app.layouts.interactive_tab import create_interactive_tab
+    from app.utils.display_helpers import FS_EXCLUDE_IDS
+
+    seen = [getattr(n, "id", None) for n in _walk(create_interactive_tab())]
+    for i in FS_EXCLUDE_IDS:
+        assert seen.count(i) == 1, f"{i} が初期レイアウトに {seen.count(i)} 個ある"
