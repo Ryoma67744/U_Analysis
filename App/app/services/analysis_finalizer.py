@@ -94,6 +94,7 @@ def _link_to_project(output_dir, job: dict, result: dict) -> None:
         logger.info("プロジェクト未指定のため結果の紐づけは行いません")
         return
     try:
+        from app.services.data_manager import has_msi_data
         from app.services.project_manager import (
             save_sub_project_result_dir, update_sub_project,
         )
@@ -101,8 +102,20 @@ def _link_to_project(output_dir, job: dict, result: dict) -> None:
         # 解析に使った生データフォルダも保存しておく（出力時の自動推定を不要にする）。
         # 旧実装ではここが未定義変数を参照して NameError になっており、
         # 成功のたびに「結果ディレクトリの保存に失敗」と表示されていた。
-        if data_folder:
+        #
+        # ★ ver62.4: 中身を見てから保存する。従来は真偽値だけで**無条件に上書き**して
+        #   いたため、生データの無いフォルダ（サイドバーの既定値＝装置別データの
+        #   ルート等）が来ると、**それまで正しかった登録が塗り潰されていた**。
+        #   解析は成功しているので画面にはどこにも異常が出ず、次にデータ出力を
+        #   押したときに初めて「入力ファイルが見つかりません」として現れる。
+        #   実際にこれで TIMS プロジェクトの登録が `Data/DESI/Data` になった。
+        #   間違った値で上書きするくらいなら、古くても正しい値を残す方がよい。
+        if data_folder and has_msi_data(data_folder):
             update_sub_project(proj_id, sub_id, {"data_folder": data_folder})
+        elif data_folder:
+            logger.warning(
+                "解析に使った生データフォルダに入力が見つからないため、"
+                "サブプロジェクトの登録は更新しません: %s", data_folder)
         logger.info("結果をサブプロジェクトに登録: %s/%s", proj_id, sub_id)
     except Exception as e:  # noqa: BLE001
         logger.exception("結果ディレクトリの保存に失敗")

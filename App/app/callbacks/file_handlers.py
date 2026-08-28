@@ -614,6 +614,46 @@ def reset_reanalysis_defaults(desi_val, tims_val, restore_pending=False):
 # データフォルダ自動切替（DESI/TIMS）
 # ---------------------------------------------------------------------------
 
+def _current_trigger_id():
+    """発火元の component id を返す。callback の外から呼ばれたら None。
+
+    ★ ver62.4: `ctx.triggered_id` は callback 実行中以外では
+      `MissingCallbackContextException` を投げる。`auto_switch_data_folder` は
+      テストから直接呼ばれる契約があり
+      （`test_restore_is_not_overwritten_by_defaults`）、素で参照すると
+      **その契約を壊す**。しかも全件実行では他のテストが張ったコンテキストに
+      救われて通ってしまい、単独実行でしか落ちない（PR #172 のレビュー指摘）。
+      読めないときは None にして、従来どおりの解釈へフォールバックする。
+    """
+    try:
+        return ctx.triggered_id
+    except Exception:  # noqa: BLE001 — callback 外／未確定はすべて「不明」
+        return None
+
+
+def _selected_analysis_method(desi_val, tims_val, trigger_id):
+    """利用者が実際に触った方の解析手法を返す（純関数）。
+
+    ★ ver62.4: 従来は `desi_val or tims_val` だった。しかし選択欄の既定値は
+      非対称で、DESI 側 (`analysis_method`) は `"desi_v8"`、TIMS 側
+      (`analysis_method_tims`) は `None`（`sidebar.py`）。DESI は常に真なので、
+      **両方に値が入っている瞬間は必ず DESI が勝つ**。排他クリア
+      (`clear_desi_on_tims_select`) は別の callback なので、TIMS を選んだ直後の
+      1 周目ではまだ DESI 側が残っており、**TIMS の作業中に DESI のデータ
+      フォルダが書き込まれる**。訂正は 2 周目に入るが、
+      `settings_restore_pending` が立っているとその 2 周目は降りるため
+      誤った値が残る。正しい値になるかが callback の実行順に依存していた。
+
+      発火元で決めれば順序に依存しない。発火元が分からないとき
+      （callback 外からの直接呼び出し等）は従来の解釈に倒す。
+    """
+    if trigger_id == "analysis_method":
+        return desi_val
+    if trigger_id == "analysis_method_tims":
+        return tims_val
+    return desi_val or tims_val
+
+
 @callback(
     Output("data_folder", "value", allow_duplicate=True),
     [Input("analysis_method", "value"),
@@ -633,10 +673,13 @@ def auto_switch_data_folder(desi_val, tims_val, desi_default, tims_default,
       **復元されたデータフォルダをサイドバーの既定で上書き**していた。
       出力先やしきい値は正しく戻るので気づきにくく、そのまま実行すると
       **別の場所のデータを解析してしまう**。
+
+    ★ ver62.4: どちらが選ばれているかの判定を `_selected_analysis_method` へ
+      切り出した（経緯はそちらの docstring）。
     """
     if restore_pending:
         return no_update
-    active = desi_val or tims_val
+    active = _selected_analysis_method(desi_val, tims_val, _current_trigger_id())
     if active in ("desi_v8", "desi_cluster_filter"):
         return desi_default or DEFAULT_DESI_DATA_FOLDER
     elif active in ("tims_v8", "tims_cluster_filter"):

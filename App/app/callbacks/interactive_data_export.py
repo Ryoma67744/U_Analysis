@@ -32,6 +32,7 @@ from app.services.data_manager import (
     _PARQUET_EXTS,
     build_tims_input_paths,
     find_msi_txt,
+    has_msi_data,
     list_msi_files,
 )
 from app.services.desi_header import is_data_line as _is_data_line
@@ -418,8 +419,13 @@ def _has_any_msi_files(folder: Path) -> bool:
       `_decide_instrument` が中身で訂正する前に「データフォルダが
       見つかりません」で終わる。装置は後段で確定するので、推定の段階では
       「生データがあるか」だけを見ればよい。
+
+    ★ ver62.4: 実体は `data_manager.has_msi_data` へ移した。同じ判定を
+      サービス層 (`analysis_finalizer`) からも使う必要が出たが、この
+      モジュールは dash に依存していて import できないため。判定が 2 つに
+      分かれると、保存する側と読む側で「生データがある」の意味がずれる。
     """
-    return _has_msi_files(folder, "DESI") or _has_msi_files(folder, "TIMS")
+    return has_msi_data(folder)
 
 
 def _is_within(path: Path, root: Path) -> bool:

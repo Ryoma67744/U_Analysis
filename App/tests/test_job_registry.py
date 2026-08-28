@@ -187,10 +187,18 @@ class TestFinalize:
 
         旧実装は完了時に未定義の `data_folder` を参照して NameError を出し、
         毎回「結果ディレクトリの保存に失敗」と表示していた。
+
+        ★ ver62.4: 生データが実在するフォルダを使うようにした。保存前に
+          中身を検査する門番が入ったため（生データの無いフォルダで既存の
+          正しい登録を塗り潰さないため）、実在しないパスでは保存されない。
+          このテストが見たいのは「台帳から取ること」なので、そこは変えない。
         """
         out = tmp_path / "result"
+        raw = tmp_path / "raw"
+        raw.mkdir()
+        (raw / "s1.txt").write_text("a\tb\n1\t2\n", encoding="utf-8")
         job_registry.write_job(out, pid=1, project_id="P", sub_project_id="S",
-                               data_folder="/data/raw")
+                               data_folder=str(raw))
         seen = {}
         monkeypatch.setattr(analysis_finalizer, "_write_receipt", lambda *a, **k: None)
         import app.services.project_manager as pm
@@ -203,7 +211,7 @@ class TestFinalize:
 
         assert res["errors"] == []
         assert seen["result_dir"] == ("P", "S", str(out))
-        assert seen["patch"] == {"data_folder": "/data/raw"}
+        assert seen["patch"] == {"data_folder": str(raw)}
 
     def test_registration_failure_is_reported_not_raised(self, tmp_path, monkeypatch):
         out = tmp_path / "result"
