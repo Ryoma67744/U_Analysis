@@ -448,6 +448,10 @@ def execute_save_as_project(
                               color="warning"),
                 ) + (no_update,) * 6
             updates = {"last_result_dir": result_folder or ""}
+            # ★ ver62.2: 従来は結果フォルダしか更新しなかった。別の生データで
+            #   解析し直して紐付けても **古い data_folder が残る**ため、
+            #   データ出力が別データセットのフォルダを見に行っていた。
+            #   空のときは既存値を壊さない（未設定で上書きする方が危険）。
             if msi_folder:
                 updates["data_folder"] = msi_folder
             update_sub_project(existing_proj_id, existing_sub_id, updates)

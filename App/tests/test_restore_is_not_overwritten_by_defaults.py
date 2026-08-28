@@ -133,10 +133,12 @@ def test_send_to_reanalysis_raises_the_flag(monkeypatch):
     """★ 「再解析へ送る」も同じ連鎖を起こすので旗を立てること。"""
     import app.callbacks.interactive_reanalysis_bridge as br
 
+    # ★ ver62.2: 装置の確定は `_decide_instrument`（中身 → metadata → パス）に
+    #   移った。ここが見たいのは旗であって装置判定ではないので、その 1 段だけ差す。
     monkeypatch.setattr(
-        "app.callbacks.interactive_data_export._resolve_instrument",
-        lambda inst, path: "DESI")
-    out = br.send_to_reanalysis(1, "keep", ["3"], "/tmp/x/obj.rds", None)
+        "app.callbacks.interactive_data_export._decide_instrument",
+        lambda inst, data_folder, path: ("DESI", "テスト"))
+    out = br.send_to_reanalysis(1, "keep", ["3"], "/tmp/x/obj.rds", None, None)
     assert out[-1] is True, (
         "「再解析へ送る」が復元中フラグを立てていない。"
         "転記直後にデータフォルダが既定へ戻る")

@@ -9,7 +9,6 @@ TIMS: Parquet/CSV → 選択形式（Excel / CSV / Parquet）
 
 import contextlib
 import contextvars
-import io
 import logging
 import os
 import re
@@ -30,7 +29,9 @@ from app.utils.label_persistence import load_cluster_name_map
 from app.services import hne_overlay as hn
 from app.services import hne_persistence as hp
 from app.services.data_manager import (
+    _PARQUET_EXTS,
     build_tims_input_paths,
+    find_msi_txt,
     list_msi_files,
 )
 from app.services.desi_header import is_data_line as _is_data_line
@@ -83,6 +84,149 @@ def _resolve_instrument(ms_instrument, *paths) -> str:
     if "/TIMS/" in joined:
         return "TIMS"
     return mi or "TIMS"
+
+
+# 装置を**断定できる**拡張子。どちらの経路でも使われる .txt / .csv / .tsv は
+# ここに入れない。断定できないものを断定すると、逆向きの誤判定を静かに固定する。
+_DESI_ONLY_EXTS = {".xlsx", ".xls"}     # TIMS の入力候補に Excel は無い
+
+
+def _instrument_from_folder(data_folder) -> "str | None":
+    """データフォルダの**中身**から装置を判定する。決められなければ None。
+
+    ★ ver62.2: 従来は `_resolve_instrument` のパス判定だけで経路を決めていた。
+      しかしパスは置き場所でしかなく、metadata の "TIMS" も
+      「利用者が選んだ」のか「保存モーダルの既定 (`sap_ms_instrument` の
+      value="TIMS") のまま」なのか区別が付かない。どちらも根拠として弱い。
+
+      実際に起きた不具合: parquet を `Data/DESI/Data/…` に置いた TIMS
+      プロジェクトが DESI 経路 (`_export_desi`) へ入り、`list_msi_files` は
+      parquet を 1 件も拾わないため
+      **「DESI .txt ファイルが見つかりません」で出力そのものができなかった**。
+      metadata に "TIMS" と書いてあっても、パス判定がそれを上書きしていた。
+
+      中身は食い違いようがないので中身を信じる。ただし断定できるものだけ:
+        - parquet がある   → TIMS（DESI に parquet 入力は存在しない）
+        - .xlsx/.xls がある → DESI（TIMS の入力候補に Excel は無い）
+      `.txt` / `.csv` / `.tsv` は両者で使われるので None を返し、従来の
+      metadata → パス判定に委ねる。
+    """
+    if not data_folder:
+        return None
+    folder = Path(data_folder)
+    if not folder.is_dir():
+        return None
+    try:
+        # サイドカー除外と parquet 優先の規則は data_manager を唯一の出典にする。
+        # ここで書き直すと、解析側が見ているサンプル集合と食い違う。
+        if any(Path(fp).suffix.lower() in _PARQUET_EXTS
+               for fp in build_tims_input_paths(str(folder))):
+            return "TIMS"
+        if any(f.is_file() and f.suffix.lower() in _DESI_ONLY_EXTS
+               for f in folder.iterdir()):
+            return "DESI"
+    except OSError as e:  # noqa: BLE001 — 読めないフォルダは「判定不能」に倒す
+        logger.debug("[DataExport] 中身による装置判定を断念: %s (%s)", data_folder, e)
+    return None
+
+
+def _decide_instrument(ms_instrument, data_folder, result_folder) -> tuple:
+    """`(装置, 判断根拠)` を返す。根拠はログとエラーメッセージに出す。
+
+    ★ ver62.2: 根拠を返すのは、判定を誤ったときに利用者が気づけるようにするため。
+      従来のエラーは「DESI .txt ファイルが見つかりません」だけで、
+      **なぜ DESI だと思ったのか**がどこにも出なかった。
+    """
+    path_based = _resolve_instrument(ms_instrument, data_folder, result_folder)
+    by_content = _instrument_from_folder(data_folder)
+    if by_content:
+        if by_content != path_based:
+            logger.warning(
+                "[DataExport] 装置判定を %s から %s へ訂正しました"
+                "（パスや設定より中身を優先）: data_folder=%s",
+                path_based, by_content, data_folder)
+        return by_content, "データフォルダの中身"
+
+    if (ms_instrument or "").strip().upper() == "DESI":
+        return path_based, "プロジェクト設定の ms_instrument"
+    joined = "/".join(str(p) for p in (data_folder, result_folder) if p
+                      ).replace("\\", "/")
+    if "/DESI/" in joined or "/TIMS/" in joined:
+        return path_based, "フォルダのパス"
+    return path_based, "既定"
+
+
+def _describe_folder_contents(folder: Path, limit: int = 6) -> str:
+    """フォルダ直下にあるものを「拡張子 × 件数」で要約する。
+
+    ★ ver62.2: 「見つかりません」だけでは、フォルダを間違えたのか・中身が
+      消えたのか・装置判定を誤ったのかが区別できない。実際に何があったかを見せる。
+    """
+    counts: dict = {}
+    n_dirs = 0
+    try:
+        for f in folder.iterdir():
+            if f.is_dir():
+                n_dirs += 1
+                continue
+            counts[f.suffix.lower() or "(拡張子なし)"] = (
+                counts.get(f.suffix.lower() or "(拡張子なし)", 0) + 1)
+    except OSError:
+        return "フォルダを読めませんでした"
+    parts = [f"{ext} {n} 件" for ext, n
+             in sorted(counts.items(), key=lambda kv: -kv[1])[:limit]]
+    if n_dirs:
+        parts.append(f"サブフォルダ {n_dirs} 個")
+    return "・".join(parts) if parts else "空"
+
+
+def _no_input_message(data_folder, instrument: str, reason: str = "") -> str:
+    """入力ファイルが 1 件も無いときの説明文を作る（DESI / TIMS 共通）。
+
+    ★ ver62.2: 従来は `"DESI .txt ファイルが見つかりません"` /
+      `"TIMS 入力ファイルが見つかりません"` の一行だけで、
+      **どのフォルダを見たのか・そこに何があったのか・なぜその装置だと
+      判断したのか**をどこにも出していなかった。同じ文言が
+      「フォルダが消えた」「パスが 1 階層ずれている」「装置判定を誤った」の
+      すべてで出るため、利用者もログも原因にたどり着けなかった。
+      改行は画面（div）で潰れるので 1 行に収める。
+    """
+    inst = (instrument or "").upper() or "MSI"
+    want = ".txt / .csv / .xlsx" if inst == "DESI" else ".parquet / .csv / .tsv"
+    head = f"{inst} 用の入力ファイル ({want}) が見つかりません。"
+    if not data_folder:
+        return head + "MSIデータフォルダが指定されていません。"
+    folder = Path(data_folder)
+    if not folder.exists():
+        return (head + f"フォルダが存在しません: {folder}。"
+                "移動・削除されたか、コンテナから見えないパスの可能性があります。")
+    if not folder.is_dir():
+        return head + f"フォルダではありません: {folder}。"
+    msg = (head + f"探した場所: {folder}"
+           f"（{_describe_folder_contents(folder)}）。")
+    if reason:
+        msg += f"{inst} と判断した根拠: {reason}。"
+    return msg + ("MSIデータフォルダの指定（1 階層ずれていないか）と、"
+                  "サブプロジェクトの「装置」設定を確認してください。")
+
+
+def _validate_data_folder(data_folder, instrument: str, reason: str = "") -> "str | None":
+    """出力に入る前にデータフォルダを検査する。問題があれば説明文、無ければ None。
+
+    ★ ver62.2: 従来 `_do_export` は `data_folder` の**存在も中身も見ずに**
+      DESI/TIMS の分岐へ入っていた（真偽値チェックのみ）。存在しないパスでも
+      分岐の奥まで進み、そこで出る一行のエラーだけが利用者に見えていた。
+    """
+    folder = Path(data_folder) if data_folder else None
+    if folder is None or not folder.is_dir():
+        return _no_input_message(data_folder, instrument, reason)
+    if (instrument or "").upper() == "DESI":
+        found = list_msi_files(str(folder))
+    else:
+        found = build_tims_input_paths(str(folder))
+    if not found:
+        return _no_input_message(data_folder, instrument, reason)
+    return None
 
 
 def _build_cluster_lookup(plot_data: pd.DataFrame, cluster_name_map: dict | None = None) -> dict:
@@ -241,16 +385,34 @@ def _match_sample_name(file_stem: str, sample_names: list[str]) -> str | None:
 
 
 def _has_msi_files(folder: Path, ms_instrument: str | None) -> bool:
-    """指定フォルダに MSI データファイルが存在するか判定。"""
+    """指定フォルダに MSI データファイルが存在するか判定。
+
+    ★ ver62.2: 判定の出典を `data_manager` の 1 本にそろえた。従来は
+      - DESI: `glob("*.txt")` だけ → `.csv` / `.xlsx` で登録した DESI
+        （解析時に `.txt` へ変換される運用）を**見落とす**
+      - TIMS: ext 集合に `.txt` が無く `_filter_tims_candidates`（.csv/.tsv/.txt を
+        受ける）と食い違う
+      と、実際に解析が読むファイル集合とずれていた。ずれたぶんだけ
+      `_infer_data_folder` が「データフォルダが見つかりません」を誤って返す。
+    """
     if not folder.is_dir():
         return False
-    is_desi = (ms_instrument or "").upper() == "DESI"
-    if is_desi:
-        return bool(list(folder.glob("*.txt")))
-    exts = {".parquet", ".pq", ".csv", ".tsv"}
-    return any(
-        f.suffix.lower() in exts for f in folder.iterdir() if f.is_file()
-    )
+    if (ms_instrument or "").upper() == "DESI":
+        return bool(list_msi_files(str(folder)))
+    return bool(build_tims_input_paths(str(folder)))
+
+
+def _has_any_msi_files(folder: Path) -> bool:
+    """装置を問わず MSI 入力を持つか。
+
+    ★ ver62.2: フォルダの推定は**暫定**装置で走る（パス由来なので誤り得る —
+      それがこの修正で直している不具合そのもの）。暫定装置で絞り込むと、
+      `Data/DESI/…` に置かれた parquet フォルダを「DESI の入力が無い」と弾き、
+      `_decide_instrument` が中身で訂正する前に「データフォルダが
+      見つかりません」で終わる。装置は後段で確定するので、推定の段階では
+      「生データがあるか」だけを見ればよい。
+    """
+    return _has_msi_files(folder, "DESI") or _has_msi_files(folder, "TIMS")
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -311,8 +473,19 @@ def _infer_data_folder(
             sub = get_sub_project(project_id, sub_project_id)
             if sub and sub.get("data_folder"):
                 candidate = Path(sub["data_folder"])
+                # ★ ver62.2: 従来は `is_dir()` だけで返していた。中身を見る (b) の
+                #   走査と非対称で、**生データが 1 つも無い古いパスが登録に残って
+                #   いると、正しい兄弟フォルダを覆い隠して**しまう。
+                #   （フォルダごと移した / 別データで解析し直した場合に起きる。）
+                #   中身が無ければ握り潰さず (b) の走査へ落とす。
+                # 利用者が明示的に登録したフォルダなので、装置では絞らない
+                # （暫定装置は誤り得る。`_has_any_msi_files` 参照）。
                 if candidate.is_dir():
-                    return str(candidate)
+                    if _has_any_msi_files(candidate):
+                        return str(candidate)
+                    logger.warning(
+                        "[DataExport] 登録済み data_folder に生データが無いため"
+                        "推定へ切り替えます: %s", candidate)
         except Exception:
             pass
 
@@ -333,24 +506,30 @@ def _infer_data_folder(
     if project_root and project_root.is_dir() and project_root != result_path.parent:
         search_roots.append(project_root)
 
-    for root in search_roots:
-        # プロジェクトルートが判明している場合、その配下以外は走査しない
-        if project_root is not None and not _is_within(root, project_root):
-            continue
-        # 生データが「データセットフォルダ直下」にあるケース（結果フォルダの親に .txt 等を
-        # 直接置く運用）。サブフォルダだけでなくルート自身も MSI データの有無を確認する。
-        if root != result_path and _has_msi_files(root, ms_instrument):
-            return str(root)
-        for child in sorted(root.iterdir()):
-            if not child.is_dir():
+    # ★ ver62.2: 走査は 2 周する。1 周目は暫定装置に一致するフォルダ（従来どおり。
+    #   DESI と TIMS の生データが同居していても取り違えない）、2 周目は装置を問わず
+    #   生データを持つフォルダ。1 周目で見つからないことを「生データが無い」と
+    #   決めつけないため（暫定装置はパス由来で誤り得る）。どちらで見つけても、
+    #   装置は後段の `_decide_instrument` が中身で確定する。
+    for accepts in (lambda f: _has_msi_files(f, ms_instrument), _has_any_msi_files):
+        for root in search_roots:
+            # プロジェクトルートが判明している場合、その配下以外は走査しない
+            if project_root is not None and not _is_within(root, project_root):
                 continue
-            if child == result_path or child.name in _skip:
-                continue
-            # 別プロジェクトのディレクトリは除外
-            if project_root is not None and not _is_within(child, project_root):
-                continue
-            if _has_msi_files(child, ms_instrument):
-                return str(child)
+            # 生データが「データセットフォルダ直下」にあるケース（結果フォルダの親に
+            # .txt 等を直接置く運用）。サブフォルダだけでなくルート自身も確認する。
+            if root != result_path and accepts(root):
+                return str(root)
+            for child in sorted(root.iterdir()):
+                if not child.is_dir():
+                    continue
+                if child == result_path or child.name in _skip:
+                    continue
+                # 別プロジェクトのディレクトリは除外
+                if project_root is not None and not _is_within(child, project_root):
+                    continue
+                if accepts(child):
+                    return str(child)
 
     return None
 
@@ -636,7 +815,10 @@ def _export_desi(
     add_region = region_lookup is not None
     file_stems = list_msi_files(data_folder)
     if not file_stems:
-        raise ValueError("DESI .txt ファイルが見つかりません")
+        # ★ ver62.2: 一行の「見つかりません」では原因を追えなかった。
+        #   呼び出し側 (`_do_export`) は判断根拠付きで先に検査するので、
+        #   ここへ来るのは直接呼び出し / API 経路。
+        raise ValueError(_no_input_message(data_folder, "DESI"))
 
     is_multi = len(method_lookups) > 1
     method_names = list(method_lookups.keys())
@@ -653,8 +835,10 @@ def _export_desi(
     #   **シートが 1 枚も無い「成功した」Excel** が出る。
     #   1 枚も書けないと分かっているならここで止める（openpyxl は
     #   シート 0 枚のブックを保存できず、別の分かりにくい例外になる）。
-    skipped_stems = [s for s in file_stems
-                     if not (Path(data_folder) / f"{s}.txt").exists()]
+    # ★ ver62.2: `.TXT` でも同じ stem を指すので、大文字小文字を問わず解決する
+    #   （組み立て直すと Linux で見つからず「.txt が未生成」と誤報していた）。
+    txt_by_stem = {s: find_msi_txt(data_folder, s) for s in file_stems}
+    skipped_stems = [s for s in file_stems if txt_by_stem[s] is None]
     if len(skipped_stems) == len(file_stems):
         raise ValueError(
             "書き出せるサンプルがありません。"
@@ -702,19 +886,26 @@ def _export_desi(
             "チェックを外すか、解析対象のサンプルを確認してください。")
 
     n_files = max(1, len(file_stems))
-    buf = io.BytesIO()
+    # ★ ver62.2: ver62.1 の「バイト列を組み立てずパスへ直接書く」が DESI 側に
+    #   届いていなかった。`io.BytesIO` に全量を組み立て、さらに `getvalue()` で
+    #   もう 1 部複製していたので、ブック実体の約 2 倍が常駐していた
+    #   （CHANGELOG は _export_tims / _export_desi の両方を直したと書いている）。
+    #   TIMS 側と同じく `_atomic_output` の一時パスへ openpyxl に直接書かせる。
+    filename = "UMAP_cluster_DESI.xlsx"
+    out_path = _resolve_out_path(out_dir, prefix, filename)
     # "Conditions" と "Skipped" は後から必ず追加し得るので、先に予約して奪われないようにする。
     # ★ ver59.0: 従来 "skipped" は予約されておらず、`Skipped.txt` という生ファイルが
     #   あると `_unique_sheet_name` が "Skipped" を返して報告シートと**無言で混ざる**
     #   （openpyxl は同名シートへの to_excel を例外にせず上書きする）。
     used_sheet_names = {"conditions": 1, "skipped": 1}
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+    with _atomic_output(out_path) as tmp, \
+            pd.ExcelWriter(tmp, engine="openpyxl") as writer:
         for i_f, stem in enumerate(file_stems):
             if progress_cb:
                 progress_cb(int(base + span * i_f / n_files),
                             f"書き込み中… {i_f + 1}/{n_files} ({stem})")
-            txt_path = Path(data_folder) / f"{stem}.txt"
-            if not txt_path.exists():
+            txt_path = txt_by_stem.get(stem)
+            if txt_path is None:
                 continue        # 上で列挙・記録済み (ver51.9 / B-9)
             if stem in excluded_stems:
                 # ★ ver59.0: 解析に使っていないサンプル。シートを作らない。
@@ -888,12 +1079,6 @@ def _export_desi(
             except Exception:
                 logger.warning("Skipped シートの追加に失敗", exc_info=True)
 
-    buf.seek(0)
-    # ★ ver62.1: バイト列を返さずパスへ直接書く（メモリ 4 重複製の解消）。
-    filename = "UMAP_cluster_DESI.xlsx"
-    out_path = _resolve_out_path(out_dir, prefix, filename)
-    with _atomic_output(out_path) as tmp:
-        tmp.write_bytes(buf.getvalue())
     return out_path, filename
 
 
@@ -1242,7 +1427,8 @@ def _export_tims(
     """
     input_paths = build_tims_input_paths(data_folder)
     if not input_paths:
-        raise ValueError("TIMS 入力ファイルが見つかりません")
+        # ★ ver62.2: DESI 側と同じ説明文にそろえる（どちらの経路でも理由が出る）。
+        raise ValueError(_no_input_message(data_folder, "TIMS"))
 
     is_multi = len(method_lookups) > 1
 
@@ -1477,8 +1663,9 @@ def _do_export(
     try:
         # ms_instrument を確定（DESIプロジェクトが既定の "TIMS" に落ち、誤って TIMS 経路に
         # 入る事象への対策）。metadata が "DESI" でなくてもパス規約から DESI を判定する。
+        # ここは**暫定**。データフォルダの推定がこの値に依存するため先に決める。
+        ms_instrument_raw = ms_instrument
         ms_instrument = _resolve_instrument(ms_instrument, data_folder, result_folder)
-        logger.info("[DataExport] instrument 確定: %s", ms_instrument)
         _p(5, "準備中…")
 
         # MSI データフォルダの自動推定（当該プロジェクト内に限定して推定する）
@@ -1492,6 +1679,21 @@ def _do_export(
                 "❌ MSIデータフォルダが見つかりません。"
                 "サブプロジェクト設定でMSIデータフォルダを指定してください。"
             )
+
+        # ★ ver62.2: データフォルダが決まったので、**中身**で装置を確定し直す。
+        #   パスも metadata も根拠として弱く（`_instrument_from_folder` 参照）、
+        #   parquet の TIMS データが `Data/DESI/…` にあるだけで DESI 経路へ入り、
+        #   「DESI .txt ファイルが見つかりません」で出力できなくなっていた。
+        ms_instrument, inst_reason = _decide_instrument(
+            ms_instrument_raw, data_folder, result_folder)
+        logger.info("[DataExport] instrument 確定: %s (根拠=%s) data_folder=%s",
+                    ms_instrument, inst_reason, data_folder)
+
+        # ★ ver62.2: 分岐に入る前に検査する。従来は存在しないパスでも
+        #   分岐の奥まで進み、理由の分からない一行だけが利用者に見えていた。
+        bad = _validate_data_folder(data_folder, ms_instrument, inst_reason)
+        if bad:
+            return None, None, "❌ " + bad
 
         plot_data = _interactive_data.get("plot_data")
         if plot_data is None or plot_data.empty:
@@ -1629,6 +1831,9 @@ def build_interactive_export_for_project(
                 pass
 
     try:
+        # ★ ver62.2: GUI 経路 (`_do_export`) と同じ確定手順。API だけ古い判定を
+        #   残すと、同じプロジェクトが経路によって別の装置になる。
+        ms_instrument_raw = ms_instrument
         ms_instrument = _resolve_instrument(ms_instrument, data_folder, result_folder)
         _p(5, "準備中…")
 
@@ -1639,6 +1844,14 @@ def build_interactive_export_for_project(
             return None, None, (
                 "❌ MSIデータフォルダが見つかりません。"
                 "サブプロジェクト設定でMSIデータフォルダを指定してください。")
+
+        ms_instrument, inst_reason = _decide_instrument(
+            ms_instrument_raw, data_folder, result_folder)
+        logger.info("[APIExport] instrument 確定: %s (根拠=%s) data_folder=%s",
+                    ms_instrument, inst_reason, data_folder)
+        bad = _validate_data_folder(data_folder, ms_instrument, inst_reason)
+        if bad:
+            return None, None, "❌ " + bad
 
         rmap = rds_map if isinstance(rds_map, dict) else {}
         if not rmap:
@@ -1822,7 +2035,18 @@ def data_export_start(n_clicks, data_folder, ms_instrument, export_format,
     """出力開始: 作業スレッドを起動し、進捗UI(0%)表示・ボタン無効・Interval 有効化。"""
     if not n_clicks:
         raise PreventUpdate
+    # ★ ver62.2: 手法を全部外すと `_build_all_method_lookups` の「空 = 全指定」に
+    #   落ち、**外したはずの手法まで出ていた**。列カテゴリ側は空のとき
+    #   `_export_tims` が理由付きで止めるのに、ここだけ黙って逆の結果になる。
+    #   （「空 = 全部」自体は手法を指定しない API 経路の既定として残す。）
+    #   失敗はジョブ記録に載せる。この callback には状態表示の Output が無く
+    #   （`div_data_export_status` は `data_export_poll` の持ち物）、
+    #   ここで黙って return するとボタンが効かないだけに見えるため。
     job_id = _new_job()
+    if not selected_methods:
+        _fail_job(job_id, "❌ 出力手法が 1 つも選ばれていません。"
+                          "「出力手法 (UMAP)」で 1 つ以上チェックしてください。")
+        return (_PROG_SHOW, "準備中…  0%", 0, False, True, {"job": job_id}, False)
     # 並びは `_do_export` の位置引数と 1:1（`_run_export_job` が *args で展開する）。
     # ここを崩すと progress_cb に別の値が入って静かに壊れるので、足す位置に注意。
     # ★ ver61.0: 「出力内容の設定」は **dict 1 個を末尾に** 足す。項目ごとに引数を
@@ -1900,12 +2124,41 @@ clientside_callback(
 
 
 @callback(
-    Output("data_export_format_wrapper", "style"),
+    [Output("data_export_format_wrapper", "style"),
+     Output("data_export_options_wrapper", "style"),
+     Output("div_data_export_options_summary", "children", allow_duplicate=True)],
     Input("int_cal_ms_instrument", "data"),
+    # DESI から TIMS へ切り替えたとき、要約行を「DESI は固定」のまま残さない。
+    [State("data_export_options", "data"),
+     # ★ ver62.2: 表示も出力と同じ根拠で決める（下の docstring 参照）。
+     State("interactive_msi_folder", "value"),
+     State("interactive_result_folder", "value")],
     prevent_initial_call=True,
 )
-def toggle_format_selector(ms_instrument):
-    """DESI → フォーマットセレクタ非表示 / TIMS → 表示。"""
+def toggle_format_selector(ms_instrument, options=None,
+                           data_folder=None, result_folder=None):
+    """DESI → フォーマット/出力内容の設定を非表示 / TIMS → 表示。
+
+    ★ ver62.2: 従来は形式セレクタしか隠していなかった。しかし DESI 経路
+      (`_export_desi`) は `options` を**受け取っていない**ので、
+      「⚙ 出力内容の設定」で選んだ列・集計単位・m/z 一覧は
+      **黙って無視される**。ボタンと要約行が出たままだと、
+      設定したつもりの出力が出ない理由が画面のどこにも無い。
+      DESI 出力は元 `.txt` のレイアウトをそのまま保つ形式なので、
+      選べないことを見せる方が正しい。
+
+      判定は出力と**同じ** `_decide_instrument`（中身 → metadata → パス）で行う。
+      metadata だけで隠すと、中身が parquet なのに設定が古く "DESI" の
+      プロジェクトで、出力は TIMS 経路へ行くのに**形式も列も選べない**
+      （隠れた既定値のまま出る）という食い違いになる。逆に、metadata が空の
+      DESI プロジェクトでは効かない設定が見えたままになる。
+      入力欄はここの Input ではないので、装置が変わる場面
+      （プロジェクト / サブプロジェクトの読み込み）で評価される。
+    """
+    ms_instrument, _reason = _decide_instrument(
+        ms_instrument, data_folder, result_folder)
     if (ms_instrument or "").upper() == "DESI":
-        return {"display": "none"}
-    return {"display": "block"}
+        return ({"display": "none"}, {"display": "none"},
+                "DESI は元データ (.txt) の形をそのまま保つため、"
+                "出力形式は Excel 固定・列の選択はできません。")
+    return {"display": "block"}, {"display": "block"}, _eo.describe(options)

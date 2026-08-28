@@ -19,17 +19,42 @@ def list_msi_files(data_folder: str) -> list[str]:
     CSV(.csv) も登録できるよう、対応する `.txt` が無い stem については
     変換元 (.csv/.xlsx/.xls) の stem も一覧に含める（解析時に自動で .txt 化）。
     同一 stem に `.txt` がある場合は `.txt` を優先（重複させない）。
+
+    ★ ver62.2: 拡張子の照合は大文字小文字を区別しない。`glob("*.txt")` は
+    Linux では区別するため `SAMPLE.TXT` が**存在しないものとして扱われて**いた
+    （Windows で作られた生データでは実在する）。変換元 (.csv/.xlsx) 側は
+    最初から `suffix.lower()` で吸収しており、`.txt` だけが不揃いだった。
     """
     folder = Path(data_folder)
     if not folder.is_dir():
         return []
-    txt_stems = {f.stem for f in folder.glob("*.txt")}
     from app.services.desi_converter import DESI_SRC_EXTS
+    files = [f for f in folder.iterdir() if f.is_file()]
+    txt_stems = {f.stem for f in files if f.suffix.lower() == ".txt"}
     extra_stems = {
-        f.stem for f in folder.iterdir()
-        if f.is_file() and f.suffix.lower() in DESI_SRC_EXTS
+        f.stem for f in files if f.suffix.lower() in DESI_SRC_EXTS
     } - txt_stems
     return sorted(txt_stems | extra_stems)
+
+
+def find_msi_txt(data_folder: str, stem: str) -> "Optional[Path]":
+    """`<stem>.txt` を大文字小文字を問わず解決する。無ければ None。
+
+    ★ ver62.2: `list_msi_files` が `.TXT` も拾うようになったため、
+    受け取った stem から `f"{stem}.txt"` を組み立て直すと Linux では
+    見つからず、**「.txt が未生成」という誤った理由で飛ばされる**。
+    一覧を作る側と読む側で同じ規則を使う。
+    """
+    folder = Path(data_folder)
+    if not folder.is_dir():
+        return None
+    exact = folder / f"{stem}.txt"
+    if exact.is_file():
+        return exact                      # 通常経路。走査せずに済ませる
+    for f in folder.iterdir():
+        if f.is_file() and f.stem == stem and f.suffix.lower() == ".txt":
+            return f
+    return None
 
 
 _PARQUET_EXTS = {".parquet", ".pq"}

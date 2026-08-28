@@ -669,7 +669,12 @@ def create_interactive_tab():
                                 # ★ ver61.0: 出力内容（列カテゴリ・集計単位）の設定。
                                 #   項目数が多くパネルに直置きすると窮屈なので
                                 #   モーダルに寄せる（既存の *_modal.py と同じ流儀）。
-                                dbc.Col(width="auto", children=[
+                                # ★ ver62.2: DESI では出力内容の設定が効かない
+                                #   （`_export_desi` は options を受け取らない）ので、
+                                #   形式セレクタと同様に隠せるよう id を持たせる。
+                                dbc.Col(width="auto",
+                                        id="data_export_options_wrapper",
+                                        children=[
                                     dbc.Button(
                                         "⚙ 出力内容の設定",
                                         id="btn_export_options",
