@@ -165,7 +165,7 @@ def classify_csv_role(path: Path) -> str:
 
 
 def auto_detect_file_roles(data_dir: Path) -> dict:
-    """フォルダ内の CSV を分類して役割を確定する。
+    """フォルダ内の CSV / `.sef` を分類して役割を確定する。
 
     Returns
     -------
@@ -192,6 +192,33 @@ def auto_detect_file_roles(data_dir: Path) -> dict:
             peaklists.append(p)
         else:
             unknowns.append(p)
+
+    # ★ ver63.0: `.sef` (SCiLS の feature list / JSON) も peak-list として拾う。
+    #   従来はここが `.csv` だけを走査していたため、SCiLS が実際に出す `.sef` は
+    #   フォルダに置いても**存在しないのと同じ**扱いだった。
+    #   拡張子だけでは判断しない（無関係な `.sef` を peak-list として掴むと
+    #   変換ごと落ちる）。JSON を開いて `peaklist.intervals` があるかまで見る。
+    from app.services.sef_peaklist import looks_like_sef
+    sef_peaklists: list[Path] = []
+    for p in sorted(data_dir.iterdir()):
+        if not p.is_file() or p.suffix.lower() != ".sef":
+            continue
+        if looks_like_sef(p):
+            sef_peaklists.append(p)
+        else:
+            logger.warning("`.sef` として読めないため無視します: %s", p.name)
+            unknowns.append(p)
+
+    # ★ ver63.0: CSV の peak-list と `.sef` が同居していたら**どちらを使うか
+    #   決められない**ので止める。黙って片方を採ると、利用者は「指定したはずの
+    #   化合物名が付いていない」理由を追えない（Intensity CSV が複数のときと同じ扱い）。
+    if peaklists and sef_peaklists:
+        names = "\n".join(f"  - {p.name}" for p in peaklists + sef_peaklists)
+        raise ValueError(
+            "peak-list が CSV と `.sef` の両方にあります (どちらを使うか判断できません)。\n"
+            f"どちらか一方だけを残してください:\n{names}"
+        )
+    peaklists.extend(sef_peaklists)
 
     if not intensities:
         raise ValueError(
@@ -911,6 +938,24 @@ def peaklist_skip_message(skipped: dict) -> str:
             + " を除外しました（この行の化合物名は付与されません）。")
 
 
+def read_peaklist_any(path: Path, *, return_skipped: bool = False):
+    """peak-list を拡張子で振り分けて読む（CSV / `.sef`）。
+
+    ★ ver63.0: SCiLS が実際に書き出すのは `.sef` なのに、読み口が CSV 専用
+      (`_read_peaklist`) しか無く、利用者は毎回手で CSV へ直していた。
+      `.sef` 側は `sef_peaklist.read_sef_peaklist` が同じ戻り値契約で返すので、
+      呼び出し側（変換 / 分子情報の後付け）はこの窓口だけを見ればよい。
+
+    `_read_peaklist` には ver51.8 / ver52.3 の修正と、CSV 固有の「区切り文字が
+    Name の内部に現れて列数が壊れる」再結合ロジックが積んである。`.sef` は JSON で
+    この問題自体が起きないため、**CSV 側には手を入れず**別実装を並べる。
+    """
+    if Path(path).suffix.lower() == ".sef":
+        from app.services.sef_peaklist import read_sef_peaklist
+        return read_sef_peaklist(path, return_skipped=return_skipped)
+    return _read_peaklist(Path(path), return_skipped=return_skipped)
+
+
 def _estimate_conversion_need_gb(
     *,
     csv_bytes: int,
@@ -1390,7 +1435,8 @@ def convert_scils_to_parquet(
             try:
                 _report(12, "化合物アノテーションを付与中…")
                 from app.services import peak_annotation as _pann
-                pk_mz, pk_names, pk_skipped = _read_peaklist(
+                # ★ ver63.0: CSV / `.sef` のどちらでも読めるよう窓口を経由する。
+                pk_mz, pk_names, pk_skipped = read_peaklist_any(
                     peaklist_path, return_skipped=True)
                 # ★ ver52.3 (T5): 壊れ行は捨てるだけで、変換は「成功」と表示されていた。
                 #   落ちた行の化合物名はサイドカーに載らないので、変換後の成果物からは

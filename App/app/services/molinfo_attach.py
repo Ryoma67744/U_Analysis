@@ -127,7 +127,8 @@ def attach_molecular_info(
 
     Args:
         sub: サブプロジェクト dict（data_folder / last_result_dir / output_dir を参照）
-        csv_path: アップロードされた SCiLS「Static feature list」CSV のパス
+        csv_path: アップロードされた SCiLS「Static feature list」のパス
+            （CSV / `.sef` のどちらでもよい。★ ver63.0）
         tol_da: peak-list m/z と特徴量 m/z の最近傍マッチ許容（Da）
         dry_run: True なら書き込み・無効化をせず件数のみ返す（プレビュー用）
         also_result_dirs: data_folder に加え結果ディレクトリにもサイドカーを置く
@@ -136,7 +137,7 @@ def attach_molecular_info(
         dict: status / n_features / n_peaklist / n_matched / sidecar_paths / base /
             n_peaklist_skipped / peaklist_skip_message
     """
-    from app.services.scils_converter import _read_peaklist, peaklist_skip_message
+    from app.services.scils_converter import read_peaklist_any, peaklist_skip_message
     from app.services.peak_annotation import build_feature_annotation_table
     from app.services.annotation_inspect import _is_real_compound
 
@@ -155,9 +156,11 @@ def attach_molecular_info(
     if not base:
         raise ValueError("本体 parquet が data_folder に見つかりません。")
 
-    pk_mz, pk_names, pk_skipped = _read_peaklist(Path(csv_path), return_skipped=True)
+    # ★ ver63.0: CSV / `.sef` のどちらでも読めるよう窓口を経由する。
+    pk_mz, pk_names, pk_skipped = read_peaklist_any(Path(csv_path), return_skipped=True)
     if pk_mz.size == 0:
-        raise ValueError("peak-list CSV から m/z を読み取れませんでした（形式を確認してください）。")
+        raise ValueError(
+            "peak-list から m/z を読み取れませんでした（形式を確認してください）。")
 
     feat_df = build_feature_annotation_table(mz_sorted, pk_mz, pk_names, tol_da=tol_da)
     n_matched = int(feat_df["compound"].apply(_is_real_compound).sum())

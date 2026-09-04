@@ -72,3 +72,45 @@ def test_confirm_error_is_caught(monkeypatch):
     body, disabled, refresh = amc.confirm_add_molinfo(1, _CONTENTS, "f.csv", _TARGET, 3)
     assert isinstance(body, dbc.Alert)
     assert refresh is no_update              # 失敗時はカード再描画しない
+
+
+# ---------------------------------------------------------------------------
+# アップロードの一時ファイル拡張子（★ ver63.0）
+# ---------------------------------------------------------------------------
+# `_decode_to_temp` は `suffix=".csv"` の決め打ちだった。読み口が CSV 専用だった
+# 頃は無害だったが、`.sef` を受け付ける今は `read_peaklist_any` が**拡張子で**
+# 振り分けるため、`.sef` を上げても CSV パーサへ送られてしまう。
+# この 3 件は決め打ちに戻すと落ちる。
+
+def test_decode_to_temp_keeps_sef_suffix():
+    path = amc._decode_to_temp(_CONTENTS, "peaks.sef")
+    try:
+        assert path.endswith(".sef")
+    finally:
+        amc._safe_unlink(path)
+
+
+def test_decode_to_temp_keeps_csv_suffix():
+    path = amc._decode_to_temp(_CONTENTS, "peaks.csv")
+    try:
+        assert path.endswith(".csv")
+    finally:
+        amc._safe_unlink(path)
+
+
+def test_decode_to_temp_falls_back_to_csv():
+    """未知/欠損の拡張子は従来どおり CSV 扱い（既存の挙動を変えない）。"""
+    for filename in ("peaks.weird", "noext", None, ""):
+        path = amc._decode_to_temp(_CONTENTS, filename)
+        try:
+            assert path.endswith(".csv")
+        finally:
+            amc._safe_unlink(path)
+
+
+def test_decode_to_temp_is_case_insensitive():
+    path = amc._decode_to_temp(_CONTENTS, "PEAKS.SEF")
+    try:
+        assert path.endswith(".sef")
+    finally:
+        amc._safe_unlink(path)
