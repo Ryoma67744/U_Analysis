@@ -24,11 +24,17 @@ def _write_legacy(
     duplicate_names: bool = False,
     with_metadata: bool = True,
     with_peaklist: bool = True,
+    use_dictionary=None,
 ) -> "pa.Table":
     """旧レイアウト (rg_rows 行/row group) の変換済み parquet を模して書く。
 
     病的な値（NaN / ±inf / ±0.0 / subnormal / float32 最大値）を必ず混ぜる。
     戻り値は書いた内容の Table（比較用）。
+
+    `use_dictionary` は `pq.ParquetWriter` にそのまま渡す。既定 None は
+    **pyarrow の既定（全列 True）**＝ ver49.0 以前の実出力に相当する。
+    ver60.0 以降の変換器は `use_dictionary=["annotation"]` で書くので、
+    その形の入力を作るときは明示的に渡すこと。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(42)
@@ -70,7 +76,8 @@ def _write_legacy(
     cols.append(pa.array([f"tissue{i % 3}" for i in range(n_rows)]))
 
     table = pa.Table.from_arrays(cols, schema=schema)
-    with pq.ParquetWriter(str(path), schema, compression=compression) as w:
+    dict_kw = {} if use_dictionary is None else {"use_dictionary": use_dictionary}
+    with pq.ParquetWriter(str(path), schema, compression=compression, **dict_kw) as w:
         for s in range(0, n_rows, rg_rows):
             w.write_table(table.slice(s, rg_rows), row_group_size=rg_rows)
     return table
@@ -85,6 +92,25 @@ def _read_all(path: Path) -> "pa.RecordBatch":
     pf = pq.ParquetFile(str(path), memory_map=False)
     try:
         return next(pf.iter_batches(batch_size=pf.metadata.num_rows))
+    finally:
+        pf.close()
+
+
+def _dict_encoded_columns(path: Path) -> set:
+    """辞書エンコードされている列名を返す（row group 0 で代表）。
+
+    列名は**位置**で引く。このリポジトリの Parquet は列名が重複し得るため、
+    名前で引くと壊れる。判定方法は test_scils_converter.py の
+    `test_intensity_columns_are_not_dictionary_encoded` と同じ。
+    """
+    pf = pq.ParquetFile(str(path), memory_map=False)
+    try:
+        names = pf.schema_arrow.names
+        rg = pf.metadata.row_group(0)
+        return {
+            names[i] for i in range(pf.metadata.num_columns)
+            if i < len(names) and any("DICTIONARY" in str(e) for e in rg.column(i).encodings)
+        }
     finally:
         pf.close()
 
@@ -161,6 +187,53 @@ class TestRepackBasics:
 
         md = pq.ParquetFile(str(p)).metadata
         assert md.row_group(0).column(0).compression.upper() == "ZSTD"
+
+    def test_plain_intensity_columns_stay_plain(self, tmp_path):
+        """★ ver63.1: ver60.0 以降の出力（強度は PLAIN）を再パックしても
+        辞書エンコードが復活しないこと。
+
+        `pq.ParquetWriter` の `use_dictionary` 既定は**全列 True** なので、
+        指定を忘れると変換器が ver60.0 で強度列から外した辞書が再パックで戻る
+        （連続量への辞書は書き込みが 3.2 倍遅く、ファイルも大きくなる）。
+        値は変わらないため `_verify_files` のビット比較も通ってしまい、
+        このテストが無いと誰も気づけない。
+
+        `repack_file` は単一 row group をスキップするので、実際に退行しうるのは
+        メモリ不足で `single-fallback` に落ちた複数 row group の出力。
+        ここでもその形（rg_rows=200）を作って再現している。
+        """
+        p = tmp_path / "sample.parquet"
+        expected = _write_legacy(p, n_rows=1000, n_mz=5, rg_rows=200,
+                                 use_dictionary=["annotation"])
+        assert _dict_encoded_columns(p) == {"annotation"}, "前提: 入力は PLAIN"
+
+        res = pr.repack_file(p, backup=False)
+
+        assert res.status == "repacked", res.reason
+        assert _dict_encoded_columns(p) == {"annotation"}, (
+            "再パックで強度列に辞書エンコードが復活している"
+        )
+        assert _bitwise_same(expected, _read_all(p))
+
+    def test_dictionary_encoded_input_stays_dictionary(self, tmp_path):
+        """逆方向。入力が全列辞書（ver49.0 以前の実出力）ならそのまま維持する。
+
+        「入力の選択を維持する」が仕様であって「常に PLAIN にする」ではない。
+        `test_file_size_does_not_grow` がこの形の入力に依存しているので、
+        ここで明示的に固定しておく。
+        """
+        p = tmp_path / "sample.parquet"
+        expected = _write_legacy(p, n_rows=1000, n_mz=5, rg_rows=200)
+        n_cols = pq.ParquetFile(str(p)).metadata.num_columns
+        assert len(_dict_encoded_columns(p)) == n_cols, "前提: 入力は全列辞書"
+
+        res = pr.repack_file(p, backup=False)
+
+        assert res.status == "repacked", res.reason
+        assert len(_dict_encoded_columns(p)) == n_cols, (
+            "入力が全列辞書だったのに再パックで PLAIN に落ちている"
+        )
+        assert _bitwise_same(expected, _read_all(p))
 
     def test_uncompressed_input(self, tmp_path):
         """圧縮なしのファイル。`UNCOMPRESSED` をそのまま渡すと pyarrow が例外を出す"""

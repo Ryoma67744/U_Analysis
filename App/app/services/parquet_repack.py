@@ -188,12 +188,66 @@ def _footer_ram_bytes(md) -> float:
 
 
 def _detect_codec(md) -> str:
-    """元ファイルの圧縮コーデックを検出（先頭 row group の先頭列で代表）"""
+    """元ファイルの圧縮コーデックを検出（先頭 row group の先頭列で代表）
+
+    **圧縮レベルは検出できない。** Parquet の column chunk メタデータが持つのは
+    コーデック名だけで、`compression_level` はファイルに一切記録されない
+    （書き手側のパラメータであってフォーマットの一部ではない）。したがって
+    level を指定して書かれたファイルを再パックすると、値はビット一致のまま
+    pyarrow 既定の level で書き直され、**サイズだけが変わる**。
+    将来 `scils_converter` 側で level を明示するなら、`repack_file` にも
+    同じ値を渡すオプションを同時に足すこと。
+    """
     try:
         raw = md.row_group(0).column(0).compression
     except Exception:
         return "zstd"
     return _CODEC_MAP.get(str(raw).upper(), "zstd")
+
+
+def _detect_dictionary_columns(md, schema):
+    """入力の辞書エンコードを検出し、`use_dictionary` に渡せる形で返す。
+
+    戻り値は `True`（全列）/ `False`（無し）/ 列名のリスト（一部の列だけ）。
+
+    ★ ver63.1: ここが無いと書き込み側の `use_dictionary` が未指定になり、
+      pyarrow 既定の**全列 True** が適用されていた。変換器は ver60.0 で
+      `use_dictionary=["annotation"]` に絞っている（強度のような連続量に辞書を
+      掛けると値ごとにハッシュを引くので書き込みが遅く、辞書本体とインデックスを
+      両方持つのでファイルも大きくなる）のに、**再パックを通すとその選択が
+      黙って捨てられ、強度列に辞書が戻っていた**。
+      コーデックは `_detect_codec` で維持しているのに、エンコードだけ維持して
+      いないという非対称が本体。値は変わらないので `_verify_files` のビット比較も
+      通ってしまい、気づける手段が無かった。
+
+    **検出**は列名ではなく位置で行う。このリポジトリの Parquet は列名が重複し得る
+    ため（ver55.0 以前は化合物名を列名に焼き込んでいた）、名前で引くと壊れる。
+    重複名があると `use_dictionary` の名前指定は同名の全列に効いてしまうが、
+    重複名を持つ古いファイルは全列が辞書 ON なので下の `True` 分岐で拾われ、
+    「一部だけ辞書 かつ 名前が重複」は実質発生しない。
+
+    列名に `.` や `[]` が含まれていても `use_dictionary` へそのまま渡してよい
+    （`化合物0_123.4567 | LipidMaps | [M+H]+` で pyarrow 25.0.1 実測。スキーマが
+    フラットなのでネストしたパスとしての解釈は起きない）。`read_table` の
+    dataset API が同じ名前で `Dot path ... unterminated index` を出すのとは別経路。
+    """
+    names = list(schema.names)
+    try:
+        rg = md.row_group(0)
+        dict_idx = {
+            i for i in range(md.num_columns)
+            if any("DICTIONARY" in str(e) for e in rg.column(i).encodings)
+        }
+    except Exception:
+        # エンコードが読めないときは従来の挙動（pyarrow 既定）に倒す。
+        # ここで False にすると、辞書が正しく効いていたファイルを
+        # 黙って PLAIN に落としてしまう。
+        return True
+    if not dict_idx:
+        return False
+    if len(dict_idx) >= md.num_columns:
+        return True
+    return sorted({names[i] for i in dict_idx if i < len(names)})
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +490,10 @@ def repack_file(
                 )
 
         codec = _detect_codec(md)
+        # ★ ver63.1: エンコードも入力から引き継ぐ。未指定だと pyarrow 既定の
+        #   全列 True になり、変換器が ver60.0 で強度列から外した辞書エンコードが
+        #   再パックで復活する（_detect_dictionary_columns の docstring 参照）。
+        use_dict = _detect_dictionary_columns(md, schema)
 
         # --- dry-run はここまで（書き込まない） ---
         if dry_run:
@@ -453,7 +511,8 @@ def repack_file(
         # --- 書き込み（iter_batches 単一経路） ---
         tmp = _unique_path(path.parent / (path.name + _TMP_SUFFIX))
         written = 0
-        with pq.ParquetWriter(str(tmp), schema, compression=codec) as writer:
+        with pq.ParquetWriter(str(tmp), schema, compression=codec,
+                              use_dictionary=use_dict) as writer:
             for batch in pf.iter_batches(batch_size=rg_rows):
                 table = pa.Table.from_batches([batch], schema=schema)
                 # row_group_size は必ず明示する。None 既定は 1,048,576 行で無言分割する。

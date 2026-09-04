@@ -32,6 +32,7 @@
 
 import dataclasses
 import json
+import logging
 import sys
 import traceback
 from pathlib import Path
@@ -44,6 +45,54 @@ from app.services.scils_converter import convert_scils_to_parquet  # noqa: E402
 # GUI 側が拾う進捗行。値だけでなくラベルも出すので、そのまま人にも読める。
 # 対になる正規表現は scils_converter_callbacks._PROGRESS_RE。片方だけ変えないこと。
 _PROGRESS_PREFIX = "進捗"
+
+
+def setup_cli_logging() -> None:
+    """変換器の診断ログ (INFO) をこのプロセスの stdout に出す。
+
+    ★ ver63.1: これが無いと変換の診断ログが**本番のどこにも出ない**。
+      ver60.0 で変換をサブプロセス化したとき、`setup_logging()` を呼ぶのは
+      `App/run_app.py`（Dash 本体）だけなので、この CLI プロセスでは
+        1. 有効レベルが root 既定の WARNING になり `logger.info(...)` が
+           ハンドラに届く前にレベル判定で捨てられる
+        2. ハンドラが 1 つも無く、WARNING 以上だけが `logging.lastResort` で
+           stderr へ出る
+      の 2 段で INFO が消えていた。`Phase A エンジン:` / `Phase A 完了: N 秒` /
+      `row group 計画:` / `変換メモリ確認:` が丸ごと失われており、
+      **どのフェーズに何秒かかったかを本番で知る手段が無かった**。
+      WARNING 以上とこの CLI の `print` は出るためログはそれらしく見え、
+      `App/docs/DEPLOY.md` の調査手順だけが黙って空振りしていた。
+
+    `log_config.setup_logging()` は呼ばない。あちらは `RotatingFileHandler` で
+    `msi_app.log` に書くが、**RotatingFileHandler はマルチプロセス安全ではない**。
+    Dash 本体が開いているのと同じファイルをこのサブプロセスからも開くと、
+    ローテーションが競合してログを落としうる。変換ログ
+    (`Data/Other/logs/scils_convert/log/`) に出せば GUI のログ欄にもそのまま載る。
+
+    ハンドラは `msi.scils_converter` ではなく親の `msi` に付ける。変換経路は
+    `sef_peaklist` / `peak_annotation` など他モジュールも通り、いずれも
+    `logging.getLogger("msi.*")` を使うので、親に 1 つ付ければ全部拾える。
+
+    書式は既存の契約を壊さないよう次の 3 つを満たすこと:
+      - 行頭を `進捗` にしない — `test_progress_lines_match_the_callback_regex` が
+        `startswith("進捗")` の行を全部 `_PROGRESS_RE` に通す
+      - 本文に `進捗: NN% ` を含めない — コールバックはログ全体を `finditer` で
+        走査して % の最大値を採る (`scils_converter_callbacks.poll_scils_conversion`)
+      - 行頭を 2 スペース字下げにしない — `_error_excerpt` が字下げ行を
+        エラー本文として拾う
+    """
+    logger = logging.getLogger("msi")
+    logger.setLevel(logging.INFO)
+    # 重複ハンドラを防止する（`log_config.setup_logging` が同じ理由で同じことをしている）。
+    # 通常この CLI は 1 プロセス 1 変換だが、main() を直接呼ぶテストから 2 回来ると
+    # 全行が二重に出て、進捗の重複除去が効いているのか判らなくなる。
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter("[%(levelname)s] %(name)s: %(message)s"))
+        logger.addHandler(handler)
+    # root にハンドラが付いた場合の二重出力を防ぐ（今は root は素だが、
+    # 将来 basicConfig を足した人が二重に悩まないようにしておく）。
+    logger.propagate = False
 
 
 def parse_args(argv):
@@ -77,6 +126,7 @@ def main(argv):
         print(f"引数エラー: {e}", flush=True)
         return 1
 
+    setup_cli_logging()
     result_json = opts.pop("result_json")
 
     print(f"入力フォルダ: {input_folder}", flush=True)
