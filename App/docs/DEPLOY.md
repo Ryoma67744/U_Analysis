@@ -839,9 +839,28 @@ free -h
 空き X.X GB）」と出る場合、まずログで**実際の見積り内訳**を確認する。
 
 ```bash
-grep "変換メモリ確認" Data/Other/logs/msi_app.log | tail -5
-# 例: 変換メモリ確認: Intensity CSV 9.50 GB / 空き 11.80 GB (取得元 cgroup+cache)
-#     / 推定 203,078 spot × 4,566 m/z → 必要 3.0 GB
+grep "変換メモリ確認" Data/Other/logs/scils_convert/log/*.log | tail -5
+# 例: [INFO] msi.scils_converter: 変換メモリ確認: Intensity CSV 9.50 GB /
+#     空き 11.80 GB (取得元 cgroup+cache) / 推定 203,078 spot × 4,566 m/z → 必要 3.0 GB
+```
+
+> **ver63.1 以前は `msi_app.log` を見る手順になっていたが、そこには出ない。**
+> ver60.0 で変換をサブプロセス化して以降、変換の診断ログは Dash 本体の
+> `msi_app.log` ではなく**変換ごとのログ**（`Data/Other/logs/scils_convert/log/`）に出る。
+> ver63.1 より前のアプリでは CLI がログ設定をしていなかったため、
+> INFO がどちらにも出ていなかった（この grep は 0 件を返す）。
+
+同じログに **Phase A / Phase B の所要秒数**と**採用した row group レイアウト**も出る。
+変換が遅いときはまずここを見て、どちらのフェーズが支配的かを切り分ける。
+
+```bash
+grep -E "Phase [AB] (エンジン|完了)|row group 計画" \
+    Data/Other/logs/scils_convert/log/*.log | tail -10
+# 例: [INFO] msi.scils_converter: Phase A エンジン: polars (streaming sink)
+#     [INFO] msi.scils_converter: Phase A 完了: 92.4 秒
+#     [INFO] msi.scils_converter: row group 計画: single → 203,078 行 × 1 group
+#           （想定 2.63 GB / 予算 5.40 GB）
+#     [INFO] msi.scils_converter: Phase B 完了: 38.1 秒
 ```
 
 読み方（ver56.8 以降）:

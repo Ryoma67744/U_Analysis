@@ -94,6 +94,47 @@ class TestCliContract:
         assert pcts == sorted(pcts), f"進捗が逆行している: {pcts}"
         assert pcts[-1] == 100, f"最後が 100% で終わっていない: {pcts[-1]}"
 
+    def test_diagnostic_info_lines_reach_stdout(self, tmp_path):
+        """★ ver63.1: 変換器の診断 INFO が変換ログに届くこと。
+
+        ver60.0 で変換をサブプロセス化したとき、CLI がログ設定をしていなかったため
+        子プロセスでは (1) 有効レベルが root 既定の WARNING になり INFO が
+        レベル判定で捨てられ、(2) ハンドラも無いので WARNING 以上だけが
+        `logging.lastResort` で stderr に出る、という状態だった。結果として
+        `Phase A エンジン:` / `Phase A 完了: N 秒` / `row group 計画:` が
+        **本番のどこにも出ず、どのフェーズが遅いのかを知る手段が無かった**。
+
+        `変換メモリ確認:` は Intensity CSV が 0.5GB 未満だと
+        `_check_conversion_memory` が早期 return するのでここには出ない。
+        アサートに入れないこと。
+        """
+        src = _make_folder(tmp_path / "in")
+        p = _run_cli(str(src), str(tmp_path / "out.parquet"), "--no-organize")
+
+        assert p.returncode == 0, p.stdout + p.stderr
+        for needle in ("Phase A エンジン:", "Phase A 完了:",
+                       "Phase B 完了:", "row group 計画:"):
+            assert needle in p.stdout, f"{needle!r} がログに出ていない:\n{p.stdout}"
+
+    def test_log_lines_do_not_collide_with_the_progress_contract(self, tmp_path):
+        """診断ログの書式が進捗行・エラー本文の抽出を壊さないこと。
+
+        コールバックはログ**全文**を `_PROGRESS_RE.finditer` で走査して % の
+        最大値を採り、`_error_excerpt` は字下げ行をエラー本文として拾う。
+        ログ行がどちらかに紛れ込むと、例外を出さずに進捗バーや失敗表示が壊れる。
+        """
+        from app.callbacks.scils_converter_callbacks import _PROGRESS_RE
+
+        src = _make_folder(tmp_path / "in")
+        p = _run_cli(str(src), str(tmp_path / "out.parquet"), "--no-organize")
+        assert p.returncode == 0, p.stdout + p.stderr
+
+        log_lines = [ln for ln in p.stdout.splitlines() if ln.startswith("[")]
+        assert log_lines, f"診断ログが 1 行も出ていない:\n{p.stdout}"
+        for ln in log_lines:
+            assert not _PROGRESS_RE.search(ln), f"ログ行が進捗として拾われる: {ln!r}"
+            assert not ln.startswith("  "), f"ログ行がエラー本文として拾われる: {ln!r}"
+
     def test_failure_exits_2_and_keeps_the_actionable_message(self, tmp_path):
         """入力不備のとき、変換器の指示文が画面まで届くこと。"""
         from app.callbacks.scils_converter_callbacks import _error_excerpt

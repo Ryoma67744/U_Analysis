@@ -12,6 +12,117 @@
 
 ---
 
+## 2026-09-04_ver63.1
+
+### 修正: 変換の診断ログが本番のどこにも出ていなかった
+
+`App/tools/convert_scils_cli.py` には `logging` の記述が 1 つも無く、
+`setup_logging()` を呼ぶのは `App/run_app.py`（Dash 本体）だけだった。ver60.0 で
+変換をサブプロセス化して以降、この CLI プロセスでは
+
+1. 有効レベルが root 既定の **WARNING** になり `logger.info(...)` が
+   ハンドラに届く前にレベル判定で捨てられる
+2. ハンドラが 1 つも無く、WARNING 以上だけが `logging.lastResort` で stderr へ出る
+
+の 2 段で **INFO が完全に消えていた**。失われていたのは次の行:
+
+| 出所 | 内容 |
+|---|---|
+| `scils_converter.py:1046` | `変換メモリ確認: Intensity CSV N GB / 空き N GB (取得元 …) / 推定 …` |
+| `:773` / `:811` | `Phase A エンジン: polars (streaming sink)` / `pyarrow (batched fallback)` |
+| `:1429` / `:1692` | **`Phase A 完了: N 秒`** / **`Phase B 完了: N 秒`** |
+| `:1261` / `:1270` | `row group 計画: … 想定 N GB / 予算 N GB` |
+| `:1687` | `Parquet レイアウト: N row group × N 行 / フッタ N MB` |
+
+実害が 3 つあった。
+
+- **`App/docs/DEPLOY.md` の調査手順が空振りしていた。** メモリ不足時に
+  `grep "変換メモリ確認" Data/Other/logs/msi_app.log` を見るよう案内していたが、
+  0 件しか返らない。ver56.8 の見積り内訳の読み方まで丁寧に書いてある節が丸ごと死んでいた。
+- **どのフェーズに何秒かかったかを本番で知る手段が無かった。** 実データ規模
+  （203,078 spot × 2,700〜4,566 m/z）の性能実測がリポジトリに一件も無いのはこれが原因。
+- **どちらのエンジンで走ったかが残らない。** ver4.24 では本番 CPU が `lzcnt` 非対応で
+  polars が SIGILL クラッシュしていた。同種の事故が再発しても事後に追えない。
+
+WARNING 以上と CLI 自身の `print` は出るためログは「それらしく」見え、
+消えているのが INFO だけなので気づけなかった。
+
+#### 変更点
+
+- **`convert_scils_cli.py` に `setup_cli_logging()` を新設**し、引数パース成功直後に呼ぶ。
+  `"msi"` ロガー（全モジュールの親）に **stdout** のハンドラを付け、レベルを INFO にする。
+  変換ログは GUI のログ欄がそのまま表示しているので、**利用者の画面にも出るようになる**。
+- **`log_config.setup_logging()` は呼ばない。** あちらは `RotatingFileHandler` で
+  `msi_app.log` に書くが、**RotatingFileHandler はマルチプロセス安全ではない**。
+  Dash 本体が開いているのと同じファイルをサブプロセスからも開くと、
+  ローテーションが競合してログを落としうる。
+- 書式は `[LEVEL] name: message`。既存の契約を壊さないよう 3 つの制約を満たしている:
+  行頭を `進捗` にしない / 本文に `進捗: NN% ` を含めない / 行頭を 2 スペース字下げにしない
+  （前 2 つは進捗バー、最後は `_error_excerpt` のエラー本文抽出が壊れる）。
+- **`App/docs/DEPLOY.md`** の調査手順を実際の出力先
+  （`Data/Other/logs/scils_convert/log/`）へ修正し、Phase A/B の秒数と row group
+  レイアウトを見る grep も追記した。
+
+### 修正: 再パックが変換器のエンコード選択を捨てていた
+
+`parquet_repack.py` の `pq.ParquetWriter(...)` に `use_dictionary` を渡しておらず、
+**pyarrow 既定の全列 True** が適用されていた。変換器は ver60.0 で
+`use_dictionary=["annotation"]` に絞っている（連続量である強度に辞書を掛けると
+値ごとにハッシュを引くので書き込みが 3.2 倍遅く、辞書本体とインデックスを両方持つので
+ファイルも大きい。実測 596MB → 375MB）のに、**再パックを通すとその選択が黙って
+捨てられ、強度列に辞書が戻っていた**。
+
+圧縮コーデックは `_detect_codec` で入力から維持しているのに、エンコードだけ
+維持していないという非対称が本体。値は 1 ビットも変わらないため
+`_verify_files` のビット比較も通ってしまい、気づける手段が無かった。
+
+影響範囲は限定的で、`repack_file` は `num_row_groups <= 1` をスキップするため、
+既定の変換出力（全行 1 row group）は対象にならない。実際に退行するのは
+**メモリ不足で `single-fallback` に落ちた出力**（複数 row group ＋ PLAIN）。
+4,566 m/z × float32 では single に空き 7.4 GB が必要で、float64 なら
+`mem_limit: 12g` では必ず fallback する。
+
+#### 変更点
+
+- **`_detect_dictionary_columns()` を新設**。入力の row group 0 のエンコードを見て
+  `use_dictionary` に渡せる形（`True` / `False` / 列名リスト）を返す。
+  列名は**位置**で引く（ver55.0 以前は化合物名を列名に焼き込んでおり重複し得るため）。
+  エンコードが読めないときは `True`（従来＝pyarrow 既定）に倒す。ここで `False` にすると、
+  辞書が正しく効いていたファイルを黙って PLAIN に落としてしまう。
+- **`_detect_codec` の docstring に「圧縮レベルは検出できない」と明記**した。
+  Parquet の column chunk メタデータが持つのはコーデック名だけで、
+  `compression_level` はファイルに一切記録されない（書き手側のパラメータであって
+  フォーマットの一部ではない）。したがって level を指定して書かれたファイルを
+  再パックすると、値はビット一致のまま既定 level で書き直されサイズだけ変わる。
+  将来 `scils_converter` 側で level を明示するなら、`repack_file` にも同じ値を渡す
+  オプションを同時に足すこと。
+
+### テスト
+
+`tests/test_scils_convert_subprocess.py` に 2 件、`tests/test_parquet_repack.py` に
+2 件追加（20 passed / 38 passed）。いずれも**変更を戻すと落ちること**を確認済み。
+
+- `test_diagnostic_info_lines_reach_stdout` — `Phase A エンジン:` / `Phase A 完了:` /
+  `Phase B 完了:` / `row group 計画:` が出ること。`変換メモリ確認:` は CSV が
+  0.5GB 未満だと `_check_conversion_memory` が早期 return するので**入れていない**。
+- `test_log_lines_do_not_collide_with_the_progress_contract` — ログ行が
+  `_PROGRESS_RE` にマッチせず、字下げでもないこと。書式を不用意に変えたときの踏み絵。
+- `test_plain_intensity_columns_stay_plain` — PLAIN の複数 row group 入力
+  （＝ver60.0 以降の `single-fallback` 出力）を再パックしても、辞書エンコードが
+  `annotation` だけのままであること。
+- `test_dictionary_encoded_input_stays_dictionary` — 逆方向。全列辞書の入力
+  （ver49.0 以前の実出力）は全列辞書のまま維持すること。仕様は「入力の選択を維持する」
+  であって「常に PLAIN にする」ではない。
+
+テストヘルパ `_write_legacy` に `use_dictionary` 引数を足した。従来これは
+`use_dictionary` 未指定＝辞書 ON で入力を作っており、**PLAIN 入力を再パックする
+ケースが 1 件も無かった**ため、`test_file_size_does_not_grow` を含め既存テストは
+この退行を検出できなかった。
+
+出力 Parquet の値・スキーマ・メタデータはこの変更でも一切変わらない。
+
+---
+
 ## 2026-09-04_ver63.0
 
 ### 機能: SCiLS の `.sef` を分子アノテーションとしてそのまま読む
