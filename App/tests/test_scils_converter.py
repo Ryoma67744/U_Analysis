@@ -155,7 +155,7 @@ class TestAutoDetectFileRoles:
         p.write_text(json.dumps(doc), encoding="utf-8")
         return p
 
-    def _write_peaklist_csv(self, tmp_path, name="peaks.csv"):
+    def _write_peaklist_csv(self, tmp_path, name="peaks.csv"):  # noqa: D401
         p = tmp_path / name
         p.write_text("m/z,Name\n100.0,Choline | HMDB | [M+H]+ | 0.3ppm\n", encoding="utf-8")
         return p
@@ -176,12 +176,53 @@ class TestAutoDetectFileRoles:
         assert roles["peak_list"] is None
         assert any(p.name == "other.sef" for p in roles["unknown"])
 
-    def test_raises_when_peaklist_csv_and_sef_coexist(self, tmp_path):
-        """どちらを使うか決められないので止める（黙って片方を採らない）。"""
+    def test_csv_wins_when_peaklist_csv_and_sef_coexist(self, tmp_path):
+        """CSV と `.sef` が同居したら CSV を優先する。ただし黙って捨てない。"""
         self._minimal_folder(tmp_path)
         self._write_peaklist_csv(tmp_path)
         self._write_sef(tmp_path)
-        with pytest.raises(ValueError, match=r"CSV と `\.sef` の両方"):
+        roles = sc.auto_detect_file_roles(tmp_path)
+        assert roles["peak_list"].name == "peaks.csv"
+        # 置いたのに使われなかったことは必ず伝える
+        warns = " ".join(roles["warnings"])
+        assert "peaks.sef" in warns and "peaks.csv" in warns
+
+    def test_coexist_warning_reaches_result(self, tmp_path, monkeypatch):
+        """検出時の警告が変換結果の warnings に載る（画面に出る経路）。"""
+        self._minimal_folder(tmp_path)
+        self._write_peaklist_csv(tmp_path)
+        self._write_sef(tmp_path)
+        roles = sc.auto_detect_file_roles(tmp_path)
+        result = sc.ConversionResult()
+        result.warnings.extend(roles.get("warnings", []))
+        assert any("`.sef` は無視" in w for w in result.warnings)
+
+    def test_raises_when_multiple_peaklist_csv(self, tmp_path):
+        """★ ver63.0: 従来は英数字順の先頭を黙って採用していた。"""
+        self._minimal_folder(tmp_path)
+        self._write_peaklist_csv(tmp_path, "a_peaks.csv")
+        self._write_peaklist_csv(tmp_path, "b_peaks.csv")
+        with pytest.raises(ValueError, match="CSV が複数あります"):
+            sc.auto_detect_file_roles(tmp_path)
+
+    def test_raises_when_multiple_sef(self, tmp_path):
+        self._minimal_folder(tmp_path)
+        self._write_sef(tmp_path, "a.sef")
+        self._write_sef(tmp_path, "b.sef")
+        with pytest.raises(ValueError, match=r"`\.sef` が複数あります"):
+            sc.auto_detect_file_roles(tmp_path)
+
+    def test_duplicate_check_runs_before_csv_preference(self, tmp_path):
+        """CSV 優先で `.sef` を捨てる場合でも、`.sef` の重複は止める。
+
+        捨てる側だからと黙認すると「2 枚あるのに気づかないまま片方を消した」
+        状態が残り、CSV を外した瞬間に暗黙選択へ戻る。
+        """
+        self._minimal_folder(tmp_path)
+        self._write_peaklist_csv(tmp_path)
+        self._write_sef(tmp_path, "a.sef")
+        self._write_sef(tmp_path, "b.sef")
+        with pytest.raises(ValueError, match=r"`\.sef` が複数あります"):
             sc.auto_detect_file_roles(tmp_path)
 
 

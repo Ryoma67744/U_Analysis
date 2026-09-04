@@ -53,8 +53,17 @@ ver55.0 が塞いだ「指定していないアノテーションが付く」の
 - `scils_converter.read_peaklist_any` … CSV / `.sef` を拡張子で振り分ける窓口。
   `_read_peaklist` は ver51.8 / ver52.3 の修正と CSV 固有の再結合ロジックを持つので**触らない**
 - `auto_detect_file_roles` が `.sef` も走査。拡張子だけでは判断せず JSON を開いて
-  `peaklist.intervals` を確認する。**peak-list CSV と `.sef` が同居したら停止**
-  （黙って片方を採ると「指定したはずの化合物名が付いていない」理由を追えない）
+  `peaklist.intervals` を確認する。peak-list の選択規則を明示した:
+  - **CSV と `.sef` が同居 → CSV を優先**。ただし黙って捨てず、使わなかった `.sef` を
+    変換完了画面の警告に出す（`auto_detect_file_roles` が `warnings` を返し、
+    変換が `result.warnings` へ流す）
+  - **同じ種類が 2 枚以上 → 停止**。従来 (CSV 同士) は `peaklists[0]` で
+    **英数字順の先頭を黙って採用**しており、どれが使われたか利用者に伝わらないため
+    「指定したはずの化合物名が付いていない」理由を追えなかった
+    （注釈サイドカーで同じ英数字順の暗黙選択を不具合として直したのと同型）。
+    Intensity CSV が複数のときと同じ扱いに揃える。CSV 優先で `.sef` を捨てる場合でも
+    `.sef` の重複は止める —— 捨てる側だからと黙認すると、CSV を外した瞬間に
+    暗黙選択へ戻るため
 - `add_molinfo_callbacks._decode_to_temp` の `suffix=".csv"` **決め打ちを修正**。
   読み口が拡張子で振り分ける以上、ここが `.sef` を `.csv` として保存すると
   JSON を CSV パーサへ渡すことになる（本件で最も避けたい経路）
@@ -71,7 +80,8 @@ ver55.0 が塞いだ「指定していないアノテーションが付く」の
 
 - 退行防止: 新規 `tests/test_sef_peaklist.py`（19 件。正規化・pass-through・
   捏造しないこと・壊れた interval の計上・列名往復）、
-  `tests/test_scils_converter.py` に `.sef` 検出と CSV 同居エラー、
+  `tests/test_scils_converter.py` に `.sef` 検出と選択規則（CSV 優先・重複で停止・
+  警告が `result.warnings` へ届くこと）、
   `tests/test_add_molinfo_callbacks.py` に一時ファイルの拡張子。
   正規化と拡張子修正を戻すと **9 件が落ちる**ことを確認済み。
 

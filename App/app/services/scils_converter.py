@@ -199,6 +199,7 @@ def auto_detect_file_roles(data_dir: Path) -> dict:
     #   拡張子だけでは判断しない（無関係な `.sef` を peak-list として掴むと
     #   変換ごと落ちる）。JSON を開いて `peaklist.intervals` があるかまで見る。
     from app.services.sef_peaklist import looks_like_sef
+    detect_warnings: list[str] = []
     sef_peaklists: list[Path] = []
     for p in sorted(data_dir.iterdir()):
         if not p.is_file() or p.suffix.lower() != ".sef":
@@ -209,16 +210,31 @@ def auto_detect_file_roles(data_dir: Path) -> dict:
             logger.warning("`.sef` として読めないため無視します: %s", p.name)
             unknowns.append(p)
 
-    # ★ ver63.0: CSV の peak-list と `.sef` が同居していたら**どちらを使うか
-    #   決められない**ので止める。黙って片方を採ると、利用者は「指定したはずの
-    #   化合物名が付いていない」理由を追えない（Intensity CSV が複数のときと同じ扱い）。
+    # ★ ver63.0: **同じ種類**の peak-list が複数あったら止める。従来 (CSV 同士) は
+    #   下の `peaklists[0]` で**英数字順の先頭を黙って採用**していた。どれが使われたか
+    #   利用者に伝わらないので、「指定したはずの化合物名が付いていない」理由を追えない
+    #   （注釈サイドカーで同じ英数字順の暗黙選択を不具合として直したのと同型）。
+    #   Intensity CSV が複数のときと同じ扱いに揃える。
+    for label, group in (("CSV", peaklists), ("`.sef`", sef_peaklists)):
+        if len(group) > 1:
+            names = "\n".join(f"  - {p.name}" for p in group)
+            raise ValueError(
+                f"peak-list の {label} が複数あります (どれを使うか判断できません)。\n"
+                f"1 つだけ残してください:\n{names}"
+            )
+
+    # ★ ver63.0: CSV と `.sef` が同居していたら **CSV を優先**する。
+    #   ただし**黙って捨てない**。置いたファイルが使われなかったことは、
+    #   変換完了画面の警告として必ず伝える（`result.warnings` へ流す）。
+    #   ここで黙ると「.sef を置いたのに中身が違う」を追跡できなくなる。
     if peaklists and sef_peaklists:
-        names = "\n".join(f"  - {p.name}" for p in peaklists + sef_peaklists)
-        raise ValueError(
-            "peak-list が CSV と `.sef` の両方にあります (どちらを使うか判断できません)。\n"
-            f"どちらか一方だけを残してください:\n{names}"
-        )
-    peaklists.extend(sef_peaklists)
+        ignored = ", ".join(p.name for p in sef_peaklists)
+        msg = (f"peak-list が CSV と `.sef` の両方にあるため、CSV "
+               f"({peaklists[0].name}) を使いました。`.sef` は無視しています: {ignored}")
+        logger.warning("%s", msg)
+        detect_warnings.append(msg)
+    else:
+        peaklists.extend(sef_peaklists)
 
     if not intensities:
         raise ValueError(
@@ -249,6 +265,9 @@ def auto_detect_file_roles(data_dir: Path) -> dict:
         "spot_likes": spot_likes,
         "peak_list": peaklists[0] if peaklists else None,
         "unknown": unknowns,
+        # ★ ver63.0: 検出の段階で「置いたのに使わなかった」判断をしたときの説明。
+        #   呼び出し側が `result.warnings` に流して利用者へ見せる。
+        "warnings": detect_warnings,
     }
 
 
@@ -1347,6 +1366,8 @@ def convert_scils_to_parquet(
     intensity_path: Path = detected["intensity"]
     spot_likes: list[Path] = detected["spot_likes"]
     peaklist_path: Optional[Path] = detected.get("peak_list")
+    # ★ ver63.0: 検出時の判断（CSV と `.sef` が同居 → CSV 優先など）を利用者へ。
+    result.warnings.extend(detected.get("warnings", []))
 
     # 1.5) マスター座標表を組み立てる。★ ver55.0: 「一番大きい座標 CSV = マスター」
     #      という決め打ちをやめ、spot 集合を見てレイアウトを判定する。切片ごとに
