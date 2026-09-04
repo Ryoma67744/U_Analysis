@@ -33,11 +33,13 @@ def create_add_molinfo_modal():
                 dcc.Upload(
                     id="add_molinfo_upload",
                     children=html.Div([
-                        "CSV をドラッグ&ドロップ、または ",
+                        # ★ ver63.0: SCiLS が実際に出すのは `.sef`。CSV しか
+                        #   受け付けないため毎回手で変換する必要があった。
+                        "CSV / .sef をドラッグ&ドロップ、または ",
                         html.A("ファイルを選択", className="text-primary"),
                     ]),
                     multiple=False,
-                    accept=".csv",
+                    accept=".csv,.sef",
                     className="border rounded p-4 text-center text-muted",
                     style={"borderStyle": "dashed", "cursor": "pointer"},
                 ),

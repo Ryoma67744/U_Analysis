@@ -134,6 +134,121 @@ class TestAutoDetectFileRoles:
         with pytest.raises(FileNotFoundError):
             sc.auto_detect_file_roles(tmp_path / "does_not_exist")
 
+    # --- `.sef` (SCiLS の feature list / JSON) ★ ver63.0 ---
+
+    def _minimal_folder(self, tmp_path):
+        """Intensity + Spot だけの最小フォルダを作る（peak-list の検出だけ見るため）。"""
+        _write_intensity_csv(
+            tmp_path, "s_Intensity.csv", [100.0], list(range(1, 7)),
+            np.arange(6).reshape(1, 6).astype(float),
+        )
+        _write_spot_csv(tmp_path, "s_Spot.csv", list(range(1, 7)),
+                        list(range(6)), list(range(6)))
+
+    def _write_sef(self, tmp_path, name="peaks.sef"):
+        import json
+        doc = {"version": "2", "peaklist": {"metaInformation": {"numberOfIntervals": "1"},
+                                            "intervals": [{"lower": 99.99, "upper": 100.01,
+                                                           "name": "A | adduct=[M+H]+",
+                                                           "color": "#fff"}]}}
+        p = tmp_path / name
+        p.write_text(json.dumps(doc), encoding="utf-8")
+        return p
+
+    def _write_peaklist_csv(self, tmp_path, name="peaks.csv"):  # noqa: D401
+        p = tmp_path / name
+        p.write_text("m/z,Name\n100.0,Choline | HMDB | [M+H]+ | 0.3ppm\n", encoding="utf-8")
+        return p
+
+    def test_sef_detected_as_peak_list(self, tmp_path):
+        """★ ver63.0: 従来は `.csv` しか走査せず、`.sef` は無いのと同じ扱いだった。"""
+        self._minimal_folder(tmp_path)
+        self._write_sef(tmp_path)
+        roles = sc.auto_detect_file_roles(tmp_path)
+        assert roles["peak_list"] is not None
+        assert roles["peak_list"].name == "peaks.sef"
+
+    def test_sef_that_is_not_json_is_ignored(self, tmp_path):
+        """拡張子だけで掴まない（無関係な `.sef` で変換ごと落とさない）。"""
+        self._minimal_folder(tmp_path)
+        (tmp_path / "other.sef").write_text("not json at all", encoding="utf-8")
+        roles = sc.auto_detect_file_roles(tmp_path)
+        assert roles["peak_list"] is None
+        assert any(p.name == "other.sef" for p in roles["unknown"])
+
+    def test_csv_wins_when_peaklist_csv_and_sef_coexist(self, tmp_path):
+        """CSV と `.sef` が同居したら CSV を優先する。ただし黙って捨てない。"""
+        self._minimal_folder(tmp_path)
+        self._write_peaklist_csv(tmp_path)
+        self._write_sef(tmp_path)
+        roles = sc.auto_detect_file_roles(tmp_path)
+        assert roles["peak_list"].name == "peaks.csv"
+        # 置いたのに使われなかったことは必ず伝える
+        warns = " ".join(roles["warnings"])
+        assert "peaks.sef" in warns and "peaks.csv" in warns
+
+    def test_coexist_warning_reaches_result(self, tmp_path, monkeypatch):
+        """検出時の警告が変換結果の warnings に載る（画面に出る経路）。"""
+        self._minimal_folder(tmp_path)
+        self._write_peaklist_csv(tmp_path)
+        self._write_sef(tmp_path)
+        roles = sc.auto_detect_file_roles(tmp_path)
+        result = sc.ConversionResult()
+        result.warnings.extend(roles.get("warnings", []))
+        assert any("`.sef` は無視" in w for w in result.warnings)
+
+    def test_raises_when_multiple_peaklist_csv(self, tmp_path):
+        """★ ver63.0: 従来は英数字順の先頭を黙って採用していた。"""
+        self._minimal_folder(tmp_path)
+        self._write_peaklist_csv(tmp_path, "a_peaks.csv")
+        self._write_peaklist_csv(tmp_path, "b_peaks.csv")
+        with pytest.raises(ValueError, match="CSV が複数あります"):
+            sc.auto_detect_file_roles(tmp_path)
+
+    def test_raises_when_multiple_sef(self, tmp_path):
+        self._minimal_folder(tmp_path)
+        self._write_sef(tmp_path, "a.sef")
+        self._write_sef(tmp_path, "b.sef")
+        with pytest.raises(ValueError, match=r"`\.sef` が複数あります"):
+            sc.auto_detect_file_roles(tmp_path)
+
+    def test_duplicate_check_runs_before_csv_preference(self, tmp_path):
+        """CSV 優先で `.sef` を捨てる場合でも、`.sef` の重複は止める。
+
+        捨てる側だからと黙認すると「2 枚あるのに気づかないまま片方を消した」
+        状態が残り、CSV を外した瞬間に暗黙選択へ戻る。
+        """
+        self._minimal_folder(tmp_path)
+        self._write_peaklist_csv(tmp_path)
+        self._write_sef(tmp_path, "a.sef")
+        self._write_sef(tmp_path, "b.sef")
+        with pytest.raises(ValueError, match=r"`\.sef` が複数あります"):
+            sc.auto_detect_file_roles(tmp_path)
+
+
+class TestReadPeaklistAny:
+    """★ ver63.0: 拡張子で CSV / `.sef` を振り分ける窓口。"""
+
+    def test_routes_sef_to_json_reader(self, tmp_path):
+        import json
+        p = tmp_path / "x.sef"
+        p.write_text(json.dumps({"version": "2", "peaklist": {"intervals": [
+            {"lower": 99.99, "upper": 100.01,
+             "name": "Z | adduct=[M+H]+ | delta=1.0ppm | best_name_audit=Choline"}]}}),
+            encoding="utf-8")
+        mz, names = sc.read_peaklist_any(p)
+        assert mz.size == 1
+        assert mz[0] == pytest.approx(100.0)
+        # 正規化済み（素通しなら化合物名は "Z" のまま）
+        assert names[0].startswith("Choline | [M+H]+ | 1.0ppm")
+
+    def test_routes_csv_to_existing_reader(self, tmp_path):
+        p = tmp_path / "x.csv"
+        p.write_text("m/z,Name\n100.0,Choline | HMDB | [M+H]+ | 0.3ppm\n", encoding="utf-8")
+        mz, names = sc.read_peaklist_any(p)
+        assert mz.size == 1 and mz[0] == pytest.approx(100.0)
+        assert names[0].startswith("Choline | HMDB")
+
 
 # ---------------------------------------------------------------------------
 # compute_spot_mapping

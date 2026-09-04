@@ -108,6 +108,13 @@ REPORTS_SKIPS = {
     ("lite_view_callbacks.py", "_build_spot_filtering_section"):
         "ver52.3 ④: QC 画像が読めないと節ごと消え、「除去していない」と区別が付かなかった。"
         "読めなかった件数を節内に出す",
+    ("sef_peaklist.py", "read_sef_peaklist"):
+        "ver63.0: `.sef` (JSON 版 peak-list) の壊れた interval を飛ばす。"
+        "上の `_read_peaklist` (CSV 版) と**同じ 3 分類** (short_row / non_numeric_mz / "
+        "non_finite_mz) を同じキー名で `return_skipped=True` から返すので、"
+        "報告は既存の `peaklist_skip_message` がそのまま担う "
+        "（変換は `result.warnings`、分子情報の後付けはプレビュー）。"
+        "捨てた行の化合物名はサイドカーに載らず成果物から復元できないのは CSV 側と同じ",
 }
 
 # ===========================================================================

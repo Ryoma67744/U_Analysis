@@ -39,7 +39,7 @@ def create_scils_converter_modal():
             dbc.ModalBody([
                 html.P(
                     "SCiLS Lab で Export した Intensity CSV + Spot CSV "
-                    "(+ 任意の Annotation CSV / Feature list CSV) が入ったフォルダを"
+                    "(+ 任意の Annotation CSV / Feature list CSV・.sef) が入ったフォルダを"
                     "指定してください。ヘッダ構造とサイズで役割を自動検出し、Parquet に変換します。",
                     className="text-muted small mb-3",
                 ),
@@ -55,8 +55,11 @@ def create_scils_converter_modal():
                         "無い場合は、それらを統合して座標表を作り、ファイル名を"
                         "そのまま領域ラベルにします。",
                         html.Br(),
-                        "・Feature list CSV（m/z と Name を持つもの）があれば化合物名を"
-                        "サイドカーに登録します。列名は m/z のままなので、"
+                        # ★ ver63.0: SCiLS が実際に出す `.sef` も読めるようにした。
+                        #   従来は CSV しか走査しておらず、`.sef` を置いても
+                        #   検出されないまま「化合物名なし」で変換されていた。
+                        "・Feature list（m/z と Name を持つ CSV、または SCiLS の .sef）"
+                        "があれば化合物名をサイドカーに登録します。列名は m/z のままなので、"
                         "解析時に表示を切り替えられます。",
                     ],
                     className="text-muted small mb-3",

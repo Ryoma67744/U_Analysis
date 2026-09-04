@@ -452,7 +452,8 @@ def _render_success(result) -> html.Div:
             "列名は m/z のままなので、解析設定の「変換元 CSV 由来の化合物名を使う」で"
             "いつでも表示を切り替えられます。"
             if result.has_peak_list else
-            "Feature list (peak-list) CSV が無かったため化合物名は登録していません。"
+            # ★ ver63.0: `.sef` も受け付けるようになったので文言に含める。
+            "Feature list (peak-list) CSV / .sef が無かったため化合物名は登録していません。"
             "あとから「分子情報を登録」で追加できます。",
             className="text-muted d-block mt-1",
         ),

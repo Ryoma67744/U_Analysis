@@ -12,6 +12,81 @@
 
 ---
 
+## 2026-09-04_ver63.0
+
+### 機能: SCiLS の `.sef` を分子アノテーションとしてそのまま読む
+
+分子情報（化合物名）の入力は peak-list CSV しか想定しておらず、SCiLS が実際に
+書き出す `.sef` は**アプリから存在しないのと同じ**だった。`auto_detect_file_roles` は
+`.csv` しか走査せず、後付け UI も `accept=".csv"`。利用者は毎回手で CSV へ直していた。
+
+`.sef` は JSON で、**CSV と同じ情報を持っている**ことを実ファイルで確認した:
+
+| peak-list CSV の列 | `.sef` |
+|---|---|
+| `m/z` | `(lower + upper) / 2` |
+| `Interval Width (+/- Da)` | `(upper - lower) / 2` |
+| `Color` | `color` |
+| `Name` | `name` |
+| `Intensity [Regions]` | 無し（元々 `intensity=UNAVAILABLE`） |
+
+**ただし `Name` の文法が違う。** CSV は位置区切り
+（`化合物名 | 分類 | DB | [M+H]+ | 0.85ppm | formula=…`）だが、`.sef` は key=value 主体
+（`… | adduct=[M+H]+ | delta=3.85ppm | best_name_audit=Pyridine | …`）。
+
+★ **素通しは「読めない」ではなく「黙って壊れる」**。`parse_scils_name` は位置文法で
+読むので、実ファイル 273 件で **adduct 0/273・ppm 0/273**、化合物名は
+`best_name_audit` 側ではなく先頭フィールドの内部符号
+`FORMULA_ADDUCT_CANDIDATE C5H5N [M+H]+` になる。例外は一切出ず「変換成功」と表示され、
+この名前が列名 → R の rowname → 画面・CSV・PPTX・PNG まで伝播する。
+ver55.0 が塞いだ「指定していないアノテーションが付く」のと同型の事故になる。
+
+そこで**入口で文法を正規化してから**既存経路へ渡す。`build_feature_annotation_table`
+以降（サイドカー生成 → エクスポート時の列名埋め込み → m/z 一覧表）は無変更。
+
+- 新規 `App/app/services/sef_peaklist.py`
+  - `read_sef_peaklist` … 戻り値の契約を `_read_peaklist` と揃えたので、
+    呼び出し側は拡張子で分岐するだけでよく `peaklist_skip_message` もそのまま使える
+  - `normalize_sef_name` … `best_name_audit` を先頭へ、`adduct=` / `delta=` を
+    素フィールドへ昇格。**既に SCiLS 文法なら無変換**（書式が変わっても壊れない）
+  - 壊れた interval は CSV 側（ver52.3）と同じく内訳を数えて報告する
+- `scils_converter.read_peaklist_any` … CSV / `.sef` を拡張子で振り分ける窓口。
+  `_read_peaklist` は ver51.8 / ver52.3 の修正と CSV 固有の再結合ロジックを持つので**触らない**
+- `auto_detect_file_roles` が `.sef` も走査。拡張子だけでは判断せず JSON を開いて
+  `peaklist.intervals` を確認する。peak-list の選択規則を明示した:
+  - **CSV と `.sef` が同居 → CSV を優先**。ただし黙って捨てず、使わなかった `.sef` を
+    変換完了画面の警告に出す（`auto_detect_file_roles` が `warnings` を返し、
+    変換が `result.warnings` へ流す）
+  - **同じ種類が 2 枚以上 → 停止**。従来 (CSV 同士) は `peaklists[0]` で
+    **英数字順の先頭を黙って採用**しており、どれが使われたか利用者に伝わらないため
+    「指定したはずの化合物名が付いていない」理由を追えなかった
+    （注釈サイドカーで同じ英数字順の暗黙選択を不具合として直したのと同型）。
+    Intensity CSV が複数のときと同じ扱いに揃える。CSV 優先で `.sef` を捨てる場合でも
+    `.sef` の重複は止める —— 捨てる側だからと黙認すると、CSV を外した瞬間に
+    暗黙選択へ戻るため
+- `add_molinfo_callbacks._decode_to_temp` の `suffix=".csv"` **決め打ちを修正**。
+  読み口が拡張子で振り分ける以上、ここが `.sef` を `.csv` として保存すると
+  JSON を CSV パーサへ渡すことになる（本件で最も避けたい経路）
+
+**分類名と DB 名は空欄のままにする。** `.sef` はこの 2 つを持たないので、それらしい値を
+作らない（ver55.0 が Spot ファイル名からの領域ラベル捏造を塞いだのと同じ方針）。
+位置文法上、間を空にすれば両方 None のまま adduct と ppm だけが正しく取れる。
+`.sef` 固有の情報（`candidates` / `v2.8` ティア / `subset` 等）は `raw` に保持するので、
+エクスポート列名には自動的に全部入る（サイドカーの列は増やさない）。
+
+実ファイル 273 件での実測: compound / adduct / ppm / formula が **273/273**、
+`_is_real_compound`（`n_annotated` の数え方）**273/273**、
+列名 → m/z 復元 **273/273**、lipid_class / database は 0/273（空欄が正）。
+
+- 退行防止: 新規 `tests/test_sef_peaklist.py`（19 件。正規化・pass-through・
+  捏造しないこと・壊れた interval の計上・列名往復）、
+  `tests/test_scils_converter.py` に `.sef` 検出と選択規則（CSV 優先・重複で停止・
+  警告が `result.warnings` へ届くこと）、
+  `tests/test_add_molinfo_callbacks.py` に一時ファイルの拡張子。
+  正規化と拡張子修正を戻すと **9 件が落ちる**ことを確認済み。
+
+---
+
 ## 2026-08-28_ver62.8
 
 ### 修正: 壊れた登録値を、解析自身の記録から復旧する

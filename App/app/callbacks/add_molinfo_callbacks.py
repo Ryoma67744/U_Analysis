@@ -1,13 +1,15 @@
 # =============================================================================
 # MSI Analysis Application - Add Molecular Info Callbacks
-# サブプロジェクトカードの「分子情報を登録」ボタン → SCiLS feature-list CSV を
-# アップロードし、本体を書き換えずにサイドカー（化合物名注釈）を後付け生成する。
+# サブプロジェクトカードの「分子情報を登録」ボタン → SCiLS feature-list
+# (CSV / `.sef`) をアップロードし、本体を書き換えずにサイドカー（化合物名注釈）を
+# 後付け生成する。
 # =============================================================================
 
 import base64
 import logging
 import os
 import tempfile
+from pathlib import Path
 
 from dash import (
     Input, Output, State, callback, ctx, no_update, html, ALL,
@@ -20,11 +22,26 @@ from app.services.molinfo_attach import attach_molecular_info
 logger = logging.getLogger("msi.add_molinfo")
 
 
+# アップロードを受け付ける拡張子。ここに無いものは `.csv` として扱う（従来動作）。
+_ALLOWED_SUFFIXES = (".csv", ".sef")
+
+
 def _decode_to_temp(contents: str, filename) -> str:
-    """`data:...;base64,<payload>` を復号し一時 CSV に書き出してパスを返す。"""
+    """`data:...;base64,<payload>` を復号し一時ファイルに書き出してパスを返す。
+
+    ★ ver63.0: 拡張子が `suffix=".csv"` で**決め打ち**だった。読み口が CSV 専用
+      だった頃は無害だったが、`.sef` を受け付ける今は致命的で、`.sef` を上げても
+      一時ファイルが `molinfo_xxx.csv` になる。読み口 (`read_peaklist_any`) は
+      拡張子で振り分けるので、**JSON を CSV パーサへ渡す**ことになり
+      「m/z 列がありません」で落ちるか、最悪は黙って別物として読まれる。
+      元のファイル名から拡張子を採る。
+    """
     _ctype, b64 = str(contents).split(",", 1)
     data = base64.b64decode(b64)
-    fd, path = tempfile.mkstemp(suffix=".csv", prefix="molinfo_")
+    suffix = Path(str(filename or "")).suffix.lower()
+    if suffix not in _ALLOWED_SUFFIXES:
+        suffix = ".csv"
+    fd, path = tempfile.mkstemp(suffix=suffix, prefix="molinfo_")
     with os.fdopen(fd, "wb") as fh:
         fh.write(data)
     return path
@@ -59,7 +76,8 @@ def open_add_molinfo(clicks, project):
     sub_id = ctx.triggered_id["index"]
     project_id = project.get("id", "") if project else ""
     nonce = ctx.triggered[0].get("value") if ctx.triggered else None
-    body = html.Div("SCiLS の「Static feature list」CSV をアップロードしてください。",
+    body = html.Div("SCiLS の「Static feature list」(CSV / .sef) を"
+                    "アップロードしてください。",
                     className="text-muted")
     # contents=None で前回アップロードをクリア。confirm は無効化して開く。
     return True, {"project_id": project_id, "sub_id": sub_id, "nonce": nonce}, body, True, None
@@ -86,7 +104,7 @@ def preview_add_molinfo(contents, filename, target):
         r = attach_molecular_info(sub, csv_path, dry_run=True)
     except Exception as e:  # noqa: BLE001
         logger.exception("molinfo プレビュー失敗")
-        return _danger(f"CSV の解析に失敗しました: {e}"), True
+        return _danger(f"peak-list の解析に失敗しました: {e}"), True
     finally:
         _safe_unlink(csv_path)
 
@@ -99,14 +117,15 @@ def preview_add_molinfo(contents, filename, target):
     if r["n_matched"] == 0:
         return dbc.Alert(
             [html.B("マッチ 0 件です。"),
-             html.Div("CSV の m/z とデータセットの特徴量 m/z が一致しません"
+             html.Div("peak-list の m/z とデータセットの特徴量 m/z が一致しません"
                       "（別データセットの feature list の可能性）。ファイルをご確認ください。",
                       className="small"),
              *skip_note],
             color="warning", className="mb-0 py-2"), True
 
     body = dbc.Alert([
-        html.Div(f"CSV: {r['n_peaklist']:,} ピーク ／ データセット特徴量 {r['n_features']:,} 件"),
+        html.Div(f"peak-list: {r['n_peaklist']:,} ピーク ／ "
+                 f"データセット特徴量 {r['n_features']:,} 件"),
         html.Div([html.B(f"{r['n_matched']:,} 件"),
                   " の特徴量に化合物名がマッチします。"
                   "「この内容で登録」で確定してください。"]),
