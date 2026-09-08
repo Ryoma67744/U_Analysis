@@ -77,6 +77,25 @@ def test_find_tims_file_path_multi_searches_every_folder(tmp_path):
     assert find_tims_file_path_multi([None, "", str(a)], "s1") == str(a / "s1.parquet")
 
 
+# ver64.0: 切片セレクタの入力が「サンプル名 + フォルダ一覧」から
+#   「選んだファイルのフルパス一覧」に変わった（同名ファイルを区別するため）。
+#   守るべき挙動＝**追加フォルダのサンプルの切片も拾えること**は変わらないので、
+#   画面と同じ経路（一覧を作る → チェックを集約する → 切片を組み立てる）を
+#   通して確認する。経路のどこかで追加フォルダが落ちれば、ここで落ちる。
+def _selected_paths(base, extra_folders):
+    from app.callbacks.file_handlers import (
+        sync_selected_samples, update_sample_selector,
+    )
+    children = update_sample_selector(str(base), None, "tims_v8", extra_folders)
+    values = []
+    for block in (children if isinstance(children, list) else [children]):
+        for sub in (getattr(block, "children", None) or []):
+            if type(sub).__name__ == "Checklist":
+                values.append(list(sub.value))
+    _names, paths = sync_selected_samples(values)
+    return paths
+
+
 def test_annotation_selector_covers_extra_folders(tmp_path):
     """★ 追加フォルダのサンプルにも切片チェックボックスが出ること。"""
     pytest.importorskip("pyarrow")
@@ -88,8 +107,10 @@ def test_annotation_selector_covers_extra_folders(tmp_path):
     _write_parquet(base / "s_base.parquet", ["ROI_A", "ROI_B"])
     _write_parquet(extra / "s_extra.parquet", ["ROI_C", "ROI_D"])
 
-    children, store = update_annotation_selector(
-        ["s_base", "s_extra"], str(base), None, "tims_v8", [str(extra)])
+    paths = _selected_paths(base, [str(extra)])
+    assert paths == [str(base / "s_base.parquet"), str(extra / "s_extra.parquet")]
+
+    children, store = update_annotation_selector(paths, None, "tims_v8")
 
     assert store == ["ROI_A", "ROI_B", "ROI_C", "ROI_D"], (
         f"追加フォルダのサンプルの切片が拾えていない: {store}")
@@ -107,15 +128,15 @@ def test_annotation_selector_without_extra_folders_is_unchanged(tmp_path):
     _write_parquet(base / "s_base.parquet", ["ROI_A", "ROI_B"])
 
     for extra in (None, [], [""]):
-        _, store = update_annotation_selector(
-            ["s_base"], str(base), None, "tims_v8", extra)
+        paths = _selected_paths(base, extra)
+        _, store = update_annotation_selector(paths, None, "tims_v8")
         assert store == ["ROI_A", "ROI_B"], extra
 
 
 def test_annotation_selector_still_hidden_for_non_tims(tmp_path):
     from app.callbacks.file_handlers import update_annotation_selector
     assert update_annotation_selector(
-        ["s"], str(tmp_path), "desi_v8", None, None) == ([], None)
+        [str(tmp_path / "s.parquet")], "desi_v8", None) == ([], None)
 
 
 # ---------------------------------------------------------------------------

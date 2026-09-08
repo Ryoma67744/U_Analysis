@@ -208,7 +208,7 @@ def init_from_env() -> None:
     initial_b = os.environ.get("INITIAL_PASSWORD_B", "").strip()
 
     if not initial_b:
-        # ★ ver63.4: FLASK_SECRET_KEY と同じく「どう直すか」を書く。
+        # ★ ver64.1: FLASK_SECRET_KEY と同じく「どう直すか」を書く。
         #   秘密値の壁は 3 枚 (FLASK_SECRET_KEY → INITIAL_PASSWORD_B →
         #   MASTER_PASSWORD) あり、1 枚ずつ手で越えさせると必ず途中で詰まる。
         raise RuntimeError(

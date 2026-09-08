@@ -26,6 +26,10 @@ _last_settings_lock = FileLock(str(_LAST_SETTINGS_FILE) + ".lock", timeout=30)
 _AUTO_SAVE_KEYS = [
     "analysis_method", "analysis_method_tims",
     "data_folder", "annotation_path", "output_dir",
+    # ★ ver64.0: 追加データフォルダ (TIMS)。data_folder と対で保存しないと、
+    #   ブラウザを再読込しただけで追加フォルダが消え、基準フォルダ 1 つ分
+    #   だけで解析したことに利用者が気づけない。
+    "extra_data_folders",
     "p_thresh", "logfc_thresh",
     "resume_rds", "rds_folder",
     "reanalysis_data_folder", "rds_path",

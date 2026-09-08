@@ -104,7 +104,7 @@ def _reset_active_project_key():
 # Flask セッション設定 (Tier A/B 認証用)
 # SECRET_KEY は環境変数必須 (未設定なら起動失敗 = フェイルファースト)
 #
-# ★ ver63.4: 「どうすれば直るか」を書く。エラー文が
+# ★ ver64.1: 「どうすれば直るか」を書く。エラー文が
 #   `Generate with: openssl rand -hex 32` だけだったため、Windows の
 #   デスクトップ起動 (run_app.bat) でここに当たった利用者は、openssl も無く
 #   `.env` をどこに置けばよいかも分からず先に進めなかった。

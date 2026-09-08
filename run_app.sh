@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR/App"
 
-# ★ ver63.4: 初回起動時に App/.env を用意する（FLASK_SECRET_KEY 等の自動生成）。
+# ★ ver64.1: 初回起動時に App/.env を用意する（FLASK_SECRET_KEY 等の自動生成）。
 #   .env は .gitignore 済みで clone/ZIP 展開直後には存在せず、その状態で起動すると
 #   FLASK_SECRET_KEY 未設定の RuntimeError で即死していた。
 #   既に .env があれば何もしない（設定済みの値は書き換えない）。

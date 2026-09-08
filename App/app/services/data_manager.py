@@ -164,6 +164,40 @@ def build_tims_input_paths_multi(data_folders: list[str]) -> list[str]:
     return sorted(all_paths)
 
 
+def list_tims_folder_groups(data_folders) -> list[dict]:
+    """フォルダごとに `{"folder": パス, "paths": [フルパス, ...]}` を並べて返す。
+
+    ★ ver64.0: 画面のサンプル一覧と解析対象 (INPUT_PATHS) の出典を 1 つにする。
+    従来は一覧を `list_tims_files_multi`（**stem で重複排除**）、解析対象を
+    `build_tims_input_paths_multi` + stem 一致で作っており、別フォルダに同名
+    ファイルがあると **画面には 1 個しか出ないのに解析には 2 本入る**という
+    食い違いが起きていた。しかも片方だけ外すことができず、切片(annotation)の
+    候補も先に並ぶフォルダ側しか解決されないため、もう一方は
+    `ANNOTATION_FILTER に一致する spot がありません` で解析ごと落ちる。
+    フォルダを分けたまま返せば、同名ファイルもフォルダごとに別項目として
+    選べる（＝画面で見えているものがそのまま解析対象になる）。
+
+    - 空文字・None の行は読み飛ばす（入力途中の行）
+    - 同じフォルダを 2 回指定しても 1 回だけ返す
+    - 各フォルダ内の絞り込み規則は `list_tims_files` と同じ（Parquet 優先 /
+      注釈サイドカー除外）
+    """
+    groups: list[dict] = []
+    seen: set[str] = set()
+    for folder in data_folders or []:
+        if not folder or not str(folder).strip():
+            continue
+        key = str(Path(folder))
+        if key in seen:
+            continue
+        seen.add(key)
+        groups.append({
+            "folder": key,
+            "paths": [str(f) for f in _filter_tims_candidates(Path(folder))],
+        })
+    return groups
+
+
 def read_raw_mz_spectrum(data_folder: str, is_tims: bool = True,
                          sample_name: str = None) -> Optional[pd.DataFrame]:
     """生データファイルから m/z フィーチャーの平均スペクトルを読み取る。

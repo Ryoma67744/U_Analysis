@@ -17,7 +17,7 @@ fi
 echo "[1/5] $(python3 --version) が見つかりました。"
 
 # [2/5] 環境設定 (.env)
-# ★ ver63.4: .env は .gitignore 済みで clone/ZIP 展開直後には存在しない。
+# ★ ver64.1: .env は .gitignore 済みで clone/ZIP 展開直後には存在しない。
 #   FLASK_SECRET_KEY / MASTER_PASSWORD / INITIAL_PASSWORD_B が無いとアプリは
 #   起動できず、越えてもログインできなかった。ここで自動生成する。
 #   pip より前に置くのは、この処理が標準ライブラリだけで動くため

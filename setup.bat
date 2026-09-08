@@ -33,7 +33,7 @@ echo.
 
 REM ============================================================
 REM  Step 2: 環境設定 (.env) の作成
-REM  ★ ver63.4: .env は .gitignore 済みで ZIP 展開直後には存在しない。
+REM  ★ ver64.1: .env は .gitignore 済みで ZIP 展開直後には存在しない。
 REM    FLASK_SECRET_KEY / MASTER_PASSWORD / INITIAL_PASSWORD_B が無いと
 REM    アプリは起動できず、越えてもログインできなかった。ここで自動生成する。
 REM    pip より前に置くのは、この処理が標準ライブラリだけで動くため

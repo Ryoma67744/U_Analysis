@@ -637,6 +637,8 @@ _ANALYSIS_SETTINGS_KEYS = [
     "reanalysis_logfc_thresh",
     "reanalysis_ion_mode",
     "reanalysis_tolerance_mz",
+    # ver64.0: 追加データフォルダ (TIMS)。data_folder と対で復元する
+    "extra_data_folders",
 ]
 
 
@@ -663,6 +665,11 @@ _ANALYSIS_SETTINGS_KEYS = [
      Output("reanalysis_logfc_thresh", "value", allow_duplicate=True),
      Output("reanalysis_ion_mode", "value", allow_duplicate=True),
      Output("reanalysis_tolerance_mz", "value", allow_duplicate=True),
+     # ★ ver64.0: 追加データフォルダ (TIMS) も data_folder と対で復元する。
+     #   復元しないと、前に開いていたサブプロジェクトの追加フォルダが残った
+     #   まま実行され、記録上は今のサブプロジェクトなのに別のデータが混ざる
+     #   （下の data_folder についての注意書きとまったく同じ事故になる）。
+     Output("extra_data_folders_store", "data", allow_duplicate=True),
      # ★ ver58.1 (デバッグ総点検 B-1〜B-3): 「いま復元している」と宣言する。
      #   ここは analysis_method と ion_mode を同一レスポンスで書くため、
      #   従来は auto_switch_data_folder / auto_switch_adduct /
@@ -677,7 +684,7 @@ _ANALYSIS_SETTINGS_KEYS = [
 )
 def sub_action_new_analysis(clicks, project):
     """サブプロジェクト「解析」→ 解析設定画面に遷移 + 前回設定を復元"""
-    _n_outputs = 23   # ver58.1: settings_restore_pending を追加
+    _n_outputs = 24   # ver64.0: extra_data_folders_store を追加
     if not ctx.triggered_id or not any(c for c in clicks if c):
         return (no_update,) * _n_outputs
 
@@ -741,6 +748,9 @@ def sub_action_new_analysis(clicks, project):
         _restored("reanalysis_logfc_thresh", param_default("reanalysis_logfc_thresh")),
         _restored("reanalysis_ion_mode", "Positive"),
         _restored("reanalysis_tolerance_mz", param_default("reanalysis_tolerance_mz")),
+        # 保存が無いサブプロジェクト（ver64.0 より前に作られたもの）は空に戻す。
+        # `no_update` にすると前のサブプロジェクトの追加フォルダが残ってしまう。
+        [f for f in (settings.get("extra_data_folders") or []) if f],
         True,                                                   # settings_restore_pending
     )
 

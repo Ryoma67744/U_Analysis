@@ -5,7 +5,7 @@
 """デスクトップ起動 (setup.bat / run_app.bat / setup.sh / run_app.sh) 用の
 `.env` 自動生成。
 
-★ ver63.4: `.env` が無い状態で `run_app.bat` を叩くと、アプリは
+★ ver64.1: `.env` が無い状態で `run_app.bat` を叩くと、アプリは
 `FLASK_SECRET_KEY env var is required` で **起動すらできなかった**。
 
 前の実装が駄目だった理由:
@@ -91,7 +91,7 @@ def needs_generation(value: Optional[str]) -> bool:
 
 
 # 秘密値が未設定/雛形のまま起動しようとしたときに出す案内。
-# ★ ver63.4: 従来の `Generate with: openssl rand -hex 32` だけでは、
+# ★ ver64.1: 従来の `Generate with: openssl rand -hex 32` だけでは、
 #   Windows のデスクトップ起動でここに当たった利用者が動けなかった
 #   (openssl が無い / `.env` をどこに置くのか分からない)。
 HOWTO = (
@@ -109,7 +109,7 @@ _RECOMMENDED_SECRET_LEN = 32
 def validate_secret_key(raw: Optional[str]) -> str:
     """FLASK_SECRET_KEY を検証して返す。未設定/プレースホルダなら RuntimeError。
 
-    ★ ver63.4: プレースホルダを弾くようにした。従来は「空でなければ通す」
+    ★ ver64.1: プレースホルダを弾くようにした。従来は「空でなければ通す」
     判定で、`.env.example` の `CHANGE_ME_TO_RANDOM_HEX_64` を
     コピーしただけの状態が **起動はするがセッション署名鍵は公開値** という
     最も危険な形で通っていた。この鍵で署名した Cookie は、リポジトリを見た
@@ -194,7 +194,7 @@ def set_key(text: str, key: str, value: str) -> str:
 def _adjust_example_for_platform(text: str, is_windows: bool) -> str:
     """`.env.example` は Windows 既定の R_HOME を持つ。Windows 以外では無効化する。
 
-    ★ ver63.4: `R_HOME=C:\\Program Files\\R\\R-4.4.2` を macOS/Linux にそのまま
+    ★ ver64.1: `R_HOME=C:\\Program Files\\R\\R-4.4.2` を macOS/Linux にそのまま
     複製すると 2 つ壊れる:
       1. `config.py` が存在しないパスを見る (PATH の Rscript へ落ちるので実害は
          小さいが、`.env` の記述と実際の R がズレて切り分けを誤らせる)

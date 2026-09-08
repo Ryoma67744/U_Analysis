@@ -149,6 +149,11 @@ def _create_analysis_settings_subtab():
                             ),
                             html.Div(id="sample_selector"),
                             dcc.Store(id="selected_samples_store", data=[]),
+                            # ★ ver64.0: チェックしたファイルの「フルパス」。
+                            #   サンプル名 (stem) だけでは別フォルダの同名ファイルを
+                            #   区別できず、片方を外せない / 両方が黙って解析に入る、
+                            #   という食い違いが起きていた。解析対象はこちらを正とする。
+                            dcc.Store(id="selected_sample_paths_store", data=[]),
                             dbc.FormText("チェックを入れたサンプルが解析対象になります"),
                             # --- DESI: バッチ補正の有無 (ver58.0 / A-1) ---
                             #   DESI の補正は group.by.vars="sample" 固定で、TIMS の
@@ -223,7 +228,13 @@ def _create_analysis_settings_subtab():
                                         size="sm", color="info", outline=True,
                                         style={"marginTop": "5px"},
                                     ),
-                                    dcc.Store(id="extra_data_folders_store", data=[]),
+                                    # ★ ver64.0: 上の「データフォルダ」と同じく前回値を復元する。
+                                    #   従来この Store だけ既定 (memory) の空リストで、
+                                    #   ブラウザを再読込しただけで追加フォルダが消えていた。
+                                    #   消えたことは画面のどこにも出ないので、利用者は
+                                    #   1 フォルダ分だけで解析したことに気づけない。
+                                    dcc.Store(id="extra_data_folders_store",
+                                              data=ls.get("extra_data_folders", [])),
                                     dcc.Store(id="extra_folder_pending_store", data=""),
                                 ],
                             ),
