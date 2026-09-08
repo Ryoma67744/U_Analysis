@@ -103,12 +103,18 @@ def _reset_active_project_key():
 
 # Flask セッション設定 (Tier A/B 認証用)
 # SECRET_KEY は環境変数必須 (未設定なら起動失敗 = フェイルファースト)
-_secret_key = os.environ.get("FLASK_SECRET_KEY", "").strip()
-if not _secret_key:
-    raise RuntimeError(
-        "FLASK_SECRET_KEY env var is required (32+ random bytes). "
-        "Generate with: openssl rand -hex 32"
-    )
+#
+# ★ ver63.4: 「どうすれば直るか」を書く。エラー文が
+#   `Generate with: openssl rand -hex 32` だけだったため、Windows の
+#   デスクトップ起動 (run_app.bat) でここに当たった利用者は、openssl も無く
+#   `.env` をどこに置けばよいかも分からず先に進めなかった。
+#   ランチャ側 (setup.bat / run_app.bat / *.sh) が env_bootstrap を呼ぶように
+#   なったので、通常はここへ来ないが、来たときの案内は具体的にしておく。
+#   判定と文面は env_bootstrap 側に置く。ランチャ (bat/sh) が呼ぶ生成処理と
+#   「何が必須か」を 1 か所にまとめ、片方だけ直して食い違うのを防ぐため。
+from app.services.env_bootstrap import validate_secret_key  # noqa: E402
+
+_secret_key = validate_secret_key(os.environ.get("FLASK_SECRET_KEY", ""))
 server.config["SECRET_KEY"] = _secret_key
 server.config["PERMANENT_SESSION_LIFETIME"] = timedelta(
     seconds=int(os.environ.get("SESSION_COOKIE_MAX_AGE_SEC", 86400))

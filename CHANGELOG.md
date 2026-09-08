@@ -12,6 +12,93 @@
 
 ---
 
+## 2026-09-08_ver63.4
+
+### 修正: 配布物のデスクトップ起動が `FLASK_SECRET_KEY` 未設定で必ず失敗する
+
+Windows で ZIP を展開し `run_app.bat` をダブルクリックした利用者から、
+起動できないという報告:
+
+```
+RuntimeError: FLASK_SECRET_KEY env var is required (32+ random bytes).
+Generate with: openssl rand -hex 32
+```
+
+**特定の環境の問題ではなく、配布物のデスクトップ起動は誰がやっても必ずここで
+止まる**状態だった。`.env` は `.gitignore` 済みで ZIP にも clone にも含まれず、
+`setup.bat` / `run_app.bat` / `setup.sh` / `run_app.sh` のどれも `.env` を作らず、
+`SETUP_GUIDE.html` にも「作れ」と書いていなかった。Docker 運用はリポジトリ直下の
+`.env` から `docker-compose.yml` 経由で環境変数を渡すため、**サーバ側では
+一度も表面化しなかった**。
+
+しかも壁は 1 枚ではなく、手で 1 つずつ埋めても順に次で止まる:
+
+| 順 | 未設定だと | どこで止まるか |
+|---|---|---|
+| 1 | `FLASK_SECRET_KEY` | `main.py` が RuntimeError（今回の報告） |
+| 2 | `INITIAL_PASSWORD_B` | `auth_service.init_from_env()` が RuntimeError |
+| 3 | `MASTER_PASSWORD` | 例外は出ないが `verify_master` が常に False で**ログイン画面を突破できない** |
+
+**(1) ランチャが `.env` を用意する**
+
+`app/services/env_bootstrap.py` を追加し、4 本のランチャすべてが起動前に
+`python -m app.services.env_bootstrap` を呼ぶようにした。`.env.example` を土台に
+`.env` を作り、上記 3 つ（+ 後方互換の `INITIAL_PASSWORD_A`）が空または
+プレースホルダのときだけ生成する。**冪等**で、既にある値は読みも書きもしない
+（再実行で鍵が変わると、既存セッションと `auth.json` が食い違う）。
+
+`MASTER_PASSWORD` はログイン時に人が手で打つため、読み違えやすい文字
+(`l/I/1`, `o/O/0`) を除いた `xxxx-xxxx-xxxx` 形式で生成し、コンソールに表示する。
+見逃しても `App/.env` の当該行で確認できる。
+
+標準ライブラリだけで書いてあるのは、`setup.bat` の `pip install` **より前**、
+python-dotenv すら入っていない段階で動く必要があるため。
+
+**(2) アプリ側のフェイルファーストは変えない**
+
+「未設定なら起動失敗」はサーバ運用の安全装置なので緩めない。面倒を見るのは
+ランチャから明示的に呼ばれたときだけで、`main.py` は従来どおり落ちる。
+ただしエラー文に**直し方**を書いた。従来の
+`Generate with: openssl rand -hex 32` だけでは、openssl が無く `.env` の置き場所も
+分からない Windows 利用者は動けなかった。`init_from_env()` の RuntimeError も同様。
+
+**(3) プレースホルダのままの起動を拒否する**（セキュリティ）
+
+従来の判定は「空でなければ通す」だったため、`.env.example` を手でコピーしただけの
+`FLASK_SECRET_KEY=CHANGE_ME_TO_RANDOM_HEX_64` は**素通りしていた**。これは公開
+リポジトリに載っている固定文字列で、この鍵で署名したセッション Cookie は誰でも
+偽造できる。「起動はするが認証は実質無効」という、落ちるより悪い状態だったので
+起動を止めるようにした。32 文字未満の鍵は既存デプロイを止めないため警告どまり。
+
+**(4) 非 Windows では雛形の `R_HOME` をコメント化する**
+
+`.env.example` の `R_HOME=C:\Program Files\R\R-4.4.2` を macOS/Linux にそのまま
+複製すると、`run_app.sh` が `.env` を `set -a; . ./.env` で**シェルとして読む**ため
+`Files\R\R-4.4.2: command not found` となり `set -e` でランチャごと落ちる。
+見本として行は残しつつコメント化する（R は `config.py` が OS 別に自動判定する）。
+
+**(5) ついでに: クリーンな checkout でテストが 1 件落ちていた**
+
+`test_active_project_scope.py` の `test_flask_before_request_hook_exists` は
+`FLASK_SECRET_KEY` しか設定せずに `app.main` を import しており、
+`auth.json` が未生成だと (2) の壁で落ちる。「先に走った別のテストが
+`auth.json` を作っていれば通る」実行順依存で、単独実行と新規 checkout では
+失敗していた。同種の他テストに合わせて `INITIAL_PASSWORD_B` も設定するようにした。
+
+**確認**
+
+`.env` が無い状態から `python -m app.services.env_bootstrap` → `import app.main` →
+生成された `MASTER_PASSWORD` で `/login` POST → `/` が 200、まで通しで確認済み。
+回帰テストは `App/tests/test_env_bootstrap.py`（36 件）。ランチャ 4 本が生成処理を
+呼んでいることも検査対象に含めた。モジュール単体が正しくてもランチャの呼び出しが
+抜ければ、利用者から見た症状（ダブルクリックで起動しない）はそのまま再発するため。
+`run_app.sh` からの実起動 (waitress) と `/healthz` 200 応答も確認。
+全体は 2650 passed / 47 skipped / 0 failed（`.env` も `auth.json` も無い状態から）。
+
+version 63.3->63.4。**解析の挙動は不変**（起動時の環境設定のみ）。
+
+---
+
 ## 2026-09-08_ver63.3
 
 ### 修正: 進捗表示がファイル名で誤爆する / RPCA のスキップが無言 / 段階ごとの所要時間が残らない

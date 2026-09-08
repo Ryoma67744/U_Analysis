@@ -81,6 +81,14 @@ class TestBeforeRequestIsRegistered:
         import secrets
         # app.main は import 時に SECRET_KEY を要求する（フェイルファースト設計）
         monkeypatch.setenv("FLASK_SECRET_KEY", secrets.token_hex(32))
+        # ★ ver63.4: 認証用の初期パスワードも要る。app.main は import 時に
+        #   auth_service.init_from_env() を呼び、auth.json が未生成なら
+        #   INITIAL_PASSWORD_B 必須で RuntimeError になる。
+        #   従来は「先に走った別のテストが auth.json を作っていれば通る」状態で、
+        #   このファイル単独 / クリーンな checkout では落ちていた
+        #   (test_callback_targets_exist_in_layout.py は既に両方を設定している)。
+        monkeypatch.setenv("MASTER_PASSWORD", "test-master")
+        monkeypatch.setenv("INITIAL_PASSWORD_B", "test-b")
         from app.main import server
         names = [f.__name__ for f in server.before_request_funcs.get(None, [])]
         assert "_reset_active_project_key" in names, names

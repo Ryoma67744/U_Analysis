@@ -176,10 +176,19 @@
   <p>自動で以下が実行されます:</p>
   <ol>
     <li>Python の存在チェック</li>
+    <li><strong>環境設定 <code>App\.env</code> の作成（ログインパスワードの自動生成）</strong></li>
     <li>Python パッケージのインストール（Dash, Plotly, pandas 等）</li>
     <li>R の存在チェック（見つからない場合はスキップ）</li>
     <li>R パッケージのインストール（Seurat, harmony 等 — 初回は10〜20分かかります）</li>
   </ol>
+  <div class="warn">
+    <strong>ログインパスワードをメモしてください。</strong>
+    2 番目のステップで、アプリのログインに使う <code>MASTER_PASSWORD</code> が
+    自動生成され、画面に <code>&gt;&gt;&gt;  xxxx-xxxx-xxxx  &lt;&lt;&lt;</code> の形式で表示されます。
+    見逃した場合も、あとから <code>App\.env</code> をメモ帳で開いて
+    <code>MASTER_PASSWORD=</code> の行を見れば確認できます。
+    ログイン後、アプリ内のパスワード変更画面から好きな値に変更できます。
+  </div>
   <div class="note">
     Python パッケージのインストールにはインターネット接続が必要です。
     初回は 2〜5 分程度かかります。
@@ -194,6 +203,13 @@
   <pre>Dash is running on http://127.0.0.1:3838/</pre>
   <p>ブラウザが自動で開きます。開かない場合は、ブラウザで
     <a href="http://127.0.0.1:3838/" target="_blank">http://127.0.0.1:3838/</a> にアクセスしてください。</p>
+  <p>ログイン画面が出たら、<code>App\.env</code> の <code>MASTER_PASSWORD</code>
+    （Step 4 で自動生成された値）を入力します。</p>
+  <div class="note">
+    <code>setup.bat</code> を実行せずに <code>run_app.bat</code> を直接起動した場合も、
+    <code>App\.env</code> が無ければその場で自動生成されます
+    （生成した値は上書きされないので、2 回目以降は何も起きません）。
+  </div>
   <div class="success">
     <strong>起動成功!</strong> ブラウザにアプリの画面が表示されれば、セットアップは完了です。
   </div>
@@ -251,6 +267,22 @@ TIMS_DATA_DIR=C:\Users\your-name\MSI_Data\TIMS</pre>
 <ul>
   <li>インターネット接続を確認してください</li>
   <li>プロキシ環境の場合は、IT 部門に pip の設定方法を確認してください</li>
+</ul>
+
+<h3>「FLASK_SECRET_KEY env var is required」と表示されて起動しない</h3>
+<ul>
+  <li>環境設定ファイル <code>App\.env</code> がまだ作られていない状態です。</li>
+  <li><code>setup.bat</code>（または <code>run_app.bat</code>）を実行すると自動生成されます。</li>
+  <li>手動で作る場合は、コマンドプロンプトで <code>App</code> フォルダに移動して
+    <pre>python -m app.services.env_bootstrap</pre>
+    を実行してください。<code>App\.env</code> が作られ、ログインパスワードが表示されます。</li>
+</ul>
+
+<h3>ログインパスワードが分からない</h3>
+<ul>
+  <li><code>App\.env</code> をメモ帳で開き、<code>MASTER_PASSWORD=</code> の行を確認してください。</li>
+  <li>共有 URL の閲覧用パスワードは同ファイルの <code>INITIAL_PASSWORD_B=</code> の行です。</li>
+  <li><code>.env</code> は秘密情報を含みます。メールや共有フォルダで配らないでください。</li>
 </ul>
 
 <h3>ブラウザに画面が表示されない</h3>
@@ -312,10 +344,17 @@ TIMS_DATA_DIR=C:\Users\your-name\MSI_Data\TIMS</pre>
   <p>自動で以下が実行されます:</p>
   <ol>
     <li>Python 存在チェック</li>
+    <li><strong>環境設定 <code>App/.env</code> の作成（ログインパスワードの自動生成）</strong></li>
     <li>Python パッケージのインストール</li>
     <li>Rscript 存在チェック (見つからない場合はスキップ)</li>
     <li>R パッケージのインストール (初回は 10〜20 分)</li>
   </ol>
+  <div class="warn">
+    <strong>ログインパスワードをメモしてください。</strong>
+    2 番目のステップでアプリのログインに使う <code>MASTER_PASSWORD</code> が自動生成され、
+    <code>&gt;&gt;&gt;  xxxx-xxxx-xxxx  &lt;&lt;&lt;</code> の形式で表示されます。
+    見逃した場合は <code>cat App/.env | grep MASTER_PASSWORD</code> で確認できます。
+  </div>
   <div class="warn">
     <strong>実行ビットが外れている場合:</strong>
     配布 ZIP には実行ビット (0o755) を付与していますが、Finder の解凍ユーティリティや
@@ -332,6 +371,8 @@ bash run_app.sh</pre>
 <div class="step-box">
   <pre>./run_app.sh</pre>
   <p>起動後、ブラウザで <a href="http://127.0.0.1:3838/" target="_blank">http://127.0.0.1:3838/</a> にアクセスします。</p>
+  <p>ログイン画面では <code>App/.env</code> の <code>MASTER_PASSWORD</code> を入力します
+    (<code>setup.sh</code> を実行していない場合も <code>run_app.sh</code> が初回に自動生成します)。</p>
   <div class="tip">
     <strong>Gatekeeper の警告が出た場合:</strong>
     macOS Sequoia (15.x) 以降では、未署名の <code>.sh</code> をダブルクリック起動するとブロックされます
