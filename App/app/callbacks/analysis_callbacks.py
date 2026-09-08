@@ -1236,7 +1236,14 @@ _STEP_DEFINITIONS = {
     "tims_v8": [
         ("Loading", "reading parquet"),
         ("Preprocessing", "preprocessing"),
-        ("Harmony correction", "harmony"),
+        # ★ ver63.3: キーワードを "harmony" から "harmony correction" へ。
+        #   "harmony" はログ中の **ファイル名** "Step2_HarmonyPCA_Result.rds" に
+        #   部分一致してしまい、Harmony を実行していない resume 実行でも
+        #   「Harmony correction (3/13) 23%」が長時間表示されていた（実測: RDS を
+        #   読んだ直後から "Finding Markers" が出るまでの全区間）。R 側は
+        #   ver63.3 で Harmony を実際に走らせるときだけ
+        #   "[stage] Harmony correction" を出すようにしたので、そちらに合わせる。
+        ("Harmony correction", "harmony correction"),
         ("Clustering", "findclusters"),
         ("Markers", "finding markers"),
         ("Annotation", "annotating"),
