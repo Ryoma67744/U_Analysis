@@ -179,6 +179,8 @@ _RUN_ARGS = {
     "reanalysis_cal_use_previous": False, "reanalysis_cal_data": None,
     "annotation_filter_data": None, "annotation_filter_reanalysis_data": None,
     "extra_data_folders": [], "mz_align_ppm": 0, "selected_samples": [],
+    # ver64.0: 選んだファイルのフルパス（TIMS の INPUT_PATHS はこれが正）
+    "selected_sample_paths": [],
     "cal_per_sample_store": {}, "cal_sample_selector_prev": "__all__",
     "desi_use_roi_as_sample": False,
     # ver58.0 (A-1): DESI のバッチ補正の有無

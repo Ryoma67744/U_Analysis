@@ -418,6 +418,10 @@ def _effective_data_folder(analysis_type, data_folder, reanalysis_data_folder) -
      State("extra_data_folders_store", "data"),
      State("mz_align_ppm", "value"),
      State("selected_samples_store", "data"),
+     # ★ ver64.0: 選んだファイルのフルパス。サンプル名 (stem) だけでは
+     #   別フォルダの同名ファイルを区別できず、片方を外しても両方消える /
+     #   両方が黙って INPUT_PATHS に入る、という食い違いが起きていた。
+     State("selected_sample_paths_store", "data"),
      State("cal_per_sample_store", "data"),
      State("cal_sample_selector_prev", "data"),
      State("desi_use_roi_as_sample", "value"),
@@ -466,6 +470,7 @@ def run_analysis(
     extra_data_folders,
     mz_align_ppm,
     selected_samples,
+    selected_sample_paths,
     cal_per_sample_store,
     cal_sample_selector_prev,
     desi_use_roi_as_sample,
@@ -516,7 +521,8 @@ def run_analysis(
             annotation_filter=annotation_filter_data,
             annotation_filter_reanalysis=annotation_filter_reanalysis_data,
             roi_filter=desi_roi_filter_list,
-            use_roi_as_sample=bool(desi_use_roi_as_sample))
+            use_roi_as_sample=bool(desi_use_roi_as_sample),
+            extra_data_folders=extra_data_folders)
         if _blocking:
             return (
                 app_state, True,
@@ -584,6 +590,11 @@ def run_analysis(
             "norm_mode_reanalysis": norm_mode_reanalysis,
             "tims_scenario": tims_scenario,
             "reanalysis_tims_scenario": reanalysis_tims_scenario,
+            # ★ ver64.0: 追加データフォルダも保存する。上の data_folder は
+            #   保存・復元されるのにこれだけ揮発 (memory Store) で、ブラウザを
+            #   再読込しただけで消えていた。消えたことは画面のどこにも出ず、
+            #   利用者は基準フォルダ 1 つだけで解析したことに気づけない。
+            "extra_data_folders": [f for f in (extra_data_folders or []) if f],
         })
     except Exception as e:
         warn_user(f"解析設定の保存に失敗: {e}")
@@ -613,6 +624,12 @@ def run_analysis(
                     "reanalysis_logfc_thresh": reanalysis_logfc_thresh,
                     "reanalysis_ion_mode": reanalysis_ion_mode,
                     "reanalysis_tolerance_mz": reanalysis_tolerance_mz,
+                    # ★ ver64.0: data_folder と対で保存する。片方だけ保存すると
+                    #   サブプロジェクトを開き直したときに基準フォルダだけが
+                    #   復元され、追加フォルダは前の作業のものが残る / 消える、
+                    #   のどちらかになる（どちらも別のデータを解析しうる）。
+                    "extra_data_folders": [
+                        f for f in (extra_data_folders or []) if f],
                 })
     except Exception as e:
         warn_user(f"サブプロジェクト設定の保存に失敗: {e}")
@@ -756,15 +773,31 @@ def run_analysis(
                 params["allow_condition_correction"] = _allow
                 # ★ ver58.0 (A-1): 「補正なし」を実処理へ届ける
                 params["batch_correction_enable"] = _correct
-                # INPUT_PATHS: 選択サンプルに対応するファイルのフルパスリスト
-                from app.services.data_manager import build_tims_input_paths_multi
-                all_folders = [data_folder] + (extra_data_folders or [])
-                all_paths = build_tims_input_paths_multi(all_folders)
-                if selected_samples:
-                    selected_set = set(selected_samples)
-                    all_paths = [p for p in all_paths
-                                 if Path(p).stem in selected_set]
+                # INPUT_PATHS: 画面でチェックしたファイルのフルパスリスト
+                # ★ ver64.0: チェックしたファイルのパスをそのまま使う。従来は
+                #   フォルダ全件を並べてから `Path(p).stem in 選択サンプル名` で
+                #   絞っていたため、別フォルダに同名ファイルがあると
+                #   **チェックは 1 個なのに 2 本が解析に入り**、片方だけ外す
+                #   こともできなかった（R 側では両方が同じサンプル名になる）。
+                #   パスは実在するものだけに絞る。存在しないパスを渡すと R が
+                #   `INPUT_PATHS[file.exists(INPUT_PATHS)]` で無言のまま捨てる。
+                all_paths = [p for p in (selected_sample_paths or [])
+                             if Path(p).is_file()]
+                if not all_paths:
+                    # 画面がまだ描かれていない等でチェック状態を取れないときの
+                    # 従来どおりのフォールバック（フォルダ全件）。
+                    from app.services.data_manager import build_tims_input_paths_multi
+                    all_folders = [data_folder] + (extra_data_folders or [])
+                    all_paths = build_tims_input_paths_multi(all_folders)
+                    if selected_samples:
+                        selected_set = set(selected_samples)
+                        all_paths = [p for p in all_paths
+                                     if Path(p).stem in selected_set]
                 params["input_paths"] = all_paths
+                # サンプル名も実際に読むファイルから引き直す。R 側のサンプル名は
+                # basename 由来なので、ここがずれると受領証と実処理が食い違う。
+                params["sample_names"] = list(dict.fromkeys(
+                    Path(p).stem for p in all_paths)) or sample_names
                 # OUTPUT_DIR: TIMSスクリプトはOUTPUT_DIR（大文字）を使用
                 params["output_dir_var"] = "OUTPUT_DIR"
                 # ANNOTATION_CSV_PATH
@@ -1132,6 +1165,13 @@ def run_analysis(
                 "mz_align_ppm": params.get("mz_align_ppm"),
                 # どのサンプル/ROI/セクションを解析に入れたか
                 "sample_names": params.get("sample_names"),
+                # ★ ver64.0: 実際に読んだファイルのフルパスと、追加データ
+                #   フォルダ。従来はどちらも記録されず、複数フォルダから
+                #   集めた解析について「どのフォルダのどのファイルが入ったか」を
+                #   後から確かめる手段が log/v8_runtime_*.R しか無かった。
+                "input_paths": params.get("input_paths"),
+                "extra_data_folders": [
+                    f for f in (extra_data_folders or []) if f],
                 "roi_filter": params.get("roi_filter"),
                 "annotation_filter": params.get("annotation_filter"),
                 "use_roi_as_sample": params.get("use_roi_as_sample"),
@@ -2645,7 +2685,8 @@ def _collect_preflight_errors(desi_method, tims_method,
                               resume_rds, rds_folder, rds_folder_reanalysis,
                               annotation_filter=None,
                               annotation_filter_reanalysis=None,
-                              roi_filter=None, use_roi_as_sample=False):
+                              roi_filter=None, use_roi_as_sample=False,
+                              extra_data_folders=None):
     """入力を検査して (blocking, advisory) の 2 つのリストを返す。
 
     ★ ver58.1 (デバッグ総点検 B-4): 切片 / ROI の Store を受け取る。
@@ -2670,6 +2711,18 @@ def _collect_preflight_errors(desi_method, tims_method,
         r = validate_data_folder(data_folder, is_tims=is_tims)
         if not r["ok"]:
             blocking.append(f"データフォルダ: {r['msg']}")
+        # ★ ver64.0: 追加データフォルダ (TIMS) も基準フォルダと同じ基準で見る。
+        #   従来は検査対象外で、存在しないパスや空のフォルダを足しても
+        #   何も言われないまま「そのフォルダの分だけ黙って抜けた」結果になった。
+        #   空欄の行は「これから入力する行」なので止めない。
+        if analysis_type == "tims_v8":
+            for folder in (extra_data_folders or []):
+                if not folder or not str(folder).strip():
+                    continue
+                r = validate_data_folder(folder, is_tims=True)
+                if not r["ok"]:
+                    blocking.append(
+                        f"追加データフォルダ ({Path(folder).name or folder}): {r['msg']}")
         if resume_rds:
             r = validate_rds_folder(rds_folder)
             if not r["ok"]:
@@ -2772,7 +2825,9 @@ def _preflight_alert(blocking, advisory):
      State("annotation_filter_store", "data"),
      State("annotation_filter_store_reanalysis", "data"),
      State("desi_roi_filter_store", "data"),
-     State("desi_use_roi_as_sample", "value")],
+     State("desi_use_roi_as_sample", "value"),
+     # ★ ver64.0: 表示側も実行側と同じ材料で判断する（追加データフォルダ）。
+     State("extra_data_folders_store", "data")],
     prevent_initial_call=True,
 )
 def preflight_validation(
@@ -2783,6 +2838,7 @@ def preflight_validation(
     resume_rds, rds_folder, rds_folder_reanalysis,
     annotation_filter=None, annotation_filter_reanalysis=None,
     roi_filter=None, use_roi_as_sample=False,
+    extra_data_folders=None,
 ):
     """起動ボタン押下時にプリフライトチェックを実行する。
 
@@ -2796,7 +2852,8 @@ def preflight_validation(
         resume_rds, rds_folder, rds_folder_reanalysis,
         annotation_filter=annotation_filter,
         annotation_filter_reanalysis=annotation_filter_reanalysis,
-        roi_filter=roi_filter, use_roi_as_sample=bool(use_roi_as_sample))
+        roi_filter=roi_filter, use_roi_as_sample=bool(use_roi_as_sample),
+        extra_data_folders=extra_data_folders)
     alert = _preflight_alert(blocking, advisory)
     if alert is None:
         return "", {"display": "none"}
