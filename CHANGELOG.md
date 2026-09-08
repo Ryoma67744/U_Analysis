@@ -12,6 +12,48 @@
 
 ---
 
+## 2026-09-08_ver64.2
+
+### 修正: 効かないマスターパスワードを「ログイン用」として表示していた
+
+ver64.1 で追加した `.env` 自動生成の穴。PR #181 のレビュー (Codex) 指摘で発覚し、
+本体がマージされた後に見つかったため別リリースとして出す。
+
+`auth_service.verify_master` は `auth.json` の `master_password_hash` があれば
+**そちらを優先し、`.env` の `MASTER_PASSWORD` を無視する** (UI でパスワードを
+変更すると付く)。この状態で `.env` を失って再生成すると、`env_bootstrap` は
+新しい値を
+
+```
+      >>>  xxxx-xxxx-xxxx  <<<
+  ブラウザのログイン画面でこの値を入力してください。
+```
+
+と大きく表示していたが、**その値では認証を通らない**。`App/` だけ入れ替えて
+`Data/` を残す更新手順 (`create_dist_zip.py` が想定している手順そのもの) で
+普通に起きる。効かない値を案内するのは、何も出さないより悪い。
+
+- `auth.json` の中身を読む `stored_auth_hashes()` を追加。
+  `master_password_hash` があるときは目立つ提示をやめ、「アプリ内で変更済みの
+  ものが有効」「今回生成した値では入れない」ことと、復旧方法 (当該行を消せば
+  `.env` の値で入れる) を出す。
+- 判定を**ファイルの有無から鍵の有無へ**変更した。ver64.1 の
+  `_auth_config_exists()` はファイルの有無だけを見ていたが、`init_from_env` が
+  作った直後の `auth.json` には `master_password_hash` が無く、その場合は
+  `.env` の値が**効く**。ファイル有無で判定すると逆に嘘の警告になる。
+  共有用 (`INITIAL_PASSWORD_B`) の但し書きも同じ理由で `password_b_hash` を見る。
+- 2 回目以降 (何も生成しない) の案内も同様に実態へ合わせた。
+- `auth.json` が壊れている / JSON でない場合は空集合を返し、セットアップを
+  止めない (`stored_auth_hashes` は例外を投げない)。
+
+回帰テスト 12 件を追加し、`auth.json` の 3 状態 (無し / `password_b_hash` のみ /
+`master_password_hash` あり) で表示が変わることを固定した。`master_overridden`
+の判定を潰すと 2 件が落ちることを確認済み。
+
+version 64.1->64.2。**解析の挙動は不変**（起動時の案内文のみ）。
+
+---
+
 ## 2026-09-08_ver64.1
 
 ### 修正: 配布物のデスクトップ起動が `FLASK_SECRET_KEY` 未設定で必ず失敗する
@@ -50,15 +92,6 @@ Generate with: openssl rand -hex 32
 `MASTER_PASSWORD` はログイン時に人が手で打つため、読み違えやすい文字
 (`l/I/1`, `o/O/0`) を除いた `xxxx-xxxx-xxxx` 形式で生成し、コンソールに表示する。
 見逃しても `App/.env` の当該行で確認できる。
-
-ただし **`auth.json` に保存済みのパスワードがある場合は、そちらが優先されるため
-生成した値では入れない**。`verify_master` は `master_password_hash` があれば
-`.env` の `MASTER_PASSWORD` を無視し、`init_from_env` は `password_b_hash` が
-あれば初期化ごとスキップする。`App/` だけ入れ替えて `Data/` を残したときに
-この状態になるので、そのときは「生成した値では入れない」ことと復旧方法を出す。
-ファイルの有無ではなく**鍵の有無**で判定するのが要点で、`init_from_env` が
-作った直後の `auth.json` には `master_password_hash` が無く、その場合は `.env` の
-値が効くため、ファイル有無で判定すると逆に嘘の警告になる。
 
 標準ライブラリだけで書いてあるのは、`setup.bat` の `pip install` **より前**、
 python-dotenv すら入っていない段階で動く必要があるため。

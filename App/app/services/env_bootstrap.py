@@ -306,7 +306,7 @@ def auth_config_path() -> Path:
 def stored_auth_hashes() -> frozenset:
     """`auth.json` に保存済みのパスワードハッシュ種別を返す (読めなければ空)。
 
-    ★ ver64.1: `.env` に書いた値が実際に効くかは **auth.json の中身**で決まる。
+    ★ ver64.2: `.env` に書いた値が実際に効くかは **auth.json の中身**で決まる。
 
     - `master_password_hash` があると `verify_master` はそちらを優先し、
       `.env` の `MASTER_PASSWORD` は **無視される**
@@ -374,7 +374,7 @@ def main(argv: Optional[list] = None) -> int:
     _safe_print("")
     if "MASTER_PASSWORD" in generated:
         if master_overridden:
-            # ★ ver64.1: 効かない値を「これでログインしてください」と出さない。
+            # ★ ver64.2: 効かない値を「これでログインしてください」と出さない。
             #   UI でパスワードを変更済みの環境 (auth.json に master_password_hash が
             #   ある) では verify_master がそちらを優先し、.env の値は無視される。
             #   App/ だけ入れ替えて Data/ を残すと、この状態で .env だけが再生成される。

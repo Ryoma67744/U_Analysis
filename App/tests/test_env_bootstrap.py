@@ -251,7 +251,7 @@ class TestKeyEditing:
 
 
 class TestOverriddenMasterPasswordIsNotPresentedAsActive:
-    """★ ver64.1: 効かないパスワードを「これでログインしてください」と出さない。
+    """★ ver64.2: 効かないパスワードを「これでログインしてください」と出さない。
 
     `auth_service.verify_master` は `auth.json` の `master_password_hash` を
     **`.env` の `MASTER_PASSWORD` より優先する**（UI でパスワードを変更すると付く）。
