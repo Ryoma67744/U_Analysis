@@ -90,6 +90,25 @@ RPCA_FGLOBALS_MAXSIZE <- 64 * 1024^3  # 64GB（>26.25GiB の globals を通す�
   flush(stdout())
 }
 
+# ---- [ver63.3] 段階マーカー＋所要時間 ----
+# 従来 tictoc は :2452 tic / :2960 toc の 1 組だけで、"  Finding Markers..." 等の
+# 段階行に時刻が無かった。そのため 68 分の内訳を知るのに、出力ファイルの mtime を
+# 突き合わせる必要があった（2026-09 の調査。結果は DEG 61% / 作図 22%）。
+# もう一つの役割: 進捗バー(_detect_current_step)はログの部分一致で段階を判定するため、
+# 通常の出力に紛れた単語を誤って拾う。実際 "Step2_HarmonyPCA_Result.rds" という
+# **ファイル名**の "harmony" を拾って、Harmony を実行していない resume でも
+# 「Harmony correction (3/13)」と表示され続けていた。[stage] 接頭辞を付けた
+# 専用行を出し、UI 側はこれを見る。
+.stage_t0 <- NULL
+.stage_mark <- function(name) {
+  .now <- Sys.time()
+  .el  <- if (is.null(.stage_t0)) NA_real_ else as.numeric(difftime(.now, .stage_t0, units = "secs"))
+  .stage_t0 <<- .now
+  if (is.na(.el)) cat(sprintf("[stage] %s\n", name))
+  else            cat(sprintf("[stage] %s (前段 %.1f 秒)\n", name, .el))
+  flush(stdout())
+}
+
 # ---- [ver45.9] コンテナの残メモリ ----
 # cgroup v2: memory.max / memory.current、v1: memory.limit_in_bytes / usage_in_bytes。
 # 取得できなければ NA を返し、呼び出し側は保守的な既定にフォールバックする。
@@ -1830,6 +1849,9 @@ run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_onl
                       else if ("rpca" %in% names(obj@reductions)) "rpca"
                       else "pca"
     .dims_clust <- 1:min(UMAP_DIMS_MAX, MAX_PCS, ncol(Embeddings(obj, .red_for_clust)))
+    # ★ ver63.3: tims_v8 の段階定義 "findclusters" に対応する出力がこれまで
+    #   1 行も無く、この段は恒久的に到達不能だった。
+    .stage_mark("FindClusters")
     cat(sprintf(">> クラスタリング (%s): reduction=%s / dims=%d / k=%d / resolution=%s\n",
                 prefix, .red_for_clust, length(.dims_clust), CLUSTER_K_PARAM,
                 as.character(CLUSTER_RESOLUTION)))
@@ -1929,7 +1951,7 @@ run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_onl
   obj <- JoinLayers(obj)
   
   
-cat("  Finding Markers...\n")
+.stage_mark("Finding Markers")
 
 # 書き出し用の絞り込み (ver58.0 / A-3)。
 #   検定と補正は全特徴量に対して行い、CSV に出すのは画面の閾値を通った行だけにする。
@@ -2029,7 +2051,7 @@ if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
 }
   
   # 3. アノテーション
-  cat("  Annotating...\n")
+  .stage_mark("Annotating")
   if (!is.null(ann_db)) {
     deg$annotation <- annotate_mz_with_format(unique(deg$gene), ann_db, TOLERANCE_MZ, ion_mode = ION_MODE, adduct_patterns = ANNOT_ADDUCT_PATTERNS)[deg$gene]
   } else {
@@ -2043,7 +2065,7 @@ if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
   write.csv(deg_csv, file.path(sub_od, "markers_annotated.csv"), row.names=FALSE)
   
   # 4. Heatmap (要望②: 全手法で出力)
-  cat("  Generating Heatmap...\n")
+  .stage_mark("Generating Heatmap")
   top5 <- deg %>% group_by(cluster) %>% top_n(HEATMAP_TOPN_PER_CLUSTER, wt=avg_log2FC)
   top_genes <- unique(top5$gene)
   if(length(top_genes) > 0) {
@@ -2107,7 +2129,7 @@ if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
   # 5. Volcano Plot (要望③: Volcano_Plots_Mz は m/z のみ / 注釈付きは別出力)
   
   # 5. Volcano Plot (m/z only & annotated)
-  cat("  Volcano Plots...\n")
+  .stage_mark("Volcano Plots")
   vol_dir_mz <- file.path(sub_od, "Volcano_Plots_Mz")
   vol_dir_annot <- file.path(sub_od, "Volcano_Plots_Annotated")
   dir.create(vol_dir_mz, showWarnings=FALSE)
@@ -2263,7 +2285,7 @@ if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
   }
 
 # 5b. MSI Images (要望⑥: Volcano Top5 の MSI 画像出力を復活)
-  cat("  MSI Images (Top5)...\n")
+  .stage_mark("MSI Images (Top5)")
   msi_dir <- file.path(sub_od, "Cluster_Top5_MSI")
   dir.create(msi_dir, showWarnings=FALSE)
   for (cl in unique(deg$cluster)) {
@@ -2348,7 +2370,7 @@ if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
   }
 
 # 6. TIC Overlay (要望⑤)
-  cat("  TIC Overlay...\n")
+  .stage_mark("TIC Overlay")
   export_cluster_highlights(obj, prefix, outdir)
   
   # 7. クラスタ付きファイルの書き出し (CSV / Parquet 両対応; prefix付きで上書き防止)
@@ -2422,7 +2444,7 @@ if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
     }
   }
 
-cat("  Done.\n")
+.stage_mark("Done")
 # [ver45.9] downstream 終了時の残量。harmony と pca_uncorrected の間でどれだけ解放
 #   されたかが分かり、次の downstream / RPCA に入れる余裕を判断できる。
 invisible(gc(verbose = FALSE))
@@ -2680,6 +2702,9 @@ if (!step2_done && !.stage_downstream) {
     invisible(gc(verbose = FALSE))
     .mem_note_base("Step2 scale.data 破棄後")
     if(use_harmony) {
+      # ★ ver63.3: Harmony を「実際に走らせるとき」だけ段階行を出す。
+      #   UI はこの行を見る。従来はファイル名の "harmony" を拾っていた。
+      .stage_mark("Harmony correction")
       # ★ ver63.2: project.dim = FALSE を明示する。
       #   harmony(稼働環境 2.0.5) の既定は project.dim=TRUE で、収束後に
       #   Seurat::ProjectDim を呼び scale.data %*% cell.embeddings を計算する。
@@ -2710,7 +2735,7 @@ if (!step2_done && !.stage_downstream) {
   # ver4: 補正変数が無い(NA)場合は Harmony をスキップし、無補正PCAへフォールバック
   # [ver6.6] 進捗バー用の段階マーカー。reduction 構築中は一致キーワードが出ず
   #   UI が「準備中」に見えるため、"preprocessing" を1行出す（_detect_current_step が拾う）。
-  cat("Preprocessing (variable features / scaling / PCA)...\n")
+  .stage_mark("Preprocessing (variable features / scaling / PCA)")
 
   # [ver56.5] リトライで軽い設定へ落ちたことを必ず記録する (R3-RETRY)。
   #   従来は tryCatch(error=function(e) FALSE) が失敗理由ごと捨て、ループ内に
@@ -2805,8 +2830,21 @@ if (!is.null(seu_harmony)) {
 }
 
 # ★ver4: 無補正PCA結果の下流解析（Step2_PCA_uncorrected が存在すれば実行）
-.unc_rds_path <- file.path(RDS_SAVE_DIR, "Step2_PCA_uncorrected.rds")
-if (isTRUE(ALWAYS_OUTPUT_UNCORRECTED_PCA) && file.exists(.unc_rds_path)) {
+# ★ ver63.3: RESUME 元も探す。従来は新しい出力先 (RDS_SAVE_DIR) 決め打ちだったが、
+#   ④「続きを実行」は UMAP ハイパラのサフィックス付きで必ず別フォルダへ出力するため、
+#   ①が Harmony で作ったコンパニオンが見つからず、無補正PCA の下流が
+#   **何のメッセージも出さずに**落ちていた（PR-1 で Harmony が通ると顕在化する）。
+#   同スクリプト内の UMAP embedding / DEG は既に .get_rds_candidates で
+#   RESUME_DIR_PATH -> RDS_SAVE_DIR の順に両方を探しており、ここだけ非対称だった。
+.unc_rds_path <- NULL
+for (.c in .get_rds_candidates("Step2_PCA_uncorrected.rds")) {
+  if (file.exists(.c)) { .unc_rds_path <- .c; break }
+}
+if (isTRUE(ALWAYS_OUTPUT_UNCORRECTED_PCA) && is.null(.unc_rds_path)) {
+  message(">> 無補正PCA: Step2_PCA_uncorrected.rds が見つからないため下流をスキップします",
+          "（主結果が無補正PCAのときは設計どおり生成されません）")
+}
+if (isTRUE(ALWAYS_OUTPUT_UNCORRECTED_PCA) && !is.null(.unc_rds_path)) {
   .unc_obj <- tryCatch(load_rds_compact(.unc_rds_path)$obj, error=function(e) NULL)
   if (!is.null(.unc_obj)) {
     run_downstream_analysis(.unc_obj, "pca_uncorrected", od, ann_db, generate_mz_only = FALSE,
@@ -2985,6 +3023,19 @@ if (!step3_done && !.stage_downstream) {
       cat(sprintf("RPCA skip: 有効バッチ<2 (batch='%s', >=%d cells)\n", .rpca_batch, MIN_CELLS_RPCA))
       seu_rpca <- NULL
     }
+  } else {
+    # ★ ver63.3: この分岐には従来 else が無く、条件が偽のとき **何も出力せずに素通り**
+    #   していた。RPCA が無いことも、その理由も、ログにも画面にも一切残らないため、
+    #   「なぜ RPCA が出ないのか」の切り分けにコードを読むしかなかった（2026-09 の実例）。
+    #   スキップ自体は仕様どおりでも、理由は必ず残す。
+    cat(sprintf(paste0("RPCA skip: 統合できる単位が 2 つ未満です",
+                       " (入力ファイル %d 本 / ANNOTATION_ROLE='%s' / 切片 %d 枚)\n"),
+                length(seu_list), ANNOTATION_ROLE, .n_slice))
+    cat(paste0("  RPCA を実行するには、入力を 2 ファイル以上にするか、",
+               "解析シナリオを「連続切片」または「条件比較＋技術差補正」",
+               "(ANNOTATION_ROLE='section_id') にしてください。\n"))
+    flush(stdout())
+    seu_rpca <- NULL
   }
   
   # ★要望①: Step3 完了時のRDS保存 (slim: DietSeurat + qs 圧縮)
@@ -3002,6 +3053,14 @@ if (!step3_done && !.stage_downstream) {
 if(!is.null(seu_rpca)) {
   run_downstream_analysis(seu_rpca, "rpca", od, ann_db, generate_mz_only = FALSE)
 }
+
+# ★ ver63.3: tims_v8 の段階定義 "saving" に対応する英語の出力が R 側に 0 件で、
+#   この段は恒久的に到達不能だった（保存ログは日本語の「[rds_io] 保存開始」だけ）。
+#   置き場所は downstream の中ではなくここ。downstream は最大 3 回
+#   （harmony / pca_uncorrected / rpca）呼ばれ、進捗判定は「最も index の大きい段」を
+#   採るため、downstream 内に置くと index 11 が index 10 の RPCA を追い越して
+#   RPCA 実行中の表示を潰してしまう。全工程の後始末であるここなら順序が正しい。
+.stage_mark("Saving outputs / finalizing")
 
 # ---- Cleanup: Step1 RDS（解析完了後は不要） ----
 if (file.exists(rds_step1_out)) {
