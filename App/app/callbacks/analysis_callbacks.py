@@ -21,6 +21,7 @@ from app.services.analysis_runner import (
     start_analysis_process,
     get_analysis_log,
     get_analysis_log_full,
+    get_analysis_log_markers,
     format_log_lines_styled,
     get_analysis_status,
     check_process_completion,
@@ -30,6 +31,7 @@ from app.services.analysis_runner import (
 from app.services.session_manager import load_last_settings, save_last_settings
 from app.services.project_manager import save_sub_project_settings, save_sub_project_result_dir, update_sub_project
 from app.services.notify import warn_user
+from app.services import progress_estimator as _estimator
 from app.services import receipt as _receipt
 from app.services import analysis_finalizer as _finalizer
 from app.services import job_registry as _job_registry
@@ -1256,125 +1258,36 @@ def run_analysis(
 # 進捗監視（2秒ごと）
 # ---------------------------------------------------------------------------
 
-# 解析タイプ別のステップ定義リスト
-# 各ステップ: (表示名, 検出キーワード) — ログにキーワードが出現したらそのステップに到達
-_STEP_DEFINITIONS = {
-    "desi_v8": [
-        ("Loading", "reading desi data"),
-        ("Filtering", "spot filtering"),
-        ("PCA", "pca"),
-        ("UMAP", "umap"),
-        ("Clustering", "findclusters"),
-        ("Harmony/RPCA", "harmony"),
-        ("DEG", "deg"),
-        ("Heatmap", "heatmap"),
-        ("Volcano", "volcano"),
-        ("MSI Images", "msi"),
-        ("Saving", "saving"),
-        ("Done", "all done"),
-    ],
-    "tims_v8": [
-        ("Loading", "reading parquet"),
-        ("Preprocessing", "preprocessing"),
-        # ★ ver63.3: キーワードを "harmony" から "harmony correction" へ。
-        #   "harmony" はログ中の **ファイル名** "Step2_HarmonyPCA_Result.rds" に
-        #   部分一致してしまい、Harmony を実行していない resume 実行でも
-        #   「Harmony correction (3/13) 23%」が長時間表示されていた（実測: RDS を
-        #   読んだ直後から "Finding Markers" が出るまでの全区間）。R 側は
-        #   ver63.3 で Harmony を実際に走らせるときだけ
-        #   "[stage] Harmony correction" を出すようにしたので、そちらに合わせる。
-        ("Harmony correction", "harmony correction"),
-        ("Clustering", "findclusters"),
-        ("Markers", "finding markers"),
-        ("Annotation", "annotating"),
-        ("Heatmap", "heatmap"),
-        ("Volcano", "volcano"),
-        ("MSI Images", "msi images"),
-        ("TIC Overlay", "tic overlay"),
-        ("RPCA", "running rpca"),
-        ("Saving", "saving"),
-        ("Done", "all done"),
-    ],
-    "desi_cluster_filter": [
-        ("Loading", "loading"),
-        ("Filtering", "filter"),
-        ("DEG", "deg"),
-        ("Heatmap", "heatmap"),
-        ("Volcano", "volcano"),
-        ("MSI Images", "msi"),
-        ("Saving", "saving"),
-        ("Merge", "merge"),
-        ("Done", "done"),
-    ],
-    "tims_cluster_filter": [
-        ("Loading", "loading"),
-        ("Filtering", "filter"),
-        ("Markers", "finding markers"),
-        ("Heatmap", "heatmap"),
-        ("Volcano", "volcano"),
-        ("MSI Images", "msi"),
-        ("Saving", "saving"),
-        ("Merge", "merge"),
-        ("Done", "done"),
-    ],
-}
+# ★ ver65.0: 段の定義と残り時間の計算は `app.services.progress_estimator` へ移した。
+#
+#   従来ここには 13 段の等重量モデルがあった。
+#
+#       progress_ratio = step_current / step_total
+#       remaining      = elapsed / progress_ratio * (1 - progress_ratio)
+#
+#   実測 (CHANGELOG ver63.3 (3): 68 分の内訳 DEG 61% / 作図 22%) では DEG 1 段が
+#   所要の 61% を占めるのに、この式は 1/13 = 7.7% としか数えない。その結果
+#   **DEG に入った瞬間「残り約 12 分」と出しておいて、その 41 分のあいだ表示が
+#   11 分 → 78 分へ増え続ける**（実際の残りは減っている）状態だった。さらに
+#   段 4-10 は R の `run_downstream_analysis()` の中にあり最大 3 回繰り返されるが、
+#   このモデルには巡回の概念が無く、1 巡目終了時点で 77% を指したまま残り 2 巡
+#   （全体の半分以上）を動かずに待たせていた。
+#
+#   移した先では (1) 段ごとの重み (2) R が出す実測時刻から求めるこの実行の
+#   ペース (3) `[plan]/[pass]` 行による巡数、の 3 つを使う。dash に依存しない
+#   純粋な計算なので単体テストできる（`tests/test_progress_estimation.py`）。
+#
+#   互換のため、段の記録が無いログ（DESI テンプレート / ver63.3 以前の実行）は
+#   従来どおりの部分一致で段を検出する経路に落ちる。
 
 
 def _detect_current_step(log_text: str, analysis_type: str):
-    """ログテキストからステップ定義に基づいて現在のステップを検出する。
-    Returns: (step_number, total_steps, step_name)
-    step_number は 1始まり。未検出なら (0, total, "準備中")
+    """ログテキストから現在のステップを検出する（後方互換の薄い包み）。
+
+    Returns: (step_number, total_steps, step_name) — step_number は 1 始まり。
     """
-    steps = _STEP_DEFINITIONS.get(analysis_type, _STEP_DEFINITIONS["desi_v8"])
-    total = len(steps)
-    log_lower = log_text.lower()
-
-    # 後ろから探して最後に到達したステップを見つける
-    current_idx = -1
-    for i in range(len(steps) - 1, -1, -1):
-        _, keyword = steps[i]
-        if keyword in log_lower:
-            current_idx = i
-            break
-
-    if current_idx < 0:
-        return 0, total, "準備中"
-
-    step_name = steps[current_idx][0]
-    return current_idx + 1, total, step_name
-
-
-def _format_remaining_time(start_time_iso: str, step_current: int, step_total: int) -> str:
-    """経過時間と現在のステップ位置から残り時間を推定する。
-    ステップが進むたびに毎回再計算されるため、動的に精度が向上する。
-    """
-    if step_current <= 0:
-        return "残り時間: 計算中..."
-
-    try:
-        start_time = datetime.fromisoformat(start_time_iso)
-    except (ValueError, TypeError):
-        return "残り時間: 計算中..."
-
-    elapsed = (datetime.now() - start_time).total_seconds()
-    if elapsed < 1:
-        return "残り時間: 計算中..."
-
-    progress_ratio = step_current / step_total
-    if progress_ratio >= 1.0:
-        return "残り時間: まもなく完了"
-
-    remaining_sec = elapsed / progress_ratio * (1 - progress_ratio)
-
-    if remaining_sec >= 3600:
-        h = int(remaining_sec // 3600)
-        m = int((remaining_sec % 3600) // 60)
-        return f"残り約 {h}時間{m}分"
-    elif remaining_sec >= 60:
-        m = int(remaining_sec // 60)
-        return f"残り約 {m}分"
-    else:
-        return "残り約 1分未満"
+    est = _estimator.estimate(analysis_type, log_text, None)
+    return est.step_current, est.step_total, est.step_name
 
 
 def _format_elapsed_time(start_time_iso: str) -> str:
@@ -1439,8 +1352,15 @@ def update_progress(n_intervals, app_state, log_search, log_level, log_lines_cou
         raw_log = get_analysis_log(log_file, last_n=n_lines)
     else:
         raw_log = ""
-    # ステップ検出用の生テキスト（フィルタ前に取得）
-    log_text_for_steps = get_analysis_log(log_file, last_n=600) if log_file else ""
+    # ステップ検出用（フィルタ前）。
+    # ★ ver65.0: 段の記録 (`[stage]/[plan]/[pass]`) は **全文から** 拾う。
+    #   従来は末尾 600 行の窓で、1 つの段が 600 行を超える出力を出すと
+    #   その段の行が窓から押し出され、進捗が後退したり「準備中」へ巻き戻った。
+    #   マーカーが 1 行も無いログ（DESI テンプレート / ver63.3 以前の実行）は
+    #   従来どおり末尾の窓で部分一致する経路に落ちる。
+    marker_text = get_analysis_log_markers(log_file) if log_file else ""
+    log_text_for_steps = (
+        marker_text or (get_analysis_log(log_file, last_n=600) if log_file else ""))
     # 表示用のスタイル付きログ
     styled_log = format_log_lines_styled(
         raw_log, search=log_search or "", level=log_level or "all")
@@ -1461,20 +1381,24 @@ def update_progress(n_intervals, app_state, log_search, log_level, log_lines_cou
         for ext in ("*.png", "*.csv", "*.rds"):
             file_count += len(list(Path(output_dir).rglob(ext)))
 
-    # ステップ検出（ステップ定義リストに基づく — フィルタ前の生テキスト使用）
-    step_current, step_total, step_name = _detect_current_step(log_text_for_steps, analysis_type)
+    # ★ ver65.0: 段の重み・この実行の実測ペース・downstream の巡数を使って
+    #   進捗と残り時間を出す（`app.services.progress_estimator`）。
+    try:
+        _started = datetime.fromisoformat(start_time_iso) if start_time_iso else None
+    except (TypeError, ValueError):
+        _started = None
+    est = _estimator.estimate(analysis_type, log_text_for_steps, _started)
+    step_current, step_total, step_name = est.step_current, est.step_total, est.step_name
 
-    # 進捗バーをステップベースで計算
+    # 進捗バーは段の重みぶんで進む（従来は段数の等分だった）。
+    # 100% は完了ハンドラだけが出す（走っているのに 100% は誤解を招く）ので 99 で止める。
     if step_current > 0:
-        progress = min(95, int(step_current / step_total * 100))
+        progress = min(99, int(est.fraction * 100))
     else:
         progress = min(95, file_count * 2)  # ステップ未検出時はファイル数ベース
 
-    # 残り時間を毎回再計算
-    remaining_text = _format_remaining_time(start_time_iso, step_current, step_total)
-
-    # 表示テキスト組み立て
-    step_display = f"{step_name} ({step_current}/{step_total})" if step_current > 0 else "準備中"
+    remaining_text = _estimator.format_remaining(est)
+    step_display = _estimator.format_step(est)
     section_text = f"出力: {file_count} ファイル | ステップ: {step_display} | {remaining_text}"
 
     if status in ("finished", "error") or completed_status:

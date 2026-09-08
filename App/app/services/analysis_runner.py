@@ -1344,6 +1344,31 @@ def get_analysis_log_full(log_file: str) -> str:
         return ""
 
 
+# 進捗の段階判定に使う機械可読な行の接頭辞（R 側 `.stage_mark` / `.plan_downstream`）
+_PROGRESS_MARKER_PREFIXES = ("[stage]", "[plan]", "[pass]")
+
+
+def get_analysis_log_markers(log_file: str) -> str:
+    """段階判定用の行だけを **ログ全文から** 抜き出して返す。
+
+    ★ ver65.0: 従来 `update_progress` は末尾 600 行 (`get_analysis_log(...,600)`)
+    を段階判定に使っていた。これは**窓**なので、1 つの段が 600 行を超える出力を
+    出すと（`FindAllMarkers` は `verbose=FALSE` を渡しておらず Seurat の出力が
+    そのまま流れ込む）、その段の `[stage]` 行が窓から押し出される。すると
+    より前の段に**後退**するか、全部消えて「準備中 / 残り時間: 計算中...」へ
+    巻き戻る。段の行は 1 回の解析で数十行しか出ないので、全文から拾って窓を無くす。
+
+    返すのはマーカー行だけなので、後段の正規表現が舐める量は行数に比例しない。
+    """
+    try:
+        lines = Path(log_file).read_text(encoding="utf-8").splitlines()
+    except Exception as e:  # noqa: BLE001 — ログが読めないだけで進捗を止めない
+        logger.debug("ログのマーカー行取得に失敗: %s", e)
+        return ""
+    return "\n".join(
+        ln for ln in lines if ln.lstrip().startswith(_PROGRESS_MARKER_PREFIXES))
+
+
 def format_log_lines_styled(log_text: str, search: str = "",
                              level: str = "all") -> list:
     """ログテキストを html.Span のリストに変換。
