@@ -20,8 +20,9 @@ from app.layouts.file_browser_modal import (
     get_available_drives, list_directory, build_breadcrumb_parts,
 )
 from app.services.data_manager import (
-    list_msi_files, list_tims_files,
+    list_msi_files, list_tims_files, list_tims_folder_groups,
     find_tims_file_path, read_parquet_annotations, read_desi_roi_list,
+    validate_data_folder,
 )
 from app.services.session_manager import save_last_settings
 from app.services.notify import warn_user
@@ -258,6 +259,28 @@ def toggle_resume_reanalysis_panel(resume):
 # データフォルダ → サンプル一覧
 # ---------------------------------------------------------------------------
 
+def _sample_group_block(folder: str, options: list[dict], values: list[str],
+                        show_header: bool) -> "html.Div":
+    """フォルダ 1 つ分のチェックリストを見出し付きで組み立てる。"""
+    children = []
+    if show_header:
+        children.append(html.Small(
+            f"\U0001f4c1 {Path(folder).name or folder}",
+            className="fw-bold d-block text-muted",
+            title=folder,
+            style={"fontSize": "0.75rem"},
+        ))
+    children.append(dbc.Checklist(
+        # index はフォルダのフルパス。フォルダ名だけだと別階層の同名フォルダで
+        # ID が衝突し、Dash のパターンマッチングが両方まとめて拾ってしまう。
+        id={"type": "sample_check", "index": folder},
+        options=options,
+        value=values,          # デフォルト全選択（従来どおり）
+        className="ms-2" if show_header else "",
+    ))
+    return html.Div(children, className="mb-1")
+
+
 @callback(
     Output("sample_selector", "children"),
     [Input("data_folder", "value"),
@@ -266,39 +289,106 @@ def toggle_resume_reanalysis_panel(resume):
      Input("extra_data_folders_store", "data")],
 )
 def update_sample_selector(data_folder, desi_method, tims_method, extra_folders):
+    """データフォルダ + 追加データフォルダのサンプル一覧を作る。
+
+    ★ ver64.0: TIMS はフォルダごとに区切って並べ、チェックの値を
+      **ファイルのフルパス**にした。従来は `list_tims_files_multi` が stem で
+      重複排除した名前の一覧を 1 本のチェックリストで出していたため、
+      別フォルダに同名ファイルがあると
+
+        - 画面には 1 個しか出ないのに INPUT_PATHS には 2 本入る
+        - 片方だけチェックを外せない（外すと両方消える）
+        - 切片(annotation)の候補は先に並ぶフォルダ側しか解決されず、
+          もう一方は `ANNOTATION_FILTER に一致する spot がありません` で
+          解析ごと落ちる
+
+      という 3 つの食い違いが同時に起きていた。どのフォルダのどのファイルを
+      選んだのかが画面と解析で 1 対 1 に対応するようにする。
+      DESI は従来どおり 1 フォルダ・stem 単位（R が data_folder/<stem>.txt を
+      決め打ちで読むため、パスを値にすると逆に対応が取れない）。
+    """
     if not data_folder or not Path(data_folder).is_dir():
         return html.Div("データフォルダを指定してください", className="text-muted")
 
     active = desi_method or tims_method or "desi_v8"
-    if active in ("tims_v8", "tims_cluster_filter"):
-        from app.services.data_manager import list_tims_files_multi
-        all_folders = [data_folder] + (extra_folders or [])
-        samples = list_tims_files_multi(all_folders)
-    else:
-        samples = list_msi_files(data_folder)
 
+    if active in ("tims_v8", "tims_cluster_filter"):
+        groups = list_tims_folder_groups([data_folder] + list(extra_folders or []))
+        blocks, total = [], 0
+        # 見出しは「フォルダが 2 つ以上あるとき」だけ出す。1 つのときに出すと
+        # 従来の画面に余計な行が増えるだけで情報が増えない。
+        show_header = len([g for g in groups if g["paths"]]) > 1
+        for g in groups:
+            if not g["paths"]:
+                continue
+            total += len(g["paths"])
+            opts = [{"label": f" {Path(p).stem}", "value": p} for p in g["paths"]]
+            blocks.append(_sample_group_block(
+                g["folder"], opts, [o["value"] for o in opts], show_header))
+        if not blocks:
+            return html.Div("対応ファイルが見つかりません", className="text-warning")
+        if show_header:
+            # ★ ver64.0: 上の「N ファイル検出」バッジは基準フォルダしか数えない。
+            #   追加フォルダを足しても数字が動かないので「追加できていない」ように
+            #   見える、というのが利用者からの申告そのものだった。合計をここに出す。
+            blocks.append(html.Small(
+                f"合計 {total} ファイル（{len(blocks)} フォルダ）",
+                className="text-muted d-block",
+                style={"fontSize": "0.75rem", "marginTop": "2px"},
+            ))
+        return blocks
+
+    samples = list_msi_files(data_folder)
     if not samples:
         return html.Div("対応ファイルが見つかりません", className="text-warning")
-
-    return dbc.Checklist(
-        id="selected_samples",
-        options=[{"label": s, "value": s} for s in samples],
-        value=samples,  # デフォルト全選択
+    return _sample_group_block(
+        data_folder,
+        [{"label": f" {s}", "value": s} for s in samples],
+        samples,
+        False,
     )
 
 
 # ---------------------------------------------------------------------------
-# selected_samples → selected_samples_store 同期
+# サンプルのチェック → selected_samples_store / selected_sample_paths_store 同期
 # 動的生成の Checklist を静的 Store にブリッジ
 # ---------------------------------------------------------------------------
 
+def _sample_value_is_path(value: str) -> bool:
+    """チェックリストの値がフルパスか（TIMS）サンプル名か（DESI）を見分ける。
+
+    `Path.stem` には区切り文字が入らないので、区切り文字の有無で判別できる。
+    解析手法を State で受け取る方式にすると、手法を切り替えた直後の 1 回だけ
+    「新しい手法 × 古いチェックリスト」の組で解釈してしまう。
+    """
+    return "/" in value or "\\" in value
+
+
 @callback(
-    Output("selected_samples_store", "data"),
-    Input("selected_samples", "value"),
-    prevent_initial_call=True,
+    [Output("selected_samples_store", "data"),
+     Output("selected_sample_paths_store", "data")],
+    Input({"type": "sample_check", "index": ALL}, "value"),
 )
-def sync_selected_samples(value):
-    return value or []
+def sync_selected_samples(all_values):
+    """全フォルダ分のチェックを 1 つにまとめる。
+
+    - `selected_samples_store`      … サンプル名 (stem)。既存の読み手
+      （キャリブレーションのサンプル選択・DESI・再解析）はこちらを使う。
+    - `selected_sample_paths_store` … 選んだファイルのフルパス。TIMS の
+      INPUT_PATHS と切片選択はこちらを正とする（同名ファイルを区別するため）。
+    """
+    paths, names = [], []
+    for vals in all_values or []:
+        for v in (vals or []):
+            if _sample_value_is_path(v):
+                paths.append(v)
+                names.append(Path(v).stem)
+            else:
+                names.append(v)
+    # 同名ファイルを 2 フォルダから選んだ場合、名前は 1 つに畳む（R 側の
+    # サンプル名は basename 由来なので、名前の一覧としては重複させない）。
+    uniq_names = list(dict.fromkeys(names))
+    return uniq_names, paths
 
 
 # ---------------------------------------------------------------------------
@@ -308,39 +398,38 @@ def sync_selected_samples(value):
 @callback(
     [Output("annotation_selector", "children"),
      Output("annotation_filter_store", "data")],
-    [Input("selected_samples", "value"),
-     Input("data_folder", "value"),
+    [Input("selected_sample_paths_store", "data"),
      Input("analysis_method", "value"),
-     Input("analysis_method_tims", "value"),
-     # ver56.5 (F-C02-1): サンプル一覧は追加フォルダも含めて作られるのに、
-     # ここだけ基準フォルダしか見ていなかった。追加フォルダのサンプルは
-     # パス解決に失敗して黙って読み飛ばされ、切片(annotation)のチェックボックスが
-     # 出ない = そのサンプルだけ切片で絞り込めない状態になっていた。
-     Input("extra_data_folders_store", "data")],
+     Input("analysis_method_tims", "value")],
     prevent_initial_call=True,
 )
-def update_annotation_selector(selected_samples, data_folder, desi_method,
-                               tims_method, extra_folders=None):
-    """選択されたTIMSファイルごとにannotation一覧をチェックボックスで表示"""
+def update_annotation_selector(selected_paths, desi_method, tims_method):
+    """選択されたTIMSファイルごとにannotation一覧をチェックボックスで表示
+
+    ★ ver64.0: 入力をサンプル名 (stem) からファイルのフルパスに変えた。
+      従来は `find_tims_file_path_multi(全フォルダ, stem)` で**先に見つかった
+      1 本**を解決していたため、別フォルダの同名ファイルは切片の候補に一度も
+      現れなかった。ANNOTATION_FILTER は R 側で全ファイルに一律で適用される
+      ので、候補に出なかったファイルは 0 件一致となり
+      `ANNOTATION_FILTER に一致する spot がありません` で解析ごと停止する。
+      （ver56.5 の F-C02-1 は「追加フォルダを見ていない」側だけを直しており、
+      同名ファイルの取りこぼしは残っていた。）
+      チェックボックスの id にもフルパスを使う。stem を使うと同名ファイルで
+      **Dash の ID が重複**し、2 つのチェックが 1 つとして扱われる。
+    """
     active = desi_method or tims_method or "desi_v8"
 
     # TIMS UMAP以外では非表示
     if active != "tims_v8":
         return [], None
 
-    if not selected_samples or not data_folder or not Path(data_folder).is_dir():
+    if not selected_paths:
         return [], None
-
-    from app.services.data_manager import find_tims_file_path_multi
-    all_folders = [data_folder] + list(extra_folders or [])
 
     children = []
     all_annotations = []
 
-    for sample in selected_samples:
-        file_path = find_tims_file_path_multi(all_folders, sample)
-        if not file_path:
-            continue
+    for file_path in selected_paths:
         annotations = read_parquet_annotations(file_path)
         if not annotations:
             continue
@@ -349,9 +438,10 @@ def update_annotation_selector(selected_samples, data_folder, desi_method,
 
         # ファイル名ラベル + チェックボックス
         children.append(html.Div([
-            html.Small(f"\U0001F4C4 {sample}", className="fw-bold"),
+            html.Small(f"\U0001F4C4 {Path(file_path).stem}",
+                       className="fw-bold", title=file_path),
             dbc.Checklist(
-                id={"type": "annotation_check", "index": sample},
+                id={"type": "annotation_check", "index": file_path},
                 options=[{"label": f" {a}", "value": a} for a in annotations],
                 value=annotations,  # デフォルト全選択
                 inline=True,
@@ -400,7 +490,10 @@ def sync_annotation_to_store(all_values):
 @callback(
     [Output("desi_roi_selector", "children"),
      Output("desi_roi_filter_store", "data")],
-    [Input("selected_samples", "value"),
+    # ★ ver64.0: サンプルのチェックリストはフォルダごとのパターンマッチング
+    #   部品になったので、静的 ID `selected_samples` は存在しない。集約済みの
+    #   Store を見る（DESI は 1 フォルダなので値は従来どおり stem）。
+    [Input("selected_samples_store", "data"),
      Input("data_folder", "value"),
      Input("analysis_method", "value")],
     prevent_initial_call=True,
@@ -990,8 +1083,31 @@ _DEFAULT_START_DIR = {
 #       無反応にしていた）。
 _STORE_TARGETS = {"extra_folder_pending_store"}
 
+# ★ ver64.0: 追加データフォルダの行から開いたときの caller_id。
+#   `_ALL_TARGET_IDS` のどれとも一致しない番兵にしておくと、共有の
+#   `apply_file_browser_selection` は「どの入力欄も更新せずモーダルを閉じる」
+#   だけになり、行への書き戻しは専用の `apply_extra_folder_selection` が担う。
+#   （静的 ID を 1 つ増やす方式にすると、行が増減するたびに Output の数が
+#     変わる = Dash では表現できない。）
+_EXTRA_ROW_CALLER = "__extra_folder_row__"
+
+
 def _target_property(tid):
     return "data" if tid in _STORE_TARGETS else "value"
+
+
+def _browser_start_dir(current_val, default_start):
+    """ファイルブラウザの初期ディレクトリを決める（入力欄の現在値を優先）。"""
+    initial_dir = (str(default_start) if default_start and default_start.is_dir()
+                   else str(APP_BASE_DIR))
+    if current_val:
+        p = Path(current_val)
+        if p.is_dir():
+            return str(p)
+        if p.parent.is_dir():
+            # ファイルパスの場合は親ディレクトリを使用
+            return str(p.parent)
+    return initial_dir
 
 
 # すべてのブラウズボタンからモーダルを開く
@@ -1000,20 +1116,43 @@ def _target_property(tid):
      Output("fb_state", "data", allow_duplicate=True),
      Output("fb_drive_selector", "options"),
      Output("fb_selected_path", "children", allow_duplicate=True)],
-    [Input(btn_id, "n_clicks") for btn_id in _BROWSE_BUTTONS],
+    [Input(btn_id, "n_clicks") for btn_id in _BROWSE_BUTTONS]
+    # ★ ver64.0: 追加データフォルダの各行の「参照...」。別 callback に分けると
+    #   fb_drive_selector.options を 2 つの callback が書くことになるため、
+    #   モーダルを開く経路はここ 1 本のままにする。
+    + [Input({"type": "btn_browse_extra_folder", "index": ALL}, "n_clicks")],
     [State("fb_state", "data")]
-    + [State(tid, _target_property(tid)) for tid in _ALL_TARGET_IDS],
+    + [State(tid, _target_property(tid)) for tid in _ALL_TARGET_IDS]
+    + [State("extra_data_folders_store", "data")],
     prevent_initial_call=True,
 )
 def open_file_browser(*args):
-    # args: [btn_clicks..., fb_state, target_values...]
+    # args: [btn_clicks..., extra_browse_clicks, fb_state, target_values..., extra_folders]
     n_buttons = len(_BROWSE_BUTTONS)
-    state = args[n_buttons]  # fb_state
-    target_values = args[n_buttons + 1:]  # 各ターゲット入力欄の現在値
+    extra_clicks = args[n_buttons]        # パターンマッチング分は 1 引数=リスト
+    state = args[n_buttons + 1]           # fb_state
+    target_values = args[n_buttons + 2:n_buttons + 2 + len(_ALL_TARGET_IDS)]
+    extra_folders = args[-1]              # 追加データフォルダの現在値
 
     triggered = ctx.triggered_id
     if triggered is None:
         return no_update, no_update, no_update, no_update
+
+    # 追加データフォルダの行から開いた場合
+    if isinstance(triggered, dict) and triggered.get("type") == "btn_browse_extra_folder":
+        if not any(c for c in (extra_clicks or []) if c):
+            return no_update, no_update, no_update, no_update
+        idx = triggered.get("index")
+        folders = list(extra_folders or [])
+        current_val = folders[idx] if isinstance(idx, int) and 0 <= idx < len(folders) else ""
+        new_state = {
+            "current_dir": _browser_start_dir(current_val, TIMS_DATA_DIR),
+            "mode": "folder",
+            "caller_id": _EXTRA_ROW_CALLER,
+            "extra_index": idx,
+            "selected_path": "",
+        }
+        return True, new_state, get_available_drives(), ""
 
     if triggered in _BROWSE_BUTTONS:
         mode, target_id = _BROWSE_BUTTONS[triggered]
@@ -1021,23 +1160,12 @@ def open_file_browser(*args):
 
         # 対応する入力欄の現在値を取得し、初期ディレクトリを決定
         # 優先順: 入力欄の現在値 → target_id 既定 (DESI/TIMS DATA_DIR) → APP_BASE_DIR
-        default_start = _DEFAULT_START_DIR.get(target_id)
-        if default_start and default_start.is_dir():
-            initial_dir = str(default_start)
-        else:
-            initial_dir = str(APP_BASE_DIR)
         try:
-            idx = _ALL_TARGET_IDS.index(target_id)
-            current_val = target_values[idx]
-            if current_val:
-                p = Path(current_val)
-                if p.is_dir():
-                    initial_dir = str(p)
-                elif p.parent.is_dir():
-                    # ファイルパスの場合は親ディレクトリを使用
-                    initial_dir = str(p.parent)
+            current_val = target_values[_ALL_TARGET_IDS.index(target_id)]
         except (ValueError, IndexError):
-            pass
+            current_val = ""
+        initial_dir = _browser_start_dir(
+            current_val, _DEFAULT_START_DIR.get(target_id))
 
         new_state = {
             "current_dir": initial_dir,
@@ -1175,6 +1303,39 @@ def apply_file_browser_selection(n_clicks, state):
     results.append(False)  # close modal
     return results
 
+
+@callback(
+    Output("extra_data_folders_store", "data", allow_duplicate=True),
+    Input("fb_select_btn", "n_clicks"),
+    [State("fb_state", "data"),
+     State("extra_data_folders_store", "data")],
+    prevent_initial_call=True,
+)
+def apply_extra_folder_selection(n_clicks, state, folders):
+    """追加データフォルダの行から開いた「選択」を、その行に書き戻す。
+
+    共有の `apply_file_browser_selection` は Output が静的 ID の一覧で固定
+    されているため、行数が変わる追加フォルダには書けない。caller_id が
+    番兵のときだけこちらが該当行を差し替える（それ以外は no_update なので、
+    従来の参照ボタンの挙動は一切変わらない）。
+    """
+    if not n_clicks or not state:
+        return no_update
+    if state.get("caller_id") != _EXTRA_ROW_CALLER:
+        return no_update
+    selected_path = state.get("selected_path") or ""
+    if not selected_path:
+        return no_update
+    idx = state.get("extra_index")
+    new_folders = list(folders or [])
+    if not isinstance(idx, int) or not (0 <= idx < len(new_folders)):
+        return no_update
+    if new_folders[idx] == selected_path:
+        return no_update
+    new_folders[idx] = selected_path
+    return new_folders
+
+
 # キャンセルボタン
 @callback(
     Output("file_browser_modal", "is_open", allow_duplicate=True),
@@ -1256,32 +1417,88 @@ def add_extra_folder(pending_path, current_folders):
     return folders
 
 
+def _extra_folder_badge(folder: str):
+    """追加フォルダ 1 行分の件数バッジ。上の `data_folder_badge` と同じ見た目。"""
+    if not folder or not folder.strip():
+        return html.Span("パスを入力するか「参照...」で選んでください",
+                         style={"color": "#6c757d", "fontSize": "0.75rem"})
+    result = validate_data_folder(folder, is_tims=True)
+    color = "#28a745" if result["ok"] else "#dc3545"
+    mark = "\u2713" if result["ok"] else "\u2717"
+    return html.Span(f"{mark} {result['msg']}",
+                     style={"color": color, "fontSize": "0.8rem"})
+
+
 @callback(
     Output("extra_data_folders_container", "children"),
     Input("extra_data_folders_store", "data"),
 )
 def render_extra_folders(folders):
-    """追加フォルダリストをUI表示"""
+    """追加フォルダを「パス入力欄 + 参照... + 件数バッジ + ×」の行で並べる。
+
+    ★ ver64.0: 従来はフォルダ名を出すだけの読み取り専用リストで、
+      パスを直したいときは一度 × で消して選び直すしかなかった。上の
+      「データフォルダ」欄とは操作方法も見た目も違ううえ、**件数バッジが
+      基準フォルダの分しか無い**ため、追加したフォルダに実際に何ファイル
+      入っているのかを画面から確かめる手段がまったく無かった。
+      基準フォルダの欄と同じ形に揃える。
+    """
     if not folders:
         return []
-    items = []
+    rows = []
     for i, folder in enumerate(folders):
-        folder_name = Path(folder).name or folder
-        items.append(
-            dbc.ListGroupItem(
-                className="d-flex justify-content-between align-items-center py-1 px-2",
-                style={"fontSize": "0.85rem"},
-                children=[
-                    html.Span(f"\U0001f4c1 {folder_name}", title=folder),
-                    dbc.Button(
-                        "\u00d7", size="sm", color="danger", outline=True,
-                        id={"type": "btn_remove_extra_folder", "index": i},
-                        style={"padding": "0 6px", "lineHeight": "1.2"},
-                    ),
-                ],
-            )
-        )
-    return dbc.ListGroup(items, flush=True, style={"marginTop": "5px"})
+        rows.append(html.Div(
+            className="mb-2",
+            style={"marginTop": "5px"},
+            children=[
+                html.Div(
+                    style={"display": "flex", "gap": "5px"},
+                    children=[
+                        dbc.Input(
+                            id={"type": "extra_folder_path", "index": i},
+                            value=folder,
+                            placeholder="データフォルダのパス",
+                            size="sm",
+                            # 1 文字ごとに Store を書き換えると、その都度この行が
+                            # 描き直されて入力欄のカーソルが飛ぶ。確定時だけ送る。
+                            debounce=True,
+                        ),
+                        dbc.Button(
+                            "参照...", size="sm", color="secondary",
+                            id={"type": "btn_browse_extra_folder", "index": i},
+                        ),
+                        dbc.Button(
+                            "\u00d7", size="sm", color="danger", outline=True,
+                            id={"type": "btn_remove_extra_folder", "index": i},
+                            style={"padding": "0 8px", "lineHeight": "1.2"},
+                        ),
+                    ],
+                ),
+                _extra_folder_badge(folder),
+            ],
+        ))
+    return rows
+
+
+@callback(
+    Output("extra_data_folders_store", "data", allow_duplicate=True),
+    Input({"type": "extra_folder_path", "index": ALL}, "value"),
+    State("extra_data_folders_store", "data"),
+    prevent_initial_call=True,
+)
+def edit_extra_folder_path(values, current):
+    """入力欄に直接書かれた / 貼り付けられたパスを Store に反映する。"""
+    if values is None:
+        return no_update
+    current = list(current or [])
+    if len(values) != len(current):
+        # 行を足した / 消した直後は、まだ描き直し前の値が届くことがある。
+        # 件数が合わないうちは触らない（古い値で上書きしてしまうため）。
+        return no_update
+    new = [(v or "").strip() for v in values]
+    if new == current:
+        return no_update
+    return new
 
 
 @callback(
