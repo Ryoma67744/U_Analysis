@@ -15,7 +15,7 @@ cd /d "%~dp0App"
 REM ============================================================
 REM  Step 1: Python チェック
 REM ============================================================
-echo [1/4] Python の確認中...
+echo [1/5] Python の確認中...
 python --version >nul 2>&1
 if errorlevel 1 (
     echo.
@@ -32,9 +32,26 @@ for /f "tokens=*" %%i in ('python --version 2^>^&1') do echo   %%i が見つか�
 echo.
 
 REM ============================================================
-REM  Step 2: Python パッケージインストール
+REM  Step 2: 環境設定 (.env) の作成
+REM  ★ ver64.1: .env は .gitignore 済みで ZIP 展開直後には存在しない。
+REM    FLASK_SECRET_KEY / MASTER_PASSWORD / INITIAL_PASSWORD_B が無いと
+REM    アプリは起動できず、越えてもログインできなかった。ここで自動生成する。
+REM    pip より前に置くのは、この処理が標準ライブラリだけで動くため
+REM    （パッケージ導入に失敗しても .env だけは残る）。
 REM ============================================================
-echo [2/4] Python パッケージをインストール中...
+echo [2/5] 環境設定 (.env) を確認中...
+python -m app.services.env_bootstrap
+if errorlevel 1 (
+    echo.
+    echo [警告] .env の自動生成に失敗しました。
+    echo   App\.env.example を App\.env にコピーして手動で設定してください。
+)
+echo.
+
+REM ============================================================
+REM  Step 3: Python パッケージインストール
+REM ============================================================
+echo [3/5] Python パッケージをインストール中...
 echo   （初回は数分かかる場合があります）
 echo.
 python -m pip install --upgrade pip >nul 2>&1
@@ -52,9 +69,9 @@ echo   Python パッケージのインストールが完了しました。
 echo.
 
 REM ============================================================
-REM  Step 3: R チェック
+REM  Step 4: R チェック
 REM ============================================================
-echo [3/4] R の確認中...
+echo [4/5] R の確認中...
 Rscript --version >nul 2>&1
 if errorlevel 1 (
     echo.
@@ -72,9 +89,9 @@ for /f "tokens=*" %%i in ('Rscript --version 2^>^&1') do echo   R が見つか�
 echo.
 
 REM ============================================================
-REM  Step 4: R パッケージインストール
+REM  Step 5: R パッケージインストール
 REM ============================================================
-echo [4/4] R パッケージをインストール中...
+echo [5/5] R パッケージをインストール中...
 echo   （初回は 10〜20 分かかる場合があります）
 echo.
 Rscript install_r_packages.R
@@ -92,6 +109,10 @@ echo   セットアップが完了しました！
 echo.
 echo   アプリの起動方法:
 echo     run_app.bat をダブルクリックしてください。
+echo.
+echo   ログインパスワードは App\.env の MASTER_PASSWORD 行に
+echo   記載されています（メモ帳などで開いて確認してください）。
+echo   ログイン後、アプリ内のパスワード変更 UI から変更できます。
 echo ============================================================
 echo.
 pause

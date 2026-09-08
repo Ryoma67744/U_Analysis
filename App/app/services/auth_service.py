@@ -208,10 +208,18 @@ def init_from_env() -> None:
     initial_b = os.environ.get("INITIAL_PASSWORD_B", "").strip()
 
     if not initial_b:
+        # ★ ver64.1: FLASK_SECRET_KEY と同じく「どう直すか」を書く。
+        #   秘密値の壁は 3 枚 (FLASK_SECRET_KEY → INITIAL_PASSWORD_B →
+        #   MASTER_PASSWORD) あり、1 枚ずつ手で越えさせると必ず途中で詰まる。
         raise RuntimeError(
             "Auth config not initialized and INITIAL_PASSWORD_B not set. "
             "Set INITIAL_PASSWORD_B (共有用パスワード) in .env and restart. "
             "ログインは MASTER_PASSWORD を使用します。"
+            "\n  デスクトップ起動: App フォルダで "
+            "`python -m app.services.env_bootstrap` を実行すると "
+            "App/.env を自動生成します"
+            "\n                    (setup.bat / run_app.bat / setup.sh / "
+            "run_app.sh は自動実行)"
         )
 
     # ★ ver56.4: ロックを取る前に親ディレクトリを用意する。
