@@ -51,6 +51,15 @@ Generate with: openssl rand -hex 32
 (`l/I/1`, `o/O/0`) を除いた `xxxx-xxxx-xxxx` 形式で生成し、コンソールに表示する。
 見逃しても `App/.env` の当該行で確認できる。
 
+ただし **`auth.json` に保存済みのパスワードがある場合は、そちらが優先されるため
+生成した値では入れない**。`verify_master` は `master_password_hash` があれば
+`.env` の `MASTER_PASSWORD` を無視し、`init_from_env` は `password_b_hash` が
+あれば初期化ごとスキップする。`App/` だけ入れ替えて `Data/` を残したときに
+この状態になるので、そのときは「生成した値では入れない」ことと復旧方法を出す。
+ファイルの有無ではなく**鍵の有無**で判定するのが要点で、`init_from_env` が
+作った直後の `auth.json` には `master_password_hash` が無く、その場合は `.env` の
+値が効くため、ファイル有無で判定すると逆に嘘の警告になる。
+
 標準ライブラリだけで書いてあるのは、`setup.bat` の `pip install` **より前**、
 python-dotenv すら入っていない段階で動く必要があるため。
 

@@ -36,6 +36,7 @@ python-dotenv すら入っていない段階 — でも動く必要があるた�
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import platform
@@ -290,27 +291,44 @@ def bootstrap(
 _BAR = "=" * 62
 
 
-def _auth_config_exists() -> bool:
-    """パスワードの実体 (auth.json) が既に保存済みか。
+def auth_config_path() -> Path:
+    """`auth.json` の位置。`auth_service._default_auth_path()` と同じ規則。
 
-    `INITIAL_PASSWORD_A/B` は **auth.json が無いときの初期化にしか使われない**
-    (`auth_service.init_from_env`)。一度アプリを起動した後に `.env` だけを
-    失って再生成すると、新しい共有用パスワードを表示しても実際には効かない
-    (auth.json 側の bcrypt ハッシュが優先される)。効かない値を「これを使え」と
-    表示するのは誤案内なので、その場合だけ但し書きを出す。
-
-    パスは `auth_service._default_auth_path()` と同じ規則
-    (`AUTH_CONFIG_PATH` 優先、既定は `<リポジトリルート>/Data/Other/common/auth.json`)。
-    ここで config を import しないのは、python-dotenv 未導入でも動かすため。
+    (`AUTH_CONFIG_PATH` 優先、既定は `<リポジトリルート>/Data/Other/common/auth.json`)
+    ここで `app.config` を import しないのは、python-dotenv 未導入でも動かすため。
     """
     override = os.environ.get("AUTH_CONFIG_PATH", "").strip()
-    path = Path(override) if override else (
-        APP_DIR.parent / "Data" / "Other" / "common" / "auth.json"
-    )
+    if override:
+        return Path(override)
+    return APP_DIR.parent / "Data" / "Other" / "common" / "auth.json"
+
+
+def stored_auth_hashes() -> frozenset:
+    """`auth.json` に保存済みのパスワードハッシュ種別を返す (読めなければ空)。
+
+    ★ ver64.1: `.env` に書いた値が実際に効くかは **auth.json の中身**で決まる。
+
+    - `master_password_hash` があると `verify_master` はそちらを優先し、
+      `.env` の `MASTER_PASSWORD` は **無視される**
+      (`auth_service.verify_master`。UI でパスワードを変更すると付く)。
+    - `password_b_hash` があると `init_from_env` が初期化ごとスキップするので、
+      `.env` の `INITIAL_PASSWORD_B` は使われない。
+
+    どちらも「`App/` だけ入れ替えて `Data/` を残した」ときに起きる。効かない値を
+    「これでログインしてください」と表示するのは誤案内なので、その判定に使う。
+    ファイルの有無ではなく鍵の有無を見るのは、`init_from_env` が作った直後の
+    auth.json には `master_password_hash` が無く、その場合は `.env` の
+    `MASTER_PASSWORD` が**効く**ため (ファイル有無では過剰警告になる)。
+    """
     try:
-        return path.is_file()
-    except OSError:
-        return False
+        data = json.loads(auth_config_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return frozenset()
+    if not isinstance(data, dict):
+        return frozenset()
+    return frozenset(
+        k for k in ("master_password_hash", "password_b_hash") if data.get(k)
+    )
 
 
 def _safe_print(text: str) -> None:
@@ -337,9 +355,16 @@ def main(argv: Optional[list] = None) -> int:
     path = result["path"]
     generated = result["generated"]
 
+    stored = stored_auth_hashes()
+    master_overridden = "master_password_hash" in stored
+
     if not generated:
         _safe_print(f"環境設定は準備済みです: {path}")
-        _safe_print("  ログインパスワードは .env の MASTER_PASSWORD 行で確認できます。")
+        if master_overridden:
+            _safe_print("  ログインパスワードはアプリ内で変更済みのものが有効です")
+            _safe_print(f"  ({auth_config_path()} が .env より優先されます)。")
+        else:
+            _safe_print("  ログインパスワードは .env の MASTER_PASSWORD 行で確認できます。")
         return 0
 
     _safe_print(_BAR)
@@ -348,18 +373,31 @@ def main(argv: Optional[list] = None) -> int:
     _safe_print(f"  ファイル: {path}")
     _safe_print("")
     if "MASTER_PASSWORD" in generated:
-        _safe_print("  ログインパスワードを自動生成しました:")
-        _safe_print("")
-        _safe_print(f"      >>>  {generated['MASTER_PASSWORD']}  <<<")
-        _safe_print("")
-        _safe_print("  ブラウザのログイン画面でこの値を入力してください。")
-        _safe_print("  控えを忘れても .env の MASTER_PASSWORD 行で確認できます。")
-        _safe_print("  アプリ内のパスワード変更 UI から好きな値に変更できます。")
+        if master_overridden:
+            # ★ ver64.1: 効かない値を「これでログインしてください」と出さない。
+            #   UI でパスワードを変更済みの環境 (auth.json に master_password_hash が
+            #   ある) では verify_master がそちらを優先し、.env の値は無視される。
+            #   App/ だけ入れ替えて Data/ を残すと、この状態で .env だけが再生成される。
+            _safe_print("  ログインパスワードはアプリ内で変更済みのものが有効です。")
+            _safe_print(f"  ({auth_config_path()} の設定が優先されるため、")
+            _safe_print("   今回 .env に生成した値ではログインできません)")
+            _safe_print("")
+            _safe_print("  控えが無い場合は、その auth.json の \"master_password_hash\"")
+            _safe_print("  の行を削除すると、下記の値でログインできるようになります:")
+            _safe_print(f"      {generated['MASTER_PASSWORD']}")
+        else:
+            _safe_print("  ログインパスワードを自動生成しました:")
+            _safe_print("")
+            _safe_print(f"      >>>  {generated['MASTER_PASSWORD']}  <<<")
+            _safe_print("")
+            _safe_print("  ブラウザのログイン画面でこの値を入力してください。")
+            _safe_print("  控えを忘れても .env の MASTER_PASSWORD 行で確認できます。")
+            _safe_print("  アプリ内のパスワード変更 UI から好きな値に変更できます。")
     if "INITIAL_PASSWORD_B" in generated:
         _safe_print("")
         _safe_print("  共有 URL 閲覧用パスワード (INITIAL_PASSWORD_B):")
         _safe_print(f"      {generated['INITIAL_PASSWORD_B']}")
-        if _auth_config_exists():
+        if "password_b_hash" in stored:
             _safe_print("      ※ 既に設定済みのパスワードがあるため、この値は使われません")
             _safe_print("         (変更はアプリ内のパスワード変更 UI から)")
     _safe_print("")

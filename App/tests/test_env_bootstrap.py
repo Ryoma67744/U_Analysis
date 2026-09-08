@@ -250,6 +250,101 @@ class TestKeyEditing:
         assert eb.set_key("A=1\n", "B", "2") == "A=1\nB=2\n"
 
 
+class TestOverriddenMasterPasswordIsNotPresentedAsActive:
+    """★ ver64.1: 効かないパスワードを「これでログインしてください」と出さない。
+
+    `auth_service.verify_master` は `auth.json` の `master_password_hash` を
+    **`.env` の `MASTER_PASSWORD` より優先する**（UI でパスワードを変更すると付く）。
+    `App/` だけ入れ替えて `Data/` を残すと、この状態のまま `.env` だけが
+    再生成される。当初の実装は生成した値を無条件に「ログインパスワード」として
+    大きく表示しており、実際には通らない値を案内していた。
+
+    ファイルの有無ではなく **鍵の有無** で判定するのも要点。`init_from_env` が
+    作った直後の `auth.json` には `master_password_hash` が無く、その場合は
+    `.env` の値が**効く**ので、警告を出すと逆に嘘になる。
+    """
+
+    @pytest.fixture
+    def cli_env(self, tmp_path, monkeypatch, env_pair):
+        """CLI (`main`) の出力を検査するための一時環境。"""
+        _, example = env_pair
+        monkeypatch.setattr(eb, "ENV_PATH", tmp_path / "cli.env")
+        monkeypatch.setattr(eb, "ENV_EXAMPLE_PATH", example)
+        auth_path = tmp_path / "auth.json"
+        monkeypatch.setenv("AUTH_CONFIG_PATH", str(auth_path))
+        return auth_path
+
+    def test_no_auth_json_means_env_value_is_live(self, cli_env, capsys):
+        eb.main([])
+        out = capsys.readouterr().out
+        assert ">>>" in out, "初回はログインパスワードを目立つ形で出すこと"
+        assert "ログインできません" not in out
+
+    def test_password_b_hash_alone_does_not_warn_about_master(self, cli_env, capsys):
+        """`init_from_env` 直後の状態。master は .env の値が効くので警告しない。"""
+        cli_env.write_text('{"password_b_hash": "$2b$12$dummy"}', encoding="utf-8")
+        eb.main([])
+        out = capsys.readouterr().out
+        assert ">>>" in out, "master は有効なのに警告するのは過剰"
+        # 共有用 (B) の方は効かないので、そちらだけ但し書きが出る
+        assert "この値は使われません" in out
+
+    def test_master_hash_suppresses_the_login_banner(self, cli_env, capsys):
+        cli_env.write_text(
+            '{"master_password_hash": "$2b$12$dummy", "password_b_hash": "$2b$12$d"}',
+            encoding="utf-8",
+        )
+        eb.main([])
+        out = capsys.readouterr().out
+        assert ">>>" not in out, (
+            "auth.json の master_password_hash が優先されるので、"
+            "生成した値を「ログインパスワード」として提示してはいけない"
+        )
+        assert "ログインできません" in out
+        assert "アプリ内で変更済み" in out
+
+    def test_already_configured_env_also_reports_the_override(self, cli_env, capsys):
+        """2 回目以降 (何も生成しない) の案内も実態に合わせる。"""
+        eb.main([])            # 1 回目: .env を作る
+        cli_env.write_text('{"master_password_hash": "$2b$12$dummy"}', encoding="utf-8")
+        capsys.readouterr()
+
+        eb.main([])            # 2 回目: 生成なし
+
+        out = capsys.readouterr().out
+        assert ".env の MASTER_PASSWORD 行で確認できます" not in out
+        assert "アプリ内で変更済み" in out
+
+
+class TestStoredAuthHashes:
+    def test_missing_file_is_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AUTH_CONFIG_PATH", str(tmp_path / "nope.json"))
+        assert eb.stored_auth_hashes() == frozenset()
+
+    @pytest.mark.parametrize("body", ["", "{", "[]", "null", '"text"'])
+    def test_broken_content_is_empty_not_an_error(self, tmp_path, monkeypatch, body):
+        """auth.json が壊れていてもセットアップは止めない。"""
+        path = tmp_path / "auth.json"
+        path.write_text(body, encoding="utf-8")
+        monkeypatch.setenv("AUTH_CONFIG_PATH", str(path))
+        assert eb.stored_auth_hashes() == frozenset()
+
+    def test_reports_only_the_keys_actually_set(self, tmp_path, monkeypatch):
+        path = tmp_path / "auth.json"
+        path.write_text(
+            '{"master_password_hash": "x", "password_b_hash": "", '
+            '"password_a_hash": "y", "password_version": 3}',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AUTH_CONFIG_PATH", str(path))
+        # 空文字は「未設定」。password_a_hash は判定に使わない
+        assert eb.stored_auth_hashes() == frozenset({"master_password_hash"})
+
+    def test_env_override_wins_for_the_path(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AUTH_CONFIG_PATH", str(tmp_path / "custom.json"))
+        assert eb.auth_config_path() == tmp_path / "custom.json"
+
+
 class TestLauncherWiring:
     """ランチャが生成処理を呼ばなくなったら、利用者から見た不具合が再発する。"""
 
