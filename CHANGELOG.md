@@ -12,6 +12,84 @@
 
 ---
 
+## 2026-09-08_ver63.2
+
+### 修正: Harmony が必ず失敗する不具合と、RPCA が JoinLayers で OOM kill される不具合
+
+TIMS 本解析で **Harmony と RPCA の結果が両方とも出ない**という報告の調査結果。
+原因は独立した 2 つの不具合だった。シナリオ「補正なし(within_slice)」運用では
+Harmony 分岐に入らず RPCA もゲートで落ちるため、**ver45.9(2026-07-26) 以降
+今日まで露見していなかった**。2026-09-07 に `integrate_correct` で実行して初めて
+両方が呼ばれ、両方が別々の理由で失敗した。
+
+**(1) Harmony が収束後に必ず `non-conformable arguments` で落ちる**
+
+ver45.9 が `RunHarmony` の 4 行上で `scale.data` を破棄したが、その安全性の根拠に
+「`RunHarmony` は PCA 埋め込みに対して動く」と書かれていた。これは**後処理を見落とした
+記述**で、harmony は既定 `project.dim=TRUE` により収束後に `Seurat::ProjectDim` を呼び
+`scale.data %*% cell.embeddings` を計算する。破棄済みなので 0x0 行列との積になり落ちる。
+
+実測(2026-09-07): 3 tier すべて同一エラー、`Layer 'scale.data' is empty` 警告が
+試行回数と同じ 3 回。その後 `PCA_RETRY_GRID` へ転落するため、**中身が無補正 PCA の
+結果が `Step2_HarmonyPCA_Result.rds` という名前で保存され、画面には「Harmony」と
+表示されていた**（アプリはファイル名で手法名を決めるため）。
+
+- 稼働環境の harmony は 2.0.5。引数名は **`project.dim`(ドット区切り)**。
+  `project_dim` と書くと `...` に吸収されて黙って無視されるため効かない。
+- `RunHarmony(..., project.dim = FALSE)` を明示。本スクリプトは harmony の loadings を
+  どこでも使わないため**出力は不変**。
+- 同じパッチを当てている再解析側 (`260623_DBSCAN_ver18_Cluster_Filter_ReUMAP.R` が
+  生成する `run_pipeline`) にも同修正。DESI(v16) は `scale.data` を破棄していないため対象外。
+
+**(2) RPCA が `JoinLayers` で OOM kill される**
+
+`Running RPCA` の直後に SIGKILL(9)。**落ちていたのは `IntegrateLayers` ではなく、その直後の
+`JoinLayers`**。ログ最終行の `Adding a dimensional reduction (rpca) without the associated
+assay being present` は DimReduc 代入時の警告で、これが出た時点で `IntegrateLayers` は
+アンカー計算を完了している。
+
+メモリ収支(236,184 セル x 1,545 特徴量, 密度 49.6%, dense 2.72 GiB / sparse 2.02 GiB):
+
+| 時点 | 実測/内訳 | 累計 |
+|---|---|---|
+| Step3 開始前 | seu_list 2.02 + counts 2.02 + data 2.02 + 端数 | 6.42 GB(実測) |
+| split 完了 | 同上 | 6.08 GB(実測) |
+| + ScaleData の dense | +2.72 | 8.80 |
+| **+ JoinLayers の新旧二重保持** | **+4.05** | **12.96 → mem_limit 12g 超過** |
+
+`cgroup memory.events` は `oom_kill 3` / `oom 36` / `max 12,280,721` を記録しており、
+cgroup OOM で確定。ホストには swap 32 GiB があり cgroup にも 28 GiB 割り当て済みだが、
+`JoinLayers` は旧行列を読みながら新行列を書くためワーキングセットが退避候補にならず救えない。
+
+- **`JoinLayers` の直前で `counts` 層と `scale.data` を破棄**（-6.77 GiB）。
+  どちらも以降どこからも読まれない: `counts` は直後の
+  `save_rds_compact(keep_counts=FALSE)` でどのみち落とし、`scale.data` は Step3 RDS に
+  保存されず下流は subset に対し作り直す（`counts` の読み手は Step1 系ヘルパ
+  `:1154/:1256/:1282/:1307/:1316` と `apply_input_norm` のみ、いずれも Step3 下流に無い）。
+  破棄は**直前**でなければならない。ループ先頭の `FindVariableFeatures` が Seurat v5 既定の
+  `layer="counts"` を読むため、早く捨てると再試行できなくなる。
+  破棄が効いたかを `Layers()` の前後でログに出し、次に落ちたとき 1 行で切り分けられるようにした。
+- **`seu_list` の中身を解放**（-2.02 GiB）。`merge` 以降どこからも中身は読まれず
+  `length()` だけが使われるのに、生 counts を Step3 の全期間抱えていた。長さのみ保持。
+- 推定ピーク **12.96 → 約 6.2 GiB**。`mem_limit` は 12g のままで収まるため、
+  ver45.5 が推奨していた 24〜32g への引き上げも swap 追加も不要。
+
+**(3) 計測の追加（挙動不変）**
+
+`FindVariableFeatures / ScaleData / RunPCA / IntegrateLayers / JoinLayers` の各段に
+`.mem_note` を追加。この区間には計測が 1 行も無く、今回は警告の出力位置から
+死因を推定する必要があった。
+
+**採らなかった対策**: `mem_limit` 引き上げ（天井への張り付きが常態化し ver60.1 の
+「落ちないまま無反応」障害を招く）/ swap 追加（既に存在し、かつ効かない）/
+`R_MAX_VSIZE_GB`（死因が `JoinLayers` なので捕まえても同じ場所で死に、Step1 の実測
+10.41 GB により誤爆する）/ nfeatures 梯子の変更（-0.96 GiB では不足を埋められず、
+HVG が変わって統合結果が変わる）。
+
+version 63.1→63.2。R スクリプトの修正のみで、**解析結果は不変**。
+
+---
+
 ## 2026-09-04_ver63.1
 
 ### 修正: 変換の診断ログが本番のどこにも出ていなかった

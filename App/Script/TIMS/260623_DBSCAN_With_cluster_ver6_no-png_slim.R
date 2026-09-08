@@ -2670,13 +2670,27 @@ if (!step2_done && !.stage_downstream) {
     # [ver45.9] scale.data は PCA 計算後は不要。実測(再解析)では ScaleData が +4.68GB を要し、
     #   以後 11.4GB 前後で全工程が走って FindAllMarkers の並列化時に OOM した。ここで破棄する。
     #   安全な根拠: downstream のヒートマップは subset に対し ScaleData を作り直す(空の前提の
-    #   設計)、Step2 の RDS 保存は keep_scale=FALSE で元々落としている、RunHarmony は PCA
-    #   埋め込みに対して動く、RPCA ブロックでも既に破棄済み(前倒しするだけ)。
+    #   設計)、Step2 の RDS 保存は keep_scale=FALSE で元々落としている、RPCA ブロックでも
+    #   既に破棄済み(前倒しするだけ)。
+    # ★ ver63.2: 当初ここには「RunHarmony は PCA 埋め込みに対して動く」とも書いていたが、
+    #   これは後処理を見落とした記述だった。harmony は収束後に Seurat::ProjectDim を呼び
+    #   scale.data を読むため、破棄したままでは必ず落ちる。下の RunHarmony に
+    #   project.dim = FALSE を付けてその後処理を止めることで整合させている。
     suppressWarnings(try(s[[DefaultAssay(s)]]$scale.data <- NULL, silent = TRUE))
     invisible(gc(verbose = FALSE))
     .mem_note_base("Step2 scale.data 破棄後")
     if(use_harmony) {
-      s <- RunHarmony(s, group.by.vars=group_var)
+      # ★ ver63.2: project.dim = FALSE を明示する。
+      #   harmony(稼働環境 2.0.5) の既定は project.dim=TRUE で、収束後に
+      #   Seurat::ProjectDim を呼び scale.data %*% cell.embeddings を計算する。
+      #   ver45.9 が 4 行上で scale.data を破棄したため 0x0 行列との積になり、
+      #   Harmony は「収束した後に」必ず non-conformable arguments で落ちていた。
+      #   実測(2026-09-07): 3 tier すべて同一エラー、"Layer 'scale.data' is empty" 警告 3 回。
+      #   その後 PCA グリッドへ転落するため、中身が無補正 PCA の結果が
+      #   Step2_HarmonyPCA_Result.rds という名前で保存され、画面には「Harmony」と出ていた。
+      #   引数名はドット区切り。project_dim と書くと ... に吸収されて黙って無視される。
+      #   本スクリプトは harmony の loadings をどこでも使わないので出力は不変。
+      s <- RunHarmony(s, group.by.vars=group_var, project.dim = FALSE)
     }
     # PIPELINE_STAGE=reduction_only: reduction(PCA/Harmony)計算後に即返す
     #   （UMAP/FindNeighbors/FindClusters をスキップ＝PreFlight 診断用の軽量実行）
@@ -2847,6 +2861,13 @@ if (!step3_done && !.stage_downstream) {
     # IntegrateLayers に置換。新 reduction 名 "rpca"（下流/診断がそのまま採用）。
     .rpca_batch <- if (length(seu_list) >= 2) "sample" else "slice_id"
 
+    # ★ ver63.2: seu_list は :2644 の merge 以降どこからも中身を読まれず、
+    #   :2841 と直上の length() だけが使われる（grep 済み）。にもかかわらず
+    #   生 counts を Step3 の全期間抱え続けており、実測 6.42 GB のうち約 2.0 GB が
+    #   これだった。length() を保つため長さだけ残して中身を捨てる。結果は不変。
+    seu_list <- vector("list", length(seu_list))
+    gc(verbose = FALSE)
+
     # [ver6.x メモリ削減] Step3 に入る前に、直前段階(Harmony/無補正PCAの下流解析)が
     # 残した巨大な副産物を先に捨てる。RPCA は PCA 空間しか使わないため結果は不変。
     #   - graphs: FindNeighbors が作る近傍グラフ(セル数^2 相当のスパース)。RPCA では未使用。
@@ -2902,9 +2923,14 @@ if (!step3_done && !.stage_downstream) {
       for (nf in c(2000L, 1000L, 500L)) {
         cat(sprintf("  [RPCA] IntegrateLayers 試行: nfeatures=%d, k.weight=%d\n", nf, .kw))
         ok <- tryCatch({
+          # ★ ver63.2: この区間には計測が 1 行も無く、2026-09-07 の SIGKILL では
+          #   「どの行で落ちたか」を警告の出力位置から推定する羽目になった。各段に入れる。
           seu_rpca <- FindVariableFeatures(seu_rpca, nfeatures = nf, verbose = FALSE)
+          .mem_note(sprintf("Step3 FindVariableFeatures 後 (nf=%d)", nf))
           seu_rpca <- ScaleData(seu_rpca, verbose = FALSE)
+          .mem_note("Step3 ScaleData 後")
           seu_rpca <- RunPCA(seu_rpca, npcs = MAX_PCS, verbose = FALSE)
+          .mem_note("Step3 RunPCA 後")
           # この一手だけ future.globals 上限を一時解除（plan=sequential のため複製なし）。
           # 成功/失敗いずれでも finally で必ず元（4GB）へ戻す（:69 の全域既定は不変）。
           .old_gmax <- getOption("future.globals.maxSize")
@@ -2916,7 +2942,31 @@ if (!step3_done && !.stage_downstream) {
                             k.weight = .kw, verbose = FALSE),
             finally = options(future.globals.maxSize = .old_gmax)
           )
+          .mem_note("Step3 IntegrateLayers 後")
+          # ★ ver63.2: JoinLayers は 6 分割レイヤーを結合し直すため、処理中は新旧が
+          #   同時に載る（counts + data で約 +4.0 GB）。2026-09-07 の実行はまさにこの行で
+          #   SIGKILL された（直前の IntegrateLayers は成功しており、rpca の DimReduc を
+          #   代入した警告がログに残っている）。ここで捨てる 2 つは以降どこからも読まれない:
+          #     counts     … 下の save_rds_compact(keep_counts=FALSE) でどのみち落とす
+          #     scale.data … Step3 RDS に保存されず、下流は subset に対し作り直す
+          #   破棄は JoinLayers の「直前」でなければならない。上の FindVariableFeatures が
+          #   Seurat v5 既定の layer="counts" を読むため、ループ先頭で捨てると再試行できない。
+          .lay_before <- tryCatch(SeuratObject::Layers(seu_rpca[["Spatial"]]),
+                                  error = function(e) character(0))
+          suppressWarnings(try(seu_rpca[["Spatial"]]$scale.data <- NULL, silent = TRUE))
+          for (.ly in grep("^counts", .lay_before, value = TRUE))
+            suppressWarnings(try(LayerData(seu_rpca[["Spatial"]], layer = .ly) <- NULL, silent = TRUE))
+          gc(verbose = FALSE)
+          # 破棄が実際に効いたかをログに残す。効いていなければ JoinLayers で再び
+          # 天井に当たるので、次に落ちたときこの 1 行で切り分けられる。
+          cat(sprintf("  [RPCA] JoinLayers 前の破棄: [%s] -> [%s]\n",
+                      paste(.lay_before, collapse = ","),
+                      paste(tryCatch(SeuratObject::Layers(seu_rpca[["Spatial"]]),
+                                     error = function(e) character(0)), collapse = ",")))
+          flush(stdout())
+          .mem_note("Step3 JoinLayers 直前 (counts/scale.data 破棄後)")
           seu_rpca <- JoinLayers(seu_rpca)
+          .mem_note("Step3 JoinLayers 後")
           if (!identical(PIPELINE_STAGE, "reduction_only")) {
             .rd <- 1:min(UMAP_DIMS_MAX, ncol(Embeddings(seu_rpca, "rpca")))
             seu_rpca <- RunUMAP(seu_rpca, reduction = "rpca", dims = .rd,
