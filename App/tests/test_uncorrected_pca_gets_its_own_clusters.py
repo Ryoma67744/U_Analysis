@@ -190,6 +190,67 @@ def test_the_tims_result_does_not_grow_a_fake_pca(tmp_path):
     assert Path(got["PCA (uncorrected)"]).name == "Step2_PCA_uncorrected.rds"
 
 
+def test_the_real_tims_output_set_yields_only_the_three_real_methods(tmp_path):
+    """★ ver66.3: 実際の出力一式で、手法が本物の 3 つだけになること。
+
+    ver66.2 で「同じファイルが二つの手法に登録される」のは止めたが、実フォルダには
+    手法ごとの**描画材料**も並んでいる。`pixel_table_rpca.rds` は `"rpca"` に当たる
+    ものの `RPCA` の枠は埋まっているので条件が偽になり、`elif` 連鎖の最後の
+    `"pca"` まで落ちて **`PCA` を名乗っていた**。利用者の画面ではこれが
+    「ver66.2 にしても PCA が消えない」として現れた。
+
+    上の合成ケースは Step ファイルしか置いていないため素通りしていた。
+    """
+    from app.callbacks.interactive_callbacks import _detect_integration_methods
+
+    d = tmp_path / "RDS_Files"
+    d.mkdir()
+    for name in (
+        # 解析結果
+        "Step1_SeuratList_Preprocessed.rds",
+        "Step2_HarmonyPCA_Result.rds",
+        "Step3_RPCA_Result.rds",
+        "Step2_PCA_uncorrected.rds",
+        # 手法ごとの描画材料（解析結果ではない）
+        "pixel_table_harmony.rds",
+        "pixel_table_rpca.rds",
+        "pixel_table_pca_uncorrected.rds",
+        "plotdata_volcano_harmony.rds",
+        "plotdata_top5_rpca.rds",
+        "UMAP_harmony_umap_embedding.rds",
+        "deg_FindAllMarkers_raw_rpca_abc123.rds",
+        "feature_annotations.rds",
+    ):
+        (d / name).write_bytes(b"x")
+
+    got = _detect_integration_methods(str(tmp_path), include_derived=True)
+    assert "PCA" not in got, (
+        f"描画材料が「PCA」として拾われている: {got}。"
+        "選ぶと Seurat オブジェクトではないので抽出に失敗する")
+    assert set(got) == {"Harmony", "RPCA", "PCA (uncorrected)"}, got
+    assert Path(got["Harmony"]).name == "Step2_HarmonyPCA_Result.rds"
+    assert Path(got["RPCA"]).name == "Step3_RPCA_Result.rds"
+    assert Path(got["PCA (uncorrected)"]).name == "Step2_PCA_uncorrected.rds"
+
+
+def test_a_drawing_table_alone_is_not_a_method(tmp_path):
+    """★ ver66.3: 描画材料しか無いフォルダで手法が生えないこと。
+
+    解析結果を別の場所へ移したあとの残骸フォルダでも、`pixel_table_harmony.rds` が
+    `Harmony` を名乗ってはいけない（開けても中身が無く、原因が分からなくなる）。
+    """
+    from app.callbacks.interactive_callbacks import _detect_integration_methods
+
+    d = tmp_path / "RDS_Files"
+    d.mkdir()
+    for name in ("pixel_table_harmony.rds", "pixel_table_rpca.rds",
+                 "pixel_table_pca_uncorrected.rds"):
+        (d / name).write_bytes(b"x")
+
+    got = _detect_integration_methods(str(tmp_path), include_derived=True)
+    assert got == {}, f"描画材料だけのフォルダで手法が生えている: {got}"
+
+
 def test_the_derived_pca_comes_back_for_older_tims_results(tmp_path):
     """★ 併走出力を持たない古い TIMS 結果で、派生の未補正 PCA が使えること。
 
@@ -198,16 +259,26 @@ def test_the_derived_pca_comes_back_for_older_tims_results(tmp_path):
     **一度も発動していなかった**。ここが本来の姿。
     """
     from app.callbacks.interactive_callbacks import _detect_integration_methods
+    from app.config import SEURAT_CACHE_DIR
 
     d = tmp_path / "RDS_Files"
     d.mkdir()
-    for name in ("Step2_HarmonyPCA_Result.rds", "Step3_RPCA_Result.rds"):
+    # ★ ver66.3: 描画材料も並べる。実フォルダには必ずあり、これが「PCA」の枠を
+    #   埋めてしまうと救済経路が発動しない。
+    for name in ("Step2_HarmonyPCA_Result.rds", "Step3_RPCA_Result.rds",
+                 "pixel_table_harmony.rds", "pixel_table_rpca.rds"):
         (d / name).write_bytes(b"x")
 
     got = _detect_integration_methods(str(tmp_path), include_derived=True)
     assert got.get("PCA"), f"派生の未補正 PCA が選択肢に出ていない: {got}"
-    assert "derived_pca" in got["PCA"], (
+    # ★ ver66.3: 置き場所を厳密に見る。以前は `"derived_pca" in got["PCA"]` と
+    #   部分一致で見ていたが、pytest の tmp_path 自体が
+    #   `.../test_the_derived_pca_comes_back0/` という名前なので **結果フォルダ内の
+    #   別ファイルを指していても真になり**、この検査は素通りしていた。
+    assert Path(got["PCA"]).parent == Path(SEURAT_CACHE_DIR) / "derived_pca", (
         f"「PCA」が派生キャッシュではなく既存ファイルを指している: {got['PCA']}")
+    assert not str(got["PCA"]).startswith(str(tmp_path)), (
+        f"「PCA」が結果フォルダ内のファイルを指している: {got['PCA']}")
     assert got["PCA"] != got.get("Harmony")
 
 

@@ -463,6 +463,25 @@ def _save_interactive_settings(key, value):
 #   上げないと、直したのに古い派生結果が返り続ける。
 _DERIVE_PCA_VERSION = "v58.0"
 
+# 解析結果の RDS ではなく「描画材料」として R が書き出す補助 RDS のファイル名系統。
+# 手法検出はファイル名の部分一致なので、これらを先に落とさないと手法として拾われる。
+#
+# ★ ver66.3: `"pixel_table_"` を追加した。それまでの 4 つでは足りていなかった。
+#   R スクリプトは手法ごと (harmony / rpca / pca_uncorrected) に補助 RDS を **7 系統**
+#   `RDS_Files/` へ書き出すが、ここに載っていたのは 4 系統だけだった。漏れていた
+#   `pixel_table_rpca.rds` は第2段階で `"rpca" in name` に当たるものの `RPCA` の枠は
+#   既に埋まっていて条件が偽になり、`elif` 連鎖の最後の `"pca" in name` まで落ちて
+#   **`PCA` として登録されていた**。利用者には無補正 PCA に見えるが実体は描画材料の
+#   data.frame で、選ぶと抽出に失敗する。同じ理屈で Step2 本体を欠くフォルダでは
+#   `pixel_table_harmony.rds` が `Harmony` を名乗ることもありうる。
+#   ver66.2 のガード（同一ファイルの二重登録を防ぐ）は**別ファイル**が枠を埋める
+#   この経路には効かない。
+#
+#   この表と R スクリプトの出力の対応は
+#   `tests/test_aux_rds_are_not_mistaken_for_results.py` が検査する。
+#   R 側に手法別の補助出力を足すときは、ここにも系統を足すこと。
+_EXCLUDE_PREFIXES = ("umap_", "deg_", "plotdata_", "feature_", "pixel_table_")
+
 
 def _detect_integration_methods(folder_path: str, include_derived: bool = False) -> dict:
     """結果フォルダ内のRDSファイルを検出し、統合手法→パスのマッピングを返す。
@@ -484,9 +503,6 @@ def _detect_integration_methods(folder_path: str, include_derived: bool = False)
     # RDS_Files/ フォルダ内を検索
     rds_dir = base / "RDS_Files"
     search_dirs = [rds_dir, base] if rds_dir.is_dir() else [base]
-
-    # data.frame 型 RDS を除外するプレフィックス
-    _EXCLUDE_PREFIXES = ("umap_", "deg_", "plotdata_", "feature_")
 
     # 第1段階: TIMS ver13 の Step2/Step3 ファイルを優先マッチ
     for search_dir in search_dirs:
@@ -613,6 +629,12 @@ def _detect_integration_methods(folder_path: str, include_derived: bool = False)
         derived = Path(SEURAT_CACHE_DIR) / "derived_pca" / f"{h}_pca_uncorrected.rds"
         rds_map["PCA"] = str(derived)
 
+    # ★ ver66.3: どの手法がどのファイルを指したかを残す。
+    #   検出違い (ver58.0 の二重登録・ver66.3 の補助 RDS 混入) はどちらも画面上は
+    #   正常に見えるため、ログが無いと「PCA が出ている」以上のことが分からず、
+    #   結果フォルダの中身を人手で突き合わせるまで原因に辿り着けなかった。
+    logger.info("統合手法の検出結果: %s",
+                {k: Path(v).name for k, v in rds_map.items()} or "なし")
     return rds_map
 
 

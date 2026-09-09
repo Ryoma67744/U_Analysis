@@ -12,6 +12,60 @@
 
 ---
 
+## 2026-09-09_ver66.3
+
+### 修正: 解析手法の「PCA」に描画材料の RDS が入り込んでいた
+
+ver66.2 を反映しても、TIMS の結果フォルダでは解析手法の一覧に `PCA` が出たままだった。
+今度は Harmony/RPCA の結果ファイルではなく、**`RDS_Files/pixel_table_rpca.rds`**
+（空間マップを描くための data.frame。Seurat オブジェクトではない）を指していた。
+
+```
+TIMS ver6 の実出力一式で修正前の _detect_integration_methods を実行:
+   'PCA (uncorrected)' -> Step2_PCA_uncorrected.rds
+   'Harmony'           -> Step2_HarmonyPCA_Result.rds
+   'RPCA'              -> Step3_RPCA_Result.rds
+   'PCA'               -> pixel_table_rpca.rds        ← 解析結果ではない
+```
+
+**原因**: 手法の検出はファイル名の部分一致で行うため、解析結果ではない RDS を
+`_EXCLUDE_PREFIXES` で先に落としている。R スクリプトは手法ごと
+(harmony / rpca / pca_uncorrected) に補助 RDS を **7 系統**書き出すのに、
+この表には 4 系統 (`umap_` / `deg_` / `plotdata_` / `feature_`) しか載っていなかった。
+漏れていた `pixel_table_rpca.rds` は `"rpca"` に当たるものの `RPCA` の枠は既に埋まって
+いて条件が偽になり、`elif` 連鎖の最後の `"pca"` まで落ちて `PCA` になっていた。
+
+ver66.2 のガードは「**同じファイル**が二つの手法に登録される」ことを防ぐもので、
+**別ファイル**が枠を埋めるこの経路には効かない。
+
+**影響**: `PCA` を選ぶと Seurat オブジェクトではないファイルを抽出しようとして失敗する
+（ver66.2 より前は Harmony の中身が黙って出ていた）。Step2 の本体を欠いたフォルダでは
+`pixel_table_harmony.rds` が `Harmony` を名乗る可能性もあった。
+
+**修正**:
+
+- `_EXCLUDE_PREFIXES` に `"pixel_table_"` を追加し、テストから読めるようモジュール定数へ
+  引き上げ (`app/callbacks/interactive_callbacks.py`)。
+- 検出結果（どの手法がどのファイルを指したか）を `logger.info` に残す。この種の取り違えは
+  画面上は正常に見えるため、ログが無いと結果フォルダを人手で突き合わせるまで分からない。
+
+**テスト**:
+
+- 新規 `tests/test_aux_rds_are_not_mistaken_for_results.py` — **R スクリプトと除外表の
+  対応を固定する番人**。`Script/**/*.R` から「手法ごとに書き出される補助 RDS」
+  （ファイル名に `prefix` を差し込む `paste0`）の系統を抽出し、すべてが除外表で
+  塞がれていることを検査する。R 側に補助出力が増えたら落ちる。
+- `tests/test_uncorrected_pca_gets_its_own_clusters.py` — 実出力一式で手法が
+  `Harmony` / `RPCA` / `PCA (uncorrected)` の 3 つだけになること、描画材料だけの
+  フォルダで手法が生えないことを追加。
+- あわせて ver66.2 で入れた `test_the_derived_pca_comes_back_for_older_tims_results` の
+  検査が**素通りしていた**のを修正。`"derived_pca" in got["PCA"]` の部分一致は、
+  pytest の `tmp_path` 自体が `test_the_derived_pca_comes_back0` という名前のため
+  結果フォルダ内の別ファイルを指していても真になっていた。派生キャッシュの
+  ディレクトリと厳密に突き合わせる形へ変更。
+
+---
+
 ## 2026-09-09_ver66.2
 
 ### 修正: 解析手法の「PCA」が Harmony / RPCA の結果を指していた
