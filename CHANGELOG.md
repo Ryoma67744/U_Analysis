@@ -12,6 +12,49 @@
 
 ---
 
+## 2026-09-09_ver66.2
+
+### 修正: 解析手法の「PCA」が Harmony / RPCA の結果を指していた
+
+利用者からの指摘「RPCA の Uncorrected の有無って何？」を調べる過程で見つかった不具合。
+
+TIMS の結果フォルダを開くと、手法一覧の **`PCA` は無補正 PCA ではなく
+`Step2_HarmonyPCA_Result.rds`（＝Harmony の結果。ファイルの走査順によっては
+`Step3_RPCA_Result.rds`）を指していた**。無補正だと思って選んでも補正後の結果が出るので、
+補正の有無を比較したつもりが比較になっていない。しかも画面は正常に見えるため気づけない。
+
+**原因**: `interactive_callbacks._detect_integration_methods` の第2段階（と rglob
+フォールバックの第2段階）の分岐が「その**手法名**がまだ埋まっていないか」
+（`"PCA" not in rds_map`）しか見ておらず、**同じファイルが二つの手法に登録されること**を
+防いでいなかった。TIMS の実ファイル名は `Step2_Harmony**PCA**_Result.rds` /
+`Step3_R**PCA**_Result.rds` でどちらも "pca" を含むため、第1段階で Harmony / RPCA として
+登録済みでも elif 連鎖の最後まで落ちて "PCA" にも入っていた。
+混入は ver58.0（DESI で「補正なし」を選べるようにした対応）。
+
+DESI の命名（`DESI_SeuratCombined_RPCA.rds` 等）は第1段階でマッチしないため第2段階で
+先に確定し、この経路を通らない。そのため既存テストは DESI しか見ておらず素通りしていた。
+
+**二次被害**: 併走出力（`Step2_PCA_uncorrected.rds`）を持たない古い結果向けに
+「Harmony から未補正 PCA を派生生成する」救済経路は `"PCA" not in rds_map` が条件なので、
+偽の `PCA` に枠を埋められて**一度も発動していなかった**。
+
+**修正**: 第2段階のループ先頭に「既に別の手法として登録済みのファイルは飛ばす」
+ガードを追加（2 箇所）。5 パターンで確認済み:
+
+| 入力 | 結果 |
+|---|---|
+| TIMS: Harmony + RPCA + 併走出力 | 偽の `PCA` が消える。他 3 つは不変 |
+| TIMS: 併走出力なし（古い結果） | `PCA` が派生キャッシュを指す＝救済経路が復活 |
+| サブフォルダ探索 (rglob) 経路 | 同上 |
+| DESI: `DESI_SeuratCombined_PCA.rds` のみ | 従来どおり `PCA` として検出（過剰修正なし） |
+| 併走出力のみ | `PCA (uncorrected)` だけ（過剰修正なし） |
+
+**テスト**: `tests/test_uncorrected_pca_gets_its_own_clusters.py` に TIMS の**実ファイル名**を
+通す回帰テストを 2 件追加（偽の `PCA` が生えないこと／古い結果で派生 PCA が復活すること）。
+ガードを外すと 2 件とも落ちることを確認済み。全体 2,722 件 pass。
+
+---
+
 ## 2026-09-09_ver66.1
 
 ### 修正: データを読み込み直しても、前に見ていた図が残る

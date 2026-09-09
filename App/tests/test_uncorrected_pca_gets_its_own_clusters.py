@@ -162,6 +162,55 @@ def test_the_viewer_finds_the_desi_companion(tmp_path):
     assert got.get("Harmony"), "従来の Harmony 検出を壊している"
 
 
+def test_the_tims_result_does_not_grow_a_fake_pca(tmp_path):
+    """★ TIMS の実ファイル名で、補正結果が「PCA」としても拾われないこと。
+
+    TIMS の実名は `Step2_Harmony**PCA**_Result.rds` / `Step3_R**PCA**_Result.rds` で
+    どちらも "pca" を含む。各分岐は「その**手法名**がまだ埋まっていないか」しか
+    見ていなかったため、第1段階で Harmony / RPCA として登録済みでも第2段階の
+    elif 連鎖の最後まで落ち、**同じファイルが "PCA" にも入っていた**（ver58.0 で混入）。
+
+    その結果「PCA」を選ぶと中身は Harmony（走査順によっては RPCA）で、補正の有無を
+    比べたつもりが比較になっていない。画面は正常に見えるので気づけない。
+    """
+    from app.callbacks.interactive_callbacks import _detect_integration_methods
+
+    d = tmp_path / "RDS_Files"
+    d.mkdir()
+    for name in ("Step2_HarmonyPCA_Result.rds", "Step3_RPCA_Result.rds",
+                 "Step2_PCA_uncorrected.rds"):
+        (d / name).write_bytes(b"x")
+
+    got = _detect_integration_methods(str(tmp_path), include_derived=True)
+    assert "PCA" not in got, (
+        f"補正結果が「PCA」としても拾われている: {got}。"
+        "無補正だと思って選ぶと Harmony/RPCA の中身が出る")
+    assert Path(got["Harmony"]).name == "Step2_HarmonyPCA_Result.rds"
+    assert Path(got["RPCA"]).name == "Step3_RPCA_Result.rds"
+    assert Path(got["PCA (uncorrected)"]).name == "Step2_PCA_uncorrected.rds"
+
+
+def test_the_derived_pca_comes_back_for_older_tims_results(tmp_path):
+    """★ 併走出力を持たない古い TIMS 結果で、派生の未補正 PCA が使えること。
+
+    偽の「PCA」が枠を埋めていたせいで、Harmony から未補正 PCA を派生生成する
+    救済経路 (`include_derived`) は `"PCA" not in rds_map` の条件を満たせず、
+    **一度も発動していなかった**。ここが本来の姿。
+    """
+    from app.callbacks.interactive_callbacks import _detect_integration_methods
+
+    d = tmp_path / "RDS_Files"
+    d.mkdir()
+    for name in ("Step2_HarmonyPCA_Result.rds", "Step3_RPCA_Result.rds"):
+        (d / name).write_bytes(b"x")
+
+    got = _detect_integration_methods(str(tmp_path), include_derived=True)
+    assert got.get("PCA"), f"派生の未補正 PCA が選択肢に出ていない: {got}"
+    assert "derived_pca" in got["PCA"], (
+        f"「PCA」が派生キャッシュではなく既存ファイルを指している: {got['PCA']}")
+    assert got["PCA"] != got.get("Harmony")
+
+
 def test_the_derived_cache_is_invalidated_when_the_helper_changes(tmp_path):
     """★ 補助スクリプトを直しても古い派生結果が返り続けないこと。
 
