@@ -56,14 +56,14 @@ def _figure_has_content(fig):
     return bool((fig.get("layout") or {}).get("images"))
 
 
-def _get_export_figures(kind, session_id, rds_path, *, marker_size=None,
-                        label_size=None, spot_opacity=None, hne_marker_size=None):
+def _get_export_figures(kind, session_id, rds_path, *,
+                        label_size=None, spot_opacity=None):
     """描画コールバックがサーバ側に置いた figure リストを取り出す (ver46.1)。
 
     以前は同じ内容を dcc.Store 経由でブラウザに持たせていたが、描画のたびに
     全タイルの点データが往復していたためサーバ保持に変更した。
 
-    さらに、マーカーサイズ / ラベルサイズ / スポット不透明度のスライダーは
+    さらに、ラベルサイズ / スポット不透明度のスライダーは
     clientside の Plotly.restyle で画面だけを更新する（サーバは作り直さない）ため、
     保持している figure はスライダー操作前の値のままになっている。
     保存直前にここで同じ変換を掛けて、**画面と保存 PNG を一致させる**。
@@ -78,24 +78,21 @@ def _get_export_figures(kind, session_id, rds_path, *, marker_size=None,
     figs = get_export_figures(kind, session_id, rds_path)
     if not figs:
         return figs
-    if all(v is None for v in (marker_size, label_size, spot_opacity,
-                               hne_marker_size)):
+    if all(v is None for v in (label_size, spot_opacity)):
         return figs
     out = []
     for name, fig in figs:
         fig = copy.deepcopy(fig)  # 保持中の figure は壊さない
-        # 通常 (MSI) タイル用のスライダー
-        apply_display_overrides(fig, marker_size=marker_size,
-                                label_size=label_size,
-                                spot_opacity=spot_opacity, kinds=("msi",))
-        # H&E タイル用のスライダー（サイズだけ別系統。不透明度は共通）
-        apply_display_overrides(fig, marker_size=hne_marker_size,
-                                spot_opacity=spot_opacity, kinds=("hne",))
+        # ★ ver66.0: サイズ系スライダーの撤去により、通常タイルと H&E タイルで
+        #   分けて適用する必要が無くなった（不透明度は元から共通）。
+        apply_display_overrides(fig, label_size=label_size,
+                                spot_opacity=spot_opacity,
+                                kinds=("msi", "hne"))
         out.append((name, fig))
     return out
 
 
-def _get_feature_export_figures(session_id, rds_path, *, marker_size=None,
+def _get_feature_export_figures(session_id, rds_path, *,
                                 colorscale=None):
     """Feature Plot 用。clientside restyle した見た目をサーバ側にも掛ける (ver51.3)。
 
@@ -111,13 +108,12 @@ def _get_feature_export_figures(session_id, rds_path, *, marker_size=None,
     figs = get_export_figures("feature", session_id, rds_path)
     if not figs:
         return figs
-    if marker_size is None and not colorscale:
+    if not colorscale:
         return figs
     out = []
     for name, fig in figs:
         fig = copy.deepcopy(fig)  # 保持中の figure は壊さない
-        apply_feature_display_overrides(fig, marker_size=marker_size,
-                                        colorscale=colorscale)
+        apply_feature_display_overrides(fig, colorscale=colorscale)
         out.append((name, fig))
     return out
 
@@ -364,21 +360,17 @@ def cb_batch_save_umap(n_clicks, umap_fig, display_mode, session_id, rds_path):
     Input("btn_batch_save_spatial", "n_clicks"),
     [State("session_id_store", "data"),
      State("seurat_rds_path_store", "data"),
-     State("spatial_marker_size", "value"),
      State("spatial_label_size", "value"),
-     State("hne_overlay_opacity", "value"),
-     State("hne_overlay_marker_size", "value")],
+     State("hne_overlay_opacity", "value")],
     prevent_initial_call=True,
 )
-def cb_batch_save_spatial(n_clicks, session_id, rds_path, marker_size,
-                          label_size, hne_opacity, hne_marker_size):
+def cb_batch_save_spatial(n_clicks, session_id, rds_path,
+                          label_size, hne_opacity):
     if not n_clicks:
         raise PreventUpdate
     spatial_figs = _get_export_figures(
-        "spatial", session_id, rds_path,
-        marker_size=marker_size, label_size=label_size,
-        spot_opacity=(None if hne_opacity is None else hne_opacity / 100.0),
-        hne_marker_size=hne_marker_size)
+        "spatial", session_id, rds_path, label_size=label_size,
+        spot_opacity=(None if hne_opacity is None else hne_opacity / 100.0))
 
     if not spatial_figs:
         return _nothing_to_save()
@@ -405,18 +397,16 @@ def cb_batch_save_spatial(n_clicks, session_id, rds_path, marker_size,
     Input("btn_batch_save_feature", "n_clicks"),
     [State("session_id_store", "data"),
      State("seurat_rds_path_store", "data"),
-     # ver51.3: この 2 つは clientside restyle で画面だけ変わっているため、
+     # ver51.3: 配色は clientside restyle で画面だけ変わっているため、
      # サーバ保持の figure は操作前の値のまま。保存直前に同じ変換を掛ける。
-     State("feature_marker_size", "value"),
      State("feature_colorscale", "value")],
     prevent_initial_call=True,
 )
-def cb_batch_save_feature(n_clicks, session_id, rds_path,
-                          marker_size=None, colorscale=None):
+def cb_batch_save_feature(n_clicks, session_id, rds_path, colorscale=None):
     if not n_clicks:
         raise PreventUpdate
     feature_figs = _get_feature_export_figures(
-        session_id, rds_path, marker_size=marker_size, colorscale=colorscale)
+        session_id, rds_path, colorscale=colorscale)
 
     if not feature_figs:
         return _nothing_to_save()
@@ -590,21 +580,17 @@ def _save_figure_as_thumbnail(figures_list, width, height, scale,
      State("project_list_refresh", "data"),
      State("session_id_store", "data"),
      State("seurat_rds_path_store", "data"),
-     State("spatial_marker_size", "value"),
      State("spatial_label_size", "value"),
-     State("hne_overlay_opacity", "value"),
-     State("hne_overlay_marker_size", "value")],
+     State("hne_overlay_opacity", "value")],
     prevent_initial_call=True,
 )
 def cb_set_thumbnail_spatial(n_clicks, project_id, refresh, session_id, rds_path,
-                             marker_size, label_size, hne_opacity, hne_marker_size):
+                             label_size, hne_opacity):
     if not n_clicks:
         raise PreventUpdate
     spatial_figs = _get_export_figures(
-        "spatial", session_id, rds_path,
-        marker_size=marker_size, label_size=label_size,
-        spot_opacity=(None if hne_opacity is None else hne_opacity / 100.0),
-        hne_marker_size=hne_marker_size)
+        "spatial", session_id, rds_path, label_size=label_size,
+        spot_opacity=(None if hne_opacity is None else hne_opacity / 100.0))
     # ver3.15: サムネ用に小さい解像度で kaleido を呼ぶ (5-10× 高速化)
     ok, msg = _save_figure_as_thumbnail(
         spatial_figs or [],

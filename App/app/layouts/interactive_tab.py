@@ -1212,21 +1212,10 @@ def create_interactive_tab():
                                 dbc.Col(width=1, children=[
                                     dbc.Checkbox(id="spatial_show_labels", label="番号", value=False),
                                 ]),
-                                dbc.Col(width=2, children=[
-                                    html.Div(style={"display": "flex", "alignItems": "center", "gap": "4px"}, children=[
-                                        dbc.Label(["マーカーサイズ", help_badge("spatial_marker_size")], className="small mb-0"),
-                                        dbc.Button("Auto", id="spatial_marker_auto_btn",
-                                                   size="sm", outline=True, color="info",
-                                                   style={"padding": "0 5px", "fontSize": "10px",
-                                                          "lineHeight": "1.2"}),
-                                    ]),
-                                    dcc.Slider(
-                                        id="spatial_marker_size",
-                                        min=0, max=30, step=1, value=0,
-                                        marks={0: "自動", 5: "5", 10: "10", 15: "15", 30: "30"},
-                                        tooltip={"placement": "bottom", "always_visible": False},
-                                    ),
-                                ]),
+                                # ★ ver66.0: 「マーカーサイズ」スライダーと Auto ボタンを
+                                # 撤去した。Spatial は MSI の画素をデータ座標の矩形として
+                                # 敷き詰めて描くようになったため、拡大率によらず常に隙間なく
+                                # 並び、画面 px でサイズを指定する必要が無くなった。
                             ]),
                             dbc.Row(className="mt-1 align-items-center", children=[
                                 dbc.Col(width=2, children=[
@@ -1279,14 +1268,10 @@ def create_interactive_tab():
                                                tooltip={"placement": "bottom",
                                                         "always_visible": False}),
                                 ]),
-                                dbc.Col(width=2, children=[
-                                    dbc.Label("スポットサイズ", className="small mb-0"),
-                                    dcc.Slider(id="hne_overlay_marker_size", min=2, max=15,
-                                               step=1, value=5,
-                                               marks={2: "2", 5: "5", 10: "10", 15: "15"},
-                                               tooltip={"placement": "bottom",
-                                                        "always_visible": False}),
-                                ]),
+                                # ★ ver66.0: 「スポットサイズ」スライダーを撤去した。
+                                # 組織像タイルは射影で軸平行の格子が崩れるため散布のまま
+                                # だが、大きさはスポット間隔から自動算出するようにした
+                                # （従来は固定値 5 で、データによっては合っていなかった）。
                                 dbc.Col(width="auto", children=[
                                     dbc.Button("リセット", id="hne_overlay_reset",
                                                size="sm", color="outline-secondary",
@@ -1353,21 +1338,9 @@ def create_interactive_tab():
                                 ]),
                             ]),
                             dbc.Row(className="mt-1 align-items-center", children=[
-                                dbc.Col(width=4, children=[
-                                    html.Div(style={"display": "flex", "alignItems": "center", "gap": "4px"}, children=[
-                                        dbc.Label("マーカーサイズ", className="small mb-0"),
-                                        dbc.Button("Auto", id="feature_marker_auto_btn",
-                                                   size="sm", outline=True, color="info",
-                                                   style={"padding": "0 5px", "fontSize": "10px",
-                                                          "lineHeight": "1.2"}),
-                                    ]),
-                                    dcc.Slider(
-                                        id="feature_marker_size",
-                                        min=0, max=15, step=1, value=0,
-                                        marks={0: "自動", 3: "3", 5: "5", 10: "10", 15: "15"},
-                                        tooltip={"placement": "bottom", "always_visible": False},
-                                    ),
-                                ]),
+                                # ★ ver66.0: 「マーカーサイズ」スライダーと Auto ボタンを
+                                # 撤去した。Feature Plot も MSI の画素をデータ座標の矩形
+                                # として敷き詰めて描くようになったため。
                                 dbc.Col(width=2, children=[
                                     dbc.Label("行数", className="small mb-0"),
                                     dcc.Dropdown(

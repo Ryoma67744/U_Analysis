@@ -107,7 +107,8 @@ NOT_RENDERERS = {
     ("interactive_deg", "_feature_graph_config"): "描画ヘルパ",
     ("interactive_deg", "_feature_heading"): "見出し文字列",
     ("interactive_deg", "_apply_feature_data_to_stored"): "保存済み figure の書き換え",
-    ("interactive_spatial", "auto_feature_marker"): "マーカーサイズの自動調整のみ",
+    # ★ ver66.0: `auto_feature_marker` は撤去（マーカーサイズスライダーごと）。
+    ("interactive_deg", "_feature_grid_index"): "格子添字を返すだけ（図は作らない）",
     # --- 薄いラッパ（実体は _update_feature_plot_inner） ---
     ("interactive_deg", "update_feature_plot"): "実体は _update_feature_plot_inner",
     ("interactive_deg", "patch_feature_intensity"): (

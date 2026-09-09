@@ -1022,9 +1022,10 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
             sp_label_size = int(label_size_override)
         except (TypeError, ValueError):
             pass
-    sp_marker_size = spatial_display.get("marker_size")
-    if sp_marker_size is None:
-        sp_marker_size = 0  # 0 = 自動計算
+    # ★ ver66.0: spatial_display.marker_size は **読まない**。Spatial は
+    #   ラスター（データ座標の矩形）で描くようになり、画面 px のサイズ指定は
+    #   意味を持たなくなった。旧 interactive_settings.json に残っている値を
+    #   読むと、散布フォールバック時にだけ効いて挙動が一貫しなくなる。
     # ver3.5: インタラクティブで除外したクラスタも軽量ビューアに反映
     sp_exclude = spatial_display.get("exclude_cluster") or []
 
@@ -1034,7 +1035,7 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
         rot = spatial_rotation.get(s, {}) or {}
         title = _resolve_sample_label(s, sample_name_map)
         # インタラクティブ側 (interactive_spatial.py:954-966) と引数を揃える:
-        # label_size / marker_size / exclude_clusters はインタラクティブ側の
+        # label_size / exclude_clusters はインタラクティブ側の
         # 設定値を尊重 (旧: hardcode。ver3.4 で label_size 修正、ver3.5 で
         # exclude_clusters を追加)。
         fig = _create_single_spatial_fig(
@@ -1047,7 +1048,6 @@ def _build_per_sample_spatial(df_plot, color_map, highlight_clusters,
             cluster_name_map=cluster_name_map,
             saved_positions=saved_positions_per_sample.get(s),
             title=title,
-            marker_size=sp_marker_size,
             label_size=sp_label_size,
             exclude_clusters=sp_exclude,
             embed_legend=True,

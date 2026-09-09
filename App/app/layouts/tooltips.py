@@ -180,12 +180,8 @@ def get_interactive_tooltips():
             "ノイズクラスタの非表示に便利です。",
             target="spatial_exclude_cluster_help_badge", **_TOOLTIP_PROPS,
         ),
-        dbc.Tooltip(
-            "Spatial Mappingの点サイズ。\n"
-            "0=自動（ピクセル間隔から最適サイズを計算）。\n"
-            "手動で調整する場合は1以上を設定してください。",
-            target="spatial_marker_size_help_badge", **_TOOLTIP_PROPS,
-        ),
+        # ★ ver66.0: 「Spatial Mappingの点サイズ」のツールチップを削除した。
+        # スライダーごと撤去したため（ラスター描画でセル寸法がデータ座標で決まる）。
         dbc.Tooltip(
             "プロットをフルスクリーンで拡大表示します。\n"
             "詳細な観察やスクリーンショット撮影に便利です。",

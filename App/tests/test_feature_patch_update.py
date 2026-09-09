@@ -84,8 +84,13 @@ def test_returns_nothing_when_no_graphs_exist(synthetic, monkeypatch):
     assert figs == [] and cfgs == []
 
 
-def test_patches_only_color_opacity_and_note(synthetic, monkeypatch):
-    """★ 差し替えるのは色・不透明度・注記・色域だけ。座標と CellID は触らない。"""
+def test_patches_only_the_intensity_grid(synthetic, monkeypatch):
+    """★ 差し替えるのは強度の格子 (z) と色域だけ。座標と CellID は触らない。
+
+    ★ ver66.0: 散布 (marker.color/opacity) からラスター (z) へ移した。
+      幾何 (x/y/text=CellID) を差分に含めない、という ver51.5 の不変条件は
+      そのまま維持する — 含めたら削減効果が消える。
+    """
     _df, rds = synthetic
     _set_outputs(monkeypatch, ["S1", "S2"])
     figs, cfgs = ID.patch_feature_intensity(
@@ -95,15 +100,38 @@ def test_patches_only_color_opacity_and_note(synthetic, monkeypatch):
     for f in figs:
         loc = _ops(f)
         keys = set(loc)
-        assert ("data", -1, "marker", "color") in keys
-        assert ("data", -1, "marker", "opacity") in keys
-        assert ("data", -1, "marker", "cmin") in keys
-        assert ("data", -1, "marker", "cmax") in keys
-        assert ("data", -1, "customdata") in keys
+        assert ("data", -1, "z") in keys
+        assert ("data", -1, "zmin") in keys
+        assert ("data", -1, "zmax") in keys
+        # ★ ラスターに marker は存在しない。書いても効かない場所に書いていないこと。
+        assert not any("marker" in k for k in keys), \
+            f"heatmap に marker を書いている: {keys}"
         # ★ 幾何は差分に含めない (含めたら削減効果が消える)
         for forbidden in ("x", "y", "text"):
             assert not any(k[-1] == forbidden for k in keys), \
                 f"幾何 ({forbidden}) を送っている: {keys}"
+
+
+def test_patched_grid_is_json_safe(synthetic, monkeypatch):
+    """★ 差分に載る z が JSON として妥当なこと（NaN を裸で送らない）。
+
+    閾値未満のセルは NaN で埋める。素の `json.dumps` は `NaN` を出力するが
+    それは JSON として不正で、ブラウザの `JSON.parse` が落ちる ＝ m/z の
+    切り替えが全滅する。Dash は PlotlyJSONEncoder を通すので null になる。
+    ここを別のエンコーダに変えたら落ちるようにしておく。
+    """
+    import json
+    import plotly.utils as pu
+
+    _df, rds = synthetic
+    _set_outputs(monkeypatch, ["S1"])
+    figs, _ = ID.patch_feature_intensity(
+        "mz_100", 50, None, False, None, {}, rds, "/tmp/cache", "sess")
+    z = _ops(figs[0])[("data", -1, "z")]
+    assert np.isnan(np.asarray(z, dtype=float)).any(), \
+        "閾値未満のセルが NaN になっていない（テストが無意味）"
+    dumped = json.dumps({"z": z}, cls=pu.PlotlyJSONEncoder)
+    assert "NaN" not in dumped and "Infinity" not in dumped, dumped[:200]
 
 
 def test_config_filename_follows_the_feature(synthetic, monkeypatch):
@@ -129,34 +157,23 @@ def test_config_filename_uses_display_name(synthetic, monkeypatch):
     assert cfgs[0]["toImageButtonOptions"]["filename"].endswith("_腫瘍部")
 
 
-def test_intensity_range_changes_opacity_not_geometry(synthetic, monkeypatch):
-    """強度レンジを上げると隠れる点が増える (点は消えない)。"""
+def test_intensity_range_changes_visibility_not_geometry(synthetic, monkeypatch):
+    """強度レンジを上げると隠れるセルが増える (格子の形は変わらない)。
+
+    ★ ver66.0: 「隠れる」の表現が opacity=0 から z=NaN（透明）に変わった。
+      背後の TIC が見える点は同じで、ホバー対象から外れる点だけが違う。
+    """
     _df, rds = synthetic
     _set_outputs(monkeypatch, ["S1"])
 
-    def _alpha(imin):
+    def _z(imin):
         figs, _ = ID.patch_feature_intensity(
             "mz_100", imin, None, False, None, {}, rds, "/tmp/cache", "sess")
-        return np.asarray(_ops(figs[0])[("data", -1, "marker", "opacity")])
+        return np.asarray(_ops(figs[0])[("data", -1, "z")], dtype=float)
 
-    a0, a50 = _alpha(0), _alpha(50)
-    assert len(a0) == len(a50), "点数が変わっている"
-    assert int((a50 == 0).sum()) > int((a0 == 0).sum())
-
-
-def test_below_threshold_points_get_a_note(synthetic, monkeypatch):
-    """★ 隠れた点には注記が付く (opacity=0 でも hover は出るため)。"""
-    _df, rds = synthetic
-    _set_outputs(monkeypatch, ["S1"])
-    figs, _ = ID.patch_feature_intensity(
-        "mz_100", 50, None, False, None, {}, rds, "/tmp/cache", "sess")
-    loc = _ops(figs[0])
-    alpha = np.asarray(loc[("data", -1, "marker", "opacity")])
-    note = np.asarray(loc[("data", -1, "customdata")], dtype=object)
-    hidden = alpha == 0
-    assert hidden.any()
-    assert all(note[i] for i in np.flatnonzero(hidden))
-    assert not any(note[i] for i in np.flatnonzero(~hidden))
+    z0, z50 = _z(0), _z(50)
+    assert z0.shape == z50.shape, "格子の形が変わっている"
+    assert int(np.isnan(z50).sum()) > int(np.isnan(z0).sum())
 
 
 def test_stored_export_figures_follow_the_screen(synthetic, monkeypatch):
@@ -169,11 +186,9 @@ def test_stored_export_figures_follow_the_screen(synthetic, monkeypatch):
 
     _df, rds = synthetic
     # update_feature_plot が置いたのと同じ形の figure を用意する
-    n = 144
     stored = [("Feature_mz_OLD_S1", {"data": [
-        {"marker": {"color": [0.0] * n, "opacity": [1.0] * n,
-                    "colorbar": {"ticktext": ["0%", "100%"]}},
-         "customdata": [""] * n, "meta": "old"},
+        {"type": "heatmap", "z": [[0.0]], "zmin": 0.0, "zmax": 1.0,
+         "colorbar": {"ticktext": ["0%", "100%"]}, "meta": "old"},
     ]})]
     set_export_figures("feature", "sess", rds, stored)
 
@@ -187,11 +202,12 @@ def test_stored_export_figures_follow_the_screen(synthetic, monkeypatch):
 
     screen = _ops(figs[0])
     tr = fig_d["data"][-1]
-    assert list(tr["marker"]["color"]) == list(
-        screen[("data", -1, "marker", "color")]), "画面と保存で色が違う"
-    assert list(tr["marker"]["opacity"]) == list(
-        screen[("data", -1, "marker", "opacity")]), "画面と保存で不透明度が違う"
-    assert tr["marker"]["cmin"] == screen[("data", -1, "marker", "cmin")]
+    np.testing.assert_array_equal(
+        np.asarray(tr["z"], dtype=float),
+        np.asarray(screen[("data", -1, "z")], dtype=float),
+        err_msg="画面と保存で強度の格子が違う")
+    assert tr["zmin"] == screen[("data", -1, "zmin")]
+    assert tr["zmax"] == screen[("data", -1, "zmax")]
 
 
 def test_shell_is_reused_only_for_data_only_triggers(synthetic, monkeypatch):
@@ -222,7 +238,7 @@ def test_shell_is_reused_only_for_data_only_triggers(synthetic, monkeypatch):
     # ① グラフが揃っている → 殻は no_update (作り直さない)
     children, heading, _p1, _p2 = ID.update_feature_plot(
         "mz_100", None, None, None, {}, 0, 0, False,
-        0, "Plasma", existing, rds, "/tmp/cache", {}, None, "sess")
+        "Plasma", existing, rds, "/tmp/cache", {}, None, "sess")
     from dash import no_update as _NU
     assert children is _NU, "作り直す必要が無いのに殻を送っている"
     assert heading is not _NU, "見出しは常に更新すべき"
@@ -232,7 +248,7 @@ def test_shell_is_reused_only_for_data_only_triggers(synthetic, monkeypatch):
     calls["built"] = 0
     children2, _h, _p1, _p2 = ID.update_feature_plot(
         "mz_100", None, None, None, {}, 0, 0, False,
-        0, "Plasma", [], rds, "/tmp/cache", {}, None, "sess")
+        "Plasma", [], rds, "/tmp/cache", {}, None, "sess")
     assert children2 is not _NU, "グラフが無いのに作り直していない"
     assert calls["built"] > 0
 
@@ -254,12 +270,13 @@ def test_colorbar_ticks_follow_the_intensity_range(synthetic, monkeypatch):
         "mz_100", 20, 80, False, None, {}, rds, "/tmp/cache", "sess")
     loc = _ops(figs[0])
 
-    tickvals = loc[("data", -1, "marker", "colorbar", "tickvals")]
-    ticktext = loc[("data", -1, "marker", "colorbar", "ticktext")]
+    # ★ ver66.0: heatmap のカラーバーは **トレース直下**。marker.colorbar に
+    #   書いても効かないので、書き先が戻ったらここで落ちる。
+    tickvals = loc[("data", -1, "colorbar", "tickvals")]
+    ticktext = loc[("data", -1, "colorbar", "ticktext")]
     assert ticktext == ["20%", "80%"]
     # 目盛りの位置は色域そのもの。ずれるとバーの読み方が狂う。
-    assert tickvals == [loc[("data", -1, "marker", "cmin")],
-                        loc[("data", -1, "marker", "cmax")]]
+    assert tickvals == [loc[("data", -1, "zmin")], loc[("data", -1, "zmax")]]
 
 
 def test_colorbar_is_only_touched_on_the_tile_that_has_one(synthetic, monkeypatch):
@@ -285,12 +302,10 @@ def test_stored_export_colorbar_matches_the_screen(synthetic, monkeypatch):
     from app.callbacks.interactive_callbacks import (
         get_export_figures, set_export_figures)
     _df, rds = synthetic
-    n = 144
     stored = [("Feature_mz_OLD_S1", {"data": [
-        {"marker": {"color": [0.0] * n, "opacity": [1.0] * n,
-                    "colorbar": {"tickvals": [0, 1],
-                                 "ticktext": ["0%", "100%"]}},
-         "customdata": [""] * n, "meta": "old"}]})]
+        {"type": "heatmap", "z": [[0.0]], "zmin": 0.0, "zmax": 1.0,
+         "colorbar": {"tickvals": [0, 1], "ticktext": ["0%", "100%"]},
+         "meta": "old"}]})]
     set_export_figures("feature", "sess", rds, stored)
 
     _set_outputs(monkeypatch, ["S1"])
@@ -298,9 +313,9 @@ def test_stored_export_colorbar_matches_the_screen(synthetic, monkeypatch):
         "mz_NEW", 20, 80, False, None, {}, rds, "/tmp/cache", "sess")
 
     screen = _ops(figs[0])
-    cb = get_export_figures("feature", "sess", rds)[0][1]["data"][-1]["marker"]["colorbar"]
-    assert cb["ticktext"] == screen[("data", -1, "marker", "colorbar", "ticktext")]
-    assert cb["tickvals"] == screen[("data", -1, "marker", "colorbar", "tickvals")]
+    cb = get_export_figures("feature", "sess", rds)[0][1]["data"][-1]["colorbar"]
+    assert cb["ticktext"] == screen[("data", -1, "colorbar", "ticktext")]
+    assert cb["tickvals"] == screen[("data", -1, "colorbar", "tickvals")]
 
 
 # ---------------------------------------------------------------------------
@@ -349,5 +364,5 @@ def test_shell_shows_a_message_when_expression_is_unusable(synthetic, monkeypatc
 
     children, _h, _p1, _p2 = ID.update_feature_plot(
         "mz_100", None, None, None, {}, 0, 0, False,
-        0, "Plasma", [], rds, "/tmp/cache", {}, None, "sess")
+        "Plasma", [], rds, "/tmp/cache", {}, None, "sess")
     assert "発現量" in str(children)

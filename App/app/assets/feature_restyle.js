@@ -54,30 +54,29 @@ window.dash_clientside = window.dash_clientside || {};
         var meta = gd.layout.meta || {};
         if (meta.kind !== "feature") { return; }
 
-        // --- マーカーサイズ ---
-        if (opts.markerSize !== null && opts.markerSize !== undefined) {
-            var base = opts.markerSize > 0 ? opts.markerSize : meta.auto_msz;
-            var szIdx = (meta.sz || []).filter(function (i) {
-                return i >= 0 && i < gd.data.length;
-            });
-            if (base && szIdx.length) {
-                try {
-                    window.Plotly.restyle(gd, {"marker.size": base}, szIdx);
-                } catch (e) { /* noop */ }
-            }
-        }
-
         // --- 配色 (発現トレースのみ。TIC 背景は常に Greys) ---
+        // ★ ver66.0: 書き先がトレース種で変わる。ラスター (go.Heatmap) は
+        //   **トレース直下**の colorscale で、marker は存在しない。格子でない
+        //   データの散布フォールバックは従来どおり marker.colorscale。
+        //   Python 側 (apply_feature_display_overrides) と同じ規則にすること。
         if (opts.colorscale) {
             var csIdx = (meta.cs || []).filter(function (i) {
                 return i >= 0 && i < gd.data.length;
             });
-            if (csIdx.length) {
-                try {
+            var heatIdx = [], markIdx = [];
+            csIdx.forEach(function (i) {
+                if (gd.data[i].type === "heatmap") { heatIdx.push(i); }
+                else { markIdx.push(i); }
+            });
+            try {
+                if (heatIdx.length) {
+                    window.Plotly.restyle(gd, {"colorscale": opts.colorscale}, heatIdx);
+                }
+                if (markIdx.length) {
                     window.Plotly.restyle(
-                        gd, {"marker.colorscale": opts.colorscale}, csIdx);
-                } catch (e) { /* noop */ }
-            }
+                        gd, {"marker.colorscale": opts.colorscale}, markIdx);
+                }
+            } catch (e) { /* noop */ }
         }
     }
 
@@ -86,14 +85,12 @@ window.dash_clientside = window.dash_clientside || {};
         return window.dash_clientside.no_update;
     }
 
+    // ★ ver66.0: marker_size を撤去した。Feature Plot はラスター (go.Heatmap) に
+    //   なり、セルの大きさがデータ座標で決まるので調整が要らない。
     window.dash_clientside.feature_restyle = {
-        // マーカーサイズ。0 = 自動（layout.meta.auto_msz を使う）
-        marker_size: function (v) {
-            return run({markerSize: v, colorscale: null});
-        },
         // カラースケール名 (Plasma / Viridis / ...)
         colorscale: function (v) {
-            return run({markerSize: null, colorscale: v});
+            return run({colorscale: v});
         },
     };
 })();

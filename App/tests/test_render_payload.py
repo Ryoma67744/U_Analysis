@@ -13,6 +13,7 @@
 dash / plotly / PIL が無い環境ではスキップする。
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -228,10 +229,158 @@ def _spatial_fig(**kw):
     return _create_single_spatial_fig(df, cmap, None, set(), **params), df
 
 
-def test_spatial_traces_are_all_webgl():
+def test_spatial_draws_cells_not_points():
+    """★ ver66.0: Spatial は MSI の画素をデータ座標の矩形として敷き詰めて描く。
+
+    従来 (散布) はマーカーの大きさが **画面ピクセル単位**だったため、拡大率が
+    変わるたびに隣接スポットの間に隙間が出たり重なったりし、利用者が毎回
+    サイズスライダーで直していた。データ座標のセルにすればその調整が要らない。
+
+    scattergl が残っていてよいのは凡例ダミー (x=[None]) だけ。データを持つ
+    散布トレースが復活したら落ちる。SVG トレース (`scatter`) の混入も許さない
+    ＝ 1 点 = 1 DOM ノードで数万 spot が破綻する退行の番人 (ver46.1)。
+    """
     fig, _ = _spatial_fig()
-    types = {t.get("type") for t in _all_traces(fig)}
-    assert types == {"scattergl"}, f"SVG トレースが混ざっている: {types}"
+    traces = _all_traces(fig)
+    types = {t.get("type") for t in traces}
+    assert "heatmap" in types, f"ラスターで描いていない: {types}"
+    assert types <= {"heatmap", "scattergl"}, f"SVG トレースが混ざっている: {types}"
+    for t in traces:
+        if t.get("type") != "scattergl":
+            continue
+        assert list(t.get("x") or []) == [None], (
+            "凡例ダミー以外の散布トレースが残っている（サイズ依存が復活する）")
+
+
+def test_spatial_cells_have_no_pixel_size_and_no_gaps():
+    """★ セルに画面 px のサイズ概念が無く、隣接セルの間に隙間が空かないこと。
+
+    `marker` が生えたらサイズ依存が戻ったということ。`xgap`/`ygap` が 0 で
+    なくなったら、まさに本改修が解決した「隙間」が再発する。
+    """
+    fig, _ = _spatial_fig()
+    heatmaps = [t for t in _all_traces(fig) if t.get("type") == "heatmap"]
+    assert heatmaps, "heatmap が 1 つも無い（テストが無意味）"
+    for t in heatmaps:
+        assert "marker" not in t, f"heatmap に marker がある: {t.get('name')}"
+        assert t.get("xgap", 0) == 0 and t.get("ygap", 0) == 0, "セルの間に隙間がある"
+        assert t.get("zsmooth") is False, "補間が入るとピクセルの境界がぼける"
+        assert t.get("hoverongaps") is False, (
+            "空セル (組織の外側) でもホバーが出る。散布では点が無い場所に"
+            "ホバーは出なかったので退行になる")
+
+
+def test_spatial_falls_back_to_scatter_for_irregular_coords():
+    """★ 過剰修正の番人: 格子と判定できない座標では従来の散布に落ちること。
+
+    x/y は利用者の CSV/Excel をそのまま通すので、不規則座標もあり得る。
+    無理に格子へ押し込むと複数点が同じセルに潰れた「それらしく見える別物」が出る。
+    """
+    from app.callbacks.interactive_spatial import _create_single_spatial_fig
+    from app.utils.color_utils import get_cluster_color_map
+
+    rng = np.random.RandomState(0)
+    n = 200
+    df = pd.DataFrame({
+        "CellID": [f"c{i}" for i in range(n)],
+        "Cluster": [str(i % 3) for i in range(n)],
+        "Sample": "S1",
+        "SpatialX": rng.rand(n) * 50,
+        "SpatialY": rng.rand(n) * 50,
+        "TotalCount": np.arange(n, dtype=float),
+    })
+    cmap = get_cluster_color_map(df["Cluster"], None)
+    fig = _create_single_spatial_fig(df, cmap, None, set(), embed_legend=True)
+    d = fig.to_dict()
+    types = {t.get("type") for t in d["data"]}
+    assert types == {"scattergl"}, f"格子でないのにラスター化している: {types}"
+    assert d["layout"]["meta"]["raster"] is False
+
+
+def test_spatial_raster_can_be_disabled():
+    """★ SPATIAL_RASTER=0 で従来の散布に戻せること（実データでの逃げ道）。"""
+    import app.utils.raster as R
+
+    original = R.SCREEN_RASTER_ENABLED
+    try:
+        R.SCREEN_RASTER_ENABLED = False
+        fig, _ = _spatial_fig()
+        types = {t.get("type") for t in _all_traces(fig)}
+        assert types == {"scattergl"}, f"無効化が効いていない: {types}"
+    finally:
+        R.SCREEN_RASTER_ENABLED = original
+
+
+def test_spatial_cluster_cells_match_the_color_map():
+    """★ セルごとに「そのクラスタの色」で塗られていること。
+
+    離散カラースケールの段境界が 1 段ずれると、全セルが隣のクラスタの色になる。
+    「それらしく見える別物」なので、目視では気づけない。1 セルずつ照合する。
+    """
+    from app.callbacks.interactive_spatial import _create_single_spatial_fig
+    from app.utils.color_utils import get_cluster_color_map
+
+    df = _make_plot_data(n_side=12, samples=("S1",), n_clusters=5)
+    cmap = get_cluster_color_map(df["Cluster"], None)
+    fig = _create_single_spatial_fig(df, cmap, None, set(), embed_legend=True)
+    hm = [t for t in fig.to_dict()["data"]
+          if t.get("type") == "heatmap" and t.get("customdata") is not None]
+    assert hm, "クラスタ層 (customdata つき heatmap) が無い"
+    tr = hm[0]
+    z = np.asarray(tr["z"], dtype=float)
+    cs, zmin, zmax = tr["colorscale"], tr["zmin"], tr["zmax"]
+    cd = np.asarray(tr["customdata"], dtype=object)
+
+    def color_at(v):
+        """plotly と同じ規則で z 値 → 実際に描かれる色を逆算する。"""
+        t = (v - zmin) / (zmax - zmin)
+        prev = cs[0][1]
+        for stop, col in cs:
+            if t <= stop + 1e-12:
+                return col if abs(t - stop) < 1e-12 or col == prev else prev
+            prev = col
+        return cs[-1][1]
+
+    want = {(float(r.SpatialX), -float(r.SpatialY)): str(r.Cluster)
+            for r in df.itertuples()}
+    xc = np.asarray(tr["x"], dtype=float)
+    yc = np.asarray(tr["y"], dtype=float)
+    checked = 0
+    for j, yv in enumerate(yc):
+        for i, xv in enumerate(xc):
+            if not np.isfinite(z[j, i]):
+                continue
+            checked += 1
+            cluster = want[(xv, yv)]
+            assert color_at(z[j, i]).lower() == cmap[cluster].lower(), (
+                f"({xv},{yv}) の色がクラスタ {cluster} と食い違う")
+            assert cd[j, i] == cluster, f"({xv},{yv}) のホバー名が違う"
+    assert checked == len(df), f"検査できたセルが足りない: {checked}/{len(df)}"
+
+
+def test_spatial_hover_name_is_not_expanded_as_a_template():
+    """★ クラスタ表示名に "%{x}" が含まれてもテンプレート展開されないこと。
+
+    表示名は利用者が付けるもので、Plotly のテンプレート記法を含みうる
+    (ver46.2/46.3 の教訓)。ラスターでも値として customdata で渡すこと。
+    """
+    from app.callbacks.interactive_spatial import _create_single_spatial_fig
+    from app.utils.color_utils import get_cluster_color_map
+
+    df = _make_plot_data(n_side=8, samples=("S1",), n_clusters=2)
+    cmap = get_cluster_color_map(df["Cluster"], None)
+    fig = _create_single_spatial_fig(
+        df, cmap, None, set(), embed_legend=True,
+        cluster_name_map={"0": "%{x} 腫瘍", "1": "正常"})
+    hm = [t for t in fig.to_dict()["data"]
+          if t.get("type") == "heatmap" and t.get("customdata") is not None]
+    assert hm
+    tmpl = hm[0].get("hovertemplate") or ""
+    assert "%{customdata}" in tmpl, "ホバーが customdata 経由になっていない"
+    assert "腫瘍" not in tmpl, "表示名をテンプレートに直接埋めている"
+    flat = [v for row in np.asarray(hm[0]["customdata"], dtype=object)
+            for v in row if v]
+    assert "%{x} 腫瘍" in flat, "表示名が値として渡っていない"
 
 
 def test_spatial_hover_text_is_scalar_not_per_point_array():
@@ -662,7 +811,11 @@ def _graph_figures(node, id_type=None):
 
 def test_feature_plot_renders_webgl_and_stores_figures_serverside(
         dash_app, monkeypatch):
-    """Feature Plot の実コールバックを回して、SVG に戻っていないことを確認する。"""
+    """Feature Plot の実コールバックを回して、ラスターで描かれることを確認する。
+
+    ★ ver66.0: 散布 (scattergl) からラスター (heatmap) へ移した。SVG (scatter) に
+      戻ると 1 点 = 1 DOM ノードで数万 spot が破綻するので、そちらの番人も兼ねる。
+    """
     from app.callbacks.interactive_callbacks import get_export_figures
 
     df, rds_path = _install_synthetic_state(monkeypatch)
@@ -670,14 +823,14 @@ def test_feature_plot_renders_webgl_and_stores_figures_serverside(
 
     resp = _call_callback(
         dash_app, "feature_plot_container",
-        # ver51.3: marker_size / colorscale は clientside restyle へ移したので
-        # Input(10) → Input(8) + State に移動した。
+        # ver51.3: 配色は clientside restyle へ移したので State にある。
+        # ★ ver66.0: marker_size は撤去したので State が 1 つ減った。
         # Inputs(8): feature, sample, imin, imax, name_map, fs_trigger,
         #            rows, show_compound
-        # States(7): marker_size, colorscale, rds_path, cache_dir,
-        #            rotation_store, deg_data, session_id
+        # States(6): colorscale, rds_path, cache_dir, rotation_store,
+        #            deg_data, session_id
         args=["mz_100", "S1", None, None, {}, 0, 0, False,
-              0, "Plasma", [], rds_path, "/tmp/cache", {}, None, session_id],
+              "Plasma", [], rds_path, "/tmp/cache", {}, None, session_id],
         triggered_prop="feature_select.value")
 
     figs = _graph_figures(resp["feature_plot_container"]["children"],
@@ -685,7 +838,7 @@ def test_feature_plot_renders_webgl_and_stores_figures_serverside(
     assert figs, "Feature Plot の figure が生成されていない"
     for fig in figs:
         types = {t.get("type") for t in fig.get("data", [])}
-        assert types == {"scattergl"}, f"SVG に戻っている: {types}"
+        assert types == {"heatmap"}, f"ラスターで描いていない: {types}"
         assert fig["layout"].get("uirevision"), "uirevision が設定されていない"
 
     # 一括保存用の figure はレスポンスではなくサーバ側に置かれる
@@ -695,20 +848,19 @@ def test_feature_plot_renders_webgl_and_stores_figures_serverside(
 
 def test_feature_geometry_is_stable_across_intensity_range(
         dash_app, monkeypatch):
-    """★ ver51.5: 幾何は強度レンジで変わらず、可視性は opacity で表す。
+    """★ ver51.5: 幾何は強度レンジで変わらない（可視性だけが変わる）。
 
     従来は閾値未満の点を visible_mask で **トレースから除外** していたため、
     点の集合が m/z・強度レンジごとに変わり、x/y/CellID を毎回送り直していた
     (1 タイル 1.12MB gzip のうち 0.44MB がこの再送)。
 
-    全点を常に保持する形に変えたので、
-      - 点数は強度レンジによらず一定
-      - 閾値未満は marker.opacity == 0
-      - tooltip に「閾値未満」と出る (customdata)
-    を固定する。
+    ★ ver66.0: ラスター化に伴い、可視性の表現が marker.opacity == 0 から
+      z == NaN（透明）に変わった。格子の形と CellID は強度レンジによらず一定、
+      という不変条件はそのまま維持する。
 
-    ★ opacity=0 の点でも hover は発生する (Plotly の仕様。e2e で実測済み)。
-      だから注記が要る。除外していた頃と厳密に同じ挙動にはできない。
+      あわせて「閾値未満」の注記 (customdata) は不要になった。散布では
+      opacity=0 の点にも hover が発生してしまうので注記が要ったが、
+      ラスターは hoverongaps=False で空セルが hover 対象から外れるため。
     """
     df, rds_path = _install_synthetic_state(monkeypatch)
     n_tile = int((df["Sample"] == "S1").sum())
@@ -717,7 +869,7 @@ def test_feature_geometry_is_stable_across_intensity_range(
         resp = _call_callback(
             dash_app, "feature_plot_container",
             args=["mz_100", "S1", imin, None, {}, 0, 0, False,
-                  0, "Plasma", [], rds_path, "/tmp/cache", {}, None, "sess-mask"],
+                  "Plasma", [], rds_path, "/tmp/cache", {}, None, "sess-mask"],
             triggered_prop="feature_intensity_min.value")
         figs = _graph_figures(resp["feature_plot_container"]["children"],
                               id_type="feature_graph")
@@ -728,34 +880,29 @@ def test_feature_geometry_is_stable_across_intensity_range(
     t50 = _fg_trace(50)
     t100 = _fg_trace(100)
 
-    # ① 点数は強度レンジによらず全点で一定
+    def _z(t):
+        return np.asarray(t["z"], dtype=float)
+
+    # ① セル数（格子の形）は強度レンジによらず一定
     for label, t in (("0%", t0), ("50%", t50), ("100%", t100)):
-        assert len(t["x"]) == n_tile, f"{label}: {len(t['x'])} != {n_tile}"
+        assert _z(t).size == _z(t0).size, f"{label}: 格子の大きさが変わっている"
+        assert int(np.isfinite(_z(t)).sum()) + int(np.isnan(_z(t)).sum()) \
+            == _z(t).size
 
     # ② 座標と CellID は 1 バイトも変わらない (差分更新できる前提)
     assert list(t50["x"]) == list(t0["x"])
     assert list(t50["y"]) == list(t0["y"])
-    assert list(t50["text"]) == list(t0["text"])
+    assert [list(r) for r in t50["text"]] == [list(r) for r in t0["text"]]
 
-    # ③ 可視性は opacity で表現される。下限を上げれば隠れる点が増える
-    op0 = np.asarray(t0["marker"]["opacity"], dtype=float)
-    op50 = np.asarray(t50["marker"]["opacity"], dtype=float)
-    assert int((op50 == 0).sum()) > int((op0 == 0).sum()), \
-        "下限を上げても隠れる点が増えていない"
+    # ③ 可視性は z=NaN で表現される。下限を上げれば隠れるセルが増える
+    assert int(np.isnan(_z(t50)).sum()) > int(np.isnan(_z(t0)).sum()), \
+        "下限を上げても隠れるセルが増えていない"
 
-    # ④ 隠れた点には「閾値未満」の注記が入る (hover が発生するため)
-    cd50 = np.asarray(t50["customdata"], dtype=object)
-    hidden = op50 == 0
-    assert hidden.any()
-    assert all(cd50[i] for i in np.flatnonzero(hidden)), \
-        "隠れた点に注記が無い"
-    assert not any(cd50[i] for i in np.flatnonzero(~hidden)), \
-        "見えている点に余計な注記が付いている"
+    # ④ 値が入っているセル数は「閾値以上の点数」と一致する
+    assert int(np.isfinite(_z(t0)).sum()) <= n_tile
 
-    # ⑤ 下限 100% = 全点が閾値未満。カラーバーを残すため全点は残る
-    op100 = np.asarray(t100["marker"]["opacity"], dtype=float)
-    assert len(t100["x"]) == n_tile
-    assert float(op100.max()) == 0.0
+    # ⑤ 下限 100% = 全セルが閾値未満 → 全部 NaN（カラーバーは残る）
+    assert bool(np.all(np.isnan(_z(t100)))), "下限 100% で残っているセルがある"
 
 
 def test_feature_hovertemplate_uses_customdata_for_note():
@@ -783,11 +930,11 @@ def test_spatial_and_umap_callbacks_return_expected_output_counts(
         #   exclude, rds_path, name_map, fs_trigger, colors, rows,
         #   cluster_names, merge_toggle, merge_mode, accordion, legend_hidden,
         #   hne_show, hne_mono
-        # States(6): label_positions, session_id, marker_size, label_size,
-        #   hne_opacity, hne_marker_size
+        # ★ ver66.0: サイズ系 State 2 つ (marker_size / hne_marker_size) を撤去。
+        # States(4): label_positions, session_id, label_size, hne_opacity
         args=["S1", None, [], {}, False, None, rds_path, {}, 0, {}, 0,
               {}, "separate", "shade", ["acc_spatial"], [], False, False,
-              {}, "sess-spatial", 3, 10, 100, 5],
+              {}, "sess-spatial", 10, 100],
         triggered_prop="interactive_sample.value")
     assert set(spatial) == {"spatial_plots_container", "last_spatial_figure_store"}
 
@@ -797,7 +944,9 @@ def test_spatial_and_umap_callbacks_return_expected_output_counts(
     assert figs, "Spatial の figure が生成されていない"
     for f in figs:
         types = {t.get("type") for t in f.get("data", [])}
-        assert types == {"scattergl"}, f"SVG トレースが混ざっている: {types}"
+        # ★ ver66.0: ラスター (heatmap) + 凡例ダミー (scattergl)。SVG は許さない。
+        assert "heatmap" in types, f"ラスターで描いていない: {types}"
+        assert types <= {"heatmap", "scattergl"}, f"SVG が混ざっている: {types}"
         assert f["layout"].get("uirevision"), "uirevision が設定されていない"
 
     umap = _call_callback(
@@ -823,16 +972,21 @@ def test_spatial_and_umap_callbacks_return_expected_output_counts(
 # ここが食い違うと「画面と保存した PNG が違う」という最悪の壊れ方をするため、
 # 後付け適用の結果が新規ビルドと一致することを固定する。
 
-def _marker_sizes(fig_dict):
-    return [t.get("marker", {}).get("size")
-            for t in fig_dict.get("data", [])
-            if isinstance(t.get("meta"), dict) and "dsz" in t["meta"]]
+def _spot_opacities(fig_dict):
+    """スポット不透明度スライダーの対象トレースの不透明度を集める。
 
-
-def _marker_opacities(fig_dict):
-    return [t.get("marker", {}).get("opacity")
-            for t in fig_dict.get("data", [])
-            if isinstance(t.get("meta"), dict) and t["meta"].get("op")]
+    ★ ver66.0: 書き先がトレース種で変わる。ラスター化した通常タイルは heatmap の
+      **トレース直下** opacity、H&E タイルは散布のままで marker.opacity。
+      Python 側 (apply_display_overrides) と JS 側 (spatial_restyle.js) が
+      同じ規則であることを、この関数を通して検証する。
+    """
+    out = []
+    for t in fig_dict.get("data", []):
+        if not (isinstance(t.get("meta"), dict) and t["meta"].get("op")):
+            continue
+        out.append(t.get("opacity") if t.get("type") == "heatmap"
+                   else t.get("marker", {}).get("opacity"))
+    return out
 
 
 def _label_sizes(fig_dict):
@@ -840,73 +994,52 @@ def _label_sizes(fig_dict):
             for a in fig_dict.get("layout", {}).get("annotations", [])]
 
 
-@pytest.mark.parametrize("marker_size", [3, 9, 0])
-def test_display_overrides_match_fresh_build(marker_size):
-    """後付け適用 == 最初からその値でビルド（マーカーサイズ）。"""
-    from app.utils.display_helpers import apply_display_overrides
-
-    fresh, _ = _spatial_fig(marker_size=marker_size)
-    built, _ = _spatial_fig(marker_size=1)          # 別の値で作ってから
-    patched = apply_display_overrides(built.to_dict(), marker_size=marker_size)
-
-    assert _marker_sizes(patched) == _marker_sizes(fresh.to_dict())
-    assert _marker_sizes(patched), "meta タグ付きトレースが 1 つも無い"
-
-
 def test_display_overrides_match_fresh_build_opacity_and_label():
     """後付け適用 == 最初からその値でビルド（不透明度・ラベルサイズ）。"""
     from app.utils.display_helpers import apply_display_overrides
 
-    fresh, _ = _spatial_fig(marker_size=4, spot_opacity=0.4,
-                            label_size=18, show_labels=True)
-    built, _ = _spatial_fig(marker_size=4, spot_opacity=1.0,
-                            label_size=10, show_labels=True)
-    patched = apply_display_overrides(built.to_dict(), marker_size=4,
+    fresh, _ = _spatial_fig(spot_opacity=0.4, label_size=18, show_labels=True)
+    built, _ = _spatial_fig(spot_opacity=1.0, label_size=10, show_labels=True)
+    patched = apply_display_overrides(built.to_dict(),
                                       spot_opacity=0.4, label_size=18)
 
     fresh_d = fresh.to_dict()
-    assert _marker_opacities(patched) == _marker_opacities(fresh_d)
+    assert _spot_opacities(patched) == _spot_opacities(fresh_d)
+    assert _spot_opacities(patched), "不透明度の対象トレースが 1 つも無い"
     assert _label_sizes(patched) == _label_sizes(fresh_d)
     assert _label_sizes(patched), "ラベル注記が 1 つも無い"
 
 
-def test_display_overrides_auto_uses_layout_meta():
-    """marker_size=0（自動）は layout.meta.auto_msz を使う。"""
-    from app.utils.display_helpers import apply_display_overrides
-
-    fig, _ = _spatial_fig(marker_size=7)
-    d = fig.to_dict()
-    auto = d["layout"]["meta"]["auto_msz"]
-    assert auto > 0
-    patched = apply_display_overrides(d, marker_size=0)
-    # dsz=0 のトレースはちょうど auto、dsz=1 のトレースは auto+1
-    sizes = set(_marker_sizes(patched))
-    assert sizes <= {auto, auto + 1} and auto in sizes
-
-
 def test_display_overrides_respects_tile_kind():
-    """kinds に合わない図は一切変更しない（通常用スライダーが H&E に効かない）。"""
+    """kinds に合わない図は一切変更しない（通常用スライダーが H&E に効かない）。
+
+    ★ ver66.0: 以前は空リスト同士の比較で素通りしていた（`[] == []` で PASS）。
+      比較対象が非空であることを先に確かめる。
+    """
     from app.utils.display_helpers import apply_display_overrides
 
-    fig, _ = _spatial_fig(marker_size=4)
+    fig, _ = _spatial_fig(spot_opacity=1.0)
     d = fig.to_dict()
-    before = _marker_sizes(d)
-    apply_display_overrides(d, marker_size=20, kinds=("hne",))
-    assert _marker_sizes(d) == before
+    before = _spot_opacities(d)
+    assert before, "比較対象が空（テストが無意味）"
+    apply_display_overrides(d, spot_opacity=0.2, kinds=("hne",))
+    assert _spot_opacities(d) == before
 
 
 def test_display_overrides_ignores_untagged_traces():
     """meta を持たないトレース（凡例ダミー等）は触らない。"""
     from app.utils.display_helpers import apply_display_overrides
 
-    fig, _ = _spatial_fig(marker_size=4)
+    fig, _ = _spatial_fig(spot_opacity=1.0)
     d = fig.to_dict()
-    untagged_before = [t.get("marker", {}).get("size")
-                       for t in d["data"] if not isinstance(t.get("meta"), dict)]
-    apply_display_overrides(d, marker_size=25, spot_opacity=0.1)
-    untagged_after = [t.get("marker", {}).get("size")
-                      for t in d["data"] if not isinstance(t.get("meta"), dict)]
-    assert untagged_before == untagged_after
+
+    def _untagged():
+        return [(t.get("opacity"), t.get("marker", {}).get("opacity"))
+                for t in d["data"] if not isinstance(t.get("meta"), dict)]
+
+    untagged_before = _untagged()
+    apply_display_overrides(d, spot_opacity=0.1)
+    assert untagged_before == _untagged()
     assert untagged_before, "凡例ダミートレースが存在しない"
 
 
@@ -918,8 +1051,8 @@ def test_cosmetic_sliders_are_not_inputs_of_spatial_callback(dash_app):
     spec = dc.GLOBAL_CALLBACK_MAP[key]
     input_ids = {i["id"] for i in spec["inputs"]}
     state_ids = {s["id"] for s in spec["state"]}
-    for cid in ("spatial_marker_size", "spatial_label_size",
-                "hne_overlay_opacity", "hne_overlay_marker_size"):
+    # ★ ver66.0: サイズ系スライダーは撤去したので、残る 2 つを見る。
+    for cid in ("spatial_label_size", "hne_overlay_opacity"):
         assert cid not in input_ids, f"{cid} が Input に戻っている"
         assert cid in state_ids, f"{cid} が State から消えている"
 
@@ -949,8 +1082,9 @@ def test_perf_callbacks_are_registered_clientside(dash_app):
             restyle_fns.add(fn["function_name"])
 
     assert found == expected, f"relayout フィルタが clientside でない: {found}"
-    assert restyle_fns == {"marker_size", "label_size",
-                           "spot_opacity", "hne_marker_size"}, restyle_fns
+    # ★ ver66.0: サイズ系 (marker_size / hne_marker_size) を撤去した。
+    #   完全一致なので、復活したらここで落ちる。
+    assert restyle_fns == {"label_size", "spot_opacity"}, restyle_fns
 
 
 def test_no_server_callback_takes_relayoutdata_directly(dash_app):
@@ -1074,23 +1208,17 @@ def test_no_hovertemplate_embeds_dynamic_text():
 # 「画面と保存 PNG が一致する」ことを担保するのがここのテスト。
 # 食い違うと、画面では Viridis なのに保存 PNG は Plasma、という最悪の壊れ方をする。
 
-def _feature_figs(dash_app, monkeypatch, marker_size, colorscale):
+def _feature_figs(dash_app, monkeypatch, colorscale):
     """実コールバックを回して Feature タイルの figure dict 群を返す。"""
     _df, rds_path = _install_synthetic_state(monkeypatch)
     resp = _call_callback(
         dash_app, "feature_plot_container",
         args=["mz_100", "S1", None, None, {}, 0, 0, False,
-              marker_size, colorscale, [], rds_path, "/tmp/cache", {}, None,
+              colorscale, [], rds_path, "/tmp/cache", {}, None,
               "sess-ovr"],
         triggered_prop="feature_select.value")
     return _graph_figures(resp["feature_plot_container"]["children"],
                           id_type="feature_graph")
-
-
-def _feature_marker_sizes(fig_dict):
-    meta = (fig_dict.get("layout") or {}).get("meta") or {}
-    data = fig_dict.get("data") or []
-    return [data[i].get("marker", {}).get("size") for i in meta.get("sz") or []]
 
 
 def _feature_colorscales(fig_dict):
@@ -1106,45 +1234,34 @@ def _feature_colorscales(fig_dict):
     d = fig.to_dict()
     meta = (d.get("layout") or {}).get("meta") or {}
     data = d.get("data") or []
-    return [data[i].get("marker", {}).get("colorscale")
-            for i in meta.get("cs") or []]
+    # ★ ver66.0: 書き先がトレース種で変わる（heatmap はトレース直下）。
+    out = []
+    for i in meta.get("cs") or []:
+        tr = data[i]
+        out.append(tr.get("colorscale") if tr.get("type") == "heatmap"
+                   else tr.get("marker", {}).get("colorscale"))
+    return out
 
 
 def test_feature_figure_carries_restyle_meta(dash_app, monkeypatch):
-    """clientside restyle が必要とする layout.meta が載っていること。"""
-    figs = _feature_figs(dash_app, monkeypatch, 5, "Plasma")
+    """clientside restyle が必要とする layout.meta が載っていること。
+
+    ★ ver66.0: サイズ系 (auto_msz / sz) は撤去した。配色 (cs) だけが残る。
+    """
+    figs = _feature_figs(dash_app, monkeypatch, "Plasma")
     assert figs, "Feature タイルが生成されていない"
     for f in figs:
         meta = (f.get("layout") or {}).get("meta") or {}
         assert meta.get("kind") == "feature", f"kind が違う: {meta.get('kind')}"
-        assert meta.get("auto_msz", 0) > 0, "auto_msz が無い（自動モードに戻せない）"
-        assert meta.get("sz"), "サイズ対象トレースの索引が無い"
+        assert "auto_msz" not in meta, "撤去したはずの auto_msz が残っている"
+        assert "sz" not in meta, "撤去したはずの sz が残っている"
         assert meta.get("cs"), "配色対象トレースの索引が無い"
         n = len(f.get("data") or [])
-        assert all(0 <= i < n for i in meta["sz"] + meta["cs"]), "索引が範囲外"
+        assert all(0 <= i < n for i in meta["cs"]), "索引が範囲外"
         # ★ 背景 TIC は常に Greys。配色プルダウンの対象に入れてはいけない。
-        assert set(meta["cs"]).isdisjoint(
-            {i for i in meta["sz"] if f["data"][i].get("marker", {})
-             .get("colorscale") == "Greys"}), "TIC 背景が配色対象に入っている"
-
-
-@pytest.mark.parametrize("marker_size", [3, 9, 0])
-def test_feature_display_overrides_match_fresh_build(dash_app, monkeypatch,
-                                                     marker_size):
-    """後付け適用 == 最初からその値でビルド（マーカーサイズ）。"""
-    import copy
-
-    from app.utils.display_helpers import apply_feature_display_overrides
-
-    fresh = _feature_figs(dash_app, monkeypatch, marker_size, "Plasma")
-    built = _feature_figs(dash_app, monkeypatch, 1, "Plasma")
-    assert fresh and len(fresh) == len(built)
-
-    for f_fresh, f_built in zip(fresh, built):
-        patched = apply_feature_display_overrides(
-            copy.deepcopy(f_built), marker_size=marker_size)
-        assert _feature_marker_sizes(patched) == _feature_marker_sizes(f_fresh)
-        assert _feature_marker_sizes(patched), "サイズ対象トレースが無い"
+        for i in meta["cs"]:
+            assert f["data"][i].get("colorscale") != "Greys", \
+                "TIC 背景が配色対象に入っている"
 
 
 def test_feature_display_overrides_match_fresh_build_colorscale(dash_app,
@@ -1154,8 +1271,8 @@ def test_feature_display_overrides_match_fresh_build_colorscale(dash_app,
 
     from app.utils.display_helpers import apply_feature_display_overrides
 
-    fresh = _feature_figs(dash_app, monkeypatch, 4, "Viridis")
-    built = _feature_figs(dash_app, monkeypatch, 4, "Plasma")
+    fresh = _feature_figs(dash_app, monkeypatch, "Viridis")
+    built = _feature_figs(dash_app, monkeypatch, "Plasma")
 
     for f_fresh, f_built in zip(fresh, built):
         assert _feature_colorscales(f_built) != _feature_colorscales(f_fresh), \
@@ -1165,15 +1282,26 @@ def test_feature_display_overrides_match_fresh_build_colorscale(dash_app,
         assert _feature_colorscales(patched) == _feature_colorscales(f_fresh)
 
 
-def test_feature_overrides_ignore_other_tile_kinds():
-    """kind が feature でない図は一切変更しない。"""
+def test_feature_overrides_ignore_other_tile_kinds(dash_app, monkeypatch):
+    """kind が feature でない図は一切変更しない。
+
+    ★ ver66.0: 以前は Spatial の図を渡していたので、比較対象 (`meta.cs` 由来) が
+      空リスト同士になり **何も検証せずに PASS** していた。実際の Feature 図の
+      kind だけを書き換えて渡し、比較対象が非空であることを先に確かめる。
+    """
+    import copy
+
     from app.utils.display_helpers import apply_feature_display_overrides
 
-    fig, _ = _spatial_fig(marker_size=4)
-    d = fig.to_dict()
-    before = _marker_sizes(d)
-    apply_feature_display_overrides(d, marker_size=20, colorscale="Viridis")
-    assert _marker_sizes(d) == before
+    figs = _feature_figs(dash_app, monkeypatch, "Plasma")
+    assert figs, "Feature タイルが生成されていない"
+    d = copy.deepcopy(figs[0])
+    before = _feature_colorscales(d)
+    assert before and before[0] is not None, "比較対象が空（テストが無意味）"
+
+    d["layout"]["meta"] = dict(d["layout"]["meta"], kind="msi")
+    apply_feature_display_overrides(d, colorscale="Viridis")
+    assert _feature_colorscales(d) == before
 
 
 def test_feature_restyle_js_matches_python_contract():
@@ -1184,14 +1312,17 @@ def test_feature_restyle_js_matches_python_contract():
     """
     js = (APP_ROOT / "app" / "assets" / "feature_restyle.js").read_text(
         encoding="utf-8")
-    for token in ('meta.kind !== "feature"', "meta.auto_msz", "meta.sz",
-                  "meta.cs", "marker.size", "marker.colorscale"):
+    for token in ('meta.kind !== "feature"', "meta.cs",
+                  '"colorscale"', "marker.colorscale"):
         assert token in js, f"feature_restyle.js に {token!r} が無い"
+    # ★ ver66.0: サイズ系は撤去した。復活したらここで落ちる。
+    for gone in ("meta.auto_msz", "meta.sz", "marker.size"):
+        assert gone not in js, f"撤去したはずの {gone!r} が feature_restyle.js に残っている"
     # Python 側の実装が同じキーを使っていること
     src = (APP_ROOT / "app" / "utils" / "display_helpers.py").read_text(
         encoding="utf-8")
     assert "apply_feature_display_overrides" in src
-    for token in ('"feature"', '"auto_msz"', '"sz"', '"cs"', '"colorscale"'):
+    for token in ('"feature"', '"cs"', '"colorscale"'):
         assert token in src, f"display_helpers.py に {token} が無い"
 
 
@@ -1315,12 +1446,17 @@ def test_spatial_tic_color_is_rounded():
     tic = [t for t in fig.to_dict().get("data", [])
            if t.get("name") == "_background_tic"]
     assert tic, "TIC 背景トレースが見つからない"
-    arr = np.asarray(tic[0]["marker"]["color"], dtype=float)
+    # ★ ver66.0: 背景も heatmap になったので、色は marker.color ではなく z。
+    #   空セルは NaN なので、値が入っているセルだけを取り出して比べる。
+    z = np.asarray(tic[0]["z"], dtype=float)
+    arr = z[np.isfinite(z)]
+    arr = np.sort(arr)
+    raw = np.sort(raw)
 
     # 生値がそのまま入っていない (= 丸めを通っている)
-    assert not np.array_equal(arr, raw), "marker.color が生の float64 のまま"
+    assert not np.array_equal(arr, raw), "z が生の float64 のまま"
     # 丸め関数の出力と一致する
-    assert np.array_equal(arr, _round_values_for_display(raw))
+    assert np.array_equal(arr, np.sort(_round_values_for_display(raw)))
     # 値としては同じもの (範囲の 1/10000 未満のずれ)
     span = float(raw.max() - raw.min())
     assert float(np.max(np.abs(arr - raw))) < span / 1e4
@@ -1430,3 +1566,52 @@ def test_no_dead_cluster_colorscale_computation():
         src = (APP_ROOT / rel).read_text(encoding="utf-8")
         assert "_get_cluster_colorscale(" not in src, \
             f"{rel} に死んだ colorscale 計算が復活している"
+
+
+# ---------------------------------------------------------------------------
+# 13. サイズスライダーの撤去 (ver66.0)
+# ---------------------------------------------------------------------------
+# MSI の画素をデータ座標の矩形として敷き詰めて描くようにしたので、
+# 「画面 px でのマーカーサイズ」という概念そのものが無くなった。
+# 復活させると、また拡大率ごとに隙間・重なりが出る状態に戻る。
+
+def test_size_sliders_are_gone(dash_app):
+    """★ サイズ系スライダーがレイアウトから消えていること。"""
+    import dash._callback as dc
+
+    ids = set()
+    for spec in dc.GLOBAL_CALLBACK_MAP.values():
+        for dep in list(spec["inputs"]) + list(spec["state"]):
+            if isinstance(dep.get("id"), str):
+                ids.add(dep["id"])
+    for gone in ("spatial_marker_size", "feature_marker_size",
+                 "hne_overlay_marker_size", "fs_spatial_marker_size"):
+        assert gone not in ids, f"{gone} が復活している"
+    # 撤去しないもの（Volcano は散布のままなので残る）
+    assert "volcano_marker_size" in ids, "無関係な Volcano まで消している"
+
+
+def test_display_override_helpers_have_no_marker_size():
+    """★ 後付け適用のヘルパーからも marker_size が消えていること。"""
+    import inspect
+
+    from app.utils.display_helpers import (apply_display_overrides,
+                                           apply_feature_display_overrides)
+
+    for fn in (apply_display_overrides, apply_feature_display_overrides):
+        assert "marker_size" not in inspect.signature(fn).parameters, \
+            f"{fn.__name__} に marker_size が残っている"
+
+
+def test_spatial_restyle_js_has_no_size_functions():
+    """★ clientside 側からもサイズ系が消えていること（Python 側と対）。"""
+    js = (APP_ROOT / "app" / "assets" / "spatial_restyle.js").read_text(
+        encoding="utf-8")
+    # コメントは対象外（撤去の経緯を書いてあるので語そのものは残る）
+    code = "\n".join(re.sub(r"//.*$", "", ln) for ln in js.splitlines())
+    for gone in ("marker_size", "hne_marker_size", "marker.size", "auto_msz"):
+        assert gone not in code, \
+            f"撤去したはずの {gone!r} が spatial_restyle.js に残っている"
+    # 残すもの
+    for token in ("label_size", "spot_opacity", "marker.opacity"):
+        assert token in code, f"spatial_restyle.js から {token!r} が消えている"
