@@ -508,6 +508,23 @@ def _detect_integration_methods(folder_path: str, include_derived: bool = False)
             name_lower = rds_file.name.lower()
             if any(name_lower.startswith(p) for p in _EXCLUDE_PREFIXES):
                 continue
+            # ★ ver66.2: 既に別の手法として登録済みのファイルは二度と拾わない。
+            #
+            #   各分岐は「その**手法名**がまだ埋まっていないか」(`"PCA" not in rds_map`)
+            #   しか見ておらず、**同じファイルが二つの手法に登録されること**を
+            #   防いでいなかった。TIMS の実ファイル名は
+            #   `Step2_Harmony**PCA**_Result.rds` / `Step3_R**PCA**_Result.rds` で
+            #   どちらも "pca" を含むため、第1段階で Harmony / RPCA として登録済みでも、
+            #   ここで elif 連鎖の最後まで落ちて **同じファイルが "PCA" にも入っていた**。
+            #   その結果、利用者が「PCA」を選ぶと中身は Harmony（走査順によっては RPCA）で、
+            #   無補正と比べたつもりが比較になっていなかった。画面は正常に見えるので
+            #   気づけない（ver58.0 の DESI 対応で混入）。
+            #
+            #   さらに、併走出力を持たない古い結果向けの救済（Harmony から未補正 PCA を
+            #   派生生成する下の include_derived 分岐）は `"PCA" not in rds_map` が条件なので、
+            #   偽の "PCA" に枠を埋められて発動しなくなっていた。
+            if str(rds_file) in rds_map.values():
+                continue
             if "harmony" in name_lower and "Harmony" not in rds_map:
                 rds_map["Harmony"] = str(rds_file)
             elif "rpca" in name_lower and "RPCA" not in rds_map:
@@ -544,6 +561,10 @@ def _detect_integration_methods(folder_path: str, include_derived: bool = False)
             for rds_file in base.rglob("*.rds"):
                 name_lower = rds_file.name.lower()
                 if any(name_lower.startswith(p) for p in _EXCLUDE_PREFIXES):
+                    continue
+                # ★ ver66.2: 上の第2段階と同じガード（理由もそちらのコメント参照）。
+                #   片方だけ直すと、サブフォルダ探索に落ちた結果でだけ再発する。
+                if str(rds_file) in rds_map.values():
                     continue
                 if "harmony" in name_lower and "Harmony" not in rds_map:
                     rds_map["Harmony"] = str(rds_file)
