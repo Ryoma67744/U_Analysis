@@ -100,12 +100,43 @@ RPCA_FGLOBALS_MAXSIZE <- 64 * 1024^3  # 64GB（>26.25GiB の globals を通す�
 # 「Harmony correction (3/13)」と表示され続けていた。[stage] 接頭辞を付けた
 # 専用行を出し、UI 側はこれを見る。
 .stage_t0 <- NULL
+# ★ ver65.0: 段階行に **時刻** を足す。
+#   ver63.3 で「前段 N 秒」は出るようになったが、これは *終わった段* の長さで、
+#   **いま走っている段に入ってから何秒経ったか**が分からない。UI 側は
+#   「経過 / (到達段 ÷ 全段)」という等重量の式しか組めず、DEG (実測で全体の 61%)
+#   に入った瞬間に「残り 12 分」と出しておいて、その 41 分のあいだ表示が
+#   11 分→78 分へ **増え続ける**（＝残り時間が当てにならない）状態だった。
+#   時刻があれば「この段に入って何秒」が引けるので、段の途中も滑らかに詰められる。
 .stage_mark <- function(name) {
   .now <- Sys.time()
   .el  <- if (is.null(.stage_t0)) NA_real_ else as.numeric(difftime(.now, .stage_t0, units = "secs"))
   .stage_t0 <<- .now
-  if (is.na(.el)) cat(sprintf("[stage] %s\n", name))
-  else            cat(sprintf("[stage] %s (前段 %.1f 秒)\n", name, .el))
+  .ts  <- format(.now, "%Y-%m-%dT%H:%M:%S")
+  # 段名と「(前段 N 秒)」の並びは変えない。UI 側の従来のキーワード判定
+  # (部分一致) をそのまま通すため。末尾に [t=...] を足すだけにする。
+  if (is.na(.el)) cat(sprintf("[stage] %s [t=%s]\n", name, .ts))
+  else            cat(sprintf("[stage] %s (前段 %.1f 秒) [t=%s]\n", name, .el, .ts))
+  flush(stdout())
+}
+
+# ---- [ver65.0] downstream が何巡するかを宣言する ----
+# 段 4-10 (FindClusters / Finding Markers / Annotating / Heatmap / Volcano /
+# MSI Images / TIC Overlay) は **すべて run_downstream_analysis() の中**にあり、
+# この関数は既定で最大 3 回 (harmony / pca_uncorrected / rpca) 呼ばれる。
+# UI 側は「最も index の大きい段」で進捗を出すため、1 巡目が終わった時点で
+# 13 段中 10 段＝77% を指したまま、残り 2 巡 (全体の半分以上) のあいだ
+# バーが一切動かない。何巡するかを先に伝えれば、UI は巡ごとに数えられる。
+.downstream_planned <- 0L
+.downstream_seen    <- 0L
+.plan_downstream <- function(n) {
+  .downstream_planned <<- as.integer(n)
+  cat(sprintf("[plan] downstream_passes=%d\n", .downstream_planned))
+  flush(stdout())
+}
+# 予定していた巡が実際には走らないとき（RPCA スキップ等）に 1 行残す。
+# これが無いと UI は「まだ 1 巡残っている」と信じたまま終わってしまう。
+.skip_downstream <- function(reason) {
+  cat(sprintf("[pass] skip %s\n", reason))
   flush(stdout())
 }
 
@@ -1789,6 +1820,12 @@ run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_onl
     return(invisible(NULL))
   }
   cat(paste0("\n>>> Starting Downstream Analysis for: ", prefix, " <<<\n"))
+  # ★ ver65.0: 何巡目かを機械可読な 1 行で出す。段 4-10 はこの関数の中なので、
+  #   これが無いと UI からは 3 巡が 1 巡に見える。
+  .downstream_seen <<- .downstream_seen + 1L
+  cat(sprintf("[pass] downstream %d/%d (%s)\n",
+              .downstream_seen, max(.downstream_planned, .downstream_seen), prefix))
+  flush(stdout())
   .mem_note_base(paste0("downstream 開始 (", prefix, ")"))
   
   # サブフォルダに出力 (上書き防止)
@@ -2515,6 +2552,9 @@ if (RESUME_FROM_RDS && file.exists(rds_step1_in)) {
 }
 
 if (!step1_done && !.stage_downstream) {
+  # ★ ver65.0: 読み込みにも段の印を打つ。ここは実測で全体の 1 割前後を占めるのに
+  #   `[stage]` 行が無く、UI からは「準備中」のまま何分も動かないように見えていた。
+  .stage_mark("Reading Parquet / input files")
   seu_list <- list(); input_paths <- unique(INPUT_PATHS[file.exists(INPUT_PATHS)])
   fa_all <- list()  # 注釈付き列名データの per-feature メタ（化合物名/m/z/|以降）を保持
   for (fp in input_paths) {
@@ -2825,6 +2865,22 @@ if (!step2_done && !.stage_downstream) {
 # ★解析実行 (Harmony or PCA)
 # ★要望②, ⑥: 関数化により、後続のRPCAの結果に上書きされることなく確実に出力される
 # ④: Step3 のみ読み込んだ場合 seu_harmony は NULL → スキップ
+# ★ ver65.0: 予定巡数を先に宣言する。ここは Step2 が終わった直後で、
+#   3 つの分岐の条件がすべて揃っている唯一の場所。
+#   実際に走らない巡は各分岐が .skip_downstream() で取り消すので、
+#   予定が多めに出ても UI 側で必ず補正される。
+.plan_downstream(
+  # PIPELINE_STAGE=reduction_only は下流を 1 巡も回さない（PreFlight 診断用）。
+  if (identical(PIPELINE_STAGE, "reduction_only")) 0L else
+  (if (!is.null(seu_harmony)) 1L else 0L) +
+  (if (isTRUE(ALWAYS_OUTPUT_UNCORRECTED_PCA) &&
+       !identical(REDUCTION_USED, "pca")) 1L else 0L) +
+  (if (isTRUE(ENABLE_RPCA) &&
+       (length(seu_list) >= 2 ||
+        (ANNOTATION_ROLE == "section_id" &&
+         length(unique(na.omit(seu_harmony$slice_id))) >= 2))) 1L else 0L)
+)
+
 if (!is.null(seu_harmony)) {
   run_downstream_analysis(seu_harmony, REDUCTION_USED, od, ann_db)
 }
@@ -2843,6 +2899,7 @@ for (.c in .get_rds_candidates("Step2_PCA_uncorrected.rds")) {
 if (isTRUE(ALWAYS_OUTPUT_UNCORRECTED_PCA) && is.null(.unc_rds_path)) {
   message(">> 無補正PCA: Step2_PCA_uncorrected.rds が見つからないため下流をスキップします",
           "（主結果が無補正PCAのときは設計どおり生成されません）")
+  .skip_downstream("pca_uncorrected")   # ver65.0: 予定した巡を取り消す
 }
 if (isTRUE(ALWAYS_OUTPUT_UNCORRECTED_PCA) && !is.null(.unc_rds_path)) {
   .unc_obj <- tryCatch(load_rds_compact(.unc_rds_path)$obj, error=function(e) NULL)
@@ -2850,6 +2907,9 @@ if (isTRUE(ALWAYS_OUTPUT_UNCORRECTED_PCA) && !is.null(.unc_rds_path)) {
     run_downstream_analysis(.unc_obj, "pca_uncorrected", od, ann_db, generate_mz_only = FALSE,
                             force_recluster = TRUE)
     rm(.unc_obj); gc()
+  } else {
+    message("!! 無補正PCA: RDS を読めなかったため下流をスキップします: ", .unc_rds_path)
+    .skip_downstream("pca_uncorrected")   # ver65.0
   }
 }
 
@@ -3052,6 +3112,10 @@ if (!step3_done && !.stage_downstream) {
 # ★要望②, ⑥: Harmonyとは独立して実行されるため、確実に結果が出る
 if(!is.null(seu_rpca)) {
   run_downstream_analysis(seu_rpca, "rpca", od, ann_db, generate_mz_only = FALSE)
+} else {
+  # ★ ver65.0: RPCA が skip / 失敗のとき、予定していた 3 巡目は走らない。
+  #   上の RPCA skip 分岐は 4 か所あるが、走らなかったことの判定はここ 1 か所で足りる。
+  .skip_downstream("rpca")
 }
 
 # ★ ver63.3: tims_v8 の段階定義 "saving" に対応する英語の出力が R 側に 0 件で、
