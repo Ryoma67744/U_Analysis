@@ -745,7 +745,17 @@ def _call_callback(dash_app, output_marker, args, triggered_prop):
     from dash._utils import AttributeDict
 
     keys = [k for k in dc.GLOBAL_CALLBACK_MAP if output_marker in k]
-    assert len(keys) == 1, f"{output_marker} に一致するコールバックが {len(keys)} 件"
+    # ★ ver66.1: 同じ Output を複数のコールバックが持つようになった
+    #   (`interactive_resets.clear_stale_figures` がデータセット切替で図を空にする)。
+    #   出力 id だけでは絞れないので、**発火元の Input を持つ方**を選ぶ。
+    #   Dash の dispatch も出力と入力の組で決まるので、これが実挙動に一致する。
+    trigger_id = triggered_prop.split(".")[0]
+    if len(keys) > 1:
+        keys = [k for k in keys
+                if any(i.get("id") == trigger_id
+                       for i in dc.GLOBAL_CALLBACK_MAP[k]["inputs"])]
+    assert len(keys) == 1, (
+        f"{output_marker} / {triggered_prop} に一致するコールバックが {len(keys)} 件")
     spec = dc.GLOBAL_CALLBACK_MAP[keys[0]]
     # Output が 1 個のコールバックは spec["output"] が Output 単体で、
     # Dash も outputs_list を list ではなく dict 単体として受け取る。
