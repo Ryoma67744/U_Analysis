@@ -370,21 +370,10 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                 ]),
             ]),
             dbc.Row(className="mt-1 align-items-center", children=[
-                dbc.Col(width=2, children=[
-                    html.Div(style={"display": "flex", "alignItems": "center", "gap": "4px"}, children=[
-                        dbc.Label("マーカー", className="small mb-0"),
-                        dbc.Button("Auto", id="fs_spatial_marker_auto_btn",
-                                   size="sm", outline=True, color="info",
-                                   style={"padding": "0 5px", "fontSize": "10px",
-                                          "lineHeight": "1.2"}),
-                    ]),
-                    dcc.Slider(
-                        id="fs_spatial_marker_size",
-                        min=0, max=30, step=1, value=0,
-                        marks={0: "自動", 10: "10", 20: "20", 30: "30"},
-                        tooltip={"placement": "bottom", "always_visible": False},
-                    ),
-                ]),
+                # ★ ver66.0: フルスクリーンの「マーカー」サイズも撤去した。
+                # 通常表示と同じくラスターで描くので調整が要らない。
+                # しかもこれは clientside ではなくサーバ側 Input だったため、
+                # 動かすたびに全タイルが作り直されていた（撤去の効果が最も大きい）。
                 dbc.Col(width=2, children=[
                     dbc.Label("ラベル", className="small mb-0"),
                     dcc.Slider(
@@ -595,7 +584,6 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
      Input("fs_spatial_show_labels", "value"),
      Input("fs_spatial_highlight_cluster", "value"),
      Input("fs_spatial_exclude_cluster", "value"),
-     Input("fs_spatial_marker_size", "value"),
      Input("fs_spatial_height_slider", "value"),
      Input("fs_spatial_width_slider", "value"),
      Input("fs_spatial_label_size", "value"),
@@ -609,7 +597,7 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
     prevent_initial_call=True,
 )
 def update_fs_spatial(sample, rotation_store, show_labels, highlight,
-                      exclude_clusters, marker_size, height_val, width_val,
+                      exclude_clusters, height_val, width_val,
                       label_size, legend_hidden, custom_colors, rows,
                       hne_opacity, accumulated_positions, cluster_name_map=None,
                       rds_path=None):
@@ -656,7 +644,6 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                                          flip_h=transform.get("flip_h", False),
                                          flip_v=transform.get("flip_v", False),
                                          title=display_s, embed_legend=True,
-                                         marker_size=marker_size or 0,
                                          exclude_clusters=exclude_clusters,
                                          label_size=label_size or 10,
                                          saved_positions=spatial_pos.get(s),

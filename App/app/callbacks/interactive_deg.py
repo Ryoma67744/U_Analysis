@@ -38,6 +38,7 @@ from app.utils.label_persistence import (
     compute_annotation_offsets as _compute_annotation_offsets,
 )
 from app.utils.validation import coerce_count, coerce_number
+from app.utils import raster as _raster
 
 logger = logging.getLogger("msi.interactive.deg")
 
@@ -436,8 +437,7 @@ def _feature_heading(feature_name, deg_data, show_compound_names, interactive_da
     # 強度レンジ (feature_intensity_min/max) は Input のまま。**見た目だけの
     # パラメータではない** — しきい値未満の点はトレースから除外しており
     # (visible_mask)、点の集合そのものが変わるので restyle では表現できない。
-    [State("feature_marker_size", "value"),
-     State("feature_colorscale", "value"),
+    [State("feature_colorscale", "value"),
      # ver51.5: いまブラウザに実在するグラフの id。サーバ側にメモを置く代わりに
      # これで「殻を作り直す必要があるか」を判断する。ページを再読み込みすると
      # 空になるので、**リロード後に自動で復帰する** (メモ方式だと画面が白いまま
@@ -454,7 +454,7 @@ def update_feature_plot(feature_name, sample,
                         intensity_min, intensity_max,
                         name_map, _fs_trigger, rows,
                         show_compound_names,
-                        marker_size, colorscale, existing_graph_ids,
+                        colorscale, existing_graph_ids,
                         rds_path, cache_dir_str, rotation_store,
                         deg_data, session_id=None):
     from app.callbacks.interactive_callbacks import (
@@ -471,7 +471,7 @@ def update_feature_plot(feature_name, sample,
         return _update_feature_plot_inner(
             _pt, feature_name, sample, intensity_min, intensity_max,
             name_map, _fs_trigger, rows, show_compound_names,
-            marker_size, colorscale, existing_graph_ids,
+            colorscale, existing_graph_ids,
             rds_path, cache_dir_str, rotation_store,
             deg_data, session_id,
             _transform_coords, _calc_zero_gap_marker_size,
@@ -482,7 +482,7 @@ def update_feature_plot(feature_name, sample,
 def _update_feature_plot_inner(
         _pt, feature_name, sample, intensity_min, intensity_max,
         name_map, _fs_trigger, rows, show_compound_names,
-        marker_size, colorscale, existing_graph_ids,
+        colorscale, existing_graph_ids,
         rds_path, cache_dir_str, rotation_store,
         deg_data, session_id,
         _transform_coords, _calc_zero_gap_marker_size,
@@ -594,7 +594,6 @@ def _update_feature_plot_inner(
                            no_update, no_update, [], heading=heading)
         display_min, display_max = rng
 
-        auto_mode = (marker_size is None or marker_size <= 0)
 
         # ホバー/ファイル名用ラベル（化合物名を利用可能なら付与）。
         # ホバーは 化合物名⇄m/z トグルに追従、ファイル名は常に安全化した識別子。
@@ -628,8 +627,22 @@ def _update_feature_plot_inner(
             # マーカーサイズ: 自動モード(0)ならサンプル毎に計算。
             # ver51.3: 自動値は常に計算して layout.meta.auto_msz に載せる。
             # clientside restyle で「自動」に戻されたときの基準になる。
-            auto_msz = _calc_zero_gap_marker_size(plot_x, plot_y, render_height=280)
-            m_size = auto_msz if auto_mode else marker_size
+            #
+            # ★ ver66.0: 作画領域の高さを 280 と決め打ちしていたが、実際の
+            #   dcc.Graph は 350px で margin が t=30/b=10 なので **310px** だった。
+            #   その差のぶんマーカーが約 10% 小さく、既定表示でスポットの間に
+            #   隙間が空いていた（利用者が毎回スライダーで詰めていた原因の一つ）。
+            #   ラスター経路ではそもそもこの値を使わないが、格子と判定できない
+            #   データの散布フォールバックでは効くので実寸に直す。
+            auto_msz = _calc_zero_gap_marker_size(plot_x, plot_y, render_height=310)
+            # ★ ver66.0: スライダーが無くなったので常に自動値。
+            #   散布フォールバック時にだけ使われる。
+            m_size = auto_msz
+
+            # ★ ver66.0: 規則格子ならラスター（MSI 画像そのもの）で描く。
+            #   詳細な理由は app/utils/raster.py の docstring を参照。
+            gi = (_raster.grid_index(plot_x, plot_y)
+                  if _raster.screen_raster_enabled() else None)
 
             # 最後のサンプルのみカラーバーを表示
             is_last = (s == samples_to_show[-1])
@@ -664,17 +677,29 @@ def _update_feature_plot_inner(
             # ver46.1: go.Scatter(SVG) -> go.Scattergl(WebGL)。SVG は 1 点 = 1 DOM ノードのため
             # 数万 spot で描画・パンが破綻していた（Spatial/UMAP は元から Scattergl）。
             if "TotalCount" in df_s.columns:
-                fig.add_trace(go.Scattergl(
-                    x=plot_x, y=plot_y, mode="markers",
-                    marker=dict(size=m_size, symbol="square",
-                                # ver51.3: 背景の TIC も同じ理由で丸める。
-                                # hoverinfo="skip" なので数値は画面に出ない。
-                                color=_round_values_for_display(
-                                    df_s["TotalCount"].values),
-                                colorscale="Greys", opacity=0.5,
-                                showscale=False),
-                    hoverinfo="skip", showlegend=False,
-                ))
+                if gi is not None:
+                    _tic = np.asarray(_round_values_for_display(
+                        df_s["TotalCount"].values), dtype=float)
+                    _tic_finite = _tic[np.isfinite(_tic)]
+                    _tmin = float(_tic_finite.min()) if _tic_finite.size else 0.0
+                    _tmax = float(_tic_finite.max()) if _tic_finite.size else 1.0
+                    if _tmax <= _tmin:
+                        _tmax = _tmin + 1.0
+                    fig.add_trace(_raster.heatmap_trace(
+                        _raster.fill_grid(_raster.grid_shape(gi), gi[0], gi[1], _tic),
+                        gi[2], gi[3], "Greys", _tmin, _tmax, opacity=0.5))
+                else:
+                    fig.add_trace(go.Scattergl(
+                        x=plot_x, y=plot_y, mode="markers",
+                        marker=dict(size=m_size, symbol="square",
+                                    # ver51.3: 背景の TIC も同じ理由で丸める。
+                                    # hoverinfo="skip" なので数値は画面に出ない。
+                                    color=_round_values_for_display(
+                                        df_s["TotalCount"].values),
+                                    colorscale="Greys", opacity=0.5,
+                                    showscale=False),
+                        hoverinfo="skip", showlegend=False,
+                    ))
                 bg_idx = len(fig.data) - 1
 
             # 発現量オーバーレイ
@@ -686,37 +711,68 @@ def _update_feature_plot_inner(
             # 閾値未満は opacity=0 で隠し、tooltip に「閾値未満」と出す。
             fg_color, fg_alpha, fg_below = _feature_intensity_style(
                 df_s["_expression"].values, display_min, display_max)
-            fg_marker = dict(marker_opts)
-            fg_marker["opacity"] = fg_alpha
-            fg_marker["color"] = fg_color
-            fig.add_trace(go.Scattergl(
-                x=plot_x,
-                y=plot_y,
-                mode="markers",
-                marker=fg_marker,
-                text=df_s["CellID"].values,
-                # ver51.5: 閾値未満の注記。ほぼ空文字なので gzip でほぼ消える。
-                customdata=fg_below,
-                # ver46.3: ラベル(化合物名)はユーザー提供のアノテーションファイル由来で、
-                # "%{x}" 等の Plotly テンプレート記法を含み得る。hovertemplate に
-                # 直接埋めると展開されてしまうため meta 経由で値として渡す。
-                meta=hover_label,
-                hovertemplate=("%{meta}: %{marker.color:.4f}%{customdata}"
-                               "<br>%{text}<extra></extra>"),
-                showlegend=False,
-            ))
+            if gi is not None:
+                # ★ ver66.0: ラスターはセルごとの不透明度を持てないので、
+                #   「強度が弱いほど薄く TIC が透ける」段階的 α (0.3〜1.0) は
+                #   表現できない。閾値未満のセルを NaN（＝完全に透明）にして
+                #   背後の TIC を見せる形に改める。閾値の判定そのものは
+                #   `_feature_intensity_style` の α をそのまま使うので、
+                #   「どこが閾値未満か」は従来と 1 セルも変わらない。
+                #
+                #   併せて `hoverongaps=False` により閾値未満のセルはホバー対象から
+                #   外れる。従来は opacity=0 の点でもホバーが出てしまうため
+                #   「閾値未満」の注記 (customdata) を添えていた (ver51.5) が、
+                #   ラスターではその制約自体が無くなるので注記も不要になる。
+                fg_z = _raster.fill_grid(
+                    _raster.grid_shape(gi), gi[0], gi[1],
+                    np.where(np.asarray(fg_alpha) > 0.0,
+                             np.asarray(fg_color, dtype=float), np.nan))
+                fig.add_trace(_raster.heatmap_trace(
+                    fg_z, gi[2], gi[3], colorscale or "Plasma",
+                    display_min, display_max,
+                    showscale=is_last,
+                    colorbar=marker_opts.get("colorbar"),
+                    # CellID は m/z に依存しない＝殻側に置き、差分更新では触らない。
+                    text=_raster.fill_grid_labels(
+                        _raster.grid_shape(gi), gi[0], gi[1], df_s["CellID"].values),
+                    # ver46.3: ラベル(化合物名)はユーザー提供のため meta 経由で値渡し。
+                    meta=hover_label,
+                    hovertemplate=("%{meta}: %{z:.4f}"
+                                   "<br>%{text}<extra></extra>"),
+                ))
+            else:
+                fg_marker = dict(marker_opts)
+                fg_marker["opacity"] = fg_alpha
+                fg_marker["color"] = fg_color
+                fig.add_trace(go.Scattergl(
+                    x=plot_x,
+                    y=plot_y,
+                    mode="markers",
+                    marker=fg_marker,
+                    text=df_s["CellID"].values,
+                    # ver51.5: 閾値未満の注記。ほぼ空文字なので gzip でほぼ消える。
+                    customdata=fg_below,
+                    # ver46.3: ラベル(化合物名)はユーザー提供のアノテーションファイル由来で、
+                    # "%{x}" 等の Plotly テンプレート記法を含み得る。hovertemplate に
+                    # 直接埋めると展開されてしまうため meta 経由で値として渡す。
+                    meta=hover_label,
+                    hovertemplate=("%{meta}: %{marker.color:.4f}%{customdata}"
+                                   "<br>%{text}<extra></extra>"),
+                    showlegend=False,
+                ))
 
             fg_idx = len(fig.data) - 1
             r_margin = 80 if is_last else 10
             fig.update_layout(
-                # ver51.3: 見た目だけのコントロール (マーカーサイズ / 配色) を
-                # clientside restyle で処理するための索引。
-                #   sz … marker.size がサイズ入力に従うトレース
-                #   cs … marker.colorscale が配色プルダウンに従うトレース
+                # ver51.3: 見た目だけのコントロール (配色) を clientside restyle で
+                # 処理するための索引。
+                #   cs … 配色プルダウンに従うトレース
                 #        (TIC 背景は常に Greys なので入れない)
-                meta=dict(kind="feature", auto_msz=float(auto_msz),
-                          sz=[i for i in (bg_idx, fg_idx) if i is not None],
-                          cs=[fg_idx]),
+                # ★ ver66.0: 配色の書き先がトレース種で変わる。ラスターは
+                #   heatmap のトップレベル `colorscale`、散布フォールバックは
+                #   `marker.colorscale`。raster フラグでどちらかを判別する。
+                meta=dict(kind="feature", cs=[fg_idx],
+                          raster=gi is not None),
                 title=dict(text=display_s, font=dict(size=14), x=0.5),
                 xaxis=dict(showgrid=False, showline=False, zeroline=False,
                            showticklabels=False, title="", visible=False),
@@ -769,6 +825,40 @@ def _update_feature_plot_inner(
                        no_update, no_update, [])
 
 
+def _feature_grid_index(df_s, rotation_store, sample_key):
+    """殻と同じ座標変換を通して格子添字を返す（格子でなければ None）。
+
+    ★ ver66.0: 殻 (`_update_feature_plot_inner`) と差分更新で **同一の**
+      `_transform_coords` → `_round_for_display` → `grid_index` を通す。
+      片方だけ別実装にすると、m/z を切り替えた瞬間に 1 セルずれた画になり、
+      しかも「それらしく」見えてしまうので気づけない
+      （ver52.5 の「発現量を位置で代入して行がずれる」と同じ壊れ方）。
+    """
+    if not _raster.screen_raster_enabled():
+        return None
+    if "SpatialX" not in df_s.columns or "SpatialY" not in df_s.columns:
+        return None
+    # 循環 import を避けるため関数内 import（このモジュールの既存の流儀に合わせる）
+    from app.callbacks.interactive_spatial import (
+        _transform_coords, _round_for_display)
+
+    store = rotation_store or {}
+    transform = store.get(
+        sample_key, store.get("__all__",
+                              {"angle": 0, "flip_h": False, "flip_v": False}))
+    if isinstance(transform, (int, float)):
+        transform = {"angle": int(transform), "flip_h": False, "flip_v": False}
+    px, py = _transform_coords(
+        df_s["SpatialX"].values,
+        -df_s["SpatialY"].values,          # Y軸反転（殻と同じ）
+        transform.get("angle", 0),
+        flip_h=transform.get("flip_h", False),
+        flip_v=transform.get("flip_v", False))
+    px, py = _round_for_display(px, py)
+    return _raster.grid_index(px, py)
+
+
+
 # ---------------------------------------------------------------------------
 # m/z 切替の差分更新 (ver51.5)
 # ---------------------------------------------------------------------------
@@ -797,12 +887,16 @@ def _update_feature_plot_inner(
      State("sample_name_map_store", "data"),
      State("seurat_rds_path_store", "data"),
      State("seurat_cache_dir_store", "data"),
-     State("session_id_store", "data")],
+     State("session_id_store", "data"),
+     # ★ ver66.0: ラスターの z を作るには格子添字が要る＝座標変換が要る。
+     #   殻と同じ回転/反転を通さないと 1 セルずれた画になり、しかも
+     #   「それらしく」見えるので気づけない (ver52.5 の行順ずれと同じ壊れ方)。
+     State("spatial_rotation_store", "data")],
     prevent_initial_call=True,
 )
 def patch_feature_intensity(feature_name, intensity_min, intensity_max,
                             show_compound_names, sample, name_map, rds_path,
-                            cache_dir_str, session_id=None):
+                            cache_dir_str, session_id=None, rotation_store=None):
     """m/z / 強度レンジの変更を figure の差分更新で反映する。"""
     from app.callbacks.interactive_callbacks import (
         _interactive_data, _bridge, _set_active_key,
@@ -840,7 +934,9 @@ def patch_feature_intensity(feature_name, intensity_min, intensity_max,
             return [no_update] * n, [no_update] * n
 
         samples_to_show = [sample] if sample else sorted(df["Sample"].unique())
-        _cols = [c for c in ("Sample", "TotalCount") if c in df.columns]
+        # ★ ver66.0: SpatialX/Y も持ってくる。ラスターの z は格子添字が要るため。
+        _cols = [c for c in ("Sample", "TotalCount", "SpatialX", "SpatialY")
+                 if c in df.columns]
         df_plot = df[_cols].copy()
         # ★ ver52.5: 初回描画側と同じ照合。差分更新はここだけ通るので、
         #   片方に足すと「最初は止まるのに、m/z を切り替えると出る」になる。
@@ -897,22 +993,41 @@ def patch_feature_intensity(feature_name, intensity_min, intensity_max,
                     continue
                 color, alpha, below = _feature_intensity_style(
                     df_s["_expression"].values, display_min, display_max)
+                gi = _feature_grid_index(df_s, rotation_store, s_key)
 
                 patched = Patch()
                 # 発現トレースは常に最後。TIC 背景 (あれば) は触らない。
-                patched["data"][-1]["marker"]["color"] = color
-                patched["data"][-1]["marker"]["opacity"] = alpha
-                patched["data"][-1]["marker"]["cmin"] = display_min
-                patched["data"][-1]["marker"]["cmax"] = display_max
-                patched["data"][-1]["customdata"] = below
+                if gi is not None:
+                    # ★ ver66.0: ラスター経路。幾何 (x/y/text=CellID) は m/z に
+                    #   依存しないので触らない ＝ ver51.5 の不変条件は維持したまま、
+                    #   差し替えるのを marker.color/opacity から z に移しただけ。
+                    patched["data"][-1]["z"] = _raster.fill_grid(
+                        _raster.grid_shape(gi), gi[0], gi[1],
+                        np.where(np.asarray(alpha) > 0.0,
+                                 np.asarray(color, dtype=float), np.nan))
+                    patched["data"][-1]["zmin"] = display_min
+                    patched["data"][-1]["zmax"] = display_max
+                else:
+                    patched["data"][-1]["marker"]["color"] = color
+                    patched["data"][-1]["marker"]["opacity"] = alpha
+                    patched["data"][-1]["marker"]["cmin"] = display_min
+                    patched["data"][-1]["marker"]["cmax"] = display_max
+                    patched["data"][-1]["customdata"] = below
                 patched["data"][-1]["meta"] = hover_label
                 if s_key == colorbar_index:
                     # ★ 目盛りの位置とラベルの両方。位置は cmin/cmax に、
                     #   ラベルは強度レンジ(%)に対応する。片方だけ直すと
                     #   カラーバーの読み方が狂う。
-                    patched["data"][-1]["marker"]["colorbar"]["tickvals"] = [
-                        display_min, display_max]
-                    patched["data"][-1]["marker"]["colorbar"]["ticktext"] = ticktext
+                    # ★ ver66.0: heatmap のカラーバーは **トレース直下**。
+                    #   marker.colorbar に書いても効かない。
+                    if gi is not None:
+                        patched["data"][-1]["colorbar"]["tickvals"] = [
+                            display_min, display_max]
+                        patched["data"][-1]["colorbar"]["ticktext"] = ticktext
+                    else:
+                        patched["data"][-1]["marker"]["colorbar"]["tickvals"] = [
+                            display_min, display_max]
+                        patched["data"][-1]["marker"]["colorbar"]["ticktext"] = ticktext
                 figures.append(patched)
                 configs.append(_feature_graph_config(
                     file_label, _display_name(s_key, name_map or {})))
@@ -927,7 +1042,7 @@ def patch_feature_intensity(feature_name, intensity_min, intensity_max,
                 if si is not None:
                     stored[si] = _apply_feature_data_to_stored(
                         stored[si], color, alpha, below, display_min,
-                        display_max, hover_label, ticktext, new_name)
+                        display_max, hover_label, ticktext, new_name, gi=gi)
                 measured["color"].append(color)
                 measured["opacity"].append(alpha)
                 measured["note"].append(below)
@@ -940,26 +1055,41 @@ def patch_feature_intensity(feature_name, intensity_min, intensity_max,
 
 
 def _apply_feature_data_to_stored(entry, color, alpha, below, cmin, cmax,
-                                  hover_label, ticktext, new_name):
+                                  hover_label, ticktext, new_name, gi=None):
     """サーバ保持の一括保存用 figure に、画面と同じ差分を当てる。
 
     ここを忘れると「画面は新しい m/z、保存 PNG は古い m/z」になる。
+
+    gi: ラスター経路の格子添字（`_feature_grid_index` の戻り値）。None なら散布。
     """
     try:
         name, fig_d = entry
         tr = (fig_d.get("data") or [])[-1]
-        marker = tr.setdefault("marker", {})
-        marker["color"] = color
-        marker["opacity"] = alpha
-        marker["cmin"] = cmin
-        marker["cmax"] = cmax
-        if isinstance(marker.get("colorbar"), dict):
-            # ver51.6: 目盛りの **位置** も cmin/cmax に追従させる。
-            # ticktext だけ直すと、ラベルは新しいのに目盛り線が古い位置に
-            # 残り、カラーバーの読み方が狂う。
-            marker["colorbar"]["tickvals"] = [cmin, cmax]
-            marker["colorbar"]["ticktext"] = ticktext
-        tr["customdata"] = below
+        if gi is not None:
+            # ★ ver66.0: 画面側 (Patch) と同じ書き先にする。heatmap では
+            #   z / zmin / zmax / colorbar がトレース直下で、marker は存在しない。
+            tr["z"] = _raster.fill_grid(
+                _raster.grid_shape(gi), gi[0], gi[1],
+                np.where(np.asarray(alpha) > 0.0,
+                         np.asarray(color, dtype=float), np.nan))
+            tr["zmin"] = cmin
+            tr["zmax"] = cmax
+            if isinstance(tr.get("colorbar"), dict):
+                tr["colorbar"]["tickvals"] = [cmin, cmax]
+                tr["colorbar"]["ticktext"] = ticktext
+        else:
+            marker = tr.setdefault("marker", {})
+            marker["color"] = color
+            marker["opacity"] = alpha
+            marker["cmin"] = cmin
+            marker["cmax"] = cmax
+            if isinstance(marker.get("colorbar"), dict):
+                # ver51.6: 目盛りの **位置** も cmin/cmax に追従させる。
+                # ticktext だけ直すと、ラベルは新しいのに目盛り線が古い位置に
+                # 残り、カラーバーの読み方が狂う。
+                marker["colorbar"]["tickvals"] = [cmin, cmax]
+                marker["colorbar"]["ticktext"] = ticktext
+            tr["customdata"] = below
         tr["meta"] = hover_label
         entry_list = list(entry)
         entry_list[0] = new_name
@@ -982,8 +1112,8 @@ def _apply_feature_data_to_stored(entry, color, alpha, below, cmin, cmax,
 # display_helpers.apply_feature_display_overrides で同じ変換を掛ける
 # (interactive_batch_save.cb_batch_save_feature)。
 
+# ★ ver66.0: marker_size の登録を削除した（スライダーごと撤去）。
 for _ctl_id, _fn in (
-    ("feature_marker_size", "marker_size"),
     ("feature_colorscale", "colorscale"),
 ):
     clientside_callback(

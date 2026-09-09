@@ -132,14 +132,13 @@ def save_heatmap_settings(top_n, scale, annotation_switch, cluster, rds_path):
      Input("feature_intensity_min", "value"),
      Input("feature_intensity_max", "value"),
      Input("feature_colorscale", "value"),
-     Input("feature_marker_size", "value"),
      Input("feature_violin_group_by", "value"),
      Input("feature_show_compound_names", "value")],
     State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
 def save_feature_settings(feature, mz_min, mz_max, cluster_filter, filter_mode,
-                          intensity_min, intensity_max, colorscale, marker_size,
+                          intensity_min, intensity_max, colorscale,
                           violin_group_by, show_compound_names, rds_path):
     return _save("feature_display", {
         "feature": feature,
@@ -150,7 +149,6 @@ def save_feature_settings(feature, mz_min, mz_max, cluster_filter, filter_mode,
         "intensity_min": intensity_min,
         "intensity_max": intensity_max,
         "colorscale": colorscale,
-        "marker_size": marker_size,
         "violin_group_by": violin_group_by,
         "show_compound_names": bool(show_compound_names),
         "_note": "intensity_min/max clip the colour scale (cmin/cmax), in % of range",
@@ -217,20 +215,18 @@ def save_umap_view_settings(display_mode, highlight, facet_by,
      Input("spatial_highlight_cluster", "value"),
      Input("hne_overlay_show", "value"),
      Input("hne_overlay_mono", "value"),
-     Input("hne_overlay_opacity", "value"),
-     Input("hne_overlay_marker_size", "value")],
+     Input("hne_overlay_opacity", "value")],
     State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
 def save_spatial_view_settings(sample, highlight, overlay_show, overlay_mono,
-                               overlay_opacity, overlay_marker_size, rds_path):
+                               overlay_opacity, rds_path):
     return _save("spatial_view", {
         "sample": sample,
         "highlight_cluster": highlight,
         "hne_overlay_show": bool(overlay_show),
         "hne_overlay_mono": bool(overlay_mono),
         "hne_overlay_opacity": overlay_opacity,
-        "hne_overlay_marker_size": overlay_marker_size,
     }, rds_path)
 
 

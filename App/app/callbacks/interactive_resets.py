@@ -39,12 +39,12 @@ def reset_volcano(n_clicks):
 
 
 @callback(
-    [Output("hne_overlay_opacity", "value", allow_duplicate=True),
-     Output("hne_overlay_marker_size", "value", allow_duplicate=True)],
+    # ★ ver66.0: スポットサイズを撤去したので、戻すのは透明度だけになった。
+    Output("hne_overlay_opacity", "value", allow_duplicate=True),
     Input("hne_overlay_reset", "n_clicks"),
     prevent_initial_call=True,
 )
 def reset_hne_overlay(n_clicks):
     if not n_clicks:
         raise PreventUpdate
-    return 100, 5
+    return 100

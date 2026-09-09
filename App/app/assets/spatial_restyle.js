@@ -47,38 +47,27 @@ window.dash_clientside = window.dash_clientside || {};
         if (opts.kinds.indexOf(meta.kind) < 0) { return; }
 
         // --- マーカーサイズ / 不透明度（トレース単位の restyle）---
-        var idx = [], sizes = [], opacities = [];
-        var base = null;
-        if (opts.markerSize !== null && opts.markerSize !== undefined) {
-            base = opts.markerSize > 0 ? opts.markerSize : meta.auto_msz;
-        }
+        // ★ ver66.0: 不透明度の書き先がトレース種で変わる。ラスター化した通常タイルは
+        //   heatmap なので **トレース直下の opacity**、H&E タイルは射影で格子が崩れる
+        //   ため散布のままで marker.opacity。まとめて 1 回の restyle には載せられない
+        //   ので、書き先ごとに添字をまとめる。Python 側 (apply_display_overrides) と
+        //   同じ規則にすること。片方だけ直すと画面と保存 PNG がずれる。
+        var idxHeat = [], idxMark = [];
+        var hasOpacity = (opts.spotOpacity !== null && opts.spotOpacity !== undefined);
         for (var i = 0; i < gd.data.length; i++) {
             var tm = gd.data[i].meta;
-            if (!tm || typeof tm !== "object" || tm.dsz === undefined) { continue; }
-            var touched = false;
-            var size = undefined, opacity = undefined;
-            if (base) { size = base + (tm.dsz || 0); touched = true; }
-            if (opts.spotOpacity !== null && opts.spotOpacity !== undefined && tm.op) {
-                opacity = opts.spotOpacity;
-                touched = true;
-            }
-            if (!touched) { continue; }
-            idx.push(i);
-            sizes.push(size);
-            opacities.push(opacity);
+            if (!tm || typeof tm !== "object" || !tm.op) { continue; }
+            if (gd.data[i].type === "heatmap") { idxHeat.push(i); }
+            else { idxMark.push(i); }
         }
-        if (idx.length) {
-            var update = {};
-            if (sizes.some(function (v) { return v !== undefined; })) {
-                update["marker.size"] = sizes;
+        try {
+            if (hasOpacity && idxHeat.length) {
+                window.Plotly.restyle(gd, {"opacity": opts.spotOpacity}, idxHeat);
             }
-            if (opacities.some(function (v) { return v !== undefined; })) {
-                update["marker.opacity"] = opacities;
+            if (hasOpacity && idxMark.length) {
+                window.Plotly.restyle(gd, {"marker.opacity": opts.spotOpacity}, idxMark);
             }
-            if (Object.keys(update).length) {
-                try { window.Plotly.restyle(gd, update, idx); } catch (e) { /* noop */ }
-            }
-        }
+        } catch (e) { /* noop */ }
 
         // --- ラベルサイズ（layout.annotations の relayout）---
         if (opts.labelSize !== null && opts.labelSize !== undefined) {
@@ -98,27 +87,19 @@ window.dash_clientside = window.dash_clientside || {};
         return window.dash_clientside.no_update;
     }
 
+    // ★ ver66.0: marker_size / hne_marker_size を撤去した。通常タイルはラスター
+    //   (go.Heatmap) になり、セルの大きさがデータ座標で決まるので調整が要らない。
+    //   H&E タイルは散布のままだが、サイズは自動計算に固定した。
     window.dash_clientside.spatial_restyle = {
-        // 通常 (MSI) タイルのマーカーサイズ。0 = 自動（layout.meta.auto_msz を使う）
-        marker_size: function (v) {
-            return run({markerSize: v, labelSize: null, spotOpacity: null,
-                        kinds: ["msi"]});
-        },
         // クラスタ番号ラベルの文字サイズ
         label_size: function (v) {
-            return run({markerSize: null, labelSize: v, spotOpacity: null,
-                        kinds: ["msi"]});
+            return run({labelSize: v, spotOpacity: null, kinds: ["msi"]});
         },
         // スポット不透明度 (0-100)。通常タイル・H&E タイルの両方に効く
         spot_opacity: function (v) {
             var op = (v === null || v === undefined) ? null : v / 100.0;
-            return run({markerSize: null, labelSize: null, spotOpacity: op,
+            return run({labelSize: null, spotOpacity: op,
                         kinds: ["msi", "hne"]});
-        },
-        // H&E タイルのスポットサイズ
-        hne_marker_size: function (v) {
-            return run({markerSize: v, labelSize: null, spotOpacity: null,
-                        kinds: ["hne"]});
         },
     };
 })();

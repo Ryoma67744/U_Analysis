@@ -29,6 +29,7 @@ from app.utils.display_helpers import (
     transform_uirevision as _transform_uirevision,
 )
 from app.callbacks.interactive_hne_bg import build_hne_overlay_fig as _build_hne_overlay_fig
+from app.utils import raster as _raster
 
 logger = logging.getLogger("msi.interactive.spatial")
 
@@ -175,6 +176,95 @@ def _calc_zero_gap_marker_size(plot_x, plot_y, render_height=310, scale_factor=1
     return 4
 
 
+# ---------------------------------------------------------------------------
+# ラスター（MSI 画像）経路のレイヤ生成 (ver66.0)
+# ---------------------------------------------------------------------------
+# ★ ver66.0: 従来 Spatial は go.Scattergl の正方マーカーで描いていた。マーカーの
+#   大きさは **画面ピクセル単位**なので、「隣接スポットがちょうど接する大きさ」は
+#   データ座標の拡大率が変わるたびに崩れる。ズームすれば隙間が開き、縮めば重なる。
+#   しかもズーム/パンは assets/relayout_filter.js でサーバへ送らない設計なので、
+#   サーバ側が追従することも原理的にできなかった（利用者がスライダーで直していた）。
+#
+#   MSI は「決まった位置に四角い画素を隙間なく並べたもの」なので、セルの大きさを
+#   **データ座標**で決める go.Heatmap のほうが実体に近く、どの拡大率でも隙間ゼロになる。
+#   x と y でピクセル間隔が違うデータ（正方マーカーでは埋められない）も正しく描ける。
+#
+#   格子と判定できない座標（不規則・任意角回転）では grid_index が None を返すので、
+#   その場合だけ従来の散布経路にフォールバックする。
+
+_RASTER_SPOT = {"op": True}     # スポット不透明度スライダーの対象（サイズは無い）
+
+
+def _raster_add_background(fig, gi, df_sample, mask, name=None):
+    """背景層（TIC の白黒 or 一様な薄灰）を 1 本足す。散布経路の bg_marker と同じ規則。
+
+    name: 散布経路と同じ命名を保つために呼び出し側が渡す（通常表示は
+        "_background_tic"、ハイライト/選択時は既定の "TIC"/"Other"）。
+    """
+    ix, iy, xc, yc = gi
+    if not mask.any():
+        return
+    shape = (len(yc), len(xc))
+    if "TotalCount" in df_sample.columns:
+        tc = np.asarray(
+            _round_values_for_display(df_sample["TotalCount"].values[mask]),
+            dtype=float)
+        z = _raster.fill_grid(shape, ix[mask], iy[mask], tc)
+        finite = tc[np.isfinite(tc)]
+        zmin = float(finite.min()) if finite.size else 0.0
+        zmax = float(finite.max()) if finite.size else 1.0
+        if zmax <= zmin:
+            zmax = zmin + 1.0
+        cscale, default_name, opacity = "Greys", "TIC", 0.5
+    else:
+        z = _raster.fill_grid(shape, ix[mask], iy[mask], 0.0)
+        cscale = [[0.0, HIGHLIGHT_GRAY], [1.0, HIGHLIGHT_GRAY]]
+        zmin, zmax, default_name, opacity = 0.0, 1.0, "Other", 0.2
+    fig.add_trace(_raster.heatmap_trace(
+        z, xc, yc, cscale, zmin, zmax,
+        name=name or default_name, opacity=opacity))
+
+
+def _raster_add_clusters(fig, gi, cluster_str_values, mask, color_map,
+                         cluster_name_map, spot_opacity):
+    """クラスタ色の層を 1 本足す（全クラスタを 1 枚の z にまとめる）。
+
+    散布では「1 クラスタ = 1 トレース」だったが、ラスターでは離散カラースケール
+    (`raster.build_discrete_colorscale`) に index を渡して 1 枚に畳む。
+    画面の凡例はサーバ側の共有凡例 (legend_hidden) なので、トレースを分ける必要は無い。
+    """
+    ix, iy, xc, yc = gi
+    if not mask.any():
+        return
+    shape = (len(yc), len(xc))
+    sel = cluster_str_values[mask]
+    cats = sorted(set(sel), key=_cluster_sort_key)
+    idx_of = {c: i for i, c in enumerate(cats)}
+    hex_list = [color_map.get(c, "#999999") for c in cats]
+    values = np.array([idx_of[c] for c in sel], dtype=float)
+    z = _raster.fill_grid(shape, ix[mask], iy[mask], values)
+    cscale, zmin, zmax = _raster.build_discrete_colorscale(hex_list)
+    # ホバー文字列はセルごとに持たせる（テンプレートへ直接埋めない: ver46.2 の教訓）。
+    name_of = {c: _cluster_display_name(c, cluster_name_map) for c in cats}
+    labels = _raster.fill_grid_labels(
+        shape, ix[mask], iy[mask], [name_of[c] for c in sel])
+    fig.add_trace(_raster.heatmap_trace(
+        z, xc, yc, cscale, zmin, zmax,
+        customdata=labels, hovertemplate="%{customdata}<extra></extra>",
+        opacity=spot_opacity, meta=_RASTER_SPOT))
+
+
+def _raster_add_solid(fig, gi, mask, color, name):
+    """単色の層を 1 本足す（選択セルの赤ハイライト用）。"""
+    ix, iy, xc, yc = gi
+    if not mask.any():
+        return
+    shape = (len(yc), len(xc))
+    z = _raster.fill_grid(shape, ix[mask], iy[mask], 1.0)
+    fig.add_trace(_raster.heatmap_trace(
+        z, xc, yc, [[0.0, color], [1.0, color]], 0.0, 1.0, name=name))
+
+
 def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                                selected_cell_ids, rotation_deg=0,
                                show_labels=False, flip_h=False, flip_v=False,
@@ -233,81 +323,117 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
     if marker_size <= 0:
         marker_size = auto_msz
 
+    # ★ ver66.0: 規則格子なら「MSI 画像そのもの」として描く（詳細は上のブロック）。
+    #   格子と判定できない座標では None が返るので、その場合だけ従来の散布に落ちる。
+    gi = (_raster.grid_index(plot_x, plot_y)
+          if _raster.screen_raster_enabled() else None)
+
     if selected_cell_ids:
         mask_selected = df_sample["CellID"].isin(selected_cell_ids).values
         mask_bg = ~mask_selected
-        if mask_bg.any():
-            if "TotalCount" in df_sample.columns:
-                tc_values = df_sample["TotalCount"].values[mask_bg]
-                bg_marker = dict(size=marker_size, symbol="square",
-                                 # ver51.4: TIC も丸める。hoverinfo="skip" なので
-                                 # 表示桁の心配は無い (Feature 側と違う点)。
-                                 color=_round_values_for_display(tc_values),
-                                 colorscale="Greys",
-                                 opacity=0.5, showscale=False)
-                bg_name = "TIC"
-            else:
-                bg_marker = dict(size=marker_size, symbol="square", color=HIGHLIGHT_GRAY, opacity=0.2)
-                bg_name = "Other"
-            fig.add_trace(go.Scattergl(
-                x=plot_x[mask_bg],
-                y=plot_y[mask_bg],
-                mode="markers",
-                marker=bg_marker,
-                name=bg_name, showlegend=False, hoverinfo="skip",
-                meta=_MSZ_BG,
-            ))
-        if mask_selected.any():
-            fig.add_trace(go.Scattergl(
-                x=plot_x[mask_selected],
-                y=plot_y[mask_selected],
-                mode="markers",
-                marker=dict(size=marker_size + 1, symbol="square", color="red"),
-                name=f"Selected ({mask_selected.sum()})",
-                meta=_MSZ_PLUS1,
-            ))
+        if gi is not None:
+            _raster_add_background(fig, gi, df_sample, mask_bg)
+            # ★ ver66.0: 散布では選択セルを marker_size+1 で 1px 大きく描いて
+            #   背景に埋もれないようにしていた。ラスターでは全セルが同じ大きさで
+            #   隙間なく敷かれ、前面に描くだけで確実に見えるので拡大は要らない
+            #   （そもそも +1 は画面 px なのでズームで意味が変わっていた）。
+            _raster_add_solid(fig, gi, mask_selected, "red",
+                              f"Selected ({int(mask_selected.sum())})")
+        else:
+            if mask_bg.any():
+                if "TotalCount" in df_sample.columns:
+                    tc_values = df_sample["TotalCount"].values[mask_bg]
+                    bg_marker = dict(size=marker_size, symbol="square",
+                                     # ver51.4: TIC も丸める。hoverinfo="skip" なので
+                                     # 表示桁の心配は無い (Feature 側と違う点)。
+                                     color=_round_values_for_display(tc_values),
+                                     colorscale="Greys",
+                                     opacity=0.5, showscale=False)
+                    bg_name = "TIC"
+                else:
+                    bg_marker = dict(size=marker_size, symbol="square", color=HIGHLIGHT_GRAY, opacity=0.2)
+                    bg_name = "Other"
+                fig.add_trace(go.Scattergl(
+                    x=plot_x[mask_bg],
+                    y=plot_y[mask_bg],
+                    mode="markers",
+                    marker=bg_marker,
+                    name=bg_name, showlegend=False, hoverinfo="skip",
+                    meta=_MSZ_BG,
+                ))
+            if mask_selected.any():
+                fig.add_trace(go.Scattergl(
+                    x=plot_x[mask_selected],
+                    y=plot_y[mask_selected],
+                    mode="markers",
+                    marker=dict(size=marker_size + 1, symbol="square", color="red"),
+                    name=f"Selected ({mask_selected.sum()})",
+                    meta=_MSZ_PLUS1,
+                ))
     elif highlight_clusters and len(highlight_clusters) > 0:
         highlight_set = set(str(c) for c in highlight_clusters)
         # 非ハイライトクラスタをTIC or 灰色で描画
         mask_bg = ~cluster_str.isin(highlight_set)
-        if mask_bg.values.any():
-            if "TotalCount" in df_sample.columns:
-                tc_values = df_sample["TotalCount"].values[mask_bg.values]
-                bg_marker = dict(size=marker_size, symbol="square",
-                                 # ver51.4: TIC も丸める。hoverinfo="skip" なので
-                                 # 表示桁の心配は無い (Feature 側と違う点)。
-                                 color=_round_values_for_display(tc_values),
-                                 colorscale="Greys",
-                                 opacity=0.5, showscale=False)
-                bg_name = "TIC"
-            else:
-                bg_marker = dict(size=marker_size, symbol="square", color=HIGHLIGHT_GRAY, opacity=0.2)
-                bg_name = "Other"
-            fig.add_trace(go.Scattergl(
-                x=plot_x[mask_bg.values],
-                y=plot_y[mask_bg.values],
-                mode="markers",
-                marker=bg_marker,
-                name=bg_name, showlegend=False, hoverinfo="skip",
-                meta=_MSZ_BG,
-            ))
-        # ハイライトクラスタを色付きで描画
-        for cl in sorted(highlight_clusters, key=lambda x: _cluster_sort_key(x), reverse=True):
-            mask = (cluster_str_values == str(cl))
-            if mask.any():
+        if gi is not None:
+            _raster_add_background(fig, gi, df_sample, mask_bg.values)
+            _raster_add_clusters(fig, gi, cluster_str_values, ~mask_bg.values,
+                                 color_map, cluster_name_map, spot_opacity)
+        else:
+            if mask_bg.values.any():
+                if "TotalCount" in df_sample.columns:
+                    tc_values = df_sample["TotalCount"].values[mask_bg.values]
+                    bg_marker = dict(size=marker_size, symbol="square",
+                                     # ver51.4: TIC も丸める。hoverinfo="skip" なので
+                                     # 表示桁の心配は無い (Feature 側と違う点)。
+                                     color=_round_values_for_display(tc_values),
+                                     colorscale="Greys",
+                                     opacity=0.5, showscale=False)
+                    bg_name = "TIC"
+                else:
+                    bg_marker = dict(size=marker_size, symbol="square", color=HIGHLIGHT_GRAY, opacity=0.2)
+                    bg_name = "Other"
                 fig.add_trace(go.Scattergl(
-                    x=plot_x[mask],
-                    y=plot_y[mask],
+                    x=plot_x[mask_bg.values],
+                    y=plot_y[mask_bg.values],
                     mode="markers",
-                    marker=dict(size=marker_size + 1, symbol="square",
-                                color=color_map.get(str(cl), "#999999"),
-                                opacity=spot_opacity),
-                    name=_cluster_display_name(cl, cluster_name_map),
-                    legendgroup=_cluster_display_name(cl, cluster_name_map),
-                    meta=_MSZ_SPOT_PLUS1,
+                    marker=bg_marker,
+                    name=bg_name, showlegend=False, hoverinfo="skip",
+                    meta=_MSZ_BG,
                 ))
+            # ハイライトクラスタを色付きで描画
+            for cl in sorted(highlight_clusters, key=lambda x: _cluster_sort_key(x), reverse=True):
+                mask = (cluster_str_values == str(cl))
+                if mask.any():
+                    fig.add_trace(go.Scattergl(
+                        x=plot_x[mask],
+                        y=plot_y[mask],
+                        mode="markers",
+                        marker=dict(size=marker_size + 1, symbol="square",
+                                    color=color_map.get(str(cl), "#999999"),
+                                    opacity=spot_opacity),
+                        name=_cluster_display_name(cl, cluster_name_map),
+                        legendgroup=_cluster_display_name(cl, cluster_name_map),
+                        meta=_MSZ_SPOT_PLUS1,
+                    ))
     else:
-        if embed_legend:
+        if gi is not None:
+            # 背景は従来と同じ条件（embed_legend のときだけ）で敷く。
+            if embed_legend:
+                _raster_add_background(
+                    fig, gi, df_sample,
+                    np.ones(len(cluster_str_values), dtype=bool),
+                    name="_background_tic")
+                # 凡例で灰色化されたクラスタは色を塗らない＝下の背景が透ける
+                # （散布経路で「色付き trace を描かない」のと同じ意味）。
+                mask_color = ~np.isin(cluster_str_values,
+                                      list(legend_hidden_set)) \
+                    if legend_hidden_set \
+                    else np.ones(len(cluster_str_values), dtype=bool)
+            else:
+                mask_color = np.ones(len(cluster_str_values), dtype=bool)
+            _raster_add_clusters(fig, gi, cluster_str_values, mask_color,
+                                 color_map, cluster_name_map, spot_opacity)
+        elif embed_legend:
             # 凡例ダブルクリック時に他クラスタを「TIC (白黒)」or 灰色で
             # 残すための背景 trace。showlegend=False のため Plotly の
             # ダブルクリック操作対象外で、色付き trace が visible=False に
@@ -452,8 +578,11 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
         uirevision=uirevision,
         # ver46.1: clientside restyle 用のタイル情報。
         # kind でどのスライダーの対象かを判別し、auto_msz を「自動」時の基準サイズにする。
+        # ★ ver66.0: raster はラスター経路を通ったか。テストのフックであると同時に、
+        #   散布へフォールバックしたことをブラウザの開発者ツールから確認できる。
         meta=dict(kind="msi", auto_msz=float(auto_msz),
-                  label_size=float(label_size or 10)),
+                  label_size=float(label_size or 10),
+                  raster=gi is not None),
     )
     if title:
         layout_opts["title"] = dict(text=title, font=dict(size=title_font_size or 14), x=0.5)
@@ -1019,48 +1148,9 @@ def create_umap_name_controls(rds_path, name_map):
 
 
 # ---------------------------------------------------------------------------
-# Spatial マーカーサイズ Auto ボタン
+# ★ ver66.0: マーカーサイズの「Auto」ボタン 3 つ (通常 / フルスクリーン / Feature)
+#   を撤去した。スライダーごと無くなったので、自動モードへ戻すボタンも不要になった。
 # ---------------------------------------------------------------------------
-
-@callback(
-    Output("spatial_marker_size", "value"),
-    Input("spatial_marker_auto_btn", "n_clicks"),
-    [State("spatial_rotation_store", "data"),
-     State("interactive_sample", "value")],
-    prevent_initial_call=True,
-)
-def auto_spatial_marker(n_clicks, rotation_store, sample):
-    """通常ビュー: スライダーを自動モード(0)にリセット -> 各サンプル個別に自動計算"""
-    return 0
-
-
-@callback(
-    Output("fs_spatial_marker_size", "value"),
-    Input("fs_spatial_marker_auto_btn", "n_clicks"),
-    [State("spatial_rotation_store", "data"),
-     State("fs_spatial_sample", "value"),
-     State("fs_spatial_height_slider", "value")],
-    prevent_initial_call=True,
-)
-def auto_fs_spatial_marker(n_clicks, rotation_store, sample, height_val):
-    """フルスクリーン: スライダーを自動モード(0)にリセット -> 各サンプル個別に自動計算"""
-    return 0
-
-
-# ---------------------------------------------------------------------------
-# Feature Plot マーカーサイズ Auto ボタン
-# ---------------------------------------------------------------------------
-
-@callback(
-    Output("feature_marker_size", "value"),
-    Input("feature_marker_auto_btn", "n_clicks"),
-    [State("spatial_rotation_store", "data"),
-     State("feature_sample_select", "value")],
-    prevent_initial_call=True,
-)
-def auto_feature_marker(n_clicks, rotation_store, sample):
-    """Feature Plot: スライダーを自動モード(0)にリセット -> 各サンプル個別に自動計算"""
-    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -1096,10 +1186,8 @@ def auto_feature_marker(n_clicks, rotation_store, sample):
      Input("hne_overlay_mono", "value")],
     [State("accumulated_label_positions", "data"),
      State("session_id_store", "data"),
-     State("spatial_marker_size", "value"),
      State("spatial_label_size", "value"),
-     State("hne_overlay_opacity", "value"),
-     State("hne_overlay_marker_size", "value")],
+     State("hne_overlay_opacity", "value")],
 )
 def update_spatial_plots(sample, highlight_clusters, selected_ids,
                          rotation_store, show_labels,
@@ -1108,8 +1196,7 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
                          cluster_name_map, merge_toggle, merge_color_mode,
                          active_items, legend_hidden, hne_show,
                          hne_mono, accumulated_positions,
-                         session_id=None, marker_size=0, label_size=10,
-                         hne_opacity=100, hne_marker_size=5):
+                         session_id=None, label_size=10, hne_opacity=100):
     from app.callbacks.interactive_callbacks import (
         _set_active_key, accordion_toggle_is_noop, accordion_record_closed,
         set_export_figures)
@@ -1201,7 +1288,7 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
             try:
                 fig = _build_hne_overlay_fig(
                     df_s, rds_path, s, title=display_s,
-                    opacity=hne_opacity, marker_size=hne_marker_size,
+                    opacity=hne_opacity,
                     color_map=color_map, cluster_name_map=cluster_name_map,
                     show_labels=show_labels, exclude_clusters=exclude_clusters,
                     legend_hidden=legend_hidden, mono=hne_mono)
@@ -1215,7 +1302,6 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
                                          show_labels=show_labels,
                                          flip_h=flip_h, flip_v=flip_v,
                                          title=display_s, embed_legend=True,
-                                         marker_size=marker_size or 0,
                                          exclude_clusters=exclude_clusters,
                                          label_size=label_size or 10,
                                          saved_positions=spatial_pos.get(s),
@@ -1278,15 +1364,14 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
 
 @callback(
     Output("spatial_display_save_trigger", "data"),
-    [Input("spatial_marker_size", "value"),
-     Input("spatial_label_size", "value"),
+    [Input("spatial_label_size", "value"),
      Input("spatial_show_labels", "value"),
      Input("spatial_rows_per_view", "value"),
      Input("spatial_exclude_cluster", "value")],
     State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
-def save_spatial_display_settings(marker_size, label_size, show_labels,
+def save_spatial_display_settings(label_size, show_labels,
                                   rows, exclude_cluster, rds_path):
     """Spatial 表示パラメータの変更を interactive_settings.json に保存。
 
@@ -1297,8 +1382,10 @@ def save_spatial_display_settings(marker_size, label_size, show_labels,
         raise PreventUpdate
     from app.callbacks.interactive_callbacks import _save_interactive_settings, _set_active_key
     _set_active_key(rds_path)
+    # ★ ver66.0: marker_size は保存しない。ラスター描画ではセル寸法が
+    #   データ座標で決まるため、画面 px の値を持ち回っても意味を持たない。
+    #   旧 interactive_settings.json に残っている値も読まない（下の軽量ビューア）。
     _save_interactive_settings("spatial_display", {
-        "marker_size": marker_size if marker_size is not None else 0,
         "label_size": label_size if label_size is not None else 10,
         "show_labels": bool(show_labels),
         "rows_per_view": rows if rows is not None else 0,
@@ -1500,11 +1587,10 @@ def reflect_cluster_color_lock(lock_state, comp_id, my_session_id):
 # ブラウザ側で Plotly.restyle する（assets/spatial_restyle.js）。
 # Output はダミー Store。実際の更新は JS が DOM 上のグラフに直接行う。
 
+# ★ ver66.0: marker_size / hne_marker_size の登録を削除した（スライダーごと撤去）。
 for _slider_id, _fn in (
-    ("spatial_marker_size", "marker_size"),
     ("spatial_label_size", "label_size"),
     ("hne_overlay_opacity", "spot_opacity"),
-    ("hne_overlay_marker_size", "hne_marker_size"),
 ):
     clientside_callback(
         ClientsideFunction(namespace="spatial_restyle", function_name=_fn),

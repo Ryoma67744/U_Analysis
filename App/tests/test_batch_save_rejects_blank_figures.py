@@ -171,9 +171,9 @@ def test_deg_zip_heatmap_without_focus_is_not_labelled(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("fn,args,patch_target", [
-    (lambda: bs.cb_batch_save_spatial(1, "s1", "/tmp/x.rds", None, None, None, None),
+    (lambda: bs.cb_batch_save_spatial(1, "s1", "/tmp/x.rds", None, None),
      None, "_get_export_figures"),
-    (lambda: bs.cb_batch_save_feature(1, "s1", "/tmp/x.rds", None, None),
+    (lambda: bs.cb_batch_save_feature(1, "s1", "/tmp/x.rds", None),
      None, "_get_feature_export_figures"),
 ])
 def test_batch_save_says_why_nothing_happened(monkeypatch, fn, args, patch_target):
@@ -196,8 +196,8 @@ def test_batch_save_still_raises_on_a_stale_zero_click():
     """n_clicks が無い（＝押されていない）ときは従来どおり何もしないこと。"""
     for call in (
         lambda: bs.cb_batch_save_umap(0, REAL, "integrated", "s", "/tmp/x.rds"),
-        lambda: bs.cb_batch_save_spatial(0, "s", "/tmp/x.rds", None, None, None, None),
-        lambda: bs.cb_batch_save_feature(0, "s", "/tmp/x.rds", None, None),
+        lambda: bs.cb_batch_save_spatial(0, "s", "/tmp/x.rds", None, None),
+        lambda: bs.cb_batch_save_feature(0, "s", "/tmp/x.rds", None),
         lambda: bs.cb_batch_save_deg(0, REAL, REAL, None, None, "/tmp/x.rds"),
     ):
         with pytest.raises(PreventUpdate):

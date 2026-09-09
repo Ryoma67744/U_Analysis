@@ -197,17 +197,21 @@ def transform_uirevision(sample, transform, extra=None) -> str:
 # meta を持たないトレース (凡例ダミー・H&E 画像など) は一切触らない。
 # ---------------------------------------------------------------------------
 
-def apply_display_overrides(fig_dict, *, marker_size=None, label_size=None,
+def apply_display_overrides(fig_dict, *, label_size=None,
                             spot_opacity=None, kinds=("msi", "hne")):
-    """figure dict にマーカーサイズ / ラベルサイズ / スポット不透明度を適用する。
+    """figure dict にラベルサイズ / スポット不透明度を適用する。
 
     fig_dict は破壊的に更新して返す（呼び出し側が必要なら事前にコピーすること）。
 
-    marker_size: None または 0 以下なら layout.meta.auto_msz（自動値）を使う。
     label_size:  None なら変更しない。
     spot_opacity: 0–1。None なら変更しない。
     kinds: 対象とするタイル種別。layout.meta.kind がこれに含まれない図は無視する
         （通常タイル用スライダーが H&E タイルに効かないようにするため）。
+
+    ★ ver66.0: `marker_size` 引数を廃止した。Spatial はラスター (go.Heatmap) で
+      描くようになり、セルの大きさがデータ座標で決まるため「画面 px でのマーカー
+      サイズ」という概念自体が無くなった。H&E タイルは射影で軸平行の格子が崩れる
+      ので散布のままだが、そちらもサイズは自動計算に固定した。
     """
     if not isinstance(fig_dict, dict):
         return fig_dict
@@ -216,24 +220,20 @@ def apply_display_overrides(fig_dict, *, marker_size=None, label_size=None,
     if meta.get("kind") not in kinds:
         return fig_dict
 
-    if marker_size is not None:
-        base = float(marker_size) if float(marker_size) > 0 else None
-        if base is None:
-            base = meta.get("auto_msz")
-        if base:
-            for tr in fig_dict.get("data") or []:
-                tmeta = tr.get("meta")
-                if not isinstance(tmeta, dict) or "dsz" not in tmeta:
-                    continue
-                marker = tr.setdefault("marker", {})
-                marker["size"] = float(base) + float(tmeta.get("dsz", 0))
-
     if spot_opacity is not None:
         for tr in fig_dict.get("data") or []:
             tmeta = tr.get("meta")
             if not isinstance(tmeta, dict) or not tmeta.get("op"):
                 continue
-            tr.setdefault("marker", {})["opacity"] = float(spot_opacity)
+            # ★ ver66.0: 書き先がトレース種で変わる。ラスター化した通常タイルは
+            #   heatmap なので **トレース直下の opacity**、H&E タイルは射影で
+            #   格子が崩れるため散布のままで marker.opacity。
+            #   同じスライダーが 2 種類のトレースを相手にするので、片方だけ直すと
+            #   「通常タイルは透けるのに H&E は透けない」（またはその逆）になる。
+            if tr.get("type") == "heatmap":
+                tr["opacity"] = float(spot_opacity)
+            else:
+                tr.setdefault("marker", {})["opacity"] = float(spot_opacity)
 
     if label_size is not None:
         for ann in layout.get("annotations") or []:
@@ -259,14 +259,16 @@ def apply_display_overrides(fig_dict, *, marker_size=None, label_size=None,
 # 一致することを検証している。
 # ---------------------------------------------------------------------------
 
-def apply_feature_display_overrides(fig_dict, *, marker_size=None,
-                                    colorscale=None):
-    """Feature Plot の figure dict にマーカーサイズ / 配色を適用する。
+def apply_feature_display_overrides(fig_dict, *, colorscale=None):
+    """Feature Plot の figure dict に配色を適用する。
 
     fig_dict は破壊的に更新して返す（呼び出し側が必要なら事前にコピーすること）。
 
-    marker_size: None なら変更しない。0 以下なら layout.meta.auto_msz（自動値）。
     colorscale: None / 空なら変更しない。
+
+    ★ ver66.0: `marker_size` 引数を廃止した。Feature Plot はラスター
+      (go.Heatmap) で描くようになり、セルの大きさがデータ座標で決まるため
+      「画面 px でのマーカーサイズ」という概念自体が無くなった。
     """
     if not isinstance(fig_dict, dict):
         return fig_dict
@@ -276,19 +278,17 @@ def apply_feature_display_overrides(fig_dict, *, marker_size=None,
         return fig_dict
     data = fig_dict.get("data") or []
 
-    if marker_size is not None:
-        base = float(marker_size) if float(marker_size) > 0 else None
-        if base is None:
-            base = meta.get("auto_msz")
-        if base:
-            for i in meta.get("sz") or []:
-                if 0 <= int(i) < len(data):
-                    data[int(i)].setdefault("marker", {})["size"] = float(base)
-
     if colorscale:
         for i in meta.get("cs") or []:
             if 0 <= int(i) < len(data):
-                data[int(i)].setdefault("marker", {})["colorscale"] = colorscale
+                tr = data[int(i)]
+                # ★ ver66.0: 書き先がトレース種で変わる。heatmap は
+                #   **トレース直下**の colorscale で、marker は存在しない。
+                #   散布フォールバック (格子でないデータ) は従来どおり marker 側。
+                if tr.get("type") == "heatmap":
+                    tr["colorscale"] = colorscale
+                else:
+                    tr.setdefault("marker", {})["colorscale"] = colorscale
 
     return fig_dict
 

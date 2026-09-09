@@ -13,11 +13,13 @@
 
 import base64
 import logging
+import math
 import os
 import threading
 from collections import OrderedDict
 from io import BytesIO
 
+import numpy as np
 import plotly.graph_objects as go
 from dash import Input, Output, callback, html
 
@@ -26,6 +28,7 @@ from app.services.hne_overlay import msi_to_hne_px
 from app.utils.color_utils import cluster_display_name as _cluster_display_name
 from app.utils.display_helpers import transform_uirevision as _transform_uirevision
 from app.utils.selection_utils import natural_cluster_key
+from app.utils import raster as _raster
 
 logger = logging.getLogger("msi.interactive.hne_bg")
 
@@ -118,6 +121,44 @@ def _msg(text, cls="text-muted small"):
     return html.Span(text, className=cls)
 
 
+def _auto_hne_marker_size(msi_x, msi_y, px_x, px_y, render_height=310):
+    """射影後の H&E 画素座標に対するスポットサイズ（画面 px）を推定する。
+
+    ★ ver66.0: 従来は固定値 5 だった。スライダーで直せたので固定でも運用できたが、
+      スライダーを撤去した以上、実データの間隔から決める必要がある。
+
+      `_calc_zero_gap_marker_size` をそのまま当てられない。あれは「x のユニーク値の
+      最小差」を間隔とみなすので、任意角のアフィンで回った座標では極端に小さい値に
+      なり、スポットが消えたように見える。
+
+      MSI 側は必ず軸平行の格子なので、そちらで間隔 s を取り、射影の拡大率 k を
+      分散比 sqrt((var(px)+var(py))/(var(mx)+var(my))) で見積もって s*k を
+      射影後の間隔とする（回転に依存しない）。相似変換なら厳密、せん断を含む
+      アフィンでは近似。
+
+      なお **これは画面 px のままなので、H&E タイルではズームで隙間が出る問題が残る**。
+      組織像は射影で軸平行の格子が崩れ、ラスター（データ座標のセル）にできないため。
+    """
+    msi_x = np.asarray(msi_x, dtype=float)
+    msi_y = np.asarray(msi_y, dtype=float)
+    px_x = np.asarray(px_x, dtype=float)
+    px_y = np.asarray(px_y, dtype=float)
+    if msi_x.size < 2:
+        return 5
+    step = _raster._detect_step(msi_x)
+    if not step:
+        return 5
+    var_msi = float(np.var(msi_x) + np.var(msi_y))
+    var_px = float(np.var(px_x) + np.var(px_y))
+    if var_msi <= 0 or var_px <= 0:
+        return 5
+    pitch = step * math.sqrt(var_px / var_msi)
+    y_range = float(px_y.max() - px_y.min())
+    if not (y_range > 0) or not np.isfinite(pitch):
+        return 5
+    return max(2.0, pitch * render_height / y_range)
+
+
 def build_hne_overlay_fig(df_sample, rds_path, sample, *, title=None, opacity=70,
                           marker_size=5, color_map=None, cluster_name_map=None,
                           show_labels=False, exclude_clusters=None,
@@ -166,7 +207,10 @@ def build_hne_overlay_fig(df_sample, rds_path, sample, *, title=None, opacity=70
     px_x, px_y = proj
 
     op = (opacity if opacity is not None else 70) / 100.0
-    ms = marker_size if (marker_size and marker_size > 0) else 5
+    ms = (marker_size if (marker_size and marker_size > 0)
+          else _auto_hne_marker_size(
+              sub["SpatialX"].to_numpy(dtype=float),
+              sub["SpatialY"].to_numpy(dtype=float), px_x, px_y))
     color_map = color_map or {}
     hidden = {str(c) for c in (legend_hidden or [])}
 
