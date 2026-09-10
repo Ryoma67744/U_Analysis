@@ -1914,6 +1914,10 @@ def create_interactive_tab():
 
         # PR-F: UI ロック用 Store + Interval (複数ユーザー同時編集対応)
         dcc.Store(id="session_id_store", data=None),
+        # ★ ver66.3: 同じブラウザの別タブで表示・保存用キャッシュを混ぜない。
+        # cookie の session_id と異なり、ブラウザ窓ごとに生成する memory Store。
+        dcc.Store(id="interactive_view_id", data=None),
+        dcc.Store(id="feature_intensity_request", data=None),
         dcc.Store(id="edit_lock_state", data={}),
         dcc.Interval(
             id="edit_lock_heartbeat",
@@ -1955,6 +1959,15 @@ def create_interactive_tab():
         dcc.Store(id="cluster_name_map_store", data={}),
         # Feature Plot 閲覧履歴
         dcc.Store(id="feature_history_store", data=[]),
+        # ★ ver66.3: 種類別の要求・応答。UMAP/Spatial の要求には Feature/DEG の
+        # 全データを含めず、応答はブラウザ内で最新の要求と照合して表示する。
+        dcc.Store(id="fullscreen_request_light_store"),
+        dcc.Store(id="fullscreen_request_feature_store"),
+        dcc.Store(id="fullscreen_request_deg_store"),
+        dcc.Store(id="fullscreen_response_light_store"),
+        dcc.Store(id="fullscreen_response_feature_store"),
+        dcc.Store(id="fullscreen_response_deg_store"),
+        dcc.Store(id="fullscreen_empty_body_store", data=fs_exclude_placeholders()),
         # フルスクリーン閉じトリガー
         dcc.Store(id="fullscreen_closed_trigger", data=0),
         # ver46.1: フルスクリーンを開いた時点のラベル位置の指紋。閉じたときに

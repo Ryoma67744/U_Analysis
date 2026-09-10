@@ -297,6 +297,19 @@ class TestMoveEntry:
         assert r["old_path"] == str(src)
         assert r["new_path"] == str(locs["output"] / src.name)
 
+    def test_execute_rechecks_target_changed_after_preview(
+            self, locs, no_running_analysis, projects_store):
+        """容量表示を再利用しても、実行直前の移動先検証は現在の実体を参照する。"""
+        src = _make_result_dir(locs["stray"])
+        assert db.preview_move(str(src), str(locs["output"]))["ok"]
+        target = locs["output"] / src.name
+        target.mkdir()
+        (target / "keep.txt").write_text("external change", encoding="utf-8")
+        result = db.move_entry(str(src), str(locs["output"]))
+        assert not result["ok"]
+        assert src.is_dir()
+        assert (target / "keep.txt").read_text(encoding="utf-8") == "external change"
+
 
 # ---------------------------------------------------------------------------
 # 開いている結果フォルダの読み替え

@@ -100,21 +100,53 @@ def _fs_exclude_placeholders(*present_ids):
     return fs_exclude_placeholders(*present_ids)
 
 
-@callback(
+# ★ ver66.3: 全画面の種類ごとに要求を分ける。従来は UMAP/Spatial を
+# 開く際にも Feature の全図と DEG 全行を State として送っていた。
+# ブラウザ側ルータが要求識別子と閉鎖状態を管理し、図の完成が前後しても
+# 最新の要求だけを既存モーダルへ反映する。
+clientside_callback(
+    ClientsideFunction(namespace="fullscreen_router", function_name="route"),
     [Output("fullscreen_plot_modal", "is_open"),
      Output("fullscreen_modal_title", "children"),
      Output("fullscreen_modal_body", "children")],
     [Input("expand_umap_btn", "n_clicks"),
      Input("expand_feature_btn", "n_clicks"),
      Input("expand_spatial_btn", "n_clicks"),
-     Input("expand_deg_btn", "n_clicks")],
-    # ★ ver51.9: `interactive_umap_plot.figure` と `last_spatial_figure_store`
-    #   を State で受けていたが、**関数本体で一度も参照していなかった**。
-    #   フルスクリーンは図を作り直すので不要。全 spot の点データ 2 つぶんが
-    #   ボタンを押すたびにブラウザ→サーバへ往復していた。
-    [State("feature_plot_container", "children"),
-     State("deg_data_store", "data"),
-     State("spatial_rotation_store", "data"),
+     Input("expand_deg_btn", "n_clicks"),
+     Input("fullscreen_plot_modal", "is_open"),
+     Input("fullscreen_response_light_store", "data"),
+     Input("fullscreen_response_feature_store", "data"),
+     Input("fullscreen_response_deg_store", "data"),
+     Input("seurat_rds_path_store", "data"),
+     Input("load_token_store", "data")],
+    State("fullscreen_empty_body_store", "data"),
+    prevent_initial_call=True,
+)
+
+
+def _fullscreen_request_matches(request, kinds, rds_path):
+    """対象の表示種別・RDS が現在の要求と一致することを確かめる。"""
+    return (
+        isinstance(request, dict)
+        and isinstance(request.get("token"), str)
+        and bool(request["token"])
+        and request.get("kind") in kinds
+        and request.get("rds_path") == rds_path
+    )
+
+
+def _fullscreen_response(request, result):
+    """図と要求識別子を同じ応答に載せ、ブラウザで旧応答を棄却できるようにする。"""
+    if result[0] is no_update:
+        return {**request, "is_open": False}
+    is_open, title, body = result
+    return {**request, "is_open": is_open, "title": title, "body": body}
+
+
+@callback(
+    Output("fullscreen_response_light_store", "data"),
+    Input("fullscreen_request_light_store", "data"),
+    [State("spatial_rotation_store", "data"),
      State("custom_color_map_store", "data"),
      State("spatial_rows_per_view", "value"),
      State("hne_overlay_opacity", "value"),
@@ -122,17 +154,86 @@ def _fs_exclude_placeholders(*present_ids):
      State("seurat_rds_path_store", "data")],
     prevent_initial_call=True,
 )
+def render_light_fullscreen_request(request, rotation_store, custom_colors,
+                                    spatial_rows, hne_opacity,
+                                    cluster_name_map, rds_path):
+    if not _fullscreen_request_matches(request, {"umap", "spatial"}, rds_path):
+        raise PreventUpdate
+    result = toggle_fullscreen(
+        None, None, None, None, None, None,
+        rotation_store, custom_colors, spatial_rows, hne_opacity,
+        cluster_name_map, rds_path,
+        _trigger=f"expand_{request['kind']}_btn",
+    )
+    return _fullscreen_response(request, result)
+
+
+@callback(
+    Output("fullscreen_response_feature_store", "data"),
+    Input("fullscreen_request_feature_store", "data"),
+    [State("feature_plot_container", "children"),
+     State("seurat_rds_path_store", "data")],
+    prevent_initial_call=True,
+)
+def render_feature_fullscreen_request(request, feat_container_children, rds_path):
+    if not _fullscreen_request_matches(request, {"feature"}, rds_path):
+        raise PreventUpdate
+    result = toggle_fullscreen(
+        None, None, None, None, feat_container_children, None,
+        None, None, None, None, None, rds_path,
+        _trigger="expand_feature_btn",
+    )
+    return _fullscreen_response(request, result)
+
+
+@callback(
+    Output("fullscreen_response_deg_store", "data"),
+    Input("fullscreen_request_deg_store", "data"),
+    [State("deg_data_store", "data"),
+     State("cluster_name_map_store", "data"),
+     State("seurat_rds_path_store", "data")],
+    prevent_initial_call=True,
+)
+def render_deg_fullscreen_request(request, deg_data, cluster_name_map, rds_path):
+    if not _fullscreen_request_matches(request, {"deg"}, rds_path):
+        raise PreventUpdate
+    result = toggle_fullscreen(
+        None, None, None, None, None, deg_data,
+        None, None, None, None, cluster_name_map, rds_path,
+        _trigger="expand_deg_btn",
+    )
+    return _fullscreen_response(request, result)
+
+
+def _clone_fullscreen_feature_children(node):
+    """Feature の図・値を保ったまま、全画面側の component ID だけを分離する。"""
+    if isinstance(node, (list, tuple)):
+        return [_clone_fullscreen_feature_children(child) for child in node]
+    if hasattr(node, "to_plotly_json"):
+        node = node.to_plotly_json()
+    if not isinstance(node, dict) or not isinstance(node.get("props"), dict):
+        return node
+    props = dict(node["props"])
+    component_id = props.get("id")
+    if isinstance(component_id, dict) and component_id.get("type") == "feature_graph":
+        props["id"] = {**component_id, "type": "fs_feature_graph"}
+    if "children" in props:
+        props["children"] = _clone_fullscreen_feature_children(props["children"])
+    # figure/config の数値配列には触れない。children 構造だけを複製する。
+    return {**node, "props": props}
+
+
 def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                       feat_container_children, deg_data,
                       rotation_store, custom_colors, spatial_rows, hne_opacity,
-                      cluster_name_map=None, rds_path=None):
+                      cluster_name_map=None, rds_path=None, *, _trigger=None):
     from app.callbacks.interactive_callbacks import _set_active_key
     _set_active_key(rds_path)
     # 遅延 import（循環参照回避）
     from app.callbacks.interactive_umap import _build_umap_integrated_fig
     from app.callbacks.interactive_spatial import _create_single_spatial_fig
 
-    trigger = ctx.triggered_id
+    trigger = _trigger or ctx.triggered_id
     if not trigger:
         return _NOTHING_TO_EXPAND
 
@@ -244,9 +345,15 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
 
     # ===== Feature Plot (コンテナごと拡大) =====
     if trigger == "expand_feature_btn" and feat_container_children:
+        # ★ ver66.3: 通常の children は単一 Div の JSON(dict) なので、* 展開すると
+        # props/type/namespace というキー文字列だけになり図が消えていた。
+        # list と単一 component を共に保ち、同じ feature_graph ID を複製しない。
+        # 全画面は開いた時点の図であり、主画面の m/z 差分更新対象から分離する。
+        cloned = _clone_fullscreen_feature_children(feat_container_children)
+        children = cloned if isinstance(cloned, list) else [cloned]
         return (
             True, "Feature Plot",
-            html.Div([*feat_container_children,
+            html.Div([*children,
                       *_fs_exclude_placeholders()]),
         )
 
@@ -488,6 +595,8 @@ def on_fullscreen_close(is_open, current_val, label_positions, snapshot):
 # フルスクリーン UMAP インタラクティブ更新
 # ---------------------------------------------------------------------------
 
+# ★ ver66.3: 点・ラベルの大きさだけで全点を再送しない。値は構造変更時の
+# 再生成用 State に残し、通常の外観更新は umap_restyle.js が行う。
 @callback(
     Output("fs_umap_graph_container", "children"),
     [Input("fs_umap_display_mode", "value"),
@@ -497,9 +606,9 @@ def on_fullscreen_close(is_open, current_val, label_positions, snapshot):
      Input("fs_umap_show_legend", "value"),
      Input("fs_umap_height_slider", "value"),
      Input("fs_umap_width_slider", "value"),
-     Input("fs_umap_marker_size", "value"),
+     State("fs_umap_marker_size", "value"),
      Input("fs_umap_exclude_cluster", "value"),
-     Input("fs_umap_label_size", "value"),
+     State("fs_umap_label_size", "value"),
      Input("umap_legend_hidden_store", "data")],
     [State("custom_color_map_store", "data"),
      State("umap_rows_per_view", "value"),
@@ -829,10 +938,12 @@ clientside_callback(
 )
 
 clientside_callback(
-    ClientsideFunction(namespace="relayout", function_name="filter_annotations"),
+    ClientsideFunction(namespace="fullscreen_router", function_name="filter_annotations"),
     Output("fs_annotation_relayout_signal", "data"),
     [Input("fs_umap_integrated_graph", "relayoutData"),
      Input({"type": "fs_spatial_graph", "index": ALL}, "relayoutData")],
+    [State("seurat_rds_path_store", "data"),
+     State("load_token_store", "data")],
     prevent_initial_call=True,
 )
 
@@ -886,13 +997,20 @@ def accumulate_annotation_positions_normal(signal, existing,
     [State("accumulated_label_positions", "data"),
      State("fs_umap_exclude_cluster", "value"),
      State("fs_spatial_exclude_cluster", "value"),
-     State("seurat_rds_path_store", "data")],
+     State("seurat_rds_path_store", "data"),
+     State("load_token_store", "data")],
     prevent_initial_call=True,
 )
 def accumulate_annotation_positions_fs(signal, existing,
                                         fs_umap_exclude, fs_spatial_exclude,
-                                        rds_path):
+                                        rds_path, load_token=None):
     """FS: アノテーション位置変更を蓄積（UMAP 統合 / Spatial タイルの両方）。"""
+    # ★ ver66.3: 読込先を切り替えた直後の旧図の relayout を、新しい RDS の
+    # ラベル位置として自動保存しない。図を表示した要求の来歴を照合する。
+    scope = signal.get("fullscreen_scope") if isinstance(signal, dict) else None
+    if (not isinstance(scope, dict) or scope.get("rds_path") != rds_path
+            or scope.get("load_token") != load_token):
+        raise PreventUpdate
     rd, triggered_id = _signal_parts(signal)
     if not triggered_id:
         raise PreventUpdate

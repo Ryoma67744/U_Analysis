@@ -9,6 +9,7 @@
 import logging
 import math
 import re
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -39,6 +40,10 @@ from app.utils.label_persistence import (
 )
 from app.utils.validation import coerce_count, coerce_number
 from app.utils import raster as _raster
+from app.utils.feature_geometry import (
+    get_feature_geometry, cached_feature_grid, feature_generation_prefix,
+    feature_transform_key, feature_dataset_frame,
+)
 
 logger = logging.getLogger("msi.interactive.deg")
 
@@ -285,6 +290,22 @@ _FEATURE_DATA_ONLY_TRIGGERS = {
 }
 
 
+clientside_callback(
+    ClientsideFunction(namespace="feature_requests", function_name="view_id"),
+    Output("interactive_view_id", "data"), Input("session_id_store", "data"),
+)
+clientside_callback(
+    ClientsideFunction(namespace="feature_requests", function_name="intensity"),
+    Output("feature_intensity_request", "data"),
+    [Input("feature_select", "value"), Input("feature_intensity_min", "value"),
+     Input("feature_intensity_max", "value"), Input("feature_show_compound_names", "value"),
+     Input("interactive_view_id", "data"), Input("feature_sample_select", "value"),
+     Input("sample_name_map_store", "data"), Input("fullscreen_closed_trigger", "data"),
+     Input("feature_rows_per_view", "value"), Input("spatial_rotation_store", "data"),
+     Input("seurat_rds_path_store", "data"), Input("load_stage_trigger_3", "data")],
+)
+
+
 def _feature_intensity_style(expr_raw, display_min, display_max):
     """強度から (色, 不透明度, 閾値未満の注記) の 3 配列を作る。
 
@@ -422,41 +443,37 @@ def _feature_heading(feature_name, deg_data, show_compound_names, interactive_da
      Output("feature_plot_heading", "children"),
      Output("feature_intensity_min", "placeholder"),
      Output("feature_intensity_max", "placeholder")],
-    [Input("feature_select", "value"),
-     Input("feature_sample_select", "value"),
-     Input("feature_intensity_min", "value"),
-     Input("feature_intensity_max", "value"),
-     Input("sample_name_map_store", "data"),
-     Input("fullscreen_closed_trigger", "data"),
-     Input("feature_rows_per_view", "value"),
-     Input("feature_show_compound_names", "value")],
-    # ver51.3: マーカーサイズと配色は figure のデータを変えないので Input から
-    # 外し、clientside の Plotly.restyle (assets/feature_restyle.js) で処理する。
-    # State に残すのは、他の理由で作り直すときに現在値でビルドするため。
-    #
-    # 強度レンジ (feature_intensity_min/max) は Input のまま。**見た目だけの
-    # パラメータではない** — しきい値未満の点はトレースから除外しており
-    # (visible_mask)、点の集合そのものが変わるので restyle では表現できない。
+    Input("feature_intensity_request", "data"),
     [State("feature_colorscale", "value"),
-     # ver51.5: いまブラウザに実在するグラフの id。サーバ側にメモを置く代わりに
-     # これで「殻を作り直す必要があるか」を判断する。ページを再読み込みすると
-     # 空になるので、**リロード後に自動で復帰する** (メモ方式だと画面が白いまま
-     # 残りうる)。
-     State({"type": "feature_graph", "index": ALL}, "id"),
+     State({"type": "feature_graph", "index": ALL, "generation": ALL}, "id"),
      State("seurat_rds_path_store", "data"),
      State("seurat_cache_dir_store", "data"),
-     State("spatial_rotation_store", "data"),
-     State("deg_data_store", "data"),
-     State("session_id_store", "data")],
+     State("deg_data_store", "data"), State("session_id_store", "data")],
     prevent_initial_call=True,
 )
+def _render_feature_plot_for_view(request, colorscale, existing_graph_ids,
+                                  rds_path, cache_dir_str, deg_data, session_id=None):
+    # ★ ver66.3: 殻と差分が同じブラウザ操作番号を使う。初回の遅い殻も拒否する。
+    if not request or not request.get("view_id"):
+        raise PreventUpdate
+    if not _feature_request_matches_dataset(request, rds_path):
+        return no_update, no_update, no_update, no_update
+    return update_feature_plot(
+        request.get("feature"), request.get("sample"), request.get("intensity_min"),
+        request.get("intensity_max"), request.get("name_map"), request.get("fullscreen_closed"),
+        request.get("rows"), request.get("show_names"), colorscale, existing_graph_ids,
+        rds_path, cache_dir_str, request.get("rotation"), deg_data, session_id,
+        request.get("view_id"), request.get("sequence"), request.get("trigger"))
+
+
 def update_feature_plot(feature_name, sample,
                         intensity_min, intensity_max,
                         name_map, _fs_trigger, rows,
                         show_compound_names,
                         colorscale, existing_graph_ids,
                         rds_path, cache_dir_str, rotation_store,
-                        deg_data, session_id=None):
+                        deg_data, session_id=None, view_id=None,
+                        request_sequence=None, request_trigger=None):
     from app.callbacks.interactive_callbacks import (
         _interactive_data, _bridge, _set_active_key, set_export_figures)
     from app.callbacks.interactive_spatial import (
@@ -476,7 +493,8 @@ def update_feature_plot(feature_name, sample,
             deg_data, session_id,
             _transform_coords, _calc_zero_gap_marker_size,
             _round_for_display, _round_values_for_display,
-            _interactive_data, _bridge, set_export_figures)
+            _interactive_data, _bridge, set_export_figures, view_id,
+            request_sequence, request_trigger)
 
 
 def _update_feature_plot_inner(
@@ -487,18 +505,32 @@ def _update_feature_plot_inner(
         deg_data, session_id,
         _transform_coords, _calc_zero_gap_marker_size,
         _round_for_display, _round_values_for_display,
-        _interactive_data, _bridge, set_export_figures):
+        _interactive_data, _bridge, set_export_figures, view_id=None,
+        request_sequence=None, request_trigger=None):
     """update_feature_plot の本体 (perf_trace で包むために分離した)。"""
+
+    from app.callbacks.interactive_callbacks import (
+        get_feature_dataset, set_feature_exports_if_current, begin_feature_request)
+    dataset = get_feature_dataset(rds_path)
+    if not begin_feature_request(dataset, session_id, rds_path, view_id, request_sequence):
+        return no_update, no_update, no_update, no_update
+    triggered_id = request_trigger or ctx.triggered_id
+    geometry = get_feature_geometry(dataset)
+    generation_prefix = feature_generation_prefix(
+        dataset, rotation_store, _raster.screen_raster_enabled())
+    generation = generation_prefix + uuid.uuid4().hex
 
     def _finish(children, ph_min, ph_max, fig_dicts, heading=no_update):
         """ver46.1: 一括保存用 figure はサーバ側に保持し、ブラウザへは送らない。"""
-        set_export_figures("feature", session_id, rds_path, fig_dicts)
+        if not set_feature_exports_if_current(dataset, session_id, rds_path, fig_dicts,
+                                              view_id=view_id, request_sequence=request_sequence):
+            return no_update, no_update, no_update, no_update
         # ver51.5: PERF_TRACE=1 のときだけ転送量を測る (既定 OFF)。
         _pt.note(tiles=len(fig_dicts))
         _pt.measure_payload(children, "children")
         return children, heading, ph_min, ph_max
     # 名前変更・フルスクリーン閉鎖トリガーだがFeature未選択 -> スキップ
-    if ctx.triggered_id in ("sample_name_map_store", "fullscreen_closed_trigger") and not feature_name:
+    if triggered_id in ("sample_name_map_store", "fullscreen_closed_trigger") and not feature_name:
         # ver51.6: Output は 4 つ (children / heading / 下限 / 上限)。
         # 見出しの Output を足したときにこの分岐だけ 3 値のままだった。
         return no_update, no_update, no_update, no_update
@@ -507,7 +539,7 @@ def _update_feature_plot_inner(
         return _finish(html.Div("m/z Feature を選択してください", className="text-muted p-3"),
                        no_update, no_update, [])
 
-    df = _interactive_data.get("plot_data")
+    df = feature_dataset_frame(dataset)
     if df is None:
         return _finish(html.Div("データが読み込まれていません", className="text-muted p-3"),
                        no_update, no_update, [])
@@ -532,8 +564,12 @@ def _update_feature_plot_inner(
     heading = _feature_heading(feature_name, deg_data, show_compound_names,
                                _interactive_data)
     have = [str(d.get("index")) for d in (existing_graph_ids or []) if d]
-    if (ctx.triggered_id in _FEATURE_DATA_ONLY_TRIGGERS
-            and have == [str(s) for s in samples_to_show]):
+    if (triggered_id in _FEATURE_DATA_ONLY_TRIGGERS
+            and have == [str(s) for s in samples_to_show]
+            and all(str(d.get("generation", "")).startswith(generation_prefix)
+                    for d in (existing_graph_ids or []))
+            and (view_id is None or _feature_exports_match_ids(
+                session_id, rds_path, view_id, existing_graph_ids))):
         _pt.note(patched=1)
         # 見出しだけ更新して抜ける。図は CB2 が差分更新する。
         return no_update, heading, no_update, no_update
@@ -772,7 +808,8 @@ def _update_feature_plot_inner(
                 #   heatmap のトップレベル `colorscale`、散布フォールバックは
                 #   `marker.colorscale`。raster フラグでどちらかを判別する。
                 meta=dict(kind="feature", cs=[fg_idx],
-                          raster=gi is not None),
+                          raster=gi is not None, dataset_revision=dataset.revision,
+                          feature_generation=generation, sample_id=str(s)),
                 title=dict(text=display_s, font=dict(size=14), x=0.5),
                 xaxis=dict(showgrid=False, showline=False, zeroline=False,
                            showticklabels=False, title="", visible=False),
@@ -807,7 +844,9 @@ def _update_feature_plot_inner(
                     children=[
                         # ver46.1: id を付与し、React が再マウントではなく差分更新
                         # できるようにする（WebGL コンテキストの作り直しを避ける）。
-                        dcc.Graph(id={"type": "feature_graph", "index": str(s)},
+                        # ★ ver66.3: 新版の殻には別IDを付け、遅い旧Patchの適用先を消す。
+                        dcc.Graph(id={"type": "feature_graph", "index": str(s),
+                                      "generation": generation},
                                   figure=fig, style={"height": "350px"}, config=cfg),
                     ],
                 )
@@ -858,6 +897,16 @@ def _feature_grid_index(df_s, rotation_store, sample_key):
     return _raster.grid_index(px, py)
 
 
+def _feature_exports_match_ids(session_id, rds_path, view_id, graph_ids):
+    from app.callbacks.interactive_callbacks import get_export_figures
+    stored = get_export_figures("feature", session_id, rds_path, view_id)
+    actual = {(str((fd.get("layout", {}).get("meta") or {}).get("sample_id")),
+               (fd.get("layout", {}).get("meta") or {}).get("feature_generation"))
+              for _name, fd in stored}
+    return bool(actual) and all((str(oid.get("index")), oid.get("generation")) in actual
+                                for oid in graph_ids)
+
+
 
 # ---------------------------------------------------------------------------
 # m/z 切替の差分更新 (ver51.5)
@@ -877,30 +926,46 @@ def _feature_grid_index(df_s, rotation_store, sample_key):
 #   でないと「画面と保存 PNG で m/z が違う」ことになる。
 
 @callback(
-    [Output({"type": "feature_graph", "index": ALL}, "figure"),
-     Output({"type": "feature_graph", "index": ALL}, "config")],
-    [Input("feature_select", "value"),
-     Input("feature_intensity_min", "value"),
-     Input("feature_intensity_max", "value"),
-     Input("feature_show_compound_names", "value")],
-    [State("feature_sample_select", "value"),
-     State("sample_name_map_store", "data"),
-     State("seurat_rds_path_store", "data"),
-     State("seurat_cache_dir_store", "data"),
-     State("session_id_store", "data"),
-     # ★ ver66.0: ラスターの z を作るには格子添字が要る＝座標変換が要る。
-     #   殻と同じ回転/反転を通さないと 1 セルずれた画になり、しかも
-     #   「それらしく」見えるので気づけない (ver52.5 の行順ずれと同じ壊れ方)。
-     State("spatial_rotation_store", "data")],
+    [Output({"type": "feature_graph", "index": ALL, "generation": ALL}, "figure"),
+     Output({"type": "feature_graph", "index": ALL, "generation": ALL}, "config")],
+    Input("feature_intensity_request", "data"),
+    [State("seurat_rds_path_store", "data"), State("seurat_cache_dir_store", "data"),
+     State("session_id_store", "data")],
     prevent_initial_call=True,
 )
+def request_feature_intensity(request, rds_path, cache_dir_str, session_id=None):
+    if not request or not request.get("view_id"):
+        raise PreventUpdate
+    if (request.get("trigger") not in _FEATURE_DATA_ONLY_TRIGGERS
+            or not _feature_request_matches_dataset(request, rds_path)):
+        n = len(ctx.outputs_list[0] or [])
+        return [no_update] * n, [no_update] * n
+    return patch_feature_intensity(
+        request.get("feature"), request.get("intensity_min"), request.get("intensity_max"),
+        request.get("show_names"), request.get("sample"), request.get("name_map"),
+        rds_path, cache_dir_str, session_id, request.get("rotation"),
+        request.get("view_id"), request.get("sequence"))
+
+
+def _feature_request_matches_dataset(request, rds_path):
+    """★ ver66.3: 遅い旧要求が新しいRDSのStateだけを拾って描画するのを防ぐ。"""
+    from app.callbacks.interactive_callbacks import get_feature_dataset
+    if request.get("rds_path", rds_path) != rds_path:
+        return False
+    dataset = get_feature_dataset(rds_path)
+    return request.get("dataset_revision", dataset.revision) == dataset.revision
+
+
 def patch_feature_intensity(feature_name, intensity_min, intensity_max,
                             show_compound_names, sample, name_map, rds_path,
-                            cache_dir_str, session_id=None, rotation_store=None):
+                            cache_dir_str, session_id=None, rotation_store=None,
+                            view_id=None, request_sequence=None):
     """m/z / 強度レンジの変更を figure の差分更新で反映する。"""
     from app.callbacks.interactive_callbacks import (
         _interactive_data, _bridge, _set_active_key,
-        get_export_figures, set_export_figures)
+        get_export_figures, get_feature_dataset, set_feature_exports_if_current,
+        begin_feature_request)
+    from app.services.seurat_bridge import _parquet_file_sig
     from app.utils.perf_trace import perf_trace
 
     out_ids = [o["id"] for o in (ctx.outputs_list[0] or [])]
@@ -913,15 +978,31 @@ def patch_feature_intensity(feature_name, intensity_min, intensity_max,
 
     with perf_trace("patch_feature_intensity", tiles=n) as _pt:
         _set_active_key(rds_path)
-        df = _interactive_data.get("plot_data")
+        dataset = get_feature_dataset(rds_path)
+        generation_prefix = feature_generation_prefix(
+            dataset, rotation_store, _raster.screen_raster_enabled())
+        if any(not str(o.get("generation", "")).startswith(generation_prefix)
+               for o in out_ids):
+            return [no_update] * n, [no_update] * n
+        if not begin_feature_request(dataset, session_id, rds_path, view_id, request_sequence):
+            return [no_update] * n, [no_update] * n
+        geometry = get_feature_geometry(dataset)
+        df = feature_dataset_frame(dataset)
         if df is None or "SpatialX" not in df.columns:
             return [no_update] * n, [no_update] * n
 
         with _pt.phase("read"):
             expression = None
+            source_signature = None
             if cache_dir_str:
+                try:
+                    source_signature = _parquet_file_sig(
+                        Path(cache_dir_str) / "expression_matrix.parquet")
+                except OSError:
+                    pass
                 expression = _bridge.get_feature_expression_fast(
                     Path(cache_dir_str), feature_name)
+            fast_expression = expression is not None
             if expression is None:
                 expression = _bridge.get_feature_expression(rds_path, feature_name)
 
@@ -934,18 +1015,39 @@ def patch_feature_intensity(feature_name, intensity_min, intensity_max,
             return [no_update] * n, [no_update] * n
 
         samples_to_show = [sample] if sample else sorted(df["Sample"].unique())
-        # ★ ver66.0: SpatialX/Y も持ってくる。ラスターの z は格子添字が要るため。
-        _cols = [c for c in ("Sample", "TotalCount", "SpatialX", "SpatialY")
-                 if c in df.columns]
-        df_plot = df[_cols].copy()
         # ★ ver52.5: 初回描画側と同じ照合。差分更新はここだけ通るので、
         #   片方に足すと「最初は止まるのに、m/z を切り替えると出る」になる。
         if not _expression_alignment_ok(cache_dir_str, df):
             return [no_update] * n, [no_update] * n
-        df_plot["_expression"] = np.asarray(expression)
-
-        expr_vals = df_plot.loc[
-            df_plot["Sample"].isin(samples_to_show), "_expression"].values
+        # ★ ver66.3: 判定不能の許容は旧経路専用。正規ParquetのCellID順を
+        #   明示的に照合できたときだけ不変の位置索引・格子を再利用する。
+        reuse = False
+        if geometry is not None and fast_expression and source_signature is not None:
+            try:
+                reuse = (_bridge.expression_row_order_matches(
+                    Path(cache_dir_str), geometry.columns["CellID"]) is True)
+            except Exception as exc:  # 照合不能なら従来計算へ戻し、再利用しない
+                logger.debug("幾何再利用用のCellID照合を利用できません: %s", exc)
+                reuse = False
+        if fast_expression and source_signature is not None:
+            try:
+                if _parquet_file_sig(Path(cache_dir_str) / "expression_matrix.parquet") != source_signature:
+                    return [no_update] * n, [no_update] * n
+            except OSError:
+                return [no_update] * n, [no_update] * n
+        expression = np.asarray(expression)
+        if reuse:
+            wanted_rows = [geometry.rows[str(s)] for s in samples_to_show
+                           if str(s) in geometry.rows]
+            expr_vals = expression[np.concatenate(wanted_rows)] if wanted_rows else np.array([])
+            df_plot = None
+        else:
+            _cols = [c for c in ("Sample", "TotalCount", "SpatialX", "SpatialY")
+                     if c in df.columns]
+            df_plot = df[_cols].copy()
+            df_plot["_expression"] = expression
+            expr_vals = df_plot.loc[
+                df_plot["Sample"].isin(samples_to_show), "_expression"].values
         rng = _feature_display_range(expr_vals, intensity_min, intensity_max)
         if rng is None:
             return [no_update] * n, [no_update] * n
@@ -959,7 +1061,8 @@ def patch_feature_intensity(feature_name, intensity_min, intensity_max,
         # 一括保存用にサーバが保持している figure にも同じ差分を当てる
         # ★ 保存用 figure の名前は **表示名** (name_map 適用後) で作られている。
         #   グラフ id は生のサンプル名なので、同じ変換を通してから対応付ける。
-        stored = list(get_export_figures("feature", session_id, rds_path) or [])
+        stored_original = get_export_figures("feature", session_id, rds_path, view_id)
+        stored = list(stored_original or [])
         # ★ ver51.9 / B-4: 従来は **表示名の suffix 一致** で引いていた
         #   (`k.endswith(f"_{display_s}")`)。名前は
         #   `Feature_{file_label}_{display_s}` で file_label も display_s も
@@ -970,11 +1073,13 @@ def patch_feature_intensity(feature_name, intensity_min, intensity_max,
         #   殻 (`_update_feature_plot_inner`) は `samples_to_show` の順で
         #   `export_figs` を作るので、**位置**で対応付ければ名前に依存しない。
         #   件数が食い違うときだけ従来の名前照合へ落とす（殻が古い等）。
-        if len(stored) == len(samples_to_show):
-            stored_index_of = {str(s): i for i, s in enumerate(samples_to_show)}
-        else:
-            stored_index_of = None
-            stored_by_name = {name: idx for idx, (name, _fd) in enumerate(stored)}
+        stored_index_of = {
+            (str((fd.get("layout", {}).get("meta") or {}).get("sample_id")),
+             (fd.get("layout", {}).get("meta") or {}).get("feature_generation")): i
+            for i, (_name, fd) in enumerate(stored)}
+        if view_id is not None and any((str(oid.get("index")), oid.get("generation"))
+                                       not in stored_index_of for oid in out_ids):
+            return [no_update] * n, [no_update] * n
 
         figures, configs = [], []
         measured = {"color": [], "opacity": [], "note": []}
@@ -986,25 +1091,37 @@ def patch_feature_intensity(feature_name, intensity_min, intensity_max,
         with _pt.phase("build"):
             for oid in out_ids:
                 s_key = str(oid.get("index"))
-                df_s = df_plot[df_plot["Sample"].astype(str) == s_key]
-                if df_s.empty:
+                if reuse:
+                    positions = geometry.rows.get(s_key)
+                    values = expression[positions] if positions is not None else np.array([])
+                    gi = cached_feature_grid(
+                        geometry, s_key,
+                        feature_transform_key(rotation_store, _raster.screen_raster_enabled()),
+                        lambda: _feature_grid_index(df.iloc[positions], rotation_store, s_key)
+                    ) if positions is not None else None
+                else:
+                    df_s = df_plot[df_plot["Sample"].astype(str) == s_key]
+                    values = df_s["_expression"].values
+                    gi = _feature_grid_index(df_s, rotation_store, s_key)
+                if len(values) == 0:
                     figures.append(no_update)
                     configs.append(no_update)
                     continue
                 color, alpha, below = _feature_intensity_style(
-                    df_s["_expression"].values, display_min, display_max)
-                gi = _feature_grid_index(df_s, rotation_store, s_key)
+                    values, display_min, display_max)
 
                 patched = Patch()
+                z = None
                 # 発現トレースは常に最後。TIC 背景 (あれば) は触らない。
                 if gi is not None:
                     # ★ ver66.0: ラスター経路。幾何 (x/y/text=CellID) は m/z に
                     #   依存しないので触らない ＝ ver51.5 の不変条件は維持したまま、
                     #   差し替えるのを marker.color/opacity から z に移しただけ。
-                    patched["data"][-1]["z"] = _raster.fill_grid(
+                    z = _raster.fill_grid(
                         _raster.grid_shape(gi), gi[0], gi[1],
                         np.where(np.asarray(alpha) > 0.0,
                                  np.asarray(color, dtype=float), np.nan))
+                    patched["data"][-1]["z"] = z
                     patched["data"][-1]["zmin"] = display_min
                     patched["data"][-1]["zmax"] = display_max
                 else:
@@ -1034,28 +1151,35 @@ def patch_feature_intensity(feature_name, intensity_min, intensity_max,
 
                 display_s = _display_name(s_key, name_map or {})
                 new_name = f"Feature_{file_label}_{display_s}"
-                if stored_index_of is not None:
-                    si = stored_index_of.get(s_key)
-                else:
-                    si = next((stored_by_name[k] for k in stored_by_name
-                               if k.endswith(f"_{display_s}")), None)
+                si = stored_index_of.get((s_key, oid.get("generation")))
                 if si is not None:
                     stored[si] = _apply_feature_data_to_stored(
                         stored[si], color, alpha, below, display_min,
-                        display_max, hover_label, ticktext, new_name, gi=gi)
+                        display_max, hover_label, ticktext, new_name, gi=gi, z=z)
                 measured["color"].append(color)
                 measured["opacity"].append(alpha)
                 measured["note"].append(below)
 
-        if stored:
-            set_export_figures("feature", session_id, rds_path, stored)
+        # ★ ver66.3: 読込・殻の再生成が途中で進んだら、保存図と画面を共に更新しない。
+        if get_feature_dataset(rds_path) is not dataset:
+            return [no_update] * n, [no_update] * n
+        if fast_expression and source_signature is not None:
+            try:
+                if _parquet_file_sig(Path(cache_dir_str) / "expression_matrix.parquet") != source_signature:
+                    return [no_update] * n, [no_update] * n
+            except OSError:
+                return [no_update] * n, [no_update] * n
+        if stored and not set_feature_exports_if_current(
+                dataset, session_id, rds_path, stored, expected=stored_original,
+                view_id=view_id, request_sequence=request_sequence):
+            return [no_update] * n, [no_update] * n
         # Patch オブジェクトは JSON 化できないので、実際に流れる配列そのものを測る
         _pt.measure_payload(measured, "patch")
         return figures, configs
 
 
 def _apply_feature_data_to_stored(entry, color, alpha, below, cmin, cmax,
-                                  hover_label, ticktext, new_name, gi=None):
+                                  hover_label, ticktext, new_name, gi=None, z=None):
     """サーバ保持の一括保存用 figure に、画面と同じ差分を当てる。
 
     ここを忘れると「画面は新しい m/z、保存 PNG は古い m/z」になる。
@@ -1064,35 +1188,44 @@ def _apply_feature_data_to_stored(entry, color, alpha, below, cmin, cmax,
     """
     try:
         name, fig_d = entry
-        tr = (fig_d.get("data") or [])[-1]
+        # ★ ver66.3: 古い保存図の配列や辞書を次m/zの更新で汚染しない。
+        #   不変の座標は共有し、変更する枝だけをコピーする。
+        fig_d = dict(fig_d)
+        fig_d["data"] = list(fig_d.get("data") or [])
+        tr = dict(fig_d["data"][-1])
+        fig_d["data"][-1] = tr
         if gi is not None:
             # ★ ver66.0: 画面側 (Patch) と同じ書き先にする。heatmap では
             #   z / zmin / zmax / colorbar がトレース直下で、marker は存在しない。
-            tr["z"] = _raster.fill_grid(
+            tr["z"] = np.array(z, copy=True) if z is not None else _raster.fill_grid(
                 _raster.grid_shape(gi), gi[0], gi[1],
                 np.where(np.asarray(alpha) > 0.0,
                          np.asarray(color, dtype=float), np.nan))
             tr["zmin"] = cmin
             tr["zmax"] = cmax
             if isinstance(tr.get("colorbar"), dict):
+                tr["colorbar"] = dict(tr["colorbar"])
                 tr["colorbar"]["tickvals"] = [cmin, cmax]
                 tr["colorbar"]["ticktext"] = ticktext
         else:
-            marker = tr.setdefault("marker", {})
-            marker["color"] = color
-            marker["opacity"] = alpha
+            marker = dict(tr.get("marker") or {})
+            tr["marker"] = marker
+            marker["color"] = np.array(color, copy=True)
+            marker["opacity"] = np.array(alpha, copy=True)
             marker["cmin"] = cmin
             marker["cmax"] = cmax
             if isinstance(marker.get("colorbar"), dict):
+                marker["colorbar"] = dict(marker["colorbar"])
                 # ver51.6: 目盛りの **位置** も cmin/cmax に追従させる。
                 # ticktext だけ直すと、ラベルは新しいのに目盛り線が古い位置に
                 # 残り、カラーバーの読み方が狂う。
                 marker["colorbar"]["tickvals"] = [cmin, cmax]
                 marker["colorbar"]["ticktext"] = ticktext
-            tr["customdata"] = below
+            tr["customdata"] = np.array(below, copy=True)
         tr["meta"] = hover_label
         entry_list = list(entry)
         entry_list[0] = new_name
+        entry_list[1] = fig_d
         # tuple は書き換えられないので呼び出し側のリスト要素を差し替える
         return tuple(entry_list)
     except Exception as e:  # noqa: BLE001 - 保存用の同期失敗で画面を壊さない

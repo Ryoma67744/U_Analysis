@@ -155,6 +155,10 @@ def apply_shared_mode(shared):
 )
 def render_project_cards(current_page, _refresh, sort_order, search_text):
     """ランディングページ表示時にプロジェクトカードを生成"""
+    # ★ ver66.3: 解析中の更新でも非表示の全カードを再構築していた。
+    # current_page も Input なので、ランディングへの復帰時に最新一覧を取得する。
+    if current_page in ("action", "analysis", "lite"):
+        return no_update
     projects = list_projects()
 
     if not projects:

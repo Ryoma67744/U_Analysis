@@ -3,13 +3,16 @@
 - `app_server`: run_app.py を試験ポートで起動し `/healthz` 緑を待つ。
 - `page`: 既設 Chromium を起動し `/login` でログインしてインタラクティブタブへ。
 
-Playwright/ブラウザが無い環境では該当テストを skip する（CI/Docker で実行する想定）。
+Playwright/ブラウザが無い環境では通常 skip する。検証必須の実行は
+`E2E_STRICT=1` とし、起動不能をエラーとして記録する。
+`E2E_APP_ROOT=/path/to/baseline/App` で同じ隔離ハーネスから比較元を起動できる。
 Dash ではコンポーネント `id` がそのまま安定セレクタ（`#id`）。data-testid は不要。
 """
 
 import collections
 import os
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -23,6 +26,13 @@ import pytest
 HOST = "127.0.0.1"
 APP_ROOT = Path(__file__).resolve().parents[2]  # .../App
 MASTER_PW = "e2e-master-pass"
+
+
+def _unavailable(reason):
+    """★ ver66.3: 検証必須の実行で依存不足を成功相当の skip にしない。"""
+    if os.environ.get("E2E_STRICT") == "1":
+        pytest.fail(reason, pytrace=False)
+    pytest.skip(reason)
 
 
 class _LogDrain:
@@ -62,10 +72,21 @@ def _free_port() -> int:
 
 
 @pytest.fixture(scope="session")
-def app_server():
+def app_server(tmp_path_factory):
     """run_app.py を subprocess 起動して base URL と master password を返す。"""
-    if not (APP_ROOT / "run_app.py").exists():
-        pytest.skip("run_app.py が見つかりません")
+    # ★ ver66.3: 以前は実リポジトリで起動し、前回設定の削除や認証・キャッシュの
+    #   書込が利用者データに及び得た。コードと同梱資産だけを一時領域へ複製する。
+    #   E2E_APP_ROOT は同じハーネスで未変更版を比較するための読み取り元指定。
+    source = Path(os.environ.get("E2E_APP_ROOT", str(APP_ROOT))).resolve()
+    if not (source / "run_app.py").exists():
+        _unavailable(f"run_app.py が見つかりません: {source}")
+    runtime_root = tmp_path_factory.mktemp("msi-e2e")
+    app_root = runtime_root / "App"
+    app_root.mkdir()
+    shutil.copy2(source / "run_app.py", app_root / "run_app.py")
+    for folder in ("app", "Script", "DB"):
+        shutil.copytree(source / folder, app_root / folder,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     port = _free_port()
     env = dict(os.environ)
     env["FLASK_SECRET_KEY"] = secrets.token_hex(32)
@@ -74,9 +95,17 @@ def app_server():
     env["INITIAL_PASSWORD_B"] = "e2e-b"
     env["APP_HOST"] = HOST
     env["APP_PORT"] = str(port)
+    env["PYTHONPATH"] = str(app_root)
+    env["DESI_DATA_DIR"] = str(runtime_root / "Data" / "DESI" / "Data")
+    env["TIMS_DATA_DIR"] = str(runtime_root / "Data" / "TIMS" / "Data")
+    env["OUTPUT_DATA_DIR"] = str(runtime_root / "Data" / "Other" / "output")
+    env["AUTH_CONFIG_PATH"] = str(runtime_root / "Data" / "Other" / "auth.json")
+    env["SEURAT_CACHE_DIR"] = str(runtime_root / "Data" / "Other" / "seurat_cache")
+    env["DATA_EXPORT_TMP_DIR"] = str(runtime_root / "Data" / "Other" / "exports")
+    env["GPT_EXPORT_TMP_DIR"] = str(runtime_root / "Data" / "Other" / "gpt_exports")
 
     proc = subprocess.Popen(
-        [sys.executable, "run_app.py"], cwd=str(APP_ROOT), env=env,
+        [sys.executable, "run_app.py"], cwd=str(app_root), env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     # パイプを読み続ける（詰まるとアプリが write でブロックして無応答になる）
     drain = _LogDrain(proc.stdout)
@@ -85,7 +114,7 @@ def app_server():
     healthy = False
     for _ in range(60):
         if proc.poll() is not None:
-            pytest.skip(f"アプリ起動に失敗（依存不足の可能性）:\n{drain.text()[-1500:]}")
+            _unavailable(f"アプリ起動に失敗:\n{drain.text()[-2500:]}")
         try:
             with urllib.request.urlopen(base + "/healthz", timeout=2) as r:
                 if r.status == 200:
@@ -96,7 +125,12 @@ def app_server():
         time.sleep(1)
     if not healthy:
         proc.terminate()
-        pytest.skip("アプリが /healthz 緑になりませんでした")
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=10)
+        _unavailable(f"アプリが /healthz 緑になりませんでした:\n{drain.text()[-2500:]}")
 
     yield base, MASTER_PW
 
@@ -105,6 +139,7 @@ def app_server():
         proc.wait(timeout=10)
     except Exception:
         proc.kill()
+        proc.wait(timeout=10)
 
 
 def _launch_chromium(p):
@@ -138,13 +173,13 @@ def page(app_server):
     try:
         from playwright.sync_api import sync_playwright
     except Exception:
-        pytest.skip("playwright が未インストールです")
+        _unavailable("playwright が未インストールです")
 
     with sync_playwright() as p:
         try:
             browser = _launch_chromium(p)
         except Exception as e:  # noqa: BLE001
-            pytest.skip(f"Chromium の起動に失敗: {e}")
+            _unavailable(f"Chromium の起動に失敗: {e}")
         ctx = browser.new_context()
         pg = ctx.new_page()
         pg.goto(base, wait_until="domcontentloaded", timeout=30000)

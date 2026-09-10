@@ -22,6 +22,8 @@ import urllib.request
 
 import pytest
 
+from .conftest import _unavailable
+
 pytestmark = pytest.mark.e2e
 
 
@@ -226,149 +228,124 @@ def test_relayout_filter_seq_is_monotonic(page):
 # ---------------------------------------------------------------------------
 
 def test_spatial_restyle_is_loaded(page):
+    # ★ ver66.3: ver66.0 で撤去したサイズ API を必須とする古い試験を更新する。
     fns = page.evaluate(
         """() => {
             const ns = window.dash_clientside && window.dash_clientside.spatial_restyle;
             return ns ? Object.keys(ns).sort() : null;
         }"""
     )
-    assert fns == ["hne_marker_size", "label_size", "marker_size", "spot_opacity"]
+    assert fns == ["label_size", "spot_opacity"]
 
 
-def test_spatial_restyle_updates_only_tagged_traces(page):
-    """meta タグ付きトレースだけを、役割どおりに更新すること。
-
-    実データ無しでも検証できるよう、テスト用の Plotly グラフを
-    #spatial_plots_container に差し込んで restyle を走らせる。
-    """
+@pytest.mark.parametrize("kind", ["msi", "hne"])
+def test_spatial_restyle_updates_only_tagged_traces(page, kind):
+    """★ ver66.3: ラスター・散布の不透明度を正しい階層へ反映し数値を維持する。"""
     result = page.evaluate(
-        """async () => {
+        """async (kind) => {
             const host = document.querySelector('#spatial_plots_container');
             if (!host || !window.Plotly) { return {error: 'no host/plotly'}; }
             const div = document.createElement('div');
             host.appendChild(div);
             await window.Plotly.newPlot(div, [
+                {type: 'heatmap', x: [1,2], y: [1,2], z: [[0,1],[2,null]],
+                 opacity: 1, meta: {op: false}},
+                {type: 'heatmap', x: [1,2], y: [1,2], z: [[2,3],[4,null]],
+                 opacity: 1, meta: {op: true}},
                 {type: 'scattergl', x: [1,2], y: [1,2], mode: 'markers',
-                 marker: {size: 3, opacity: 1}, meta: {dsz: 0, op: false}},   // 背景
-                {type: 'scattergl', x: [1,2], y: [1,2], mode: 'markers',
-                 marker: {size: 3, opacity: 1}, meta: {dsz: 0, op: true}},    // スポット
-                {type: 'scattergl', x: [1,2], y: [1,2], mode: 'markers',
-                 marker: {size: 3, opacity: 1}, meta: {dsz: 1, op: true}},    // +1
+                 marker: {size: 3, opacity: 1}, meta: {op: true}},
                 {type: 'scattergl', x: [null], y: [null], mode: 'markers',
-                 marker: {size: 10}},                                          // 凡例ダミー
-            ], {meta: {kind: 'msi', auto_msz: 4.5}, annotations: [
+                 marker: {size: 10, opacity: 1}},
+            ], {meta: {kind}, annotations: [
                 {text: 'C1', x: 1, y: 1, showarrow: false, font: {size: 10}}]});
-
-            window.dash_clientside.spatial_restyle.marker_size(8);
+            const values = () => div.data.map(t => ({x: t.x, y: t.y, z: t.z}));
+            const before = JSON.stringify(values());
             window.dash_clientside.spatial_restyle.spot_opacity(40);
             window.dash_clientside.spatial_restyle.label_size(18);
-            const sizes = div.data.map(t => t.marker.size);
-            const ops = div.data.map(t => t.marker.opacity);
-            const labelSize = div.layout.annotations[0].font.size;
-
-            // 「自動」(0) に戻すと layout.meta.auto_msz が使われる
-            window.dash_clientside.spatial_restyle.marker_size(0);
-            const autoSizes = div.data.map(t => t.marker.size);
-
-            // H&E 用スライダーは kind='msi' のこの図を触らない
-            window.dash_clientside.spatial_restyle.hne_marker_size(30);
-            const afterHne = div.data.map(t => t.marker.size);
-
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            const out = {
+                heat: div.data.slice(0, 2).map(t => t.opacity),
+                scatter: div.data.slice(2).map(t => t.marker.opacity),
+                sizes: div.data.slice(2).map(t => t.marker.size),
+                rasterHasMarker: div.data.slice(0, 2).some(t => t.marker !== undefined),
+                labelSize: div.layout.annotations[0].font.size,
+                sameValues: before === JSON.stringify(values())
+            };
+            window.Plotly.purge(div);
             host.removeChild(div);
-            return {sizes, ops, labelSize, autoSizes, afterHne};
-        }"""
+            return out;
+        }""", kind,
     )
     assert "error" not in result, result
-    # 背景=8, スポット=8, +1=9, 凡例ダミー=10(不変)
-    assert result["sizes"] == [8, 8, 9, 10]
-    # 不透明度は op:true のトレースだけ 0.4、他は 1 のまま
-    assert result["ops"] == [1, 0.4, 0.4, None] or result["ops"][:3] == [1, 0.4, 0.4]
-    assert result["labelSize"] == 18
-    # 自動 → auto_msz(4.5) と +1
-    assert result["autoSizes"] == [4.5, 4.5, 5.5, 10]
-    # 種別違いのスライダーでは変化しない
-    assert result["afterHne"] == result["autoSizes"]
+    assert result["heat"] == [1, 0.4]
+    assert result["scatter"] == [0.4, 1]
+    assert result["sizes"] == [3, 10]
+    assert not result["rasterHasMarker"]
+    assert result["labelSize"] == (18 if kind == "msi" else 10)
+    assert result["sameValues"]
 
 
 # ---------------------------------------------------------------------------
-# 2b. Feature Plot の clientside restyle (ver51.3)
+# 2b. Feature Plot の clientside restyle
 # ---------------------------------------------------------------------------
-# Spatial と同じ「サーバ側に戻ると無音で元の重さに逆戻りする」性質があるので、
-# 同じ番人を置く。対象トレースの探し方だけが違う (Spatial はトレースの meta、
-# Feature は layout.meta の添字。発現トレースの meta は hover ラベルの値に
-# 使っているため上書きできない)。
 
 def test_feature_restyle_is_loaded(page):
+    # ★ ver66.3: ラスター化後の公開 API は配色のみ。存在しないサイズ API を呼ばない。
     fns = page.evaluate(
         """() => {
             const ns = window.dash_clientside && window.dash_clientside.feature_restyle;
             return ns ? Object.keys(ns).sort() : null;
         }"""
     )
-    assert fns == ["colorscale", "marker_size"]
+    assert fns == ["colorscale"]
 
 
-def test_feature_restyle_updates_only_indexed_traces(page):
-    """layout.meta の添字どおりに、対象トレースだけを更新すること。
-
-    ★ TIC 背景は常に Greys。配色プルダウンで塗り替わってはいけない
-      (cs に入れていないこと) を実ブラウザで固定する。
-    """
+@pytest.mark.parametrize("trace_type", ["heatmap", "scattergl"])
+def test_feature_restyle_updates_only_indexed_traces(page, trace_type):
+    """★ ver66.3: ラスターと散布の配色更新で TIC・値・別種別の図を維持する。"""
     result = page.evaluate(
-        """async () => {
+        """async (traceType) => {
             const host = document.querySelector('#feature_plot_container');
             if (!host || !window.Plotly) { return {error: 'no host/plotly'}; }
+            const trace = (cs) => traceType === 'heatmap'
+                ? {type: 'heatmap', x: [1,2], y: [1,2],
+                   z: [[0.25,0.75],[0,null]], colorscale: cs}
+                : {type: 'scattergl', x: [1,2], y: [1,2], mode: 'markers',
+                   marker: {size: 3, color: [0.25,0.75], colorscale: cs}};
             const div = document.createElement('div');
-            host.appendChild(div);
-            await window.Plotly.newPlot(div, [
-                {type: 'scattergl', x: [1,2], y: [1,2], mode: 'markers',
-                 marker: {size: 3, colorscale: 'Greys'}},      // 0: TIC 背景
-                {type: 'scattergl', x: [1,2], y: [1,2], mode: 'markers',
-                 marker: {size: 3, colorscale: 'Plasma'}},     // 1: 発現量
-            ], {meta: {kind: 'feature', auto_msz: 4.5, sz: [0, 1], cs: [1]}});
-
-            // 別種別の図。Feature 用の操作で触ってはいけない。
             const other = document.createElement('div');
-            host.appendChild(other);
-            await window.Plotly.newPlot(other, [
-                {type: 'scattergl', x: [1,2], y: [1,2], mode: 'markers',
-                 marker: {size: 3, colorscale: 'Greys'}, meta: {dsz: 0, op: false}},
-            ], {meta: {kind: 'msi', auto_msz: 9}});
-
-            window.dash_clientside.feature_restyle.marker_size(8);
+            host.appendChild(div); host.appendChild(other);
+            await window.Plotly.newPlot(div, [trace('Greys'), trace('Plasma')],
+                {meta: {kind: 'feature', cs: [1]}});
+            await window.Plotly.newPlot(other, [trace('Greys')],
+                {meta: {kind: 'msi', cs: [0]}});
+            const values = () => div.data.map(t => ({x: t.x, y: t.y, z: t.z,
+                color: t.marker && t.marker.color, size: t.marker && t.marker.size}));
+            const before = JSON.stringify(values());
+            const otherBefore = JSON.stringify(other.data);
             window.dash_clientside.feature_restyle.colorscale('Viridis');
-            const sizes = div.data.map(t => t.marker.size);
-            // ★ plotly.py は組み立て時に名前を停止点配列へ展開するが、
-            //   plotly.js は gd.data に名前のまま保持する (展開は _fullData 側)。
-            //   両方の形を受けられるように正規化する。
+            await new Promise(resolve => requestAnimationFrame(resolve));
             const first = div.data.map(t => {
-                const cs = t.marker.colorscale;
+                const cs = t.type === 'heatmap' ? t.colorscale : t.marker.colorscale;
                 return Array.isArray(cs) ? String(cs[0][1]).toLowerCase()
                                          : String(cs).toLowerCase();
             });
-
-            // 「自動」(0) に戻すと layout.meta.auto_msz が使われる
-            window.dash_clientside.feature_restyle.marker_size(0);
-            const autoSizes = div.data.map(t => t.marker.size);
-
-            const otherSize = other.data.map(t => t.marker.size);
-
+            const out = {first,
+                sameValues: before === JSON.stringify(values()),
+                otherUnchanged: otherBefore === JSON.stringify(other.data),
+                rasterHasMarker: traceType === 'heatmap'
+                    && div.data.some(t => t.marker !== undefined)};
+            window.Plotly.purge(div); window.Plotly.purge(other);
             host.removeChild(div); host.removeChild(other);
-            return {sizes, first, autoSizes, otherSize};
-        }"""
+            return out;
+        }""", trace_type,
     )
     assert "error" not in result, result
-    # sz:[0,1] なので両方 8
-    assert result["sizes"] == [8, 8]
-    # cs:[1] だけ Viridis 化。TIC 背景 (index 0) は Greys のまま
-    # (名前のままなら "viridis"、展開済みなら Viridis の先頭色 #440154)
     assert result["first"][1] in ("viridis", "#440154"), result["first"]
-    assert result["first"][0] not in ("viridis", "#440154"), \
-        f"TIC 背景まで配色が変わっている: {result['first']}"
-    # 自動 → auto_msz(4.5)
-    assert result["autoSizes"] == [4.5, 4.5]
-    # kind='msi' の図は Feature 用の操作では変わらない
-    assert result["otherSize"] == [3]
+    assert result["first"][0] not in ("viridis", "#440154"), result["first"]
+    assert result["sameValues"]
+    assert result["otherUnchanged"]
+    assert not result["rasterHasMarker"]
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +368,7 @@ def test_dash_callback_response_is_gzipped(app_server):
             encoding = r.headers.get("Content-Encoding", "")
             body = r.read()
     except Exception as e:  # noqa: BLE001
-        pytest.skip(f"/_dash-layout を取得できない（認証設定依存）: {e}")
+        _unavailable(f"/_dash-layout を取得できない: {e}")
 
     assert encoding == "gzip", (
         f"Content-Encoding={encoding!r}。flask-compress / compress=True の設定を確認")

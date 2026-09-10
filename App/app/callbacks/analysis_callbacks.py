@@ -19,9 +19,10 @@ from app.services.analysis_runner import (
     generate_v8_config,
     generate_cluster_filter_config,
     start_analysis_process,
-    get_analysis_log,
     get_analysis_log_full,
-    get_analysis_log_markers,
+    get_log_snapshot,
+    get_analysis_output_count,
+    release_analysis_monitor,
     format_log_lines_styled,
     get_analysis_status,
     check_process_completion,
@@ -1338,6 +1339,18 @@ def update_progress(n_intervals, app_state, log_search, log_level, log_lines_cou
     start_time_iso = app_state.get("start_time", "")
     analysis_type = app_state.get("analysis_type", "desi_v8")
 
+    # ★ ver66.3: ログ無変化でも終了・停止を必ず確認する。終了処理による
+    # [EXIT]追記も最後の画面に含めるため、ログ取得より先に確認する。
+    process = _process_state.get("process")
+    log_fh = _process_state.get("log_file_handle")
+    completed_status = None
+    if process:
+        completed_status = check_process_completion(process, status_file, log_fh)
+    status = completed_status or (
+        get_analysis_status(status_file) if status_file else "unknown")
+    generation = start_time_iso or app_state.get("pid", "")
+    snapshot = get_log_snapshot(log_file, generation)
+
     # ログ取得（フィルタ用の行数設定）
     # [ver51.1] 0 は「全行」を意味する有効な選択肢。falsy 判定で 50 に潰していたため
     #   直後の全行分岐が到達不能で、「全行」を選んでも末尾 50 行しか出なかった。
@@ -1346,40 +1359,29 @@ def update_progress(n_intervals, app_state, log_search, log_level, log_lines_cou
         n_lines = 50 if log_lines_count is None else int(log_lines_count)
     except (TypeError, ValueError):
         n_lines = 50
-    if n_lines == 0 and log_file:
-        raw_log = get_analysis_log_full(log_file)
-    elif log_file:
-        raw_log = get_analysis_log(log_file, last_n=n_lines)
-    else:
-        raw_log = ""
-    # ステップ検出用（フィルタ前）。
-    # ★ ver65.0: 段の記録 (`[stage]/[plan]/[pass]`) は **全文から** 拾う。
-    #   従来は末尾 600 行の窓で、1 つの段が 600 行を超える出力を出すと
-    #   その段の行が窓から押し出され、進捗が後退したり「準備中」へ巻き戻った。
-    #   マーカーが 1 行も無いログ（DESI テンプレート / ver63.3 以前の実行）は
-    #   従来どおり末尾の窓で部分一致する経路に落ちる。
-    marker_text = get_analysis_log_markers(log_file) if log_file else ""
-    log_text_for_steps = (
-        marker_text or (get_analysis_log(log_file, last_n=600) if log_file else ""))
-    # 表示用のスタイル付きログ
-    styled_log = format_log_lines_styled(
-        raw_log, search=log_search or "", level=log_level or "all")
+    # ★ ver66.3: 末尾と累積マーカーを同じ読込から取得し、重複全文読込をなくす。
+    # 旧形式の段階検出は従来の末尾600行を維持する。
+    log_text_for_steps = snapshot.markers or snapshot.tail(600)
+    # ns単位の時刻はJavaScriptの整数精度を超えるため、Storeへは文字列で渡す。
+    display_token = [log_file, str(generation), [str(v) for v in snapshot.revision],
+                     n_lines, log_search or "", log_level or "all"]
+    display_changed = app_state.get("_log_display_token") != display_token
+    styled_log = no_update
+    if display_changed:
+        # 全行選択時の検索は従来どおり全文を対象にする。全文自体は保持しない。
+        raw_log = (get_analysis_log_full(log_file) if log_file and
+                   (n_lines == 0 or n_lines > 600 or n_lines < 0)
+                   else snapshot.tail(n_lines))
+        if n_lines and (n_lines > 600 or n_lines < 0):
+            raw_log = "\n".join(raw_log.splitlines()[-n_lines:])
+        styled_log = format_log_lines_styled(
+            raw_log, search=log_search or "", level=log_level or "all")
+        # 表示済み状態は各画面のStoreに置く。他のタブの初回描画を抑制しない。
+        app_state["_log_display_token"] = display_token
 
-    # プロセス完了チェック
-    process = _process_state.get("process")
-    log_fh = _process_state.get("log_file_handle")
-    completed_status = None
-    if process:
-        completed_status = check_process_completion(process, status_file, log_fh)
-
-    # ステータス確認
-    status = get_analysis_status(status_file) if status_file else "unknown"
-
-    # 出力ファイル数
-    file_count = 0
-    if output_dir and Path(output_dir).is_dir():
-        for ext in ("*.png", "*.csv", "*.rds"):
-            file_count += len(list(Path(output_dir).rglob(ext)))
+    file_count = get_analysis_output_count(
+        output_dir, generation,
+        force=status in ("finished", "error", "stopped"))
 
     # ★ ver65.0: 段の重み・この実行の実測ペース・downstream の巡数を使って
     #   進捗と残り時間を出す（`app.services.progress_estimator`）。
@@ -1401,8 +1403,9 @@ def update_progress(n_intervals, app_state, log_search, log_level, log_lines_cou
     step_display = _estimator.format_step(est)
     section_text = f"出力: {file_count} ファイル | ステップ: {step_display} | {remaining_text}"
 
-    if status in ("finished", "error") or completed_status:
-        final_status = completed_status or status
+    if status in ("finished", "error"):
+        final_status = status
+        release_analysis_monitor(log_file, output_dir, generation)
         _process_state["process"] = None
         _process_state["log_file_handle"] = None
 
@@ -1444,6 +1447,7 @@ def update_progress(n_intervals, app_state, log_search, log_level, log_lines_cou
         )
 
     if status == "stopped":
+        release_analysis_monitor(log_file, output_dir, generation)
         _process_state["process"] = None
         _process_state["log_file_handle"] = None
         app_state["is_running"] = False
@@ -1461,7 +1465,7 @@ def update_progress(n_intervals, app_state, log_search, log_level, log_lines_cou
 
     return (
         styled_log, progress, f"{progress}%", section_text,
-        no_update, no_update,
+        app_state if display_changed else no_update, no_update,
         no_update,
         no_update,  # progress_container: 変更なし
         no_update,  # log_header: 変更なし

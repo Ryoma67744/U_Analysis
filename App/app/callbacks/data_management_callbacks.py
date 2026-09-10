@@ -24,6 +24,17 @@ from app.services.data_browser import (
 from app.services.project_manager import restore_projects_from_meta
 
 
+def _data_management_visible(current_page, main_tab, settings_subtab):
+    """データ管理が実際に表示されているときだけ集計する。"""
+    return (current_page == "analysis" and main_tab == "settings"
+            and settings_subtab == "settings_subtab_data")
+
+
+# ★ ver66.3: フォルダ移動の dm_state 更新が全ルート容量の再走査まで起動していた。
+# 全体サマリは明示更新・プロジェクト操作完了・表示復帰で現在値を取得する。
+# 表示の再利用をサービスの移動可否検証に持ち込まず、操作直前の実状態確認を保つ。
+
+
 # ---------------------------------------------------------------------------
 # 1. 場所選択トグル: dm_loc_btn クリック → dm_state.location_key 更新
 # ---------------------------------------------------------------------------
@@ -49,10 +60,17 @@ def on_location_select(clicks, state):
 
 @callback(
     Output("dm_layout_summary", "children"),
-    Input("dm_state", "data"),
     Input("dm_refresh_btn", "n_clicks"),
+    Input("project_list_refresh", "data"),
+    Input("sub_project_list_refresh", "data"),
+    Input("current_page", "data"),
+    Input("main_tabs", "active_tab"),
+    Input("settings_subtabs", "active_tab"),
 )
-def render_layout_summary(_state, _n):
+def render_layout_summary(_n, _project_refresh, _sub_refresh,
+                        current_page, main_tab, settings_subtab):
+    if not _data_management_visible(current_page, main_tab, settings_subtab):
+        return no_update
     rows = get_layout_summary()
     header = html.Tr([
         html.Th("場所"),
@@ -105,8 +123,16 @@ def render_layout_summary(_state, _n):
      Output("dm_breadcrumb", "children")],
     Input("dm_state", "data"),
     Input("dm_refresh_btn", "n_clicks"),
+    Input("project_list_refresh", "data"),
+    Input("sub_project_list_refresh", "data"),
+    Input("current_page", "data"),
+    Input("main_tabs", "active_tab"),
+    Input("settings_subtabs", "active_tab"),
 )
-def render_directory(state, _n):
+def render_directory(state, _n, _project_refresh, _sub_refresh,
+                     current_page, main_tab, settings_subtab):
+    if not _data_management_visible(current_page, main_tab, settings_subtab):
+        return no_update, no_update
     state = state or {}
     key = state.get("location_key") or "desi"
     subpath = state.get("subpath") or ""
@@ -317,10 +343,17 @@ def on_restore(clicks, scan_cache, refresh_token):
 
 @callback(
     Output("dm_result_audit", "children"),
-    Input("dm_state", "data"),
     Input("dm_refresh_btn", "n_clicks"),
+    Input("project_list_refresh", "data"),
+    Input("sub_project_list_refresh", "data"),
+    Input("current_page", "data"),
+    Input("main_tabs", "active_tab"),
+    Input("settings_subtabs", "active_tab"),
 )
-def render_result_audit(_state, _n):
+def render_result_audit(_n, _project_refresh, _sub_refresh,
+                        current_page, main_tab, settings_subtab):
+    if not _data_management_visible(current_page, main_tab, settings_subtab):
+        return no_update
     rows = audit_result_dirs()
     if not rows:
         return dbc.Alert(
@@ -557,10 +590,17 @@ def on_move_execute(n_clicks, pending, refresh_token, open_result_folder):
 
 @callback(
     Output("dm_storage_stats", "children"),
-    Input("dm_state", "data"),
     Input("dm_refresh_btn", "n_clicks"),
+    Input("project_list_refresh", "data"),
+    Input("sub_project_list_refresh", "data"),
+    Input("current_page", "data"),
+    Input("main_tabs", "active_tab"),
+    Input("settings_subtabs", "active_tab"),
 )
-def render_storage_stats(_state, _n):
+def render_storage_stats(_n, _project_refresh, _sub_refresh,
+                        current_page, main_tab, settings_subtab):
+    if not _data_management_visible(current_page, main_tab, settings_subtab):
+        return no_update
     stats = get_storage_stats()
     header = html.Tr([
         html.Th("場所"),
@@ -604,8 +644,16 @@ def render_storage_stats(_state, _n):
 @callback(
     Output("dm_backup_list", "children"),
     Input("dm_refresh_btn", "n_clicks"),
+    Input("project_list_refresh", "data"),
+    Input("sub_project_list_refresh", "data"),
+    Input("current_page", "data"),
+    Input("main_tabs", "active_tab"),
+    Input("settings_subtabs", "active_tab"),
 )
-def render_backup_list(_n):
+def render_backup_list(_n, _project_refresh, _sub_refresh,
+                       current_page, main_tab, settings_subtab):
+    if not _data_management_visible(current_page, main_tab, settings_subtab):
+        return no_update
     backups = list_backup_generations(limit=20)
     if not backups:
         return html.Div(

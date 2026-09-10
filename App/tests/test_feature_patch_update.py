@@ -54,6 +54,7 @@ def synthetic(monkeypatch):
     IC._set_active_key(rds)
     IC._interactive_data["plot_data"] = df
     IC._interactive_data["rds_path"] = rds
+    IC.set_export_figures("feature", "sess", rds, [])
     monkeypatch.setattr(IC._bridge, "ensure_expression_matrix",
                         lambda p: None, raising=False)
     monkeypatch.setattr(
@@ -62,13 +63,22 @@ def synthetic(monkeypatch):
     return df, rds
 
 
+def _generation():
+    from app.callbacks.interactive_callbacks import get_feature_dataset
+    from app.utils.feature_geometry import feature_generation_prefix
+    return feature_generation_prefix(
+        get_feature_dataset(), {}, ID._raster.screen_raster_enabled()) + "test-shell"
+
+
 def _set_outputs(monkeypatch, indices):
     """ctx.outputs_list を差し替える (pattern-matching Output の実体)。"""
     class _Ctx:
         outputs_list = [
-            [{"id": {"type": "feature_graph", "index": i}, "property": "figure"}
+            [{"id": {"type": "feature_graph", "index": i,
+                     "generation": _generation()}, "property": "figure"}
              for i in indices],
-            [{"id": {"type": "feature_graph", "index": i}, "property": "config"}
+            [{"id": {"type": "feature_graph", "index": i,
+                     "generation": _generation()}, "property": "config"}
              for i in indices],
         ]
         triggered_id = "feature_select"
@@ -190,6 +200,7 @@ def test_stored_export_figures_follow_the_screen(synthetic, monkeypatch):
         {"type": "heatmap", "z": [[0.0]], "zmin": 0.0, "zmax": 1.0,
          "colorbar": {"ticktext": ["0%", "100%"]}, "meta": "old"},
     ]})]
+    stored[0][1]["layout"] = {"meta": {"sample_id": "S1", "feature_generation": _generation()}}
     set_export_figures("feature", "sess", rds, stored)
 
     _set_outputs(monkeypatch, ["S1"])
@@ -233,7 +244,8 @@ def test_shell_is_reused_only_for_data_only_triggers(synthetic, monkeypatch):
     monkeypatch.setattr(ID, "ctx", _Ctx)
     monkeypatch.setattr(ID, "_feature_intensity_style", counting)
 
-    existing = [{"type": "feature_graph", "index": s} for s in ("S1", "S2")]
+    existing = [{"type": "feature_graph", "index": s, "generation": _generation()}
+                for s in ("S1", "S2")]
 
     # ① グラフが揃っている → 殻は no_update (作り直さない)
     children, heading, _p1, _p2 = ID.update_feature_plot(
@@ -306,6 +318,7 @@ def test_stored_export_colorbar_matches_the_screen(synthetic, monkeypatch):
         {"type": "heatmap", "z": [[0.0]], "zmin": 0.0, "zmax": 1.0,
          "colorbar": {"tickvals": [0, 1], "ticktext": ["0%", "100%"]},
          "meta": "old"}]})]
+    stored[0][1]["layout"] = {"meta": {"sample_id": "S1", "feature_generation": _generation()}}
     set_export_figures("feature", "sess", rds, stored)
 
     _set_outputs(monkeypatch, ["S1"])

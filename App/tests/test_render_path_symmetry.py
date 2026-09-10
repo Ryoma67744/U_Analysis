@@ -111,6 +111,14 @@ NOT_RENDERERS = {
     ("interactive_deg", "_feature_grid_index"): "格子添字を返すだけ（図は作らない）",
     # --- 薄いラッパ（実体は _update_feature_plot_inner） ---
     ("interactive_deg", "update_feature_plot"): "実体は _update_feature_plot_inner",
+    # ★ ver66.3: 要求Storeの導入で入口を分離した。描画計算は既存の実体に委譲し、
+    #   強度上下限をrequestから渡す。新しい描画コピーと混同しないよう理由を登録する。
+    ("interactive_deg", "_render_feature_plot_for_view"): (
+        "要求の由来を照合し、上下限をupdate_feature_plotへ渡す薄い入口"),
+    ("interactive_deg", "request_feature_intensity"): (
+        "要求の由来を照合し、上下限をpatch_feature_intensityへ渡す薄い入口"),
+    ("interactive_deg", "_feature_exports_match_ids"): "保存図の実IDと殻世代の照合のみ",
+    ("interactive_deg", "_feature_request_matches_dataset"): "RDSパスと読込版の照合のみ",
     ("interactive_deg", "patch_feature_intensity"): (
         "既存 figure への差分適用。intensity_min/max は受け取っている"),
     # --- 未使用 (dead) ---

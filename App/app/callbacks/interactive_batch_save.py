@@ -57,7 +57,8 @@ def _figure_has_content(fig):
 
 
 def _get_export_figures(kind, session_id, rds_path, *,
-                        label_size=None, spot_opacity=None):
+                        label_size=None, spot_opacity=None, marker_size=None,
+                        label_positions=None, view_id=None):
     """描画コールバックがサーバ側に置いた figure リストを取り出す (ver46.1)。
 
     以前は同じ内容を dcc.Store 経由でブラウザに持たせていたが、描画のたびに
@@ -73,27 +74,46 @@ def _get_export_figures(kind, session_id, rds_path, *,
     import copy
 
     from app.callbacks.interactive_callbacks import get_export_figures
-    from app.utils.display_helpers import apply_display_overrides
+    from app.utils.display_helpers import (
+        apply_display_overrides, apply_umap_display_overrides)
 
-    figs = get_export_figures(kind, session_id, rds_path)
+    view = {"view_id": view_id} if view_id else {}
+    figs = get_export_figures(kind, session_id, rds_path, **view)
     if not figs:
         return figs
-    if all(v is None for v in (label_size, spot_opacity)):
+    if all(v is None for v in (label_size, spot_opacity, marker_size, label_positions)):
         return figs
     out = []
     for name, fig in figs:
         fig = copy.deepcopy(fig)  # 保持中の figure は壊さない
         # ★ ver66.0: サイズ系スライダーの撤去により、通常タイルと H&E タイルで
         #   分けて適用する必要が無くなった（不透明度は元から共通）。
-        apply_display_overrides(fig, label_size=label_size,
-                                spot_opacity=spot_opacity,
-                                kinds=("msi", "hne"))
+        if kind == "umap":
+            # ★ ver66.3: UMAPもクライアント更新になるため、保存クリック時の
+            # 設定を使う。別コールバックの設定保存完了を待つ必要はない。
+            apply_umap_display_overrides(
+                fig, marker_size=marker_size, label_size=label_size,
+                label_positions=label_positions)
+        else:
+            apply_display_overrides(fig, label_size=label_size,
+                                    spot_opacity=spot_opacity,
+                                    kinds=("msi", "hne"))
         out.append((name, fig))
     return out
 
 
+def _umap_figure_for_export(fig, marker_size, label_size, label_positions=None):
+    """★ ver66.3: 統合図のfigure Stateがrestyle前でも保存は現在のサイズにする。"""
+    import copy
+    from app.utils.display_helpers import apply_umap_display_overrides
+
+    return apply_umap_display_overrides(
+        copy.deepcopy(fig), marker_size=marker_size, label_size=label_size,
+        label_positions=label_positions)
+
+
 def _get_feature_export_figures(session_id, rds_path, *,
-                                colorscale=None):
+                                colorscale=None, view_id=None):
     """Feature Plot 用。clientside restyle した見た目をサーバ側にも掛ける (ver51.3)。
 
     Spatial 版 (`_get_export_figures`) と役割は同じだが、対象トレースの見つけ方が
@@ -105,7 +125,8 @@ def _get_feature_export_figures(session_id, rds_path, *,
     from app.callbacks.interactive_callbacks import get_export_figures
     from app.utils.display_helpers import apply_feature_display_overrides
 
-    figs = get_export_figures("feature", session_id, rds_path)
+    view = {"view_id": view_id} if view_id else {}
+    figs = get_export_figures("feature", session_id, rds_path, **view)
     if not figs:
         return figs
     if not colorscale:
@@ -321,13 +342,22 @@ _BATCH_OUTPUTS = [
     [State("interactive_umap_plot", "figure"),
      State("umap_display_mode", "value"),
      State("session_id_store", "data"),
-     State("seurat_rds_path_store", "data")],
+     State("seurat_rds_path_store", "data"),
+     State("umap_marker_size", "value"),
+     State("umap_label_size", "value"),
+     State("accumulated_label_positions", "data"),
+     State("interactive_view_id", "data")],
     prevent_initial_call=True,
 )
-def cb_batch_save_umap(n_clicks, umap_fig, display_mode, session_id, rds_path):
+def cb_batch_save_umap(n_clicks, umap_fig, display_mode, session_id, rds_path,
+                       marker_size=None, label_size=None, accumulated_positions=None,
+                       view_id=None):
     if not n_clicks:
         raise PreventUpdate
-    per_sample_figs = _get_export_figures("umap", session_id, rds_path)
+    per_sample_figs = _get_export_figures(
+        "umap", session_id, rds_path,
+        marker_size=marker_size, label_size=label_size,
+        label_positions=accumulated_positions, view_id=view_id)
 
     if display_mode == "per_sample" and per_sample_figs:
         figures = per_sample_figs
@@ -335,7 +365,8 @@ def cb_batch_save_umap(n_clicks, umap_fig, display_mode, session_id, rds_path):
     elif _figure_has_content(umap_fig):
         # ver56.5 (C10-5): 空の figure も truthy なので、以前はここを素通りして
         # 枠線だけの真っ白な PNG が UMAP_integrated.png として ZIP に入っていた。
-        figures = [("UMAP_integrated", umap_fig)]
+        figures = [("UMAP_integrated", _umap_figure_for_export(
+            umap_fig, marker_size, label_size, accumulated_positions))]
         w, h, s = _INTEGRATED_W, _INTEGRATED_H, _INTEGRATED_SCALE
     else:
         return _nothing_to_save()
@@ -399,14 +430,15 @@ def cb_batch_save_spatial(n_clicks, session_id, rds_path,
      State("seurat_rds_path_store", "data"),
      # ver51.3: 配色は clientside restyle で画面だけ変わっているため、
      # サーバ保持の figure は操作前の値のまま。保存直前に同じ変換を掛ける。
-     State("feature_colorscale", "value")],
+     State("feature_colorscale", "value"),
+     State("interactive_view_id", "data")],
     prevent_initial_call=True,
 )
-def cb_batch_save_feature(n_clicks, session_id, rds_path, colorscale=None):
+def cb_batch_save_feature(n_clicks, session_id, rds_path, colorscale=None, view_id=None):
     if not n_clicks:
         raise PreventUpdate
     feature_figs = _get_feature_export_figures(
-        session_id, rds_path, colorscale=colorscale)
+        session_id, rds_path, colorscale=colorscale, view_id=view_id)
 
     if not feature_figs:
         return _nothing_to_save()
@@ -611,22 +643,32 @@ def cb_set_thumbnail_spatial(n_clicks, project_id, refresh, session_id, rds_path
      State("interactive_project_select", "value"),
      State("project_list_refresh", "data"),
      State("session_id_store", "data"),
-     State("seurat_rds_path_store", "data")],
+     State("seurat_rds_path_store", "data"),
+     State("umap_marker_size", "value"),
+     State("umap_label_size", "value"),
+     State("accumulated_label_positions", "data"),
+     State("interactive_view_id", "data")],
     prevent_initial_call=True,
 )
 def cb_set_thumbnail_umap(n_clicks, umap_fig,
                           display_mode, project_id, refresh,
-                          session_id, rds_path):
+                          session_id, rds_path,
+                          marker_size=None, label_size=None, accumulated_positions=None,
+                          view_id=None):
     if not n_clicks:
         raise PreventUpdate
-    per_sample_figs = _get_export_figures("umap", session_id, rds_path)
+    per_sample_figs = _get_export_figures(
+        "umap", session_id, rds_path,
+        marker_size=marker_size, label_size=label_size,
+        label_positions=accumulated_positions, view_id=view_id)
     # 表示モードに応じて選択: per_sample なら 1 枚目、それ以外は統合 UMAP
     if display_mode == "per_sample" and per_sample_figs:
         figs = per_sample_figs
     elif _figure_has_content(umap_fig):
         # ver56.5 (C10-5): 空の figure も truthy。以前はここを素通りして
         # 真っ白な PNG でサムネを上書きし、しかも成功メッセージを出していた。
-        figs = [("UMAP_integrated", umap_fig)]
+        figs = [("UMAP_integrated", _umap_figure_for_export(
+            umap_fig, marker_size, label_size, accumulated_positions))]
     else:
         return True, "UMAP プロットが見つかりません", "danger", no_update
     # ver3.15: サムネ用に小さい解像度で kaleido を呼ぶ (5-10× 高速化)

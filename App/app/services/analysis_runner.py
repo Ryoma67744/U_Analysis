@@ -11,11 +11,14 @@ import shutil
 import signal
 import subprocess
 import threading
+import time
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from app.config import R_HELPERS_DIR, RSCRIPT_PATH
+from app.services.analysis_log import get_log_snapshot, release_log_snapshot
 
 # PR-H3 C2: R subprocess の wallclock timeout (秒)。0 で無効化。
 # 巨大データロード時の OOM / 無限ループ等で 1 ユーザーが全リソースを
@@ -1360,13 +1363,49 @@ def get_analysis_log_markers(log_file: str) -> str:
 
     返すのはマーカー行だけなので、後段の正規表現が舐める量は行数に比例しない。
     """
-    try:
-        lines = Path(log_file).read_text(encoding="utf-8").splitlines()
-    except Exception as e:  # noqa: BLE001 — ログが読めないだけで進捗を止めない
-        logger.debug("ログのマーカー行取得に失敗: %s", e)
-        return ""
-    return "\n".join(
-        ln for ln in lines if ln.lstrip().startswith(_PROGRESS_MARKER_PREFIXES))
+    # ★ ver66.3: 全期間のマーカーを保持し、通常の監視は追記だけを読む。
+    return get_log_snapshot(log_file).markers
+
+
+_output_count_cache = OrderedDict()
+_output_count_lock = threading.Lock()
+# 2秒の監視5回に1回はログ出力が無くても件数を更新する。終了時は待たない。
+_OUTPUT_COUNT_INTERVAL = 10.0
+
+
+def get_analysis_output_count(output_dir, generation="", force=False):
+    """表示用件数を短時間だけ再利用し、終了確認では必ず再走査する。"""
+    if not output_dir:
+        return 0
+    key = (str(Path(output_dir).absolute()), str(generation))
+    with _output_count_lock:
+        cached = _output_count_cache.get(key)
+        now = time.monotonic()
+        if cached and not force and now - cached[0] < _OUTPUT_COUNT_INTERVAL:
+            return cached[1]
+        # ★ ver66.3: 同じ木を拡張子ごとに3回走査していたため、1回で集計する。
+        count = 0
+        for _, dirs, files in os.walk(output_dir):
+            for name in dirs + files:
+                suffix = Path(name).suffix
+                if os.name == "nt":
+                    suffix = suffix.lower()
+                if suffix in (".png", ".csv", ".rds"):
+                    count += 1
+        _output_count_cache[key] = (time.monotonic(), count)
+        _output_count_cache.move_to_end(key)
+        while len(_output_count_cache) > 8:
+            _output_count_cache.popitem(last=False)
+        return count
+
+
+def release_analysis_monitor(log_file, output_dir, generation=""):
+    """終了したジョブの監視キャッシュを解放する。"""
+    release_log_snapshot(log_file, generation)
+    if output_dir:
+        key = (str(Path(output_dir).absolute()), str(generation))
+        with _output_count_lock:
+            _output_count_cache.pop(key, None)
 
 
 def format_log_lines_styled(log_text: str, search: str = "",
