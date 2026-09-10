@@ -111,6 +111,45 @@ def _read_csv_rows(path: Path) -> list:
     return rows
 
 
+def _named_format_from_header(path: Path) -> Optional[bool]:
+    """先頭論理レコードだけで新形式を判定。読込上限を超えたら判定を保留する。"""
+    # ★ ver66.3: 従来は変換不要の正規 .txt も全強度を文字列リストにした。
+    # 区切り推定は同じ10物理行、形式判定は同じCSV論理レコードを使う。
+    # 64 Ki文字は軽量判定の資源上限であり、対応形式を制限する値ではない。
+    # 長大・不正なヘッダは従来の全文経路に戻して既存の扱いを維持する。
+    limit = 64 * 1024
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
+            head = []
+            remaining = limit
+            for _ in range(10):
+                line = f.readline(remaining + 1)
+                if len(line) > remaining:
+                    return None
+                if not line:
+                    break
+                head.append(line)
+                remaining -= len(line)
+            delim = _sniff_delimiter("".join(head))
+            f.seek(0)
+
+            def bounded_lines():
+                remaining = limit
+                while True:
+                    line = f.readline(remaining + 1)
+                    if len(line) > remaining:
+                        raise OverflowError("DESI header probe limit")
+                    if not line:
+                        return
+                    remaining -= len(line)
+                    yield line
+
+            header = next(csv.reader(bounded_lines(), delimiter=delim), [])
+            return _is_named_format([header])
+    except (OSError, csv.Error, OverflowError):
+        return None
+
+
 def _cell_to_str(v) -> str:
     """Excel セル値を、桁落ち・指数表記を避けつつ文字列化する。"""
     if v is None:
@@ -321,6 +360,8 @@ def normalize_desi_txt(txt_path) -> bool:
     if not txt_path.is_file():
         return False
     try:
+        if _named_format_from_header(txt_path) is False:
+            return False
         rows = _read_csv_rows(txt_path)  # 区切り自動判定 (tab/カンマ両対応)
     except Exception as e:
         logger.warning("DESI .txt 読み込みに失敗 (%s): %s", txt_path.name, e)
