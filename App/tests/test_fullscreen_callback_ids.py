@@ -82,6 +82,11 @@ def _component_ids(node):
 
 def _body_builder():
     """`fullscreen_modal_body` の children を返す関数を見つける。"""
+    # ★ ver66.3: 種類別 callback とブラウザの旧応答検査を経由するようになった。
+    # 共通 builder の実際の分岐を検査し、callback の分離で検査を空振りさせない。
+    for node in ast.walk(_tree()):
+        if isinstance(node, ast.FunctionDef) and node.name == "toggle_fullscreen":
+            return node
     for node in ast.walk(_tree()):
         if not isinstance(node, ast.FunctionDef):
             continue

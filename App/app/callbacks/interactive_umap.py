@@ -13,7 +13,7 @@ import numpy as np
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
 from dash import (Input, Output, State, callback, ctx, no_update, html, dcc,
-                  ALL)
+                  ALL, clientside_callback, ClientsideFunction)
 from dash.exceptions import PreventUpdate
 
 from app.config import HIGHLIGHT_GRAY
@@ -65,6 +65,34 @@ def _rounded_umap(df):
     return df.assign(UMAP_1=rx, UMAP_2=ry)
 
 
+def _add_umap_trace(fig, trace, *, role, delta):
+    """★ ver66.3: hover用metaを維持し、外観だけの更新対象を別に記録する。
+
+    一律のrestyleでは強調点・灰色背景の差や凡例/下書きの固定サイズを失う。
+    Pythonの保存処理とJSが同じ役割表を読むことで、画面と保存を一致させる。
+    """
+    fig.add_trace(trace)
+    meta = dict(fig.layout.meta or {})
+    style = dict(meta.get("umap_style") or {})
+    markers = list(style.get("markers") or [])
+    markers.append({"index": len(fig.data) - 1, "role": role, "delta": delta})
+    style["markers"] = markers
+    meta.update(kind="umap", umap_style=style)
+    fig.update_layout(meta=meta)
+
+
+def _add_umap_label(fig, cluster_id, **kwargs):
+    """★ ver66.3: 改名後の表示名ではなく実IDで、保存時のラベル移動を対応づける。"""
+    fig.add_annotation(name="umap_cluster_label", **kwargs)
+    meta = dict(fig.layout.meta or {})
+    style = dict(meta.get("umap_style") or {})
+    labels = list(style.get("labels") or [])
+    labels.append({"index": len(fig.layout.annotations) - 1, "cluster": str(cluster_id)})
+    style["labels"] = labels
+    meta.update(kind="umap", umap_style=style)
+    fig.update_layout(meta=meta)
+
+
 def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                                 show_legend, show_labels, title=None,
                                 marker_size=2, exclude_clusters=None,
@@ -104,17 +132,17 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
         highlight_set = set(str(c) for c in highlight_clusters)
         mask_bg = ~df["Cluster"].astype(str).isin(highlight_set)
         if mask_bg.any():
-            fig.add_trace(go.Scattergl(
+            _add_umap_trace(fig, go.Scattergl(
                 x=df.loc[mask_bg, "UMAP_1"],
                 y=df.loc[mask_bg, "UMAP_2"],
                 mode="markers",
                 marker=dict(size=max(1, marker_size - 1), color=HIGHLIGHT_GRAY, opacity=bg_opacity),
                 name="Other", showlegend=False, hoverinfo="skip",
-            ))
+            ), role="background", delta=-1)
         for cl in highlight_clusters:
             mask = df["Cluster"].astype(str) == str(cl)
             if mask.any():
-                fig.add_trace(go.Scattergl(
+                _add_umap_trace(fig, go.Scattergl(
                     x=df.loc[mask, "UMAP_1"],
                     y=df.loc[mask, "UMAP_2"],
                     mode="markers",
@@ -125,18 +153,18 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                     # ver46.1: 同一文字列を点数ぶん並べた配列だった。Plotly は
                     # スカラーを全点にブロードキャストするので表示は変わらない。
                     meta=str(cl),
-                ))
+                ), role="highlight", delta=1)
     else:
         # 凡例ダブルクリック時に他クラスタを灰色で残すための背景 trace。
         # showlegend=False のため Plotly のダブルクリック操作対象外で、
         # 色付き trace が visible=False になっても下の灰色背景が残る。
-        fig.add_trace(go.Scattergl(
+        _add_umap_trace(fig, go.Scattergl(
             x=df["UMAP_1"], y=df["UMAP_2"],
             mode="markers",
             marker=dict(size=marker_size, color=HIGHLIGHT_GRAY, opacity=0.2),
             showlegend=False, hoverinfo="skip",
             name="_background_grey",
-        ))
+        ), role="background", delta=0)
         color_col = color_by if color_by in df.columns else "Cluster"
         categories = sorted(df[color_col].unique(), key=_cluster_sort_key)
         # ★ ver51.9 / C-2: 色は **除外前** の母集団で決める（上と同じ理由）。
@@ -149,7 +177,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
         for cat in categories:
             mask = df[color_col] == cat
             rank = _cluster_sort_key(cat)[0] if str(cat).isdigit() else 1000
-            fig.add_trace(go.Scattergl(
+            _add_umap_trace(fig, go.Scattergl(
                 x=df.loc[mask, "UMAP_1"],
                 y=df.loc[mask, "UMAP_2"],
                 mode="markers",
@@ -162,7 +190,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                 # "Cluster"/"Sample" の固定値なので埋め込みのままで安全。
                 meta=str(cat),
                 hovertemplate=f"{color_col}: " + "%{meta}<br>%{text}<extra></extra>",
-            ))
+            ), role="point", delta=0)
 
     if show_labels:
         centroids = df.groupby("Cluster").agg(
@@ -174,7 +202,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
         for _, row in centroids.iterrows():
             cl_str = str(row["Cluster"])
             pos = (saved_positions or {}).get(cl_str, {})
-            fig.add_annotation(
+            _add_umap_label(fig, cl_str,
                 x=pos.get("x", row["cx"]),
                 y=pos.get("y", row["cy"]),
                 text=_cluster_display_name(cl_str, cluster_name_map),
@@ -206,12 +234,12 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
     fig.update_layout(**layout_opts)
     # ver27.0: ポリゴン下書きの専用オーバーレイ trace（常に最後＝data[-1]）。
     # 空で追加し、interactive_loupe の umap_polygon_overlay が Patch で頂点を流し込む。
-    fig.add_trace(go.Scattergl(
+    _add_umap_trace(fig, go.Scattergl(
         x=[], y=[], mode="lines+markers", name="_umap_poly_draft",
         line=dict(color="#d6336c", width=2),
         marker=dict(color="#d6336c", size=7, symbol="circle"),
         showlegend=False, hoverinfo="skip", uid="umap_poly_draft",
-    ))
+    ), role="draft", delta=None)
     return fig
 
 
@@ -260,47 +288,47 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
             mask_hl = df_s["Cluster"].astype(str).isin(hl_set)
             mask_bg_s = ~mask_hl
             if mask_bg_s.any():
-                fig.add_trace(go.Scattergl(
+                _add_umap_trace(fig, go.Scattergl(
                     x=df_s.loc[mask_bg_s, "UMAP_1"],
                     y=df_s.loc[mask_bg_s, "UMAP_2"],
                     mode="markers",
                     marker=dict(size=marker_size, color=HIGHLIGHT_GRAY, opacity=0.3),
                     name="Other", showlegend=False, hoverinfo="skip",
-                ))
+                ), role="background", delta=0)
             for cl in highlight_clusters:
                 if str(cl) in legend_hidden_set:
                     continue  # 凡例で灰色化 → 色付き trace を描かない（灰色背景は残る）
                 mask_cl = df_s["Cluster"].astype(str) == str(cl)
                 if mask_cl.any():
-                    fig.add_trace(go.Scattergl(
+                    _add_umap_trace(fig, go.Scattergl(
                         x=df_s.loc[mask_cl, "UMAP_1"],
                         y=df_s.loc[mask_cl, "UMAP_2"],
                         mode="markers",
                         marker=dict(size=marker_size + 1, color=color_map.get(str(cl), "#999999")),
                         name=_cluster_display_name(cl, cluster_name_map), showlegend=False,
                         legendgroup=_cluster_display_name(cl, cluster_name_map),
-                    ))
+                    ), role="highlight", delta=1)
         else:
             # 凡例ダブルクリック時に他クラスタを灰色で残すための背景 trace
-            fig.add_trace(go.Scattergl(
+            _add_umap_trace(fig, go.Scattergl(
                 x=df_s["UMAP_1"], y=df_s["UMAP_2"],
                 mode="markers",
                 marker=dict(size=marker_size, color=HIGHLIGHT_GRAY, opacity=0.2),
                 showlegend=False, hoverinfo="skip",
                 name="_background_grey",
-            ))
+            ), role="background", delta=0)
             for cl in sorted(df_s["Cluster"].unique(), key=_cluster_sort_key):
                 if str(cl) in legend_hidden_set:
                     continue  # 凡例で灰色化 → 色付き trace を描かない（灰色背景は残る）
                 mask_cl = df_s["Cluster"] == cl
-                fig.add_trace(go.Scattergl(
+                _add_umap_trace(fig, go.Scattergl(
                     x=df_s.loc[mask_cl, "UMAP_1"],
                     y=df_s.loc[mask_cl, "UMAP_2"],
                     mode="markers",
                     marker=dict(size=marker_size, color=color_map.get(str(cl), "#999999")),
                     name=_cluster_display_name(cl, cluster_name_map), showlegend=False,
                     legendgroup=_cluster_display_name(cl, cluster_name_map),
-                ))
+                ), role="point", delta=0)
 
         # 凡例用ダミートレース（出力PNG用）。この図に存在するクラスタは色付き、
         # 欠番は「空白スロット」(透明マーカー＋空白名)で位置を保持＝全図で番号の縦位置がそろう。
@@ -310,20 +338,20 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
             for cl in sorted(df["Cluster"].unique(), key=_cluster_sort_key):
                 rank = _cluster_sort_key(cl)[0] if str(cl).isdigit() else 1000
                 if str(cl) in present:
-                    fig.add_trace(go.Scattergl(
+                    _add_umap_trace(fig, go.Scattergl(
                         x=[None], y=[None], mode="markers",
                         marker=dict(size=10, color=color_map.get(str(cl), "#999999")),
                         name=_cluster_display_name(cl, cluster_name_map),
                         showlegend=True, legendrank=rank,
                         legendgroup=_cluster_display_name(cl, cluster_name_map),
-                    ))
+                    ), role="legend", delta=None)
                 else:
-                    fig.add_trace(go.Scattergl(
+                    _add_umap_trace(fig, go.Scattergl(
                         x=[None], y=[None], mode="markers",
                         marker=dict(size=10, color="rgba(0,0,0,0)"),
                         name=" ", showlegend=True, legendrank=rank,
                         legendgroup=f"_blank_{cl}",
-                    ))
+                    ), role="legend", delta=None)
 
         if show_labels:
             sample_pos = (saved_positions or {}).get(s, {})
@@ -336,7 +364,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
             for _, row in centroids.iterrows():
                 cl_str = str(row["Cluster"])
                 pos = sample_pos.get(cl_str, {})
-                fig.add_annotation(
+                _add_umap_label(fig, cl_str,
                     x=pos.get("x", row["cx"]),
                     y=pos.get("y", row["cy"]),
                     text=_cluster_display_name(cl_str, cluster_name_map),
@@ -358,6 +386,13 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
             # ver46.1: 見た目だけの変更ではズーム/パンを保持する。
             uirevision=(f"{uirevision}|{s}" if uirevision else None),
         )
+
+        # ★ ver66.3: 表示名は重複し得るため、保存時のラベル位置は実Sample IDで結合する。
+        _meta = dict(fig.layout.meta or {})
+        _style = dict(_meta.get("umap_style") or {})
+        _style["sample"] = str(s)
+        _meta["umap_style"] = _style
+        fig.update_layout(meta=_meta)
 
         # 出力(一括保存/サムネ)は各図に凡例を残す → 先にスナップショット。
         if collect_figures is not None:
@@ -422,20 +457,20 @@ def _build_umap_facet_graphs(df, facets, color_map, marker_size=2,
             mask = np.asarray(sel)
         fig = go.Figure()
         # 全体を淡灰で背景表示（位置の文脈を保つ）
-        fig.add_trace(go.Scattergl(
+        _add_umap_trace(fig, go.Scattergl(
             x=x_all, y=y_all, mode="markers",
             marker=dict(size=marker_size, color=HIGHLIGHT_GRAY, opacity=0.15),
-            showlegend=False, hoverinfo="skip", name="_bg"))
+            showlegend=False, hoverinfo="skip", name="_bg"), role="background", delta=0)
         sub = df[mask]
         for cl in sorted(sub["Cluster"].unique(), key=_cluster_sort_key):
             if str(cl) in legend_hidden_set:
                 continue  # 凡例で灰色化 → 色付き trace を描かない（灰色背景は残る）
             m2 = (sub["Cluster"] == cl)
-            fig.add_trace(go.Scattergl(
+            _add_umap_trace(fig, go.Scattergl(
                 x=sub.loc[m2, "UMAP_1"], y=sub.loc[m2, "UMAP_2"], mode="markers",
                 marker=dict(size=marker_size + 1, color=color_map.get(str(cl), "#999999")),
                 name=_cluster_display_name(cl, cluster_name_map), showlegend=False,
-                legendgroup=_cluster_display_name(cl, cluster_name_map)))
+                legendgroup=_cluster_display_name(cl, cluster_name_map)), role="highlight", delta=1)
         fig.update_layout(
             margin=dict(l=40, r=10, t=28, b=40),
             title=dict(text=f"{label} ({int(mask.sum())})", font=dict(size=12), x=0.5),
@@ -506,6 +541,7 @@ def _get_merged_label_positions(accumulated_positions=None,
 # UMAP プロット — コールバック
 # ---------------------------------------------------------------------------
 
+# ★ ver66.3: 点/文字サイズはStateにし、下のクライアント更新で座標の再送を省く。
 @callback(
     Output("interactive_umap_plot", "figure"),
     [Input("umap_color_by", "value"),
@@ -513,9 +549,9 @@ def _get_merged_label_positions(accumulated_positions=None,
      Input("umap_show_legend", "value"),
      Input("umap_show_labels", "value"),
      Input("umap_display_mode", "value"),
-     Input("umap_marker_size", "value"),
+     State("umap_marker_size", "value"),
      Input("umap_exclude_cluster", "value"),
-     Input("umap_label_size", "value"),
+     State("umap_label_size", "value"),
      Input("seurat_rds_path_store", "data"),
      Input("fullscreen_closed_trigger", "data"),
      Input("custom_color_map_store", "data"),
@@ -543,7 +579,7 @@ def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
         #   ここで記録せずに抜けると、記録は「開」のまま据え置かれ、
         #   開き直したときに「変化なし」と誤判定されて再描画がスキップされる
         #   （畳んでいる間の改名・色変更が画面にも一括保存にも反映されない）。
-        accordion_record_closed("acc_umap", session_id, rds_path)
+        accordion_record_closed("acc_umap", session_id, rds_path, consumer="integrated")
         return no_update
     # ver46.1: 他セクションの開閉だけで統合 UMAP を作り直さない
     # ★ ver51.9 / C-3: 節 id は `acc_umap`。`acc_umap_integrated` は実在せず、
@@ -552,7 +588,7 @@ def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
     #   ただし当時の修正は綴りを直しただけで、上記の「閉状態を記録しない」
     #   問題は残っていたため、症状（開き直しても古いまま）は変わっていなかった。
     if accordion_toggle_is_noop("acc_umap", session_id, rds_path,
-                                active_items, ctx.triggered_id):
+                                active_items, ctx.triggered_id, consumer="integrated"):
         return no_update
     _set_active_key(rds_path)
     if display_mode == "per_sample":
@@ -638,9 +674,9 @@ def toggle_merge_controls(_rds_path, _fs_trigger):
     [Input("umap_display_mode", "value"),
      Input("umap_highlight_cluster", "value"),
      Input("umap_show_labels", "value"),
-     Input("umap_marker_size", "value"),
+     State("umap_marker_size", "value"),
      Input("umap_exclude_cluster", "value"),
-     Input("umap_label_size", "value"),
+     State("umap_label_size", "value"),
      Input("seurat_rds_path_store", "data"),
      Input("umap_show_legend", "value"),
      Input("sample_name_map_store", "data"),
@@ -653,14 +689,16 @@ def toggle_merge_controls(_rds_path, _fs_trigger):
      Input("umap_legend_hidden_store", "data")],
     [State("accumulated_label_positions", "data"),
      State("selection_groups_store", "data"),
-     State("session_id_store", "data")],
+     State("session_id_store", "data"),
+     # ★ ver66.3: Cookieが同じ2タブでも保存図を混ぜない。IDの初期化完了時も描く。
+     Input("interactive_view_id", "data")],
 )
 def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
                             marker_size, exclude_clusters, label_size, rds_path,
                             show_legend, name_map, _fs_trigger, custom_colors,
                             rows, cluster_name_map, active_items,
                             facet_by, legend_hidden, accumulated_positions,
-                            selection_groups, session_id=None):
+                            selection_groups, session_id=None, view_id=None):
     """表示モード「サンプル別」(=分割表示) の場合、facet_by 基準で分割表示する。"""
     from app.callbacks.interactive_callbacks import (
         _interactive_data, _set_active_key, accordion_toggle_is_noop,
@@ -668,18 +706,19 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
     active_list = active_items if isinstance(active_items, list) else ([active_items] if active_items else [])
     if "acc_umap" not in active_list:
         # ★ ver56.5 (§4.3 / C09-1): 閉状態を記録してから抜ける
-        accordion_record_closed("acc_umap", session_id, rds_path)
+        accordion_record_closed("acc_umap", session_id, rds_path, consumer="facet")
         return no_update
     # ver46.1: 他セクションの開閉だけで全図を作り直さない
     # ver51.9 / C-3: 同上（`acc_umap_facet` も実在しない）
     if accordion_toggle_is_noop("acc_umap", session_id, rds_path,
-                                active_items, ctx.triggered_id):
+                                active_items, ctx.triggered_id, consumer="facet"):
         return no_update
     _set_active_key(rds_path)
 
     def _finish(children, fig_dicts):
         """ver46.1: 一括保存/サムネ用 figure はサーバ側に保持し、ブラウザへは送らない。"""
-        set_export_figures("umap", session_id, rds_path, fig_dicts)
+        view = {"view_id": view_id} if view_id else {}
+        set_export_figures("umap", session_id, rds_path, fig_dicts, **view)
         return children
 
     if display_mode != "per_sample":
@@ -795,3 +834,25 @@ def save_umap_display_settings(marker_size, label_size, show_labels,
         "color_by": color_by or "Cluster",
     })
     return no_update
+
+
+# ★ ver66.3: 通常図と全画面は独立した表示設定を持つ。生成直後の図にも
+# 最新設定を再適用し、閉中の変更や古い描画応答でサイズが戻るのを防ぐ。
+# titleは副作用更新用の出力であり、巨大なfigure自体は返さない。
+clientside_callback(
+    ClientsideFunction(namespace="umap_restyle", function_name="normal"),
+    Output("umap_per_sample_container", "title"),
+    [Input("umap_marker_size", "value"),
+     Input("umap_label_size", "value"),
+     Input("interactive_umap_plot", "figure"),
+     Input("umap_per_sample_container", "children")],
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="umap_restyle", function_name="fullscreen"),
+    Output("fs_umap_graph_container", "title"),
+    [Input("fs_umap_marker_size", "value"),
+     Input("fs_umap_label_size", "value"),
+     Input("fs_umap_graph_container", "children")],
+    prevent_initial_call=True,
+)

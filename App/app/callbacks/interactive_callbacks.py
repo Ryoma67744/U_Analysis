@@ -92,6 +92,7 @@ import time
 import uuid
 from collections import OrderedDict
 from app.utils.validation import coerce_count, coerce_number
+from app.utils.feature_geometry import new_feature_dataset, forget_feature_geometry
 
 # LRU 設定 (環境変数で調整可、デフォルトは 8 件 / 30 分)
 _MAX_PROJECT_STATES = int(os.environ.get("MAX_PROJECT_STATES", 8))
@@ -169,12 +170,15 @@ def _evict_stale_states_unsafe() -> int:
         if k != _DEFAULT_KEY and (now - ts) > _PROJECT_STATE_TTL_SEC
     ]
     for k in expired:
-        _project_states.pop(k, None)
+        old = _project_states.pop(k, None)
+        if old:
+            forget_feature_geometry(old.get("_feature_dataset"))
         _state_access_time.pop(k, None)
         removed += 1
     # 2. LRU eviction (上限超過分)
     while len(_project_states) > _MAX_PROJECT_STATES:
-        k, _ = _project_states.popitem(last=False)  # 最古
+        k, old = _project_states.popitem(last=False)  # 最古
+        forget_feature_geometry(old.get("_feature_dataset"))
         _state_access_time.pop(k, None)
         removed += 1
     return removed
@@ -228,7 +232,9 @@ def _drop_state(project_key: str | None = None) -> None:
     if not key:
         return
     with _state_lock:
-        _project_states.pop(key, None)
+        old = _project_states.pop(key, None)
+        if old:
+            forget_feature_geometry(old.get("_feature_dataset"))
     if _active_key_var.get() == key:
         _active_key_var.set(None)
 
@@ -244,7 +250,10 @@ class _InteractiveDataProxy:
         return _get_state()[key]
 
     def __setitem__(self, key, value):
-        _get_state()[key] = value
+        if key == "plot_data":
+            _publish_feature_dataset(value)
+        else:
+            _get_state()[key] = value
 
     def get(self, key, default=None):
         return _get_state().get(key, default)
@@ -253,7 +262,11 @@ class _InteractiveDataProxy:
         return key in _get_state()
 
     def update(self, *args, **kwargs):
-        _get_state().update(*args, **kwargs)
+        values = dict(*args, **kwargs)
+        if "plot_data" in values:
+            _publish_feature_dataset(values.pop("plot_data"), values)
+        else:
+            _get_state().update(values)
 
     def pop(self, key, *args):
         return _get_state().pop(key, *args)
@@ -284,6 +297,70 @@ class _InteractiveDataProxy:
 _interactive_data = _InteractiveDataProxy()
 
 
+def _publish_feature_dataset(plot_data, metadata=None, project_key=None):
+    """★ ver66.3: 版とデータを同時公開し、m/z処理途中の読込替えを検知する。"""
+    publication = new_feature_dataset(plot_data)
+    with _state_lock:
+        state = _get_state(project_key)
+        forget_feature_geometry(state.get("_feature_dataset"))
+        state.update(metadata or {})
+        state.update(plot_data=plot_data, _feature_dataset=publication)
+    return publication
+
+
+def get_feature_dataset(project_key=None):
+    """Feature処理は開始時に取得した一つの版を最後まで参照する。"""
+    with _state_lock:
+        state = _get_state(project_key)
+        publication = state.get("_feature_dataset")
+        # 旧APIで直接stateへ代入する拡張も、別オブジェクトなら新しい版にする。
+        if publication is None or publication.source is not state.get("plot_data"):
+            publication = _publish_feature_dataset(state.get("plot_data"), project_key=project_key)
+        return publication
+
+
+def set_feature_exports_if_current(dataset, session_id, rds_path, figures,
+                                   expected=None, view_id=None, request_sequence=None):
+    """★ ver66.3: 旧版の完了応答で、新版や作り直した殻の保存図を上書きしない。"""
+    with _state_lock:
+        if get_feature_dataset(rds_path) is not dataset:
+            return False
+        with _export_figures_lock:
+            key = _export_key("feature", session_id, rds_path, view_id)
+            if request_sequence is not None and _feature_request_sequences.get(key) != (
+                    dataset.revision, request_sequence):
+                return False
+            if expected is not None:
+                def generations(entries):
+                    return tuple((fd.get("layout", {}).get("meta") or {}).get("feature_generation")
+                                 for _name, fd in (entries or []))
+                # ★ ver66.3: 同じ殻の先行m/z差分によるlist差替えは許容する。
+                #   object identity CASでは遅く完了した最新m/zまで棄却していた。
+                if generations(_export_figures.get(key)) != generations(expected):
+                    return False
+            set_export_figures("feature", session_id, rds_path, figures, view_id)
+        return True
+
+
+def begin_feature_request(dataset, session_id, rds_path, view_id, sequence):
+    """★ ver66.3: ブラウザ発行の操作順で比較し、到着順の逆転も拒否する。"""
+    if sequence is None:
+        return True
+    with _state_lock:
+        if get_feature_dataset(rds_path) is not dataset:
+            return False
+        with _export_figures_lock:
+            key = _export_key("feature", session_id, rds_path, view_id)
+            prior = _feature_request_sequences.get(key)
+            if prior and prior[0] == dataset.revision and prior[1] > sequence:
+                return False
+            _feature_request_sequences[key] = (dataset.revision, sequence)
+            _feature_request_sequences.move_to_end(key)
+            while len(_feature_request_sequences) > _MAX_EXPORT_FIG_ENTRIES:
+                _feature_request_sequences.popitem(last=False)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # エクスポート用 figure のサーバ側保持 (ver46.1)
 # ---------------------------------------------------------------------------
@@ -304,19 +381,21 @@ _MAX_EXPORT_FIG_ENTRIES = int(os.environ.get("MAX_EXPORT_FIG_ENTRIES", 24))
 _EXPORT_FIG_TTL_SEC = int(os.environ.get("EXPORT_FIG_TTL_SEC", 30 * 60))
 _export_figures: "OrderedDict[tuple, list]" = OrderedDict()
 _export_figures_time: dict[tuple, float] = {}
-_export_figures_lock = threading.Lock()
+_export_figures_lock = threading.RLock()
+_feature_request_sequences = OrderedDict()
 
 
-def _export_key(kind: str, session_id, rds_path):
-    return (str(kind), str(session_id or "__nosession__"), str(rds_path or ""))
+def _export_key(kind: str, session_id, rds_path, view_id=None):
+    key = (str(kind), str(session_id or "__nosession__"), str(rds_path or ""))
+    return key + (str(view_id),) if view_id is not None else key
 
 
-def set_export_figures(kind: str, session_id, rds_path, figures) -> None:
+def set_export_figures(kind: str, session_id, rds_path, figures, view_id=None) -> None:
     """描画コールバックが作った (名前, figure dict) のリストをサーバ側に保持する。
 
     figures: [(name, fig_dict), ...]。空リストも「今は無い」として正しく保持する。
     """
-    key = _export_key(kind, session_id, rds_path)
+    key = _export_key(kind, session_id, rds_path, view_id)
     now = time.time()
     with _export_figures_lock:
         _export_figures[key] = figures
@@ -333,9 +412,9 @@ def set_export_figures(kind: str, session_id, rds_path, figures) -> None:
             _export_figures_time.pop(k, None)
 
 
-def get_export_figures(kind: str, session_id, rds_path) -> list:
+def get_export_figures(kind: str, session_id, rds_path, view_id=None) -> list:
     """保持済みの (名前, figure dict) リストを返す。無ければ空リスト。"""
-    key = _export_key(kind, session_id, rds_path)
+    key = _export_key(kind, session_id, rds_path, view_id)
     with _export_figures_lock:
         figs = _export_figures.get(key)
         if figs is not None:
@@ -363,8 +442,11 @@ _accordion_seen_lock = threading.Lock()
 _MAX_ACCORDION_SEEN = 256
 
 
-def _accordion_key(section: str, session_id, rds_path) -> tuple:
-    return (str(section), str(session_id or "__nosession__"), str(rds_path or ""))
+def _accordion_key(section: str, session_id, rds_path, consumer=None) -> tuple:
+    key = (str(section), str(session_id or "__nosession__"), str(rds_path or ""))
+    # ★ ver66.3: 同じ節を描く統合/分割UMAPが開閉記録を共有すると、先に呼ばれた
+    #   非表示側が再開イベントを消費する。実在する節IDを保ち、描画処理だけ区別する。
+    return key if consumer is None else (*key, str(consumer))
 
 
 def _accordion_remember(key: tuple, is_open: bool):
@@ -378,7 +460,7 @@ def _accordion_remember(key: tuple, is_open: bool):
     return prev
 
 
-def accordion_record_closed(section: str, session_id, rds_path) -> None:
+def accordion_record_closed(section: str, session_id, rds_path, *, consumer=None) -> None:
     """「今このセクションは閉じている」ことだけを記録する。
 
     ★ ver56.5 (デバッグ総点検 §4.3 / C09-1・C04-1):
@@ -391,11 +473,11 @@ def accordion_record_closed(section: str, session_id, rds_path) -> None:
 
       早期 return の直前でこれを呼び、閉状態を必ず残すこと。
     """
-    _accordion_remember(_accordion_key(section, session_id, rds_path), False)
+    _accordion_remember(_accordion_key(section, session_id, rds_path, consumer), False)
 
 
 def accordion_toggle_is_noop(section: str, session_id, rds_path,
-                             active_items, triggered_id) -> bool:
+                             active_items, triggered_id, *, consumer=None) -> bool:
     """accordion の開閉だけが理由の発火で、当該セクションの状態が不変なら True。
 
     True を返した呼び出し元は no_update を返してよい（＝再描画不要）。
@@ -403,7 +485,7 @@ def accordion_toggle_is_noop(section: str, session_id, rds_path,
     active_list = (active_items if isinstance(active_items, list)
                    else ([active_items] if active_items else []))
     is_open = section in active_list
-    prev = _accordion_remember(_accordion_key(section, session_id, rds_path),
+    prev = _accordion_remember(_accordion_key(section, session_id, rds_path, consumer),
                                is_open)
 
     # accordion 以外がトリガー → 通常の再描画（表示内容が変わっている）
@@ -918,15 +1000,14 @@ def load_stage_b_extract(trigger):
                     _load_error_alert(
                         f"抽出結果が空です（プロットデータを取得できませんでした）: {rds_path}"),
                     no_update)
+        feature_dataset = _publish_feature_dataset(result["plot_data"], {
+            "cluster_stats": result["cluster_stats"],
+            "features_list": result["features_list"],
+            "feature_annotations": result.get("feature_annotations") or {},
+            "meta": result["meta"], "rds_path": rds_path,
+            "cache_dir": result.get("cache_dir"), "method": integration_method,
+        }, rds_path)
         state = _get_state(rds_path)
-        state["plot_data"] = result["plot_data"]
-        state["cluster_stats"] = result["cluster_stats"]
-        state["features_list"] = result["features_list"]
-        state["feature_annotations"] = result.get("feature_annotations") or {}
-        state["meta"] = result["meta"]
-        state["rds_path"] = rds_path
-        state["cache_dir"] = result.get("cache_dir")
-        state["method"] = integration_method
         state.pop("_deg_data", None)
         state.pop("_calib_warning", None)
         _set_active_key(rds_path)
@@ -969,7 +1050,7 @@ def load_stage_b_extract(trigger):
         {"rds_path": rds_path, "method": integration_method,
          "result_folder": trigger["result_folder"], "n": trigger["n"],
          # 段 C・D がキャンセルを確認できるよう合図の識別子を引き継ぐ
-         "token": token},
+         "token": token, "dataset_revision": feature_dataset.revision},
     )
 
 
@@ -1111,7 +1192,7 @@ def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
         "設定を復元中…", 85, no_update, no_update,
         {"rds_path": rds_path, "method": integration_method,
          "result_folder": result_folder, "n": trigger["n"],
-         "token": token},   # 最終段 (D) までキャンセルの合図を引き継ぐ
+         "token": token, "dataset_revision": trigger.get("dataset_revision")},
     )
 
 

@@ -244,6 +244,57 @@ def apply_display_overrides(fig_dict, *, label_size=None,
 
 
 # ---------------------------------------------------------------------------
+# UMAPの外観設定とラベル位置を保存用の図へ反映する (ver66.3)
+# ---------------------------------------------------------------------------
+
+def apply_umap_display_overrides(fig_dict, *, marker_size=None, label_size=None,
+                                 label_positions=None):
+    """★ ver66.3: UMAPの画面用サイズだけを保存用のコピーへ反映する。
+
+    元の座標・hover用metaは変えない。ラベル位置は指定された場合のみ反映する。
+    凡例ダミーと選択ポリゴンは固定サイズのまま保持する。
+    assets/umap_restyle.jsと同じ役割表/サイズ式を使う。
+    """
+    if not isinstance(fig_dict, dict):
+        return fig_dict
+    layout = fig_dict.get("layout") or {}
+    meta = layout.get("meta") or {}
+    if not isinstance(meta, dict) or meta.get("kind") != "umap":
+        return fig_dict
+    data = fig_dict.get("data") or []
+    if marker_size is not None:
+        for rule in (meta.get("umap_style") or {}).get("markers") or []:
+            index = rule.get("index")
+            delta = rule.get("delta")
+            if (rule.get("role") not in ("point", "highlight", "background")
+                    or not isinstance(index, int) or not 0 <= index < len(data)
+                    or delta is None):
+                continue
+            data[index].setdefault("marker", {})["size"] = max(
+                1, float(marker_size) + float(delta))
+    if label_size is not None:
+        for annotation in layout.get("annotations") or []:
+            if annotation.get("name") == "umap_cluster_label":
+                annotation.setdefault("font", {})["size"] = float(label_size)
+    if label_positions:
+        style = meta.get("umap_style") or {}
+        sample = style.get("sample")
+        if sample is None:
+            positions = label_positions.get("umap_integrated") or {}
+        else:
+            positions = (label_positions.get("umap_per_sample") or {}).get(sample) or {}
+        annotations = layout.get("annotations") or []
+        for rule in style.get("labels") or []:
+            index = rule.get("index")
+            position = positions.get(rule.get("cluster")) or {}
+            if isinstance(index, int) and 0 <= index < len(annotations):
+                for axis in ("x", "y"):
+                    if axis in position:
+                        annotations[index][axis] = position[axis]
+    return fig_dict
+
+
+# ---------------------------------------------------------------------------
 # Feature Plot 用の見た目パラメータ後付け適用 (ver51.3)
 # ---------------------------------------------------------------------------
 # Spatial と同じ狙い（マーカーサイズ・配色をサーバで作り直さず restyle する）だが、

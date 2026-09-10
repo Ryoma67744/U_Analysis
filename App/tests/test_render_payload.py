@@ -835,13 +835,10 @@ def test_feature_plot_renders_webgl_and_stores_figures_serverside(
         dash_app, "feature_plot_container",
         # ver51.3: 配色は clientside restyle へ移したので State にある。
         # ★ ver66.0: marker_size は撤去したので State が 1 つ減った。
-        # Inputs(8): feature, sample, imin, imax, name_map, fs_trigger,
-        #            rows, show_compound
-        # States(6): colorscale, rds_path, cache_dir, rotation_store,
-        #            deg_data, session_id
-        args=["mz_100", "S1", None, None, {}, 0, 0, False,
-              "Plasma", [], rds_path, "/tmp/cache", {}, None, session_id],
-        triggered_prop="feature_select.value")
+        # ★ ver66.3: 殻/差分が同じ小要求Storeの操作番号と表示設定を受ける。
+        args=[{"feature": "mz_100", "sample": "S1", "view_id": "view-feature"},
+              "Plasma", [], rds_path, "/tmp/cache", None, session_id],
+        triggered_prop="feature_intensity_request.data")
 
     figs = _graph_figures(resp["feature_plot_container"]["children"],
                           id_type="feature_graph")
@@ -852,7 +849,7 @@ def test_feature_plot_renders_webgl_and_stores_figures_serverside(
         assert fig["layout"].get("uirevision"), "uirevision が設定されていない"
 
     # 一括保存用の figure はレスポンスではなくサーバ側に置かれる
-    stored = get_export_figures("feature", session_id, rds_path)
+    stored = get_export_figures("feature", session_id, rds_path, "view-feature")
     assert stored and stored[0][0].startswith("Feature_")
 
 
@@ -878,9 +875,10 @@ def test_feature_geometry_is_stable_across_intensity_range(
     def _fg_trace(imin):
         resp = _call_callback(
             dash_app, "feature_plot_container",
-            args=["mz_100", "S1", imin, None, {}, 0, 0, False,
-                  "Plasma", [], rds_path, "/tmp/cache", {}, None, "sess-mask"],
-            triggered_prop="feature_intensity_min.value")
+            args=[{"feature": "mz_100", "sample": "S1", "intensity_min": imin,
+                   "view_id": "view-feature"},
+                  "Plasma", [], rds_path, "/tmp/cache", None, "sess-mask"],
+            triggered_prop="feature_intensity_request.data")
         figs = _graph_figures(resp["feature_plot_container"]["children"],
                               id_type="feature_graph")
         # trace[0] は TIC 背景(全点)、trace[-1] が発現量オーバーレイ
@@ -961,10 +959,11 @@ def test_spatial_and_umap_callbacks_return_expected_output_counts(
 
     umap = _call_callback(
         dash_app, "umap_per_sample_container",
-        # Inputs(16) + States(3)
-        args=["per_sample", None, False, 2, None, 11, rds_path, True, {}, 0,
-              {}, 0, {}, ["acc_umap"], "Sample", [],
-              {}, {"groups": []}, "sess-umap"],
+        # ★ ver66.3: 点/文字サイズはStateへ移した。HTTPはInput群→State群、
+        # 関数呼出はDashのinputs_state_indicesが既存順へ並べ直す。
+        args=["per_sample", None, False, None, rds_path, True, {}, 0,
+              {}, 0, {}, ["acc_umap"], "Sample", [], "view-umap",
+              2, 11, {}, {"groups": []}, "sess-umap"],
         triggered_prop="umap_display_mode.value")
     assert set(umap) == {"umap_per_sample_container"}
     umap_figs = _graph_figures(umap["umap_per_sample_container"]["children"],
@@ -1077,7 +1076,7 @@ def test_perf_callbacks_are_registered_clientside(dash_app):
 
     expected = {
         "annotation_relayout_signal": ("relayout", "filter_annotations"),
-        "fs_annotation_relayout_signal": ("relayout", "filter_annotations"),
+        "fs_annotation_relayout_signal": ("fullscreen_router", "filter_annotations"),
     }
     found = {}
     restyle_fns = set()
@@ -1223,10 +1222,10 @@ def _feature_figs(dash_app, monkeypatch, colorscale):
     _df, rds_path = _install_synthetic_state(monkeypatch)
     resp = _call_callback(
         dash_app, "feature_plot_container",
-        args=["mz_100", "S1", None, None, {}, 0, 0, False,
-              colorscale, [], rds_path, "/tmp/cache", {}, None,
+        args=[{"feature": "mz_100", "sample": "S1", "view_id": "view-feature"},
+              colorscale, [], rds_path, "/tmp/cache", None,
               "sess-ovr"],
-        triggered_prop="feature_select.value")
+        triggered_prop="feature_intensity_request.data")
     return _graph_figures(resp["feature_plot_container"]["children"],
                           id_type="feature_graph")
 

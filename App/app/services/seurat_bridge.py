@@ -73,9 +73,11 @@ _FEATURE_COL_WAIT_SEC = float(os.environ.get("FEATURE_COL_WAIT_SEC", 120))
 
 
 def _parquet_file_sig(path: Path) -> tuple:
-    """(path, mtime_ns, size)。stat に失敗したら OSError を投げる。"""
+    """ファイルの更新検知用署名。stat に失敗したら OSError を投げる。"""
     st = path.stat()
-    return (str(path), st.st_mtime_ns, st.st_size)
+    # ★ ver66.3: 同サイズ・mtimeを維持した置換でも古いCellID/強度を再利用しない。
+    # 内容の完全同一性の証明ではないため、Feature側の行対応照合も維持する。
+    return (str(path), st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
 
 
 def _get_parquet_handle(expr_path: Path, key: tuple) -> tuple:

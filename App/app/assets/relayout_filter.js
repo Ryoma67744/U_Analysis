@@ -50,8 +50,10 @@ window.dash_clientside = window.dash_clientside || {};
             return false;
         }
         for (var k in rd) {
+            // ★ ver66.3: UMAP文字サイズのクライアント更新もfont.sizeの
+            // relayoutを発火する。実際の位置移動だけを保存処理へ送る。
             if (Object.prototype.hasOwnProperty.call(rd, k) &&
-                k.indexOf("annotations[") === 0) {
+                /^annotations\[\d+\]\.(x|y)$/.test(k)) {
                 return true;
             }
         }
