@@ -369,7 +369,7 @@ class TestWiredIntoTheCallback:
         import app.callbacks.analysis_callbacks as ac
         src = inspect.getsource(ac.update_progress)
         assert "_estimator.estimate(" in src
-        assert "get_analysis_log_markers" in src
+        assert "snapshot.markers" in src
         assert "step_current / step_total" not in src, (
             "等重量モデルが復活している")
 
