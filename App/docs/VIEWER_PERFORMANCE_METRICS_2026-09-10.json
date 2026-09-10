@@ -1,0 +1,265 @@
+{
+  "baseline_commit": "fcee345bd24df0dbf22d39b095f33008f6d9fb94",
+  "scope": "合成データによるサーバ処理の測定。ブラウザや解析全体の時間は含まない。",
+  "log": {
+    "unchanged": {
+      "baseline_median_seconds": 0.3192933719983557,
+      "updated_median_seconds": 0.00020383200171636418,
+      "updated_bytes_read": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "baseline_bytes_per_poll": 20200048
+    },
+    "append": {
+      "baseline_median_seconds": 0.34182760400290135,
+      "updated_median_seconds": 0.00022932499996386468,
+      "updated_bytes_read": [
+        537,
+        537,
+        537,
+        537,
+        537
+      ],
+      "baseline_bytes_per_poll": 20200298
+    },
+    "log_bytes": 10100149,
+    "outputs_equal": true,
+    "scope": "Synthetic log read and parse only; warm OS cache; five repetitions; no browser or R execution"
+  },
+  "desi_normalizer": {
+    "bytes": 27997277,
+    "times_seconds": {
+      "before": [
+        1.6131441309989896,
+        1.5348603269958403,
+        2.4399644260047353,
+        1.7992127879988402,
+        1.4242030209934455
+      ],
+      "after": [
+        0.0006995620060479268,
+        0.00037522999627981335,
+        0.00022308999905362725,
+        0.00018779699894366786,
+        0.0002559360000304878
+      ]
+    },
+    "median_seconds": {
+      "before": 1.6131441309989896,
+      "after": 0.0002559360000304878
+    },
+    "median_saving_seconds": 1.612888194998959,
+    "return_values": {
+      "before": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "after": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    "sha256_before": "93a0391d42f2fcd046ccb3864e26279d52e59ade9f9f277083362f11939e4d65",
+    "sha256_after": "93a0391d42f2fcd046ccb3864e26279d52e59ade9f9f277083362f11939e4d65",
+    "note": "同一合成正規DESI、旧新を交互に5回。normalizerのみ、実アプリの開始待ち全体ではない。"
+  },
+  "feature_patch_warm": [
+    {
+      "pixels_per_tile": 50000,
+      "tiles": 1,
+      "pixels_total": 50000,
+      "publication_s": 0.0013712809959542938,
+      "first_new_patch_s": 0.1939461440051673,
+      "old_s": [
+        0.06060216500191018,
+        0.03931150699645514,
+        0.04444501399848377,
+        0.049267068003246095,
+        0.05597504199977266
+      ],
+      "new_s": [
+        0.01658183999825269,
+        0.01844782800617395,
+        0.014460013997450005,
+        0.015587654001137707,
+        0.027668862996506505
+      ],
+      "old_median_s": 0.049267068003246095,
+      "new_median_s": 0.01658183999825269,
+      "saved_median_s": 0.032685228004993405,
+      "all_z_exact_equal": true,
+      "geometry_retained_bytes": 3203600,
+      "geometry_limit_bytes": 268435456,
+      "process_max_rss_kib": 250052
+    },
+    {
+      "pixels_per_tile": 100000,
+      "tiles": 6,
+      "pixels_total": 600000,
+      "publication_s": 0.06179962099849945,
+      "first_new_patch_s": 1.7892793450009776,
+      "old_s": [
+        0.8420426980010234,
+        0.7857878590002656,
+        0.797748621997016,
+        0.8473169040007633,
+        0.9213671620018431
+      ],
+      "new_s": [
+        0.18435581700032344,
+        0.20611876000475604,
+        0.169093142998463,
+        0.17696551800327143,
+        0.18521293300000252
+      ],
+      "old_median_s": 0.8420426980010234,
+      "new_median_s": 0.18435581700032344,
+      "saved_median_s": 0.6576868810006999,
+      "all_z_exact_equal": true,
+      "geometry_retained_bytes": 38431200,
+      "geometry_limit_bytes": 268435456,
+      "process_max_rss_kib": 619640
+    },
+    {
+      "pixels_per_tile": 100000,
+      "tiles": 20,
+      "pixels_total": 2000000,
+      "publication_s": 0.06667493299755733,
+      "first_new_patch_s": 6.17404726499808,
+      "old_s": [
+        5.116584235998744,
+        5.111122105001414,
+        4.9349188650012366,
+        5.329903625999577,
+        4.9587536309991265
+      ],
+      "new_s": [
+        0.7649736009989283,
+        0.6324438909941819,
+        0.6619281929961289,
+        0.722343647001253,
+        0.6495728039953974
+      ],
+      "old_median_s": 5.111122105001414,
+      "new_median_s": 0.6619281929961289,
+      "saved_median_s": 4.449193912005285,
+      "all_z_exact_equal": true,
+      "geometry_retained_bytes": 128104000,
+      "geometry_limit_bytes": 268435456,
+      "process_max_rss_kib": 1602060
+    }
+  ],
+  "feature_patch_first_call": [
+    {
+      "mode": "old",
+      "pixels": 600000,
+      "tiles": 6,
+      "publication_s": 2.3442000383511186e-05,
+      "first_callback_s": 2.32388463299867,
+      "publication_plus_callback_s": 2.3239080749990535,
+      "max_rss_kib": 542076,
+      "rep": 0
+    },
+    {
+      "mode": "new",
+      "pixels": 600000,
+      "tiles": 6,
+      "publication_s": 0.04422633400099585,
+      "first_callback_s": 1.902789207000751,
+      "publication_plus_callback_s": 1.947015541001747,
+      "max_rss_kib": 547552,
+      "rep": 0
+    },
+    {
+      "mode": "new",
+      "pixels": 600000,
+      "tiles": 6,
+      "publication_s": 0.04234299500240013,
+      "first_callback_s": 1.5283677839979646,
+      "publication_plus_callback_s": 1.5707107790003647,
+      "max_rss_kib": 546764,
+      "rep": 1
+    },
+    {
+      "mode": "old",
+      "pixels": 600000,
+      "tiles": 6,
+      "publication_s": 2.4052002117969096e-05,
+      "first_callback_s": 1.8459064939961536,
+      "publication_plus_callback_s": 1.8459305459982716,
+      "max_rss_kib": 539364,
+      "rep": 1
+    },
+    {
+      "mode": "old",
+      "pixels": 2000000,
+      "tiles": 20,
+      "publication_s": 8.798099588602781e-05,
+      "first_callback_s": 8.566661229000601,
+      "publication_plus_callback_s": 8.566749209996487,
+      "max_rss_kib": 1348712,
+      "rep": 0
+    },
+    {
+      "mode": "new",
+      "pixels": 2000000,
+      "tiles": 20,
+      "publication_s": 0.0800343939990853,
+      "first_callback_s": 5.295079215000442,
+      "publication_plus_callback_s": 5.375113608999527,
+      "max_rss_kib": 1346324,
+      "rep": 0
+    },
+    {
+      "mode": "new",
+      "pixels": 2000000,
+      "tiles": 20,
+      "publication_s": 0.15625978200114332,
+      "first_callback_s": 5.807348553003976,
+      "publication_plus_callback_s": 5.963608335005119,
+      "max_rss_kib": 1343780,
+      "rep": 1
+    },
+    {
+      "mode": "old",
+      "pixels": 2000000,
+      "tiles": 20,
+      "publication_s": 2.2918997274246067e-05,
+      "first_callback_s": 8.465248160995543,
+      "publication_plus_callback_s": 8.465271079992817,
+      "max_rss_kib": 1348212,
+      "rep": 1
+    }
+  ],
+  "normal_tests": {
+    "baseline": {
+      "passed": 2715,
+      "failed": 3,
+      "skipped": 51,
+      "deselected": 24,
+      "xfailed": 2
+    },
+    "candidate": {
+      "passed": 2875,
+      "failed": 3,
+      "skipped": 51,
+      "deselected": 30,
+      "xfailed": 2
+    },
+    "same_failures": [
+      "tests.test_job_registry.TestConcurrencyGuard::test_maintenance_tool_is_blocked_during_analysis",
+      "tests.test_job_registry.TestConcurrencyGuard::test_second_start_is_refused",
+      "tests.test_job_registry.TestConcurrencyGuard::test_simultaneous_starts_only_one_wins"
+    ]
+  }
+}
