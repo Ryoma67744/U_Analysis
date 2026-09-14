@@ -42,6 +42,7 @@ local({
          " App/Script/helpers/rds_io.R の配置を確認してください。")
   }
   source(helper_path, local = FALSE)
+  source(file.path(dirname(helper_path), "analysis_contract.R"), local = FALSE)
 })
 
 # ------------------------------------------------------------
@@ -143,6 +144,19 @@ V8_UMAP_DIMS_N <- NA
 #   NA / NULL なら v16 既定（FALSE / フィルタなし）＝従来挙動。
 V8_USE_ROI_AS_SAMPLE <- NA
 V8_ROI_FILTER <- NULL
+# ★ verNEXT: DB照合をパスの残存だけで有効にしない。通常解析と同じ明示値を渡す。
+V8_DB_ANNOTATION_ENABLED <- FALSE
+V8_MRM_FILE_PATH <- ""
+V8_ANALYSIS_SIGNATURE <- ""
+V8_SECTION_MANIFEST_PATH <- ""
+V8_UMAP_SEED <- NA
+V8_CLUSTER_DIMS_N <- NA
+V8_CLUSTER_K_PARAM <- NA
+V8_CLUSTER_METRIC <- ""
+V8_CLUSTER_ALGORITHM <- NA
+V8_CLUSTER_RESOLUTION_SINGLE <- NA
+V8_CLUSTER_RESOLUTION_HARMONY <- NA
+V8_CLUSTER_RESOLUTION_RPCA <- NA
 
 # マージスクリプトのパス（Python側から自動注入）
 MERGE_SCRIPT_PATH <- ""
@@ -383,7 +397,7 @@ replace_assign_line <- function(code_vec, var, new_rhs) {
     code_vec
   }
 
-  r_str <- function(x) paste0("\"", gsub("\\\\", "\\\\\\\\", x), "\"")
+  r_str <- function(x) encodeString(as.character(x), quote = '"')
 
   code <- replace_assign_line(code, "data_folder", r_str(data_folder))
   code <- replace_assign_line(code, "output_dir",  r_str(output_dir))
@@ -447,6 +461,19 @@ replace_assign_line <- function(code_vec, var, new_rhs) {
     code <- replace_assign_line(code, "ROI_FILTER",
       paste0("c(", paste(sprintf("\"%s\"", V8_ROI_FILTER), collapse = ", "), ")"))
   }
+
+  # ★ verNEXT: 再解析TXTには由来・切片・群の対応表を同梱する。
+  # 元ファイルのmanifestパスを一時TXTへ誤適用せず、復元済み画素メタデータを使用する。
+  code <- replace_assign_line(code, "SECTION_MANIFEST_PATH", r_str(""))
+  code <- replace_assign_line(code, "DB_ANNOTATION_ENABLED", if (isTRUE(V8_DB_ANNOTATION_ENABLED)) "TRUE" else "FALSE")
+  code <- replace_assign_line(code, "MRM_FILE_PATH", r_str(V8_MRM_FILE_PATH))
+  code <- replace_assign_line(code, "ANALYSIS_SIGNATURE", r_str(V8_ANALYSIS_SIGNATURE))
+  for (.key in c("UMAP_SEED", "CLUSTER_DIMS_N", "CLUSTER_K_PARAM", "CLUSTER_ALGORITHM",
+                 "CLUSTER_RESOLUTION_SINGLE", "CLUSTER_RESOLUTION_HARMONY", "CLUSTER_RESOLUTION_RPCA")) {
+    .value <- get(paste0("V8_", .key))
+    if (!is.na(.value)) code <- replace_assign_line(code, .key, as.character(.value))
+  }
+  if (nzchar(V8_CLUSTER_METRIC)) code <- replace_assign_line(code, "CLUSTER_METRIC", r_str(V8_CLUSTER_METRIC))
 
   # sample_names ブロック差し替え
   start_pat <- "^\\s*sample_names\\s*<-\\s*c\\s*\\("
@@ -512,8 +539,16 @@ exported_files <- c()
 #   元 .txt の名前 (`<元名>`) との照合には逆引きが要る。
 .rds_samples_all <- unique(as.character(seu@meta.data$sample))
 
-for (sn in SAMPLE_NAMES) {
-  original_txt <- file.path(ORIGINAL_DATA_FOLDER, paste0(sn, ".txt"))
+# ★ verNEXT: 更新された切片/群情報は元ファイルに適用してからTXT対応表に保存する。
+.rerun_manifest <- ua_read_manifest(V8_SECTION_MANIFEST_PATH)
+.rerun_inputs <- if (!is.null(.rerun_manifest)) {
+  Filter(function(x) !identical(x$selection_mode, "none"), .rerun_manifest$files)
+} else lapply(SAMPLE_NAMES, function(sn) list(path = file.path(ORIGINAL_DATA_FOLDER, paste0(sn, ".txt"))))
+.rerun_stems <- vapply(.rerun_inputs, function(x) tools::file_path_sans_ext(basename(ua_value(x$runtime_path, ua_value(x$path)))), character(1))
+for (.input_index in seq_along(.rerun_inputs)) {
+  .input <- .rerun_inputs[[.input_index]]
+  original_txt <- ua_value(.input$runtime_path, ua_value(.input$path))
+  sn <- tools::file_path_sans_ext(basename(original_txt))
   .stopif(file.exists(original_txt), paste0("元txtが見つかりません: ", original_txt))
 
   # ★ ver58.0 (A-5): `<元名>` で 1 行も当たらないとき、従来は `next` で
@@ -523,6 +558,13 @@ for (sn in SAMPLE_NAMES) {
   .res <- .resolve_rds_samples(
     sn, .rds_samples_all,
     if (isTRUE(V8_USE_ROI_AS_SAMPLE)) V8_ROI_FILTER else NULL)
+  # ★ verNEXT: 再解析を繰り返しても、表示名を保存したsidecarから元サンプルへ戻れる。
+  if (is.null(.res) && file.exists(paste0(original_txt, ".metadata.csv"))) {
+    .previous_md <- read.csv(paste0(original_txt, ".metadata.csv"), stringsAsFactors = FALSE,
+                            colClasses = "character", na.strings = character())
+    .previous_names <- intersect(unique(.previous_md$sample), .rds_samples_all)
+    if (length(.previous_names)) .res <- list(names = .previous_names, rois = character())
+  }
   if (is.null(.res)) {
     stop(paste0(
       "再解析: RDS の中に '", sn, "' に対応するサンプルがありません。\n",
@@ -542,6 +584,21 @@ for (sn in SAMPLE_NAMES) {
   }
 
   rows_sn <- md_keep[as.character(md_keep$sample) %in% .res$names, , drop = FALSE]
+  # ★ verNEXT: 同名ファイルの画素をサンプル表示名だけで混ぜない。
+  .source_ids <- c(ua_value(.input$file_id), normalizePath(original_txt, winslash = "/", mustWork = FALSE))
+  if (file.exists(paste0(original_txt, ".metadata.csv"))) {
+    .previous_md <- read.csv(paste0(original_txt, ".metadata.csv"), stringsAsFactors = FALSE,
+                            colClasses = "character", na.strings = character())
+    if ("source_file_id" %in% names(.previous_md)) .source_ids <- unique(.previous_md$source_file_id)
+  }
+  if ("source_file_id" %in% names(rows_sn) && any(rows_sn$source_file_id %in% .source_ids)) {
+    rows_sn <- rows_sn[rows_sn$source_file_id %in% .source_ids, , drop = FALSE]
+  } else if (sum(.rerun_stems == sn) > 1L) stop("同名入力の元ファイルIDを照合できません: ", original_txt)
+  if (!is.null(.rerun_manifest) && nrow(rows_sn)) {
+    rows_sn <- ua_section_metadata(rows_sn, original_txt, .rerun_manifest,
+                                   roi_col = "ROI", pixel_col = "spot_index",
+                                   fallback_role = if (isTRUE(V8_USE_ROI_AS_SAMPLE)) "section" else "region")
+  }
   if (nrow(rows_sn) == 0) {
     message(".. skip (no remaining spots): ", sn)
     next
@@ -559,12 +616,25 @@ for (sn in SAMPLE_NAMES) {
   } else {
     paste0("_KEEP_Cl_", paste(TARGET_CLUSTERS, collapse = "-"))
   }
-  out_txt <- file.path(EXPORT_TXT_DIR, paste0(sn, suffix, ".txt"))
-  dbg_tsv <- file.path(EXPORT_TXT_DIR, paste0(sn, suffix, "_debug.tsv"))
+  .output_stem <- if (sum(.rerun_stems == sn) > 1L) paste0(sn, "_source", .input_index) else sn
+  out_txt <- file.path(EXPORT_TXT_DIR, paste0(.output_stem, suffix, ".txt"))
+  dbg_tsv <- file.path(EXPORT_TXT_DIR, paste0(.output_stem, suffix, "_debug.tsv"))
 
   message(">> Exporting filtered txt: ", basename(out_txt))
   stat <- export_filtered_txt_from_original(original_txt, out_txt, pix_ids, debug_tsv_path = dbg_tsv)
   message(sprintf("   kept %d / %d lines", stat$n_kept, stat$n_total))
+
+  # ★ verNEXT: TXTの再出力で失われていた元ファイル・元画素・切片・個体・群を保持する。
+  .meta_cols <- intersect(c("spot_index", "sample", "source_file_id", "source_pixel_id",
+                             "section_id", "subject_id", "group", "integration_unit_id"), names(rows_sn))
+  .export_md <- rows_sn[, .meta_cols, drop = FALSE]
+  .export_md$spot_index <- rows_sn$PixelID_for_export
+  if (!("source_file_id" %in% names(.export_md))) .export_md$source_file_id <- normalizePath(original_txt, winslash = "/", mustWork = FALSE)
+  if (!("source_pixel_id" %in% names(.export_md))) .export_md$source_pixel_id <- as.character(rows_sn$PixelID_for_export)
+  if (!("section_id" %in% names(.export_md))) .export_md$section_id <- as.character(rows_sn$sample)
+  if (!("integration_unit_id" %in% names(.export_md))) .export_md$integration_unit_id <- .export_md$section_id
+  if (anyDuplicated(.export_md$spot_index)) stop("再解析TXTの画素IDが重複しています: ", sn)
+  write.csv(.export_md, paste0(out_txt, ".metadata.csv"), row.names = FALSE, na = "")
 
   exported_files <- c(exported_files, tools::file_path_sans_ext(basename(out_txt)))
 
