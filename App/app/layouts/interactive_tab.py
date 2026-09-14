@@ -884,12 +884,17 @@ def create_interactive_tab():
                         # ★ ver67.0: 群登録を画素のクラスタ操作と分け、独立試料数を示す。
                         dbc.AccordionItem(title="群・個体情報", item_id="acc_section_groups", children=[
                             html.Div(id="int_section_group_panel", style={"display": "none"}, children=[
+                                # ★ ver67.1: 群の表示・編集が数値解析を変えると誤解されないよう用途を示す。
+                                html.P("群・個体情報は色分け・表示の絞り込み・独立試料数の確認・出力に使います。ここでの編集や表示群の変更は、保存済みの強度・座標・クラスタを変更せず、群間検定も実行しません。",
+                                       className="small mb-2"),
                                 html.Div(id="int_section_group_summary", className="mb-2 small"),
                                 dbc.Label("表示する群（UMAP・空間表示）"),
                                 dcc.Dropdown(id="int_section_group_filter", options=[], value=None,
                                              multi=True, placeholder="表示する群を選択"),
                                 html.Details(className="mt-3", children=[
                                     html.Summary("群・個体情報を編集"),
+                                    html.P("入力例：個体／独立試料IDは C1・C2・K1 など、群は ctrl・KO など。同じ個体の連続切片には同じIDを指定し、編集後に「群・個体情報を保存」を押します。",
+                                           className="small mt-2 mb-2"),
                                     dash_table.DataTable(id="int_section_group_table", data=[],
                                         columns=[{"name": "切片", "id": "section", "editable": False},
                                                  {"name": "個体／独立試料ID", "id": "subject_id"},
