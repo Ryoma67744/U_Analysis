@@ -63,7 +63,7 @@ suppressPackageStartupMessages({
 
 # ---- パフォーマンス最適化: 並列化 & Leidenクラスタリング ----
 if (!requireNamespace("future", quietly = TRUE)) install.packages("future", repos = "https://cran.rstudio.com/")
-if (!requireNamespace("leiden", quietly = TRUE)) install.packages("leiden", repos = "https://cran.rstudio.com/")
+# ★ ver67.0: Seurat5のLeidenはleidenbaseを使うため未使用のPython版leidenを起動時に導入しない。
 library(future)
 plan(sequential)  # workerはFindAllMarkers直前にのみ起動（メモリ節約）
 options(future.globals.maxSize = 4 * 1024^3)  # 4GB制限
@@ -221,6 +221,8 @@ local({
          " App/Script/helpers/rds_io.R の配置を確認してください。")
   }
   source(helper_path, local = FALSE)
+  source(file.path(dirname(helper_path), "analysis_contract.R"), local = FALSE)
+  source(file.path(dirname(helper_path), "feature_naming_policy.R"), local = FALSE)
 })
 
 # ============================================================
@@ -228,13 +230,17 @@ local({
 # ============================================================
 
 # ---- 1. 入出力パス設定 ----
+# ★ ver67.0: 元の表示名と独立した選択・由来・再開条件。
+SECTION_MANIFEST_PATH <- ""
+ANALYSIS_SIGNATURE <- ""
+# ★ ver67.0: 入力はアプリで注入する。テンプレートに個人環境のパスを保存しない。
 # 解析したいCSVファイルのパス (複数可)
 INPUT_PATHS <- c(
-  "C:\\Users\\Cciia\\Biochem Dropbox\\Biochem's shared workspace\\Workspace\\UMAP\\TIMS\\Data\\test-250809_Kizu_H2-18O_Brain_Transform\\test-250809_Kizu_H2-18O_Brain_Transform.parquet"
+  ""
 )
 
 # 結果を出力するメインフォルダ
-OUTPUT_DIR <- "C:\\Users\\Cciia\\Biochem Dropbox\\Biochem's shared workspace\\Workspace\\UMAP\\TIMS\\Data\\test-250809_Kizu_H2-18O_Brain_Transform"
+OUTPUT_DIR <- "./analysis_output"
 
 # プロジェクト名
 PROJECT_LABEL <- "Annotation-test1_" 
@@ -246,7 +252,7 @@ RESUME_FROM_RDS <- FALSE
 #このRでは解析の段階によって途中セーブような機能を持っています(.rdsファイルの出力)
 #　　→このファイルを使えば過去に行ったデータの読み込みやHarmony、RCPAの結果を飛ばしてそのあとの解析から進められます。
 #    →さらに、「TRUE」でも既にあるファイルは使用し、なければ新規で作成して使用する方式を採用しています。なので、2回目以降はTRUE機能をご利用ください。木津
-RESUME_DIR_PATH <- "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\MSI_Tims\\SCiLS_Transform\\2025\\251230_Ishitani_Kilifish_Transform\\251230_Ishitani_Kilifish_POS2__20260117\\RDS_Files" 
+RESUME_DIR_PATH <- ""
 
 # ---- 1b. CSV読み込みキャッシュ ----
 RDS_CACHE_ENABLE <- TRUE          
@@ -346,7 +352,7 @@ ANNOTATION_CSV_PATH <- ""
 # ver55.0 以降の変換では列名は m/z のままで、化合物名はサイドカー
 # <BASE>_feature_annotations.parquet が持つ。旧データ（列名に化合物名が
 # 焼き込まれた parquet）はこのフラグに関わらず従来どおり表示される。
-USE_EMBEDDED_COMPOUND_NAMES <- FALSE
+USE_EMBEDDED_COMPOUND_NAMES <- TRUE
 
 # 極性（TraceFinder の Polarity 列が '+' / '-' の前提）
 ION_MODE <- "Negative"   # "Positive" or "Negative"
@@ -505,6 +511,7 @@ N_VAR_FEATURES     <- 3000
 UMAP_N_NEIGHBORS  <- 30L          # Seurat RunUMAP 既定
 UMAP_MIN_DIST     <- 0.3          # Seurat RunUMAP 既定
 UMAP_METRIC       <- "cosine"     # Seurat RunUMAP 既定
+CLUSTER_DIMS_N    <- NA_integer_ # 未指定ならUMAPと同じ次元数
 CLUSTER_K_PARAM   <- 20L          # Seurat FindNeighbors 既定
 CLUSTER_METRIC    <- "euclidean"  # Seurat FindNeighbors 既定
 CLUSTER_ALGORITHM <- 4L           # Leiden（従来 algorithm = 4）
@@ -1183,7 +1190,9 @@ read_desi_data_cached <- function(file_path, sample_prefix = NULL, cache_dir = R
     if (!is.null(obj) && is.list(obj) && !is.null(obj$meta) && !is.null(obj$data)) {
       # ★ ver57.5: 大きさ・更新時刻に加えて設定の指紋も一致すること。
       #   指紋を持たない古いキャッシュ (NULL) は「別物」として読み直す。
-      ok <- isTRUE(all.equal(as.numeric(obj$meta$size), as.numeric(fi$size))) &&
+      ok <- identical(obj$meta$sample_prefix, sn) &&
+            identical(obj$meta$input_path, ua_path(file_path)) &&
+            isTRUE(all.equal(as.numeric(obj$meta$size), as.numeric(fi$size))) &&
             isTRUE(all.equal(as.numeric(obj$meta$mtime), as.numeric(fi$mtime))) &&
             identical(as.character(obj$meta$settings %||% ""), skey)
       if (ok) { return(obj$data) }
@@ -1193,7 +1202,7 @@ read_desi_data_cached <- function(file_path, sample_prefix = NULL, cache_dir = R
     }
   }
   dat <- read_desi_data(file_path, sn)
-  if (enable_cache) try(saveRDS(list(meta = list(size = as.numeric(fi$size), mtime = as.numeric(fi$mtime), settings = skey), data = dat), cache_fp), silent = TRUE)
+  if (enable_cache) try(saveRDS(list(meta = list(sample_prefix = sn, input_path = ua_path(file_path), size = as.numeric(fi$size), mtime = as.numeric(fi$mtime), settings = skey), data = dat), cache_fp), silent = TRUE)
   dat
 }
 
@@ -1210,6 +1219,7 @@ rename_seurat_features <- function(seu, new_names) {
     assay = "Spatial"
   )
   new_seu@meta.data <- meta
+  new_seu@misc <- seu@misc
   new_seu
 }
 
@@ -1225,6 +1235,10 @@ calibrate_feature_names <- function(seu_list) {
     sname <- seu_list[[i]]$sample[1]
 
     # サンプル固有 or グローバルフォールバック
+    # 表示名の同名対策では既存の試料別キャリブレーション条件を変更しない。
+    if (has_per_sample && !sname %in% names(CALIBRATION_BY_SAMPLE) &&
+        nzchar(ua_value(seu_list[[i]]@misc$input_basename)))
+      sname <- ua_value(seu_list[[i]]@misc$input_basename)
     if (has_per_sample && !is.null(sname) && sname %in% names(CALIBRATION_BY_SAMPLE)) {
       coefs <- CALIBRATION_BY_SAMPLE[[sname]]
       cat(sprintf("  [Calibration] Sample '%s': per-sample coefficients\n", sname))
@@ -1322,6 +1336,7 @@ merge_duplicate_features <- function(seu, new_names) {
     assay = "Spatial"
   )
   new_seu@meta.data <- seu@meta.data
+  new_seu@misc <- seu@misc
   new_seu
 }
 
@@ -1797,7 +1812,8 @@ assign_xy_grid <- function(seu, nx=NULL, ny=NULL){
 
   # PixelTable: meta.data から描画材料（x/y/cluster/TIC/条件など）を保存
   md <- obj@meta.data
-  keep_md <- intersect(c("x_coord","y_coord","seurat_clusters","nCount_Spatial","slice_id","condition","sample"),
+  keep_md <- intersect(c("x_coord","y_coord","seurat_clusters","nCount_Spatial","slice_id","condition","sample",
+                         "spot_index","source_file_id","source_pixel_id","section_id","subject_id","group","integration_unit_id"),
                        colnames(md))
   if (length(keep_md) > 0) {
     pix <- md[, keep_md, drop = FALSE]
@@ -1837,7 +1853,7 @@ run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_onl
 
   # ---- UMAP Resume/Save (追加RDS) ----
   # If UMAP reduction is missing, try to restore from RDS; otherwise compute once and save embedding.
-  if (!("umap" %in% names(obj@reductions))) {
+  if (!isTRUE(force_recluster) && !("umap" %in% names(obj@reductions))) {
     obj <- .load_umap_embedding_if_exists(obj, prefix)
   }
   if (!("umap" %in% names(obj@reductions))) {
@@ -1885,7 +1901,7 @@ run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_onl
                       else if ("harmony" %in% names(obj@reductions)) "harmony"
                       else if ("rpca" %in% names(obj@reductions)) "rpca"
                       else "pca"
-    .dims_clust <- 1:min(UMAP_DIMS_MAX, MAX_PCS, ncol(Embeddings(obj, .red_for_clust)))
+    .dims_clust <- seq_len(min(if (is.finite(CLUSTER_DIMS_N)) CLUSTER_DIMS_N else UMAP_DIMS_MAX, MAX_PCS, ncol(Embeddings(obj, .red_for_clust))))
     # ★ ver63.3: tims_v8 の段階定義 "findclusters" に対応する出力がこれまで
     #   1 行も無く、この段は恒久的に到達不能だった。
     .stage_mark("FindClusters")
@@ -2014,7 +2030,7 @@ run_downstream_analysis <- function(obj, prefix, outdir, ann_db, generate_mz_onl
 # (Add) Volcano/DEG resume: try reading saved DEG RDS first (requirement ②).
 # If available and readable, we reuse it to regenerate volcano plots without re-running FindAllMarkers.
 deg <- NULL
-if (exists("RESUME_FROM_RDS", envir = .GlobalEnv) && isTRUE(get("RESUME_FROM_RDS", envir = .GlobalEnv))) {
+if (!isTRUE(force_recluster) && exists("RESUME_FROM_RDS", envir = .GlobalEnv) && isTRUE(get("RESUME_FROM_RDS", envir = .GlobalEnv))) {
   # ★ ver58.0 (A-3): 取り置きの名前に検定条件を含める。
   #   条件を変えても古いテーブルがそのまま再利用されると、
   #   「直したのに結果が変わらない」になる。
@@ -2070,7 +2086,8 @@ if (is.null(deg)) {
 
   if(nrow(deg) == 0) {
     cat("  No markers found.\n")
-    return(invisible(NULL))
+    write.csv(deg, file.path(sub_od, "markers_annotated.csv"), row.names = FALSE)
+    return(invisible(obj))
   }
 
 
@@ -2096,6 +2113,7 @@ if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
   }
   # ver4: マーカー表はピクセル単位の探索的ランキング（空間自己相関未補正・群間検定ではない）である旨を明記
   # ★ ver58.0 (A-3): 検定・補正は全体、書き出しは従来どおり閾値で絞る
+  deg <- apply_feature_naming_policy(deg, outdir, isTRUE(ANNOTATION_ENABLE))
   deg_csv <- .deg_for_export(deg)
   deg_csv$ranking_type   <- "exploratory_pixel_level"
   deg_csv$inference_note <- "Exploratory pixel-level ranking; spatial autocorrelation not modeled; NOT sample-level statistical inference"
@@ -2124,7 +2142,7 @@ if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
     ann_for_top <- ann_vec[top_genes]
 
     .is_missing_annot_h <- is.na(ann_for_top) | !nzchar(as.character(ann_for_top))
-    .is_hit_format_h <- grepl("_", as.character(ann_for_top), fixed = TRUE)
+    .is_hit_format_h <- as.character(ann_for_top) != top_genes
     heat_labels <- ifelse(.is_missing_annot_h | !.is_hit_format_h, mz_only_heat[top_genes], as.character(ann_for_top))
     heat_label_map <- setNames(heat_labels, top_genes)
 
@@ -2204,7 +2222,7 @@ if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
   # 注釈（DB一致しない場合は m/z を使う）
   if ("annotation" %in% colnames(deg_plot)) {
     .is_missing_annot0 <- is.na(deg_plot$annotation) | !nzchar(as.character(deg_plot$annotation))
-    .is_hit_format0 <- grepl("_", as.character(deg_plot$annotation), fixed = TRUE)
+    .is_hit_format0 <- as.character(deg_plot$annotation) != as.character(deg_plot$gene)
     deg_plot$annot_or_mz <- ifelse(.is_missing_annot0 | !.is_hit_format0, deg_plot$mz_only, as.character(deg_plot$annotation))
   } else {
     deg_plot$annot_or_mz <- deg_plot$mz_only
@@ -2275,7 +2293,7 @@ if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
     # 注釈付きラベルは、DB一致せず annotation を返せない場合は m/z を表示する
     .is_missing_annot <- is.na(df_sub$annotation) | !nzchar(as.character(df_sub$annotation))
     # annotate_mz_with_format の「ヒットしたとき」は "Compound Adduct_<mz>" 形式になる前提
-    .is_hit_format <- grepl("_", as.character(df_sub$annotation), fixed = TRUE)
+    .is_hit_format <- as.character(df_sub$annotation) != as.character(df_sub$gene)
     df_sub$annot_or_mz <- ifelse(.is_missing_annot | !.is_hit_format, df_sub$mz_only, as.character(df_sub$annotation))
     df_sub$label_annot <- ifelse(df_sub$gene %in% top_hits$gene, df_sub$annot_or_mz, NA)
 
@@ -2412,15 +2430,17 @@ if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
   
   # 7. クラスタ付きファイルの書き出し (CSV / Parquet 両対応; prefix付きで上書き防止)
   if(!is.null(INPUT_PATHS)){
-    for (fp in INPUT_PATHS[file.exists(INPUT_PATHS)]) {
+    .export_paths <- INPUT_PATHS[file.exists(INPUT_PATHS)]
+    .export_names <- make.unique(tools::file_path_sans_ext(basename(.export_paths)))
+    for (fp in .export_paths) {
 
       ext <- tolower(tools::file_ext(fp))
-      sn  <- tools::file_path_sans_ext(basename(fp))
-
-      meta <- obj@meta.data %>%
-        tibble::rownames_to_column("cell") %>%
-        dplyr::filter(sample==sn) %>%
-        dplyr::select(spot_index, seurat_clusters)
+      sn <- .export_names[match(fp, .export_paths)]
+      # ★ ver67.0: basenameの一致だけで結合すると同名入力間で画素が交差する。
+      meta <- ua_input_metadata(obj@meta.data, fp, SECTION_MANIFEST)
+      .export_metadata <- intersect(c("source_file_id", "source_pixel_id", "section_id",
+        "subject_id", "group", "integration_unit_id"), names(meta))
+      meta <- meta[, c("spot_index", "seurat_clusters", .export_metadata), drop = FALSE]
 
       if(nrow(meta) == 0) next
 
@@ -2471,6 +2491,7 @@ if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
           y       = df2$y,
           cluster = df2$seurat_clusters
         )
+        cluster_info <- cbind(cluster_info, df2[, .export_metadata, drop = FALSE])
         write.csv(cluster_info,
                   file.path(sub_od, paste0(sn, "_cluster_assignment_", prefix, ".csv")),
                   row.names = FALSE)
@@ -2486,6 +2507,7 @@ if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
 #   されたかが分かり、次の downstream / RPCA に入れる余裕を判断できる。
 invisible(gc(verbose = FALSE))
 .mem_note_base(paste0("downstream 終了 (", prefix, ")"))
+  invisible(obj)
 }
 
 # ============================================================
@@ -2496,6 +2518,7 @@ today <- format(Sys.Date(), "%Y%m%d")
 # 出力先 = OUTPUT_DIR 直下（アプリ側でフォルダを指定済み）
 od <- OUTPUT_DIR
 dir.create(od, recursive = TRUE, showWarnings = FALSE)
+SECTION_MANIFEST <- ua_read_manifest(SECTION_MANIFEST_PATH)
 
 # ★要望①: RDSファイル保存フォルダ "RDS_Files"
 RDS_SAVE_DIR <- file.path(od, "RDS_Files")
@@ -2538,7 +2561,7 @@ if (RESUME_FROM_RDS && file.exists(rds_step1_in)) {
   message(">> RESUME: Loading Step1 ...")
   tryCatch({
     seu_list <- load_rds_compact(rds_step1_in)
-    if (length(seu_list) > 0) {
+    if (length(seu_list) > 0 && ua_checkpoint_matches(seu_list, ANALYSIS_SIGNATURE)) {
       step1_done <- TRUE
       # 読み込み成功したら今回のフォルダにもコピーして保存
       if (normalizePath(rds_step1_in) != normalizePath(rds_step1_out, mustWork=FALSE)) {
@@ -2557,21 +2580,43 @@ if (!step1_done && !.stage_downstream) {
   .stage_mark("Reading Parquet / input files")
   seu_list <- list(); input_paths <- unique(INPUT_PATHS[file.exists(INPUT_PATHS)])
   fa_all <- list()  # 注釈付き列名データの per-feature メタ（化合物名/m/z/|以降）を保持
+  .input_sources <- vapply(input_paths, function(fp) ua_value(ua_manifest_entry(SECTION_MANIFEST, fp)$file_id, ua_path(fp)), character(1))
+  .input_labels <- ua_disambiguate_samples(tools::file_path_sans_ext(basename(input_paths)), .input_sources)
   for (fp in input_paths) {
-    sn <- tools::file_path_sans_ext(basename(fp))
+    # ★ ver67.0: 同名入力だけを区別し、R側の空間描画・H&Eでも別試料として保持する。
+    sn <- .input_labels[match(fp, input_paths)]
     dat <- read_desi_data_cached(fp, sn)
     if (!is.null(dat$feature_annotations)) {
       .fa <- dat$feature_annotations; .fa$sample <- sn
       fa_all[[length(fa_all) + 1]] <- .fa
     }
     seu <- CreateSeuratObject(counts=dat$count_matrix, project="DESI", assay="Spatial")
+    seu@misc$input_basename <- tools::file_path_sans_ext(basename(fp))
     seu$sample <- sn; seu$x_coord <- dat$coordinates$x; seu$y_coord <- dat$coordinates$y; seu$spot_index <- dat$coordinates$spot_index
     if ("annotation" %in% colnames(dat$coordinates)) seu$annotation <- dat$coordinates$annotation
     seu <- assign_xy_grid(seu)
     # condition は slice_id（= annotation名）をそのまま使用
 seu$condition <- seu$slice_id
-    if(ncol(seu)>0) seu_list[[length(seu_list)+1]] <- seu
+    # 再解析の一時名を元画素IDへ復元する。
+    .side_path <- file.path(dirname(fp), paste0(tools::file_path_sans_ext(basename(fp)), ".metadata.csv"))
+    if (file.exists(.side_path)) {
+      .side <- read.csv(.side_path, stringsAsFactors = FALSE, check.names = FALSE,
+                        colClasses = "character", na.strings = character())
+      if (!"spot_index" %in% names(.side) || anyDuplicated(.side$spot_index)) stop("再解析の画素対応表が不正です")
+      .idx <- match(as.character(seu$spot_index), .side$spot_index)
+      if (anyNA(.idx)) stop("再解析の元画素IDに対応しない画素があります")
+      for (.key in intersect(c("source_file_id", "source_pixel_id", "section_id", "subject_id", "group", "integration_unit_id"), names(.side)))
+        seu@meta.data[[.key]] <- .side[[.key]][.idx]
+    }
+    seu <- ua_apply_sections(seu, fp, SECTION_MANIFEST,
+      fallback_role = if (ANNOTATION_ROLE == "section_id") "section" else "region")
+    if (!is.null(seu) && ncol(seu) > 0) {
+      seu <- ua_stamp_checkpoint(seu, ANALYSIS_SIGNATURE)
+      seu_list[[length(seu_list)+1]] <- seu
+    }
   }
+
+  if (!length(seu_list)) stop("解析対象の画素がありません。切片/ROI選択を確認してください。")
 
   # ---- feature_annotations を出力に保存（要件: |以降のメタ情報を保持し将来参照可能に）----
   if (length(fa_all) > 0) {
@@ -2683,236 +2728,174 @@ apply_input_norm <- function(s) {
   }
 }
 
-if (RESUME_FROM_RDS && file.exists(rds_step2_in)) {
-  message(">> RESUME: Loading Step2 ...")
-  tryCatch({
-    res_obj <- load_rds_compact(rds_step2_in)
-    seu_harmony <- res_obj$obj
-    REDUCTION_USED <- res_obj$reduction
-    step2_done <- TRUE
-    # コピー保存
-    if (normalizePath(rds_step2_in) != normalizePath(rds_step2_out, mustWork=FALSE)) {
-      file.copy(rds_step2_in, rds_step2_out, overwrite=TRUE)
+# ★ ver67.0: 未補正PCAを補正法より先に保存し、下流出力も独立させる。
+rds_pca_out <- file.path(RDS_SAVE_DIR, "Step2_PCA_uncorrected.rds")
+seu_pca <- NULL
+.pca_recluster <- FALSE
+if (RESUME_FROM_RDS) {
+  for (.path in .get_rds_candidates("Step2_PCA_uncorrected.rds")) {
+    if (!file.exists(.path)) next
+    .saved <- tryCatch(load_rds_compact(.path), error = function(e) NULL)
+    if (!is.null(.saved) && ua_checkpoint_matches(.saved, ANALYSIS_SIGNATURE)) {
+      seu_pca <- if (inherits(.saved, "Seurat")) .saved else .saved$obj
+      if (!is.null(seu_pca)) break
     }
+  }
+  if (file.exists(rds_step2_in)) {
+    .saved <- tryCatch(load_rds_compact(rds_step2_in), error = function(e) NULL)
+    if (!is.null(.saved) && ua_checkpoint_matches(.saved, ANALYSIS_SIGNATURE)) {
+      .old_obj <- if (inherits(.saved, "Seurat")) .saved else .saved$obj
+      .old_red <- if (inherits(.saved, "Seurat")) "harmony" else .saved$reduction
+      if (!is.null(.old_obj)) {
+        if (identical(.old_red, "harmony") && "harmony" %in% names(.old_obj@reductions)) {
+          seu_harmony <- .old_obj
+          # ★ ver67.0: 別出力先への段階再開でも保存済みHarmonyを引き継ぐ。
+          if (ua_path(rds_step2_in) != ua_path(rds_step2_out) &&
+              !file.copy(rds_step2_in, rds_step2_out, overwrite = TRUE))
+            stop("Harmonyの保存済み結果を出力先へコピーできません")
+          step2_done <- TRUE
+        }
+        if (is.null(seu_pca) && "pca" %in% names(.old_obj@reductions)) {
+          seu_pca <- ua_prepare_reduction(.old_obj, "pca")
+          .pca_recluster <- TRUE
+        }
+      }
+    }
+  }
+}
+if (is.null(seu_pca) && !.stage_downstream) {
+  if (!length(seu_list)) stop("PCAに使用できる入力がありません")
+  cell_ids <- make.unique(vapply(seu_list, function(s) as.character(s$sample[1]), character(1)))
+  seu_merged <- if (length(seu_list) == 1L) seu_list[[1]] else
+    merge(seu_list[[1]], y = seu_list[-1], add.cell.ids = cell_ids)
+  .stage_mark("Preprocessing (variable features / scaling / PCA)")
+  ua_record_method(od, "pca", "running", stage = "reduction")
+  .pca_error <- ""
+  .pca_grid <- if (isTRUE(BATCH_CORRECTION_ENABLE) && length(unique(seu_merged$integration_unit_id)) >= 2L) HARMONY_RETRY_GRID else PCA_RETRY_GRID
+  for (i in seq_along(.pca_grid)) {
+    cfg <- .pca_grid[[i]]
+    seu_pca <- tryCatch({
+      s <- apply_input_norm(seu_merged)
+      s <- FindVariableFeatures(s, nfeatures = cfg$n_var_features)
+      hvf <- unique(VariableFeatures(s))
+      npcs_use <- min(cfg$max_pcs, length(hvf) - 1L, ncol(s) - 1L)
+      if (!is.finite(npcs_use) || npcs_use < 2L) stop("PCAに必要な特徴量/画素が不足しています")
+      s <- ScaleData(s, features = hvf)
+      s <- RunPCA(s, npcs = npcs_use, features = hvf, seed.use = GLOBAL_RANDOM_SEED)
+      suppressWarnings(try(s[[DefaultAssay(s)]]$scale.data <- NULL, silent = TRUE))
+      s <- ua_stamp_checkpoint(s, ANALYSIS_SIGNATURE)
+      s@misc$pca_parameters <- list(n_var_features = cfg$n_var_features,
+        max_pcs = npcs_use, umap_dims = min(cfg$umap_dims, npcs_use), retry_tier = i)
+      s
+    }, error = function(e) {
+      .pca_error <<- conditionMessage(e)
+      message(sprintf("[retry] tier%d 失敗 (pca): %s", i, .pca_error))
+      NULL
+    })
+    if (!is.null(seu_pca)) {
+      RETRY_TIER_USED <- i
+      RETRY_N_VAR_FEATURES_EFFECTIVE <- cfg$n_var_features
+      RETRY_MAX_PCS_EFFECTIVE <- seu_pca@misc$pca_parameters$max_pcs
+      RETRY_UMAP_DIMS_EFFECTIVE <- seu_pca@misc$pca_parameters$umap_dims
+      cat(sprintf("[retry] 採用 tier%d: n_var_features=%d max_pcs=%d umap_dims=%d\n", i,
+        RETRY_N_VAR_FEATURES_EFFECTIVE, RETRY_MAX_PCS_EFFECTIVE, RETRY_UMAP_DIMS_EFFECTIVE))
+      break
+    }
+  }
+  rm(seu_merged); gc()
+  if (is.null(seu_pca)) {
+    ua_record_method(od, "pca", "failed", .pca_error, "reduction")
+    stop("PCAの全設定が失敗しました: ", .pca_error)
+  }
+  .pca_recluster <- TRUE
+}
+if (is.null(seu_pca)) {
+  ua_record_method(od, "pca", "failed", "保存条件に一致するPCAがありません。新規/再解析を実行してください", "reduction")
+  stop("保存条件に一致するPCAがありません。新規/再解析を実行してください")
+}
+if (!"integration_unit_id" %in% colnames(seu_pca@meta.data)) {
+  seu_pca$integration_unit_id <- if (ANNOTATION_ROLE == "section_id")
+    paste(seu_pca$sample, seu_pca$slice_id, sep = "::") else as.character(seu_pca$sample)
+}
+.n_units <- length(unique(na.omit(seu_pca$integration_unit_id)))
+group_var <- "integration_unit_id"
+.correction_enabled <- isTRUE(BATCH_CORRECTION_ENABLE) && .n_units >= 2L
+.plan_downstream(if (identical(PIPELINE_STAGE, "reduction_only")) 0L else
+  1L + as.integer(.correction_enabled) + as.integer(.correction_enabled && isTRUE(ENABLE_RPCA)))
+# countsを含め、強制終了後のRPCA再開にも使用できるPCAを保存する。
+save_rds_compact(list(obj = seu_pca, reduction = "pca"), rds_pca_out, keep_counts = TRUE)
+ua_record_method(od, "pca", "complete", stage = "reduction", rds_path = rds_pca_out)
+.ua_finish_tims <- function(obj, method, prefix, path, force_recluster = FALSE) {
+  if (identical(PIPELINE_STAGE, "reduction_only")) {
+    # ★ ver67.0: 再利用した手法も記録し、「続きを実行」の検出対象にする。
+    ua_record_method(od, method, "complete", stage = "reduction", rds_path = path)
+    return(obj)
+  }
+  ua_record_method(od, method, "running", stage = "downstream", rds_path = path)
+  .started <- FALSE
+  tryCatch({
+    if (force_recluster || !"seurat_clusters" %in% colnames(obj@meta.data) ||
+        !"umap" %in% names(obj@reductions)) {
+      obj <- ua_cluster_reduction(obj, method, UMAP_DIMS_MAX,
+        if (is.finite(CLUSTER_DIMS_N)) CLUSTER_DIMS_N else UMAP_DIMS_MAX,
+        UMAP_N_NEIGHBORS, UMAP_MIN_DIST, UMAP_METRIC, GLOBAL_RANDOM_SEED,
+        CLUSTER_K_PARAM, CLUSTER_METRIC, CLUSTER_RESOLUTION, CLUSTER_ALGORITHM)
+      force_recluster <- TRUE
+    }
+    save_rds_compact(list(obj = obj, reduction = method), path, keep_counts = method == "pca")
+    # 新しいクラスタに過去のDEG/UMAPキャッシュを適用しない。
+    .old_resume <- RESUME_FROM_RDS
+    if (force_recluster) RESUME_FROM_RDS <<- FALSE
+    .started <- TRUE
+    completed <- tryCatch(run_downstream_analysis(obj, prefix, od, ann_db,
+      generate_mz_only = method != "rpca"), finally = { RESUME_FROM_RDS <<- .old_resume })
+    if (inherits(completed, "Seurat")) obj <- completed
+    ua_record_method(od, method, "complete", stage = "downstream", rds_path = path)
+    obj
   }, error = function(e) {
-    message("!! Resume failed (Step2 broken?): ", e$message)
-    step2_done <- FALSE
+    ua_record_method(od, method, "failed", conditionMessage(e), "downstream", path)
+    if (!.started) .skip_downstream(prefix)
+    plan(sequential)
+    message("!! ", method, " 下流処理失敗（保存済みreductionは保持）: ", conditionMessage(e))
+    obj
   })
 }
-
-if (!step2_done && !.stage_downstream) {
-  # [P9] 一括merge（Reduceの逐次mergeより効率的）
-  cell_ids <- sapply(seu_list, function(s) s$sample[1])
-  seu_merged <- merge(seu_list[[1]], y = seu_list[-1], add.cell.ids = cell_ids)
-  # ---- ver4: 補正変数の決定（過補正防止）----
-  # 既定では技術的バッチ(BATCH_VAR='sample')が複数ある場合のみ補正。
-  # condition/slice_id（生物差）は ALLOW_CONDITION_CORRECTION=TRUE のときのみ許可し、
-  # それ以外は group_var=NA（補正せず無補正PCAを使用）。
-  .bv        <- if (BATCH_VAR %in% colnames(seu_merged@meta.data)) BATCH_VAR else "sample"
-  .bv_levels <- length(unique(na.omit(seu_merged@meta.data[[.bv]])))
-  .bv_is_bio <- (.bv %in% c("condition", "slice_id")) && !isTRUE(ALLOW_CONDITION_CORRECTION)
-  # ★ ver58.0 (A-1): 明示の旗を最優先で見る。旗が偽なら列も件数も見ずに補正しない。
-  group_var  <- if (isTRUE(BATCH_CORRECTION_ENABLE) && .bv_levels > 1 && !.bv_is_bio) .bv else NA_character_
-  if (is.na(group_var)) {
-    if (!isTRUE(BATCH_CORRECTION_ENABLE)) {
-      cat("[ver4] シナリオの指定によりバッチ補正を行いません -> 無補正PCAを使用\n")
-    } else
-    cat(sprintf("[ver4] 技術的バッチが無いため補正をスキップ (BATCH_VAR='%s', levels=%d) -> 無補正PCAを使用\n", .bv, .bv_levels))
-  } else {
-    cat(sprintf("[ver4] バッチ補正変数: '%s' (levels=%d)\n", group_var, .bv_levels))
-  }
-  
-  # 統合処理 (Harmony / PCA fallback)
-  run_pipeline <- function(use_harmony, cfg) {
-    # [P7] pipe→sequential（中間オブジェクトコピー削減）
-    s <- apply_input_norm(seu_merged)
-    s <- FindVariableFeatures(s, nfeatures = cfg$n_var_features)
-    s <- ScaleData(s)
-    s <- RunPCA(s, npcs = cfg$max_pcs)
-    # [ver45.9] scale.data は PCA 計算後は不要。実測(再解析)では ScaleData が +4.68GB を要し、
-    #   以後 11.4GB 前後で全工程が走って FindAllMarkers の並列化時に OOM した。ここで破棄する。
-    #   安全な根拠: downstream のヒートマップは subset に対し ScaleData を作り直す(空の前提の
-    #   設計)、Step2 の RDS 保存は keep_scale=FALSE で元々落としている、RPCA ブロックでも
-    #   既に破棄済み(前倒しするだけ)。
-    # ★ ver63.2: 当初ここには「RunHarmony は PCA 埋め込みに対して動く」とも書いていたが、
-    #   これは後処理を見落とした記述だった。harmony は収束後に Seurat::ProjectDim を呼び
-    #   scale.data を読むため、破棄したままでは必ず落ちる。下の RunHarmony に
-    #   project.dim = FALSE を付けてその後処理を止めることで整合させている。
-    suppressWarnings(try(s[[DefaultAssay(s)]]$scale.data <- NULL, silent = TRUE))
-    invisible(gc(verbose = FALSE))
-    .mem_note_base("Step2 scale.data 破棄後")
-    if(use_harmony) {
-      # ★ ver63.3: Harmony を「実際に走らせるとき」だけ段階行を出す。
-      #   UI はこの行を見る。従来はファイル名の "harmony" を拾っていた。
+seu_pca <- .ua_finish_tims(seu_pca, "pca", "pca_uncorrected", rds_pca_out, .pca_recluster)
+if (.correction_enabled) {
+  if (is.null(seu_harmony) && !.stage_downstream) {
+    ua_record_method(od, "harmony", "running", stage = "reduction")
+    seu_harmony <- tryCatch({
       .stage_mark("Harmony correction")
-      # ★ ver63.2: project.dim = FALSE を明示する。
-      #   harmony(稼働環境 2.0.5) の既定は project.dim=TRUE で、収束後に
-      #   Seurat::ProjectDim を呼び scale.data %*% cell.embeddings を計算する。
-      #   ver45.9 が 4 行上で scale.data を破棄したため 0x0 行列との積になり、
-      #   Harmony は「収束した後に」必ず non-conformable arguments で落ちていた。
-      #   実測(2026-09-07): 3 tier すべて同一エラー、"Layer 'scale.data' is empty" 警告 3 回。
-      #   その後 PCA グリッドへ転落するため、中身が無補正 PCA の結果が
-      #   Step2_HarmonyPCA_Result.rds という名前で保存され、画面には「Harmony」と出ていた。
-      #   引数名はドット区切り。project_dim と書くと ... に吸収されて黙って無視される。
-      #   本スクリプトは harmony の loadings をどこでも使わないので出力は不変。
-      s <- RunHarmony(s, group.by.vars=group_var, project.dim = FALSE)
-    }
-    # PIPELINE_STAGE=reduction_only: reduction(PCA/Harmony)計算後に即返す
-    #   （UMAP/FindNeighbors/FindClusters をスキップ＝PreFlight 診断用の軽量実行）
-    if (identical(PIPELINE_STAGE, "reduction_only")) {
-      return(s)
-    }
-    red_use <- if (use_harmony) "harmony" else "pca"
-    s <- RunUMAP(s, reduction=red_use, dims=1:cfg$umap_dims,
-                 n.neighbors=UMAP_N_NEIGHBORS, min.dist=UMAP_MIN_DIST,
-                 metric=UMAP_METRIC, seed.use=GLOBAL_RANDOM_SEED)
-    s <- FindNeighbors(s, reduction=red_use, dims=1:cfg$umap_dims,
-                       k.param=CLUSTER_K_PARAM, annoy.metric=CLUSTER_METRIC)
-    FindClusters(s, resolution=CLUSTER_RESOLUTION, algorithm=CLUSTER_ALGORITHM)
+      s <- ua_prepare_reduction(seu_pca, "pca")
+      s <- RunHarmony(s, group.by.vars = group_var, project.dim = FALSE)
+      s@misc$cluster_reduction <- "harmony"
+      save_rds_compact(list(obj = s, reduction = "harmony"), rds_step2_out, keep_counts = FALSE)
+      ua_record_method(od, "harmony", "complete", stage = "reduction", rds_path = rds_step2_out)
+      s
+    }, error = function(e) {
+      ua_record_method(od, "harmony", "failed", conditionMessage(e), "reduction")
+      if (!identical(PIPELINE_STAGE, "reduction_only")) .skip_downstream("harmony")
+      message("!! Harmony failed; PCA is preserved: ", conditionMessage(e))
+      NULL
+    })
   }
-  
-  # Retry Logic
-  # ver4: 補正変数が無い(NA)場合は Harmony をスキップし、無補正PCAへフォールバック
-  # [ver6.6] 進捗バー用の段階マーカー。reduction 構築中は一致キーワードが出ず
-  #   UI が「準備中」に見えるため、"preprocessing" を1行出す（_detect_current_step が拾う）。
-  .stage_mark("Preprocessing (variable features / scaling / PCA)")
-
-  # [ver56.5] リトライで軽い設定へ落ちたことを必ず記録する (R3-RETRY)。
-  #   従来は tryCatch(error=function(e) FALSE) が失敗理由ごと捨て、ループ内に
-  #   ログも 1 行も無かったため、
-  #     可変特徴量 3000→1000→500 / 主成分 30→20→15 / UMAP 次元 30→20→15
-  #   と縮退して計算されても、画面にもログにも成果物にも痕跡が残らなかった。
-  #   受領書と Methods は最初の構成値(例 dims=30)を報告するので、論文の
-  #   Methods に実際とは違うハイパーパラメータが載り、再現実験も成立しない。
-  #   ここで採用した段と設定値をグローバルへ残し、rds_io.R のサイドカー経由で
-  #   受領書・Methods へ流す。**計算そのものは一切変えない**（記録の追加のみ）。
-  .record_retry <- function(tier, cfg) {
-    RETRY_TIER_USED              <<- tier
-    RETRY_N_VAR_FEATURES_EFFECTIVE <<- cfg$n_var_features
-    RETRY_MAX_PCS_EFFECTIVE      <<- cfg$max_pcs
-    RETRY_UMAP_DIMS_EFFECTIVE    <<- cfg$umap_dims
-    cat(sprintf("[retry] 採用 tier%d: n_var_features=%d max_pcs=%d umap_dims=%d\n",
-                tier, cfg$n_var_features, cfg$max_pcs, cfg$umap_dims))
-    if (tier > 1L) {
-      cat(sprintf(paste0("[retry] 注意: 1 段目より軽い設定で計算しました。",
-                         "受領書・Methods にはこの実効値が記録されます。\n")))
-    }
+  if (!is.null(seu_harmony)) {
+    REDUCTION_USED <- "harmony"
+    seu_harmony <- .ua_finish_tims(seu_harmony, "harmony", "harmony", rds_step2_out)
+  } else if (.stage_downstream) {
+    ua_record_method(od, "harmony", "skipped", "保存条件に一致するHarmony reductionがありません", "reduction")
+    .skip_downstream("harmony")
   }
-  .try_grid <- function(grid, use_harmony) {
-    for (i in seq_along(grid)) {
-      cfg <- grid[[i]]
-      ok <- tryCatch({ seu_harmony <<- run_pipeline(use_harmony, cfg); TRUE },
-                     error = function(e) {
-                       message(sprintf("[retry] tier%d 失敗 (%s): %s", i,
-                                       if (use_harmony) "harmony" else "pca",
-                                       conditionMessage(e)))
-                       FALSE
-                     })
-      if (ok) { .record_retry(i, cfg); return(TRUE) }
-    }
-    FALSE
-  }
-
-  if (!is.na(group_var)) {
-    if (.try_grid(HARMONY_RETRY_GRID, TRUE)) REDUCTION_USED <- "harmony"
-  }
-  if(is.null(seu_harmony)) {
-    if (.try_grid(PCA_RETRY_GRID, FALSE)) REDUCTION_USED <- "pca"
-  }
-  if(is.null(seu_harmony)) stop("All pipelines failed.")
-  
-  # ★要望①: Step2 完了時のRDS保存 (slim: DietSeurat + qs 圧縮)
-  # [ver46.0] Step2 RDS は「中断時に Step3(RPCA) から再開する」ための成果物でもある。
-  #   ところが RPCA は apply_input_norm(seu_rpca) 経由で counts 層を読むため
-  #   (INPUT_NORMALIZED=TRUE のとき)、counts を落として保存した RDS では再開できない。
-  #   既定は従来どおり counts を落とす（対話ビューアがこの RDS を読むため軽い方が良い）。
-  #   再開したい場合は SAVE_STEP2_WITH_COUNTS=1 を「再開元にしたい実行の前に」設定する。
-  .s2_counts <- Sys.getenv("SAVE_STEP2_WITH_COUNTS", unset = "0") %in% c("1", "true", "TRUE", "yes", "YES")
-  if (.s2_counts) {
-    message(">> Step2 RDS を counts 込みで保存します (SAVE_STEP2_WITH_COUNTS=1)。",
-            "ファイルは大きくなりますが、Step3(RPCA) からの再開が可能になります。")
-  }
-  save_rds_compact(list(obj=seu_harmony, reduction=REDUCTION_USED), rds_step2_out,
-                   keep_counts = .s2_counts)
-  gc()
-
-  # ---- 無補正PCAの併走出力（補正の妥当性を比較するため）----
-  # 主結果が補正(harmony等)のときのみ出力。主結果が既に "pca" の場合は同一のため出さない。
-  # [ver6.5] 旧来の run_pipeline(FALSE) による再計算を廃止し、Harmony が内部に持つ
-  #   入力 pca をそのまま流用する。これで (a) 重複PCA計算が消え（時間・メモリ削減）、
-  #   (b) Harmony と同一設定(同HVG/同PC数)の pca になり、補正前後の比較が公平になる。
-  if (isTRUE(ALWAYS_OUTPUT_UNCORRECTED_PCA) && !identical(REDUCTION_USED, "pca")) {
-    if ("pca" %in% names(seu_harmony@reductions)) {
-      cat("無補正PCAは Harmony の pca を流用します -> Step2_PCA_uncorrected.rds\n")
-      seu_unc <- seu_harmony                                   # copy-on-write（即時複製しない）
-      for (.rn in setdiff(names(seu_unc@reductions), "pca"))   # 補正系 reduction を除去し pca のみ残す
-        seu_unc[[.rn]] <- NULL                                 # 既存 RPCA 部と同じ除去イディオム
-      # ★ ver58.0 (A-2): 補正側のクラスタを引き継がない。
-      #   引き継ぐと「無補正の座標＋補正後のクラスタ」という混成になる。
-      #   下流 (run_downstream_analysis) が force_recluster=TRUE で取り直す。
-      seu_unc@meta.data$seurat_clusters <- NULL
-      for (.c in grep("_snn_res", colnames(seu_unc@meta.data), value = TRUE))
-        seu_unc@meta.data[[.c]] <- NULL
-      save_rds_compact(list(obj=seu_unc, reduction="pca"),
-                       file.path(RDS_SAVE_DIR, "Step2_PCA_uncorrected.rds"), keep_counts=FALSE)
-      rm(seu_unc); gc()
-    } else {
-      message("!! 無補正PCA: seu_harmony に pca が無いためスキップ")
-    }
-  }
+} else {
+  ua_record_method(od, "harmony", "skipped", if (.n_units < 2L) "統合単位が2未満" else "保存条件で補正無効", "reduction")
 }
-
-# ★解析実行 (Harmony or PCA)
-# ★要望②, ⑥: 関数化により、後続のRPCAの結果に上書きされることなく確実に出力される
-# ④: Step3 のみ読み込んだ場合 seu_harmony は NULL → スキップ
-# ★ ver65.0: 予定巡数を先に宣言する。ここは Step2 が終わった直後で、
-#   3 つの分岐の条件がすべて揃っている唯一の場所。
-#   実際に走らない巡は各分岐が .skip_downstream() で取り消すので、
-#   予定が多めに出ても UI 側で必ず補正される。
-.plan_downstream(
-  # PIPELINE_STAGE=reduction_only は下流を 1 巡も回さない（PreFlight 診断用）。
-  if (identical(PIPELINE_STAGE, "reduction_only")) 0L else
-  (if (!is.null(seu_harmony)) 1L else 0L) +
-  (if (isTRUE(ALWAYS_OUTPUT_UNCORRECTED_PCA) &&
-       !identical(REDUCTION_USED, "pca")) 1L else 0L) +
-  (if (isTRUE(ENABLE_RPCA) &&
-       (length(seu_list) >= 2 ||
-        (ANNOTATION_ROLE == "section_id" &&
-         length(unique(na.omit(seu_harmony$slice_id))) >= 2))) 1L else 0L)
-)
-
-if (!is.null(seu_harmony)) {
-  run_downstream_analysis(seu_harmony, REDUCTION_USED, od, ann_db)
-}
-
-# ★ver4: 無補正PCA結果の下流解析（Step2_PCA_uncorrected が存在すれば実行）
-# ★ ver63.3: RESUME 元も探す。従来は新しい出力先 (RDS_SAVE_DIR) 決め打ちだったが、
-#   ④「続きを実行」は UMAP ハイパラのサフィックス付きで必ず別フォルダへ出力するため、
-#   ①が Harmony で作ったコンパニオンが見つからず、無補正PCA の下流が
-#   **何のメッセージも出さずに**落ちていた（PR-1 で Harmony が通ると顕在化する）。
-#   同スクリプト内の UMAP embedding / DEG は既に .get_rds_candidates で
-#   RESUME_DIR_PATH -> RDS_SAVE_DIR の順に両方を探しており、ここだけ非対称だった。
-.unc_rds_path <- NULL
-for (.c in .get_rds_candidates("Step2_PCA_uncorrected.rds")) {
-  if (file.exists(.c)) { .unc_rds_path <- .c; break }
-}
-if (isTRUE(ALWAYS_OUTPUT_UNCORRECTED_PCA) && is.null(.unc_rds_path)) {
-  message(">> 無補正PCA: Step2_PCA_uncorrected.rds が見つからないため下流をスキップします",
-          "（主結果が無補正PCAのときは設計どおり生成されません）")
-  .skip_downstream("pca_uncorrected")   # ver65.0: 予定した巡を取り消す
-}
-if (isTRUE(ALWAYS_OUTPUT_UNCORRECTED_PCA) && !is.null(.unc_rds_path)) {
-  .unc_obj <- tryCatch(load_rds_compact(.unc_rds_path)$obj, error=function(e) NULL)
-  if (!is.null(.unc_obj)) {
-    run_downstream_analysis(.unc_obj, "pca_uncorrected", od, ann_db, generate_mz_only = FALSE,
-                            force_recluster = TRUE)
-    rm(.unc_obj); gc()
-  } else {
-    message("!! 無補正PCA: RDS を読めなかったため下流をスキップします: ", .unc_rds_path)
-    .skip_downstream("pca_uncorrected")   # ver65.0
-  }
-}
-
+# RPCA入力は未補正PCAの測定アッセイ。表示名やHarmony成功から独立させる。
+seu_harmony <- seu_pca
+rm(seu_pca)
+# トップレベルの一時参照を残すとRPCA期間中も旧countsを保持するため解放する。
+for (.tmp_name in intersect(c("s", ".saved", ".old_obj", "res_obj"), ls(envir = .GlobalEnv)))
+  rm(list = .tmp_name, envir = .GlobalEnv)
+gc(verbose = FALSE)
 
 # ============================================================
 # Step 3: RPCA
@@ -2928,11 +2911,13 @@ if (RESUME_FROM_RDS && file.exists(rds_step3_in)) {
   message(">> RESUME: Loading Step3 ...")
   tryCatch({
     res_obj <- load_rds_compact(rds_step3_in)
+    if (!ua_checkpoint_matches(res_obj, ANALYSIS_SIGNATURE)) stop("RPCAの保存条件が一致しません")
     seu_rpca <- res_obj$obj
-    step3_done <- TRUE
+    step3_done <- !is.null(seu_rpca)
     # コピー保存
     if (normalizePath(rds_step3_in) != normalizePath(rds_step3_out, mustWork=FALSE)) {
-      file.copy(rds_step3_in, rds_step3_out, overwrite=TRUE)
+      if (!file.copy(rds_step3_in, rds_step3_out, overwrite=TRUE))
+        stop("RPCAの保存済み結果を出力先へコピーできません")
     }
   }, error = function(e) {
     message("!! Resume failed (Step3 broken?): ", e$message)
@@ -2941,23 +2926,26 @@ if (RESUME_FROM_RDS && file.exists(rds_step3_in)) {
 }
 
 if (!step3_done && !.stage_downstream) {
+  tryCatch({
   # ver4: RPCAは「技術的バッチ」に対してのみ実行する。
   #   - 複数sample（別測定）→ sampleごとに統合（正当なバッチ補正）
   #   - 単一sample + ANNOTATION_ROLE=="section_id"（連続切片=技術反復）→ slice_idで統合
   #   - それ以外（生物学的ROI/群; 既定）→ RPCAをスキップ（生物差を消さない）
-  .n_slice         <- length(unique(na.omit(seu_harmony$slice_id)))
-  .rpca_section_ok <- (ANNOTATION_ROLE == "section_id") && .n_slice >= 2
+  .n_slice <- .n_units
+  .rpca_section_ok <- .correction_enabled
   if (!isTRUE(ENABLE_RPCA)) {
+    ua_record_method(od, "rpca", "skipped", "保存条件でRPCA無効", "reduction")
     cat("RPCA skip: ENABLE_RPCA=FALSE (Harmony/無補正PCA の結果で完了します)\n")
     seu_rpca <- NULL
-  } else if (length(seu_list) >= 2 || .rpca_section_ok) {
+  } else if (.rpca_section_ok) {
+    ua_record_method(od, "rpca", "running", stage = "reduction")
     cat("Running RPCA (Seurat v5 IntegrateLayers)...\n")
 
     # ---- v5 ネイティブ統合（IntegrateLayers + RPCAIntegration; 省メモリ）----
     # v4 の FindIntegrationAnchors+IntegrateData は補正済み発現行列を実体化するため
     # 大規模(>~10万px)で OOM する。低次元PCA空間で統合し reduction だけ作る
     # IntegrateLayers に置換。新 reduction 名 "rpca"（下流/診断がそのまま採用）。
-    .rpca_batch <- if (length(seu_list) >= 2) "sample" else "slice_id"
+    .rpca_batch <- group_var
 
     # ★ ver63.2: seu_list は :2644 の merge 以降どこからも中身を読まれず、
     #   :2841 と直上の length() だけが使われる（grep 済み）。にもかかわらず
@@ -2984,18 +2972,8 @@ if (!step3_done && !.stage_downstream) {
     # [ver6.x メモリ削減] 「元(seu_harmony)から部分集合(seu_rpca)を作ってから元を捨てる」
     # 順序だと両方が同時に載るピークが必ず出る。全セルが対象で内容が変わらないケースでは
     # 複製を作らず参照を付け替え、複製が要る場合も直後に元参照を外して即回収する。
-    .sl_all  <- unique(na.omit(seu_harmony$slice_id))
-    .need_ss <- any(is.na(seu_harmony$slice_id)) ||
-                !all(as.character(seu_harmony$slice_id) %in% as.character(.sl_all))
-    if (.need_ss) {
-      seu_rpca <- tryCatch(
-        subset(seu_harmony, subset = slice_id %in% .sl_all),
-        error = function(e) seu_harmony)
-      rm(seu_harmony); gc(verbose = FALSE)   # 複製直後に元を解放（二重保持の窓を最小化）
-    } else {
-      seu_rpca <- seu_harmony                # 内容同一 → 複製せず付け替え（copy-on-write）
-      rm(seu_harmony)                        # 参照を1本にしてから以降の破壊的変更を行う
-    }
+    seu_rpca <- seu_harmony
+    rm(seu_harmony)
     DefaultAssay(seu_rpca) <- "Spatial"
     # Step2 由来の reduction(harmony 等)を除去（run_downstream の harmony 優先採用を回避）。
     for (.rn in names(seu_rpca@reductions)) seu_rpca[[.rn]] <- NULL
@@ -3005,6 +2983,7 @@ if (!step3_done && !.stage_downstream) {
     .bt   <- as.character(seu_rpca@meta.data[[.rpca_batch]])
     .keep <- names(which(table(.bt) >= MIN_CELLS_RPCA))
     if (length(.keep) >= 2) {
+      seu_rpca@misc$integration_excluded_units <- setdiff(unique(.bt), .keep)
       seu_rpca <- subset(seu_rpca, cells = colnames(seu_rpca)[.bt %in% .keep])
       .kw <- max(5L, min(100L, as.integer(min(table(as.character(seu_rpca@meta.data[[.rpca_batch]])))) - 1L))
       seu_rpca <- apply_input_norm(seu_rpca)
@@ -3027,7 +3006,9 @@ if (!step3_done && !.stage_downstream) {
           .mem_note(sprintf("Step3 FindVariableFeatures 後 (nf=%d)", nf))
           seu_rpca <- ScaleData(seu_rpca, verbose = FALSE)
           .mem_note("Step3 ScaleData 後")
-          seu_rpca <- RunPCA(seu_rpca, npcs = MAX_PCS, verbose = FALSE)
+          .npc <- min(MAX_PCS, length(VariableFeatures(seu_rpca)) - 1L, min(table(.bt[.bt %in% .keep])) - 1L)
+          if (.npc < 2L) stop("RPCAの主成分数が不足しています")
+          seu_rpca <- RunPCA(seu_rpca, npcs = .npc, verbose = FALSE)
           .mem_note("Step3 RunPCA 後")
           # この一手だけ future.globals 上限を一時解除（plan=sequential のため複製なし）。
           # 成功/失敗いずれでも finally で必ず元（4GB）へ戻す（:69 の全域既定は不変）。
@@ -3036,7 +3017,7 @@ if (!step3_done && !.stage_downstream) {
           seu_rpca <- tryCatch(
             IntegrateLayers(seu_rpca, method = RPCAIntegration,
                             orig.reduction = "pca", new.reduction = "rpca",
-                            assay = "Spatial", dims = 1:MAX_PCS,
+                            assay = "Spatial", dims = seq_len(.npc),
                             k.weight = .kw, verbose = FALSE),
             finally = options(future.globals.maxSize = .old_gmax)
           )
@@ -3065,21 +3046,16 @@ if (!step3_done && !.stage_downstream) {
           .mem_note("Step3 JoinLayers 直前 (counts/scale.data 破棄後)")
           seu_rpca <- JoinLayers(seu_rpca)
           .mem_note("Step3 JoinLayers 後")
-          if (!identical(PIPELINE_STAGE, "reduction_only")) {
-            .rd <- 1:min(UMAP_DIMS_MAX, ncol(Embeddings(seu_rpca, "rpca")))
-            seu_rpca <- RunUMAP(seu_rpca, reduction = "rpca", dims = .rd,
-                                n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
-                                metric = UMAP_METRIC, seed.use = GLOBAL_RANDOM_SEED)
-            seu_rpca <- FindNeighbors(seu_rpca, reduction = "rpca", dims = .rd,
-                                      k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
-            seu_rpca <- FindClusters(seu_rpca, resolution = CLUSTER_RESOLUTION, algorithm = CLUSTER_ALGORITHM)
-          }
           TRUE
         }, error = function(e) { message("!! RPCA(IntegrateLayers) failed: ", e$message); FALSE })
         if (ok) break
       }
-      if (!ok) seu_rpca <- NULL
+      if (!ok) {
+        ua_record_method(od, "rpca", "failed", "全RPCA設定で統合に失敗", "reduction")
+        seu_rpca <- NULL
+      }
     } else {
+      ua_record_method(od, "rpca", "skipped", "必要画素数を満たす統合単位が2未満", "reduction")
       cat(sprintf("RPCA skip: 有効バッチ<2 (batch='%s', >=%d cells)\n", .rpca_batch, MIN_CELLS_RPCA))
       seu_rpca <- NULL
     }
@@ -3088,13 +3064,8 @@ if (!step3_done && !.stage_downstream) {
     #   していた。RPCA が無いことも、その理由も、ログにも画面にも一切残らないため、
     #   「なぜ RPCA が出ないのか」の切り分けにコードを読むしかなかった（2026-09 の実例）。
     #   スキップ自体は仕様どおりでも、理由は必ず残す。
-    cat(sprintf(paste0("RPCA skip: 統合できる単位が 2 つ未満です",
-                       " (入力ファイル %d 本 / ANNOTATION_ROLE='%s' / 切片 %d 枚)\n"),
-                length(seu_list), ANNOTATION_ROLE, .n_slice))
-    cat(paste0("  RPCA を実行するには、入力を 2 ファイル以上にするか、",
-               "解析シナリオを「連続切片」または「条件比較＋技術差補正」",
-               "(ANNOTATION_ROLE='section_id') にしてください。\n"))
-    flush(stdout())
+    ua_record_method(od, "rpca", "skipped", if (.n_units < 2L) "統合単位が2未満" else "保存条件で補正無効", "reduction")
+    cat("RPCA skip: 有効な統合単位が2未満、または保存条件で補正無効\n")
     seu_rpca <- NULL
   }
   
@@ -3103,19 +3074,27 @@ if (!step3_done && !.stage_downstream) {
   # （空RDSがあると PreFlight 診断が「reduction が検出されませんでした」と誤表示する。
   #   下流は直後の if(!is.null(seu_rpca)) で既にガード済み。RESUME は file.exists で安全。）
   if (!is.null(seu_rpca)) {
-    save_rds_compact(list(obj=seu_rpca), rds_step3_out, keep_counts=FALSE)  # 生counts層は保存後未使用→除去
+    save_rds_compact(list(obj=seu_rpca), rds_step3_out, keep_counts=FALSE)
+    ua_record_method(od, "rpca", "complete", stage = "reduction", rds_path = rds_step3_out)
   }
   gc()
+  }, error = function(e) {
+    seu_rpca <<- NULL
+    ua_record_method(od, "rpca", "failed", conditionMessage(e), "reduction")
+    message("!! RPCA failed; PCA is preserved: ", conditionMessage(e))
+  })
 }
+
 
 # ★解析実行 (RPCA)
 # ★要望②, ⑥: Harmonyとは独立して実行されるため、確実に結果が出る
 if(!is.null(seu_rpca)) {
-  run_downstream_analysis(seu_rpca, "rpca", od, ann_db, generate_mz_only = FALSE)
+  seu_rpca <- .ua_finish_tims(seu_rpca, "rpca", "rpca", rds_step3_out)
 } else {
   # ★ ver65.0: RPCA が skip / 失敗のとき、予定していた 3 巡目は走らない。
   #   上の RPCA skip 分岐は 4 か所あるが、走らなかったことの判定はここ 1 か所で足りる。
-  .skip_downstream("rpca")
+  if (.correction_enabled && isTRUE(ENABLE_RPCA) && !identical(PIPELINE_STAGE, "reduction_only")) .skip_downstream("rpca")
+  if (.stage_downstream) ua_record_method(od, "rpca", "skipped", "保存条件に一致するRPCA reductionがありません", "reduction")
 }
 
 # ★ ver63.3: tims_v8 の段階定義 "saving" に対応する英語の出力が R 側に 0 件で、
@@ -3127,7 +3106,7 @@ if(!is.null(seu_rpca)) {
 .stage_mark("Saving outputs / finalizing")
 
 # ---- Cleanup: Step1 RDS（解析完了後は不要） ----
-if (file.exists(rds_step1_out)) {
+if (!identical(PIPELINE_STAGE, "reduction_only") && file.exists(rds_step1_out)) {
   message(">> Cleanup: Step1 RDS を削除しました（解析完了のため不要）")
   file.remove(rds_step1_out)
 }

@@ -34,6 +34,14 @@ from app.utils.label_persistence import (
 
 logger = logging.getLogger("msi.interactive.umap")
 
+def _with_section_groups(df, rds_path, groups):
+    from app.services.section_group_metadata import overlay_result_metadata, filter_groups, UNASSIGNED_GROUP
+    df = overlay_result_metadata(df, rds_path)
+    if df is not None and "group" in df.columns:
+        df = df.assign(group=df["group"].fillna("").replace("", UNASSIGNED_GROUP))
+    return filter_groups(df, groups)
+
+
 
 # ---------------------------------------------------------------------------
 # UMAP プロット — ヘルパー関数
@@ -182,7 +190,8 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                 y=df.loc[mask, "UMAP_2"],
                 mode="markers",
                 marker=dict(size=marker_size, color=cat_color_map.get(str(cat), "#999999")),
-                name=_cluster_display_name(cat, cluster_name_map),
+                name=(_cluster_display_name(cat, cluster_name_map)
+                      if color_col == "Cluster" else str(cat)),
                 legendrank=rank,
                 text=df.loc[mask, "CellID"],
                 # ver46.3: cat（クラスタ値 / サンプル名）はデータ由来なので
@@ -563,13 +572,16 @@ def _get_merged_label_positions(accumulated_positions=None,
      # ★ ver56.5 (§4.3 / C09-2): 開閉記録を利用者ごとに分けるための session_id。
      #   隣の facet 版 (:662) と Spatial 版は渡していたが、統合 UMAP だけ
      #   None を渡しており、全利用者が同じ鍵 (`__nosession__`) を共有していた。
-     State("session_id_store", "data")],
+     State("session_id_store", "data"),
+     Input("int_section_group_filter", "value"),
+     Input("int_section_group_updated", "data")],
 )
 def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
                      display_mode, marker_size, exclude_clusters, label_size,
                      rds_path, _fs_trigger, custom_colors, cluster_name_map,
                      merge_toggle, merge_color_mode, active_items,
-                     accumulated_positions, session_id=None):
+                     accumulated_positions, session_id=None, section_groups=None,
+                     _section_updated=None):
     from app.callbacks.interactive_callbacks import (
         _interactive_data, _set_active_key, accordion_toggle_is_noop,
         accordion_record_closed)
@@ -593,7 +605,9 @@ def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
     _set_active_key(rds_path)
     if display_mode == "per_sample":
         return go.Figure()
-    df = _interactive_data.get("plot_data")
+    from app.services.section_group_metadata import filter_groups
+    all_df = _with_section_groups(_interactive_data.get("plot_data"), rds_path, None)
+    df = filter_groups(all_df, section_groups)
     if df is None:
         return go.Figure()
 
@@ -602,7 +616,7 @@ def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
     effective_custom_colors = custom_colors
     if merge_toggle == "merged" and df is not None and "Cluster_merged" in df.columns:
         # ver46.1: 全列コピーをやめ、UMAP 描画が使う列だけを組み立てる。
-        _cols = [c for c in ("Sample", "CellID") if c in df.columns]
+        _cols = [c for c in ("Sample", "CellID", "group", "subject_id", "section_id") if c in df.columns]
         plot_df = df[_cols].copy()
         plot_df["Cluster"] = df["Cluster_merged"].to_numpy()
         plot_df["UMAP_1"] = df["UMAP_1_merged"].to_numpy()
@@ -610,6 +624,10 @@ def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
         effective_custom_colors = _get_merged_cluster_color_map(
             plot_df["Cluster"], mode=merge_color_mode or "shade"
         )
+
+    if color_by == "group" and "group" in all_df.columns:
+        # ★ ver67.0: 群を絞っても全体図と切片ごとの群色を変えない。
+        effective_custom_colors = _get_cluster_color_map(all_df["group"])
 
     # rds_path / method を引数で明示することで、_interactive_data が
     # ContextVar 切替直後で未初期化の場合にも JSON を正しく読込む。
@@ -691,14 +709,18 @@ def toggle_merge_controls(_rds_path, _fs_trigger):
      State("selection_groups_store", "data"),
      State("session_id_store", "data"),
      # ★ ver66.3: Cookieが同じ2タブでも保存図を混ぜない。IDの初期化完了時も描く。
-     Input("interactive_view_id", "data")],
+     Input("interactive_view_id", "data"),
+     Input("int_section_group_filter", "value"),
+     Input("int_section_group_updated", "data"),
+     Input("umap_color_by", "value")],
 )
 def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
                             marker_size, exclude_clusters, label_size, rds_path,
                             show_legend, name_map, _fs_trigger, custom_colors,
                             rows, cluster_name_map, active_items,
                             facet_by, legend_hidden, accumulated_positions,
-                            selection_groups, session_id=None, view_id=None):
+                            selection_groups, session_id=None, view_id=None,
+                            section_groups=None, _section_updated=None, color_by="Cluster"):
     """表示モード「サンプル別」(=分割表示) の場合、facet_by 基準で分割表示する。"""
     from app.callbacks.interactive_callbacks import (
         _interactive_data, _set_active_key, accordion_toggle_is_noop,
@@ -723,9 +745,27 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
 
     if display_mode != "per_sample":
         return _finish("", [])
-    df = _interactive_data.get("plot_data")
+    from app.services.section_group_metadata import filter_groups
+    all_df = _with_section_groups(_interactive_data.get("plot_data"), rds_path, None)
+    df = filter_groups(all_df, section_groups)
     if df is None:
         return _finish("", [])
+    if df.empty:
+        return _finish(html.Div("表示する群が選択されていません。", className="text-muted p-3"), [])
+    if color_by == "group" and "group" in df.columns:
+        group_colors = _get_cluster_color_map(all_df["group"])
+        figures, children = [], []
+        for sample in sorted(df["Sample"].unique()):
+            fig = _build_umap_integrated_fig(df.loc[df["Sample"] == sample], "group", None,
+                show_legend, show_labels, marker_size=marker_size or 2,
+                exclude_clusters=exclude_clusters, label_size=label_size or 11,
+                cluster_name_map=cluster_name_map, custom_colors=group_colors)
+            label = _display_name(sample, name_map)
+            figures.append((label, fig.to_dict()))
+            children.append(html.Div([html.H6(label), dcc.Graph(
+                id={"type": "umap_per_sample_graph", "index": str(sample)}, figure=fig,
+                style={"height": "300px"})]))
+        return _finish(children, figures)
     color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
     # ver46.1: 埋め込み座標/点集合が変わる要素のみ uirevision に含める。
     uirev = _geom_uirevision(

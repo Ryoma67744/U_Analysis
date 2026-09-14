@@ -353,5 +353,13 @@ class TestPersistence:
         assert 'Output("extra_data_folders_store", "data", allow_duplicate=True)' \
             in outputs
         src = inspect.getsource(pc.sub_action_new_analysis)
-        assert "_n_outputs = 24" in src, "Output を足したのに戻り値の個数が合っていない"
+        from types import SimpleNamespace
+        monkeypatch.setattr(pc, "ctx", SimpleNamespace(triggered_id={"index": "sub"}))
+        monkeypatch.setattr(pc, "get_sub_project", lambda *_: {"data_folder": "/main"})
+        monkeypatch.setattr(pc, "get_sub_project_settings", lambda *_: {"extra_data_folders": ["/extra"], "use_annotation_check": []})
+        restored = pc.sub_action_new_analysis([1], {"id": "project"})
+        assert restored[22] == ["/extra"]
+        assert restored[23:27] == ({}, {}, [], [])
+        assert restored[-1] is True
+        assert len(restored) == 28
         assert 'settings.get("extra_data_folders")' in src

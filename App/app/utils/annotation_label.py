@@ -37,6 +37,12 @@ def _resolve_compound(feature_name: str,
     各候補は is_meaningful_annotation で「数値のみ / feature と同一」を排除する。
     """
     feat = feature_name
+    # ★ ver67.0: SCiLS 名を DB で上書きせず、競合 feature を他の表示経路でも再注釈しない。
+    rec = (feature_annotations or {}).get(feat) or {}
+    if rec.get("status") == "conflict":
+        return ""
+    if is_meaningful_annotation(rec.get("compound"), feat):
+        return rec["compound"].strip()
     if annotation_map:
         cand = annotation_map.get(feat)
         if isinstance(cand, str) and is_meaningful_annotation(cand, feat):
@@ -58,6 +64,8 @@ def _display_name(feature_name: str, feature_annotations: Optional[dict]) -> str
         return ""
     rec = feature_annotations.get(feature_name)
     if isinstance(rec, dict):
+        if rec.get("status") == "conflict":
+            return ""
         dn = rec.get("display_name")
         if isinstance(dn, str) and dn.strip():
             return dn.strip()

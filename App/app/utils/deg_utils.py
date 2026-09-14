@@ -287,7 +287,8 @@ def standardize_deg_df(df: pd.DataFrame) -> list[dict] | None:
         #   加え、app/services/annotation_sources.build_feature_source_map() の結果（feature→由来）
         #   を gene/m/z で突き合わせて source 列を埋める想定。取込設計が未確定のため現状は変更なし。
         keep = [c for c in ["gene", "cluster", "avg_log2FC", "p_val_adj",
-                             "pct.1", "pct.2", "annotation"] if c in df.columns]
+                             "pct.1", "pct.2", "annotation", "annotation_source",
+                             "annotation_candidates"] if c in df.columns]
         df = df[keep]
 
         # 数値列を丸める

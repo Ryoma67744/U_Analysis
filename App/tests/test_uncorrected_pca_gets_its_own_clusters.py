@@ -69,12 +69,12 @@ def _fn_body(src: str, header: str) -> str:
 # ---------------------------------------------------------------------------
 
 def test_the_companion_does_not_inherit_the_corrected_clusters():
-    """★ 本丸: コンパニオンを作るときにクラスタを引き継がないこと。"""
-    i = _TIMS.index("ALWAYS_OUTPUT_UNCORRECTED_PCA) && !identical(REDUCTION_USED")
-    block = _TIMS[i:i + 1500]
-    assert "seurat_clusters" in block and "NULL" in block, (
-        "補正後のクラスタを落としていない。落とさないと"
-        "『無補正の座標＋補正後のクラスタ』という混成のままになる")
+    """PCAをHarmony実行より前に完成させる。"""
+    call = 'seu_pca <- .ua_finish_tims(seu_pca, "pca", "pca_uncorrected"'
+    assert _TIMS.index(call) < _TIMS.index('s <- RunHarmony(s, group.by.vars = group_var')
+    helper = (ROOT / "Script/helpers/analysis_contract.R").read_text(encoding="utf-8")
+    assert 'obj@meta.data$seurat_clusters <- NULL' in helper
+    assert 'for (name in names(obj@graphs)) obj[[name]] <- NULL' in helper
 
 
 def test_the_downstream_can_be_told_to_recluster():
@@ -89,11 +89,12 @@ def test_the_downstream_can_be_told_to_recluster():
 
 
 def test_the_companion_call_asks_for_a_recluster():
-    """★ コンパニオンの下流処理が取り直しを要求すること。"""
-    i = _TIMS.index('run_downstream_analysis(.unc_obj, "pca_uncorrected"')
-    call = _TIMS[i:i + 300]
-    assert "force_recluster = TRUE" in call, (
-        f"コンパニオンが取り直しを要求していない: {call[:160]}")
+    """新規PCAは共通クラスタ関数を経由する。"""
+    assert '.pca_recluster <- TRUE' in _TIMS
+    assert 'seu_pca <- .ua_finish_tims(seu_pca, "pca", "pca_uncorrected", rds_pca_out, .pca_recluster)' in _TIMS
+    body = _fn_body(_TIMS, '.ua_finish_tims <- function')
+    assert 'obj <- ua_cluster_reduction(obj, method' in body
+    assert body.index('save_rds_compact(list(obj = obj') < body.index('run_downstream_analysis(obj, prefix')
 
 
 def test_the_new_clusters_are_written_back():
@@ -124,26 +125,22 @@ def test_desi_produces_an_uncorrected_companion():
 
 
 def test_desi_companion_reclusters_on_the_uncorrected_space():
-    """★ DESI のコンパニオンが無補正空間でクラスタを決めること。"""
-    # 宣言行ではなく **使っている側** を見る
-    i = _DESI.index("isTRUE(ALWAYS_OUTPUT_UNCORRECTED_PCA)")
-    block = _DESI[i:i + 3000]
-    assert "FindClusters" in block and "FindNeighbors" in block, (
-        "DESI のコンパニオンがクラスタを取り直していない")
-    assert 'reduction = "pca"' in block, (
-        "無補正 (pca) の空間でクラスタを決めていない")
+    """★ ver67.0: 必須PCAが共通処理へpcaを明示して渡す。"""
+    assert '.desi_finish_method(seu_pca, "PCA", "pca"' in _DESI
+    body = _fn_body(_DESI, ".desi_finish_method <- function")
+    assert '.desi_cluster(obj, reduction, resolution)' in body
+    helper = (ROOT / "Script/helpers/analysis_contract.R").read_text(encoding="utf-8")
+    assert 'obj <- ua_prepare_reduction(obj, reduction)' in helper
+    assert 'Seurat::FindNeighbors(obj, reduction = reduction' in helper
+    assert 'Seurat::FindClusters(obj, resolution = resolution' in helper
 
 
 def test_desi_companion_only_when_correction_ran():
-    """★ 直しすぎの検出: 補正していないときは二重に出さないこと。
-
-    「補正なし」を選んだ実行では主結果が既に無補正なので、
-    同じものをもう一度出す意味が無い。
-    """
-    i = _DESI.index("isTRUE(ALWAYS_OUTPUT_UNCORRECTED_PCA)")
-    block = _DESI[i:i + 600]
-    assert ".correct_multi" in block, (
-        "補正の有無を見ずにコンパニオンを出している")
+    """★ ver67.0: PCAは補正前に一度だけ完成させ、補正から複製しない。"""
+    call = '.desi_finish_method(seu_pca, "PCA", "pca"'
+    assert _DESI.count(call) == 1
+    assert _DESI.index(call) < _DESI.index('for (.method in c("Harmony", "RPCA"))')
+    assert 'seu_unc <- seu_harmony' not in _DESI
 
 
 # ---------------------------------------------------------------------------

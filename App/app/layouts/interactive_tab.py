@@ -556,8 +556,8 @@ def create_interactive_tab():
                                     "島の間の距離＝差の大きさは定量的ではありません"
                                     "（見た目の分離を生物差の証拠にしない）。"),
                                 html.Li(
-                                    "未補正(PCA)＝『差』の面（技術＋生物が交絡）。"
-                                    "Harmony/RPCA＝『共通性』の面（段階差は除去済み）。"),
+                                    "PCAは未補正の比較基準です。Harmony・RPCAは切片間の差を調整するため、"
+                                    "生物学的な差も変わり得ます。三手法を比較して確認してください。"),
                                 html.Li(
                                     "解剖学的に同じ領域なのに色(クラスタ/発現)が違う場合は生物差の『候補』。"
                                     "確証には反復切片や直交検証が必要です。"),
@@ -881,6 +881,32 @@ def create_interactive_tab():
                             ),
                         ]),
 
+                        # ★ ver67.0: 群登録を画素のクラスタ操作と分け、独立試料数を示す。
+                        dbc.AccordionItem(title="群・個体情報", item_id="acc_section_groups", children=[
+                            html.Div(id="int_section_group_panel", style={"display": "none"}, children=[
+                                html.Div(id="int_section_group_summary", className="mb-2 small"),
+                                dbc.Label("表示する群（UMAP・空間表示）"),
+                                dcc.Dropdown(id="int_section_group_filter", options=[], value=None,
+                                             multi=True, placeholder="表示する群を選択"),
+                                html.Details(className="mt-3", children=[
+                                    html.Summary("群・個体情報を編集"),
+                                    dash_table.DataTable(id="int_section_group_table", data=[],
+                                        columns=[{"name": "切片", "id": "section", "editable": False},
+                                                 {"name": "個体／独立試料ID", "id": "subject_id"},
+                                                 {"name": "群", "id": "group"}],
+                                        editable=True, page_size=12, style_table={"overflowX": "auto"},
+                                        style_cell={"textAlign": "left", "padding": "8px"}),
+                                    dbc.Button("群・個体情報を保存", id="int_section_group_save", size="sm",
+                                               color="primary", className="mt-2"),
+                                    html.Div(id="int_section_group_status", className="small mt-2"),
+                                ]),
+                                dbc.Button("画素・切片メタデータCSV", id="int_section_metadata_export",
+                                           size="sm", color="outline-secondary", className="mt-3"),
+                                dcc.Download(id="int_section_metadata_download"),
+                            ]),
+                            dcc.Store(id="int_section_group_updated", data=0),
+                        ]),
+
                         # --- UMAP プロット ---
                         dbc.AccordionItem(title="UMAP", item_id="acc_umap", className="accordion-umap", children=[
                             html.Div(className="d-flex justify-content-end gap-2", children=[
@@ -914,6 +940,7 @@ def create_interactive_tab():
                                         options=[
                                             {"label": "Cluster", "value": "Cluster"},
                                             {"label": "Sample", "value": "Sample"},
+                                            {"label": "群", "value": "group"},
                                         ],
                                         value="Cluster", inline=True,
                                     ),

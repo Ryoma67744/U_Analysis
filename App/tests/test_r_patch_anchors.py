@@ -68,8 +68,8 @@ EXPECTED_ANCHOR_COUNT = {
     #   （定数 SKIP_BACKGROUND_FILTER の差し替えに置き換えた。差し替えは
     #     `replace_assign_line` = 0 件で停止する形なので anchor を持たない）
     "DESI 再解析": 2,
-    # ver56.5: Retry Logic 置換を削除して 4 → 3。
-    "TIMS 再解析": 3,
+    # ver67.0: 共通関数へ移しrun_pipelineの置換も削除して3 → 2。
+    "TIMS 再解析": 2,
 }
 
 # 手術対象のコードを保持している R の変数名。

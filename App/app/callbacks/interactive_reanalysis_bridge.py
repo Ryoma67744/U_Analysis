@@ -10,6 +10,7 @@
 # =============================================================================
 
 import logging
+from copy import deepcopy
 from pathlib import Path
 
 from dash import Input, Output, State, callback, no_update, html
@@ -51,6 +52,12 @@ def fill_bridge_cluster_options(rds_path):
      # ★ ver58.1 (デバッグ総点検 B-3): 転記も analysis_method を書くので、
      #   auto_switch_data_folder が発火して**それまで指定していた
      #   データフォルダが既定に戻る**。復元中と宣言して黙らせる。
+     # ★ ver67.0: フォルダだけではPCAで選んだクラスタがRPCAとして解釈される。
+     Output("rds_path", "value", allow_duplicate=True),
+     Output("cluster_source", "value", allow_duplicate=True),
+     Output("reanalysis_data_folder", "value", allow_duplicate=True),
+     Output("section_manifest_store_reanalysis", "data", allow_duplicate=True),
+     Output("reanalysis_source_manifest_store", "data", allow_duplicate=True),
      Output("settings_restore_pending", "data", allow_duplicate=True)],
     Input("btn_send_to_reanalysis", "n_clicks"),
     [State("reanalysis_bridge_mode", "value"),
@@ -59,17 +66,18 @@ def fill_bridge_cluster_options(rds_path):
      State("int_cal_ms_instrument", "data"),
      # ★ ver62.2: 装置は生データフォルダの中身でしか確実に決まらない
      #   （`interactive_data_export._instrument_from_folder` 参照）。
-     State("interactive_msi_folder", "value")],
+     State("interactive_msi_folder", "value"),
+     State("interactive_integration_method", "value")],
     prevent_initial_call=True,
 )
 def send_to_reanalysis(n_clicks, mode, clusters, rds_path, ms_instrument,
-                       data_folder=None):
+                       data_folder=None, integration_method=None):
     if not n_clicks:
         raise PreventUpdate
     if not clusters:
         return (no_update, no_update, no_update, no_update, no_update, no_update,
                 html.Span("対象クラスタを選択してください", className="text-warning small"),
-                no_update)
+                no_update, no_update, no_update, no_update, no_update, no_update)
     target = ", ".join(str(c) for c in clusters)
     fm = mode if mode in ("keep", "exclude") else "keep"
     folder = str(Path(rds_path).parent) if rds_path else ""
@@ -86,8 +94,25 @@ def send_to_reanalysis(n_clicks, mode, clusters, rds_path, ms_instrument,
         desi_method, tims_method = "desi_cluster_filter", None
     else:
         desi_method, tims_method = None, "tims_cluster_filter"
+    from app.services.section_group_metadata import load_result_manifest
+    manifest = deepcopy(load_result_manifest(rds_path)) if rds_path else {}
+    source_folder = data_folder or next(
+        (str(Path(f["path"]).parent) for f in manifest.get("files", [])
+         if f.get("selection_mode") != "none"), "")
+    method = str(integration_method or "").strip().lower()
+    if method.startswith("pca"):
+        method = "pca"
+    if method not in ("pca", "harmony", "rpca"):
+        name = Path(rds_path or "").name.lower()
+        method = ("rpca" if "rpca" in name else "harmony" if "harmony" in name
+                  else "pca" if "pca" in name or "singlesample" in name else no_update)
+    if manifest:
+        manifest["source_rds_path"] = str(rds_path)
+        manifest["source_data_folder"] = source_folder
+    source = ({"manifest": manifest, "data_folder": source_folder,
+               "rds_path": str(rds_path)} if manifest else None)
     msg = html.Span(
-        f"{inst} 再解析フォームに転記しました（対象クラスタ・モード・RDSフォルダ）。"
-        "設定タブで「再解析データフォルダ」等を確認して ▶解析実行 してください。",
-        className="text-success small")
-    return target, fm, folder, desi_method, tims_method, "settings", msg, True
+        f"{inst} 再解析フォームに転記しました（対象クラスタ・モード・表示中のRDS・切片情報）。"
+        "設定タブで条件を確認して ▶解析実行 してください。", className="text-success small")
+    return (target, fm, folder, desi_method, tims_method, "settings", msg,
+            rds_path or "", method, source_folder, manifest or None, source, True)

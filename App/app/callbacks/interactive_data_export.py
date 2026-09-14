@@ -254,12 +254,20 @@ def _build_cluster_lookup(plot_data: pd.DataFrame, cluster_name_map: dict | None
     """
     if plot_data is None or plot_data.empty:
         return {}
-    lookup = {}
+    from app.services.section_group_metadata import SourceClusterLookup, normalize_pixel_id
+    lookup = SourceClusterLookup()
     for _, row in plot_data.iterrows():
         sx = row.get("SpatialX")
         sy = row.get("SpatialY")
         sample = str(row.get("Sample", ""))
         cluster = row.get("Cluster", "")
+        fid, pid = row.get("source_file_id"), row.get("source_pixel_id")
+        if pd.notna(fid) and pd.notna(pid) and str(fid):
+            source_key = (str(fid), normalize_pixel_id(pid))
+            value = cluster_display_name(cluster, cluster_name_map)
+            if source_key in lookup.by_source and lookup.by_source[source_key] != value:
+                raise ValueError("同じ元画素IDに異なるクラスタが記録されています。")
+            lookup.by_source[source_key] = value
         if pd.notna(sx) and pd.notna(sy):
             key = (sample, round(float(sx), 4), round(float(sy), 4))
             lookup[key] = cluster_display_name(cluster, cluster_name_map)
@@ -302,8 +310,18 @@ def _build_extra_lookups(plot_data: pd.DataFrame, options) -> dict:
     ok = ~(np.isnan(sx) | np.isnan(sy))
     keys = [(s, round(float(x), 4), round(float(y), 4))
             for s, x, y in zip(samples[ok], sx[ok], sy[ok])]
+    from app.services.section_group_metadata import SourceClusterLookup, normalize_pixel_id
+    source_keys = None
+    if {"source_file_id", "source_pixel_id"}.issubset(plot_data.columns):
+        source_keys = [(str(fid), normalize_pixel_id(pid))
+                       if pd.notna(fid) and pd.notna(pid) and str(fid) else None
+                       for fid, pid in zip(plot_data["source_file_id"], plot_data["source_pixel_id"])]
     for col in need:
-        out[col] = dict(zip(keys, plot_data[col].to_numpy()[ok]))
+        lookup = SourceClusterLookup()
+        lookup.update(zip(keys, plot_data[col].to_numpy()[ok]))
+        if source_keys is not None:
+            lookup.by_source = {key: value for key, value in zip(source_keys, plot_data[col]) if key is not None}
+        out[col] = lookup
     return out
 
 
@@ -322,7 +340,8 @@ def _build_region_lookup(plot_data: pd.DataFrame, rds_path):
       利用者から見ると「ROI 機能を使っていない」と「どの ROI にも入らなかった」の
       区別が付かない（後者は解析の見落としを意味する）。
     """
-    lookup: dict = {}
+    from app.services.section_group_metadata import SourceClusterLookup, normalize_pixel_id
+    lookup = SourceClusterLookup()
     failed: list = []
     if (plot_data is None or not rds_path
             or "SpatialX" not in plot_data.columns
@@ -347,6 +366,10 @@ def _build_region_lookup(plot_data: pd.DataFrame, rds_path):
             continue
         sx = pd.to_numeric(sub["SpatialX"], errors="coerce").to_numpy(float)
         sy = pd.to_numeric(sub["SpatialY"], errors="coerce").to_numpy(float)
+        if {"source_file_id", "source_pixel_id"}.issubset(sub.columns):
+            for fid, pid, value in zip(sub["source_file_id"], sub["source_pixel_id"], region.to_numpy()):
+                if pd.notna(fid) and pd.notna(pid) and str(fid) and pd.notna(value):
+                    lookup.by_source[(str(fid), normalize_pixel_id(pid))] = str(value)
         for x, y, r in zip(sx, sy, region.to_numpy()):
             if r is None or pd.isna(x) or pd.isna(y):
                 continue
@@ -930,6 +953,7 @@ def _export_desi(
     progress_cb=None, base: int = 0, span: int = 0, conditions: dict | None = None,
     roi_failed: list | None = None, report: list | None = None,
     exclude_unused: bool = False, out_dir=None, prefix: str = "",
+    metadata_rds=None, metadata_plot=None,
 ) -> tuple[Path, str]:
     """DESI .txt → Excel バイト列（サンプル別シート + 手法別クラスター列）。
 
@@ -1116,6 +1140,8 @@ def _export_desi(
             data_rows = rows[n_header:] if len(rows) > n_header else []
             n_matched = 0
 
+            from app.services.section_group_metadata import input_source_id, normalize_pixel_id
+            source_fid = input_source_id(txt_path, metadata_rds)
             for row in data_rows:
                 padded = row + [""] * (max_cols - len(row))
 
@@ -1135,6 +1161,9 @@ def _export_desi(
                     if x_val is not None and y_val is not None:
                         key = (matched_sample, x_val, y_val)
                         cluster_val = method_lookups[method_name].get(key, "")
+                    source_lookup = getattr(method_lookups[method_name], "by_source", None)
+                    if source_fid and source_lookup:
+                        cluster_val = source_lookup.get((source_fid, normalize_pixel_id(row[0] if row else "")), "")
                     if cluster_val != "":
                         _hit_row = True
                     padded.append(cluster_val)
@@ -1146,6 +1175,9 @@ def _export_desi(
                     region_val = ""
                     if x_val is not None and y_val is not None:
                         region_val = region_lookup.get((matched_sample, x_val, y_val), "")
+                    source_regions = getattr(region_lookup, "by_source", None)
+                    if source_fid and source_regions:
+                        region_val = source_regions.get((source_fid, normalize_pixel_id(row[0] if row else "")), "")
                     padded.append(region_val)
 
                 output_rows.append(padded)
@@ -1160,6 +1192,16 @@ def _export_desi(
                     "unresolved_samples": [] if matched_sample else [stem],
                 })
 
+            if metadata_plot is not None:
+                from app.services.section_group_metadata import attach_input_metadata, METADATA_COLUMNS
+                ids = pd.DataFrame({"id": [r[0] if r else "" for r in data_rows]})
+                attached = attach_input_metadata(ids, txt_path, metadata_rds, metadata_plot)
+                added = [c for c in METADATA_COLUMNS if c in attached.columns]
+                if added:
+                    for i_h in range(n_header):
+                        output_rows[i_h].extend(added if i_h == 0 else [""] * len(added))
+                    for i_r, values in enumerate(attached[added].itertuples(index=False, name=None)):
+                        output_rows[n_header + i_r].extend(values)
             df_out = pd.DataFrame(output_rows)
 
             # シート名（31 文字制限 + 禁止文字 + 衝突対策）
@@ -1358,55 +1400,57 @@ def _read_tims_file(file_path: str, columns: "list | None" = None) -> pd.DataFra
     return alt if alt is not None else df
 
 
-def _apply_feature_annotation_columns(df: pd.DataFrame, data_folder: str) -> pd.DataFrame:
-    """サイドカーがあれば m/z 特徴量列を埋め込み名（`化合物名_<m/z> | …`）へリネームする。
-
-    本体 parquet（数 GB）は書き換えず、エクスポート時に列名だけを差し替える。これにより
-    「分子情報を後から登録」した（サイドカーのみ付与した）データでも、通常登録と同じ
-    化合物名付き列名で出力できる。サイドカー無しなら無変換。非特徴量列（id/x/y/annotation）
-    は対象外。列名が既に埋め込み済みでも m/z を再抽出して同名に解決するため冪等。
-    """
+def _apply_feature_annotation_columns(df: pd.DataFrame, data_folder: str, *, input_paths=None) -> pd.DataFrame:
+    """解析と同じ名称対応で表示列名だけを付与し、異なる feature 列を統合しない。"""
     try:
         import numpy as np
-
-        from app.services.annotation_inspect import find_annotation_sidecar
+        from app.services.naming_policy import resolve_feature_annotations
         from app.services.peak_annotation import make_column_name
         from app.utils.deg_utils import extract_mz_numeric
-
-        sidecar = find_annotation_sidecar([Path(data_folder)])
-        if sidecar is None:
-            return df
-        side = pd.read_parquet(sidecar)
-        if "mz" not in side.columns or "raw" not in side.columns:
-            return df
-        side_mz = side["mz"].to_numpy(dtype=float)
-        raws = side["raw"].tolist()
-        if side_mz.size == 0:
-            return df
-
-        non_meta = {"id", "x", "y", "annotation"}
-        tol = 0.005
-        rename: dict = {}
+        from app.callbacks.interactive_callbacks import _interactive_data
+        # ★ ver67.0: 先頭サイドカーを任意採用すると閲覧・CSV間で名前が食い違った。
+        active = _interactive_data.get("feature_annotations") or {}
+        active_map = _interactive_data.get("annotation_map") or {}
+        settings = _interactive_data.get("naming_settings") or {}
+        source_folders = {str(Path(path).resolve().parent) for path in
+                          settings.get("input_paths", []) + settings.get("original_input_paths", [])}
+        if settings.get("data_folder"):
+            source_folders.add(str(Path(settings["data_folder"]).resolve()))
+        use_active = bool(_interactive_data.get("rds_path") and (active or active_map)
+                          and str(Path(data_folder).resolve()) in source_folders)
+        # 入力フォルダの親/兄弟へ広げると、別プロジェクトの名前が混入する。
+        sidecars = ([Path(path).with_name(Path(path).stem + "_feature_annotations.parquet")
+                     for path in input_paths] if input_paths is not None else
+                    sorted(Path(data_folder).glob("*_feature_annotations.parquet")))
+        records = resolve_feature_annotations(
+            [path for path in sidecars if path.is_file()], list(df.columns)) if not use_active else {}
+        active_features = list(dict.fromkeys(list(active) + list(active_map)))
+        active_mz = np.array([extract_mz_numeric(feature) for feature in active_features])
+        rename = {}
         for col in df.columns:
-            if col in non_meta:
-                continue
             mz = extract_mz_numeric(col)
-            if mz is None or mz == float("inf"):
+            if not np.isfinite(mz):
                 continue
-            j = int(np.argmin(np.abs(side_mz - mz)))
-            if abs(side_mz[j] - mz) > tol:
+            record = records.get(col) or {}
+            compound = record.get("compound")
+            if use_active and len(active_features):
+                distances = np.abs(active_mz - mz)
+                j = int(np.argmin(distances))
+                if distances[j] > 0.005:
+                    continue
+                feature = active_features[j]
+                record = active.get(feature) or {}
+                compound = record.get("compound") or active_map.get(feature)
+            if record.get("status") == "conflict" or not compound:
                 continue
-            raw = raws[j]
-            if not isinstance(raw, str) or not raw.strip():
-                continue
+            raw = record.get("raw") or compound
             new = make_column_name(raw, float(mz))
-            if new and new != col and new not in rename.values():
+            if new and new != col and new not in rename.values() and new not in df.columns:
                 rename[col] = new
-        if rename:
-            df = df.rename(columns=rename)
-    except Exception as e:  # noqa: BLE001 — 変換失敗時はそのまま出力
-        logger.warning("エクスポート列名のアノテーション変換に失敗（未変換で出力）: %s", e)
-    return df
+        return df.rename(columns=rename) if rename else df
+    except Exception as e:
+        logger.warning("エクスポート列名の名称変換に失敗（元 feature ID で出力）: %s", e)
+        return df
 
 
 def _write_mz_list_only(mz_df: pd.DataFrame, fmt: str,
@@ -1482,9 +1526,20 @@ def _build_mz_list_table(input_paths: list, data_folder: str) -> pd.DataFrame:
                 names.append(c)
 
     renamed = _apply_feature_annotation_columns(
-        pd.DataFrame(columns=names), data_folder)
-    sidecar = find_annotation_sidecar([Path(data_folder)])
-    return _mzlist.build_mz_list(list(renamed.columns), sidecar_path=sidecar)
+        pd.DataFrame(columns=names), data_folder, input_paths=input_paths)
+    # ★ ver67.0: 一覧表にも同じ選択入力を使い、任意の先頭サイドカーを再び結合しない。
+    from app.services.naming_policy import resolve_feature_annotations
+    sidecars = [Path(path).with_name(Path(path).stem + "_feature_annotations.parquet") for path in input_paths]
+    records = resolve_feature_annotations([path for path in sidecars if path.is_file()], list(renamed.columns))
+    result = _mzlist.build_mz_list(list(renamed.columns))
+    for idx, row in result.iterrows():
+        record = records.get(row["列名"]) or {}
+        if record.get("status") == "conflict":
+            continue
+        for key in ("compound", "adduct", "formula", "ppm", "lipid_class", "database"):
+            if record.get(key) is not None:
+                result.at[idx, key] = record[key]
+    return result
 
 
 def _tims_cluster_columns(method_lookups: OrderedDict) -> list:
@@ -1515,14 +1570,19 @@ def _aggregate_tims(dfs: list, method_lookups: OrderedDict,
     value_cols = (_eo.intensity_columns(all_cols, cluster_columns=cluster_cols)
                   if _eo.wants(options, "intensity") else [])
 
+    # ★ ver67.0: 同名annotationの別ファイルを集計で混ぜない。
+    section_keys = []
+    if "section" in _eo.normalize(options)["group_keys"]:
+        section_keys = [c for c in ("source_file_id", "section_id", "subject_id", "group", "integration_unit_id") if c in all_cols]
+
     if "cluster" not in _eo.normalize(options)["group_keys"]:
-        group_cols = _eo.resolve_group_columns(options, [])
+        group_cols = _eo.resolve_group_columns(options, []) + section_keys
         partials = [_agg.accumulate_partial(d, group_cols, value_cols) for d in dfs]
         return _agg.combine_partials(partials, group_cols)
 
     frames = []
     for col in cluster_cols:
-        group_cols = _eo.resolve_group_columns(options, [col])
+        group_cols = _eo.resolve_group_columns(options, [col]) + section_keys
         partials = [_agg.accumulate_partial(d, group_cols, value_cols) for d in dfs]
         out = _agg.combine_partials(partials, group_cols)
         if out.empty:
@@ -1542,7 +1602,7 @@ def _export_tims(
     progress_cb=None, base: int = 0, span: int = 0, conditions: dict | None = None,
     report: list | None = None, exclude_unused: bool = False,
     options=None, extra_lookups: dict | None = None,
-    out_dir=None, prefix: str = "",
+    out_dir=None, prefix: str = "", metadata_rds=None, metadata_plot=None,
 ) -> tuple[Path, str]:
     """TIMS 入力ファイルに手法別クラスター列を追加してエクスポート。
 
@@ -1557,7 +1617,10 @@ def _export_tims(
 
     Returns (out_path, filename)。★ ver62.1: バイト列ではなくパスを返す。
     """
-    input_paths = build_tims_input_paths(data_folder)
+    from app.services.section_group_metadata import selected_input_paths
+    input_paths = selected_input_paths(metadata_rds, {".parquet", ".csv"})
+    if input_paths is None:
+        input_paths = build_tims_input_paths(data_folder)
     if not input_paths:
         # ★ ver62.2: DESI 側と同じ説明文にそろえる（どちらの経路でも理由が出る）。
         raise ValueError(_no_input_message(data_folder, "TIMS"))
@@ -1613,8 +1676,14 @@ def _export_tims(
         #   出力に出さなくても必ず読む（`export_options.parquet_columns`）。
         avail = _tims_available_columns(fp)
         read_cols = _eo.parquet_columns(avail, options) if avail else None
+        # ★ ver67.0: idを出力から外しても元画素との照合には必要。読込と出力を分ける。
+        if metadata_rds and read_cols is not None and "id" in (avail or []) and "id" not in read_cols:
+            read_cols = ["id", *read_cols]
         df = _read_tims_file(fp, columns=read_cols)
-        df = _apply_feature_annotation_columns(df, data_folder)
+        df = _apply_feature_annotation_columns(df, data_folder, input_paths=input_paths)
+        # ★ ver67.0: 群と由来はファイルID+画素IDで対応づける。
+        from app.services.section_group_metadata import attach_input_metadata
+        df = attach_input_metadata(df, fp, metadata_rds, metadata_plot)
         stem = Path(fp).stem
         # 右端に手法別クラスタ列・領域名列をベクトル付与（iterrows 撤廃＝軽い）。
         # ★ ver58.3: 突合の内訳を stats で受け取り、呼び出し側から利用者へ報告する。
@@ -1622,6 +1691,28 @@ def _export_tims(
         df = _append_cluster_region_columns(
             df, method_lookups, region_lookup, all_sample_list, is_multi, stem,
             _match_sample_name, stats=stats, extra_lookups=extra_lookups)
+        from app.services.section_group_metadata import append_source_clusters, append_source_values, source_match_mask
+        df = append_source_clusters(df, fp, metadata_rds, method_lookups)
+        df = append_source_values(df, fp, metadata_rds, extra_lookups, default=float("nan"))
+        if region_lookup is not None:
+            df = append_source_values(df, fp, metadata_rds, {"領域名": region_lookup})
+        source_mask = source_match_mask(df, fp, metadata_rds, method_lookups)
+        if source_mask is not None:
+            # 表示キーが元のbasenameと異なっても、照合と除外は由来IDで完結する。
+            stats.update(resolver="source-id", rows=len(df), keyed=int(source_mask.sum()),
+                         matched=int(source_mask.sum()), unresolved_samples=[], ambiguous=0,
+                         by_group={})
+            if exclude_unused and not source_mask.all():
+                stats["rows_before_exclude"] = len(df)
+                stats["excluded"] = {stem: int((~source_mask).sum())}
+                df = df.loc[source_mask].reset_index(drop=True)
+                stats["rows"] = len(df)
+            if "annotation" in df.columns:
+                source_hits = source_match_mask(df, fp, metadata_rds, method_lookups)
+                stats["by_group"] = {
+                    str(group): (int(source_hits.loc[index].sum()), len(index))
+                    for group, index in df.groupby("annotation", dropna=False).groups.items()
+                }
         if stats.get("matched", 0) < stats.get("rows", 0):
             logger.warning("[DataExport] %s: クラスタ突合 %s/%s 行 (resolver=%s, 未一致=%s)",
                            stem, stats.get("matched"), stats.get("rows"),
@@ -1638,7 +1729,7 @@ def _export_tims(
     #   解析済みの切片を「使っていない」と誤判定して消してしまう。
     #   落とすのは行フィルタで行う。ファイルを丸ごと飛ばすと全ファイル除外時に
     #   下の `dfs_out[0]` が IndexError になり、意味不明な例外として出る。
-    if exclude_unused and all_sample_list:
+    if exclude_unused and all_sample_list and not all(st.get("resolver") == "source-id" for st in stats_out):
         plan, blocked = _plan_exclusions(stats_out, all_sample_list)
         if blocked:
             logger.warning("[DataExport] 解析サンプル %s が生データに見つからないため"
@@ -1828,7 +1919,8 @@ def _do_export(
         if bad:
             return None, None, "❌ " + bad
 
-        plot_data = _interactive_data.get("plot_data")
+        from app.services.section_group_metadata import overlay_result_metadata
+        plot_data = overlay_result_metadata(_interactive_data.get("plot_data"), loaded_rds)
         if plot_data is None or plot_data.empty:
             return None, None, "データが読み込まれていません。先にデータを読み込んでください。"
 
@@ -1884,7 +1976,8 @@ def _do_export(
                 data_folder, method_lookups, region_lookup,
                 progress_cb=progress_cb, base=58, span=40, conditions=conditions,
                 roi_failed=roi_failed, report=report,
-                exclude_unused=exclude_unused, out_dir=out_dir, prefix=prefix)
+                exclude_unused=exclude_unused, out_dir=out_dir, prefix=prefix,
+                metadata_rds=loaded_rds, metadata_plot=plot_data)
         else:
             fmt = export_format or "xlsx"
             # ★ ver61.0: plot_data 由来の追加列（UMAP 座標・品質指標）。
@@ -1895,7 +1988,7 @@ def _do_export(
                 progress_cb=progress_cb, base=58, span=40, conditions=conditions,
                 report=report, exclude_unused=exclude_unused,
                 options=options, extra_lookups=extra_lookups,
-                out_dir=out_dir, prefix=prefix)
+                out_dir=out_dir, prefix=prefix, metadata_rds=loaded_rds, metadata_plot=plot_data)
         _p(99, "仕上げ中…")
 
         # ステータスメッセージ
@@ -2039,6 +2132,7 @@ def build_interactive_export_for_project(
         _p(52, "ROI(領域名)を割当中…")
         region_lookup = {}
         roi_failed: list = []
+        pdat = None
         primary_rds = _pick_primary_rds(rmap)
         if primary_rds:
             try:
@@ -2071,14 +2165,15 @@ def build_interactive_export_for_project(
                 data_folder, method_lookups, region_lookup,
                 progress_cb=progress_cb, base=58, span=40, conditions=conditions,
                 roi_failed=roi_failed, report=report,
-                exclude_unused=exclude_unused, out_dir=out_dir, prefix=prefix)
+                exclude_unused=exclude_unused, out_dir=out_dir, prefix=prefix,
+                metadata_rds=primary_rds, metadata_plot=pdat)
         else:
             fmt = export_format or "parquet"
             file_path, filename = _export_tims(
                 data_folder, method_lookups, fmt, region_lookup,
                 progress_cb=progress_cb, base=58, span=40, conditions=conditions,
                 report=report, exclude_unused=exclude_unused,
-                out_dir=out_dir, prefix=prefix)
+                out_dir=out_dir, prefix=prefix, metadata_rds=primary_rds, metadata_plot=pdat)
         _p(99, "仕上げ中…")
 
         msg = f"✅ {filename} を生成しました"

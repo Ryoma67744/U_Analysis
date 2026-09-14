@@ -222,6 +222,7 @@ def _call_link_d(rds_path):
 def test_link_d_success_returns_34_and_shows_viz(monkeypatch, sample_df, deg_records):
     rds_path = "/proj/A.rds"
     st = _seed_state(rds_path, sample_df)
+    st["naming_settings"] = {"annotation_enable": True, "annotation_csv": "/db.csv"}
     st["_deg_data"] = deg_records
     monkeypatch.setattr(ic, "_load_interactive_settings", lambda: {})
     import app.callbacks.interactive_calibration as cal
@@ -235,7 +236,7 @@ def test_link_d_success_returns_34_and_shows_viz(monkeypatch, sample_df, deg_rec
         #   スタブも 2-tuple を返す。dict のままだとアンパックが例外になり、
         #   本体の `except Exception` が拾って **注釈ゼロで「読み込み完了」**に
         #   なる（実際にこのテストがそれを捕まえた）。
-        return ({"built": True}, 0)
+        return ({features[0]: "Known compound"}, 0)
     monkeypatch.setattr(cal, "_build_feature_annotation_map", spy_anno)
     out = _call_link_d(rds_path)
     assert len(out) == 34
@@ -247,7 +248,7 @@ def test_link_d_success_returns_34_and_shows_viz(monkeypatch, sample_df, deg_rec
     assert out[-1] == "完了"                  # 進捗ラベル
     # アノテーションが正しい features で構築された (result 参照バグの回帰防止)
     assert captured.get("features") == st["features_list"]
-    assert ic._get_state(rds_path).get("annotation_map") == {"built": True}
+    assert ic._get_state(rds_path).get("annotation_map") == {st["features_list"][0]: "Known compound"}
     # ★ 読めなかったセルを数えられる形で呼んでいること。
     #   ここが False/未指定に戻ると、読み込み経路は再び黙って化合物名を落とす。
     assert captured["kwargs"].get("return_skipped") is True
@@ -261,6 +262,7 @@ def test_link_d_reports_unreadable_annotation_cells(monkeypatch, sample_df):
     """
     rds_path = "/proj/A.rds"
     st = _seed_state(rds_path, sample_df)
+    st["naming_settings"] = {"annotation_enable": True, "annotation_csv": "/db.csv"}
     st["_deg_data"] = None
     monkeypatch.setattr(ic, "_load_interactive_settings", lambda: {})
     import app.callbacks.interactive_calibration as cal
@@ -276,6 +278,7 @@ def test_link_d_says_nothing_when_all_cells_are_readable(monkeypatch, sample_df)
     """★ 過剰報告の番人: 0 件なら何も足さない。"""
     rds_path = "/proj/A.rds"
     st = _seed_state(rds_path, sample_df)
+    st["naming_settings"] = {"annotation_enable": True, "annotation_csv": "/db.csv"}
     st["_deg_data"] = None
     monkeypatch.setattr(ic, "_load_interactive_settings", lambda: {})
     import app.callbacks.interactive_calibration as cal
@@ -338,6 +341,7 @@ def test_link_d_annotation_failure_is_not_silent(monkeypatch, sample_df, caplog)
 
     rds_path = "/proj/A.rds"
     st = _seed_state(rds_path, sample_df)
+    st["naming_settings"] = {"annotation_enable": True, "annotation_csv": "/db.csv"}
     st["_deg_data"] = None
     monkeypatch.setattr(ic, "_load_interactive_settings", lambda: {})
     import app.callbacks.interactive_calibration as cal
@@ -358,3 +362,18 @@ def test_link_d_annotation_failure_is_not_silent(monkeypatch, sample_df, caplog)
     # 3) 利用者にも見える
     assert "化合物名は表示されません" in str(out[0]), (
         f"注釈が全滅したことが画面に出ていない: {out[0]}")
+
+
+def test_link_d_db_off_never_reads_saved_csv(monkeypatch, sample_df):
+    """★ ver67.0: パスが保存されていても明示的 OFF なら照合関数を呼ばない。"""
+    st = _seed_state("/proj/A.rds", sample_df)
+    st["naming_settings"] = {"annotation_enable": False, "annotation_csv": "/old/db.csv"}
+    st["feature_annotations"] = {st["features_list"][0]: {"compound": "SCiLS name"}}
+    st["_deg_data"] = [{"gene": st["features_list"][0], "annotation": "Old DB name"}]
+    monkeypatch.setattr(ic, "_load_interactive_settings", lambda: {})
+    import app.callbacks.interactive_calibration as cal
+    calls = []
+    monkeypatch.setattr(cal, "_build_feature_annotation_map", lambda *a, **k: calls.append(a))
+    out = _call_link_d("/proj/A.rds")
+    assert calls == []
+    assert out[7][0]["annotation"] == "SCiLS name"

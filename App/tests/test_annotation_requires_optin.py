@@ -134,7 +134,7 @@ class TestMetaboliteDbIsOptIn:
             "R テンプレの ANNOTATION_ENABLE 既定が TRUE のまま")
         assert re.search(r'^ANNOTATION_CSV_PATH\s*<-\s*""\s*$', body, re.M), (
             "R テンプレに直書きの DB パスが残っている")
-        assert re.search(r"^USE_EMBEDDED_COMPOUND_NAMES\s*<-\s*FALSE\s*$", body, re.M), (
+        assert re.search(r"^USE_EMBEDDED_COMPOUND_NAMES\s*<-\s*TRUE\s*$", body, re.M), (
             "USE_EMBEDDED_COMPOUND_NAMES が宣言されていない（注入先が無いと無言で素通りする）")
         # 他のパス変数（INPUT_PATHS 等）は毎回注入で置換される既定値なので対象外。
         # アノテーション系だけは「指定しない」が正常系なので、直書きが残ると必ず発火する。

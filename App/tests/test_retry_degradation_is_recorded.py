@@ -74,7 +74,8 @@ def test_effective_settings_are_exposed_to_the_sidecar():
                  "RETRY_MAX_PCS_EFFECTIVE",
                  "RETRY_UMAP_DIMS_EFFECTIVE",
                  "RETRY_TIER_USED"):
-        assert re.search(name + r"\s*<<-", src), f"{name} をグローバルへ記録していない"
+        # ver67.0: 記録がトップレベルへ移ったため通常代入もグローバル。
+        assert re.search(name + r"\s*<<?-", src), f"{name} を記録していない"
 
     sidecar = RDS_IO.read_text(encoding="utf-8")
     for name in ("n_var_features_effective", "max_pcs_effective",

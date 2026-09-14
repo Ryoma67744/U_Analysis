@@ -14,14 +14,14 @@ FA = {FEAT: {"display_name": "PI 38:4_760.5851", "compound": "PI 38:4"}}
 # ---- ソース優先順位 ----
 
 class TestPrecedence:
-    def test_annotation_map_wins_over_feature_annotations(self):
+    def test_scils_annotation_wins_over_db_annotation_map(self):
         out = feature_display_label(
             FEAT, style="paren",
             annotation_map={FEAT: "FromMap"},
             feature_annotations={FEAT: {"compound": "FromFA"}},
             deg_annotation="FromDeg",
         )
-        assert out == f"{FEAT} (FromMap)"
+        assert out == f"{FEAT} (FromFA)"
 
     def test_feature_annotations_over_deg(self):
         out = feature_display_label(

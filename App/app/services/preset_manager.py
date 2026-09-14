@@ -30,6 +30,8 @@ PRESET_KEYS = [
     "reanalysis_ion_mode", "reanalysis_tolerance_mz",
     "reanalysis_adduct_filter",
     "reanalysis_p_thresh", "reanalysis_logfc_thresh",
+    # ★ ver67.0: パスの残存から照合を再有効化しないため、明示設定を保存する。
+    "use_annotation_check", "reanalysis_use_annotation_check",
 ]
 
 

@@ -58,6 +58,7 @@ local({
          " App/Script/helpers/rds_io.R の配置を確認してください。")
   }
   source(helper_path, local = FALSE)
+  source(file.path(dirname(helper_path), "analysis_contract.R"), local = FALSE)
 })
 
 # ------------------------------------------------------------
@@ -68,13 +69,14 @@ local({
 # ------------------------------------------------------------
 
 # ========== 必須 ==========
+# ★ ver67.0: アプリから注入する設定に個人環境のパスを残さない。
 # (A) ベーススクリプト（ver15: キャリブレーション対応）のパス
-V13_SCRIPT_PATH <- "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\TIMS\\Script\\260308_DBSCAN_With_cluster_ver16.R"
+V13_SCRIPT_PATH <- "./260623_DBSCAN_With_cluster_ver6_no-png_slim.R"
 
 # (B) ver13 出力フォルダ（RDS_Files を含むフォルダ、または RDS_Files フォルダ自体）
 # 例1) ...\\<PROJECT>_<YYYYMMDD>                （この中に RDS_Files がある）
 # 例2) ...\\<PROJECT>_<YYYYMMDD>\\RDS_Files    （RDS_Files を直接指定）
-RDS_RUN_DIR <- "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\MSI_Tims\\SCiLS_Transform\\Data\\260207_HCC_Transform\\260207_HCC_1__20260207\\RDS_Files"
+RDS_RUN_DIR <- ""
 
 # (C) どの結果のクラスタを使って抽出/除外するか
 #   - "harmony" : Step2_HarmonyPCA_Result.rds を参照
@@ -88,14 +90,14 @@ RDS_PATH <- ""
 # (E) 入力ファイル（ver13 の INPUT_PATHS と同じでなくてもOK：下のマッピング/xy対応で吸収できます）
 #     Parquet(.parquet/.pq) / CSV(.csv) / TSV(.tsv/.txt) を混在させてもOK
 ORIGINAL_INPUT_PATHS <- c(
-  "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\MSI_Tims\\SCiLS_Transform\\Data\\260207_HCC_Transform\\260207_HCC_Transform.parquet"
+  ""
 )
 
 
 # (E2) [NEW] 入力ファイル名が RDS の meta.data$sample と一致しない場合のマッピング
 #   - names() に「入力ファイル側の sample 名（= basename sans ext）」、
 #     値に「RDS 側 sample 名」を入れます。
-#   - 例: c("test-250809_Kizu_H2-18O_Brain_Transform_v2" = "test-250809_Kizu_H2-18O_Brain_Transform")
+#   - 例: c("sample_reexport" = "sample_original")
 SAMPLE_NAME_MAP <- c()
 
 # (E3) [NEW] 1つの入力ファイルを複数サンプルに紐づけたい場合（必要なときだけ）
@@ -119,7 +121,7 @@ FILTER_MODE <- "exclude"
 TARGET_CLUSTERS <- c(8)
 
 # (H) フィルタ後入力の出力フォルダ
-EXPORT_DATA_DIR <- "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\MSI_Tims\\SCiLS_Transform\\Data\\260207_HCC_Transform"
+EXPORT_DATA_DIR <- "./filtered_inputs"
 dir.create(EXPORT_DATA_DIR, recursive = TRUE, showWarnings = FALSE)
 
 # (I) 新規入力を書き出した後に ver13 を自動実行するか（重いのでデフォルトFALSE推奨）
@@ -205,6 +207,12 @@ V13_UMAP_N_NEIGHBORS <- NA
 V13_UMAP_MIN_DIST <- NA
 V13_UMAP_METRIC <- ""
 V13_UMAP_DIMS_N <- NA
+V13_UMAP_SEED <- NA_integer_
+V13_CLUSTER_DIMS_N <- NA_integer_
+V13_CLUSTER_K_PARAM <- NA_integer_
+V13_CLUSTER_ALGORITHM <- NA_integer_
+V13_CLUSTER_METRIC <- ""
+V13_CLUSTER_RESOLUTION <- NA_real_
 
 # (M3) 入力正規化ポリシー（二重正規化の回避・アプリのトグルから注入）
 #   V13_INPUT_NORMALIZED=TRUE で LogNormalize を行わず NORM_MODE のみ適用。
@@ -233,6 +241,9 @@ V13_DEG_LOGFC_TH_VAL <- 0.25
 #     チェックを外しても**その切片のスポットが再解析にそのまま入る**空振りだった。
 #     NULL のままなら ver6 側の既定（フィルタなし）を使う＝従来挙動。
 V13_ANNOTATION_FILTER <- NULL
+# ★ ver67.0: 初回と再解析で選択・由来・保存条件を共通にする。
+V13_SECTION_MANIFEST_PATH <- ""
+V13_ANALYSIS_SIGNATURE <- ""
 
 # (N) slice_id / condition を 1回目RDSから保存しておきたい場合（通常は不要）
 #     ver13 は入力Parquetの annotation から slice_id/condition を再現できるため、
@@ -323,8 +334,8 @@ MERGE_OUT_PREFIX <- "UMAP_merged"
   .stopif(tolower(FILTER_MODE) %in% c("exclude", "keep"),
           "FILTER_MODE は 'exclude' または 'keep' を指定してください。")
   .stopif(length(TARGET_CLUSTERS) > 0, "TARGET_CLUSTERS が空です。")
-  .stopif(tolower(CLUSTER_SOURCE) %in% c("harmony", "rpca"),
-          "CLUSTER_SOURCE は 'harmony' または 'rpca' を指定してください。")
+  .stopif(tolower(CLUSTER_SOURCE) %in% c("harmony", "rpca", "pca", "pca_uncorrected"),
+          "CLUSTER_SOURCE は harmony / rpca / pca を指定してください。")
 
   # (2) ver13 スクリプト（自動実行する場合のみ必須）
   if (isTRUE(RUN_V13_AFTER_EXPORT)) {
@@ -464,8 +475,10 @@ resolve_rds_path <- function(rds_path, rds_run_dir, cluster_source = "harmony") 
     "Step2_HarmonyPCA_Result.rds"
   } else if (cs %in% c("rpca", "step3", "s3")) {
     "Step3_RPCA_Result.rds"
+  } else if (cs %in% c("pca", "pca_uncorrected")) {
+    "Step2_PCA_uncorrected.rds"
   } else {
-    stop("CLUSTER_SOURCE は 'harmony' か 'rpca' を指定してください。", call. = FALSE)
+    stop("CLUSTER_SOURCE は harmony / rpca / pca を指定してください。", call. = FALSE)
   }
   file.path(d, fname)
 }
@@ -566,41 +579,12 @@ derive_keep_ids_by_xy <- function(parquet_path, rows_md, xy_tol = 0) {
   .stopif(any(is.finite(px)) && any(is.finite(py)), "Parquet 側 x/y が数値として解釈できません。")
   .stopif(any(is.finite(pid)), "Parquet 側 id が数値として解釈できません。")
 
-  # 完全一致（高速・安全）
-  if (xy_tol <= 0) {
-    key_r <- paste(rx, ry, sep = "_")
-    key_p <- paste(px, py, sep = "_")
-    keep_flag <- key_p %in% key_r
-    keep_ids <- unique(pid[keep_flag])
-    keep_ids <- keep_ids[is.finite(keep_ids)]
-    return(keep_ids)
-  }
-
-  # 近傍（許容誤差以内）: まず粗く候補を絞ってから判定
-  # ※大規模データでも破綻しにくいように、四捨五入ビンで候補集合を作る
-  bx_r <- round(rx / xy_tol)
-  by_r <- round(ry / xy_tol)
-  bx_p <- round(px / xy_tol)
-  by_p <- round(py / xy_tol)
-  key_r <- paste(bx_r, by_r, sep = "_")
-  key_p <- paste(bx_p, by_p, sep = "_")
-  candidate <- key_p %in% key_r
-  if (!any(candidate)) return(numeric(0))
-
-  # 候補の中で実距離もチェック
-  # 許容: |dx|<=xy_tol かつ |dy|<=xy_tol
-  keep_ids <- numeric(0)
-  # 参照点を data.frame にしておき、候補ごとに近いものがあるか確認
-  ref <- data.frame(x = rx, y = ry, stringsAsFactors = FALSE)
-
-  idx <- which(candidate)
-  for (i in idx) {
-    dx <- abs(ref$x - px[i])
-    dy <- abs(ref$y - py[i])
-    if (any(dx <= xy_tol & dy <= xy_tol)) keep_ids <- c(keep_ids, pid[i])
-  }
-  keep_ids <- unique(keep_ids)
-  keep_ids <- keep_ids[is.finite(keep_ids)]
+  # 元メタデータの行番号を返し、新しい入力IDをsidecarの対応キーにする。
+  source_rows <- ua_match_xy(px, py, rx, ry, xy_tol)
+  keep <- !is.na(source_rows) & is.finite(pid)
+  keep_ids <- pid[keep]
+  .stopif(!anyDuplicated(keep_ids), "座標対応先の入力IDが重複しています")
+  attr(keep_ids, "source_rows") <- source_rows[keep]
   keep_ids
 }
 
@@ -730,103 +714,9 @@ export_filtered_input <- function(in_path, out_path, id_keep, debug_tsv_path = N
 }
 
 # ---------- ver13のコピーを作って I/O 設定を差し替え ----------
-patch_v13_step2_pipeline <- function(code_vec) {
-  # ver13 の run_pipeline / Retry Logic は ver12 と同形なので、ver12用の堅牢化パッチをそのまま適用
-  count_fixed <- function(x, pat_fixed) {
-    m <- gregexpr(pat_fixed, x, fixed = TRUE)[[1]]
-    if (length(m) == 1 && m[1] == -1) return(0L)
-    length(m)
-  }
-
-  # --- 1) run_pipeline 関数ブロックを置換 ---
-  s <- grep("^\\s*run_pipeline\\s*<-\\s*function\\s*\\(", code_vec)
-  if (length(s) >= 1) {
-    s <- s[1]
-    depth <- 0L
-    e <- NA_integer_
-    for (i in s:length(code_vec)) {
-      ln <- code_vec[i]
-      depth <- depth + count_fixed(ln, "{") - count_fixed(ln, "}")
-      if (i > s && depth <= 0L) { e <- i; break }
-    }
-    if (!is.na(e)) {
-      new_run <- c(
-        '  run_pipeline <- function(use_harmony, cfg) {',
-        '    # 1) Normalize(=apply_input_norm: INPUT_NORMALIZED で二重正規化を回避) -> HVF -> Scale -> PCA',
-        '    s <- apply_input_norm(seu_merged)',
-        '    s <- FindVariableFeatures(s, nfeatures = cfg$n_var_features)',
-        '    hvf <- VariableFeatures(s)',
-        '    hvf <- unique(hvf[!is.na(hvf)])',
-        '    # PCA/SVD が成立する条件を満たすように npcs を丸める（irlbaエラー回避）',
-        '    n_cells <- ncol(s)',
-        '    n_feat  <- length(hvf)',
-        '    npcs_use <- min(cfg$max_pcs, n_feat - 1, n_cells - 1)',
-        '    if (!is.finite(npcs_use) || npcs_use < 2) {',
-        '      stop(paste0("Too few variable features/cells for PCA: hvf=", n_feat, " cells=", n_cells))',
-        '    }',
-        '    # 既存 scale.data のfeature不整合警告を抑えるため、scale.data をクリア',
-        '    try({ Seurat::DefaultAssay(s) <- Seurat::DefaultAssay(seu_merged); s[[Seurat::DefaultAssay(s)]]@scale.data <- matrix(nrow=0, ncol=0) }, silent = TRUE)',
-        '    # [ver45.7 計測] 今回の停止点。ScaleData は密行列(hvf x cells x 8byte)を作るため',
-        '    #   ここが全工程で最も急激にメモリが増える。前後を実測する。',
-        '    if (exists(".mem_note_base")) .mem_note_base(sprintf("Step2 ScaleData 前 (hvf=%d, cells=%d)", n_feat, n_cells))',
-        '    s <- ScaleData(s, features = hvf)',
-        '    if (exists(".mem_note_base")) .mem_note_base("Step2 ScaleData 後")',
-        '    s <- RunPCA(s, npcs = npcs_use, features = hvf)',
-        '    if (exists(".mem_note_base")) .mem_note_base("Step2 RunPCA 後")',
-        '    # [ver45.9] scale.data は PCA を計算し終えれば不要。実測で ScaleData は +4.68GB を',
-        '    #   要し、以後 11.4GB 前後で全工程（Harmony/UMAP/downstream x2/RPCA）が走っていた。',
-        '    #   ここで破棄すると以降すべてが軽くなる。安全な根拠:',
-        '    #   - downstream のヒートマップは subset に対し ScaleData を作り直す（空の前提の設計）',
-        '    #   - Step2 の RDS 保存は keep_scale=FALSE で元々 scale.data を落としている',
-        '    #   - RunHarmony 自体は PCA 埋め込みで動くが、収束後の ProjectDim が scale.data を',
-        '    #     読むため、下の RunHarmony には project.dim = FALSE を付けている (ver63.2)',
-        '    #   - RPCA ブロックでも既に破棄済み（それを前倒しするだけ）',
-        '    suppressWarnings(try(s[[Seurat::DefaultAssay(s)]]$scale.data <- NULL, silent = TRUE))',
-        '    invisible(gc(verbose = FALSE))',
-        '    if (exists(".mem_note_base")) .mem_note_base("Step2 scale.data 破棄後")',
-        '',
-        '    # 2) dims を「実際に存在する次元数」で丸める（UMAP/Neighborsの範囲外エラー回避）',
-        '    dims_use <- 1:min(cfg$umap_dims, npcs_use)',
-        '',
-        '    if (use_harmony) {',
-        '      # ★ ver63.2: project.dim = FALSE を明示（本体 ver6 と同じ修正）。',
-        '      #   harmony の既定は project.dim=TRUE で、収束後に Seurat::ProjectDim を呼び',
-        '      #   scale.data %*% cell.embeddings を計算する。上で scale.data を破棄したままだと',
-        '      #   0x0 行列との積になり、収束した後で必ず non-conformable arguments で落ちる。',
-        '      #   引数名はドット区切り。project_dim と書くと ... に吸収され黙って無視される。',
-        '      s <- RunHarmony(s, group.by.vars = group_var, project.dim = FALSE)',
-        '    }',
-        '    # PreFlight: reduction_only は reduction(PCA/Harmony)計算後に即返す（UMAP/クラスタをスキップ）',
-        '    if (identical(PIPELINE_STAGE, "reduction_only")) return(s)',
-        '    if (use_harmony) {',
-        '      nh <- ncol(Seurat::Embeddings(s, "harmony"))',
-        '      dims_h <- 1:min(cfg$umap_dims, nh)',
-        '      s <- RunUMAP(s, reduction = "harmony", dims = dims_h) %>%',
-        '        FindNeighbors(reduction = "harmony", dims = dims_h)',
-        '    } else {',
-        '      s <- RunUMAP(s, reduction = "pca", dims = dims_use) %>%',
-        '        FindNeighbors(reduction = "pca", dims = dims_use)',
-        '    }',
-        '    FindClusters(s, resolution = CLUSTER_RESOLUTION, algorithm = 4)',
-        '  }'
-      )
-      code_vec <- c(code_vec[1:(s-1)], new_run, code_vec[(e+1):length(code_vec)])
-    }
-  }
-
-  # --- 2) Retry Logic ---
-  # [ver56.5] かつてここで Retry Logic ブロックを丸ごと置換し、失敗理由を表示する
-  #   verbose 版へ差し替えていた。本体テンプレ(ver6 slim)が ver56.5 で
-  #   失敗理由の表示に加えて「採用した段と実効ハイパーパラメータ」の記録
-  #   (RETRY_*_EFFECTIVE / [retry] ログ) まで行うようになったため、この置換は
-  #   不要になった。置換を残すと **本体側の記録を消してしまう** うえ、
-  #   `for (cfg in HARMONY_RETRY_GRID)` という目印は本体から消えたので
-  #   無言で空振りする anchor になる（tests/test_r_patch_anchors.py が検出）。
-  #   よって置換は行わず、本体テンプレの実装をそのまま引き継ぐ。
-
-  code_vec
-}
-
+# ★ ver67.0: 関数全文の文字列置換を廃止する。
+# 旧置換はUMAP/近傍の指定を捨てクラスタ法を4へ固定していた。
+# 本体の共通関数が次元数の上限と指定条件を一緒に処理する。
 make_v13_copy_with_settings <- function(v13_path, out_path,
                                         input_paths, output_dir, project_label,
                                         resume_from_rds = FALSE, resume_dir_path = "") {
@@ -860,6 +750,8 @@ make_v13_copy_with_settings <- function(v13_path, out_path,
   # OUTPUT_DIR / PROJECT_LABEL / RESUME
   code <- replace_assign_line(code, "OUTPUT_DIR",   r_str(output_dir))
   code <- replace_assign_line(code, "PROJECT_LABEL", r_str(project_label))
+  code <- replace_assign_line(code, "SECTION_MANIFEST_PATH", r_str(""))
+  code <- replace_assign_line(code, "ANALYSIS_SIGNATURE", r_str(V13_ANALYSIS_SIGNATURE))
 
   # ION_MODE ("Positive" or "Negative")
   if (exists("V13_ION_MODE") && nzchar(V13_ION_MODE)) {
@@ -921,6 +813,15 @@ make_v13_copy_with_settings <- function(v13_path, out_path,
       paste0(as.integer(V13_UMAP_DIMS_N), "L"), multiple = TRUE)
   }
 
+  # ★ ver67.0: 再解析でも指定されたクラスタ条件を使用する。
+  for (.field in c("CLUSTER_DIMS_N", "CLUSTER_K_PARAM", "CLUSTER_ALGORITHM", "CLUSTER_RESOLUTION")) {
+    .value <- get(paste0("V13_", .field))
+    if (length(.value) == 1L && is.finite(.value))
+      code <- replace_assign_line(code, .field, as.character(.value), multiple = TRUE)
+  }
+  if (nzchar(V13_CLUSTER_METRIC)) code <- replace_assign_line(code, "CLUSTER_METRIC", r_str(V13_CLUSTER_METRIC))
+  if (is.finite(V13_UMAP_SEED)) code <- replace_assign_line(code, "GLOBAL_RANDOM_SEED", as.character(V13_UMAP_SEED))
+
   # 入力正規化ポリシー（二重正規化の回避: アプリのトグルから注入。ver4 の apply_input_norm が参照）
   if (exists("V13_INPUT_NORMALIZED") && !is.na(V13_INPUT_NORMALIZED)) {
     code <- replace_assign_line(code, "INPUT_NORMALIZED", if (isTRUE(V13_INPUT_NORMALIZED)) "TRUE" else "FALSE", multiple = TRUE)
@@ -948,7 +849,7 @@ make_v13_copy_with_settings <- function(v13_path, out_path,
 
   # 切片 (Annotation) フィルタ → ver6 copy へ伝播
   #   ★ ver57.5: これが無いと、再解析画面で外した切片が解析に入ったままになる。
-  if (exists("V13_ANNOTATION_FILTER") && length(V13_ANNOTATION_FILTER) > 0) {
+  if (!nzchar(V13_SECTION_MANIFEST_PATH) && exists("V13_ANNOTATION_FILTER") && length(V13_ANNOTATION_FILTER) > 0) {
     .af <- paste0("c(", paste(sprintf("\"%s\"", V13_ANNOTATION_FILTER), collapse = ", "), ")")
     code <- replace_assign_line(code, "ANNOTATION_FILTER", .af, multiple = TRUE)
   }
@@ -987,8 +888,6 @@ make_v13_copy_with_settings <- function(v13_path, out_path,
   )
   code <- c(code[1:(s-1)], ip_lines, code[(e+1):length(code)])
 
-  # ---- Step2 の run_pipeline / Retry Logic を堅牢化パッチ ----
-  code <- patch_v13_step2_pipeline(code)
 
   writeLines(code, con = out_path, useBytes = TRUE)
 
@@ -1015,6 +914,16 @@ make_v13_copy_with_settings <- function(v13_path, out_path,
 # cell key: sample + spot_index で安定に対応付け（cellname変更に強い）
 .make_cell_key <- function(obj, sample_name_map = NULL) {
   md <- obj@meta.data
+  # ★ ver67.0: 同名ファイルや一時名でも元ファイル/元画素で対応づける。
+  if (all(c("source_file_id", "source_pixel_id") %in% colnames(md))) {
+    file_id <- as.character(md$source_file_id)
+    pixel_id <- as.character(md$source_pixel_id)
+    .stopif(all(!is.na(file_id) & nzchar(file_id) & !is.na(pixel_id) & nzchar(pixel_id)),
+            "元ファイル/元画素IDに欠損があります")
+    key <- paste(file_id, pixel_id, sep = "|")
+    .stopif(!anyDuplicated(key), "元ファイル/元画素IDが重複しています")
+    return(setNames(key, rownames(md)))
+  }
   .stopif(all(c("sample","spot_index") %in% colnames(md)),
           "ReUMAP置換には meta.data に sample/spot_index が必要です（ver13 Step1 で付与されます）。")
   sn <- as.character(md$sample)
@@ -1260,6 +1169,8 @@ if (isTRUE(SAVE_SLICE_MAP_FROM_FIRST_RUN)) {
 
 # 入力ファイルごとにフィルタして同形式で保存
 exported <- character(0)
+.section_manifest <- ua_read_manifest(V13_SECTION_MANIFEST_PATH)
+.export_stems <- make.unique(tools::file_path_sans_ext(basename(ORIGINAL_INPUT_PATHS)))
 .merge_sample_map <- c()   # rerun_sample → base_sample マッピング（マージ用）
 
 
@@ -1269,7 +1180,15 @@ for (fp in ORIGINAL_INPUT_PATHS) {
 
   # 入力ファイルの sample 名が RDS と違う場合に備え、マッピングで解決
   rds_samples <- resolve_rds_samples_for_input(input_sn, SAMPLE_NAME_MAP, SAMPLE_NAME_MAP_MULTI)
-  rows_sn <- md_keep[as.character(md_keep$sample) %in% as.character(rds_samples), , drop = FALSE]
+  entry <- ua_manifest_entry(.section_manifest, fp)
+  if (!is.null(entry) && "source_file_id" %in% colnames(md_keep)) {
+    rows_sn <- md_keep[as.character(md_keep$source_file_id) == ua_value(entry$file_id), , drop = FALSE]
+  } else {
+    rows_sn <- md_keep[as.character(md_keep$sample) %in% as.character(rds_samples), , drop = FALSE]
+  }
+  rows_sn <- ua_section_metadata(rows_sn, fp, .section_manifest,
+    roi_col = if ("annotation" %in% names(rows_sn)) "annotation" else "slice_id",
+    fallback_role = if (V13_ANNOTATION_ROLE == "section_id") "section" else "region")
   if (nrow(rows_sn) == 0) {
     message(". skip (no remaining spots for sample): ", input_sn,
             "  [mapped-> ", paste(rds_samples, collapse = ","), "]")
@@ -1280,9 +1199,11 @@ for (fp in ORIGINAL_INPUT_PATHS) {
 
   # keep_ids（= 入力側で残す id）を作る
   keep_ids <- numeric(0)
+  .matched_source_rows <- NULL
   if (INPUT_MATCH_METHOD %in% c("xy", "xy_tol") && ext %in% c("parquet", "pq")) {
     xy_tol <- if (INPUT_MATCH_METHOD == "xy_tol") INPUT_XY_TOL else 0
     keep_ids <- derive_keep_ids_by_xy(fp, rows_sn, xy_tol = xy_tol)
+    .matched_source_rows <- attr(keep_ids, "source_rows")
   } else {
     # 既定: RDS の ID_for_export（= spot_index）と入力の id を一致させる
     keep_ids <- unique(rows_sn$ID_for_export)
@@ -1303,7 +1224,7 @@ for (fp in ORIGINAL_INPUT_PATHS) {
   }
 
   out_ext <- tolower(tools::file_ext(fp))
-  out_name <- paste0(input_sn, suffix, ".", out_ext)
+  out_name <- paste0(.export_stems[match(fp, ORIGINAL_INPUT_PATHS)], suffix, ".", out_ext)
   out_fp <- file.path(EXPORT_DATA_DIR, out_name)
 
   dbg_fp <- file.path(EXPORT_DATA_DIR, paste0(input_sn, suffix, "_debug.tsv"))
@@ -1311,6 +1232,14 @@ for (fp in ORIGINAL_INPUT_PATHS) {
   res <- export_filtered_input(fp, out_fp, keep_ids, debug_tsv_path = dbg_fp)
   message(sprintf(">> Exported: %s   (%d / %d rows)", basename(out_fp), res$n_kept, res$n_total))
   exported <- c(exported, out_fp)
+  # 元画素IDを保持した対応表を一時入力に添える。
+  .side_rows <- if (is.null(.matched_source_rows)) rows_sn else rows_sn[.matched_source_rows, , drop = FALSE]
+  side <- .side_rows[, intersect(c("source_file_id", "source_pixel_id", "section_id", "subject_id",
+                                "group", "integration_unit_id"), names(.side_rows)), drop = FALSE]
+  side$spot_index <- if (is.null(.matched_source_rows)) .side_rows$ID_for_export else keep_ids
+  side <- side[!duplicated(side$spot_index), , drop = FALSE]
+  write.csv(side, file.path(dirname(out_fp), paste0(tools::file_path_sans_ext(basename(out_fp)), ".metadata.csv")),
+            row.names = FALSE, na = "")
 
   # マージ用sample名マッピング蓄積: rerun側のsample名 → base RDS側のsample名
   rerun_sn <- tools::file_path_sans_ext(out_name)   # = input_sn + suffix

@@ -20,8 +20,8 @@
     <li><a href="#settings">⚙️ 解析設定タブ</a>
       <ul>
         <li><a href="#standard-flow">🚀 標準フロー（手法別 早見）</a></li>
-        <li><a href="#tims-scenario">🧭 解析シナリオの選び方（TIMS）</a></li>
-        <li><a href="#roi-mode">🆕 DESI ROI モード（複数 ROI を別サンプル扱い）</a></li>
+        <li><a href="#tims-scenario">🧭 切片数に応じた自動解析</a></li>
+        <li><a href="#roi-mode">📍 解析対象の切片／ROI</a></li>
       </ul>
     </li>
     <li><a href="#run">▶ 解析実行 + 進捗確認</a></li>
@@ -92,7 +92,7 @@
   <tbody>
     <tr><td>正式名称</td><td>Desorption Electrospray Ionization</td><td>Trapped Ion Mobility Spectrometry</td></tr>
     <tr><td>入力ファイル</td><td><code>.imzML</code> + <code>.ibd</code> (Bruker/Waters)</td><td><code>.d</code> フォルダ (Bruker) + Parquet annotation</td></tr>
-    <tr><td>サンプル選択</td><td>1サンプル = 1切片 = 1フォルダ</td><td>1サンプル = 複数アノテーション切片</td></tr>
+    <tr><td>解析対象の選択</td><td>ファイルごとの切片／ROI</td><td>ファイルごとの切片／annotation（追加フォルダも可）</td></tr>
     <tr><td>主な解析手法</td><td>UMAP + クラスタリング</td><td>UMAP + DBSCAN + アノテーション</td></tr>
     <tr><td>解析時間目安</td><td>5〜30分（サンプル数次第）</td><td>10〜60分（イオン数次第）</td></tr>
   </tbody>
@@ -234,54 +234,28 @@
 
 <p>サブプロジェクトを開くと、まず「解析設定」タブが開きます。画面は <strong>サイドバー（左）+ メインパネル（右）</strong> 構成です。</p>
 
-<h3 class="subsection-heading" id="standard-flow">🚀 標準フロー（手法別の一般的な流れ）</h3>
-<p>もっとも一般的な使い方です。各手法を選ぶと、設定画面にも同じ内容の推奨バナーが表示されます（選択中の手法のものだけ）。</p>
+<!-- ★ ver67.0: 切片選択を中心にし、撤去済みシナリオの操作案内を残さない。 -->
+<h3 class="subsection-heading" id="standard-flow">🚀 標準フロー</h3>
+<ol>
+  <li>DESI／TIMSとデータフォルダを選び、解析するファイルを指定します。TIMSは追加フォルダのファイルも選べます。</li>
+  <li><strong>「解析対象の切片／ROI」</strong>で対象を選びます。同名ROIもファイルごとに独立して選択できます。</li>
+  <li>ROIの意味が未登録なら、<strong>「切片」か「切片内領域」</strong>を一度指定します。</li>
+  <li>必要な場合だけ<strong>「群情報を設定」</strong>、<strong>「分子情報の追加」</strong>を開きます。</li>
+  <li>正規化・変換・m/zアライメントを確認し、「解析対象：6切片 ／ 算出する結果：PCA・Harmony・RPCA」などの実行前表示を確認して開始します。</li>
+</ol>
+<p>TIMSでSCiLS RMS正規化済みの入力は二重正規化を避けます。DESI生データの正規化など、既存の前処理設定は引き続き独立して指定できます。</p>
 
-<div class="help-alert tip">
-  <div class="alert-title">💡 TIMS × SCiLS RMS の標準フロー</div>
-  <ol>
-    <li>TIMS データを <strong>SCiLS RMS</strong> で出力</li>
-    <li>正規化 <strong>「OFF」</strong>（<code>INPUT_NORMALIZED=TRUE</code>）＋ 変換 <strong><code>log1p</code></strong>
-        ＝ RMS×TIC の二重正規化を回避（TIMS は既定でこの設定）</li>
-    <li>サンプル数で自動分岐：1サンプル→<strong>PCAのみ</strong>／複数→<strong>Harmony・RPCA</strong>
-        （両方算出。「クラスタソース」で下流に使う手法を選択）</li>
-    <li><strong>UMAP・クラスタリング</strong></li>
-  </ol>
-  段階比較が目的なら<strong>未補正(PCA)も併用</strong>。各条件1切片は交絡に注意（→7章）。
-</div>
-
-<div class="help-alert tip">
-  <div class="alert-title">💡 DESI（生データ）の標準フロー</div>
-  <ol>
-    <li>DESI データ（生データ）を入力</li>
-    <li>正規化 <strong>「ON」</strong>（LogNormalize＝TIC正規化＋log。DESI は既定でこの設定）</li>
-    <li>サンプル数で自動分岐：1サンプル→<strong>PCAのみ</strong>／複数→<strong>Harmony・RPCA</strong>
-        （ROIモードで各ROIを別サンプル化すると複数統合）</li>
-    <li><strong>UMAP・クラスタリング</strong></li>
-  </ol>
-  段階比較が目的なら<strong>未補正(PCA)も併用</strong>。各条件1切片は交絡に注意（→7章）。
-</div>
-
-<h3 class="subsection-heading" id="tims-scenario">🧭 解析シナリオの選び方（TIMS）</h3>
-<p>TIMS の UMAP 解析設定にある「<strong>解析シナリオ（切片アノテーションの意味）</strong>」で、切片アノテーションが何を表すかを選ぶと、補正方法が自動で切り替わります（既定＝無補正PCA＝従来挙動。R 既定値は変更しません）。</p>
-<table class="help-table">
-  <thead><tr><th>シナリオ</th><th>例</th><th>行われる補正と出力（reduction）</th></tr></thead>
-  <tbody>
-    <tr><td>同一切片のクラスタ／群比較</td><td>1切片の部分構造／Ctrl vs KO が別アノテーション</td><td><strong>補正なし＝無補正PCA</strong>（条件が2つ以上なら condition 間 DEG も算出。各条件1切片は交絡注意）</td></tr>
-    <tr><td>連続切片を技術反復としてまとめる</td><td>同一個体の連続切片</td><td><strong>RPCA</strong> で slice_id を統合（＋無補正PCA を併走出力）</td></tr>
-    <tr><td>切片間の測定差(バッチ)を補正【非推奨】</td><td>測定ロット差を除きたい</td><td><strong>Harmony</strong> で slice_id を補正（＋無補正PCA を併走出力・過補正の恐れ）</td></tr>
-    <tr><td>条件比較＋技術差補正</td><td>各条件1切片で測定間の技術差を均したい</td><td><strong>Harmony＋RPCA を両方</strong> slice_id に適用（測定差を補正・条件差も縮小／＋無補正PCA を併走出力）</td></tr>
-  </tbody>
-</table>
-<div class="help-alert tip">
-  <div class="alert-title">💡 再解析（exclusion/inclusion）と計算の再利用</div>
-  <ul>
-    <li>再解析タブにも同じシナリオ欄があり、<strong>既定で初回解析の選択を引き継ぎます</strong>（変更可）。</li>
-    <li>exclusion/inclusion は指定クラスタの pixel を取捨選択して<strong>部分集合で解析をやり直す</strong>（reduction も再計算）。条件は初回と揃えるのが推奨です。</li>
-    <li>部分集合でパラメータを詰めるときは <strong>「① reduction のみ作成 →（②診断・③反映）→ ④続きを実行」</strong>を使うと、部分集合の reduction を1回だけ計算して再利用し、UMAP/クラスタリングのみ再実行します。</li>
-    <li>初回(全体)の reduction を部分集合へ流用することはしません（HVG/PCA/Harmony は細胞集団に依存＝科学的に別物のため）。</li>
-  </ul>
-</div>
+<h3 class="subsection-heading" id="tims-scenario">🧭 切片数に応じた自動解析</h3>
+<table class="help-table"><thead><tr><th>有効な切片数</th><th>計算する結果</th></tr></thead><tbody>
+<tr><td>1切片</td><td>PCA。Harmony・RPCAは統合単位不足として未実行を記録します。</td></tr>
+<tr><td>2切片以上</td><td>PCAを保存した後、Harmony・RPCAを同じ切片単位で個別に実行します。</td></tr>
+</tbody></table>
+<p><strong>バッチ補正のON/OFFや解析シナリオの選択は不要です。</strong>補正前の結果を見る場合は、閲覧画面でPCAを選択します。補正後の結果が生物学的に妥当かはPCAと比較して判断してください。</p>
+<div class="help-alert tip"><div class="alert-title">再解析・段階実行</div>
+<ul><li>クラスタ抽出／除外後の再解析では、選択後の画素でPCAを再計算します。</li>
+<li>①「reductionのみ」は下流のUMAP・クラスタ・マーカー計算が未完了です。④「保存条件で続きを実行」は保存済みreductionと元のUMAP・クラスタ条件を使用して完成させます。出力フォルダには <code>_continued</code> を付けます。</li>
+<li>②の診断後、③「推奨値を新しい解析へ反映」で入力欄を更新できます。推奨値を使用する場合は、新しい通常解析または①から実行してください。③で更新した画面値は④には適用されません。</li>
+<li>Harmony／RPCAが失敗しても、すでに保存されたPCAは利用できます。手法ごとの完了・未実行・失敗を確認してください。</li></ul></div>
 
 <div class="figure-frame">
   <svg viewBox="0 0 800 380" xmlns="http://www.w3.org/2000/svg">
@@ -350,7 +324,7 @@
   </thead>
   <tbody>
     <tr><td>📁 データフォルダ</td><td>生データの場所</td><td>✅ ファイルブラウザ起動</td></tr>
-    <tr><td>📋 アノテーションファイル</td><td>m/z リスト (xlsx / csv)</td><td>✅</td></tr>
+    <tr><td>📋 追加DB</td><td>「分子情報の追加」でDB照合を使う場合のみ指定</td><td>✅</td></tr>
     <tr><td>📤 出力先</td><td>解析結果の保存先</td><td>✅</td></tr>
     <tr><td>☑ サンプル選択</td><td>解析対象切片の選択</td><td>自動列挙</td></tr>
     <tr><td>⚙️ パラメータ</td><td>m/z範囲・tolerance等</td><td>直接入力</td></tr>
@@ -386,64 +360,18 @@
   </p>
 </div>
 
-<!-- -------- DESI ROI モード (ver2.0+) -------- -->
-<h3 class="subsection-heading" id="roi-mode">🆕 DESI ROI モード（複数 ROI を別サンプル扱い）</h3>
-
-<p>
-  DESI 入力 <code>.txt</code> の <strong>最終列に <code>ROI</code> 文字列</strong>
-  (例: <code>Brain</code>, <code>Heart</code>, <code>LN</code>, <code>TDLN</code> など)
-  が含まれている場合、各 ROI を「<strong>別サンプル</strong>」として扱い
-  Multi-sample mode（Harmony / RPCA）で統合解析できます。TIMS の
-  <code>annotation</code>（slice_id）列ロジックと同等の機能で、ver2.0 で追加されました。
-</p>
-
-<div class="help-alert tip">
-  <div class="alert-title">💡 想定データ形式</div>
-  <p class="small mb-1">
-    タブ区切り <code>.txt</code>。ヘッダー 4 行の後に
-    <code>spot_index, x, y, m/z_1, m/z_2, ..., m/z_N, ROI</code> の順で並ぶ。
-  </p>
-  <p class="small mb-0">
-    ROI 列は文字列。空欄や数値（例: <code>0</code>）はそのまま「1 つの ROI」として
-    扱われる。ROI モード OFF（デフォルト）ならこの列は無視され、ファイル全体が
-    1 サンプルとして処理される。
-  </p>
-</div>
-
-<h4 class="mt-3">操作手順</h4>
-<ol>
-  <li>解析設定タブの DESI セクションで
-    <strong>「ROI 列があれば各 ROI を別サンプルとして解析」</strong>
-    トグルを ON にする</li>
-  <li>データフォルダ直下に表示される <strong>ROI チェックボックス</strong>
-    から、解析したい ROI のみ選択する（例: <code>LN</code> と <code>TDLN</code>
-    にチェック、<code>0</code> を外す）</li>
-  <li>▶ 解析実行</li>
-  <li>R スクリプトのログに
-    <code>&gt;&gt; ROI モード ON: ... を 2 個の ROI に分割 (LN, TDLN)</code>
-    と出れば成功。Spot Filtering メッセージが ROI の数だけ繰り返される</li>
-</ol>
-
-<table class="help-table mt-3">
-  <thead>
-    <tr><th>入力データ</th><th>ROI モード</th><th>挙動</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>ROI 列なし</td><td>OFF</td><td>従来通り（1 サンプル）</td></tr>
-    <tr><td>ROI 列なし</td><td>ON</td><td>警告ログ出力 → 1 サンプル扱いにフォールバック</td></tr>
-    <tr><td>ROI 列あり</td><td>OFF</td><td>ROI 列は無視、ファイル全体を 1 サンプル扱い</td></tr>
-    <tr><td>ROI 列あり</td><td>ON</td><td>各 ROI を別サンプル化 + Harmony/RPCA で統合</td></tr>
-    <tr><td>ROI 列あり</td><td>ON + ROI 選択</td><td>選択した ROI のみを統合（その他は除外）</td></tr>
-  </tbody>
-</table>
-
-<div class="help-alert warn">
-  <div class="alert-title">⚠️ メモリに注意</div>
-  ROI を多く選ぶほどサンプル数が増えるため、Harmony / RPCA の統合計算で
-  メモリを多く使います。25,000 spots を超える単一 ROI を含む場合、
-  spatial smoothing で OOM を防ぐため ver2.2 で内部しきい値を引き下げています
-  （25K spots 以上は逐次計算に自動フォールバック）。
-</div>
+<h3 class="subsection-heading" id="roi-mode">📍 解析対象の切片／ROI</h3>
+<p>TIMSのannotation、DESIのROIを、ファイルごとの選択表で扱います。選択したROIは必ず画素の絞り込みに使います。全解除すると対象なしとして開始前に止まり、全画素へ戻ることはありません。</p>
+<table class="help-table"><thead><tr><th>ROIの意味</th><th>例</th><th>統合単位</th></tr></thead><tbody>
+<tr><td>切片</td><td>1ファイル内に6切片を収録</td><td>選んだ各切片</td></tr>
+<tr><td>切片内領域</td><td>同一切片の脳・肝臓など</td><td>親切片。臓器ごとに補正しません。</td></tr>
+</tbody></table>
+<h3 class="subsection-heading">群・個体情報（任意）</h3>
+<p>「群情報を設定」を開くと、選択済み切片へ個体／独立試料IDと群を登録できます。Ctrl 3例・比較群3例なら6つの個体IDを指定し、連続切片は同じ個体IDを使います。選択行への群名の一括割当もできます。</p>
+<p>閲覧画面の「群・個体情報」では群別の切片数・独立試料数を確認し、UMAPの群別色分けやUMAP・空間表示の絞り込みを行えます。群・個体名だけの保存では解析を再実行せず、測定強度・座標・クラスタ・H&amp;Eの対応を維持します。群を登録しただけで、画素を独立例とする群間検定は追加しません。</p>
+<h3 class="subsection-heading">分子情報の追加（任意）</h3>
+<p>有効なSCiLS登録名は自動で使用します。追加DB照合は明示的にONにした場合だけ実行し、既存の名前を上書きせず名称のない特徴量を補完します。名前がない場合や入力間でその特徴量の名前が競合する場合はm/zで表示します。</p>
+<p>イオンモードはDB照合またはキャリブレーションを使うときに指定します。DB照合の許容誤差と、入力間のm/zアライメント許容誤差は別の設定です。再解析でもDBのON/OFFを明示的に保存・復元します。</p>
 
 <!-- ============================================ -->
 <h2 class="section-heading" id="run">▶ 4. 解析実行 + 進捗確認</h2>
@@ -510,6 +438,10 @@
   </p>
 </div>
 
+<div class="help-alert tip"><div class="alert-title">新規PCAと旧結果の派生PCA</div>
+新規解析のPCAは専用のUMAP・クラスタ・マーカーを持つ独立した結果です。
+旧結果に独立PCAがなくHarmonyから派生表示する場合は、<strong>UMAP座標のみ未補正PCAから生成し、クラスタは既存Harmonyの定義</strong>を継承することがあります。画面の注記を確認し、独立した結果が必要な場合は再解析してください。
+</div>
 <h3 class="subsection-heading">主な機能・操作</h3>
 <table class="help-table">
   <thead>
@@ -738,7 +670,7 @@
 
 ■ 値・突合の注意
   ・m/z強度 = 測定強度（変換後の生値）。
-  ・クラスタ列・領域名は (annotation=サンプル名, x, y) を小数4桁に丸めて照合し付与。
+  ・新形式のクラスタと群情報は元ファイルID＋元画素IDで照合。旧結果とH&amp;E領域名には従来のサンプル＋座標照合を使います。
   ・ver59.0: 既定では「UMAP 解析に使っていない切片」の行を出力しない。したがって出力に残る
      空欄は「クラスタ未割当」だけを意味する（「そもそも解析していない」ではない）。
      除外した切片名と行数は生成時のステータスに必ず表示される。
@@ -866,7 +798,7 @@ ZIP名: metaboanalyst_&lt;強度種別&gt;_&lt;単位&gt;[_qea].zip
 <h3 class="subsection-heading">7.4 Harmony / RPCA の挙動と限界</h3>
 <ul>
   <li>交絡下で段階をバッチとして補正すると、<strong>技術差と生物差を一体で除去</strong>（過補正）。両者を区別する機能はない。</li>
-  <li>補正強度は概ね <strong>Harmony ＞ RPCA</strong>（パラメータ依存）。ただし<strong>強度差は技術/生物の分離器ではない</strong>（残差も差分も同じ技術:生物比の混合）。</li>
+  <li>調整の程度はデータとパラメータに依存し、HarmonyとRPCAの強弱を一律には順位づけられません。補正だけで技術差と生物差を分離できるとは限りません。</li>
   <li>条件とバッチを分離する専用手法（scDisInFact 等）も <em>multi-batch × multi-condition</em> 設計が前提＝1切片/段階では使えない。</li>
 </ul>
 
@@ -875,7 +807,7 @@ ZIP名: metaboanalyst_&lt;強度種別&gt;_&lt;単位&gt;[_qea].zip
   <thead><tr><th>ビュー</th><th>映るもの</th><th>段階の生物差として</th></tr></thead>
   <tbody>
     <tr><td>未補正 PCA</td><td>段階間差の全体（技術＋生物・交絡）＝「差」の面</td><td>本命だが交絡。loading・QC で正体を吟味</td></tr>
-    <tr><td>Harmony / RPCA</td><td>段階をまたぐ共有構造＝「共通性」の面（段階差は除去済み）</td><td>差を読む図ではない。残る差情報は組成のみ（記述的）</td></tr>
+    <tr><td>Harmony / RPCA</td><td>切片間の差を調整した埋め込み</td><td>生物学的な差も変わり得るため、PCAと対応する領域を比較</td></tr>
   </tbody>
 </table>
 <div class="help-alert tip">
@@ -900,7 +832,7 @@ ZIP名: metaboanalyst_&lt;強度種別&gt;_&lt;単位&gt;[_qea].zip
 <ul>
   <li><strong>正規化</strong>：RMS済み → 「正規化 OFF」(<code>INPUT_NORMALIZED=TRUE</code>) ＋ <code>NORM_MODE=log1p</code>。生データの直入れは不可。</li>
   <li><strong>表示</strong>：<strong>未補正(PCA)を必ず併記</strong>（基準・段階比較の本命）。Harmony/RPCA は「共通性」ビューと役割を明示。</li>
-  <li><strong>補正手法</strong>：交絡下では増やさない。見せるなら「補正なし→RPCA→Harmony」の強度スペクトルとして。</li>
+  <li><strong>補正手法</strong>：自動計算した各結果とPCAを比較し、切片・群・組織構造との対応を確認します。</li>
   <li><strong>診断</strong>：未補正 UMAP を総強度/QC で色分け（残存技術チェック）、組成ビュー、PreFlight の交絡判定（<code>not_identifiable</code>）を確認。</li>
 </ul>
 

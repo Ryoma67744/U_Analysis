@@ -151,12 +151,14 @@ def _fullscreen_response(request, result):
      State("spatial_rows_per_view", "value"),
      State("hne_overlay_opacity", "value"),
      State("cluster_name_map_store", "data"),
-     State("seurat_rds_path_store", "data")],
+     State("seurat_rds_path_store", "data"),
+     State("int_section_group_filter", "value"),
+     State("umap_color_by", "value")],
     prevent_initial_call=True,
 )
 def render_light_fullscreen_request(request, rotation_store, custom_colors,
                                     spatial_rows, hne_opacity,
-                                    cluster_name_map, rds_path):
+                                    cluster_name_map, rds_path, section_groups=None, color_by="Cluster"):
     if not _fullscreen_request_matches(request, {"umap", "spatial"}, rds_path):
         raise PreventUpdate
     result = toggle_fullscreen(
@@ -164,6 +166,7 @@ def render_light_fullscreen_request(request, rotation_store, custom_colors,
         rotation_store, custom_colors, spatial_rows, hne_opacity,
         cluster_name_map, rds_path,
         _trigger=f"expand_{request['kind']}_btn",
+        section_groups=section_groups, color_by=color_by,
     )
     return _fullscreen_response(request, result)
 
@@ -226,11 +229,12 @@ def _clone_fullscreen_feature_children(node):
 def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                       feat_container_children, deg_data,
                       rotation_store, custom_colors, spatial_rows, hne_opacity,
-                      cluster_name_map=None, rds_path=None, *, _trigger=None):
+                      cluster_name_map=None, rds_path=None, *, _trigger=None,
+                      section_groups=None, color_by="Cluster"):
     from app.callbacks.interactive_callbacks import _set_active_key
     _set_active_key(rds_path)
     # 遅延 import（循環参照回避）
-    from app.callbacks.interactive_umap import _build_umap_integrated_fig
+    from app.callbacks.interactive_umap import _build_umap_integrated_fig, _with_section_groups
     from app.callbacks.interactive_spatial import _create_single_spatial_fig
 
     trigger = _trigger or ctx.triggered_id
@@ -246,7 +250,7 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
 
     # ===== UMAP (インタラクティブ) =====
     if trigger == "expand_umap_btn":
-        df = _interactive_data.get("plot_data")
+        df = _with_section_groups(_interactive_data.get("plot_data"), rds_path, section_groups)
         if df is None:
             return _NOTHING_TO_EXPAND
 
@@ -259,7 +263,7 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
         umap_title = Path(rds_path).stem if rds_path else "UMAP"
 
         # 初期グラフ（統合モード）
-        init_fig = _build_umap_integrated_fig(df, "Cluster", None, True, False,
+        init_fig = _build_umap_integrated_fig(df, color_by, None, True, False,
                                                title=umap_title,
                                                custom_colors=custom_colors,
                                                cluster_name_map=cluster_name_map)
@@ -279,8 +283,9 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                 dbc.Col(width=2, children=[
                     dbc.RadioItems(id="fs_umap_color_by",
                                    options=[{"label": "Cluster", "value": "Cluster"},
-                                            {"label": "Sample", "value": "Sample"}],
-                                   value="Cluster", inline=True),
+                                            {"label": "Sample", "value": "Sample"},
+                                            {"label": "群", "value": "group"}],
+                                   value=color_by or "Cluster", inline=True),
                 ]),
                 dbc.Col(width=2, children=[
                     dcc.Dropdown(id="fs_umap_highlight_cluster",
@@ -359,7 +364,7 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
 
     # ===== Spatial Mapping (インタラクティブ) =====
     if trigger == "expand_spatial_btn":
-        df = _interactive_data.get("plot_data")
+        df = _with_section_groups(_interactive_data.get("plot_data"), rds_path, section_groups)
         if df is None or "SpatialX" not in df.columns:
             return _NOTHING_TO_EXPAND
 
@@ -614,14 +619,15 @@ def on_fullscreen_close(is_open, current_val, label_positions, snapshot):
      State("umap_rows_per_view", "value"),
      State("accumulated_label_positions", "data"),
      State("cluster_name_map_store", "data"),
-     State("seurat_rds_path_store", "data")],
+     State("seurat_rds_path_store", "data"),
+     Input("int_section_group_filter", "value")],
     prevent_initial_call=True,
 )
 def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
                    height_val, width_val, marker_size, exclude_clusters, label_size,
                    legend_hidden, custom_color_map, rows,
                    accumulated_positions,
-                   cluster_name_map=None, rds_path=None):
+                   cluster_name_map=None, rds_path=None, section_groups=None):
     from app.callbacks.interactive_callbacks import _set_active_key
     _set_active_key(rds_path)
     # 遅延 import（循環参照回避）
@@ -632,10 +638,23 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
 
     height_val = height_val or 78
     width_val = width_val or 95
-    df = _interactive_data.get("plot_data")
+    from app.callbacks.interactive_umap import _with_section_groups
+    df = _with_section_groups(_interactive_data.get("plot_data"), rds_path, section_groups)
     if df is None:
         return ""
     custom_colors = custom_color_map if custom_color_map else None
+    if color_by == "group" and "group" in df.columns:
+        all_df = _with_section_groups(_interactive_data.get("plot_data"), rds_path, None)
+        custom_colors = _get_cluster_color_map(all_df["group"])
+        if display_mode == "per_sample":
+            graphs = []
+            for sample in sorted(df["Sample"].unique()):
+                fig = _build_umap_integrated_fig(df.loc[df["Sample"] == sample], "group", None,
+                    show_legend, show_labels, marker_size=marker_size or 2, label_size=label_size or 11,
+                    exclude_clusters=exclude_clusters, custom_colors=custom_colors, cluster_name_map=cluster_name_map)
+                graphs.append(html.Div([html.H6(str(sample)), dcc.Graph(figure=fig,
+                    style={"height": f"{max(height_val // 2, 25)}vh"})]))
+            return html.Div(graphs, style={"width": f"{width_val}vw", "margin": "0 auto"})
     color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
     fs_config = {"scrollZoom": True, "edits": {"annotationPosition": True}, "toImageButtonOptions": {"format": "png", "scale": 3}}
     all_pos = _get_merged_label_positions(accumulated_positions)
@@ -702,14 +721,15 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
      State("hne_overlay_opacity", "value"),
      State("accumulated_label_positions", "data"),
      State("cluster_name_map_store", "data"),
-     State("seurat_rds_path_store", "data")],
+     State("seurat_rds_path_store", "data"),
+     Input("int_section_group_filter", "value")],
     prevent_initial_call=True,
 )
 def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                       exclude_clusters, height_val, width_val,
                       label_size, legend_hidden, custom_colors, rows,
                       hne_opacity, accumulated_positions, cluster_name_map=None,
-                      rds_path=None):
+                      rds_path=None, section_groups=None):
     from app.callbacks.interactive_callbacks import _set_active_key
     _set_active_key(rds_path)
     # 遅延 import（循環参照回避）
@@ -717,7 +737,8 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
 
     height_val = height_val or 60
     width_val = width_val or 95
-    df = _interactive_data.get("plot_data")
+    from app.callbacks.interactive_umap import _with_section_groups
+    df = _with_section_groups(_interactive_data.get("plot_data"), rds_path, section_groups)
     if df is None or "SpatialX" not in df.columns:
         return ""
     color_map = _get_cluster_color_map(df["Cluster"], custom_colors)

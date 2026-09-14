@@ -4,6 +4,7 @@
 # パラメータ注入 + サブプロセス管理
 # =============================================================================
 
+import json
 import logging
 import os
 import re
@@ -164,11 +165,9 @@ def _resolve_or_raise(data_folder: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _r_str(value: str) -> str:
-    """PythonのstrをRの文字列リテラルに変換（バックスラッシュをエスケープ）
-    R版: r_str <- function(x) paste0('"', gsub('\\\\', '\\\\\\\\', x), '"')
-    """
-    escaped = value.replace("\\", "\\\\")
-    return f'"{escaped}"'
+    """引用符・改行・バックスラッシュを含む値を R の文字列リテラルへ変換する。"""
+    # ★ ver67.0: パス/切片名の引用符や改行をそのまま埋め込むと R 構文が壊れていた。
+    return json.dumps(str(value), ensure_ascii=False)
 
 
 def _replace_assign(lines: list[str], var: str, new_rhs: str) -> list[str]:
@@ -209,42 +208,46 @@ def _replace_block_assign(lines: list[str], var: str, new_rhs: str) -> list[str]
     return lines
 
 
-def _replace_sample_names_block(
-    lines: list[str],
-    var_name: str,
-    sample_names: list[str],
-) -> list[str]:
-    """複数行の sample_names <- c(...) ブロックを置換。
-    R版と同じロジック: 開始行を見つけ、最大20行先まで閉じ括弧を探す。
-    """
-    start_pattern = re.compile(
-        rf"^\s*{re.escape(var_name)}\s*<-\s*c\s*\("
-    )
-    close_pattern = re.compile(r"^\s*\)\s*$")
-
-    start_idx = None
-    for i, line in enumerate(lines):
-        if start_pattern.match(line):
-            start_idx = i
-            break
-
-    if start_idx is None:
-        return lines
-
-    # 閉じ括弧を探す（最大20行先まで）
-    end_idx = start_idx
-    for i in range(start_idx + 1, min(start_idx + 21, len(lines))):
-        if close_pattern.match(lines[i]):
-            end_idx = i
-            break
-
-    # 新しいブロックを構築（バックスラッシュをエスケープ: \ → \\）
-    quoted = [f'  "{name.replace(chr(92), chr(92)*2)}"' for name in sample_names]
-    new_block = f"{var_name} <- c(\n" + ",\n".join(quoted) + "\n)"
-    new_block_lines = new_block.split("\n")
-
-    # ブロック置換
-    lines = lines[:start_idx] + new_block_lines + lines[end_idx + 1:]
+def _replace_sample_names_block(lines: list[str], var_name: str,
+                                sample_names: list[str]) -> list[str]:
+    """一行/複数行の R ベクトルを、引用符内の括弧を除いて対応付けて置換する。"""
+    # ★ ver67.0: 一行の c() と 20 行を超える入力で旧末尾が残り、R 構文が壊れていた。
+    pattern = re.compile(rf"^\s*{re.escape(var_name)}\s*<-\s*")
+    for start_idx, line in enumerate(lines):
+        matched = pattern.match(line)
+        if not matched:
+            continue
+        depth, quote, escaped, opened = 0, None, False, False
+        end_idx = start_idx
+        for index in range(start_idx, len(lines)):
+            content = lines[index][matched.end():] if index == start_idx else lines[index]
+            for char in content:
+                if quote:
+                    if escaped:
+                        escaped = False
+                    elif char == chr(92):
+                        escaped = True
+                    elif char == quote:
+                        quote = None
+                    continue
+                if char == "#":
+                    break
+                if char in (chr(34), chr(39), "`"):
+                    quote = char
+                elif char == "(":
+                    depth += 1
+                    opened = True
+                elif char == ")":
+                    depth -= 1
+            end_idx = index
+            if depth == 0:
+                break
+        if depth != 0 or quote:
+            raise ValueError(f"R テンプレートの {var_name} が閉じられていません")
+        quoted = ["  " + _r_str(name) for name in sample_names]
+        new_lines = [f"{var_name} <- c("] + [name + ("," if i < len(quoted)-1 else "")
+                      for i, name in enumerate(quoted)] + [")"]
+        return lines[:start_idx] + new_lines + lines[end_idx + 1:]
     return lines
 
 
@@ -449,6 +452,11 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
     """v8 Templateスクリプト用の設定生成（DESI/TIMS共通）
     R版: generate_v8_config() in analysis_runner.R
     """
+    from app.services.execution_policy import prepare_execution_params
+    from app.services.naming_policy import db_annotation_enabled
+    if params.get("execution_policy") or params.get("section_manifest") is not None:
+        prepare_execution_params(params, output_dir)
+    params["annotation_enable"] = db_annotation_enabled(params)
     template_path = params["template_path"]
     if not Path(template_path).exists():
         logger.error("v8 Template が見つかりません: %s", template_path)
@@ -474,6 +482,15 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
             )
         except Exception as e:
             logger.warning("DESI 入力の正規化(.txt変換)に失敗: %s", e)
+
+    # ★ ver67.0: DESI が staging .txt に変換されても元ファイル ID の対応を維持する。
+    if not params.get("input_paths") and params.get("section_manifest"):
+        from app.utils.file_locks import atomic_write_json
+        for entry in params["section_manifest"].get("files", []):
+            source = Path(entry["path"])
+            entry["runtime_path"] = str(source if source.suffix.lower() == ".txt" and source.is_file()
+                                        else Path(resolved_data_folder) / (source.stem + ".txt"))
+        atomic_write_json(params["section_manifest"], Path(params["section_manifest_path"]))
 
     # パラメータを置換
     lines = _replace_assign(lines, "data_folder", _r_str(resolved_data_folder))
@@ -508,12 +525,22 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
         if params.get(_k) is not None:
             lines = _replace_assign(lines, _var, _r_str(str(params[_k])))
 
-    # SCiLS 注釈サイドカーを結果フォルダへ運ぶ（Q2: インタラクティブ閲覧用）
-    _copy_feature_annotation_sidecars(
-        [resolved_data_folder]
-        + [str(Path(p).parent) for p in (params.get("input_paths") or [])],
-        output_dir,
-    )
+    if params.get("umap_seed") is not None:
+        seed_var = "GLOBAL_RANDOM_SEED" if any(re.match(r"^\s*GLOBAL_RANDOM_SEED\s*<-", line) for line in lines) else "UMAP_SEED"
+        lines = _replace_assign(lines, seed_var, f"{int(params['umap_seed'])}L")
+
+    # ★ ver67.0: フォルダ全件では未選択ファイルの名前が混ざるため実入力だけを保存。
+    from app.services.naming_policy import copy_selected_feature_annotations
+    from app.services.execution_policy import selected_manifest_paths
+    annotation_inputs = (selected_manifest_paths(params.get("section_manifest")) or params.get("input_paths")
+                         or [str(Path(params["data_folder"]) / f"{name}.txt") for name in params.get("sample_names", [])])
+    copy_selected_feature_annotations(annotation_inputs, output_dir)
+    for var, value in (("SECTION_MANIFEST_PATH", params.get("section_manifest_path", "")),
+                       ("ANALYSIS_SIGNATURE", params.get("analysis_signature", ""))):
+        if any(re.match(rf"^\s*{var}\s*<-", line) for line in lines):
+            lines = _replace_assign(lines, var, _r_str(value))
+    if any(re.match(r"^\s*DB_ANNOTATION_ENABLED\s*<-", line) for line in lines):
+        lines = _replace_assign(lines, "DB_ANNOTATION_ENABLED", "TRUE" if params["annotation_enable"] else "FALSE")
     lines = _replace_assign(
         lines, "RESUME_FROM_RDS",
         "TRUE" if params.get("resume_from_rds") else "FALSE",
@@ -585,7 +612,7 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
     #   利用者が何も指定しなくても DB 照合が有効なまま走っていた。
     lines = _replace_assign(
         lines, "ANNOTATION_CSV_PATH",
-        _r_str(params.get("annotation_csv_path") or ""),
+        _r_str((params.get("annotation_csv_path") or "") if params["annotation_enable"] else ""),
     )
     lines = _replace_assign(
         lines, "ANNOTATION_ENABLE",
@@ -604,7 +631,7 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
             lines, "DEFAULT_TOLERANCE_MZ", str(params["tolerance_mz"])
         )
     if params.get("adduct_patterns"):
-        r_vec = "c(" + ", ".join(f'"{p}"' for p in params["adduct_patterns"]) + ")"
+        r_vec = "c(" + ", ".join(_r_str(p) for p in params["adduct_patterns"]) + ")"
         lines = _replace_block_assign(lines, "ANNOT_ADDUCT_PATTERNS", r_vec)
     # --- 解析シナリオ → 補正ポリシー（ver6 の既存スイッチを注入。R本体は無改修） ---
     if params.get("annotation_role"):
@@ -645,12 +672,12 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
             entries = []
             for sname, scoefs in by_sample.items():
                 r_coefs = "c(" + ", ".join(str(c) for c in scoefs) + ")"
-                entries.append(f'  "{sname}" = {r_coefs}')
+                entries.append(f"  {_r_str(sname)} = {r_coefs}")
             r_list = "list(\n" + ",\n".join(entries) + "\n)"
             lines = _replace_assign(lines, "CALIBRATION_BY_SAMPLE", r_list)
 
     # --- m/z アライメント (ppm) ---
-    if params.get("mz_align_ppm"):
+    if params.get("mz_align_ppm") is not None:
         lines = _replace_assign(lines, "MZ_ALIGN_PPM", str(params["mz_align_ppm"]))
 
     # --- 入力正規化ポリシー (二重正規化の回避: INPUT_NORMALIZED / NORM_MODE) ---
@@ -691,6 +718,11 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
     """Cluster Filterスクリプト用の設定生成
     R版: generate_cluster_filter_config() in analysis_runner.R
     """
+    from app.services.execution_policy import prepare_execution_params
+    from app.services.naming_policy import db_annotation_enabled
+    if params.get("execution_policy") or params.get("section_manifest") is not None:
+        prepare_execution_params(params, output_dir)
+    params["annotation_enable"] = db_annotation_enabled(params)
     template_path = params["template_path"]
     if not Path(template_path).exists():
         logger.error("Cluster Filter テンプレが見つかりません: %s", template_path)
@@ -714,6 +746,13 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
             )
         except Exception as e:
             logger.warning("DESI 再解析入力の正規化(.txt変換)に失敗: %s", e)
+    if not params.get("original_input_paths") and params.get("section_manifest"):
+        from app.utils.file_locks import atomic_write_json
+        for entry in params["section_manifest"].get("files", []):
+            source = Path(entry["path"])
+            entry["runtime_path"] = str(source if source.suffix.lower() == ".txt" and source.is_file()
+                                        else Path(original_data_folder) / (source.stem + ".txt"))
+        atomic_write_json(params["section_manifest"], Path(params["section_manifest_path"]))
     lines = _replace_assign(
         lines, "ORIGINAL_DATA_FOLDER",
         _r_str(original_data_folder),
@@ -760,10 +799,10 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
     # 再解析は完走に 2 時間超かかるため、Step3(RPCA) だけを検証したいときに使う。
     # 未指定なら V13_RESUME_FROM_RDS は FALSE のまま＝従来どおり最初から実行される。
     if params.get("resume_reanalysis") and params.get("resume_reanalysis_dir"):
-        lines = _replace_assign(lines, "V13_RESUME_FROM_RDS", "TRUE")
-        lines = _replace_assign(
-            lines, "V13_RESUME_DIR_PATH", _r_str(params["resume_reanalysis_dir"])
-        )
+        # ★ ver67.0: DESI 再解析にも保存済み reduction の再開先を渡す。
+        resume_prefix = "V13_" if ("DBSCAN" in Path(template_path).stem or "tims" in Path(template_path).stem.lower()) else "V8_"
+        lines = _replace_assign(lines, resume_prefix + "RESUME_FROM_RDS", "TRUE")
+        lines = _replace_assign(lines, resume_prefix + "RESUME_DIR_PATH", _r_str(params["resume_reanalysis_dir"]))
 
     # --- 再解析用アノテーションファイルの注入 ---
     # ★ ver55.0 (R-01): 置換先が `ANNOTATION_CSV_PATH` だったが、ReUMAP テンプレートが
@@ -772,21 +811,26 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
     #   破棄され、テンプレート直書きの Windows Dropbox パスがそのまま走っていた。
     #   エラーも出ず解析は緑で完走するため、気づく手段が無かった。
     #   ReUMAP 側の規約: "" / NA は「ver13 側の設定を上書きしない」を意味する。
-    ann_path = params.get("reanalysis_annotation_path") or ""
-    if ann_path.lower().endswith(".csv"):
-        # TIMS (.csv) → V13_ANNOTATION_CSV_PATH
-        lines = _replace_assign(
-            lines, "V13_ANNOTATION_CSV_PATH", _r_str(ann_path)
-        )
-        lines = _replace_assign(lines, "V13_ANNOTATION_ENABLE", "TRUE")
-    elif ann_path:
-        # DESI (.xlsx) → MRM_FILE_PATH
-        lines = _replace_assign(lines, "MRM_FILE_PATH", _r_str(ann_path))
+    # ★ ver67.0: CSV パスだけで照合を ON にすると保存済み OFF が再解析で反転する。
+    ann_enabled = params["annotation_enable"]
+    ann_path = (params.get("reanalysis_annotation_path") or params.get("annotation_csv_path") or "") if ann_enabled else ""
+    is_tims = "DBSCAN" in Path(template_path).stem or "tims" in Path(template_path).stem.lower()
+    if is_tims:
+        lines = _replace_assign(lines, "V13_ANNOTATION_CSV_PATH", _r_str(ann_path))
+        lines = _replace_assign(lines, "V13_ANNOTATION_ENABLE", "TRUE" if ann_enabled else "FALSE")
     else:
-        # 指定なし = 化合物アノテーションを行わない。ここで明示的に空/FALSE を
-        # 注入しないと、テンプレート直書きのパスが生き残る。
-        lines = _replace_assign(lines, "V13_ANNOTATION_CSV_PATH", _r_str(""))
-        lines = _replace_assign(lines, "V13_ANNOTATION_ENABLE", "FALSE")
+        lines = _replace_assign(lines, "V8_MRM_FILE_PATH", _r_str(ann_path))
+        lines = _replace_assign(lines, "V8_DB_ANNOTATION_ENABLED", "TRUE" if ann_enabled else "FALSE")
+    prefix = "V13_" if is_tims else "V8_"
+    for var, value in ((prefix + "SECTION_MANIFEST_PATH", params.get("section_manifest_path", "")),
+                       (prefix + "ANALYSIS_SIGNATURE", params.get("analysis_signature", ""))):
+        if any(re.match(rf"^\s*{var}\s*<-", line) for line in lines):
+            lines = _replace_assign(lines, var, _r_str(value))
+    from app.services.naming_policy import copy_selected_feature_annotations
+    from app.services.execution_policy import selected_manifest_paths
+    annotation_inputs = (selected_manifest_paths(params.get("section_manifest")) or params.get("original_input_paths")
+                         or [str(Path(params["original_data_folder"]) / f"{name}.txt") for name in params.get("sample_names", [])])
+    copy_selected_feature_annotations(annotation_inputs, output_dir)
 
     # --- マージスクリプトパスの注入（DESI/TIMS共通） ---
     if params.get("merge_script_path"):
@@ -844,7 +888,7 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
         #   補正されない**状態で走っていた。
         if _is_tims_cf and params.get("calibration_by_sample"):
             _entries = [
-                f'  "{sname}" = c(' + ", ".join(str(c) for c in scoefs) + ")"
+                f"  {_r_str(sname)} = c(" + ", ".join(str(c) for c in scoefs) + ")"
                 for sname, scoefs in params["calibration_by_sample"].items()
             ]
             lines = _replace_assign(
@@ -882,6 +926,22 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
     if params.get("umap_dims_n") is not None:
         lines = _replace_assign(lines, f"{_pre}UMAP_DIMS_N",
                                 f"{int(params['umap_dims_n'])}L")
+
+    # ★ ver67.0: 再解析でも seed/近傍/クラスタ条件を保存値から漏れなく渡す。
+    extra_int = {"umap_seed": "UMAP_SEED", "cluster_dims_n": "CLUSTER_DIMS_N",
+                 "cluster_k_param": "CLUSTER_K_PARAM", "cluster_algorithm": "CLUSTER_ALGORITHM"}
+    extra_num = {"cluster_resolution": "CLUSTER_RESOLUTION"} if _is_tims_cf else {
+        "cluster_resolution_single": "CLUSTER_RESOLUTION_SINGLE",
+        "cluster_resolution_harmony": "CLUSTER_RESOLUTION_HARMONY",
+        "cluster_resolution_rpca": "CLUSTER_RESOLUTION_RPCA"}
+    for key, var in extra_int.items():
+        if params.get(key) is not None:
+            lines = _replace_assign(lines, _pre + var, f"{int(params[key])}L")
+    for key, var in extra_num.items():
+        if params.get(key) is not None:
+            lines = _replace_assign(lines, _pre + var, repr(float(params[key])))
+    if params.get("cluster_metric"):
+        lines = _replace_assign(lines, _pre + "CLUSTER_METRIC", _r_str(params["cluster_metric"]))
 
     # --- m/z アライメント / 化合物名の由来（★ ver58.0 / A-10。TIMS のみ） ---
     #   DESI v16 には受け手が無いので TIMS 限定（V13_ANNOTATION_FILTER と同じ扱い）。
@@ -937,7 +997,7 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
         _af = params["annotation_filter"]
         lines = _replace_assign(
             lines, "V13_ANNOTATION_FILTER",
-            "c(" + ", ".join(f'"{v}"' for v in _af) + ")",
+            "c(" + ", ".join(_r_str(v) for v in _af) + ")",
         )
     if _is_tims_cf and params.get("ion_mode"):
         lines = _replace_assign(lines, "V13_ION_MODE", _r_str(params["ion_mode"]))

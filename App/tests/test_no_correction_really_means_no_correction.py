@@ -91,52 +91,38 @@ def test_the_script_has_an_explicit_flag():
 
 
 def test_the_decision_uses_the_flag():
-    """★ 補正変数の決定が旗を見ていること。"""
-    m = re.search(r"group_var\s*<-\s*if\s*\((.+?)\)\s*\.bv\s*else", _SRC)
-    assert m, "補正変数の決定行が見つからない"
-    assert "BATCH_CORRECTION_ENABLE" in m.group(1), (
-        f"補正の判定が旗を見ていない: {m.group(1)}")
+    """保存済みOFFを尊重し、共通の統合単位数で判定する。"""
+    line = re.search(r"^\.correction_enabled\s*<-\s*(.+)$", _SRC, re.M)
+    assert line and "BATCH_CORRECTION_ENABLE" in line.group(1)
+    assert 'group_var <- "integration_unit_id"' in _SRC
+    assert '.rpca_batch <- group_var' in _SRC
 
 
 @pytest.mark.skipif(shutil.which("Rscript") is None, reason="R が無い環境")
-@pytest.mark.parametrize("enable,levels,bv,want", [
-    # 「補正なし」= 旗が偽 → ファイルが何個でも補正しない
-    (False, 1, "sample", "NA"),
-    (False, 2, "sample", "NA"),
-    (False, 5, "sample", "NA"),
-    # 従来どおり: 旗が真なら sample が複数のとき補正する
-    (True, 2, "sample", "sample"),
-    (True, 1, "sample", "NA"),
-    # 生物差の列は許可がない限り補正しない（従来どおり）
-    (True, 2, "slice_id", "NA"),
+@pytest.mark.parametrize("enable,units,want", [
+    (False, 1, "FALSE"), (False, 2, "FALSE"), (False, 6, "FALSE"),
+    (True, 1, "FALSE"), (True, 2, "TRUE"), (True, 6, "TRUE"),
 ])
-def test_the_flag_decides_whether_harmony_runs(enable, levels, bv, want):
-    """★ 本丸: 旗が偽なら補正変数が NA（＝Harmony を実行しない）になること。"""
-    m = re.search(r"(\s*\.bv_is_bio\s*<-.+?\n\s*group_var\s*<-.+?\n)", _SRC, re.S)
-    assert m, "判定ロジックを取り出せない"
-    logic = m.group(1)
-
+def test_the_flag_decides_whether_harmony_runs(enable, units, want):
+    """実際のR条件式を実行し、両補正法の共通判定を検証する。"""
+    logic = re.search(r"^\.correction_enabled\s*<-\s*.+$", _SRC, re.M)
+    assert logic
     code = f"""
 BATCH_CORRECTION_ENABLE <- {"TRUE" if enable else "FALSE"}
-ALLOW_CONDITION_CORRECTION <- FALSE
-.bv <- "{bv}"
-.bv_levels <- {levels}
-{logic}
-cat(if (is.na(group_var)) "NA" else group_var)
+.n_units <- {units}
+{logic.group(0)}
+cat(.correction_enabled)
 """
-    out = subprocess.run(["Rscript", "-e", code], capture_output=True, text=True,
-                         timeout=180)
+    out = subprocess.run(["Rscript", "-e", code], capture_output=True, text=True, timeout=180)
     assert out.returncode == 0, out.stderr
-    assert out.stdout.strip() == want, (
-        f"旗={enable} / サンプル数={levels} / 列={bv} のとき "
-        f"補正変数が {out.stdout.strip()!r}（期待 {want!r}）")
+    assert out.stdout.strip() == want
 
 
 def test_the_skip_path_already_exists():
-    """前提: 補正変数が NA のときの「無補正 PCA を使う」経路が残っていること。"""
-    assert "補正をスキップ" in _SRC, (
-        "補正をスキップする経路の説明が消えている。"
-        "旗を偽にしても行き先が無ければ意味がない")
+    """補正なしでもPCAを完成させ、Harmony名のPCAを保存しない。"""
+    assert 'seu_pca <- .ua_finish_tims(seu_pca, "pca", "pca_uncorrected"' in _SRC
+    assert 'ua_record_method(od, "harmony", "skipped"' in _SRC
+    assert 'reduction = "harmony"), rds_step2_out' in _SRC
 
 
 # ---------------------------------------------------------------------------

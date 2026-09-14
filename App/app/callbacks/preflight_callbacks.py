@@ -246,6 +246,7 @@ def _render_diagnostics_table(data: dict, rds_methods: dict):
         "③反映は各手法の推奨の最大値を採用（全手法が安定・連結する最小の共通値、"
         "許容範囲内にクランプ）。min.dist・metric は自動推奨の対象外で既定値"
         "（0.3 / cosine）を使用します。"
+        "反映した値は新しい通常解析・①で使用します。④は元の保存条件を使用します。"
         + (f"　反映値の元: {recommended['source']}" if recommended else "")
     )
     return html.Div([header, table, footer]), recommended

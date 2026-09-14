@@ -316,10 +316,13 @@ def _analysis_block(receipt: dict, params: dict) -> dict:
             "k_param": params.get("clustering_k"),
         },
         "annotation": obj.get("annotation") or {
+            "enabled": params.get("annotation_enable"),
+            "name_policy": params.get("name_policy"),
             "ion_mode": params.get("ion_mode"),
             "tolerance_mz": params.get("tolerance_mz"),
             "adduct_filter": params.get("adduct_filter"),
-            "annotation_csv": params.get("annotation_csv"),
+            "annotation_csv": (params.get("annotation_csv")
+                               if params.get("annotation_enable") is not False else ""),
             "sources": params.get("annotation_sources"),
         },
         "thresholds": obj.get("thresholds") or {
@@ -336,6 +339,8 @@ def _analysis_block(receipt: dict, params: dict) -> dict:
                 "roi_filter": params.get("roi_filter"),
                 "annotation_filter": params.get("annotation_filter"),
                 "use_roi_as_sample": params.get("use_roi_as_sample"),
+                "section_manifest": params.get("section_manifest"),
+                "execution_policy": params.get("execution_policy"),
                 "tims_scenario": (_dig(receipt, "object.pipeline.tims_scenario")
                                   or params.get("tims_scenario")),
             },
@@ -412,6 +417,10 @@ def collect_conditions(rds_path=None, result_folder=None, integration_method=Non
         "batch_de_fixed_params": dict(BATCH_DE_FIXED_PARAMS),
         "extra": dict(extra or {}),
     }
+
+    # ★ ver67.0: 編集した群は閲覧時の記録に追加し、解析時の条件は保持する。
+    if result_dir and (Path(result_dir) / "section_manifest.json").exists():
+        conditions["interactive"]["section_manifest_current"] = _read_json(Path(result_dir) / "section_manifest.json")
 
     # ver48.0: 復元より前に「直接記録されていた」項目に印を付ける。
     # 以後に埋まったものは実行スクリプト由来と判別でき、Methods 本文で色を分けられる。

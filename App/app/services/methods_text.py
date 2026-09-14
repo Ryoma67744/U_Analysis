@@ -709,6 +709,11 @@ def _sec_calib(c, lang):
 
 def _sec_annot(c, lang):
     ja = lang == "ja"
+    # ★ ver67.0: DBパスだけから「帰属した」と記載するとOFFの解析を誤記する。
+    if _get(c, "analysis.annotation.enabled") is False:
+        return {"heading": _h("annot", lang), "paragraphs": [_para(
+            "有効なSCiLS登録名がある特徴量には登録名を使用し、追加のDB照合は行わなかった。名称のない特徴量はm/zで表示した。"
+            if ja else "Available valid SCiLS names were retained; no additional database matching was performed. Features without names were displayed by m/z.")]}
     db = _get(c, "analysis.annotation.annotation_csv")
     db_name = None
     if db:
@@ -757,7 +762,12 @@ def _sec_embed(c, lang):
     scenario = _get(c, "analysis.sample_selection.tims_scenario")
 
     # --- バッチ統合 ---
-    if scenario and scenario in _SCENARIO_TEXT:
+    policy = _get(c, "analysis.sample_selection.execution_policy")
+    if policy == "section_auto_v1":
+        paras.append(_para(
+            "未補正PCAを作成し、統合単位が二つ以上の場合は同じ切片IDを用いてHarmony・RPCAを個別に実行する方針とした。群ラベルは補正単位に使用しなかった。"
+            if ja else "An uncorrected PCA result was generated. Harmony and RPCA were run separately using the same section IDs when at least two integration units were available. Group labels were not used as integration units."))
+    elif scenario and scenario in _SCENARIO_TEXT:
         txt = _SCENARIO_TEXT[scenario][0 if ja else 1]
         paras.append(_para(("試料間の統合方針として、" if ja else "For integration across samples, ")
                            + txt + ("。" if ja else ".")))

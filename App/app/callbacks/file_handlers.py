@@ -134,23 +134,16 @@ def update_reanalysis_inherited_note(desi_val, tims_val, normalize_input,
             rows.append(f"正規化: OFF（正規化済み入力）／変換: {norm_mode or 'log1p'}")
         else:
             rows.append("正規化: ON（LogNormalize を実行）")
-        # ★ ver58.0 (A-5): ROI 分割は再解析でもやり直す。何が使われるかを出す。
-        if desi_use_roi_as_sample:
-            _roi = list(desi_roi_filter or [])
-            rows.append("ROI: ROI ごとに別サンプルとして分割し直す"
-                        + (f"（対象: {', '.join(_roi)}）" if _roi else "（全 ROI）"))
-        else:
-            rows.append("ROI: 分割しない（ファイル全体を 1 サンプルとする）")
+        # ★ ver67.0: ROI の扱いは初回／再解析で共通の切片対応表に記録する。
+        rows.append("切片・ROI: この画面の「解析対象の切片／ROI」と保存済みの対応表を使用")
     else:
         # `x or 0` にしない: 0 は「無効」という正当な指定で、既定値と区別が要る
         # （既定も 0 なので結果は同じだが、この型を広げないこと自体が規約）。
         _ppm = mz_align_ppm if mz_align_ppm is not None else 0
         rows.append(f"m/z アライメント: {_ppm} ppm"
                     + ("（0 = 無効）" if not _ppm else ""))
-        rows.append("化合物名: "
-                    + ("変換元 CSV 由来を使う"
-                       if "embedded" in list(use_annotation_check or [])
-                       else "変換元 CSV 由来は使わない"))
+        rows.append("化合物名: SCiLS登録済み名称を自動使用（追加DBは明示的に有効なときのみ）")
+
 
     children = [
         html.Div(rows[0], style={"fontWeight": "600"}),
@@ -571,9 +564,24 @@ def sync_desi_roi_to_store(all_values):
     Output("sample_selector_reanalysis", "children"),
     [Input("reanalysis_data_folder", "value"),
      Input("analysis_method", "value"),
-     Input("analysis_method_tims", "value")],
+     Input("analysis_method_tims", "value"),
+     Input("reanalysis_source_manifest_store", "data"), Input("rds_path", "value")],
+    State("section_manifest_store_reanalysis", "data"),
 )
-def update_reanalysis_sample_selector(data_folder, desi_method, tims_method):
+def update_reanalysis_sample_selector(data_folder, desi_method, tims_method,
+                                      source=None, rds_path="", previous=None):
+    # ★ ver67.0: basenameだけの選択で別フォルダの元入力を落とさない。
+    from app.callbacks.section_callbacks import reanalysis_source_manifest
+    saved = reanalysis_source_manifest(source, data_folder, rds_path, previous)
+    if saved:
+        selected = [f for f in saved["files"] if f.get("selection_mode") != "none"]
+        names = list(dict.fromkeys(Path(f["path"]).stem for f in selected))
+        return html.Div([
+            html.Small(f"元解析の {len(selected)} ファイルを使用します。下の切片／ROIごとに選択できます。",
+                       className="text-muted"),
+            dbc.Checklist(id="selected_samples_reanalysis", options=[{"label": n, "value": n} for n in names],
+                          value=names, style={"display": "none"}),
+        ])
     if not data_folder or not Path(data_folder).is_dir():
         return html.Div("データフォルダを指定してください", className="text-muted")
 
@@ -699,8 +707,8 @@ def reset_reanalysis_defaults(desi_val, tims_val, restore_pending=False):
     """
     if restore_pending:
         return no_update, no_update
-    from app.config import DEFAULT_ION_MODE, DEFAULT_TOLERANCE_MZ
-    return DEFAULT_ION_MODE, DEFAULT_TOLERANCE_MZ
+    # ★ ver67.0: 手法切替だけで Negative を Positive へ戻す根拠はない。
+    return no_update, no_update
 
 
 # ---------------------------------------------------------------------------
@@ -1519,3 +1527,7 @@ def remove_extra_folder(n_clicks_list, current_folders):
             folders.pop(idx)
             return folders
     return no_update
+
+
+# ★ ver67.0: 初回／再解析に共通の切片・ROI・群設定 callback を登録する。
+from app.callbacks import section_callbacks  # noqa: E402, F401

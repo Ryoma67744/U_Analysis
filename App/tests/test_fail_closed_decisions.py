@@ -95,8 +95,7 @@ class TestAnnotationCacheFreshnessFailsClosed:
         sidecar = tmp_path / "sidecar.parquet"
         sidecar.write_bytes(b"x")
         monkeypatch.setattr(
-            type(bridge), "_find_feature_annotation_sidecar",
-            lambda self, rds: sidecar, raising=False)
+            "app.services.naming_policy.find_annotation_sidecars", lambda rds: [sidecar])
         return cache_dir, cache, sidecar
 
     def test_fresh_cache_is_reused(self, tmp_path, monkeypatch, bridge):
@@ -106,6 +105,13 @@ class TestAnnotationCacheFreshnessFailsClosed:
         cache_dir, cache, sidecar = self._prepare(tmp_path, monkeypatch, bridge)
         os.utime(sidecar, (1_700_000_000, 1_700_000_000))
         os.utime(cache, (1_800_000_000, 1_800_000_000))   # キャッシュの方が新しい
+        # ★ ver67.0: 全入力集合/feature ID が合う署名を伴うキャッシュだけが再利用可能。
+        import json
+        from app.services.seurat_bridge import _parquet_file_sig
+        from app.services.naming_policy import POLICY_VERSION
+        (cache_dir / "feature_annotations_signature.json").write_text(json.dumps({
+            "policy": POLICY_VERSION, "features": ["mz_1"],
+            "sources": [list(_parquet_file_sig(sidecar))]}))
         got = bridge._load_feature_annotations(
             cache_dir, "/rds/x.rds", features_list=["mz_1"])
         assert got == {"mz_1": "OLD NAME"}, \
@@ -131,8 +137,7 @@ class TestAnnotationCacheFreshnessFailsClosed:
                 raise OSError("stat failed")
 
         monkeypatch.setattr(
-            type(bridge), "_find_feature_annotation_sidecar",
-            lambda self, rds: _UnstatableSidecar(), raising=False)
+            "app.services.naming_policy.find_annotation_sidecars", lambda rds: [_UnstatableSidecar()])
 
         with caplog.at_level(logging.WARNING):
             got = bridge._load_feature_annotations(

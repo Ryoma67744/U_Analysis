@@ -65,7 +65,7 @@ def _marker_calls(path: Path):
 def test_every_testing_site_is_found():
     """前提: 5 か所すべてを見ていること（見落とすと片手落ちになる）。"""
     counts = {k: len(_marker_calls(v)) for k, v in _SOURCES.items()}
-    assert counts["DESI 本解析"] == 3, counts
+    assert counts["DESI 本解析"] == 1, counts  # ★ ver67.0: 3手法で共通のマーカー関数を呼ぶ
     assert counts["TIMS 本解析"] == 1, counts
     assert counts["対話画面の範囲選択"] == 2, counts   # local / global
 
@@ -124,16 +124,13 @@ def test_the_hidden_return_threshold_is_lifted(label):
 # ---------------------------------------------------------------------------
 
 def test_the_export_is_filtered():
-    """★ CSV に出すのは閾値を通ったものだけにすること。"""
+    """★ CSVの非空マーカーは共通の閾値フィルタを通る。空結果はヘッダのみ保存する。"""
     src = DESI_V16.read_text(encoding="utf-8")
-    assert ".deg_for_export" in src, (
-        "書き出し用の絞り込みが無い。全特徴量をそのまま書くと"
-        "行数が 1〜2 桁増える（ご指定は『CSV は従来どおり絞る』）")
-    for name in ("analysis_deg_all_markers_", "analysis_top5_markers_per_cluster_"):
-        i = src.index(f'paste0("{name}"')
-        head = src[max(0, i - 700):i]
-        assert ".deg_for_export" in head, (
-            f"{name}… の書き出しが絞り込みを通っていない")
+    body = src[src.index(".desi_export_result <- function"):src.index(".desi_finish_method <- function")]
+    assert '.deg_out <- .deg_for_export(deg_markers)' in body
+    assert 'write.csv(.deg_out,' in body
+    assert 'top5 <- .deg_out %>%' in body
+    assert 'write.csv(top5,' in body
 
 
 def test_the_export_filter_keeps_the_screen_thresholds():
@@ -156,15 +153,13 @@ def test_tims_export_is_filtered_too():
 # ---------------------------------------------------------------------------
 
 def test_every_branch_floors_zero_pvalues():
-    """★ 3 分岐すべてで p 値ゼロの床置換を行うこと。
-
-    従来は Harmony 分岐だけ抜けていた。行数が増えるとゼロが出やすくなり、
-    そのまま CSV に混ざる。
-    """
+    """★ ver67.0: 全手法が共有するマーカー処理で床置換する。"""
     src = DESI_V16.read_text(encoding="utf-8")
-    n = len(re.findall(r"\.floor_zero_padj\(", src))
-    assert n >= 3, (
-        f"床置換の呼び出しが {n} 箇所しかない。3 分岐すべてに要る")
+    body = src[src.index(".desi_export_result <- function"):src.index(".desi_finish_method <- function")]
+    assert 'deg_markers <- .floor_zero_padj(deg_markers)' in body
+    assert '.desi_export_result(obj, method, rds_path)' in src
+    assert '.desi_finish_method(seu_pca, "PCA", "pca"' in src
+    assert '.desi_finish_method(.obj, .method, .reduction' in src
 
 
 def test_the_deg_cache_key_includes_the_test_conditions():

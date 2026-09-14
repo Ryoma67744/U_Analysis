@@ -59,7 +59,7 @@ suppressPackageStartupMessages({
 
 # ---- パフォーマンス最適化: 並列化 & Leidenクラスタリング ----
 if (!requireNamespace("future", quietly = TRUE)) install.packages("future", repos = "https://cran.rstudio.com/")
-if (!requireNamespace("leiden", quietly = TRUE)) install.packages("leiden", repos = "https://cran.rstudio.com/")
+# ★ ver67.0: SeuratのLeiden実装を利用するため、未使用のleidenパッケージを実行時に取得しない。
 library(future)
 plan(sequential)  # workerはFindAllMarkers直前にのみ起動（メモリ節約）
 options(future.globals.maxSize = 4 * 1024^3)  # 4GB制限
@@ -146,6 +146,8 @@ local({
          " App/Script/helpers/rds_io.R の配置を確認してください。")
   }
   source(helper_path, local = FALSE)
+  source(file.path(dirname(helper_path), "analysis_contract.R"), local = FALSE)
+  source(file.path(dirname(helper_path), "feature_naming_policy.R"), local = FALSE)
 })
 
 # ---- 設定: プロット設定 & 解析パラメータ & 途中再開設定 ----
@@ -160,7 +162,7 @@ RESUME_FROM_RDS <- FALSE
 
 # 途中再開時に読み込むRDSファイルのディレクトリパス(RESUME_FROM_RDS=TRUE の場合のみ有効)
 # 例: "C:/Users/you/.../RDS_Files" または "C:\\Users\\you\\...\\RDS_Files"
-RESUME_DIR_PATH <- "C:\\Users\\Cciia\\Biochem Dropbox\\Biochem's shared workspace\\Workspace\\UMAP\\DESI\\250924_Kizu_Dev_Brain\\250924_Kizu_Dev_Brain20251028"
+RESUME_DIR_PATH <- ""
 
 # バッチ補正を行うか。
 #   ★ ver58.0 (デバッグ総点検 A-1): DESI には補正の有無を選ぶ手段が無く、
@@ -349,17 +351,17 @@ my_colors <- UMAP_DISTINCT_COLORS_50
 # ==== USER EDITABLE SETTINGS (change here only) ==============
 # ============================================================ 
 # [I/O] データフォルダと出力先の設定
-data_folder <- "C:\\Users\\Cciia\\Biochem Dropbox\\Biochem's shared workspace\\Workspace\\UMAP\\DESI\\Data\\250622_Ohashi\\250621_Ohashi_GF-AAs"
-output_dir  <- "C:\\Users\\Cciia\\Biochem Dropbox\\Biochem's shared workspace\\Workspace\\UMAP\\DESI\\Data\\250622_Ohashi\\250621_Ohashi_GF-AAs"
+data_folder <- ""
+output_dir <- ""
 
 # サンプル名のリスト (data_folder内の .txt ファイル名に対応)
 sample_names <- c(
-  "250621_Ohashi_CV-AAs",
-  "250621_Ohashi_GF-AAs"
+  "sample1",
+  "sample2"
 )
 
 # プロジェクト名の接頭辞 (出力フォルダ名に使用: Prefix + YYYYMMDD)
-PROJECT_NAME_PREFIX <- "250621_Ohashi_GF-CV_1"
+PROJECT_NAME_PREFIX <- "DESI_Analysis"
 
 # MRMリストのファイルパス (化合物同定用)
 # ★ ver55.0: 直書きの Dropbox パスを空にした。読み出し側は file.exists() で
@@ -375,11 +377,22 @@ MRM_FILE_PATH <- ""
 # - ROI_FILTER = NULL: 全 ROI を使用 / c("Brain", "Heart"): 指定 ROI のみ使用
 USE_ROI_AS_SAMPLE <- FALSE
 ROI_FILTER <- NULL
+# ★ ver67.0: ファイル別選択と切片情報を共通契約で受け取り、空選択を全件に戻さない。
+SECTION_MANIFEST_PATH <- ""
+DB_ANNOTATION_ENABLED <- FALSE
+ANALYSIS_SIGNATURE <- ""
 
 # ============================================================
 # ==== USER EDITABLE SETTINGS END =============================
 # ============================================================
 
+
+# ★ ver67.0: 個人環境の既定パスを廃し、未設定のまま別データを読むことを防ぐ。
+if (!nzchar(output_dir)) stop("解析出力先が未設定です")
+if (!nzchar(data_folder) && !nzchar(SECTION_MANIFEST_PATH) &&
+    !identical(PIPELINE_STAGE, "downstream_from_reduction")) stop("解析入力が未設定です")
+if ((isTRUE(RESUME_FROM_RDS) || identical(PIPELINE_STAGE, "downstream_from_reduction")) &&
+    !nzchar(RESUME_DIR_PATH)) stop("再開するRDSフォルダが未設定です")
 
 # ---- I/O パス設定 (moved to USER EDITABLE SETTINGS) ----
 
@@ -716,7 +729,10 @@ run_volcano_and_msi <- function(seu_obj, deg_markers, method_tag, sample_names, 
         df_sub %>% dplyr::filter(color_group == "UP")   %>% dplyr::arrange(desc(avg_log2FC)) %>% head(LABEL_TOP_N_EACH),
         df_sub %>% dplyr::filter(color_group == "DOWN") %>% dplyr::arrange(avg_log2FC)       %>% head(LABEL_TOP_N_EACH)
       )
-      if (!is.null(mrm_df) && nrow(mrm_df) > 0) {
+      if ("annotation" %in% names(mrm_hits)) {
+        name_map <- setNames(mrm_hits$annotation, mrm_hits$gene)
+        df_sub$label_mrm <- ifelse(df_sub$gene %in% names(name_map), name_map[df_sub$gene], NA)
+      } else if (!is.null(mrm_df) && nrow(mrm_df) > 0) {
         mapped_compounds <- match_mrm_compound(mrm_hits$gene, mrm_df, tolerance = 0.1)
         name_map <- setNames(mapped_compounds, mrm_hits$gene)
         df_sub$label_mrm <- ifelse(df_sub$gene %in% names(name_map), name_map[df_sub$gene], NA)
@@ -788,7 +804,10 @@ run_volcano_and_msi <- function(seu_obj, deg_markers, method_tag, sample_names, 
 
           # ---- 化合物名（MRM対応）----
           comp <- gene
-          if (!is.null(mrm_df) && nrow(mrm_df) > 0) {
+          if ("annotation" %in% names(deg_markers)) {
+            comp <- deg_markers$annotation[match(gene, deg_markers$gene)]
+            if (is.na(comp) || !nzchar(comp)) comp <- gene
+          } else if (!is.null(mrm_df) && nrow(mrm_df) > 0) {
             mm <- match_mrm_compound(gene, mrm_df, tolerance = 0.1)
             if (length(mm) == 1 && !is.na(mm) && mm != gene) {
               comp <- as.character(mm)
@@ -1160,6 +1179,8 @@ match_mrm_compound <- function(feature_names, mrm_df, tolerance = 0.1) {
   }
   
   mapped_names <- sapply(feature_names, function(feat) {
+    # ★ ver67.0: 入力に既存名称がある特徴量はDBで上書きしない。
+    if (!grepl("^[0-9.]+-[0-9.]+$", feat)) return(feat)
     # feat形式: "146.1-102"
     parts <- strsplit(feat, "-")[[1]]
     if (length(parts) != 2) return(feat)
@@ -2195,7 +2216,7 @@ filter_low_count_spots <- function(seurat_obj, method = "otsu", manual_threshold
 # =========================
 
 # MRMリストの読み込み
-if (file.exists(MRM_FILE_PATH)) {
+if (isTRUE(DB_ANNOTATION_ENABLED) && file.exists(MRM_FILE_PATH)) {
   mrm_df <- .load_mrm_table(MRM_FILE_PATH)
   if (!is.null(mrm_df)) {
     cat("MRM list loaded:", nrow(mrm_df), "rows.\n")
@@ -2203,12 +2224,13 @@ if (file.exists(MRM_FILE_PATH)) {
     warning("MRM file exists but could not be parsed into (Compound/Parent/Daughter). Compound matching will be skipped.")
   }
 } else {
-  warning("MRM file not found at:", MRM_FILE_PATH, "\nCompound matching will be skipped.")
+  if (isTRUE(DB_ANNOTATION_ENABLED)) warning("MRM file not found at:", MRM_FILE_PATH)
   mrm_df <- NULL
 }
 
 # ④ downstream_from_reduction: ①の reduction RDS を再利用し UMAP 以降のみ実行する。
 # raw データ/seu_list を一切作らず、各 branch の RESUME-load 経路に委ねる。
+.section_manifest <- ua_read_manifest(SECTION_MANIFEST_PATH)
 .stage_downstream <- identical(PIPELINE_STAGE, "downstream_from_reduction")
 .has_single  <- .stage_downstream && file.exists(file.path(RESUME_DIR_PATH, "DESI_Seurat_SingleSample.rds"))
 .has_harmony <- .stage_downstream && file.exists(file.path(RESUME_DIR_PATH, "DESI_SeuratCombined_harmony.rds"))
@@ -2224,56 +2246,44 @@ rds_path1_in <- if (RESUME_FROM_RDS) file.path(RESUME_DIR_PATH, rds_filename1) e
 if (RESUME_FROM_RDS && file.exists(rds_path1_in)) {
   message(">> RESUME: Loading existing RDS (1/2): ", rds_path1_in)
   seu_list <- load_rds_compact(rds_path1_in)
+  if (!ua_checkpoint_matches(seu_list, ANALYSIS_SIGNATURE)) stop("再開条件が前処理結果と一致しません")
   # 修正①: Resume時に既存RDSを出力先にもコピー
   file.copy(rds_path1_in, rds_path1_out, overwrite = TRUE)
 } else {
   # 生データからの読み込み
   seu_list <- list()
   expanded_sample_names <- c()  # ROI 別サンプル化後の sample 名リスト
-  for(ii in seq_along(sample_names)){
-    sample_name <- sample_names[ii]
-    file_path <- file.path(data_folder, paste0(sample_name, ".txt"))
-    desi_data <- read_desi_data(file_path, sample_prefix = sample_name)
+  # ★ ver67.0: 異なるフォルダの同名ファイルはmanifestの実パスで区別する。
+  .desi_inputs <- if (!is.null(.section_manifest)) {
+    Filter(function(x) !identical(x$selection_mode, "none"), .section_manifest$files)
+  } else lapply(sample_names, function(sn) list(path = file.path(data_folder, paste0(sn, ".txt"))))
+  for(ii in seq_along(.desi_inputs)){
+    .input <- .desi_inputs[[ii]]
+    file_path <- ua_value(.input$runtime_path, ua_value(.input$path))
+    sample_name <- tools::file_path_sans_ext(basename(file_path))
+    desi_data <- read_desi_data(file_path, sample_prefix = paste0("input", ii, "_", sample_name))
 
-    # ROI モード ON かつ ROI 列ありなら、各 ROI を別サンプルとして subset
-    # それ以外 (OFF または ROI 列なし) はファイル全体を 1 サンプルとして処理
-    if (isTRUE(USE_ROI_AS_SAMPLE) && isTRUE(desi_data$has_roi)) {
-      roi_values <- unique(desi_data$coordinates$ROI)
-      roi_values <- roi_values[!is.na(roi_values) & nzchar(roi_values)]
-      # ver3.8: ROI フィルタ前後の値を診断ログとして出力。
-      # ユーザー報告時に「期待した ROI が含まれていない」原因究明を容易にする。
-      roi_values_orig <- roi_values
-      if (!is.null(ROI_FILTER) && length(ROI_FILTER) > 0) {
-        roi_values <- intersect(roi_values, ROI_FILTER)
-      }
-      .roi_filter_str <- if (is.null(ROI_FILTER) || length(ROI_FILTER) == 0) "(none)" else paste(ROI_FILTER, collapse = ", ")
-      message(sprintf(">> ROI: 検出=[%s] フィルタ=[%s] 適用後=[%s] (sample=%s)",
-                      paste(roi_values_orig, collapse = ", "),
-                      .roi_filter_str,
-                      paste(roi_values, collapse = ", "),
-                      sample_name))
-      if (length(roi_values) == 0) {
-        message(">> WARNING: 有効な ROI が見つかりません (フィルタ後 0 件)。"
-                , "ファイル全体を 1 サンプルとして処理: ", sample_name)
-        sub_samples <- list(list(name = sample_name,
-                                 mask = rep(TRUE, ncol(desi_data$count_matrix))))
-      } else {
-        message(">> ROI モード ON: ", sample_name, " を ", length(roi_values),
-                " 個の ROI に分割 (",
-                paste(roi_values, collapse = ", "), ")")
-        sub_samples <- lapply(roi_values, function(r) {
-          list(name = paste0(sample_name, "_", r),
-               mask = !is.na(desi_data$coordinates$ROI) &
-                      desi_data$coordinates$ROI == r)
-        })
-      }
+    # ★ ver67.0: ROI選択は分割設定から独立させる。別ファイルの同名ROI、全解除も区別する。
+    .entry <- ua_manifest_entry(.section_manifest, file_path)
+    .roi <- if (isTRUE(desi_data$has_roi)) as.character(desi_data$coordinates$ROI) else rep("", ncol(desi_data$count_matrix))
+    .keep <- rep(TRUE, length(.roi))
+    if (!is.null(.entry)) {
+      .mode <- .entry$selection_mode
+      if (identical(.mode, "none")) .keep[] <- FALSE
+      if (identical(.mode, "selected")) .keep <- !is.na(.roi) & .roi %in% unlist(.entry$rois)
+    } else if (!is.null(ROI_FILTER)) {
+      .keep <- !is.na(.roi) & .roi %in% ROI_FILTER
+    }
+    if (!any(.keep)) {
+      message(">> 選択画素なし: ", sample_name)
+      next
+    }
+    .split_roi <- if (!is.null(.entry)) identical(.entry$roi_role, "section") else isTRUE(USE_ROI_AS_SAMPLE)
+    if (.split_roi && isTRUE(desi_data$has_roi)) {
+      roi_values <- unique(.roi[.keep & !is.na(.roi) & nzchar(.roi)])
+      sub_samples <- lapply(roi_values, function(r) list(name = paste0(sample_name, "_", r), mask = .keep & !is.na(.roi) & .roi == r))
     } else {
-      if (isTRUE(USE_ROI_AS_SAMPLE) && !isTRUE(desi_data$has_roi)) {
-        message(">> WARNING: ROI モード ON だが ROI 列が見つかりません。"
-                , "ファイル全体を 1 サンプルとして処理: ", sample_name)
-      }
-      sub_samples <- list(list(name = sample_name,
-                               mask = rep(TRUE, ncol(desi_data$count_matrix))))
+      sub_samples <- list(list(name = sample_name, mask = .keep))
     }
 
     for (sub in sub_samples) {
@@ -2308,6 +2318,22 @@ if (RESUME_FROM_RDS && file.exists(rds_path1_in)) {
         seurat_obj$ROI <- sub_roi
       }
 
+      # ★ ver67.0: 再解析TXTの対応表で元画素と表示名を復元し、H&E対応キーを保持する。
+      .sidecar <- paste0(file_path, ".metadata.csv")
+      if (file.exists(.sidecar)) {
+        .source_md <- read.csv(.sidecar, stringsAsFactors = FALSE, check.names = FALSE,
+                              colClasses = "character", na.strings = character())
+        .mi <- match(as.character(seurat_obj$spot_index), .source_md$spot_index)
+        if (anyNA(.mi)) stop("再解析画素の対応表に不足があります: ", .sidecar)
+        for (.col in intersect(c("sample", "source_file_id", "source_pixel_id", "section_id", "subject_id", "group", "integration_unit_id"), names(.source_md))) {
+          seurat_obj@meta.data[[.col]] <- .source_md[[.col]][.mi]
+        }
+      }
+      seurat_obj <- ua_apply_sections(seurat_obj, file_path, .section_manifest,
+                                     roi_col = "ROI", pixel_col = "spot_index",
+                                     fallback_role = if (isTRUE(USE_ROI_AS_SAMPLE)) "section" else "region")
+      if (is.null(seurat_obj) || ncol(seurat_obj) == 0) next
+
       # ★ ver57.5 (デバッグ総点検 §5.2.1): 背景除去を「飛ばす」経路を定数で持つ。
       #   従来は再解析スクリプトが**このブロックを文字列として書き換えて**
       #   Otsu をスキップさせていたが、その目印
@@ -2328,13 +2354,15 @@ if (RESUME_FROM_RDS && file.exists(rds_path1_in)) {
         )
         seu_list[[length(seu_list) + 1]] <- filtering_result_otsu$filtered_seurat
       }
-      expanded_sample_names <- c(expanded_sample_names, sub_name)
+      expanded_sample_names <- unique(c(expanded_sample_names, as.character(seurat_obj$sample)))
     }
   }
   # ROI 別サンプル化後の sample_names で後続処理が動くよう上書き
   # (例: Multi-sample mode 判定 length(sample_names) > 1、UMAP 凡例など)
   sample_names <- expanded_sample_names
+  if (!length(seu_list)) stop("解析対象の画素がありません。切片／ROIの選択を確認してください。")
   # RDS保存 (slim: DietSeurat + qs 圧縮)
+  seu_list <- ua_stamp_checkpoint(seu_list, ANALYSIS_SIGNATURE)
   save_rds_compact(seu_list, rds_path1_out)
   gc()
 }
@@ -2361,6 +2389,7 @@ if(SPATIAL_SMOOTH){
   if (RESUME_FROM_RDS && file.exists(rds_path2_in)) {
     message(">> RESUME: Loading existing RDS (2/2): ", rds_path2_in)
     seu_list <- load_rds_compact(rds_path2_in)
+    if (!ua_checkpoint_matches(seu_list, ANALYSIS_SIGNATURE)) stop("再開条件が平滑化結果と一致しません")
     # 修正①: Resume時に既存RDSを出力先にもコピー
     file.copy(rds_path2_in, rds_path2_out, overwrite = TRUE)
   } else {
@@ -2398,776 +2427,194 @@ for(ii in seq_along(seu_list)){
 # =========================
 # 解析実行 (PCA / Harmony / RPCA)
 # =========================
-# dispatch: ④は存在する reduction で分岐（seu_list が空のため length では判定不可）
-if ((.stage_downstream && .has_single) || (!.stage_downstream && length(seu_list) == 1)) {
-  # ---- Single Sample Mode (PCA) ----
-  message("Single-sample mode: PCAを用いた解析を実行します")
-  od_pca <- file.path(od, "PCA"); dir.create(od_pca, showWarnings = FALSE)
-  rds_filename_single <- "DESI_Seurat_SingleSample.rds"
-  rds_path_single_out <- file.path(rds_od, rds_filename_single)
-  
-  if (RESUME_FROM_RDS) {
-    rds_path_single_in <- file.path(RESUME_DIR_PATH, rds_filename_single)
-  } else {
-    rds_path_single_in <- ""
-  }
-  
-  if (RESUME_FROM_RDS && file.exists(rds_path_single_in)) {
-    message(">> RESUME: Loading existing RDS (Single): ", rds_path_single_in)
-    seu_single <- load_rds_compact(rds_path_single_in)
-    # 修正①: Resume時に既存RDSを出力先にもコピー
-    file.copy(rds_path_single_in, rds_path_single_out, overwrite = TRUE)
-  } else if (.stage_downstream) {
-    seu_single <- NULL  # ④だが single reduction RDS が無い → スキップ
-  } else {
-    seu_single <- seu_list[[1]]
-    DefaultAssay(seu_single) <- "Spatial"
-    seu_single <- apply_input_norm(seu_single)
-    seu_single <- FindVariableFeatures(seu_single)
-    seu_single <- ScaleData(seu_single, features = VariableFeatures(seu_single))
-    # ---- PATCH: dims auto-fix (available PCs) ----
-    nfeat_single <- length(VariableFeatures(seu_single))
-    if (is.null(nfeat_single) || nfeat_single <= 1) nfeat_single <- nrow(seu_single)
-    ncell_single <- ncol(seu_single)
-    npcs_single <- min(30, nfeat_single - 1, ncell_single - 1)
-    npcs_single <- max(2, npcs_single)
-
-    seu_single <- RunPCA(seu_single, npcs = npcs_single)
-    pc_avail <- ncol(Embeddings(seu_single, "pca"))
-    dims_use      <- seq_len(min(UMAP_DIMS_N, pc_avail))
-    dims_use_clst <- seq_len(min(CLUSTER_DIMS_N, pc_avail))
-    if (PIPELINE_STAGE != "reduction_only") {
-    seu_single <- RunUMAP(seu_single, reduction = "pca", dims = dims_use,
-                          n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
-                          metric = UMAP_METRIC, seed.use = UMAP_SEED)
-    seu_single <- FindNeighbors(seu_single, reduction = "pca", dims = dims_use_clst,
-                                k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
-    seu_single <- FindClusters(seu_single, resolution = CLUSTER_RESOLUTION_SINGLE, algorithm = CLUSTER_ALGORITHM)
-    Idents(seu_single) <- seu_single$seurat_clusters
-    }  # reduction_only: UMAP/クラスタリングをスキップ（reduction だけ保存）
-    
-    save_rds_compact(seu_single, rds_path_single_out)
-    gc()
-  }
-
-  # ④: reduction だけの RDS を読み込んだ場合、UMAP/クラスタを後付けしてから下流へ。
-  if (.stage_downstream && !is.null(seu_single) && !("umap" %in% names(seu_single@reductions))) {
-    pc_avail      <- ncol(Embeddings(seu_single, "pca"))
-    dims_use      <- seq_len(min(UMAP_DIMS_N, pc_avail))
-    dims_use_clst <- seq_len(min(CLUSTER_DIMS_N, pc_avail))
-    seu_single <- RunUMAP(seu_single, reduction = "pca", dims = dims_use,
-                          n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
-                          metric = UMAP_METRIC, seed.use = UMAP_SEED)
-    seu_single <- FindNeighbors(seu_single, reduction = "pca", dims = dims_use_clst,
-                                k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
-    seu_single <- FindClusters(seu_single, resolution = CLUSTER_RESOLUTION_SINGLE, algorithm = CLUSTER_ALGORITHM)
-    Idents(seu_single) <- seu_single$seurat_clusters
-    save_rds_compact(seu_single, rds_path_single_out)
-    gc()
-  }
-
-  # PIPELINE_STAGE: reduction_only なら以降（UMAP/作図/DEG）をスキップ（診断用に reduction だけ確定）
-  if (PIPELINE_STAGE != "reduction_only" && !is.null(seu_single)) {
-  # Color
-  current_clusters <- levels(Idents(seu_single))
-  my_colors <- .assign_cluster_colors(seu_single, seed = 42)
-  
-  
-  # UMAP Output
-  plot_umap_cluster_variants(seu_single, prefix = "single", outdir = od_pca)
-  plot_umap_per_sample(seu_single, unique(seu_single$sample), prefix = "single", outdir = od_pca)
-  
-  export_cluster_highlights(seu_single, prefix = "pca", outdir = od, sample_names = unique(seu_single$sample))
-  
-  # 統合画像コピー
-  try(suppressWarnings(file.copy(
-    from = file.path(od, "PerCluster_Highlight", "pca", "UMAP_per_sample_pca_ALLclusters.png"),
-    to   = file.path(od_pca, "UMAP_per_sample_pca_ALLclusters.png"),
-    overwrite = TRUE
-  )), silent = TRUE)
-  try(suppressWarnings(file.copy(
-    from = file.path(od, "PerCluster_Highlight", "pca", "UMAPtop_TICoverlaybottom_pca_ALLclusters.png"),
-    to   = file.path(od_pca, "UMAPtop_TICoverlaybottom_pca_ALLclusters.png"),
-    overwrite = TRUE
-  )), silent = TRUE)
-  
-  # Spatial
-  p_sp <- ggplot(seu_single@meta.data, aes(x = x_coord, y = y_coord, color = seurat_clusters)) +
-    geom_point(size = PLOT_POINT_SIZE, shape = PLOT_POINT_SHAPE, alpha = 1) +
-    scale_color_manual(values = my_colors) + scale_y_reverse() + coord_fixed() + theme_minimal() +
-    labs(x = "X Coordinate", y = "Y Coordinate", color = "Cluster")
-  p_sp <- add_filename_title(p_sp, seu_single, prefix_title = "Single sample")
-  # ggsave(file.path(od_pca, paste0("plot_cluster_single_", seu_single$sample[1], ".png")), p_sp, width = 6, height = 8, dpi = 300, bg = "white")
-
-  # DEG & Heatmap
-  cat("DEG計算中...\n")
-  # ---- 並列化開始: FindAllMarkers用 ----
-  plan(sequential)  # presto 導入済みのため逐次（multisession の 4 ワーカーが各々データを丸ごとコピーし OOM するため廃止）
-  deg_markers <- FindAllMarkers(seu_single, only.pos = FALSE, min.pct = 0, logfc.threshold = 0, return.thresh = 1, test.use = "wilcox")
-  # ---- 並列化終了: メモリ解放 ----
-  plan(sequential)
-  # BH/FDR補正に置換（Seuratデフォルトの Bonferroni は探索的解析に保守的すぎるため）
-  deg_markers$p_val_adj <- p.adjust(deg_markers$p_val, method = "BH")
-  # ★ ver58.0 (A-3): 床置換は 3 分岐共通のヘルパーへ集約した
-  deg_markers <- .floor_zero_padj(deg_markers)
-  # pixel 単位の探索的ランキング（空間自己相関未補正・群間検定ではない）である旨を明記
-  deg_markers$ranking_type   <- "exploratory_pixel_level"
-  deg_markers$inference_note <- "Exploratory pixel-level ranking; spatial autocorrelation not modeled; NOT sample-level statistical inference"
-  # ★ ver58.0 (A-3): 検定・補正は全体、書き出しは従来どおり閾値で絞る
-  .deg_out <- .deg_for_export(deg_markers)
-  write.csv(.deg_out, file.path(od_pca, "analysis_deg_all_markers_single.csv"), row.names = FALSE)
-  
-  top5_markers <- .deg_out %>% dplyr::group_by(cluster) %>% dplyr::top_n(n = 5, wt = avg_log2FC)
-  top_genes <- unique(top5_markers$gene)
-  
-  if (length(top_genes) > 1) {
-    sampled_cells <- c()
-    for (cid in unique(Idents(seu_single))) {
-      cc <- WhichCells(seu_single, idents = cid)
-      if (length(cc) > 200) cc <- sample(cc, 200)
-      sampled_cells <- c(sampled_cells, cc)
-    }
-    if (length(sampled_cells) > 1) {
-      seu_single <- ScaleData(seu_single, features = top_genes, assay = "Spatial", verbose = FALSE)  # slim RDS/diet で空の scale.data を補完（DoHeatmap 用）
-      heatmap1 <- DoHeatmap(subset(seu_single, cells = sampled_cells), features = top_genes, group.by = "ident", assay = "Spatial") +
-        scale_fill_gradientn(colors = c("blue", "white", "red")) + ggtitle("Top 5 Markers")
-      
-      # ヒートマップラベル (MRM対応)
-      if (!is.null(mrm_df)) {
-        mapped <- match_mrm_compound(top_genes, mrm_df, tolerance = 0.1)
-        name_map <- setNames(mapped, top_genes)
-        heatmap1 <- heatmap1 + scale_y_discrete(labels = function(x) {
-          lab <- sapply(x, function(xx) {
-            mm <- name_map[[xx]]
-            if (!is.null(mm) && !is.na(mm) && mm != xx) {
-              mm
-            } else {
-              xx
-            }
-          })
-          make.unique(lab)
-        })
-      }
-      # ggsave(file.path(od,"analysis_heatmap_top5_markers_pca.png"), heatmap1, width = 12, height = 8, dpi = 300)
-    }
-  }
-
-  # Volcano & MSI
-  if (nrow(deg_markers) > 0) {
-    # PCAモードでのVolcano生成
-    volcano_dir <- file.path(od, "Volcano_Plots", "pca"); dir.create(volcano_dir, recursive = TRUE, showWarnings = FALSE)
-    volcano_labeled_dir <- file.path(od, "Volcano_Plots_MRM", "pca"); dir.create(volcano_labeled_dir, recursive = TRUE, showWarnings = FALSE)
-    msi_dir <- file.path(od, "Cluster_Top5_MSI", "pca"); dir.create(msi_dir, recursive = TRUE, showWarnings = FALSE)
-    all_clusters <- sort(unique(deg_markers$cluster))
-    
-    for (cl in all_clusters) {
-      df_sub <- deg_markers[deg_markers$cluster == cl, ]
-      if(any(df_sub$p_val_adj == 0)) {
-        min_nz <- min(df_sub$p_val_adj[df_sub$p_val_adj > 0], na.rm = TRUE)
-        df_sub$p_val_adj[df_sub$p_val_adj == 0] <- min_nz * 0.1
-      }
-      df_sub$log_p <- -log10(df_sub$p_val_adj)
-      
-      df_sub$color_group <- "NO"
-      df_sub$color_group[df_sub$p_val_adj < DEG_P_THRESH_VAL & df_sub$avg_log2FC > DEG_LOGFC_TH_VAL] <- "UP"
-      df_sub$color_group[df_sub$p_val_adj < DEG_P_THRESH_VAL & df_sub$avg_log2FC < -DEG_LOGFC_TH_VAL] <- "DOWN"
-      
-      top_hits <- rbind(df_sub %>% filter(color_group == "UP") %>% arrange(desc(avg_log2FC)) %>% head(LABEL_TOP_N_EACH),
-                        df_sub %>% filter(color_group == "DOWN") %>% arrange(avg_log2FC) %>% head(LABEL_TOP_N_EACH))
-      df_sub$label_text <- ifelse(df_sub$gene %in% top_hits$gene, df_sub$gene, NA)
-      
-      max_log_p <- max(df_sub$log_p, na.rm = TRUE)
-      y_limit_max <- max_log_p * 1.2
-      
-      p <- ggplot(df_sub, aes(x = avg_log2FC, y = log_p, col = color_group)) +
-        geom_point(alpha = 0.6, size = 1.0) +
-        scale_color_manual(values = c("UP" = "red", "DOWN" = "blue", "NO" = "gray")) +
-        geom_vline(xintercept = c(-DEG_LOGFC_TH_VAL, DEG_LOGFC_TH_VAL), linetype = "dashed") +
-        geom_hline(yintercept = -log10(DEG_P_THRESH_VAL), linetype = "dashed") +
-        ggrepel::geom_text_repel(aes(label = label_text), size = 3.0, max.overlaps = 20) +
-        theme_minimal() + labs(title = paste0("Cluster ", cl)) +
-        coord_cartesian(ylim = c(0, y_limit_max))
-
-      # ggsave(file.path(volcano_dir, paste0("Volcano_Cluster_", cl, ".png")), p, width = 10, height = 8)
-
-      # MRMラベルング
-      mrm_hits <- rbind(df_sub %>% filter(color_group == "UP") %>% arrange(desc(avg_log2FC)) %>% head(LABEL_TOP_N_EACH),
-                        df_sub %>% filter(color_group == "DOWN") %>% arrange(avg_log2FC) %>% head(LABEL_TOP_N_EACH))
-      
-      if (!is.null(mrm_df)) {
-        mapped_compounds <- match_mrm_compound(mrm_hits$gene, mrm_df, tolerance = 0.1)
-        name_map <- setNames(mapped_compounds, mrm_hits$gene)
-        df_sub$label_mrm <- ifelse(df_sub$gene %in% names(name_map), name_map[df_sub$gene], NA)
-      } else {
-        df_sub$label_mrm <- ifelse(df_sub$gene %in% mrm_hits$gene, df_sub$gene, NA)
-      }
-      
-      p_mrm <- ggplot(df_sub, aes(x = avg_log2FC, y = log_p, col = color_group)) +
-        geom_point(alpha = 0.6, size = 1.0) +
-        scale_color_manual(values = c("UP" = "red", "DOWN" = "blue", "NO" = "gray")) +
-        geom_vline(xintercept = c(-DEG_LOGFC_TH_VAL, DEG_LOGFC_TH_VAL), linetype = "dashed") +
-        geom_hline(yintercept = -log10(DEG_P_THRESH_VAL), linetype = "dashed") +
-        ggrepel::geom_text_repel(aes(label = label_mrm), size = 2.5, max.overlaps = 20, box.padding = 0.5, force = 2) +
-        theme_minimal() + labs(title = paste0("Cluster ", cl, " (MRM Labeled)")) +
-        coord_cartesian(ylim = c(0, y_limit_max))
-
-      # ggsave(file.path(volcano_labeled_dir, paste0("Volcano_Cluster_", cl, "_MRM.png")), p_mrm, width = 12, height = 9)
-
-
-      # ---- Top5 MSI (修正: 分子ごとに全サンプルを横並べ、それを2行5列に配置) ----
-      run_volcano_and_msi(seu_single, deg_markers, method_tag = "pca",
-                          sample_names = unique(seu_single$sample), od = od, mrm_df = mrm_df, method_outdir = od_pca)
-    }
-  }
-  }  # end if (PIPELINE_STAGE != "reduction_only")  [single-sample downstream]
-} else {
-  # =========================
-  # Multi-sample mode
-  # =========================
-  
-  # ★ ver58.0 (A-1): 補正するかどうかで、使う reduction と出力先を切り替える。
-  #   補正しない結果を "Harmony" の名前で出すと実体と食い違い、かといって
-  #   新しい名前のフォルダにすると、マーカー表を探す側 (deg_utils) が
-  #   Harmony / RPCA / PCA / pca_uncorrected の 4 つしか知らないため
-  #   **マーカー表・Volcano・ヒートマップ・GPT がすべて空になる**。
-  #   そこで補正なしの出力は既知の "PCA" に寄せる。
-  .correct_multi <- isTRUE(BATCH_CORRECTION_ENABLE)
-  .red_multi     <- if (.correct_multi) "harmony" else "pca"
-  .tag_multi     <- if (.correct_multi) "harmony" else "pca"
-  .dir_multi     <- if (.correct_multi) "Harmony" else "PCA"
-
-  # ---- Harmony (または無補正 PCA) ----
-  message(if (.correct_multi) "Multi-sample mode: Harmony..."
-          else "Multi-sample mode: 補正なし（無補正 PCA を主結果にします）...")
-  od_harmony <- file.path(od, .dir_multi); dir.create(od_harmony, showWarnings = FALSE)
-  rds_filename_harmony <- if (.correct_multi) "DESI_SeuratCombined_harmony.rds" else "DESI_SeuratCombined_PCA.rds"
-  rds_path_harmony_out <- file.path(rds_od, rds_filename_harmony)
-  
-  rds_path_harmony_in <- if (RESUME_FROM_RDS) file.path(RESUME_DIR_PATH, rds_filename_harmony) else ""
-  if (RESUME_FROM_RDS && file.exists(rds_path_harmony_in)) {
-    message(">> RESUME: Loading existing RDS (Harmony): ", rds_path_harmony_in)
-    seu_harmony <- load_rds_compact(rds_path_harmony_in)
-    # 修正①: Resume時に既存RDSを出力先にもコピー
-    file.copy(rds_path_harmony_in, rds_path_harmony_out, overwrite = TRUE)
-  } else if (.stage_downstream) {
-    seu_harmony <- NULL  # ④だが harmony reduction RDS が無い → スキップ
-  } else {
-    # ver3.8: Reduce(function(x,y) merge(x,y,...), seu_list) は左結合で
-    # 逐次マージするため、中間結果が毎回拡大し O(n^2) のメモリ・時間を
-    # 要する。merge (merge.Seurat) は y= に list を渡せるため、1 回呼出しで
-    # O(n) に短縮できる。merge は Seurat の S3 メソッドで名前空間にエクスポート
-    # されない(pkg::merge 形式は失敗する)ため、素の merge() を使う。基本ジェネリック
-    # が merge.Seurat へ S3 ディスパッチする。
-    add_ids <- sapply(seu_list, function(s) {
-      v <- tryCatch(s$sample[1], error = function(e) "")
-      if (is.null(v) || is.na(v)) "" else as.character(v)
-    })
-    if (length(seu_list) == 1) {
-      seu_harmony <- seu_list[[1]]
-    } else {
-      seu_harmony <- merge(
-        x = seu_list[[1]],
-        y = seu_list[-1],
-        add.cell.ids = add_ids
-      )
-    }
-    seu_harmony <- apply_input_norm(seu_harmony)
-    seu_harmony <- FindVariableFeatures(seu_harmony)
-    seu_harmony <- ScaleData(seu_harmony)
-    # ---- PATCH: dims auto-fix (available Harmony PCs) ----
-    nfeat_h <- length(VariableFeatures(seu_harmony))
-    if (is.null(nfeat_h) || nfeat_h <= 1) nfeat_h <- nrow(seu_harmony)
-    ncell_h <- ncol(seu_harmony)
-    npcs_h <- min(30, nfeat_h - 1, ncell_h - 1)
-    npcs_h <- max(2, npcs_h)
-
-    seu_harmony <- RunPCA(seu_harmony, npcs = npcs_h)
-    # ★ ver58.0 (A-1): 「補正なし」を選んだら Harmony を実行しない。
-    if (.correct_multi) {
-      seu_harmony <- RunHarmony(object = seu_harmony, group.by.vars = "sample")
-    } else {
-      message(">> [補正なし] Harmony を実行しません（PCA をそのまま使います）")
-    }
-
-    h_avail <- tryCatch(ncol(Embeddings(seu_harmony, .red_multi)), error = function(e) NA_integer_)
-    if (!is.finite(h_avail) || h_avail < 1) h_avail <- ncol(Embeddings(seu_harmony, "pca"))
-    dims_use      <- seq_len(min(UMAP_DIMS_N, h_avail))
-    dims_use_clst <- seq_len(min(CLUSTER_DIMS_N, h_avail))
-
-    if (PIPELINE_STAGE != "reduction_only") {
-    seu_harmony <- RunUMAP(seu_harmony, reduction = .red_multi, dims = dims_use,
-                           n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
-                           metric = UMAP_METRIC, seed.use = UMAP_SEED)
-    seu_harmony <- FindNeighbors(seu_harmony, reduction = .red_multi, dims = dims_use_clst,
-                                 k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
-    seu_harmony <- FindClusters(seu_harmony, resolution = CLUSTER_RESOLUTION_HARMONY, algorithm = CLUSTER_ALGORITHM)
-    Idents(seu_harmony) <- seu_harmony$seurat_clusters
-    }  # reduction_only: UMAP/クラスタリングをスキップ（reduction だけ保存）
-    
-    save_rds_compact(seu_harmony, rds_path_harmony_out)
-    gc()
-  }
-
-  # ④: reduction だけの RDS を読み込んだ場合、UMAP/クラスタを後付けしてから下流へ。
-  if (.stage_downstream && !is.null(seu_harmony) && !("umap" %in% names(seu_harmony@reductions))) {
-    sample_names <- unique(as.character(seu_harmony$sample))  # ④: 下流が使う sample 名を実データに同期
-    h_avail <- tryCatch(ncol(Embeddings(seu_harmony, .red_multi)), error = function(e) NA_integer_)
-    if (!is.finite(h_avail) || h_avail < 1) h_avail <- ncol(Embeddings(seu_harmony, "pca"))
-    dims_use      <- seq_len(min(UMAP_DIMS_N, h_avail))
-    dims_use_clst <- seq_len(min(CLUSTER_DIMS_N, h_avail))
-    seu_harmony <- RunUMAP(seu_harmony, reduction = .red_multi, dims = dims_use,
-                           n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
-                           metric = UMAP_METRIC, seed.use = UMAP_SEED)
-    seu_harmony <- FindNeighbors(seu_harmony, reduction = .red_multi, dims = dims_use_clst,
-                                 k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
-    seu_harmony <- FindClusters(seu_harmony, resolution = CLUSTER_RESOLUTION_HARMONY, algorithm = CLUSTER_ALGORITHM)
-    Idents(seu_harmony) <- seu_harmony$seurat_clusters
-    save_rds_compact(seu_harmony, rds_path_harmony_out)
-    gc()
-
-    # ---- 無補正 PCA の併走出力 (ver58.0 / A-2) ----
-    #   補正した実行でのみ出す。座標もクラスタも **無補正の pca から決め直す**
-    #   ので、補正後とはクラスタ番号が対応しない（別々に決めたので当然）。
-    #   クラスタリングの条件は本解析と同じ定数を使う。
-    if (isTRUE(ALWAYS_OUTPUT_UNCORRECTED_PCA) && .correct_multi &&
-        "pca" %in% names(seu_harmony@reductions)) {
-      message(">> 無補正 PCA の併走出力を作成します（クラスタも無補正空間で決め直します）")
-      seu_unc <- seu_harmony
-      for (.rn in setdiff(names(seu_unc@reductions), "pca")) seu_unc[[.rn]] <- NULL
-      # 補正側のクラスタは引き継がない（引き継ぐと混成になる）
-      seu_unc@meta.data$seurat_clusters <- NULL
-      for (.c in grep("_snn_res", colnames(seu_unc@meta.data), value = TRUE))
-        seu_unc@meta.data[[.c]] <- NULL
-      .p_avail   <- ncol(Embeddings(seu_unc, "pca"))
-      .dims_unc  <- seq_len(min(UMAP_DIMS_N, .p_avail))
-      .dims_uncc <- seq_len(min(CLUSTER_DIMS_N, .p_avail))
-      seu_unc <- RunUMAP(seu_unc, reduction = "pca", dims = .dims_unc,
-                         n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
-                         metric = UMAP_METRIC, seed.use = UMAP_SEED)
-      seu_unc <- FindNeighbors(seu_unc, reduction = "pca", dims = .dims_uncc,
-                               k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
-      seu_unc <- FindClusters(seu_unc, resolution = CLUSTER_RESOLUTION_HARMONY,
-                              algorithm = CLUSTER_ALGORITHM)
-      Idents(seu_unc) <- seu_unc$seurat_clusters
-      save_rds_compact(seu_unc, file.path(rds_od, "DESI_SeuratCombined_PCA_uncorrected.rds"))
-      rm(seu_unc); gc()
-    }
-  }
-
-  # PIPELINE_STAGE: reduction_only なら以降（UMAP/作図/DEG）をスキップ（診断用に reduction だけ確定）
-  if (PIPELINE_STAGE != "reduction_only" && !is.null(seu_harmony)) {
-  # Color
-  current_clusters <- levels(Idents(seu_harmony))
-  my_colors <- .assign_cluster_colors(seu_harmony, seed = 42)
-  
-  
-  plot_umap_cluster_variants(seu_harmony, prefix = .tag_multi, outdir = od_harmony)
-  plot_umap_per_sample(seu_harmony, sample_names, prefix = .tag_multi, outdir = od_harmony)
-  
-  export_cluster_highlights(seu_harmony, prefix = .tag_multi, outdir = od, sample_names = sample_names,
-                            OUTPUT_UMAP_HIGHLIGHT_ALLCLUSTERS = FALSE)
-  
-  # 統合画像のコピー
-  try(suppressWarnings(file.copy(
-    from = file.path(od, "PerCluster_Highlight", .tag_multi, paste0("UMAP_per_sample_", .tag_multi, "_ALLclusters.png")),
-    to   = file.path(od_harmony, paste0("UMAP_per_sample_", .tag_multi, "_ALLclusters.png")),
-    overwrite = TRUE
-  )), silent = TRUE)
-  try(suppressWarnings(file.copy(
-    from = file.path(od, "PerCluster_Highlight", .tag_multi, paste0("UMAPtop_TICoverlaybottom_", .tag_multi, "_ALLclusters.png")),
-    to   = file.path(od_harmony, paste0("UMAPtop_TICoverlaybottom_", .tag_multi, "_ALLclusters.png")),
-    overwrite = TRUE
-  )), silent = TRUE)
-  
-  # Sample Coloring (Overlaid & Split)
-  p_sample_overlaid <- DimPlot(seu_harmony, reduction = "umap", group.by = "sample") +
-    ggtitle("UMAP: Sample colored (Harmony / Overlaid)") +
-    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
-  # ggsave(file.path(od_harmony, "umap_sample_colored_harmony_OVERLAID.png"), p_sample_overlaid, width = 8, height = 6, dpi = 300)
-
-  n_samples <- length(unique(seu_harmony$sample))
-  p_sample_split <- DimPlot(seu_harmony, reduction = "umap", group.by = "sample", split.by = "sample", ncol = n_samples) +
-    ggtitle("UMAP: Sample colored (Harmony / Split)") +
-    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
-  # ggsave(file.path(od_harmony, "umap_sample_colored_harmony_SPLIT.png"), p_sample_split, width = 6 * n_samples, height = 6, dpi = 300)
-
-  # ---- Harmony 空間分布プロット ----
-  spatial_plots_col <- list()
-  spatial_plots_lab <- list()
-  
-  for(ii in seq_along(sample_names)){
-    sample_col_h <- .get_sample_col(seu_harmony)
-    cells_sn_h <- colnames(seu_harmony)[seu_harmony@meta.data[[sample_col_h]] == sample_names[[ii]]]
-    sub_seurat <- subset(seu_harmony, cells = cells_sn_h)
-    
-    p1 <- ggplot(sub_seurat@meta.data, aes(x = x_coord, y = y_coord, color = seurat_clusters)) +
-      geom_point(size = PLOT_POINT_SIZE, shape = PLOT_POINT_SHAPE, alpha = 1) +
-      scale_color_manual(values = my_colors) + scale_y_reverse() + coord_fixed(expand = FALSE) + theme_void() +
-      labs(x = NULL, y = NULL, color = "Cluster")
-    p1 <- add_filename_title(p1, sub_seurat, prefix_title = "Harmony")
-    # ggsave(file.path(od_harmony, paste0("plot_cluster_harmony_", sample_names[[ii]], ".png")), p1, width = 6, height = 8, dpi = 300, bg = "white")
-
-    cluster_centers <- sub_seurat@meta.data %>% dplyr::group_by(seurat_clusters) %>%
-      dplyr::summarise(center_x = mean(x_coord, na.rm=T), center_y = mean(y_coord, na.rm=T), .groups='drop')
-    
-    p2 <- ggplot(sub_seurat@meta.data, aes(x = x_coord, y = y_coord, color = seurat_clusters)) +
-      geom_point(size = PLOT_POINT_SIZE, shape = PLOT_POINT_SHAPE, alpha = 1) +
-      geom_text(data = cluster_centers, aes(x = center_x, y = center_y, label = seurat_clusters), color = "black", size = 4, fontface = "bold") +
-      scale_color_manual(values = my_colors) + scale_y_reverse() + coord_fixed(expand = FALSE) + theme_void() +
-      labs(x = NULL, y = NULL, color = "Cluster")
-    p2 <- add_filename_title(p2, sub_seurat, prefix_title = "Harmony (labeled)")
-    # ggsave(file.path(od_harmony, paste0("plot_cluster_harmony_with_label_", sample_names[[ii]], ".png")), p2, width = 6, height = 8, dpi = 300, bg = "white")
-
-    spatial_plots_col[[sample_names[[ii]]]] <- p1
-    spatial_plots_lab[[sample_names[[ii]]]] <- p2
-  }
-  
-  if (length(spatial_plots_col) > 0) {
-    n_plots <- length(spatial_plots_col)
-    combined_sp_col <- wrap_plots(spatial_plots_col, nrow = 1) + plot_annotation(title = "Combined Spatial: Harmony")
-    # ggsave(file.path(od_harmony, "plot_cluster_harmony_COMBINED.png"), combined_sp_col, width = 6 * n_plots, height = 6, dpi = 300, bg = "white")
-
-    combined_sp_lab <- wrap_plots(spatial_plots_lab, nrow = 1) + plot_annotation(title = "Combined Spatial Labeled: Harmony")
-    # ggsave(file.path(od_harmony, "plot_cluster_harmony_with_label_COMBINED.png"), combined_sp_lab, width = 6 * n_plots, height = 6, dpi = 300, bg = "white")
-  }
-  
-  
-  
-  
-  # =========================
-  # DEG & Heatmap (Harmony)
-  # - Harmony / RPCA / PCA で共通の処理
-  # =========================
-  cat("DEG計算中 (Harmony)...\n")
-  
-  # Seurat v5 対応: layerを結合
-  assay_hm_harmony <- if ("Spatial" %in% Seurat::Assays(seu_harmony)) "Spatial" else DefaultAssay(seu_harmony)
-  DefaultAssay(seu_harmony) <- assay_hm_harmony
-  seu_harmony <- tryCatch(JoinLayers(seu_harmony), error = function(e) {
-    message("!! JoinLayers(Harmony) failed: ", e$message)
-    seu_harmony
-  })
-  
-  # ---- 並列化開始: FindAllMarkers用 ----
-  plan(sequential)  # presto 導入済みのため逐次（multisession の 4 ワーカーが各々データを丸ごとコピーし OOM するため廃止）
-  deg_markers_harmony <- tryCatch({
-    FindAllMarkers(seu_harmony, only.pos = FALSE, min.pct = 0, logfc.threshold = 0, return.thresh = 1, test.use = "wilcox")
-  }, error = function(e) {
-    message("!! DEG(Harmony) failed: ", e$message)
-    NULL
-  })
-  # ---- 並列化終了: メモリ解放 ----
-  plan(sequential)
-  
-  if (is.null(deg_markers_harmony) || !is.data.frame(deg_markers_harmony) || nrow(deg_markers_harmony) == 0 || !("cluster" %in% colnames(deg_markers_harmony))) {
-    message(">> DEG(Harmony) skipped: no valid marker table (check JoinLayers warning). Continue to RPCA.")
-  } else {
-    # BH/FDR補正に置換（Seuratデフォルトの Bonferroni は探索的解析に保守的すぎるため）
-    deg_markers_harmony$p_val_adj <- p.adjust(deg_markers_harmony$p_val, method = "BH")
-    # ★ ver58.0 (A-3): 従来この分岐だけ床置換が抜けていた
-    deg_markers_harmony <- .floor_zero_padj(deg_markers_harmony)
-    # pixel 単位の探索的ランキング（空間自己相関未補正・群間検定ではない）である旨を明記
-    deg_markers_harmony$ranking_type   <- "exploratory_pixel_level"
-    deg_markers_harmony$inference_note <- "Exploratory pixel-level ranking; spatial autocorrelation not modeled; NOT sample-level statistical inference"
-    # ★ ver58.0 (A-3): 検定・補正は全体、書き出しは従来どおり閾値で絞る
-    .deg_out_h <- .deg_for_export(deg_markers_harmony)
-    write.csv(.deg_out_h, file.path(od_harmony, paste0("analysis_deg_all_markers_", .tag_multi, ".csv")), row.names = FALSE)
-    
-    top5_markers_harmony <- .deg_out_h %>% dplyr::group_by(cluster) %>% dplyr::top_n(n = 5, wt = avg_log2FC)
-    top_genes_harmony <- unique(top5_markers_harmony$gene)
-    write.csv(top5_markers_harmony, file.path(od_harmony, paste0("analysis_top5_markers_per_cluster_", .tag_multi, ".csv")), row.names = FALSE)
-    
-    if (length(top_genes_harmony) > 0) {
-      sampled_cells <- c()
-      for (cid in unique(Idents(seu_harmony))) {
-        cc <- WhichCells(seu_harmony, idents = cid)
-        if (length(cc) > 200) cc <- sample(cc, 200)
-        sampled_cells <- c(sampled_cells, cc)
-      }
-      if (length(sampled_cells) > 0) {
-        seu_harmony <- ScaleData(seu_harmony, features = top_genes_harmony, assay = assay_hm_harmony, verbose = FALSE)  # slim RDS/diet で空の scale.data を補完（DoHeatmap 用）
-        heatmap_harmony <- DoHeatmap(subset(seu_harmony, cells = sampled_cells), features = top_genes_harmony, group.by = "ident", assay = assay_hm_harmony) +
-          scale_fill_gradientn(colors = c("blue", "white", "red")) + ggtitle("Top 5 Markers (Harmony)")
-        
-        # ヒートマップラベル (MRM対応)
-        if (!is.null(mrm_df)) {
-          mapped <- match_mrm_compound(top_genes_harmony, mrm_df, tolerance = 0.1)
-          name_map <- setNames(mapped, top_genes_harmony)
-          heatmap_harmony <- heatmap_harmony + scale_y_discrete(labels = function(x) {
-            lab <- sapply(x, function(xx) {
-              mm <- name_map[[xx]]
-              if (!is.null(mm) && !is.na(mm) && mm != xx) mm else xx
-            })
-            make.unique(lab)
-          })
-        }
-        # ggsave(file.path(od, "analysis_heatmap_top5_markers_harmony.png"), heatmap_harmony, width = 12, height = 8, dpi = 300)
-      }
-    }
-  }
-  # =========================
-  # Volcano & Top5 MSI (Harmony)
-  # =========================
-  if (!is.null(deg_markers_harmony) && is.data.frame(deg_markers_harmony) && nrow(deg_markers_harmony) > 0 && ("cluster" %in% colnames(deg_markers_harmony))) {
-    run_volcano_and_msi(seu_harmony, deg_markers_harmony, method_tag = .tag_multi,
-                        sample_names = sample_names, od = od, mrm_df = mrm_df, method_outdir = od_harmony)
-  }
-  }  # end if (PIPELINE_STAGE != "reduction_only")  [harmony downstream]
-
-  # ★ ver58.0 (A-1): RPCA 統合も「補正」なので、補正なしのときは丸ごと行わない。
-  #   Harmony だけ止めて RPCA を残すと、結局補正された結果が出てしまう。
-  if (.correct_multi) {
-  # ---- RPCA ----
-  message("Multi-sample mode: RPCA...")
-  od_rpca <- file.path(od, "RPCA"); dir.create(od_rpca, showWarnings = FALSE)
-  rds_filename_rpca <- "DESI_SeuratCombined_RPCA.rds"
-  rds_path_rpca_out <- file.path(rds_od, rds_filename_rpca)
-  
-  rds_path_rpca_in <- if (RESUME_FROM_RDS) file.path(RESUME_DIR_PATH, rds_filename_rpca) else ""
-  
-  if (RESUME_FROM_RDS && file.exists(rds_path_rpca_in)) {
-    message(">> RESUME: Loading existing RDS (RPCA): ", rds_path_rpca_in)
-    seu_rpca <- load_rds_compact(rds_path_rpca_in)
-    # 修正①: Resume時に既存RDSを出力先にもコピー
-    file.copy(rds_path_rpca_in, rds_path_rpca_out, overwrite = TRUE)
-  } else if (.stage_downstream) {
-    seu_rpca <- NULL  # ④だが RPCA reduction RDS が無い → スキップ
-  } else {
-    seu_list_norm <- lapply(seu_list, function(x) { x <- apply_input_norm(x); x <- FindVariableFeatures(x); x })
-    features <- SelectIntegrationFeatures(object.list = seu_list_norm, nfeatures = 3000)
-    seu_list_pca <- lapply(seu_list_norm, function(x) { x <- ScaleData(x, features = features); RunPCA(x, features = features, npcs = 30) })
-
-# ------------------------------------------------------------
-# [PATCH] RPCA dims safety:
-#  - Some datasets may produce fewer than requested PCs (e.g., due to low spot/feature counts),
-#    causing: Embeddings(...)[, dims] "subscript out of bounds" inside FindIntegrationAnchors.
-#  - We cap dims to the minimum available PC dimension across objects in seu_list_pca.
-# ------------------------------------------------------------
-get_safe_dims_for_rpca <- function(obj_list, max_dims = 30, reduction = "pca") {
-  pc_n <- suppressWarnings(sapply(obj_list, function(x) {
-    if (!(reduction %in% names(x@reductions))) return(NA_integer_)
-    emb <- tryCatch(Embeddings(x, reduction), error = function(e) NULL)
-    if (is.null(emb)) return(NA_integer_)
-    ncol(emb)
-  }))
-  pc_n <- pc_n[is.finite(pc_n)]
-  if (length(pc_n) == 0) {
-    message("!! [RPCA dims safety] Could not detect PCA dimensions; fallback to 1:", max_dims)
-    return(1:max_dims)
-  }
-  dims_max <- min(max_dims, min(pc_n))
-  if (dims_max < 2) dims_max <- 2
-  message(sprintf(">> [RPCA dims safety] Using dims = 1:%d (min available PCs across samples)", dims_max))
-  1:dims_max
+# ★ ver67.0: 全経路でPCAを先に保存する。旧DESIでは独立PCA作成がHarmonyの
+# 下流再開分岐内にだけ存在し、通常実行では作成されず、マーカー表も欠落していた。
+.desi_cluster <- function(obj, reduction, resolution) {
+  ua_cluster_reduction(obj, reduction, UMAP_DIMS_N, CLUSTER_DIMS_N,
+                       UMAP_N_NEIGHBORS, UMAP_MIN_DIST, UMAP_METRIC, UMAP_SEED,
+                       CLUSTER_K_PARAM, CLUSTER_METRIC, resolution, CLUSTER_ALGORITHM)
 }
-dims_use_rpca <- get_safe_dims_for_rpca(seu_list_pca, max_dims = 30, reduction = "pca")
-
-    anchors <- FindIntegrationAnchors(object.list = seu_list_pca, anchor.features = features, reduction = "rpca", dims = dims_use_rpca)
-    
-    seu_rpca <- IntegrateData(anchorset = anchors, dims = dims_use_rpca)
-    DefaultAssay(seu_rpca) <- "integrated"
-    seu_rpca <- ScaleData(seu_rpca)
-    # ---- PATCH: dims auto-fix (available PCs) ----
-    nfeat_r <- length(VariableFeatures(seu_rpca))
-    if (is.null(nfeat_r) || nfeat_r <= 1) nfeat_r <- nrow(seu_rpca)
-    ncell_r <- ncol(seu_rpca)
-    npcs_r <- min(30, nfeat_r - 1, ncell_r - 1)
-    npcs_r <- max(2, npcs_r)
-
-    seu_rpca <- RunPCA(seu_rpca, npcs = npcs_r)
-    pc_avail <- ncol(Embeddings(seu_rpca, "pca"))
-    dims_use      <- seq_len(min(UMAP_DIMS_N, pc_avail))
-    dims_use_clst <- seq_len(min(CLUSTER_DIMS_N, pc_avail))
-    if (PIPELINE_STAGE != "reduction_only") {
-    seu_rpca <- RunUMAP(seu_rpca, reduction = "pca", dims = dims_use,
-                        n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
-                        metric = UMAP_METRIC, seed.use = UMAP_SEED)
-    seu_rpca <- FindNeighbors(seu_rpca, reduction = "pca", dims = dims_use_clst,
-                              k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
-    seu_rpca <- FindClusters(seu_rpca, resolution = CLUSTER_RESOLUTION_RPCA, algorithm = CLUSTER_ALGORITHM)
-    Idents(seu_rpca) <- seu_rpca$seurat_clusters
-    }  # reduction_only: UMAP/クラスタリングをスキップ（reduction だけ保存）
-    
-    save_rds_compact(seu_rpca, rds_path_rpca_out)
-    gc()
+.desi_run_pca <- function(obj, features = NULL) {
+  if (is.null(features)) features <- VariableFeatures(obj)
+  if (length(features) < 2) features <- rownames(obj)
+  npcs <- min(30L, length(features) - 1L, ncol(obj) - 1L)
+  if (npcs < 2L) stop("PCAに必要な画素または特徴量が不足しています")
+  obj <- ScaleData(obj, features = features)
+  RunPCA(obj, features = features, npcs = npcs, seed.use = UMAP_SEED)
+}
+.desi_export_result <- function(obj, method, rds_path) {
+  tag <- tolower(method)
+  method_dir <- file.path(od, method)
+  dir.create(method_dir, recursive = TRUE, showWarnings = FALSE)
+  # マーカーはRPCAでも測定値のSpatial assayを使う。補正値を検定しない。
+  DefaultAssay(obj) <- "Spatial"
+  obj <- JoinLayers(obj)
+  write.csv(cbind(cell_id = colnames(obj), obj@meta.data),
+            file.path(method_dir, "cell_metadata.csv"), row.names = FALSE)
+  .cols <- .assign_cluster_colors(obj, seed = 42)
+  my_colors <<- .cols
+  plot_umap_cluster_variants(obj, prefix = tag, outdir = method_dir)
+  plot_umap_per_sample(obj, unique(as.character(obj$sample)), prefix = tag, outdir = method_dir)
+  export_cluster_highlights(obj, prefix = tag, outdir = od, sample_names = unique(as.character(obj$sample)))
+  p <- DimPlot(obj, reduction = "umap", group.by = "seurat_clusters", cols = .cols) +
+    ggtitle(paste0("UMAP (", method, ")")) + Seurat::NoAxes()
+  safe_ggsave(file.path(method_dir, paste0("umap_cluster_colored_", tag, ".png")), p, 7, 6)
+  deg_markers <- FindAllMarkers(obj, only.pos = FALSE, min.pct = 0, logfc.threshold = 0, return.thresh = 1, test.use = "wilcox")
+  if (is.null(deg_markers) || !nrow(deg_markers)) {
+    write.csv(data.frame(gene = character(), cluster = character(), p_val = numeric(),
+                         p_val_adj = numeric(), avg_log2FC = numeric()),
+              file.path(method_dir, paste0("analysis_deg_all_markers_", tag, ".csv")), row.names = FALSE)
+    return(invisible(obj))
   }
-
-  # ④: reduction だけの RDS を読み込んだ場合、UMAP/クラスタを後付けしてから下流へ。
-  if (.stage_downstream && !is.null(seu_rpca) && !("umap" %in% names(seu_rpca@reductions))) {
-    sample_names <- unique(as.character(seu_rpca$sample))  # ④: 下流が使う sample 名を実データに同期
-    pc_avail      <- ncol(Embeddings(seu_rpca, "pca"))
-    dims_use      <- seq_len(min(UMAP_DIMS_N, pc_avail))
-    dims_use_clst <- seq_len(min(CLUSTER_DIMS_N, pc_avail))
-    seu_rpca <- RunUMAP(seu_rpca, reduction = "pca", dims = dims_use,
-                        n.neighbors = UMAP_N_NEIGHBORS, min.dist = UMAP_MIN_DIST,
-                        metric = UMAP_METRIC, seed.use = UMAP_SEED)
-    seu_rpca <- FindNeighbors(seu_rpca, reduction = "pca", dims = dims_use_clst,
-                              k.param = CLUSTER_K_PARAM, annoy.metric = CLUSTER_METRIC)
-    seu_rpca <- FindClusters(seu_rpca, resolution = CLUSTER_RESOLUTION_RPCA, algorithm = CLUSTER_ALGORITHM)
-    Idents(seu_rpca) <- seu_rpca$seurat_clusters
-    save_rds_compact(seu_rpca, rds_path_rpca_out)
-    gc()
+  deg_markers$p_val_adj <- p.adjust(deg_markers$p_val, method = "BH")
+  deg_markers <- .floor_zero_padj(deg_markers)
+  deg_markers$ranking_type <- "exploratory_pixel_level"
+  deg_markers$inference_note <- "Exploratory pixel-level ranking; spatial autocorrelation not modeled; NOT sample-level statistical inference"
+  deg_markers$annotation <- match_mrm_compound(as.character(deg_markers$gene), mrm_df)
+  deg_markers <- apply_feature_naming_policy(deg_markers, od, db_enabled = DB_ANNOTATION_ENABLED)
+  .deg_out <- .deg_for_export(deg_markers)
+  write.csv(.deg_out, file.path(method_dir, paste0("analysis_deg_all_markers_", tag, ".csv")), row.names = FALSE)
+  top5 <- .deg_out %>% dplyr::group_by(cluster) %>% dplyr::slice_max(order_by = avg_log2FC, n = 5)
+  write.csv(top5, file.path(method_dir, paste0("analysis_top5_markers_per_cluster_", tag, ".csv")), row.names = FALSE)
+  top_genes <- unique(as.character(top5$gene))
+  if (length(top_genes) > 1L) {
+    set.seed(UMAP_SEED)
+    sampled_cells <- unlist(lapply(split(colnames(obj), as.character(Idents(obj))), function(cc) {
+      if (length(cc) > 200L) sample(cc, 200L) else cc
+    }), use.names = FALSE)
+    obj <- ScaleData(obj, features = top_genes, assay = "Spatial", verbose = FALSE)
+    hm <- DoHeatmap(subset(obj, cells = sampled_cells), features = top_genes,
+                    group.by = "ident", assay = "Spatial") +
+      scale_fill_gradientn(colors = c("blue", "white", "red")) + ggtitle(paste0("Top 5 Markers (", method, ")"))
+    .label_map <- setNames(deg_markers$annotation, deg_markers$gene)
+    hm <- hm + scale_y_discrete(labels = function(x) unname(.label_map[x]))
+    safe_ggsave(file.path(method_dir, paste0("analysis_heatmap_top5_markers_", tag, ".png")), hm, 12, 8)
   }
+  # 既存Volcano/MSI出力は全クラスタを一度で処理する（旧PCAではクラスタ数だけ重複呼出）。
+  run_volcano_and_msi(obj, deg_markers, method_tag = tag,
+                     sample_names = unique(as.character(obj$sample)), od = od,
+                     mrm_df = mrm_df, method_outdir = method_dir)
+  invisible(obj)
+}
+.desi_finish_method <- function(obj, method, reduction, resolution, rds_path) {
+  obj <- ua_stamp_checkpoint(obj, ANALYSIS_SIGNATURE)
+  obj@misc$analysis_method <- method
+  obj@misc$independent_pca <- identical(method, "PCA")
+  obj@misc$method_stage <- "reduction"
+  save_rds_compact(obj, rds_path)
+  ua_record_method(od, method, "complete", stage = "reduction", rds_path = rds_path)
+  if (identical(PIPELINE_STAGE, "reduction_only")) return(obj)
+  ua_record_method(od, method, "running", stage = "downstream", rds_path = rds_path)
+  # 保存済みHarmonyのクラスタをPCAへ流用せず、指定reductionから必ず作る。
+  obj <- .desi_cluster(obj, reduction, resolution)
+  obj@misc$method_stage <- "clustered"
+  save_rds_compact(obj, rds_path)
+  .desi_export_result(obj, method, rds_path)
+  obj@misc$method_stage <- "downstream"
+  save_rds_compact(obj, rds_path)
+  ua_record_method(od, method, "complete", stage = "downstream", rds_path = rds_path)
+  obj
+}
+.desi_load_method <- function(filename, method) {
+  path <- file.path(RESUME_DIR_PATH, filename)
+  if (!(isTRUE(RESUME_FROM_RDS) || .stage_downstream) || !file.exists(path)) return(NULL)
+  obj <- load_rds_compact(path)
+  if (!ua_checkpoint_matches(obj, ANALYSIS_SIGNATURE)) stop("入力または解析条件が保存結果と一致しません: ", path)
+  # 保存済みの補正済みクラスタを独立PCAと誤認しない。
+  if (identical(method, "PCA") && !isTRUE(obj@misc$independent_pca) &&
+      !identical(filename, "DESI_Seurat_SingleSample.rds")) return(NULL)
+  obj
+}
 
-  # PIPELINE_STAGE: reduction_only なら以降（UMAP/作図/DEG）をスキップ（診断用に reduction だけ確定）
-  if (PIPELINE_STAGE != "reduction_only" && !is.null(seu_rpca)) {
-  current_clusters <- levels(Idents(seu_rpca))
-  my_colors <- .assign_cluster_colors(seu_rpca, seed = 42)
-  
-  
-  plot_umap_cluster_variants(seu_rpca, prefix = "rpca", outdir = od_rpca)
-  plot_umap_per_sample(seu_rpca, sample_names, prefix = "rpca", outdir = od_rpca)
-  
-  export_cluster_highlights(seu_rpca, prefix = "rpca", outdir = od, sample_names = sample_names,
-                            OUTPUT_UMAP_HIGHLIGHT_ALLCLUSTERS = FALSE)
-  
-  # 統合画像のコピー
-  try(suppressWarnings(file.copy(
-    from = file.path(od, "PerCluster_Highlight", "rpca", "UMAP_per_sample_rpca_ALLclusters.png"),
-    to   = file.path(od_rpca, "UMAP_per_sample_rpca_ALLclusters.png"),
-    overwrite = TRUE
-  )), silent = TRUE)
-  try(suppressWarnings(file.copy(
-    from = file.path(od, "PerCluster_Highlight", "rpca", "UMAPtop_TICoverlaybottom_rpca_ALLclusters.png"),
-    to   = file.path(od_rpca, "UMAPtop_TICoverlaybottom_rpca_ALLclusters.png"),
-    overwrite = TRUE
-  )), silent = TRUE)
-  
-  # Sample Coloring (RPCA)
-  p_sample_overlaid_rpca <- DimPlot(seu_rpca, reduction = "umap", group.by = "sample") +
-    ggtitle("UMAP: Sample colored (RPCA / Overlaid)") +
-    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
-  # ggsave(file.path(od_rpca, "umap_sample_colored_rpca_OVERLAID.png"), p_sample_overlaid_rpca, width = 8, height = 6, dpi = 300)
-
-  p_sample_split_rpca <- DimPlot(seu_rpca, reduction = "umap", group.by = "sample", split.by = "sample", ncol = n_samples) +
-    ggtitle("UMAP: Sample colored (RPCA / Split)") +
-    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
-  # ggsave(file.path(od_rpca, "umap_sample_colored_rpca_SPLIT.png"), p_sample_split_rpca, width = 6 * n_samples, height = 6, dpi = 300)
-
-  # ---- RPCA 空間分布プロット ----
-  spatial_plots_col <- list()
-  spatial_plots_lab <- list()
-  
-  for(ii in seq_along(sample_names)){
-    sample_col_r <- .get_sample_col(seu_rpca)
-    cells_sn_r <- colnames(seu_rpca)[seu_rpca@meta.data[[sample_col_r]] == sample_names[[ii]]]
-    sub_seurat <- subset(seu_rpca, cells = cells_sn_r)
-    
-    p1 <- ggplot(sub_seurat@meta.data, aes(x = x_coord, y = y_coord, color = seurat_clusters)) +
-      geom_point(size = PLOT_POINT_SIZE, shape = PLOT_POINT_SHAPE, alpha = 1) +
-      scale_color_manual(values = my_colors) + scale_y_reverse() + coord_fixed(expand = FALSE) + theme_void() +
-      labs(x = NULL, y = NULL, color = "Cluster")
-    p1 <- add_filename_title(p1, sub_seurat, prefix_title = "RPCA")
-    # ggsave(file.path(od_rpca, paste0("plot_cluster_rpca_", sample_names[[ii]], ".png")), p1, width = 6, height = 8, dpi = 300, bg = "white")
-
-    cluster_centers <- sub_seurat@meta.data %>% dplyr::group_by(seurat_clusters) %>%
-      dplyr::summarise(center_x = mean(x_coord, na.rm=T), center_y = mean(y_coord, na.rm=T), .groups='drop')
-    
-    p2 <- ggplot(sub_seurat@meta.data, aes(x = x_coord, y = y_coord, color = seurat_clusters)) +
-      geom_point(size = PLOT_POINT_SIZE, shape = PLOT_POINT_SHAPE, alpha = 1) +
-      geom_text(data = cluster_centers, aes(x = center_x, y = center_y, label = seurat_clusters), color = "black", size = 4, fontface = "bold") +
-      scale_color_manual(values = my_colors) + scale_y_reverse() + coord_fixed(expand = FALSE) + theme_void() +
-      labs(x = NULL, y = NULL, color = "Cluster")
-    p2 <- add_filename_title(p2, sub_seurat, prefix_title = "RPCA (labeled)")
-    # ggsave(file.path(od_rpca, paste0("plot_cluster_rpca_with_label_", sample_names[[ii]], ".png")), p2, width = 6, height = 8, dpi = 300, bg = "white")
-
-    spatial_plots_col[[sample_names[[ii]]]] <- p1
-    spatial_plots_lab[[sample_names[[ii]]]] <- p2
+pca_filename <- if ((! .stage_downstream && length(seu_list) == 1L) || .has_single) {
+  "DESI_Seurat_SingleSample.rds"
+} else "DESI_SeuratCombined_PCA_uncorrected.rds"
+pca_path <- file.path(rds_od, pca_filename)
+ua_record_method(od, "PCA", "running", stage = "reduction", rds_path = pca_path)
+seu_pca <- .desi_load_method(pca_filename, "PCA")
+if (is.null(seu_pca) && .stage_downstream) {
+  stop("独立PCAの保存結果がありません。旧結果は通常の再解析で独立PCAを作成してください。")
+}
+if (is.null(seu_pca)) {
+  if (!length(seu_list)) stop("解析対象の画素がありません")
+  seu_pca <- if (length(seu_list) == 1L) seu_list[[1]] else {
+    merge(x = seu_list[[1]], y = seu_list[-1], add.cell.ids = as.character(seq_along(seu_list)))
   }
-  
-  if (length(spatial_plots_col) > 0) {
-    n_plots <- length(spatial_plots_col)
-    combined_sp_col <- wrap_plots(spatial_plots_col, ncol = n_plots, nrow = 1) + plot_annotation(title = "Combined Spatial: RPCA")
-    # ggsave(file.path(od_rpca, "plot_cluster_rpca_COMBINED.png"), combined_sp_col, width = 6 * n_plots, height = 6, dpi = 300, bg = "white")
-
-    combined_sp_lab <- wrap_plots(spatial_plots_lab, ncol = n_plots, nrow = 1) + plot_annotation(title = "Combined Spatial Labeled: RPCA")
-    # ggsave(file.path(od_rpca, "plot_cluster_rpca_with_label_COMBINED.png"), combined_sp_lab, width = 6 * n_plots, height = 6, dpi = 300, bg = "white")
-  }
-  
-  # DEG & Heatmap (RPCA)
-  # ver3.8: Harmony と同じ tryCatch + NULL チェックパターンを採用。
-  # FindAllMarkers が失敗しても解析全体が abort しないようにする。
-  #
-  # ★ ver57.5 (デバッグ総点検 §5.2.3): 検定の前に**測定値のアッセイへ戻す**。
-  #   従来は :2829 で `DefaultAssay(seu_rpca) <- "integrated"` にしたまま
-  #   ここへ来ていた。integrated はサンプル間の位置合わせのために
-  #   **作り直した値**（負値も取りうる）で、Seurat の公式見解でも
-  #   統合後の補正値での差次発現検定は推奨されない。
-  #   同じ v16 の Harmony 分岐 (:2712) は測定値へ戻してから検定しており、
-  #   TIMS 本解析 (ver6:1850) も同様。**RPCA 分岐だけが例外**だった。
-  assay_deg_rpca <- if ("Spatial" %in% Seurat::Assays(seu_rpca)) "Spatial" else DefaultAssay(seu_rpca)
-  DefaultAssay(seu_rpca) <- assay_deg_rpca
-  cat("DEG計算のアッセイ (RPCA): ", assay_deg_rpca, "\n", sep = "")
-  # ---- 並列化開始: FindAllMarkers用 ----
-  plan(sequential)  # presto 導入済みのため逐次（multisession の 4 ワーカーが各々データを丸ごとコピーし OOM するため廃止）
-  deg_markers <- tryCatch({
-    FindAllMarkers(seu_rpca, only.pos = FALSE, min.pct = 0, logfc.threshold = 0, return.thresh = 1, test.use = "wilcox")
-  }, error = function(e) {
-    message("!! DEG(RPCA) failed: ", e$message)
-    NULL
+  DefaultAssay(seu_pca) <- "Spatial"
+  seu_pca <- apply_input_norm(seu_pca)
+  seu_pca <- FindVariableFeatures(seu_pca)
+  seu_pca <- .desi_run_pca(seu_pca)
+}
+# 旧RDSから再開する場合にも不足する切片IDを補い、表示名には触れない。
+if (!("integration_unit_id" %in% names(seu_pca@meta.data))) {
+  seu_pca$integration_unit_id <- as.character(seu_pca$sample)
+}
+seu_pca <- ua_prepare_reduction(seu_pca, "pca")
+seu_pca <- ua_stamp_checkpoint(seu_pca, ANALYSIS_SIGNATURE)
+seu_pca@misc$analysis_method <- "PCA"
+seu_pca@misc$independent_pca <- TRUE
+save_rds_compact(seu_pca, pca_path)
+# PCA下流の失敗も結果へ記録する。reduction保存済みなら他の手法へ進める。
+seu_pca <- tryCatch(.desi_finish_method(seu_pca, "PCA", "pca", CLUSTER_RESOLUTION_SINGLE, pca_path),
+  error = function(e) {
+    ua_record_method(od, "PCA", "failed", conditionMessage(e), stage = "downstream", rds_path = pca_path)
+    message("!! PCA下流処理: ", conditionMessage(e))
+    load_rds_compact(pca_path)
   })
-  # ---- 並列化終了: メモリ解放 ----
-  plan(sequential)
+.unit_ids <- unique(as.character(seu_pca$integration_unit_id))
+.unit_ids <- .unit_ids[!is.na(.unit_ids) & nzchar(.unit_ids)]
+.correct_multi <- length(.unit_ids) >= 2L && isTRUE(BATCH_CORRECTION_ENABLE)
 
-  if (is.null(deg_markers) || !is.data.frame(deg_markers) || nrow(deg_markers) == 0 || !("cluster" %in% colnames(deg_markers))) {
-    message(">> DEG(RPCA) skipped: no valid marker table.")
-  } else {
-    # BH/FDR補正に置換（Seuratデフォルトの Bonferroni は探索的解析に保守的すぎるため）
-    deg_markers$p_val_adj <- p.adjust(deg_markers$p_val, method = "BH")
-    # ★ ver58.0 (A-3): 床置換は 3 分岐共通のヘルパーへ集約した
-    deg_markers <- .floor_zero_padj(deg_markers)
-    top5_markers <- .deg_out_r %>% dplyr::group_by(cluster) %>% dplyr::top_n(n = 5, wt = avg_log2FC)
-    top_genes <- unique(top5_markers$gene)
-
-    if (length(top_genes) > 0) {
-      sampled_cells <- c()
-      for(cid in unique(Idents(seu_rpca))) {
-        cc <- WhichCells(seu_rpca, idents = cid)
-        if(length(cc) > 200) cc <- sample(cc, 200)
-        sampled_cells <- c(sampled_cells, cc)
-      }
-      if (length(sampled_cells) > 0) {
-        seu_rpca <- ScaleData(seu_rpca, features = top_genes, assay = "integrated", verbose = FALSE)  # slim RDS/diet で空の scale.data を補完（DoHeatmap 用）
-        heatmap1 <- DoHeatmap(subset(seu_rpca, cells = sampled_cells), features = top_genes, group.by = "ident", assay = "integrated") +
-          scale_fill_gradientn(colors = c("blue", "white", "red")) + ggtitle("Top 5 Markers")
-
-        if (!is.null(mrm_df)) {
-          mapped <- match_mrm_compound(top_genes, mrm_df, tolerance = 0.1)
-          name_map <- setNames(mapped, top_genes)
-          heatmap1 <- heatmap1 + scale_y_discrete(labels = function(x) {
-            lab <- sapply(x, function(xx) {
-              mm <- name_map[[xx]]
-              if (!is.null(mm) && !is.na(mm) && mm != xx) {
-                mm
-              } else {
-                xx
-              }
-            })
-            make.unique(lab)
-          })
-        }
-        # ggsave(file.path(od,"analysis_heatmap_top5_markers_rpca.png"), heatmap1, width = 12, height = 8, dpi = 300)
-      }
-    }
-    # pixel 単位の探索的ランキング（空間自己相関未補正・群間検定ではない）である旨を明記
-    deg_markers$ranking_type   <- "exploratory_pixel_level"
-    deg_markers$inference_note <- "Exploratory pixel-level ranking; spatial autocorrelation not modeled; NOT sample-level statistical inference"
-    # ★ ver58.0 (A-3): 検定・補正は全体、書き出しは従来どおり閾値で絞る
-    .deg_out_r <- .deg_for_export(deg_markers)
-    write.csv(.deg_out_r, file.path(od_rpca, "analysis_deg_all_markers.csv"), row.names = FALSE)
-    write.csv(top5_markers, file.path(od_rpca, "analysis_top5_markers_per_cluster.csv"), row.names = FALSE)
-
-    # Volcano & MSI (RPCA) — DEG 有効時のみ実行
-    run_volcano_and_msi(seu_rpca, deg_markers, method_tag = "rpca",
-                        sample_names = sample_names, od = od, mrm_df = mrm_df, method_outdir = od_rpca)
-
-    # 個別のVolcano生成ループ (冗長だがレガシーコード維持)
-    if (FALSE && nrow(deg_markers) > 0) {
-      # 既存コードは残すが実行されないようにFALSE条件にしてある
-    }
+# ★ ver67.0: Harmony/RPCAを同じintegration_unit_idで独立実行する。失敗時に
+# PCAをHarmony名で保存せず、完成済みPCAともう一方の手法を保持する。
+for (.method in c("Harmony", "RPCA")) {
+  .filename <- if (.method == "Harmony") "DESI_SeuratCombined_harmony.rds" else "DESI_SeuratCombined_RPCA.rds"
+  .path <- file.path(rds_od, .filename)
+  if (!.correct_multi) {
+    ua_record_method(od, .method, "skipped", if (length(.unit_ids) < 2L) "integration_units_less_than_two" else "saved_correction_disabled", stage = "reduction")
+    next
   }
-  }  # end if (PIPELINE_STAGE != "reduction_only")  [rpca downstream]
-  }  # end if (.correct_multi)  [RPCA セクション]
+  ua_record_method(od, .method, "running", stage = "reduction", rds_path = .path)
+  .method_stage <- "reduction"
+  tryCatch({
+    .obj <- .desi_load_method(.filename, .method)
+    if (is.null(.obj) && .stage_downstream) {
+      ua_record_method(od, .method, "skipped", "saved_reduction_missing", stage = "reduction")
+      next
+    }
+    if (is.null(.obj)) {
+      .obj <- ua_prepare_reduction(seu_pca, "pca")
+      if (.method == "Harmony") {
+        .obj <- RunHarmony(object = .obj, group.by.vars = "integration_unit_id")
+      } else {
+        # 生物学的な群ラベルやファイル数で分岐しない。
+        .unit_list <- SplitObject(.obj, split.by = "integration_unit_id")
+        .unit_list <- lapply(.unit_list, function(x) FindVariableFeatures(apply_input_norm(x)))
+        .features <- SelectIntegrationFeatures(object.list = .unit_list)
+        .unit_list <- lapply(.unit_list, function(x) .desi_run_pca(x, .features))
+        .max_dims <- min(vapply(.unit_list, function(x) ncol(Embeddings(x, "pca")), integer(1)))
+        .dims <- seq_len(min(30L, .max_dims))
+        .anchors <- FindIntegrationAnchors(object.list = .unit_list, anchor.features = .features,
+                                           reduction = "rpca", dims = .dims)
+        .obj <- IntegrateData(anchorset = .anchors, dims = .dims)
+        DefaultAssay(.obj) <- "integrated"
+        .obj <- .desi_run_pca(.obj)
+        rm(.unit_list, .anchors)
+      }
+    }
+    .reduction <- if (.method == "Harmony") "harmony" else "pca"
+    if (!(.reduction %in% names(.obj@reductions))) stop("必要なreductionがありません: ", .reduction)
+    .resolution <- if (.method == "Harmony") CLUSTER_RESOLUTION_HARMONY else CLUSTER_RESOLUTION_RPCA
+    .method_stage <- if (identical(PIPELINE_STAGE, "reduction_only")) "reduction" else "downstream"
+    .obj <- .desi_finish_method(.obj, .method, .reduction, .resolution, .path)
+    rm(.obj)
+    gc()
+  }, error = function(e) {
+    # ★ ver67.0: 旧RDSの残存ではなく今回の実行段階で失敗位置を記録する。
+    ua_record_method(od, .method, "failed", conditionMessage(e),
+                     stage = .method_stage, rds_path = .path)
+    message("!! ", .method, ": ", conditionMessage(e), "（保存済みPCAは利用できます）")
+  })
 }
 
 # ---- Cleanup: 中間RDS（解析完了後は不要） ----

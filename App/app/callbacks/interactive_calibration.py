@@ -338,6 +338,11 @@ def _build_feature_annotation_map(
         tolerance=tolerance,
         return_skipped=True,
     )
+    if not csv_map and annotation_csv_path:
+        # ★ ver67.0: DESI の保存済み DB は MRM 形式もあるため同じ明示 ON 経路で読む。
+        csv_map, mrm_skipped = _build_mz_to_compound_map(
+            annotation_csv_path, tolerance=tolerance, return_skipped=True)
+        n_skipped += mrm_skipped
     if csv_map:
         csv_mz_values = np.array(sorted(csv_map.keys()))
         for f in features_list:
@@ -1312,13 +1317,20 @@ def _apply_int_calibration_inner(cal_enable, cal_table_data,
 
         if cal_result and cal_result.get("calibrated"):
             tol = float(tolerance_mz or 0.1)
-            deg_data = _reannotate_with_calibration(
-                deg_data, cal_result["corrected_mz_map"],
-                mrm_path_str, tolerance=tol,
-                annotation_csv_path=annotation_csv,
-                ion_mode=ion_mode or "Positive",
-                adduct_patterns=adduct_filter,
-            )
+            from app.services.naming_policy import db_annotation_enabled, compose_annotation_map, apply_annotation_map
+            # ★ ver67.0: 質量補正の操作だけで、保存済み DB パスによる照合を有効化しない。
+            if db_annotation_enabled(_interactive_data.get("naming_settings")):
+                deg_data = _reannotate_with_calibration(
+                    deg_data, cal_result["corrected_mz_map"],
+                    mrm_path_str, tolerance=tol,
+                    annotation_csv_path=annotation_csv,
+                    ion_mode=ion_mode or "Positive",
+                    adduct_patterns=adduct_filter,
+                )
+                ann_map = compose_annotation_map(features_list, _interactive_data.get("feature_annotations"),
+                    {row.get("gene"): row.get("annotation") for row in deg_data or []})
+                _interactive_data["annotation_map"] = ann_map
+                apply_annotation_map(deg_data, ann_map)
             _interactive_data["_calibration_result"] = cal_result
             status = format_calibration_status(cal_result)
             # 設定を永続化
@@ -1510,6 +1522,17 @@ def execute_reannotation(n_clicks,
         for row in deg_data:
             row = dict(row)
             gene = row.get("gene", "")
+            # ★ ver67.0: 再照合ボタンでも SCiLS 既存名/競合を上書きせず未注釈だけ補完する。
+            from app.services.naming_policy import embedded_compound
+            scils = (_interactive_data.get("feature_annotations") or {}).get(gene) or {}
+            if scils.get("status") == "conflict":
+                row["annotation"] = gene
+                updated.append(row)
+                continue
+            if scils.get("compound") or embedded_compound(gene):
+                row["annotation"] = scils.get("compound") or embedded_compound(gene)
+                updated.append(row)
+                continue
             mz_val = _extract_mz_numeric(gene)
             if mz_val != float("inf") and len(mrm_mz_values) > 0:
                 idx = int(np.argmin(np.abs(mrm_mz_values - mz_val)))
@@ -1551,7 +1574,7 @@ def execute_reannotation(n_clicks,
         features_list = _interactive_data.get("features_list", [])
         if features_list:
             try:
-                _interactive_data["annotation_map"] = _build_feature_annotation_map(
+                _db_map = _build_feature_annotation_map(
                     features_list,
                     annotation_csv_path=annotation_path if not is_excel else None,
                     ion_mode=ion_mode or "Positive",
@@ -1559,6 +1582,9 @@ def execute_reannotation(n_clicks,
                     tolerance=tol,
                     deg_data=updated,
                 )
+                from app.services.naming_policy import compose_annotation_map
+                _interactive_data["annotation_map"] = compose_annotation_map(
+                    features_list, _interactive_data.get("feature_annotations"), _db_map)
             except Exception:
                 pass
 

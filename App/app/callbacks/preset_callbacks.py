@@ -64,6 +64,8 @@ def toggle_preset_modal(n_clicks, is_open):
     State("reanalysis_adduct_filter", "value"),
     State("reanalysis_p_thresh", "value"),
     State("reanalysis_logfc_thresh", "value"),
+    State("use_annotation_check", "value"),
+    State("reanalysis_use_annotation_check", "value"),
     prevent_initial_call=True,
 )
 def save_preset_cb(n_clicks, name, *param_values):
@@ -105,6 +107,8 @@ def save_preset_cb(n_clicks, name, *param_values):
     Output("reanalysis_adduct_filter", "value", allow_duplicate=True),
     Output("reanalysis_p_thresh", "value", allow_duplicate=True),
     Output("reanalysis_logfc_thresh", "value", allow_duplicate=True),
+    Output("use_annotation_check", "value", allow_duplicate=True),
+    Output("reanalysis_use_annotation_check", "value", allow_duplicate=True),
     # ★ ver58.1 (デバッグ総点検 B-1/B-2/B-3): 「いま復元している」と宣言する。
     #   PRESET_KEYS は ion_mode を常に含むので、読み込むと必ず
     #   auto_switch_adduct が発火し、保存しておいた付加イオンの組み合わせを
@@ -125,7 +129,9 @@ def load_preset_cb(n_clicks, selected):
         return (("プリセットが見つかりません",) + (no_update,) * len(PRESET_KEYS)
                 + (no_update,))
 
-    values = [params.get(k, no_update) for k in PRESET_KEYS]
+    values = [(["db"] if "db" in (params.get(k) or []) else [])
+              if k in ("use_annotation_check", "reanalysis_use_annotation_check")
+              else params.get(k, no_update) for k in PRESET_KEYS]
     return (f"✅ 「{selected}」を読み込みました", *values, True)
 
 
