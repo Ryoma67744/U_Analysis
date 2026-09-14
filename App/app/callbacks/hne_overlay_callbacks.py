@@ -23,6 +23,7 @@ import dash_bootstrap_components as dbc
 from dash import (callback, Input, Output, State, no_update, ctx, html, dcc,
                   dash_table, clientside_callback)
 
+from app.utils.integration_methods import method_display_name, method_options
 from app.services import hne_overlay as hn
 from app.services import hne_persistence as hp
 from app.config import CLUSTER_PRESET_COLORS
@@ -686,8 +687,9 @@ def update_hne_export_method_options(rds_map):
     """rds_map から出力手法チェックリストを更新（既定で全手法チェック）。"""
     if not rds_map or not isinstance(rds_map, dict):
         return [], []
-    methods = list(rds_map.keys())
-    return [{"label": m, "value": m} for m in methods], methods
+    # ★ ver66.4: PCA の表示名を変更しても RDS/キャッシュの内部キーは保持する。
+    options = method_options(rds_map)
+    return options, [option["value"] for option in options]
 
 
 def _export_cache_key(rds_path, state, intensity_repr="data", unit="mz",
@@ -961,12 +963,12 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
         assay_note = (f"／強度アッセイ: {'/'.join(dict.fromkeys(assays))}（測定値）"
                       if assays else "")
         qea_note = "／QEA用CSV同梱(探索的)" if want_qea else ""
-        msg = (f"{len(exported)} 手法を ZIP 出力（{' / '.join(exported)}"
+        msg = (f"{len(exported)} 手法を ZIP 出力（{' / '.join(map(method_display_name, exported))}"
                f"／強度: {repr_label}／単位: {unit_label}"
                + (f"／preprocessing: {preps[0]}" if preps else "")
                + assay_note + qea_note + "）。")
         if skipped:
-            msg += f"（スキップ: {', '.join(dict.fromkeys(skipped))}）"
+            msg += f"（スキップ: {', '.join(map(method_display_name, dict.fromkeys(skipped)))}）"
         if saved:
             msg += f"  保存先: {saved}"
         return ok(_send_zip(zip_bytes), msg)

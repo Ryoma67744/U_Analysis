@@ -25,6 +25,7 @@ from __future__ import annotations
 from typing import Optional
 
 from app.services import caveats
+from app.utils.integration_methods import method_display_name
 
 METHODS_VERSION = "1"
 
@@ -141,6 +142,7 @@ def render_methods(conditions: dict, lang: str = "ja") -> str:
     out.append(f"- **{t['source']}**: {_v(c.get('result_dir'), lang)}")
     out.append("")
 
+    # ★ ver66.4: 表示用の手法名だけを変換し、条件JSONの内部識別名は変更しない。
     # --- 1. 概要 ---
     out.append(f"## {t['h_overview']}")
     out.append("")
@@ -148,7 +150,7 @@ def render_methods(conditions: dict, lang: str = "ja") -> str:
         ("analysis_type" if lang == "en" else "解析タイプ",
          _get(c, "analysis.analysis_type")),
         ("Integration method" if lang == "en" else "統合手法",
-         c.get("integration_method")),
+         method_display_name(c.get("integration_method"))),
         ("Data folder" if lang == "en" else "データフォルダ",
          _get(c, "analysis.data_folder")),
         ("Samples" if lang == "en" else "対象サンプル",
@@ -358,7 +360,7 @@ def render_conditions_rows(conditions: dict, lang: str = "ja") -> list:
 
     rows = [
         ("解析タイプ" if ja else "Analysis type", _get(c, "analysis.analysis_type")),
-        ("統合手法" if ja else "Integration method", c.get("integration_method")),
+        ("統合手法" if ja else "Integration method", method_display_name(c.get("integration_method"))),
         ("正規化" if ja else "Normalization", _get(c, "analysis.preprocessing.norm_mode")),
         ("バッチ補正" if ja else "Batch correction",
          _get(c, "analysis.preprocessing.batch_correction")),
@@ -462,17 +464,17 @@ _WARNING_TEXTS = {
     #   対応しないのは別々に決めたので当然だが、**知らないと番号で突き合わせて
     #   しまう**ため明記する。
     "uncorrected_clusters_recomputed": (
-        "「PCA (uncorrected)」のクラスタは無補正の空間で改めて決め直したものです。"
+        "「PCA」のクラスタは無補正の空間で改めて決め直したものです。"
         "補正後のクラスタ番号とは対応しません（別々に決めているため）。"
         "番号での突き合わせはできません。",
-        "Clusters for \"PCA (uncorrected)\" were computed independently in the "
+        "Clusters for \"PCA\" were computed independently in the "
         "uncorrected space. Their numbering does not correspond to the clusters of "
         "the corrected result; they cannot be matched by cluster number.",
     ),
     "derived_pca_not_persisted": (
-        "PCA (uncorrected) の UMAP 埋め込みは実行時に派生生成され、結果フォルダには"
+        "PCA の UMAP 埋め込みは実行時に派生生成され、結果フォルダには"
         "保存されません。",
-        "The PCA (uncorrected) UMAP embedding is derived at run time and is not stored "
+        "The PCA UMAP embedding is derived at run time and is not stored "
         "in the result folder.",
     ),
 }

@@ -30,6 +30,9 @@ from app.config import (
 )
 from app.services.seurat_bridge import SeuratBridge, ExtractionCancelled
 from app.services.notify import warn_user
+from app.utils.integration_methods import (
+    is_auxiliary_rds, method_display_name, method_options, resolve_method_key,
+)
 from app.utils.color_utils import (
     cluster_sort_key as _cluster_sort_key,
     get_cluster_color_map as _get_cluster_color_map,
@@ -567,13 +570,15 @@ def _detect_integration_methods(folder_path: str, include_derived: bool = False)
     rds_dir = base / "RDS_Files"
     search_dirs = [rds_dir, base] if rds_dir.is_dir() else [base]
 
-    # data.frame 型 RDS を除外するプレフィックス
-    _EXCLUDE_PREFIXES = ("umap_", "deg_", "plotdata_", "feature_")
+    # ★ ver66.4: pixel_table_rpca.rds は画素情報表であり Seurat 主結果ではない。
+    # 全探索段で先に除外し、rpca 内の pca による偽 PCA 登録を防ぐ。
 
     # 第1段階: TIMS ver13 の Step2/Step3 ファイルを優先マッチ
     for search_dir in search_dirs:
         for rds_file in search_dir.glob("*.rds"):
             name_lower = rds_file.name.lower()
+            if not rds_file.is_file() or is_auxiliary_rds(rds_file):
+                continue
             if "step2" in name_lower and "harmony" in name_lower:
                 rds_map["Harmony"] = str(rds_file)
             elif "step3" in name_lower and "rpca" in name_lower:
@@ -588,7 +593,7 @@ def _detect_integration_methods(folder_path: str, include_derived: bool = False)
     for search_dir in search_dirs:
         for rds_file in search_dir.glob("*.rds"):
             name_lower = rds_file.name.lower()
-            if any(name_lower.startswith(p) for p in _EXCLUDE_PREFIXES):
+            if not rds_file.is_file() or is_auxiliary_rds(rds_file):
                 continue
             # ★ ver66.2: 既に別の手法として登録済みのファイルは二度と拾わない。
             #
@@ -619,7 +624,8 @@ def _detect_integration_methods(folder_path: str, include_derived: bool = False)
             # ★ ver58.0 (A-1): DESI で「補正しない」を選んだときの主結果
             #   (DESI_SeuratCombined_PCA.rds)。コンパニオンと取り違えないよう
             #   uncorrected を含むものは上の分岐で先に拾っている。
-            elif ("pca" in name_lower and "uncorrected" not in name_lower
+            elif ("pca" in name_lower
+                  and not any(tag in name_lower for tag in ("harmony", "rpca", "uncorrected"))
                   and "PCA" not in rds_map):
                 rds_map["PCA"] = str(rds_file)
 
@@ -628,6 +634,8 @@ def _detect_integration_methods(folder_path: str, include_derived: bool = False)
         # 第1段階: Step2/Step3 優先
         for rds_file in base.rglob("*.rds"):
             name_lower = rds_file.name.lower()
+            if not rds_file.is_file() or is_auxiliary_rds(rds_file):
+                continue
             if "step2" in name_lower and "harmony" in name_lower:
                 rds_map["Harmony"] = str(rds_file)
             elif "step3" in name_lower and "rpca" in name_lower:
@@ -642,7 +650,7 @@ def _detect_integration_methods(folder_path: str, include_derived: bool = False)
         if "Harmony" not in rds_map or "RPCA" not in rds_map:
             for rds_file in base.rglob("*.rds"):
                 name_lower = rds_file.name.lower()
-                if any(name_lower.startswith(p) for p in _EXCLUDE_PREFIXES):
+                if not rds_file.is_file() or is_auxiliary_rds(rds_file):
                     continue
                 # ★ ver66.2: 上の第2段階と同じガード（理由もそちらのコメント参照）。
                 #   片方だけ直すと、サブフォルダ探索に落ちた結果でだけ再発する。
@@ -660,7 +668,8 @@ def _detect_integration_methods(folder_path: str, include_derived: bool = False)
                 # ★ ver58.0 (A-1): DESI で「補正しない」を選んだときの主結果
                 #   (DESI_SeuratCombined_PCA.rds)。コンパニオンと取り違えないよう
                 #   uncorrected を含むものは上の分岐で先に拾っている。
-                elif ("pca" in name_lower and "uncorrected" not in name_lower
+                elif ("pca" in name_lower
+                      and not any(tag in name_lower for tag in ("harmony", "rpca", "uncorrected"))
                       and "PCA" not in rds_map):
                     rds_map["PCA"] = str(rds_file)
 
@@ -718,9 +727,9 @@ def scan_rds_files(n_clicks, folder_path):
     if not rds_map:
         return [], None, None
 
-    options = [{"label": k, "value": k} for k in rds_map.keys()]
+    options = method_options(rds_map)
     # Harmony を優先デフォルト、なければ最初の手法
-    default = "Harmony" if "Harmony" in rds_map else list(rds_map.keys())[0]
+    default = "Harmony" if "Harmony" in rds_map else options[0]["value"]
 
     return options, default, rds_map
 
@@ -753,11 +762,16 @@ def auto_scan_rds_files(folder_path, shared):
     # 共有モードで特定手法が指定されていれば、その手法のみに限定する
     if shared and shared.get("active"):
         method = shared.get("integration_method")
-        if method and method != "all" and method in rds_map:
+        if method and method != "all":
+            # ★ ver66.4: 旧共有の PCA を補正前結果へ解決する。
+            # 見つからない場合に全手法へ範囲を広げない。
+            method = resolve_method_key(method, rds_map)
+            if method is None:
+                return [], None, {}
             rds_map = {method: rds_map[method]}
 
-    options = [{"label": k, "value": k} for k in rds_map.keys()]
-    default = "Harmony" if "Harmony" in rds_map else list(rds_map.keys())[0]
+    options = method_options(rds_map)
+    default = "Harmony" if "Harmony" in rds_map else options[0]["value"]
 
     return options, default, rds_map
 
@@ -938,6 +952,10 @@ def load_stage_a_show_progress(n_clicks, integration_method, rds_map, result_fol
                 _load_error_alert("統合手法を選択してください（結果フォルダをスキャンしてください）"),
                 no_update, no_update)
     rds_path = rds_map.get(integration_method)
+    if rds_path and is_auxiliary_rds(rds_path):
+        return (_PROGRESS_HIDE, no_update, no_update, no_update, _PROGRESS_HIDE,
+                _load_error_alert("補助データは解析結果として読み込めません。結果フォルダを再スキャンしてください。"),
+                no_update, no_update)
     # 派生PCA（未補正）: ファイル未生成でも Harmony から遅延生成する。
     derive_from = None
     if rds_path and not Path(rds_path).exists():
@@ -1311,7 +1329,7 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
         calib_warning = state.get("_calib_warning", "")
         meta = state["meta"]
         info_text = (
-            f"読み込み完了 [{integration_method}]: "
+            f"読み込み完了 [{method_display_name(integration_method)}]: "
             f"{meta.get('n_cells', '?')} cells, "
             f"{meta.get('n_clusters', '?')} clusters, "
             f"samples: {', '.join(meta.get('samples', []))}"

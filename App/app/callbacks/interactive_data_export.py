@@ -23,6 +23,7 @@ from dash import (
 )
 from dash.exceptions import PreventUpdate
 
+from app.utils.integration_methods import method_display_name, method_options
 from app.callbacks.interactive_callbacks import _bridge, _interactive_data
 from app.utils.color_utils import cluster_display_name
 from app.utils.label_persistence import load_cluster_name_map
@@ -736,7 +737,7 @@ def _build_all_method_lookups(
     for i_m, method_name in enumerate(ordered_methods):
         if progress_cb:
             progress_cb(int(base + span * i_m / n_methods),
-                        f"手法クラスタを準備中… ({method_name})")
+                        f"手法クラスタを準備中… ({method_display_name(method_name)})")
         if method_name == current_method and _interactive_data.get("plot_data") is not None:
             # 現在の手法は再読込不要
             method_lookups[method_name] = _build_cluster_lookup(
@@ -1899,7 +1900,7 @@ def _do_export(
 
         # ステータスメッセージ
         n_methods = len(method_lookups)
-        methods_str = " / ".join(method_lookups.keys())
+        methods_str = " / ".join(map(method_display_name, method_lookups))
         msg = f"✅ {filename} を生成しました"
         if n_methods > 1:
             msg += f" ({methods_str})"
@@ -2082,7 +2083,7 @@ def build_interactive_export_for_project(
 
         msg = f"✅ {filename} を生成しました"
         if len(method_lookups) > 1:
-            msg += " (" + " / ".join(method_lookups.keys()) + ")"
+            msg += " (" + " / ".join(map(method_display_name, method_lookups)) + ")"
         # ★ ver58.3: GUI 経路と同じく、突合が成立しなかったことを必ず伝える。
         blocked = [b for s_ in report for b in (s_.get("blocked_samples") or [])]
         note = _summarize_exclusions(report, blocked)
@@ -2136,8 +2137,9 @@ def update_data_export_method_options(rds_map):
     """rds_map から出力手法チェックリストを更新（既定で全手法チェック）。"""
     if not rds_map or not isinstance(rds_map, dict):
         return [], []
-    methods = list(rds_map.keys())
-    return [{"label": m, "value": m} for m in methods], methods
+    # ★ ver66.4: 非表示にした旧 PCA を既定出力へ混ぜず、内部キーをそのまま渡す。
+    options = method_options(rds_map)
+    return options, [option["value"] for option in options]
 
 
 def _run_export_job(job_id, args):

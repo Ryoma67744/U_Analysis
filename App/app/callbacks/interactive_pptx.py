@@ -19,6 +19,7 @@ import plotly.graph_objects as go
 from dash import (Input, Output, State, callback, dcc, no_update)
 from dash.exceptions import PreventUpdate
 
+from app.utils.integration_methods import method_display_name, method_options
 from app.services.seurat_bridge import SeuratBridge
 from app.services.caveats import banner_text as _caveat_banner
 from app.utils.color_utils import (
@@ -1711,9 +1712,9 @@ def update_export_method_options(rds_map):
     if not rds_map or not isinstance(rds_map, dict):
         return [], []
 
-    methods = list(rds_map.keys())
-    options = [{"label": m, "value": m} for m in methods]
-    return options, methods  # 既定で全手法チェック
+    # ★ ver66.4: 表示名だけを PCA に揃え、RDS/保存設定の内部手法名は維持する。
+    options = method_options(rds_map)
+    return options, [option["value"] for option in options]
 
 
 @callback(
@@ -1989,7 +1990,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
 
             set_progress((
                 min(int(progress_offset / total_steps * 100), 99), 100,
-                f"{method_name} のデータを読み込み中..."
+                f"{method_display_name(method_name)} のデータを読み込み中..."
             ))
 
             try:
@@ -2125,7 +2126,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                     slide = prs.slides.add_slide(prs.slide_layouts[6])
                     _pptx_add_title_bar(
                         slide,
-                        f"UMAP & Spatial Mapping \u2014 {method_name}{_gs_sfx}")
+                        f"UMAP & Spatial Mapping \u2014 {method_display_name(method_name)}{_gs_sfx}")
 
                     # 上段: サンプル別 UMAP
                     tile_w_cmp = avail_w_cmp / max(_gs_n, 1)
@@ -2249,18 +2250,18 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
             set_progress((
                 min(int(progress_offset / total_steps * 100), 99),
                 100,
-                f"{method_name} のスライドを生成中..."
+                f"{method_display_name(method_name)} のスライドを生成中..."
             ))
 
             # --- セパレータスライド ---
             sep_slide = prs.slides.add_slide(prs.slide_layouts[6])
-            _pptx_add_title_bar(sep_slide, f"═══ {method_name} ═══")
+            _pptx_add_title_bar(sep_slide, f"═══ {method_display_name(method_name)} ═══")
             txBox = sep_slide.shapes.add_textbox(
                 Inches(1), Inches(2.5), Inches(11), Inches(2))
             tf = txBox.text_frame
             tf.word_wrap = True
             p = tf.paragraphs[0]
-            p.text = f"Integration Method: {method_name}"
+            p.text = f"Integration Method: {method_display_name(method_name)}"
             p.font.size = Pt(28)
             p.font.bold = True
             p.alignment = PP_ALIGN.CENTER
@@ -2322,8 +2323,8 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
 
             # --- _build_pptx でフルセットを追加 ---
             method_sub_name = (
-                f"{sub_name} [{method_name}]"
-                if sub_name else method_name
+                f"{sub_name} [{method_display_name(method_name)}]"
+                if sub_name else method_display_name(method_name)
             )
             returned = _build_pptx(
                 method_umap_fig, None, method_meta,
@@ -2353,7 +2354,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
 
             method_end_idx = len(prs.slides) - 1
             section_map.append(
-                (method_name, method_start_idx, method_end_idx))
+                (method_display_name(method_name), method_start_idx, method_end_idx))
             exported_methods.append(method_name)
 
         if not exported_methods:
@@ -2373,11 +2374,11 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
         prs.save(output)
         output.seek(0)
 
-        methods_str = " + ".join(exported_methods)
+        methods_str = " + ".join(map(method_display_name, exported_methods))
         status_msg = f"✓ PPTXファイルを出力しました ({methods_str}): {filename}"
         if skipped_methods:
             status_msg += (
-                f"（スキップ: {', '.join(dict.fromkeys(skipped_methods))}"
+                f"（スキップ: {', '.join(map(method_display_name, dict.fromkeys(skipped_methods)))}"
                 f" — RDS が見つからない/抽出失敗）"
             )
         # ★ ver51.8: 図の PNG 変換に失敗した枚数を必ず伝える。
