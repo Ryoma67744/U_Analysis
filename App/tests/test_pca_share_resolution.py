@@ -112,23 +112,29 @@ def test_unavailable_result_does_not_create_an_empty_pca_share(share_context, mi
 
 
 @pytest.mark.parametrize("kind", ["expiring", "persistent"])
-def test_all_methods_sharing_keeps_all_and_harmony_default(share_context, kind):
-    """全手法共有では all を保存し、既定の Harmony で事前抽出する。"""
+def test_all_methods_sharing_keeps_all_and_rpca_default(share_context, kind):
+    """全手法共有では all を保存し、既定の RPCA で事前抽出する。"""
     _generate("all", kind)
     saved = share_context.created[0]
     assert saved["integration_method"] == "all"
-    assert saved["rds_path"] == "/results/Step2_HarmonyPCA_Result.rds"
+    assert saved["rds_path"] == "/results/Step3_RPCA_Result.rds"
     assert share_context.warmed == [saved["rds_path"]]
 
 
-def test_all_methods_sharing_without_harmony_keeps_available_default(share_context):
-    share_context.rds_map = {
-        "PCA (uncorrected)": "/results/Step2_PCA_uncorrected.rds",
-    }
-    _generate("all")
+@pytest.mark.parametrize("kind", ["expiring", "persistent"])
+@pytest.mark.parametrize("methods, expected", [
+    (["PCA (uncorrected)", "Harmony"], "Harmony"),
+    (["PCA (uncorrected)"], "PCA (uncorrected)"),
+    (["PCA"], "PCA"),
+])
+def test_all_methods_sharing_without_rpca_uses_available_default(share_context, kind, methods, expected):
+    """RPCA が無い共有は利用可能な Harmony または PCA を先読みする。"""
+    share_context.rds_map = {method: f"/results/{index}.rds" for index, method in enumerate(methods)}
+    _generate("all", kind)
     saved = share_context.created[0]
     assert saved["integration_method"] == "all"
-    assert saved["rds_path"] == "/results/Step2_PCA_uncorrected.rds"
+    assert saved["rds_path"] == share_context.rds_map[expected]
+    assert share_context.warmed == [saved["rds_path"]]
 
 
 def test_all_methods_sharing_uses_visible_pca_when_both_pcas_exist(share_context):

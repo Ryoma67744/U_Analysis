@@ -34,7 +34,9 @@ from app.services.share_manager import (
     cleanup_expired,
 )
 from app.services.annotation_inspect import has_compound_names
-from app.utils.integration_methods import method_display_name, method_options, resolve_method_key
+from app.utils.integration_methods import (
+    default_viewer_method, method_display_name, resolve_method_key,
+)
 from app.utils.validation import param_default
 from app.services.persistent_share_manager import (
     create_persistent_share,
@@ -1459,10 +1461,8 @@ def generate_share_link(n_clicks, sub_id, project, share_kind, expiry_days,
     requested_method = integration_method or "Harmony"
     if requested_method == "all":
         resolved_method = "all"
-        options = method_options(rds_map)
-        default_method = "Harmony" if "Harmony" in rds_map else (
-            options[0]["value"] if options else None
-        )
+        # ★ ver66.5: 初期表示を RPCA にしたため、共有の保存・先読みも同じ結果に揃える。
+        default_method = default_viewer_method(rds_map)
         rds_path = rds_map.get(default_method, "")
     else:
         resolved_method = resolve_method_key(requested_method, rds_map)

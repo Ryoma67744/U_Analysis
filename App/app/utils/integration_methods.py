@@ -27,6 +27,18 @@ def method_options(methods: Iterable[str]) -> list[dict[str, str]]:
     return [{"label": method_display_name(key), "value": key} for key in keys]
 
 
+def default_viewer_method(methods: Iterable[str]) -> str | None:
+    """通常ビューアーと全手法共有で、利用可能な初期結果を同じ順に選ぶ。"""
+    # ★ ver66.5: Harmony 固定では希望する RPCA 結果から閲覧を始められない。
+    # 検出順に依存させず RPCA、Harmony、PCA の順で選び、補正なし内部名を保つ。
+    options = method_options(methods)
+    available = {option["value"] for option in options}
+    for method in ("RPCA", "Harmony", UNCORRECTED_PCA, "PCA"):
+        if method in available:
+            return method
+    return options[0]["value"] if options else None
+
+
 def resolve_method_key(method: str | None, methods: Mapping | Iterable[str]) -> str | None:
     """表示名・旧共有名を実在する内部名へ解決する。別手法へは代替しない。"""
     keys = {str(key).casefold(): key for key in methods}
