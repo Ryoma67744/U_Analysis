@@ -79,7 +79,47 @@ def test_viewer_pca_label_retains_companion_identity_and_path(tmp_path, auto):
     pca = next(option for option in options if option["label"] == "PCA")
     assert pca["value"] == "PCA (uncorrected)"
     assert Path(rds_map[pca["value"]]).name == "Step2_PCA_uncorrected.rds"
+    assert selected == "RPCA"
+
+
+@pytest.mark.parametrize("auto", [False, True])
+@pytest.mark.parametrize("methods, expected", [
+    (["Harmony", "PCA (uncorrected)", "RPCA"], "RPCA"),
+    (["RPCA", "PCA (uncorrected)", "Harmony"], "RPCA"),
+    (["PCA (uncorrected)", "RPCA"], "RPCA"),
+    (["PCA (uncorrected)", "Harmony"], "Harmony"),
+    (["PCA (uncorrected)"], "PCA (uncorrected)"),
+    (["PCA"], "PCA"),
+])
+def test_viewer_default_uses_available_priority(tmp_path, monkeypatch, auto, methods, expected):
+    """検出順によらず RPCA を優先し、不在時は Harmony、PCA で開く。"""
+    results = {method: f"/results/{index}.rds" for index, method in enumerate(methods)}
+    monkeypatch.setattr(ic, "_detect_integration_methods", lambda *args, **kwargs: results)
+    options, selected, rds_map = (ic.auto_scan_rds_files(str(tmp_path), None) if auto
+                                 else ic.scan_rds_files(1, str(tmp_path)))
+    assert selected == expected
+    assert selected in [option["value"] for option in options]
+    assert rds_map == results
+
+
+def test_explicit_harmony_share_overrides_rpca_default(tmp_path):
+    """RPCA が存在しても、Harmony 指定の共有は対象を切り替えない。"""
+    _write_results(tmp_path / "RDS_Files")
+    options, selected, rds_map = ic.auto_scan_rds_files(
+        str(tmp_path), {"active": True, "integration_method": "Harmony"})
+    assert options == [{"label": "Harmony", "value": "Harmony"}]
     assert selected == "Harmony"
+    assert list(rds_map) == ["Harmony"]
+
+
+def test_all_methods_share_opens_rpca_without_restricting_available_results(tmp_path):
+    """全手法共有では RPCA で開き、他の手法も引き続き選択できる。"""
+    _write_results(tmp_path / "RDS_Files")
+    options, selected, rds_map = ic.auto_scan_rds_files(
+        str(tmp_path), {"active": True, "integration_method": "all"})
+    assert selected == "RPCA"
+    assert {option["value"] for option in options} == {"Harmony", "RPCA", "PCA (uncorrected)"}
+    assert set(rds_map) == {"Harmony", "RPCA", "PCA (uncorrected)"}
 
 
 def test_companion_is_the_only_visible_pca_when_both_real_results_exist():

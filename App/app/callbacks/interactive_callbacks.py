@@ -31,7 +31,8 @@ from app.config import (
 from app.services.seurat_bridge import SeuratBridge, ExtractionCancelled
 from app.services.notify import warn_user
 from app.utils.integration_methods import (
-    is_auxiliary_rds, method_display_name, method_options, resolve_method_key,
+    default_viewer_method, is_auxiliary_rds, method_display_name, method_options,
+    resolve_method_key,
 )
 from app.utils.color_utils import (
     cluster_sort_key as _cluster_sort_key,
@@ -728,8 +729,7 @@ def scan_rds_files(n_clicks, folder_path):
         return [], None, None
 
     options = method_options(rds_map)
-    # Harmony を優先デフォルト、なければ最初の手法
-    default = "Harmony" if "Harmony" in rds_map else options[0]["value"]
+    default = default_viewer_method(rds_map)
 
     return options, default, rds_map
 
@@ -771,7 +771,7 @@ def auto_scan_rds_files(folder_path, shared):
             rds_map = {method: rds_map[method]}
 
     options = method_options(rds_map)
-    default = "Harmony" if "Harmony" in rds_map else options[0]["value"]
+    default = default_viewer_method(rds_map)
 
     return options, default, rds_map
 
