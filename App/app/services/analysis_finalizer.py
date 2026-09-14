@@ -65,7 +65,10 @@ def finalize(output_dir, *, status: str, job: Optional[dict] = None,
     logger.info("解析の完了処理を開始 (%s, status=%s): %s",
                 source, status, output_dir)
 
-    if status == "finished":
+    # ★ ver67.0: 後続手法で停止しても保存済みPCAを結果として登録する。
+    from app.services.execution_policy import method_outcome
+    outcome = method_outcome(output_dir)
+    if status == "finished" or (outcome and outcome["available"]):
         _link_to_project(output_dir, job, result)
         _write_receipt(output_dir, result)
     else:

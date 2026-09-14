@@ -646,6 +646,8 @@ _ANALYSIS_SETTINGS_KEYS = [
     "reanalysis_tolerance_mz",
     # ver64.0: 追加データフォルダ (TIMS)。data_folder と対で復元する
     "extra_data_folders",
+    "section_manifest", "section_manifest_reanalysis",
+    "use_annotation_check", "reanalysis_use_annotation_check",
 ]
 
 
@@ -677,6 +679,11 @@ _ANALYSIS_SETTINGS_KEYS = [
      #   まま実行され、記録上は今のサブプロジェクトなのに別のデータが混ざる
      #   （下の data_folder についての注意書きとまったく同じ事故になる）。
      Output("extra_data_folders_store", "data", allow_duplicate=True),
+     # ★ ver67.0: 前プロジェクトの切片とDB設定を持ち越さない。
+     Output("section_manifest_store", "data", allow_duplicate=True),
+     Output("section_manifest_store_reanalysis", "data", allow_duplicate=True),
+     Output("use_annotation_check", "value", allow_duplicate=True),
+     Output("reanalysis_use_annotation_check", "value", allow_duplicate=True),
      # ★ ver58.1 (デバッグ総点検 B-1〜B-3): 「いま復元している」と宣言する。
      #   ここは analysis_method と ion_mode を同一レスポンスで書くため、
      #   従来は auto_switch_data_folder / auto_switch_adduct /
@@ -691,7 +698,7 @@ _ANALYSIS_SETTINGS_KEYS = [
 )
 def sub_action_new_analysis(clicks, project):
     """サブプロジェクト「解析」→ 解析設定画面に遷移 + 前回設定を復元"""
-    _n_outputs = 24   # ver64.0: extra_data_folders_store を追加
+    _n_outputs = 28   # ★ ver67.0: ファイル別選択と明示DB設定を追加
     if not ctx.triggered_id or not any(c for c in clicks if c):
         return (no_update,) * _n_outputs
 
@@ -758,6 +765,10 @@ def sub_action_new_analysis(clicks, project):
         # 保存が無いサブプロジェクト（ver64.0 より前に作られたもの）は空に戻す。
         # `no_update` にすると前のサブプロジェクトの追加フォルダが残ってしまう。
         [f for f in (settings.get("extra_data_folders") or []) if f],
+        settings.get("section_manifest") or {},
+        settings.get("section_manifest_reanalysis") or {},
+        ["db"] if "db" in (settings.get("use_annotation_check") or []) else [],
+        ["db"] if "db" in (settings.get("reanalysis_use_annotation_check") or []) else [],
         True,                                                   # settings_restore_pending
     )
 

@@ -17,7 +17,7 @@ def stable_section_id(file_id: str, roi: str | None = None) -> str:
 
 
 def build_section_manifest(catalog, selections=None, roles=None, group_rows=None, previous=None):
-    """★ verNEXT: ファイル別の選択と物理切片の意味を分け、全解除を全画素へ戻さない。"""
+    """★ ver67.0: ファイル別の選択と物理切片の意味を分け、全解除を全画素へ戻さない。"""
     selections, roles, previous = selections or {}, roles or {}, previous or {}
     old_files = dict(previous.get("file_settings", {}))
     old_files.update({f["path"]: f for f in previous.get("files", [])})
@@ -50,7 +50,7 @@ def build_section_manifest(catalog, selections=None, roles=None, group_rows=None
             selected, mode = list(available), "all"
         if available:
             selected = [r for r in selected if r in available]
-            # ★ verNEXT: 全ROI選択でも名前のない画素を追加の切片として混入させない。
+            # ★ ver67.0: 全ROI選択でも名前のない画素を追加の切片として混入させない。
             mode = "selected" if selected else "none"
         elif path in selections:
             mode = "all" if "__all__" in selected else "none"
@@ -103,7 +103,18 @@ def validate_section_manifest(manifest):
     files = (manifest or {}).get("files", [])
     if not files or not any(f.get("selection_mode") != "none" for f in files):
         errors.append("解析対象の切片／ROIを選択してください。")
+    seen_paths = set()
     for f in files:
+        path = str(Path(f.get("path") or "").expanduser().resolve())
+        if not f.get("path"):
+            errors.append("切片対応表の入力ファイルパスがありません。")
+        elif path in seen_paths:
+            errors.append(f"入力ファイルが重複しています: {Path(path).name}")
+        seen_paths.add(path)
+        if f.get("selection_mode") not in ("all", "selected", "none"):
+            errors.append("切片対応表の選択方式が不正です。")
+        if f.get("selection_mode") == "selected" and not f.get("rois"):
+            errors.append(f"{Path(path).name}: 解析対象のROIが選択されていません。")
         if f.get("selection_mode") != "none" and f.get("roi_role") not in ("section", "region"):
             errors.append(f"{Path(f['path']).name}: ROI が切片か切片内領域かを指定してください。")
     subject_groups = {}
@@ -121,7 +132,11 @@ def summarize_manifest(manifest):
     rows = manifest_group_rows(manifest)
     errors = validate_section_manifest(manifest)
     n = len(rows)
-    methods = "PCA・Harmony・RPCA" if n >= 2 else "PCA"
+    # ★ ver67.0: 表の行数ではなく実際に共通化する統合単位数で算出手法を案内する。
+    units = {str(s["integration_unit_id"]) for f in (manifest or {}).get("files", [])
+             if f.get("selection_mode") != "none" for s in f.get("sections", [])
+             if s.get("integration_unit_id")}
+    methods = "PCA・Harmony・RPCA" if len(units) >= 2 else "PCA"
     line = f"解析対象：{n}切片 ／ 算出する結果：{methods}"
     groups = {}
     for row in rows:

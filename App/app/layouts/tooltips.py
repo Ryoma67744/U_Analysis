@@ -51,24 +51,9 @@ def get_settings_tooltips():
             target="normalize_input_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
-            "Harmony/RPCA は段階をまたぐ共通構造を見るための統合。\n"
-            "各条件1切片(交絡)では生物差も一緒に除去されるため、未補正(PCA)も併用を。",
+            "再解析で取り除く／残すクラスタが定義された手法を選びます。\n"
+            "選択後の画素でPCAを計算し、切片数に応じてHarmony・RPCAも実行します。",
             target="cluster_source_help_badge", **_TOOLTIP_PROPS,
-        ),
-        dbc.Tooltip(
-            "切片アノテーションが何を表すかでシナリオを選択。\n"
-            "・同一切片のクラスタ / Ctrl vs KO 比較 = 無補正\n"
-            "・連続切片(技術反復) = RPCA 統合\n"
-            "・測定バッチ補正 = Harmony（過補正注意・非推奨）\n"
-            "・条件比較＋技術差補正 = Harmony と RPCA を両方適用し測定差を補正"
-            "（交絡下では条件差も縮小。条件をまたぐ共有埋め込み/クラスタを得たいとき。"
-            "条件間DEGは独立算出で不変）。",
-            target="tims_scenario_help_badge", **_TOOLTIP_PROPS,
-        ),
-        dbc.Tooltip(
-            "再解析(exclusion/inclusion)の解析シナリオ。既定は初回解析の選択を引き継ぎます。\n"
-            "意味は初回と同じ（無補正 / RPCA統合 / Harmony補正 / Harmony＋RPCA両方）。",
-            target="reanalysis_tims_scenario_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
             "m/zの一致判定に使う許容誤差（Da単位）。\n"
@@ -137,12 +122,9 @@ def get_interactive_tooltips():
     """インタラクティブ解析タブ用ツールチップ群を返す"""
     return [
         dbc.Tooltip(
-            "表示する解析手法を選択。\n"
-            "・未補正(PCA) = 段階差（技術+生物・交絡）\n"
-            "・Harmony/RPCA = 共通構造（段階差は除去）\n"
-            "PCA は未補正PCAのUMAP（比較基準）で、専用RDSが無い既存結果でも"
-            "Harmonyから自動生成して選択可。\n"
-            "読み方は隣の📚ガイド参照。",
+            "PCAは未補正、Harmony・RPCAは切片間の差を調整した結果です。\n"
+            "新規解析はPCAを必ず作成し、複数切片なら両補正法も個別に実行します。\n"
+            "旧結果から派生したPCAはHarmonyのクラスタを継承する場合があり、画面の注記を確認してください。",
             target="interactive_integration_method_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(
@@ -152,7 +134,8 @@ def get_interactive_tooltips():
         ),
         dbc.Tooltip(
             "Cluster: クラスタ番号で色分け。\n"
-            "Sample: サンプル名で色分け。",
+            "Sample: サンプル名で色分け。\n"
+            "群: 登録したCtrl／比較群などで色分け。強度やクラスタは変わりません。",
             target="umap_color_by_help_badge", **_TOOLTIP_PROPS,
         ),
         dbc.Tooltip(

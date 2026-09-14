@@ -1187,7 +1187,9 @@ def create_umap_name_controls(rds_path, name_map):
     [State("accumulated_label_positions", "data"),
      State("session_id_store", "data"),
      State("spatial_label_size", "value"),
-     State("hne_overlay_opacity", "value")],
+     State("hne_overlay_opacity", "value"),
+     Input("int_section_group_filter", "value"),
+     Input("int_section_group_updated", "data")],
 )
 def update_spatial_plots(sample, highlight_clusters, selected_ids,
                          rotation_store, show_labels,
@@ -1196,7 +1198,8 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
                          cluster_name_map, merge_toggle, merge_color_mode,
                          active_items, legend_hidden, hne_show,
                          hne_mono, accumulated_positions,
-                         session_id=None, label_size=10, hne_opacity=100):
+                         session_id=None, label_size=10, hne_opacity=100,
+                         section_groups=None, _section_updated=None):
     from app.callbacks.interactive_callbacks import (
         _set_active_key, accordion_toggle_is_noop, accordion_record_closed,
         set_export_figures)
@@ -1215,7 +1218,8 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
     _set_active_key(rds_path)
     from app.callbacks.interactive_callbacks import _interactive_data
     from app.callbacks.interactive_umap import _get_merged_label_positions
-    df = _interactive_data.get("plot_data")
+    from app.callbacks.interactive_umap import _with_section_groups
+    df = _with_section_groups(_interactive_data.get("plot_data"), rds_path, section_groups)
     if df is None or "SpatialX" not in df.columns:
         set_export_figures("spatial", session_id, rds_path, [])
         return html.Div("空間座標データがありません", className="text-muted p-3"), None

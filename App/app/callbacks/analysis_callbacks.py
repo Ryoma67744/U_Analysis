@@ -36,6 +36,8 @@ from app.services import progress_estimator as _estimator
 from app.services import receipt as _receipt
 from app.services import analysis_finalizer as _finalizer
 from app.services import job_registry as _job_registry
+from app.services.execution_policy import AUTO_POLICY, selected_manifest_paths, apply_group_rows
+from app.services.section_metadata import validate_section_manifest
 from app.version import version_label
 from app.utils.validation import coerce_count, coerce_number, validate_param
 
@@ -157,15 +159,15 @@ def toggle_sidebar_content(active_tab):
 # 解析実行
 # ---------------------------------------------------------------------------
 
-_HP_SUFFIX_RE = re.compile(r"(?:_nn\d+_md[0-9p]+_dim\d+(?:_[A-Za-z]+)?)+$")
+# ★ ver67.0: 旧結果名の数値サフィックスを読むために保持する（新規の続き実行では付けない）。
+_HP_SUFFIX_RE = re.compile(r"(?:_(?:nn\d+|md[0-9p]+|dim\d+))+(?:_[A-Za-z]+)?$")
 
 
 def _umap_hp_suffix(nn, md, dims, metric) -> str:
     """UMAPハイパラから FS 安全な短いサフィックスを生成（例: _nn15_md0p3_dim20）。
 
-    ④（reduction再利用）の出力フォルダを試行ごとに自動命名し、上書きせず
-    比較できるようにするためのもの。None のトークンは省略、metric は cosine
-    以外のときのみ付与する。
+    旧形式との互換性のため保持する。現在の④は保存条件を引き継ぐため、
+    画面の数値を出力名には使用しない。None のトークンは省略する。
     """
     parts = []
     if nn is not None:
@@ -209,20 +211,21 @@ def _resolve_full_output_dir(output_dir, output_subfolder, *, downstream,
                              umap_metric=None):
     """実際に書き込む出力先を決める。出力先が未設定なら None。
 
-    ver56.7 (C03-3): 「どのフォルダに書くか」を **1 か所に集約**する。
-    以前は上書き確認モーダルと実行本体がそれぞれ組み立てており、
-    片方だけ直すと **確認した先と実際に書く先が食い違う**。とくに ④
-    (reduction 再利用) は UMAP ハイパラからサフィックスを自動命名するため、
-    その危険が大きかった（実際、確認モーダル側は ④ を知らなかった）。
+    確認画面と実行本体は同じ決定関数を使う。
+    ★ ver67.0: ④は保存条件を使うため、現在画面の数値を名前へ付けると
+    実際に計算した条件と矛盾する。続き実行は中立な _continued で識別する。
     """
     base = _resolved_output_dir(output_dir)
     if not base:
         return None
     if downstream:
-        suffix = _umap_hp_suffix(umap_nn, umap_md, umap_dims, umap_metric)
-        if suffix:
-            stem = _strip_hp_suffix(output_subfolder or "umap")
-            return str(Path(base) / f"{stem}{suffix}")
+        stem = output_subfolder or "umap"
+        while True:
+            stripped = _strip_hp_suffix(re.sub(r"(?:_continued)+$", "", stem))
+            if stripped == stem:
+                break
+            stem = stripped
+        return str(Path(base) / f"{stem or 'umap'}_continued")
     return str(Path(base) / (output_subfolder or ""))
 
 
@@ -441,7 +444,12 @@ def _effective_data_folder(analysis_type, data_folder, reanalysis_data_folder) -
      State("umap_dims_input", "value"),
      State("tims_scenario", "value"),
      State("reanalysis_tims_scenario", "value"),
-     State("overwrite_pending_mode", "data")],
+     State("overwrite_pending_mode", "data"),
+     State("section_manifest_store", "data"),
+     State("section_manifest_store_reanalysis", "data"),
+     State("reanalysis_use_annotation_check", "value"),
+     State("section_group_table", "data"),
+     State("section_group_table_reanalysis", "data")],
     prevent_initial_call=True,
 )
 def run_analysis(
@@ -485,12 +493,19 @@ def run_analysis(
     umap_metric_input, umap_dims_input,
     tims_scenario, reanalysis_tims_scenario,
     overwrite_pending_mode,
+    section_manifest=None, section_manifest_reanalysis=None,
+    reanalysis_use_annotation_check=None,
+    section_group_rows=None, section_group_rows_reanalysis=None,
 ):
     # トリガー判定: 通常の「解析実行」(run_analysis) か、
     # PreFlight 用の「reduction のみ作成」(btn_make_reduction) か。
     # reduction_only モードでは PIPELINE_STAGE=reduction_only を注入し、
     # UMAP/クラスタリング/DEG/作図をスキップして reduction RDS だけ生成する。
     trig = ctx.triggered_id
+    # ★ ver67.0: 最後の表編集も実行時に取り込み、選択画素は変更しない。
+    section_manifest = apply_group_rows(section_manifest, section_group_rows)
+    section_manifest_reanalysis = apply_group_rows(
+        section_manifest_reanalysis, section_group_rows_reanalysis)
     reduction_only_mode = (trig == "btn_make_reduction")
     downstream_mode = (trig == "btn_run_downstream")
     if (not n_clicks and not reduction_clicks and not downstream_clicks
@@ -525,7 +540,9 @@ def run_analysis(
             annotation_filter_reanalysis=annotation_filter_reanalysis_data,
             roi_filter=desi_roi_filter_list,
             use_roi_as_sample=bool(desi_use_roi_as_sample),
-            extra_data_folders=extra_data_folders)
+            extra_data_folders=extra_data_folders,
+            section_manifest=section_manifest,
+            section_manifest_reanalysis=section_manifest_reanalysis)
         if _blocking:
             return (
                 app_state, True,
@@ -574,6 +591,10 @@ def run_analysis(
             "reanalysis_adduct_filter": reanalysis_adduct_filter,
             "mz_align_ppm": mz_align_ppm,
             "use_annotation_check": use_annotation_check,
+            "reanalysis_use_annotation_check": reanalysis_use_annotation_check,
+            "section_manifest": section_manifest,
+            "section_manifest_reanalysis": section_manifest_reanalysis,
+            "execution_policy": AUTO_POLICY,
             "resume_reanalysis": resume_reanalysis,
             "resume_reanalysis_dir": resume_reanalysis_dir,
             "reanalysis_annotation_path": reanalysis_annotation_path,
@@ -613,6 +634,11 @@ def run_analysis(
                     "data_folder": data_folder,
                     "output_dir": output_dir,
                     "annotation_path": annotation_path,
+                    "use_annotation_check": use_annotation_check,
+                    "reanalysis_use_annotation_check": reanalysis_use_annotation_check,
+                    "section_manifest": section_manifest,
+                    "section_manifest_reanalysis": section_manifest_reanalysis,
+                    "execution_policy": AUTO_POLICY,
                     "p_thresh": p_thresh,
                     "logfc_thresh": logfc_thresh,
                     "ion_mode": ion_mode,
@@ -695,7 +721,9 @@ def run_analysis(
                 #   USE_EMBEDDED_COMPOUND_NAMES として無条件に注入する（注入しないと
                 #   テンプレートのハードコード値が生き残るため）。
                 "annotation_enable": ("db" in _use_annot),
-                "use_embedded_annotation": ("embedded" in _use_annot),
+                "use_embedded_annotation": True,
+                "execution_policy": AUTO_POLICY,
+                "section_manifest": section_manifest,
                 # ★ ver56.5 (§4.2 / C03-1): `float(x) if x else 既定` は
                 #   **0 を既定値に化けさせる**（0 は falsy）。`logfc_thresh=0`
                 #   （= 倍率で絞り込まない）や `p_thresh=0` は画面から入力できる
@@ -769,8 +797,7 @@ def run_analysis(
                 if adduct_filter:
                     params["adduct_patterns"] = adduct_filter
                 # 解析シナリオ → 補正ポリシーを注入（ver6 の ANNOTATION_ROLE 等）
-                _role, _bv, _allow, _correct = _SCENARIO_MAP.get(
-                    tims_scenario or "within_slice", _SCENARIO_MAP["within_slice"])
+                _role, _bv, _allow, _correct = "section_id", "integration_unit_id", False, True
                 params["annotation_role"] = _role
                 params["batch_var"] = _bv
                 params["allow_condition_correction"] = _allow
@@ -784,18 +811,19 @@ def run_analysis(
                 #   こともできなかった（R 側では両方が同じサンプル名になる）。
                 #   パスは実在するものだけに絞る。存在しないパスを渡すと R が
                 #   `INPUT_PATHS[file.exists(INPUT_PATHS)]` で無言のまま捨てる。
-                all_paths = [p for p in (selected_sample_paths or [])
-                             if Path(p).is_file()]
-                if not all_paths:
-                    # 画面がまだ描かれていない等でチェック状態を取れないときの
-                    # 従来どおりのフォールバック（フォルダ全件）。
+                # ★ ver67.0: manifest の全解除を全ファイルへ戻さない。
+                if section_manifest is not None:
+                    all_paths = selected_manifest_paths(section_manifest)
+                elif selected_sample_paths is not None:
+                    all_paths = list(selected_sample_paths)
+                else:
                     from app.services.data_manager import build_tims_input_paths_multi
-                    all_folders = [data_folder] + (extra_data_folders or [])
-                    all_paths = build_tims_input_paths_multi(all_folders)
+                    all_paths = build_tims_input_paths_multi(
+                        [data_folder] + (extra_data_folders or []))
                     if selected_samples:
-                        selected_set = set(selected_samples)
-                        all_paths = [p for p in all_paths
-                                     if Path(p).stem in selected_set]
+                        all_paths = [p for p in all_paths if Path(p).stem in set(selected_samples)]
+                if not all_paths or any(not Path(p).is_file() for p in all_paths):
+                    raise ValueError("解析対象ファイルが未選択、または見つかりません。")
                 params["input_paths"] = all_paths
                 # サンプル名も実際に読むファイルから引き直す。R 側のサンプル名は
                 # basename 由来なので、ここがずれると受領証と実処理が食い違う。
@@ -816,23 +844,17 @@ def run_analysis(
                     if str(_acsv) and _acsv.is_file():
                         params["annotation_csv_path"] = str(_acsv)
                     else:
-                        params["annotation_enable"] = False
-                        logger.warning(
-                            "代謝物 DB 照合が選択されましたが、CSV が見つかりません: %r", str(_acsv)
-                        )
+                        raise ValueError("DB照合を使用するには有効なDBファイルを指定してください。")
 
             # --- DESI ROI 設定 (ROI 列があれば各 ROI を別サンプルとして扱う) ---
             # desi_roi_filter_list は Store から取得した list[str]。
             # update_desi_roi_selector / sync_desi_roi_to_store callback で
             # ファイルから読み取った ROI 候補のチェックボックス選択値を集約済み。
             if analysis_type == "desi_v8":
-                params["use_roi_as_sample"] = bool(desi_use_roi_as_sample)
-                if desi_roi_filter_list:
-                    params["roi_filter"] = list(desi_roi_filter_list)
-                # ★ ver58.0 (A-1): 「補正しない」を実処理へ届ける。
-                #   未指定 (旧セッション) は従来挙動＝補正する。
-                params["batch_correction_enable"] = _DESI_SCENARIO_MAP.get(
-                    desi_scenario or "correct", True)
+                params["use_roi_as_sample"] = False
+                params["batch_correction_enable"] = True
+                if section_manifest is not None:
+                    params["sample_names"] = [Path(p).stem for p in selected_manifest_paths(section_manifest)]
 
             # --- m/z アライメント (ppm) ---
             if analysis_type == "tims_v8":
@@ -844,7 +866,7 @@ def run_analysis(
                     coerce_number(mz_align_ppm, "mz_align_ppm"))
 
             # --- Annotation Filter（TIMS: Parquet内の切片選択） ---
-            if analysis_type == "tims_v8" and annotation_filter_data:
+            if section_manifest is None and analysis_type == "tims_v8" and annotation_filter_data:
                 params["annotation_filter"] = annotation_filter_data
 
             # --- m/z キャリブレーション（TIMS UMAP解析） ---
@@ -941,19 +963,24 @@ def run_analysis(
 
             # RDSパス解決: 直接指定 > フォルダ+クラスタソースから構築
             resolved_rds_path = rds_path or ""
-            resolved_cluster_source = cluster_source or "harmony"
+            resolved_cluster_source = cluster_source or "rpca"
             if not resolved_rds_path and rds_folder_reanalysis:
-                if analysis_type == "desi_cluster_filter":
-                    # DESI: Python側でファイル名を構築（DESI命名規則）
-                    rds_filename = ("DESI_SeuratCombined_harmony.rds"
-                                    if resolved_cluster_source == "harmony"
-                                    else "DESI_SeuratCombined_RPCA.rds")
-                    resolved_rds_path = str(Path(rds_folder_reanalysis) / rds_filename)
-                # TIMS: R側の resolve_rds_path() に委譲するため rds_path は空のまま
+                from app.callbacks.interactive_callbacks import _detect_integration_methods
+                from app.utils.integration_methods import resolve_method_key
+                method_paths = _detect_integration_methods(rds_folder_reanalysis)
+                chosen = resolve_method_key(resolved_cluster_source, method_paths)
+                if not chosen or not method_paths.get(chosen):
+                    raise ValueError("指定した手法のRDSが見つかりません。")
+                resolved_rds_path = str(method_paths[chosen])
 
             params = {
                 "template_path": template,
                 "rds_path": resolved_rds_path,
+                "execution_policy": AUTO_POLICY,
+                "section_manifest": section_manifest_reanalysis,
+                "annotation_enable": "db" in (reanalysis_use_annotation_check or []),
+                "use_embedded_annotation": True,
+                "cluster_source": resolved_cluster_source,
                 "original_data_folder": reanalysis_data_folder or data_folder,
                 "filter_mode": filter_mode or "exclude",
                 "target_clusters": clusters,
@@ -981,11 +1008,11 @@ def run_analysis(
                 params["pipeline_stage"] = "reduction_only"
 
             # 再解析用アノテーションファイル
-            if reanalysis_annotation_path:
+            if params["annotation_enable"] and reanalysis_annotation_path:
                 params["reanalysis_annotation_path"] = reanalysis_annotation_path
 
             # 再解析用 Annotation Filter（TIMS: 切片選択）
-            if analysis_type == "tims_cluster_filter" and annotation_filter_reanalysis_data:
+            if section_manifest_reanalysis is None and analysis_type == "tims_cluster_filter" and annotation_filter_reanalysis_data:
                 params["annotation_filter"] = annotation_filter_reanalysis_data
 
             # ★ ver58.0 (デバッグ総点検 A-6): DESI 再解析にも正規化ポリシーを渡す。
@@ -1003,9 +1030,9 @@ def run_analysis(
                 #   受け手が再解析スクリプトに無かったため二重に空振りしていた。
                 #   その結果、ROI 別サンプルは再解析で丸ごと落ちていた。
                 #   OFF も明示的に渡す（未指定＝テンプレ既定に化けさせない）。
-                params["use_roi_as_sample"] = bool(desi_use_roi_as_sample)
-                if desi_roi_filter_list:
-                    params["roi_filter"] = list(desi_roi_filter_list)
+                params["use_roi_as_sample"] = False
+                if section_manifest_reanalysis is not None:
+                    params["sample_names"] = [Path(p).stem for p in selected_manifest_paths(section_manifest_reanalysis)]
 
             # ★ ver58.0 (デバッグ総点検 A-7): UMAP 条件を再解析にも渡す。
             #   PreFlight パネルは再解析中も画面に出ているのに受け手が無く、
@@ -1024,12 +1051,14 @@ def run_analysis(
             if analysis_type == "tims_cluster_filter":
                 from app.services.data_manager import build_tims_input_paths
                 src_folder = reanalysis_data_folder or data_folder
-                _paths = build_tims_input_paths(src_folder)
+                _paths = (selected_manifest_paths(section_manifest_reanalysis)
+                          if section_manifest_reanalysis is not None
+                          else build_tims_input_paths(src_folder))
                 # ★ ver57.5: サンプル名だけ絞ると、名前と実ファイルが食い違う。
                 #   R 側は ORIGINAL_INPUT_PATHS を一巡してフィルタ済み入力を
                 #   書き出すので、ここを絞らないと外したサンプルの再解析用
                 #   ファイルが作られ、そのまま次の解析対象になる。
-                if selected_samples:
+                if section_manifest_reanalysis is None and selected_samples:
                     _sel_paths = set(selected_samples)
                     _paths = [p for p in _paths if Path(p).stem in _sel_paths]
                 params["original_input_paths"] = _paths
@@ -1042,11 +1071,9 @@ def run_analysis(
                 #   ver6 既定（ppm=0＝無効／埋め込み名を使わない）で走っていた。
                 params["mz_align_ppm"] = float(
                     coerce_number(mz_align_ppm, "mz_align_ppm"))
-                params["use_embedded_annotation"] = (
-                    "embedded" in list(use_annotation_check or []))
+                params["use_embedded_annotation"] = True
                 # 解析シナリオ → V13_ 経由で ver6 コピーへ伝播（subset の reduction に効かせる）
-                _r_role, _r_bv, _r_allow, _r_correct = _SCENARIO_MAP.get(
-                    reanalysis_tims_scenario or "within_slice", _SCENARIO_MAP["within_slice"])
+                _r_role, _r_bv, _r_allow, _r_correct = "section_id", "integration_unit_id", False, True
                 params["v13_annotation_role"] = _r_role
                 params["v13_batch_var"] = _r_bv
                 params["v13_allow_condition_correction"] = _r_allow
@@ -1068,9 +1095,9 @@ def run_analysis(
                 # ver46.0: 途中から再開（Step1/Step2 の中間結果を再利用）。
                 #   上の rds_run_dir（= クラスタ番号の参照元）とは別物なので混同しないこと。
                 #   OFF のときは params を立てない → 従来どおり最初から実行される。
-                if resume_reanalysis and resume_reanalysis_dir:
-                    params["resume_reanalysis"] = True
-                    params["resume_reanalysis_dir"] = resume_reanalysis_dir
+            if resume_reanalysis and resume_reanalysis_dir:
+                params["resume_reanalysis"] = True
+                params["resume_reanalysis_dir"] = resume_reanalysis_dir
 
             # --- m/z キャリブレーション（TIMS 再解析） ---
             if analysis_type == "tims_cluster_filter":
@@ -1109,20 +1136,6 @@ def run_analysis(
             # [ver51.2] 停止を本人だけに許すための所有者。
             "analyst": _owner_name(),
         }
-        result = start_analysis_process(
-            config_path, full_output_dir,
-            env_extra=_env_extra, job_meta=_job_meta,
-        )
-
-        if not result["success"]:
-            return (
-                app_state, True,
-                {"display": "none"}, {"display": "none"}, {"display": "none"},
-                no_update,
-                f"解析開始に失敗: {result['message']}", True,
-                no_update, no_update,
-            )
-
         # 解析パラメータを結果フォルダに保存 (C1: パラメータ履歴)
         # 値は原則 params（＝実際に R テンプレへ注入された dict）から取る。UI の
         # State を直接読むと、再解析経路で full-analysis 側の値を記録してしまう。
@@ -1135,21 +1148,19 @@ def run_analysis(
             _template = params.get("template_path") or ""
             _params_to_save = {
                 "analysis_type": analysis_type,
-                "data_folder": (reanalysis_data_folder if _is_reanalysis
-                                else data_folder) or data_folder,
+                "data_folder": params.get("original_data_folder") or params.get("data_folder") or "",
                 "output_dir": full_output_dir,
                 "annotation_path": (params.get("reanalysis_annotation_path")
-                                    if _is_reanalysis else annotation_path) or "",
-                "annotation_csv": params.get("annotation_csv_path") or annotation_csv or "",
+                                    if _is_reanalysis else params.get("annotation_path")) or "",
+                "annotation_csv": params.get("annotation_csv_path") or "",
                 "ion_mode": params.get("ion_mode") or "",
                 "tolerance_mz": params.get("tolerance_mz"),
-                "adduct_filter": params.get("adduct_patterns")
-                                 or (adduct_filter or []),
+                "adduct_filter": params.get("adduct_patterns") or [],
                 "p_thresh": params.get("p_thresh", p_thresh),
                 "logfc_thresh": params.get("logfc_thresh", logfc_thresh),
-                "filter_mode": filter_mode or "",
-                "target_clusters": target_clusters or "",
-                "resume_rds": bool(resume_rds),
+                "filter_mode": params.get("filter_mode") or "",
+                "target_clusters": params.get("target_clusters") or [],
+                "resume_rds": bool(params.get("resume_from_rds")),
                 "timestamp": datetime.now().isoformat(),
                 "umap_n_neighbors": params.get("umap_n_neighbors"),
                 "umap_min_dist": params.get("umap_min_dist"),
@@ -1172,14 +1183,23 @@ def run_analysis(
                 #   フォルダ。従来はどちらも記録されず、複数フォルダから
                 #   集めた解析について「どのフォルダのどのファイルが入ったか」を
                 #   後から確かめる手段が log/v8_runtime_*.R しか無かった。
-                "input_paths": params.get("input_paths"),
+                "input_paths": params.get("input_paths") or params.get("original_input_paths"),
+                "runtime_parameters": params,
+                "execution_policy": params.get("execution_policy"),
+                "section_manifest": params.get("section_manifest"),
+                "analysis_signature": params.get("analysis_signature"),
+                "input_fingerprints": params.get("input_fingerprints"),
+                "annotation_enable": bool(params.get("annotation_enable")),
+                "db_annotation_enabled": bool(params.get("annotation_enable")),
+                "use_embedded_annotation": bool(params.get("use_embedded_annotation")),
+                "source_result_dir": params.get("source_result_dir"),
+                "source_run": params.get("source_run"),
                 "extra_data_folders": [
                     f for f in (extra_data_folders or []) if f],
                 "roi_filter": params.get("roi_filter"),
                 "annotation_filter": params.get("annotation_filter"),
                 "use_roi_as_sample": params.get("use_roi_as_sample"),
-                "tims_scenario": (reanalysis_tims_scenario if _is_reanalysis
-                                  else tims_scenario),
+                "tims_scenario": params.get("execution_policy"),
                 "batch_var": params.get("batch_var") or params.get("v13_batch_var"),
                 "cluster_source": params.get("cluster_source"),
                 "resume_reanalysis_dir": params.get("resume_reanalysis_dir"),
@@ -1215,7 +1235,21 @@ def run_analysis(
             atomic_write_json(_params_to_save,
                               Path(full_output_dir) / "analysis_params.json")
         except Exception as e:
-            warn_user(f"パラメータ保存に失敗: {e}")
+            raise ValueError(f"パラメータ保存に失敗: {e}") from e
+
+        result = start_analysis_process(
+            config_path, full_output_dir,
+            env_extra=_env_extra, job_meta=_job_meta,
+        )
+
+        if not result["success"]:
+            return (
+                app_state, True,
+                {"display": "none"}, {"display": "none"}, {"display": "none"},
+                no_update,
+                f"解析開始に失敗: {result['message']}", True,
+                no_update, no_update,
+            )
 
         # プロセス参照をモジュールレベルで保持
         _process_state["process"] = result["process"]
@@ -1416,6 +1450,16 @@ def update_progress(n_intervals, app_state, log_search, log_level, log_lines_cou
             msg = "解析が完了しました"
             section_text = f"出力: {file_count} ファイル | ✅ 完了 ({step_total}/{step_total}) | {elapsed_text}"
             log_header = "✅ 解析完了"
+            # ★ ver67.0: 終了コードだけで補正法の成功を判定しない。
+            from app.services.execution_policy import method_outcome
+            outcome = method_outcome(output_dir)
+            if outcome and outcome["incomplete"]:
+                msg = "解析の一部が未完了です。利用可能: " + ", ".join(outcome["available"])
+                section_text = "未完了: " + ", ".join(outcome["incomplete"])
+                log_header = "⚠ 一部未完了"
+            elif outcome and outcome["reduction_only"]:
+                msg = "reductionを保存しました。UMAP・クラスタ・下流出力は未実施です。"
+                log_header = "✅ reduction保存完了"
 
             # [ver51.0] 完了処理は analysis_finalizer に一本化した。
             #   同じ処理をサーバ側ウォッチャーも実行するため、先に済んでいれば
@@ -1817,79 +1861,39 @@ _RDS_FILE_NAMES = {
     [Input("rds_folder_reanalysis", "value"),
      Input("analysis_method", "value"),
      Input("analysis_method_tims", "value")],
+    State("cluster_source", "value"),
     prevent_initial_call=True,
 )
-def detect_rds_files(folder, desi_method, tims_method):
-    """RDSフォルダ内のファイルをスキャンし、Harmony/RPCA選択肢を動的に更新する"""
-    _default_options = [
-        {"label": "Harmony/PCA", "value": "harmony"},
-        {"label": "RPCA", "value": "rpca"},
-    ]
-    _hide = {"display": "none"}
+def detect_rds_files(folder, desi_method, tims_method, current_source=None):
+    """★ ver67.0: 閲覧と同じ検出結果を使い、PCAを選択肢から消さない。"""
+    from app.callbacks.interactive_callbacks import _detect_integration_methods
+    from app.utils.integration_methods import default_viewer_method, resolve_method_key
+    from app.services.execution_policy import result_root
+    import json
 
-    if not folder or not folder.strip():
-        return "", _default_options, no_update, _hide
-
-    p = Path(folder.strip())
-    if not p.is_dir():
-        return (
-            html.Span("⚠ フォルダが見つかりません",
-                       style={"color": "#dc3545", "fontSize": "0.8rem"}),
-            _default_options, no_update, _hide,
-        )
-
-    # DESI/TIMSを判定
-    instrument = "tims" if tims_method else "desi"
-    names = _RDS_FILE_NAMES[instrument]
-
-    has_harmony = (p / names["harmony"]).exists()
-    has_rpca = (p / names["rpca"]).exists()
-
-    if has_harmony and has_rpca:
-        badge = html.Span(
-            f"✓ {names['harmony']}, {names['rpca']} 検出",
-            style={"color": "#28a745", "fontSize": "0.8rem"},
-        )
-        options = [
-            {"label": "Harmony/PCA", "value": "harmony"},
-            {"label": "RPCA", "value": "rpca"},
-        ]
-        return badge, options, no_update, {}
-
-    if has_harmony:
-        badge = html.Span(
-            f"✓ {names['harmony']} 検出",
-            style={"color": "#28a745", "fontSize": "0.8rem"},
-        )
-        options = [
-            {"label": "Harmony/PCA", "value": "harmony"},
-            {"label": "RPCA", "value": "rpca", "disabled": True},
-        ]
-        return badge, options, "harmony", {}
-
-    if has_rpca:
-        badge = html.Span(
-            f"✓ {names['rpca']} 検出",
-            style={"color": "#28a745", "fontSize": "0.8rem"},
-        )
-        options = [
-            {"label": "Harmony/PCA", "value": "harmony", "disabled": True},
-            {"label": "RPCA", "value": "rpca"},
-        ]
-        return badge, options, "rpca", {}
-
-    # どちらも見つからない
-    rds_files = list(p.glob("*.rds"))
-    if rds_files:
-        file_list = ", ".join(f.name for f in rds_files[:3])
-        suffix = f" 他{len(rds_files)-3}件" if len(rds_files) > 3 else ""
-        msg = f"⚠ 標準ファイル未検出（{file_list}{suffix}）"
-    else:
-        msg = "⚠ RDSファイルが見つかりません"
-    return (
-        html.Span(msg, style={"color": "#dc3545", "fontSize": "0.8rem"}),
-        _default_options, no_update, _hide,
-    )
+    if not folder or not str(folder).strip():
+        return "", [], no_update, {"display": "none"}
+    paths = _detect_integration_methods(str(folder).strip())
+    status_file = result_root(folder) / "analysis_methods.json"
+    if status_file.is_file():
+        try:
+            states = json.loads(status_file.read_text(encoding="utf-8")).get("methods", {})
+            paths = {k: v for k, v in paths.items()
+                     if states.get("pca" if k.startswith("PCA") else k.lower(), {}).get("stage") == "downstream"}
+        except (OSError, ValueError, AttributeError):
+            paths = {}
+    if not paths:
+        badge = html.Span("⚠ 再解析に使用できるクラスタ確定済みRDSが見つかりません",
+                          style={"color": "#dc3545", "fontSize": "0.8rem"})
+        return badge, [], None, {"display": "none"}
+    selected = resolve_method_key(current_source, paths) or default_viewer_method(paths)
+    values = {k: "pca" if k.startswith("PCA") else k.lower() for k in paths}
+    options = [{"label": "PCA" if k.startswith("PCA") else k, "value": value}
+               for k, value in values.items()]
+    options = list({row["value"]: row for row in options}.values())
+    badge = html.Span("✓ " + "・".join(row["label"] for row in options) + " 検出",
+                      style={"color": "#28a745", "fontSize": "0.8rem"})
+    return badge, options, values[selected], {}
 
 
 # ---------------------------------------------------------------------------
@@ -2614,7 +2618,8 @@ def _collect_preflight_errors(desi_method, tims_method,
                               annotation_filter=None,
                               annotation_filter_reanalysis=None,
                               roi_filter=None, use_roi_as_sample=False,
-                              extra_data_folders=None):
+                              extra_data_folders=None,
+                              section_manifest=None, section_manifest_reanalysis=None):
     """入力を検査して (blocking, advisory) の 2 つのリストを返す。
 
     ★ ver58.1 (デバッグ総点検 B-4): 切片 / ROI の Store を受け取る。
@@ -2627,6 +2632,10 @@ def _collect_preflight_errors(desi_method, tims_method,
     analysis_type = desi_method or tims_method or "desi_v8"
     is_tims = bool(tims_method)
     is_reanalysis = analysis_type in ("desi_cluster_filter", "tims_cluster_filter")
+    active_manifest = section_manifest_reanalysis if is_reanalysis else section_manifest
+    if active_manifest is not None:
+        blocking.extend(validate_section_manifest(active_manifest))
+        annotation_filter = annotation_filter_reanalysis = roi_filter = None
 
     if is_reanalysis:
         r = validate_data_folder(reanalysis_data_folder, is_tims=is_tims)
@@ -2755,7 +2764,9 @@ def _preflight_alert(blocking, advisory):
      State("desi_roi_filter_store", "data"),
      State("desi_use_roi_as_sample", "value"),
      # ★ ver64.0: 表示側も実行側と同じ材料で判断する（追加データフォルダ）。
-     State("extra_data_folders_store", "data")],
+     State("extra_data_folders_store", "data"),
+     State("section_manifest_store", "data"),
+     State("section_manifest_store_reanalysis", "data")],
     prevent_initial_call=True,
 )
 def preflight_validation(
@@ -2767,6 +2778,7 @@ def preflight_validation(
     annotation_filter=None, annotation_filter_reanalysis=None,
     roi_filter=None, use_roi_as_sample=False,
     extra_data_folders=None,
+    section_manifest=None, section_manifest_reanalysis=None,
 ):
     """起動ボタン押下時にプリフライトチェックを実行する。
 
@@ -2781,7 +2793,9 @@ def preflight_validation(
         annotation_filter=annotation_filter,
         annotation_filter_reanalysis=annotation_filter_reanalysis,
         roi_filter=roi_filter, use_roi_as_sample=bool(use_roi_as_sample),
-        extra_data_folders=extra_data_folders)
+        extra_data_folders=extra_data_folders,
+        section_manifest=section_manifest,
+        section_manifest_reanalysis=section_manifest_reanalysis)
     alert = _preflight_alert(blocking, advisory)
     if alert is None:
         return "", {"display": "none"}

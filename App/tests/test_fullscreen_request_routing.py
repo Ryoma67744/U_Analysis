@@ -67,6 +67,7 @@ def states(monkeypatch):
         "spatial_rows_per_view": 0, "hne_overlay_opacity": 100,
         "cluster_name_map_store": {"0": "C0"},
         "seurat_rds_path_store": "/test.rds",
+        "int_section_group_filter": None, "umap_color_by": "Cluster",
         "feature_plot_container": [html.Div("FEATURE-MARKER").to_plotly_json()],
         "deg_data_store": [{"cluster": "0", "gene": "DEG-MARKER", "avg_log2FC": 2.5}],
     }

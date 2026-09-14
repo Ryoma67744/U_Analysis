@@ -48,6 +48,38 @@ def _norm_scenario(v):
 
 
 
+def _section_controls(ls, scope="initial"):
+    """★ ver67.0: ROI の選択と補正単位を一つの画面・保存値で管理する。"""
+    suffix = "" if scope == "initial" else "_reanalysis"
+    return html.Div([
+        html.H5("解析対象の切片／ROI", className="mt-3"),
+        html.Div(id="section_selector" + suffix),
+        dcc.Store(id="section_catalog_store" + suffix, data=[]),
+        dcc.Store(id="section_manifest_store" + suffix, data=ls.get("section_manifest" + suffix)),
+        html.Div(id="section_summary" + suffix, className="alert alert-light py-2 mt-2"),
+        html.Details([
+            html.Summary("群情報を設定", style={"cursor": "pointer", "fontWeight": "600"}),
+            dbc.FormText("連続切片には同じ個体／独立試料IDを指定します。群名の変更で解析結果は再計算しません。"),
+            dash_table.DataTable(id="section_group_table" + suffix,
+                columns=[{"name": "切片", "id": "section", "editable": False},
+                         {"name": "フォルダ", "id": "file", "editable": False},
+                         {"name": "個体／独立試料ID", "id": "subject_id"},
+                         {"name": "群", "id": "group"},
+                         {"name": "section_id", "id": "section_id", "editable": False}],
+                hidden_columns=["section_id"], data=[], editable=True,
+                row_selectable="multi", selected_rows=[], style_table={"overflowX": "auto"},
+                style_cell={"textAlign": "left", "fontSize": "12px", "padding": "6px",
+                            "maxWidth": "180px", "overflow": "hidden", "textOverflow": "ellipsis"},
+                css=[{"selector": ".show-hide", "rule": "display: none"}]),
+            html.Div([dbc.Input(id="section_bulk_group" + suffix, placeholder="群名（例：Ctrl）", size="sm"),
+                      dbc.Button("選択行に群を設定", id="section_apply_group" + suffix,
+                                 size="sm", color="secondary", n_clicks=0)],
+                     style={"display": "flex", "gap": "6px", "marginTop": "8px"}),
+            html.Small(id="section_group_status" + suffix, className="d-block mt-1"),
+        ]),
+    ])
+
+
 def create_settings_tab():
     """設定タブ本体: 「解析設定」「データ管理」のサブタブで構成"""
     return dbc.Tabs(
@@ -91,11 +123,10 @@ def _create_analysis_settings_subtab():
                             html.Li("TIMS データを SCiLS RMS で出力"),
                             html.Li(["正規化 ", html.B("「OFF」"), " ＋ 変換 ", html.B("「log1p」"),
                                      "（RMS×TIC の二重正規化を回避。TIMS では既定でこの設定）"]),
-                            html.Li("サンプル数と『解析シナリオ』で自動分岐：既定=無補正PCA／"
-                                    "連続切片→RPCA統合／複数サンプル→Harmony・RPCA"),
+                            html.Li("切片を選択：PCAを必ず保存し、2切片以上ならHarmony・RPCAも計算"),
                             html.Li("UMAP・クラスタリング"),
                         ]),
-                        html.Small("※ 段階比較が目的なら未補正(PCA)も併用／各条件1切片は交絡に注意。",
+                        html.Small("各結果は解析後に切り替えて閲覧できます。",
                                    className="text-muted"),
                         html.Br(),
                         html.Small(["詳細は ",
@@ -114,12 +145,10 @@ def _create_analysis_settings_subtab():
                             html.Li("DESI データ（生データ）を入力"),
                             html.Li(["正規化 ", html.B("「ON」"),
                                      "（LogNormalize＝TIC正規化＋log。DESI では既定でこの設定）"]),
-                            html.Li("サンプル数で自動分岐：1サンプル→PCAのみ／複数→Harmony・RPCA"
-                                    "（両方算出。下の『クラスタソース』で使用手法を選択。"
-                                    "ROIモードで各ROIを別サンプル化すると複数統合）"),
+                            html.Li("切片を選択：PCAを必ず保存し、2切片以上ならHarmony・RPCAも計算"),
                             html.Li("UMAP・クラスタリング"),
                         ]),
-                        html.Small("※ 段階比較が目的なら未補正(PCA)も併用／各条件1切片は交絡に注意。",
+                        html.Small("各結果は解析後に切り替えて閲覧できます。",
                                    className="text-muted"),
                         html.Br(),
                         html.Small(["詳細は ",
@@ -155,65 +184,13 @@ def _create_analysis_settings_subtab():
                             #   という食い違いが起きていた。解析対象はこちらを正とする。
                             dcc.Store(id="selected_sample_paths_store", data=[]),
                             dbc.FormText("チェックを入れたサンプルが解析対象になります"),
-                            # --- DESI: バッチ補正の有無 (ver58.0 / A-1) ---
-                            #   DESI の補正は group.by.vars="sample" 固定で、TIMS の
-                            #   ような切片(slice_id)単位の概念を実装していない。
-                            #   そこで「DESI が実際にできること」だけを 2 択で出す。
-                            #   従来は選択肢が無く、複数ファイルなら必ず補正が走っていた。
-                            html.Div(
-                                style={"marginTop": "10px"},
-                                children=[
-                                    html.Hr(className="my-2"),
-                                    html.H6("バッチ補正 (複数ファイルのとき)",
-                                            className="fw-bold"),
-                                    dbc.Select(
-                                        id="desi_scenario",
-                                        options=[
-                                            {"label": "補正する：Harmony＋RPCA（従来どおり）",
-                                             "value": "correct"},
-                                            {"label": "補正しない：無補正 PCA を主結果にする",
-                                             "value": "no_correct"},
-                                        ],
-                                        value=ls.get("desi_scenario", "correct"),
-                                    ),
-                                    dbc.FormText(
-                                        "「補正しない」を選ぶと Harmony も RPCA も実行せず、"
-                                        "無補正 PCA の結果を PCA フォルダに出します。"
-                                        "MSI では 1 ファイル＝1 切片＝多くの場合 1 個体・1 条件なので、"
-                                        "サンプル単位の補正は比較したい生物差そのものを"
-                                        "縮めることがあります。ファイルが 1 つだけのときは"
-                                        "どちらを選んでも補正は行われません。",
-                                        className="text-muted small",
-                                    ),
-                                ],
-                            ),
-                            # --- DESI ROI 設定 (TIMS の annotation_selector と同じ ---
-                            #     pattern-matching 構造。データフォルダとサンプルから
-                            #     ROI 候補を自動列挙、チェックボックスで選択。
-                            #     DESI モード時のみ意味あり (callback で非表示制御)。
-                            html.Div(
-                                style={"marginTop": "10px"},
-                                children=[
-                                    html.Hr(className="my-2"),
-                                    dbc.Switch(
-                                        id="desi_use_roi_as_sample",
-                                        label="ROI 列があれば各 ROI を別サンプルとして解析",
-                                        value=ls.get("desi_use_roi_as_sample", False),
-                                        className="mb-1",
-                                    ),
-                                    html.Div(id="desi_roi_selector",
-                                             className="mt-1"),
-                                    dcc.Store(id="desi_roi_filter_store",
-                                              data=None),
-                                    dbc.FormText(
-                                        "Switch ON でチェック ROI が「別サンプル」と"
-                                        "して統合解析されます (Harmony/RPCA)。"
-                                        "OFF または ROI 列なしの場合はファイル全体を"
-                                        " 1 サンプル扱い (従来挙動)。",
-                                        className="text-muted small",
-                                    ),
-                                ],
-                            ),
+                            # ★ ver67.0: 旧設定の復元先だけ残し、実行方針は切片数から自動決定する。
+                            html.Div(style={"display": "none"}, children=[
+                                dbc.Input(id="desi_scenario", value="correct"),
+                                dbc.Checkbox(id="desi_use_roi_as_sample", value=False),
+                                html.Div(id="desi_roi_selector"),
+                                dcc.Store(id="desi_roi_filter_store", data=None),
+                            ]),
                             # --- 追加データフォルダ (TIMS複数フォルダ) ---
                             html.Div(
                                 id="extra_folders_section",
@@ -238,7 +215,8 @@ def _create_analysis_settings_subtab():
                                     dcc.Store(id="extra_folder_pending_store", data=""),
                                 ],
                             ),
-                            html.Div(id="annotation_selector", className="mt-2"),
+                            html.Div(id="annotation_selector", style={"display": "none"}),
+                            _section_controls(ls),
                             dcc.Store(id="annotation_filter_store", data=None),
                         ]),
                         # RDS途中再開
@@ -266,43 +244,21 @@ def _create_analysis_settings_subtab():
                         ]),
                     ]),
                     dbc.Col(width=6, children=[
-                        # ★ ver55.0: 「アノテーションファイル (オプション)」は
-                        #   (a) TIMS では完全な no-op（注入先 MRM_FILE_PATH が TIMS
-                        #   テンプレに無く _replace_assign が無言で素通りする）、
-                        #   (b) 実際に効いていたのは折りたたまれて見えないサイドバーの
-                        #   既定 DB、という二重の分かりにくさがあった。
-                        #   何を使うかを明示的に選ぶ形にする。
-                        html.Div(className="param-group", children=[
-                            html.H5("アノテーション (オプション)"),
-                            dbc.Checklist(
-                                id="use_annotation_check",
-                                options=[
-                                    {"label": " 変換元 CSV 由来の化合物名を使う"
-                                              "（SCiLS Feature list）",
-                                     "value": "embedded"},
-                                    {"label": " 代謝物データベース CSV で m/z 照合する",
-                                     "value": "db"},
-                                ],
-                                # 既定: 自分で Export したデータ由来の名前だけ使う。
-                                # 同梱 DB による m/z 照合は明示的に選んだときだけ。
-                                value=ls.get("use_annotation_check", ["embedded"]),
-                                switch=True,
-                            ),
-                            dbc.Input(id="annotation_path",
-                                      value=ls.get("annotation_path", ls.get("mrm_path", "")),
-                                      placeholder="代謝物データベース CSV (TIMS) / MRM .xlsx (DESI)",
-                                      className="mt-2"),
-                            dbc.Button("参照...", id="browse_annotation", size="sm", color="secondary",
-                                       style={"marginTop": "5px"}),
-                            html.Small(
-                                id="annotation_path_path_hint", children="",
-                                style={"color": "#6c757d", "fontSize": "0.75rem",
-                                       "marginTop": "2px", "display": "block"},
-                            ),
-                            dbc.FormText(
-                                "どちらも外すと化合物名は一切付けません（m/z 表示）。"
-                                "「代謝物データベース」を選んだときだけ上のパスを使います。"
-                            ),
+                        # ★ ver67.0: 登録済み分子名は自動使用し、追加 DB 照合だけ明示選択する。
+                        html.Details(className="param-group", children=[
+                            html.Summary("分子情報の追加", style={"cursor": "pointer", "fontWeight": "600"}),
+                            dbc.Checklist(id="use_annotation_check",
+                                options=[{"label": "代謝物データベースで追加照合する", "value": "db"}],
+                                value=["db"] if "db" in ls.get("use_annotation_check", []) else [],
+                                switch=True, className="mt-2"),
+                            html.Div(id="db_annotation_settings", children=[
+                                dbc.Input(id="annotation_path", value=ls.get("annotation_path", ls.get("mrm_path", "")),
+                                          placeholder="代謝物データベース CSV (TIMS) / MRM .xlsx (DESI)", className="mt-2"),
+                                dbc.Button("参照...", id="browse_annotation", size="sm", color="secondary", style={"marginTop": "5px"}),
+                                html.Small(id="annotation_path_path_hint", children="",
+                                           style={"color": "#6c757d", "fontSize": "0.75rem", "display": "block"}),
+                            ]),
+                            dbc.FormText("SCiLS登録済み名称を自動使用します。追加DB照合は名称のない特徴量だけを補完します。"),
                         ]),
                         # 正規化設定（DESI/TIMS共通・UMAP解析時のみ表示）
                         html.Div(className="param-group", style={"marginTop": "15px"}, children=[
@@ -379,36 +335,11 @@ def _create_analysis_settings_subtab():
                             id="tims_ion_settings",
                             style={"display": "none", "marginTop": "15px"},
                             children=[
-                                # 解析シナリオ（切片アノテーションの意味）→ 補正方法を自動設定。
-                                # 値は analysis_callbacks で ANNOTATION_ROLE/BATCH_VAR/
-                                # ALLOW_CONDITION_CORRECTION に変換し analysis_runner で注入。
-                                html.Div(className="param-group", children=[
-                                    html.H5(["解析シナリオ（切片アノテーションの意味）",
-                                             help_badge("tims_scenario")]),
-                                    dbc.Select(
-                                        id="tims_scenario",
-                                        options=[
-                                            {"label": "同一切片のクラスタ／群比較（Ctrl vs KO 等）：補正なし＝無補正PCA",
-                                             "value": "within_slice"},
-                                            {"label": "連続切片を技術反復としてまとめる（同一個体の連続切片）",
-                                             "value": "serial_section"},
-                                            {"label": "切片間の測定差(バッチ)を補正【非推奨・過補正注意】",
-                                             "value": "batch_correct"},
-                                            {"label": "条件比較＋技術差補正：Harmony＋RPCA を適用（測定差を補正・条件差も縮小）",
-                                             "value": "integrate_correct"},
-                                        ],
-                                        value=_norm_scenario(ls.get("tims_scenario")),
-                                    ),
-                                    dbc.FormText(
-                                        "選んだシナリオに応じて補正方法を自動設定。"
-                                        "同一切片/群比較→無補正PCA／連続切片→RPCA統合／バッチ補正→Harmony／"
-                                        "条件比較＋技術差補正→Harmony＋RPCA両方（測定間の技術差を補正。"
-                                        "交絡下では条件差も縮小するが、DEGは reduction と独立に条件で算出されるため不変）。"
-                                        "R既定値は変更しません。",
-                                        className="text-muted small",
-                                    ),
+                                html.Div(style={"display": "none"}, children=[
+                                    dbc.Input(id="tims_scenario", value="integrate_correct"),
                                 ]),
                                 html.Div(className="param-group", children=[
+                                    html.Div(id="ion_mode_panel", children=[
                                     html.H5(["イオンモード", help_badge("ion_mode")]),
                                     dbc.RadioItems(
                                         id="ion_mode",
@@ -418,16 +349,20 @@ def _create_analysis_settings_subtab():
                                         ],
                                         value=ls.get("ion_mode", "Positive"), inline=True,
                                     ),
-                                    html.H5(["m/z許容誤差", help_badge("tolerance_mz")], style={"marginTop": "10px"}),
+                                    ]),
+                                    html.Div(id="db_tolerance_panel", children=[
+                                    html.H5(["DB照合のm/z許容誤差 (Da)", help_badge("tolerance_mz")], style={"marginTop": "10px"}),
                                     dbc.Input(id="tolerance_mz", type="number",
                                               value=ls.get("tolerance_mz", 0.01), min=0, step=0.001,
                                               style={"width": "50%"}),
+                                    ]),
                                     html.H5(["m/z アライメント (ppm)", help_badge("mz_align_ppm")], style={"marginTop": "10px"}),
                                     dbc.Input(id="mz_align_ppm", type="number",
                                               value=ls.get("mz_align_ppm", 0),
                                               min=0, max=500, step=1,
                                               style={"width": "50%"}),
                                     dbc.FormText("0 = 無効。複数サンプル間でm/z値を統一する許容誤差 (ppm)"),
+                                    html.Div(id="db_adduct_panel", children=[
                                     html.H5(["Adductフィルター", help_badge("adduct_filter")], style={"marginTop": "10px"}),
                                     dbc.Checklist(
                                         id="adduct_filter",
@@ -446,6 +381,7 @@ def _create_analysis_settings_subtab():
                                                    ls.get("ion_mode", "Positive"))),
                                         inline=True,
                                     ),
+                                    ]),
                                     # --- m/z キャリブレーション ---
                                     html.Hr(style={"marginTop": "15px", "marginBottom": "10px"}),
                                     html.H5(["m/z キャリブレーション", help_badge("calibration")],
@@ -723,7 +659,13 @@ def _create_analysis_settings_subtab():
                             ),
                             html.Div(id="sample_selector_reanalysis"),
                             dbc.FormText("チェックを入れたサンプルが再解析対象になります"),
-                            html.Div(id="annotation_selector_reanalysis", className="mt-2"),
+                            html.Div(id="annotation_selector_reanalysis", style={"display": "none"}),
+                            _section_controls(ls, "reanalysis"),
+                            dcc.Store(id="reanalysis_source_manifest_store", data=(
+                                {"manifest": ls["section_manifest_reanalysis"],
+                                 "data_folder": ls["section_manifest_reanalysis"].get("source_data_folder", ""),
+                                 "rds_path": ls["section_manifest_reanalysis"].get("source_rds_path", "")}
+                                if (ls.get("section_manifest_reanalysis") or {}).get("source_rds_path") else None)),
                             dcc.Store(id="annotation_filter_store_reanalysis", data=None),
                         ]),
                         # --- フィルタモード（Row 1 左カラムに統合）---
@@ -774,10 +716,11 @@ def _create_analysis_settings_subtab():
                                     dbc.RadioItems(
                                         id="cluster_source",
                                         options=[
-                                            {"label": "Harmony/PCA", "value": "harmony"},
+                                            {"label": "PCA", "value": "pca"},
+                                            {"label": "Harmony", "value": "harmony"},
                                             {"label": "RPCA", "value": "rpca"},
                                         ],
-                                        value=ls.get("cluster_source", "harmony"),
+                                        value=ls.get("cluster_source", "rpca"),
                                         inline=True,
                                     ),
                                     html.Details([
@@ -793,8 +736,8 @@ def _create_analysis_settings_subtab():
                                                    "borderLeft": "3px solid #dee2e6"},
                                             children=[
                                                 html.P(
-                                                    "Harmony/RPCA は段階をまたぐ『共通性（共有構造）』"
-                                                    "を見るための統合です。",
+                                                    "Harmony/RPCA は切片間の差を調整した結果です。"
+                                                    "生物学的な差も変わり得るためPCAと比較してください。",
                                                     className="mb-1",
                                                 ),
                                                 html.Ul(className="mb-0", children=[
@@ -802,8 +745,8 @@ def _create_analysis_settings_subtab():
                                                         "各条件が1切片のみ（バッチ=条件が交絡）の場合、"
                                                         "補正は技術差と一緒に生物差も除去します（過補正）。"),
                                                     html.Li(
-                                                        "補正強度は概ね Harmony＞RPCA（パラメータ依存）。"
-                                                        "ただし強度差は技術差と生物差の『分離器』ではありません。"),
+                                                        "補正の影響はデータと設定に依存します。"
+                                                        "技術差と生物学的な差を完全に分離できるとは限りません。"),
                                                     html.Li(
                                                         "段階差の比較が目的なら、未補正(PCA)の結果も必ず併用を。"),
                                                 ]),
@@ -813,7 +756,7 @@ def _create_analysis_settings_subtab():
                                 ],
                             ),
                             # 後方互換: rds_path を非表示で維持（既存State参照用）
-                            dbc.Input(id="rds_path", value="",
+                            dbc.Input(id="rds_path", value=ls.get("rds_path", ""),
                                       style={"display": "none"}),
                         ]),
                         # --- 途中から再開（上の「RDS指定」とは別物）---
@@ -869,31 +812,11 @@ def _create_analysis_settings_subtab():
                             id="tims_reanalysis_ion_settings",
                             style={"display": "none", "marginTop": "15px"},
                             children=[
-                                # 再解析の解析シナリオ。既定は初回(tims_scenario)を引き継ぐ。
-                                html.Div(className="param-group", children=[
-                                    html.H5(["解析シナリオ（切片アノテーションの意味）",
-                                             help_badge("reanalysis_tims_scenario")]),
-                                    dbc.Select(
-                                        id="reanalysis_tims_scenario",
-                                        options=[
-                                            {"label": "同一切片のクラスタ／群比較（Ctrl vs KO 等）：補正なし＝無補正PCA",
-                                             "value": "within_slice"},
-                                            {"label": "連続切片を技術反復としてまとめる（同一個体の連続切片）",
-                                             "value": "serial_section"},
-                                            {"label": "切片間の測定差(バッチ)を補正【非推奨・過補正注意】",
-                                             "value": "batch_correct"},
-                                            {"label": "条件比較＋技術差補正：Harmony＋RPCA を適用（測定差を補正・条件差も縮小）",
-                                             "value": "integrate_correct"},
-                                        ],
-                                        value=_norm_scenario(ls.get("reanalysis_tims_scenario")
-                                                             or ls.get("tims_scenario")),
-                                    ),
-                                    dbc.FormText(
-                                        "既定は初回解析のシナリオを引き継ぎます（変更可）。",
-                                        className="text-muted small",
-                                    ),
+                                html.Div(style={"display": "none"}, children=[
+                                    dbc.Input(id="reanalysis_tims_scenario", value="integrate_correct"),
                                 ]),
                                 html.Div(className="param-group", children=[
+                                    html.Div(id="reanalysis_ion_mode_panel", children=[
                                     html.H5("イオンモード"),
                                     dbc.RadioItems(
                                         id="reanalysis_ion_mode",
@@ -903,7 +826,9 @@ def _create_analysis_settings_subtab():
                                         ],
                                         value=ls.get("reanalysis_ion_mode", "Positive"), inline=True,
                                     ),
-                                    html.H5("m/z許容誤差", style={"marginTop": "10px"}),
+                                    ]),
+                                    html.Div(id="reanalysis_db_match_panel", children=[
+                                    html.H5("DB照合のm/z許容誤差 (Da)", style={"marginTop": "10px"}),
                                     dbc.Input(id="reanalysis_tolerance_mz", type="number",
                                               value=ls.get("reanalysis_tolerance_mz", 0.01),
                                               min=0, step=0.001, style={"width": "50%"}),
@@ -923,6 +848,7 @@ def _create_analysis_settings_subtab():
                                                           "Positive"))),
                                         inline=True,
                                     ),
+                                    ]),
                                 ]),
                                 # --- 正規化（再解析・TIMSはRMS正規化済みのため既定OFF=二重回避） ---
                                 html.Div(className="param-group", style={"marginTop": "15px"}, children=[
@@ -981,25 +907,22 @@ def _create_analysis_settings_subtab():
                         ),
                     ]),
                 ]),
-                # アノテーションファイル（オプション）
-                html.Div(className="param-group", style={"marginTop": "15px"}, children=[
-                    html.H5("アノテーションファイル (オプション)"),
-                    html.Div(
-                        style={"display": "flex", "gap": "5px"},
-                        children=[
-                            dbc.Input(id="reanalysis_annotation_path",
-                                      value=ls.get("reanalysis_annotation_path", ""),
-                                      placeholder="アノテーションファイルのパス"),
-                            dbc.Button("参照...", id="browse_reanalysis_annotation",
-                                       size="sm", color="secondary"),
-                        ],
-                    ),
-                    html.Small(
-                        id="reanalysis_annotation_path_path_hint", children="",
-                        style={"color": "#6c757d", "fontSize": "0.75rem",
-                               "marginTop": "2px", "display": "block"},
-                    ),
-                    dbc.FormText(".xlsx (DESI) / .csv (TIMS)"),
+                html.Details(className="param-group", style={"marginTop": "15px"}, children=[
+                    html.Summary("分子情報の追加", style={"cursor": "pointer", "fontWeight": "600"}),
+                    dbc.Checklist(id="reanalysis_use_annotation_check",
+                                  options=[{"label": "代謝物データベースで追加照合する", "value": "db"}],
+                                  value=["db"] if "db" in ls.get("reanalysis_use_annotation_check", []) else [],
+                                  switch=True, className="mt-2"),
+                    html.Div(id="reanalysis_db_annotation_settings", children=[
+                        html.Div(style={"display": "flex", "gap": "5px"}, children=[
+                            dbc.Input(id="reanalysis_annotation_path", value=ls.get("reanalysis_annotation_path", ""),
+                                      placeholder="追加照合用データベースのパス"),
+                            dbc.Button("参照...", id="browse_reanalysis_annotation", size="sm", color="secondary"),
+                        ]),
+                        html.Small(id="reanalysis_annotation_path_path_hint", children="",
+                                   style={"color": "#6c757d", "fontSize": "0.75rem", "display": "block"}),
+                        dbc.FormText(".xlsx (DESI) / .csv (TIMS)"),
+                    ]),
                 ]),
                 # 再解析 詳細設定
                 html.Details([
@@ -1146,8 +1069,8 @@ def _create_preflight_section():
                 ]),
             ]),
             dbc.FormText(
-                "PreFlight 推奨値を参考に設定。これらは次回の「解析実行」に反映されます"
-                "（dims の自動反映は DESI のみ。TIMS は別途）。"
+                "これらの設定は、新しく開始する通常解析と①に使用します。"
+                "④と中断再開は元の実行に保存された条件を使用します。"
                 "自動推奨は dims・n.neighbors のみ。③反映は手法間の最大値を採用"
                 "（全手法が安定する共通値）。min.dist と metric は自動推奨せず既定"
                 "（0.3 / cosine）を使用します（手動変更可）。"
@@ -1156,33 +1079,28 @@ def _create_preflight_section():
                 style={"marginTop": "10px", "display": "flex", "gap": "10px",
                        "alignItems": "center", "flexWrap": "wrap"},
                 children=[
-                    dbc.Button("① reduction のみ作成（診断用）", id="btn_make_reduction",
+                    dbc.Button("① reduction のみ作成（条件を保存）", id="btn_make_reduction",
                                size="sm", color="primary", outline=True),
                     dbc.Button("② 🩺 PreFlight 診断を実行", id="btn_preflight_run",
                                size="sm", color="info"),
-                    dbc.Button("③ 推奨値を入力欄へ反映", id="btn_preflight_apply",
+                    dbc.Button("③ 推奨値を新しい解析へ反映", id="btn_preflight_apply",
                                size="sm", color="secondary", outline=True),
-                    dbc.Button("④ 続きを実行（reduction再利用）", id="btn_run_downstream",
+                    dbc.Button("④ 保存条件で続きを実行", id="btn_run_downstream",
                                size="sm", color="primary"),
                     dbc.Button("📂 前回の診断を表示（再計算なし）", id="btn_preflight_load",
                                size="sm", color="secondary", outline=True),
                 ],
             ),
+            # ★ ver67.0: ③→④では変更値を使わないため、推奨値の適用と保存条件の継続を分ける。
             dbc.FormText([
-                "推奨フロー: ",
-                html.B("① reduction のみ作成"),
-                "（UMAP 前で停止する軽量実行。フル解析は不要。進捗は下の"
-                "「解析実行」と同じ進捗バーに表示）→ ",
-                html.B("② PreFlight 診断"),
-                "（生成された reduction RDS を診断）→ ",
-                html.B("③ 推奨値を反映"),
-                " → ",
-                html.B("④ 続きを実行"),
-                "（①の reduction を再利用し UMAP 以降のみ実行。重い再計算なし）。"
-                "既に完了済み解析がある場合は ① を省略して ② から実行できます。"
-                "解析中は ①・④ とも実行できません。"
-                "④はUMAPハイパラ値で出力フォルダを自動命名（例 _nn15_md0p3_dim20）するため、"
-                "上書きせず複数設定を並べて比較できます。",
+                html.B("診断: "),
+                "①でreductionと条件を保存し、②で診断します。既存結果があれば②から診断できます。 ",
+                html.B("保存条件のまま完成させる: "),
+                "④で保存済みreductionを再利用し、保存されたUMAP・クラスタ条件で下流処理を実行します。 ",
+                html.B("推奨値を使って新しく解析する: "),
+                "③で入力欄を更新し、通常の「解析実行」または①から新しく実行してください。 ",
+                "④の出力先には _continued を付けます。既存結果がある場合は従来どおり上書きを確認します。"
+                "解析中は①・④とも実行できません。",
             ]),
             html.Details([
                 html.Summary(

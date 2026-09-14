@@ -410,8 +410,9 @@ class TestRTemplateEmitsWhatWeParse:
         assert "[pass] skip %s" in tims_r
 
     def test_a_skipped_pass_is_taken_back_in_r(self, tims_r):
-        """予定した巡が走らない 2 経路（無補正PCA / RPCA）で取り消すこと。"""
-        assert tims_r.count('.skip_downstream("pca_uncorrected")') >= 1
+        """PCA下流開始前の失敗と、両補正法の未実行を取り消すこと。"""
+        assert 'if (!.started) .skip_downstream(prefix)' in tims_r
+        assert '.skip_downstream("harmony")' in tims_r
         assert '.skip_downstream("rpca")' in tims_r
 
     def test_loading_is_marked(self, tims_r):

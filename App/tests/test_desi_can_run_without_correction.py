@@ -75,13 +75,13 @@ def test_the_screen_offers_a_no_correction_option():
 
 
 def test_the_default_keeps_todays_behaviour():
-    """★ 直しすぎの検出: 既定は従来どおり「補正する」こと。"""
-    src = (ROOT / "app" / "layouts" / "settings_tab.py").read_text(encoding="utf-8")
-    m = re.search(r'id="desi_scenario".*?value=(ls\.get\([^)]*\))', src, re.S)
-    assert m, "desi_scenario の既定値が読み取れない"
-    assert '"correct"' in m.group(1), (
-        f"DESI の既定が {m.group(1).strip()}。既定を「補正なし」にすると、"
-        "設定を触っていない利用者の結果まで黙って変わる")
+    """★ ver67.0: 新規解析では自動実行方針が補正を有効にする。"""
+    from app.services.execution_policy import prepare_execution_params, AUTO_POLICY
+    import tempfile
+    with tempfile.TemporaryDirectory() as out:
+        params = prepare_execution_params({"execution_policy": AUTO_POLICY}, out)
+    assert params["batch_correction_enable"] is True
+    assert params["batch_var"] == "integration_unit_id"
 
 
 def test_the_choice_reaches_the_analysis(monkeypatch, tmp_path):
@@ -104,36 +104,33 @@ def test_the_template_has_the_flag():
 
 
 def test_the_guard_variable_comes_from_the_flag():
-    """判定に使う変数が旗から導かれていること（別物にすり替わっていない）。"""
-    assert re.search(r"\.correct_multi\s*<-\s*isTRUE\(BATCH_CORRECTION_ENABLE\)", _SRC), (
-        "補正の判定に使う変数が BATCH_CORRECTION_ENABLE から導かれていない")
+    """保存済みOFF条件と、有効統合単位数の両方を尊重する。"""
+    assert re.search(r"\.correct_multi\s*<-\s*length\(\.unit_ids\) >= 2L && isTRUE\(BATCH_CORRECTION_ENABLE\)", _SRC)
 
 
 def test_harmony_is_guarded_by_the_flag():
-    """★ 旗が偽なら Harmony を実行しないこと。"""
-    i = _SRC.index("RunHarmony(object = seu_harmony")
-    head = _SRC[max(0, i - 400):i]
-    assert ".correct_multi" in head, (
-        "RunHarmony が旗で囲われていない。「補正なし」を選んでも補正が走る")
+    """共通手法ループで条件不足ならHarmony/RPCAへ到達しない。"""
+    start = _SRC.index('for (.method in c("Harmony", "RPCA"))')
+    guard = _SRC.index("if (!.correct_multi)", start)
+    skip = _SRC.index("next", guard)
+    harmony = _SRC.index("RunHarmony(object = .obj", start)
+    assert start < guard < skip < harmony
 
 
 def test_rpca_is_guarded_by_the_flag():
-    """★ 旗が偽なら RPCA 統合も走らないこと（補正の一種なので）。"""
-    i = _SRC.index('message("Multi-sample mode: RPCA...")')
-    head = _SRC[max(0, i - 400):i]
-    assert ".correct_multi" in head, (
-        "RPCA 分岐が旗で囲われていない。Harmony だけ止めても"
-        "RPCA 側で補正された結果が出てしまう")
+    """RPCAも共通の統合単位数判定を通る。"""
+    start = _SRC.index('for (.method in c("Harmony", "RPCA"))')
+    guard = _SRC.index("if (!.correct_multi)", start)
+    rpca = _SRC.index("FindIntegrationAnchors(object.list", start)
+    assert start < guard < rpca
+    assert 'SplitObject(.obj, split.by = "integration_unit_id")' in _SRC
 
 
 def test_the_uncorrected_output_goes_to_the_pca_folder():
-    """★ 補正なしの結果が `PCA/` に出ること（画面が拾える名前）。"""
-    assert re.search(r'DESI_SeuratCombined_PCA\.rds', _SRC), (
-        "補正なしのときの RDS 名が無い。`Harmony` の名前で出すと実体と食い違い、"
-        "`PCA` 以外の新しい名前にするとマーカー表を探す側が見つけられない")
-    assert re.search(r'file\.path\(od,\s*if\s*\(.*BATCH_CORRECTION_ENABLE', _SRC) or \
-           re.search(r'\.dir_multi\s*<-', _SRC), (
-        "出力フォルダが旗で切り替わっていない")
+    """必須PCAを単独RDSとPCAフォルダに保存する。"""
+    assert "DESI_SeuratCombined_PCA_uncorrected.rds" in _SRC
+    assert 'method_dir <- file.path(od, method)' in _SRC
+    assert '.desi_finish_method(seu_pca, "PCA", "pca"' in _SRC
 
 
 # ---------------------------------------------------------------------------

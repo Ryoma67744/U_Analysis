@@ -57,6 +57,9 @@ suppressPackageStartupMessages(library(Seurat))
 source(file.path(dirname(normalizePath(sub("^--file=", "",
         grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)[1]),
         mustWork = FALSE)), "rds_io.R"))
+source(file.path(dirname(normalizePath(sub("^--file=", "",
+        grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)[1]),
+        mustWork = FALSE)), "analysis_contract.R"))
 
 obj <- .step("RDS 展開", load_rds_compact(rds_path))
 
@@ -117,6 +120,14 @@ for (cname in candidate_cols) {
   }
 }
 
+# ★ ver67.0: 新しい由来情報を持つ結果だけ、複数ファイルにまたがる同名Sampleを分ける。
+# 旧RDSの保存済みH&E対応キーと、衝突していないSample名は維持する。
+if ("source_file_id" %in% names(meta) &&
+    (identical(obj@misc$source_identity_policy, "file_pixel_v1") ||
+     nzchar(ua_value(obj@misc$analysis_signature)))) {
+  sample_col <- ua_disambiguate_samples(sample_col, meta$source_file_id)
+}
+
 # --- Build plot_data ---
 plot_data <- data.frame(
   CellID   = cell_ids,
@@ -126,6 +137,14 @@ plot_data <- data.frame(
   Sample   = sample_col,
   stringsAsFactors = FALSE
 )
+
+# ★ ver67.0: 固定列の抽出で脱落していた切片・個体・群を専用列のまま渡す。
+# Sample は H&E 対応キーとして従来値を維持する。
+section_columns <- c("source_file_id", "source_pixel_id", "section_id", "subject_id",
+                     "group", "integration_unit_id")
+for (field in intersect(section_columns, colnames(meta))) {
+  plot_data[[field]] <- as.character(meta[[field]])
+}
 
 # Optional columns
 if ("nCount_Spatial" %in% colnames(meta)) {
@@ -271,7 +290,10 @@ meta_info <- list(
   samples    = samples,
   has_umap   = has_umap,
   has_spatial = ("SpatialX" %in% colnames(plot_data)),
-  has_merged_clusters = (has_merged && has_merged_umap)
+  has_merged_clusters = (has_merged && has_merged_umap),
+  section_metadata_columns = intersect(section_columns, colnames(plot_data)),
+  pca_origin = obj@misc$pca_origin,
+  cluster_reduction = obj@misc$cluster_reduction
 )
 jsonlite::write_json(meta_info, file.path(output_dir, "extraction_meta.json"),
                      auto_unbox = TRUE, pretty = TRUE)

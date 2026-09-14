@@ -216,3 +216,14 @@ ver57.4 以降、`QS_NTHREADS` 未設定時の既定は
 
 > `xz` は**常用形式で展開が最も遅い**。ver50.1 で既定から外した（1.00 GB の展開に
 > 118.7 秒＝抽出全体の 51%）。圧縮率のために選ばないこと。
+
+
+## 手法別の完了と切片対応（ver67.0）
+
+新規解析は未補正PCAを必須結果として保存し、有効な切片が二つ以上の場合にHarmony・RPCAを個別実行します。三手法のRDSでは、同じ `source_file_id`・`source_pixel_id`・`section_id`・`subject_id`・`group`・`integration_unit_id` を継承します。既存の `Sample` やH&E対応キーは置換しません。
+
+reductionのみで保存したRDSは、UMAP・クラスタ・マーカーの下流処理まで完成した結果とは区別します。手法の失敗時も、それより前に保存が完了したPCAは利用できます。
+
+旧Harmony結果から派生表示するPCAは、未補正PCA由来のUMAPにHarmonyのクラスタ定義を継承する場合があります。独立したPCAクラスタと比較するには、元条件を確認したうえで再解析します。
+
+群名・個体IDだけの変更は `section_manifest.json` に保存し、RDSの強度・座標・クラスタを更新しません。解析時点の条件と、現在の閲覧・出力時点の群情報を区別して記録します。操作の詳細は [ANALYSIS_SETTINGS.md](ANALYSIS_SETTINGS.md) を参照してください。

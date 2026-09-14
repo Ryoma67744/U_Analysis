@@ -14,6 +14,27 @@
 - **annotation** = 変換済みデータ由来のスポット注釈（SCiLS 由来）。切片/サンプルの識別に使う。
 - **領域名 / ROI** = H&E オーバーレイでユーザーが描いた領域ラベル（例 `Brain`）。annotation とは別物。
 
+## 切片・群・元画素の対応（ver67.0）
+
+新規解析のTIMS出力で「切片」を含めると、次の列も出力します。DESIのExcelには元のヘッダー・測定値を維持したまま同じメタデータ列を追加します。これらは強度列ではありません。
+
+| 列 | 意味 |
+|---|---|
+| `source_file_id` | 元入力を一意に識別するID。別フォルダの同名ファイルも区別 |
+| `source_pixel_id` | 元入力内の画素ID |
+| `section_id` | 物理的な切片ID |
+| `subject_id` | 個体／独立試料ID。未登録なら空欄 |
+| `group` | 登録した群名。未登録なら空欄 |
+| `integration_unit_id` | Harmony・RPCAで共通して使う統合単位ID |
+
+新形式のクラスタ・群の付与には元ファイルID＋元画素IDを使います。旧結果とH&E領域名には従来のサンプル＋座標照合を使用します。`Sample` や元の `annotation` の表示名は変更しません。
+
+TIMSの新形式では、解析時に選択した全フォルダの入力を対象に出力します。必要な入力ファイルが移動・削除されている場合は、欠けたファイル名を示して停止します。切片単位の集計でも、同名annotationを持つ別ファイルが混ざらないよう切片IDを集計キーに加えます。
+
+群名・個体IDの編集は、現在保存されている群情報を出力に反映します。元の測定強度、座標、クラスタは再計算しません。独立試料数は `subject_id` を重複除外して数えます。
+
+「群・個体情報」の「画素・切片メタデータCSV」は、上記の列と `CellID`・`Sample`・空間座標・UMAP座標・クラスタを含む対応表です。入力のm/z強度列は含まないため、元の対応キーで測定値と結合して使用します。
+
 ---
 
 ## ■ コピー用ブロック 1 : TIMS / インタラクティブ画面「データ出力」
@@ -61,7 +82,7 @@
 
 ■ 値・突合の注意
   ・m/z強度 = 測定強度（変換後の生値）。
-  ・クラスタ列・領域名は (annotation=サンプル名, x, y) を小数4桁に丸めて照合し付与。
+  ・新形式のクラスタ・群は元ファイルID＋元画素IDで照合。旧結果とH&E領域名は従来のサンプル＋座標照合。
   ・ver59.0: 「UMAP 解析に使っていない切片(annotation)を除外」(既定 ON) のとき、
     UMAP に含めなかった切片の行は出力されない。残った空欄は「クラスタ未割当」だけを意味する。
     除外した切片名と行数は生成時のステータスに必ず表示される。OFF で全行出力。
@@ -453,7 +474,8 @@ analysis           : バッチ解析側の条件（receipt.json / analysis_param
   .clustering      : algorithm, resolution, k_param
   .annotation      : ion_mode, tolerance_mz, adduct_filter, annotation_csv, sources
   .thresholds      : p, logfc  ← **統計判定に使われた閾値はこちら**
-  .sample_selection: sample_names, roi_filter, annotation_filter, tims_scenario
+  .sample_selection: sample_names, roi_filter, annotation_filter, section_manifest, execution_policy
+                     旧結果では tims_scenario などの当時の記録を保持
   .mz_align_ppm
 
 software           : app_version, r_version, packages{r, python}

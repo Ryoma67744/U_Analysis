@@ -687,11 +687,26 @@ def _detect_integration_methods(folder_path: str, include_derived: bool = False)
     #             rds_map["RPCA"] = merged_path
     #         break  # 最初の1つのみ使用
 
+    # ★ ver67.0: 失敗/未実行の RDS が前回から残っていても完了結果として表示しない。
+    # ★ ver67.0: RDS_Files自体を指定しても親の手法状態を確認する。
+    status_root = base.parent if base.name.casefold() == "rds_files" else base
+    status_path = status_root / "analysis_methods.json"
+    has_method_status = status_path.is_file()
+    if has_method_status:
+        try:
+            method_states = json.loads(status_path.read_text(encoding="utf-8")).get("methods", {})
+            allowed = {"complete", "completed", "reduction_ready"}
+            rds_map = {method: path for method, path in rds_map.items()
+                       if method_states.get("pca" if method.startswith("PCA") else method.lower(), {}).get("status") in allowed}
+        except (OSError, ValueError, TypeError):
+            logger.warning("手法別の完了状態を読めません: %s", status_path)
+            rds_map = {}
+
     # --- 派生PCA（未補正）: 既存結果でも未補正PCAのUMAPを比較表示できるよう、
     #     専用の未補正RDSが無く Harmony がある場合のみ「PCA」を選択肢に追加する。
     #     実体（派生RDS）は PCA 選択時に Harmony RDS から遅延生成する（load_stage_b_extract）。
     #     パスは Harmony パスから決定的に算出（SEURAT_CACHE_DIR 配下＝常に書込可能）。
-    if (include_derived and "Harmony" in rds_map
+    if (include_derived and not has_method_status and "Harmony" in rds_map
             and "PCA" not in rds_map and "PCA (uncorrected)" not in rds_map):
         import hashlib
         from app.config import SEURAT_CACHE_DIR
@@ -1018,6 +1033,13 @@ def load_stage_b_extract(trigger):
                     _load_error_alert(
                         f"抽出結果が空です（プロットデータを取得できませんでした）: {rds_path}"),
                     no_update)
+        # ★ ver67.0: 群ラベルの変更だけを別保存から重ね、強度・座標・クラスタは再計算しない。
+        from app.services.section_group_metadata import overlay_result_metadata
+        from app.services.naming_policy import load_naming_settings
+        result["plot_data"] = overlay_result_metadata(result["plot_data"], derive_from or rds_path)
+        if derive_from:
+            result["feature_annotations"] = _bridge._load_feature_annotations(
+                Path(result.get("cache_dir") or Path(rds_path).parent), derive_from, result["features_list"])
         feature_dataset = _publish_feature_dataset(result["plot_data"], {
             "cluster_stats": result["cluster_stats"],
             "features_list": result["features_list"],
@@ -1026,6 +1048,8 @@ def load_stage_b_extract(trigger):
             "cache_dir": result.get("cache_dir"), "method": integration_method,
         }, rds_path)
         state = _get_state(rds_path)
+        state["naming_settings"] = load_naming_settings(derive_from or rds_path)
+        state["legacy_derived_pca"] = bool(derive_from)
         state.pop("_deg_data", None)
         state.pop("_calib_warning", None)
         _set_active_key(rds_path)
@@ -1183,13 +1207,16 @@ def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
 
                 if cal_result and cal_result.get("calibrated"):
                     tol = float(coerce_number(tolerance_mz, "tolerance_mz"))
-                    deg_data = _reannotate_with_calibration(
-                        deg_data, cal_result["corrected_mz_map"],
-                        mrm_path, tolerance=tol,
-                        annotation_csv_path=annotation_csv,
-                        ion_mode=ion_mode,
-                        adduct_patterns=adduct_filter,
-                    )
+                    from app.services.naming_policy import db_annotation_enabled
+                    # ★ ver67.0: キャリブレーション ON は DB 照合 ON を意味しない。
+                    if db_annotation_enabled(state.get("naming_settings")):
+                        deg_data = _reannotate_with_calibration(
+                            deg_data, cal_result["corrected_mz_map"],
+                            mrm_path, tolerance=tol,
+                            annotation_csv_path=annotation_csv,
+                            ion_mode=ion_mode,
+                            adduct_patterns=adduct_filter,
+                        )
                     _interactive_data["_calibration_result"] = cal_result
             except Exception:
                 state["_calib_warning"] = "（注: m/zキャリブレーションに失敗したため未適用）"
@@ -1350,58 +1377,43 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
         samples = sorted(_interactive_data["plot_data"]["Sample"].unique())
         sample_options = [{"label": s, "value": s} for s in samples]
 
-        # --- アノテーションマップの構築（Feature検索・表示用） ---
-        # 外部アノテーション（SCiLS peak Name 由来）があれば CSV 照合をスキップし、
-        # それを直接使う（feature文字列 → 化合物名）。初期 Feature 選択肢や DEG 表示が
-        # これを参照するため、feature_options / deg_data 補完より前に構築する。
+        # ★ ver67.0: 保存された明示的 DB 設定から未注釈だけを補完し、全表示の名称を揃える。
+        from app.services.naming_policy import (
+            db_annotation_enabled, compose_annotation_map, apply_annotation_map, load_naming_settings,
+        )
         ext_ann = state.get("feature_annotations") or {}
-        if ext_ann:
-            _interactive_data["annotation_map"] = {
-                feat: rec.get("compound")
-                for feat, rec in ext_ann.items()
-                if rec.get("compound")
-            }
-        else:
+        naming_settings = state.get("naming_settings")
+        if naming_settings is None:
+            naming_settings = load_naming_settings(rds_path)
+        enabled = db_annotation_enabled(naming_settings)
+        db_map = {}
+        if enabled:
             try:
-                ann_map, n_unreadable = _build_feature_annotation_map(
+                db_map, n_unreadable = _build_feature_annotation_map(
                     state["features_list"],
-                    annotation_csv_path=annotation_csv or "",
-                    ion_mode=ion_mode or "Positive",
-                    adduct_patterns=adduct_filter,
-                    tolerance=float(coerce_number(tolerance_mz, "tolerance_mz")),
-                    deg_data=deg_data,
-                    return_skipped=True,
+                    annotation_csv_path=naming_settings.get("annotation_csv") or naming_settings.get("annotation_csv_path") or "",
+                    ion_mode=naming_settings.get("ion_mode") or ion_mode or "Positive",
+                    adduct_patterns=naming_settings.get("adduct_filter", adduct_filter),
+                    tolerance=float(coerce_number(naming_settings.get("tolerance_mz", tolerance_mz), "tolerance_mz")),
+                    deg_data=deg_data, return_skipped=True,
                 )
-                _interactive_data["annotation_map"] = ann_map
-                # ★ ver52.3 ④: 読めなかった質量セルを **読み込み時点で** 出す。
-                #   ここで落ちた化合物名は backfill_annotations 経由で
-                #   PPTX / export にも欠けたまま出るので、再アノテーション画面を
-                #   一度も開かない利用者には気づく機会が無かった。
-                #   既存の `_calib_warning`（読み込み完了行に連結される）に載せる
-                #   ——新しい Output を足すと、同じ役割の通知経路が 2 本になる。
                 if n_unreadable:
-                    info_notes.append(
-                        f"（注: アノテーション CSV の質量セル {n_unreadable} 件を"
-                        "数値として読めず、その化合物は注釈されていません）")
+                    info_notes.append(f"（注: DB の質量セル {n_unreadable} 件を数値として読めず、その化合物は注釈されていません）")
             except Exception as e:
-                # ★ ver52.3 ④: 従来はここが**完全に無言**だった。
-                #   注釈が 1 件も付かないまま「読み込み完了」と出るので、
-                #   利用者は「この装置データには化合物名が無い」と読む。
-                #   実際この except は、本スライスで戻り値の形を変えたときの
-                #   アンパック失敗まで飲み込んでいた（テストが検出）。
-                #   fail-soft は維持しつつ、起きたことは必ず残す。
                 logger.warning("アノテーション対応表の構築に失敗しました: %s", e)
-                _interactive_data["annotation_map"] = {}
-                info_notes.append(
-                    "（注: アノテーション対応表を構築できませんでした。"
-                    "化合物名は表示されません）")
-
-        # DEG レコードの空 annotation を annotation_map から補完しておくと、
-        # Volcano/Heatmap/クラスタTop5/マーカー表/PPTX が化合物名を一括参照できる。
-        try:
-            backfill_annotations(deg_data, _interactive_data.get("annotation_map"))
-        except Exception:
-            pass
+                info_notes.append("（注: アノテーション対応表を構築できませんでした。DB の化合物名は表示されません）")
+        elif not naming_settings:
+            # 旧結果に既に保存された名称は維持するが、CSV パスだけでは新たに照合しない。
+            db_map = {row.get("gene"): row.get("annotation") for row in deg_data or []}
+        ann_map = compose_annotation_map(state["features_list"], ext_ann, db_map)
+        _interactive_data["annotation_map"] = ann_map
+        apply_annotation_map(deg_data, ann_map)
+        conflicts = sum(rec.get("status") == "conflict" for rec in ext_ann.values())
+        if conflicts:
+            info_notes.append(f"（SCiLS 名の競合 {conflicts} 特徴量は m/z 表示。候補と出典は保持）")
+        if (state.get("legacy_derived_pca") or meta.get("pca_origin") == "legacy_derived"
+                or "derived_pca" in Path(rds_path).parts):
+            info_notes.append("（旧結果の派生 PCA: クラスタは既存 Harmony の定義を継承。独立 PCA の再解析結果ではありません）")
 
         # Feature選択肢: 初期は上位 500 件のみ（18k 件 eager 送信を回避）
         # ラベルは化合物名付き（"m/z (化合物名)"）。検索すると filter_features が再フィルタする。

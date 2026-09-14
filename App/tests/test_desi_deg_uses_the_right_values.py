@@ -65,35 +65,26 @@ def test_tims_restores_the_measurement_assay_before_testing():
 
 
 def test_desi_harmony_branch_restores_the_measurement_assay():
-    """v16 の Harmony 分岐も正しい（こちらは既に測定値へ戻している）。"""
+    """共通出力は必ず測定値 Spatial へ戻してから検定する。"""
     src = DESI_V16.read_text(encoding="utf-8")
-    assert re.search(
-        r'assay_hm_harmony\s*<-\s*if\s*\(\s*"Spatial"\s*%in%\s*Seurat::Assays\(seu_harmony\)',
-        src), "Harmony 分岐の測定値復帰が見当たらない"
+    start = src.index(".desi_export_result <- function")
+    body = src[start:src.index(".desi_finish_method <- function", start)]
+    restore = body.index('DefaultAssay(obj) <- "Spatial"')
+    marker = body.index("FindAllMarkers(obj")
+    assert restore < marker
+    assert 'DefaultAssay(obj) <- "integrated"' not in body[restore:marker]
 
 
 def test_desi_rpca_branch_does_not_test_on_the_integrated_assay():
-    """★ 本丸: RPCA 分岐も検定前に測定値へ戻すこと。
-
-    `DefaultAssay(seu_rpca) <- "integrated"` のあと、`FindAllMarkers(seu_rpca…)`
-    に到達するまでに測定値アッセイへ戻す代入が無いことを検出する。
-    """
-    lines = _lines(DESI_V16)
-    to_integrated = [n for n, _ in _find_calls(
-        lines, r'DefaultAssay\(seu_rpca\)\s*<-\s*"integrated"')]
-    marker = [n for n, _ in _find_calls(lines, r"FindAllMarkers\(seu_rpca")]
-    assert to_integrated, "RPCA 分岐の integrated 設定が見つからない（前提が変わった）"
-    assert marker, "RPCA 分岐の FindAllMarkers が見つからない（前提が変わった）"
-
-    start, end = min(to_integrated), min(marker)
-    between = "\n".join(lines[start:end - 1])
-    restored = re.search(
-        r'DefaultAssay\(seu_rpca\)\s*<-\s*(?!"integrated")', between)
-    assert restored, (
-        f"v16:{start} で integrated にしたまま v16:{end} で検定している。"
-        "統合のために作り直した値（負値も取る）での検定は推奨されない。"
-        "Harmony 分岐と TIMS は測定値へ戻してから検定しており、"
-        "**RPCA 分岐だけが例外**")
+    """★ ver67.0: 全手法が共通の測定値検定を通り、RPCA も迂回しない。"""
+    src = DESI_V16.read_text(encoding="utf-8")
+    helper = src[src.index(".desi_finish_method <- function"):src.index(".desi_load_method <- function")]
+    assert ".desi_export_result(obj, method, rds_path)" in helper
+    dispatch = src[src.index('for (.method in c("Harmony", "RPCA"))'):]
+    assert 'DefaultAssay(.obj) <- "integrated"' in dispatch
+    assert ".desi_finish_method(.obj, .method, .reduction, .resolution, .path)" in dispatch
+    assert "FindAllMarkers(" not in dispatch
+    assert '.desi_finish_method(seu_pca, "PCA", "pca"' in src
 
 
 # ---------------------------------------------------------------------------

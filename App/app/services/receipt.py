@@ -183,8 +183,12 @@ def build_receipt(params: dict,
         "k_param": r_sidecar.get("clustering_k"),
     }
     annotation = {
+        # ★ ver67.0: DBパスの残存と実際の照合実行を区別する。
+        "enabled": params.get("annotation_enable"),
+        "name_policy": params.get("name_policy", "scils_then_db_then_mz"),
         "sources": list(annotation_sources or params.get("annotation_sources") or []),
-        "annotation_csv": params.get("annotation_csv") or params.get("annotation_path") or "",
+        "annotation_csv": ((params.get("annotation_csv") or params.get("annotation_path") or "")
+                           if params.get("annotation_enable") is not False else ""),
         "ion_mode": params.get("ion_mode") or "",
         "tolerance_mz": params.get("tolerance_mz"),
         "adduct_filter": params.get("adduct_filter") or [],
@@ -198,6 +202,8 @@ def build_receipt(params: dict,
         "batch_var": params.get("batch_var"),
         "tims_scenario": params.get("tims_scenario"),
         "cluster_source": params.get("cluster_source"),
+        "execution_policy": params.get("execution_policy"),
+        "method_status": params.get("method_status"),
     }
     # ver47.0: どのサンプル / ROI / セクションを解析に入れたか。
     # これが無いと「n=何を解析したのか」が Methods に書けない。
@@ -206,6 +212,8 @@ def build_receipt(params: dict,
         "roi_filter": params.get("roi_filter"),
         "annotation_filter": params.get("annotation_filter"),
         "use_roi_as_sample": params.get("use_roi_as_sample"),
+        "section_manifest": params.get("section_manifest"),
+        "execution_policy": params.get("execution_policy"),
     }
 
     return {
@@ -367,7 +375,8 @@ def finalize_receipt(output_dir, app_version: Optional[str] = None,
     # そのもの」で、analysis_params.json に無い条件もここには残っている。
     # レシートから辿れないと再現性の証拠として使えないので必ず含める。
     if inputs is None:
-        acsv = params.get("annotation_csv") or params.get("annotation_path")
+        acsv = ((params.get("annotation_csv") or params.get("annotation_path"))
+                if params.get("annotation_enable") is not False else None)
         inputs = [acsv] if acsv else []
         # ★ ver52.3: 同じ探索を 2 箇所に持たない。provenance 側の
         #   `latest_runtime_script` を再利用する（従来はここにも

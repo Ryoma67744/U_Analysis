@@ -335,7 +335,8 @@ class SeuratBridge:
         # Rスクリプト更新時にもキャッシュを再生成するため、スクリプトのmtimeも含める
         r_script = R_HELPERS_DIR / "extract_seurat_data.R"
         r_mtime = r_script.stat().st_mtime if r_script.exists() else 0
-        raw = f"{rds_path}|{mtime}|{r_mtime}"
+        # ★ ver67.0: 旧抽出キャッシュには切片/個体/群 ID がなく、画面の群指定が無反応になる。
+        raw = f"{rds_path}|{mtime}|{r_mtime}|section_metadata_v1"
         return hashlib.md5(raw.encode()).hexdigest()[:16]
 
     def _get_cache_dir(self, rds_path: str) -> Path:
@@ -1102,149 +1103,40 @@ class SeuratBridge:
             "meta": meta,
         }
 
-    # --- 外部アノテーション（SCiLS peak Name 由来）のサイドカー結合 (Q2) ---
+    # --- 外部アノテーション（SCiLS peak Name 由来）のサイドカー結合 ---
     def _find_feature_annotation_sidecar(self, rds_path) -> Optional[Path]:
-        """rds_path 近傍から `*_feature_annotations.parquet` を探す。
+        """旧呼び出し用。一つに限定できるときのみ返す。"""
+        from app.services.naming_policy import find_annotation_sidecars
+        paths = find_annotation_sidecars(rds_path)
+        return paths[0] if len(paths) == 1 else None
 
-        ★ ver51.8: 候補が複数あるとき **英数字順の先頭** を無条件で返していた。
-          `analysis_runner._copy_feature_annotation_sidecars` は入力フォルダの
-          サイドカーを **全部** output_dir へコピーするので、多サンプルの
-          プロジェクトでは複数併存が通常状態。結果として
-          **サンプル A の化合物名がサンプル B の feature に付く**（m/z 0.005 Da
-          一致なので、空欄ではなく「それらしい別名」が出る = 気づけない）。
-
-          ★ ver55.0: 警告を出すだけで **先頭を使い続けていた**ので、実害は残ったままだった
-          （RDS は多サンプルを結合したオブジェクトなので、ここに「正しい 1 サンプル」は
-          存在せず、名前で選び直すこともできない）。候補が複数のときは中身を突き合わせ、
-          **一致していれば従来どおり使い、食い違っていれば付けない**（fail-closed）。
-          m/z 0.005 Da 一致で「それらしい別名」が出る事故は、空欄より悪い。
-        """
-        p = Path(rds_path).resolve()
-        bases = [p.parent, p.parent.parent, p.parent.parent.parent]
-        seen = set()
-        for base in bases:
-            if base is None or str(base) in seen or not base.is_dir():
-                continue
-            seen.add(str(base))
-            for pattern in ("*_feature_annotations.parquet",
-                            "*/*_feature_annotations.parquet"):
-                hits = sorted(base.glob(pattern))
-                if not hits:
-                    continue
-                if len(hits) == 1:
-                    return hits[0]
-                if self._sidecars_agree(hits):
-                    logger.info(
-                        "注釈サイドカーが %d 個ありますが内容は一致しています。%s を使います。",
-                        len(hits), hits[0].name)
-                    return hits[0]
-                logger.error(
-                    "注釈サイドカーが %d 個あり、内容が食い違っています。"
-                    "どのサンプルのものか決められないため化合物名を付けません "
-                    "(m/z 表示になります): %s",
-                    len(hits), [h.name for h in hits])
-                return None
-        return None
-
-    @staticmethod
-    def _sidecars_agree(paths: list) -> bool:
-        """複数サイドカーが同じ m/z → 化合物名の対応を持つかを判定する。
-
-        読めないものが 1 つでもあれば「一致していない」と見なす（安全側）。
-        """
-        ref = None
-        for path in paths:
-            try:
-                df = pd.read_parquet(path, columns=["mz", "compound"])
-            except Exception:
-                logger.warning("注釈サイドカーを読めません: %s", path, exc_info=True)
-                return False
-            key = sorted(
-                (round(float(m), 4), str(c))
-                for m, c in zip(df["mz"], df["compound"])
-            )
-            if ref is None:
-                ref = key
-            elif key != ref:
-                return False
-        return ref is not None
-
-    def _load_feature_annotations(self, cache_dir: Path, rds_path,
-                                  features_list: list) -> dict:
-        """サイドカーを features_list に数値 m/z で join し {feature_str: record} を返す。
-
-        キャッシュ済み（cache_dir/feature_annotations.json）があれば再利用。
-        サイドカー無し / 候補なし feature はキーに含めない（= m/z 表示のまま）。
-        """
+    def _load_feature_annotations(self, cache_dir: Path, rds_path, features_list: list) -> dict:
+        """選択元・全 feature ID・ファイル署名が一致する名前キャッシュだけを再利用。"""
+        from app.services.naming_policy import find_annotation_sidecars, resolve_feature_annotations, POLICY_VERSION
+        # ★ ver67.0: 最新 mtime だけでは追加/削除した入力や部分競合を検出できなかった。
+        paths = find_annotation_sidecars(rds_path)
         cache_file = cache_dir / "feature_annotations.json"
-        sidecar = self._find_feature_annotation_sidecar(rds_path)
-        # キャッシュがサイドカー以降に作られていれば再利用。サイドカーが後から
-        # 付与/更新された（= サイドカーの方が新しい）場合はキャッシュを捨てて作り直す。
-        if cache_file.exists():
-            cache_fresh = True
-            try:
-                if sidecar is not None and (
-                    sidecar.stat().st_mtime > cache_file.stat().st_mtime
-                ):
-                    cache_fresh = False
-            except OSError:
-                # ★ ver52.3: 従来はここで `cache_fresh = True`、つまり
-                #   **判定できないときに「新鮮」と結論**していた。
-                #   このブロックの目的は「古くなっていないか」の判定なので、
-                #   その不確実ケースが「古くない」に倒れるのは向きが逆。
-                #   分子情報を後から付与しても mtime を読めなければ
-                #   キャッシュが再利用され続け、**古い化合物名が出たまま**になる。
-                #   作り直すのは遅くなるだけで間違わない。安全側に倒す。
-                logger.warning(
-                    "注釈キャッシュの鮮度を判定できないため作り直す: %s",
-                    cache_file, exc_info=True)
-                cache_fresh = False
-            if cache_fresh:
-                try:
-                    with open(cache_file, "r", encoding="utf-8") as f:
-                        return json.load(f)
-                except Exception:
-                    pass
-        if not features_list:
-            return {}
-        if sidecar is None:
-            return {}
+        signature_file = cache_dir / "feature_annotations_signature.json"
         try:
-            from app.utils.deg_utils import extract_mz_numeric as _extract_mz_numeric
-            side = pd.read_parquet(sidecar)
-            side_mz = side["mz"].to_numpy(dtype=float)
-            out: dict = {}
-            tol = 0.005
-            for feat in features_list:
-                mz = _extract_mz_numeric(feat)
-                if mz is None or mz == float("inf"):
-                    continue
-                j = int(np.argmin(np.abs(side_mz - mz)))
-                if abs(side_mz[j] - mz) > tol:
-                    continue
-                row = side.iloc[j]
-                comp = _none_str(row.get("compound"))
-                if not comp:
-                    continue  # No DB hit 等は m/z 表示のまま
-                out[feat] = {
-                    "display_name": _none_str(row.get("display_name")) or comp,
-                    "compound": comp,
-                    "lipid_class": _none_str(row.get("lipid_class")),
-                    "database": _none_str(row.get("database")),
-                    "adduct": _none_str(row.get("adduct")),
-                    "ppm": (float(row["ppm"]) if pd.notna(row.get("ppm")) else None),
-                    "formula": _none_str(row.get("formula")),
-                    "smiles": _none_str(row.get("smiles")),
-                    "adduct_image": _none_str(row.get("adduct_image")),
-                    "adduct_family": _none_str(row.get("adduct_family")),
-                    "mz": float(row["mz"]),
-                }
+            signature = {"policy": POLICY_VERSION, "features": list(features_list),
+                         "sources": [list(_parquet_file_sig(path)) for path in paths]}
+        except OSError:
+            logger.warning("注釈キャッシュの鮮度を判定できないため作り直す", exc_info=True)
+            signature = None
+        if signature is not None and cache_file.exists() and signature_file.exists():
             try:
-                with open(cache_file, "w", encoding="utf-8") as f:
-                    json.dump(out, f, ensure_ascii=False)
-            except Exception:
+                fresh = all(path.stat().st_mtime_ns <= cache_file.stat().st_mtime_ns for path in paths)
+                if fresh and json.loads(signature_file.read_text(encoding="utf-8")) == signature:
+                    return json.loads(cache_file.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
                 pass
-            return out
-        except Exception as e:
-            logger.warning("feature annotation の join に失敗: %s", e)
-            return {}
+        result = resolve_feature_annotations(paths, features_list)
+        if signature is not None:
+            try:
+                from app.utils.file_locks import atomic_write_json
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                atomic_write_json(result, cache_file)
+                atomic_write_json(signature, signature_file)
+            except OSError:
+                logger.warning("名称キャッシュを保存できません: %s", cache_file)
+        return result

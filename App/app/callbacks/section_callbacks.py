@@ -65,7 +65,7 @@ def update_section_selector(paths, samples, folder, desi_method, tims_method, pr
 
 
 def reanalysis_source_manifest(source, folder, rds_path="", previous=None):
-    """★ verNEXT: 元結果の対応表が現在の再解析対象と一致する時だけ選択の正にする。"""
+    """★ ver67.0: 元結果の対応表が現在の再解析対象と一致する時だけ選択の正にする。"""
     candidates = [source or {}]
     if (previous or {}).get("source_rds_path"):
         candidates.append({"manifest": previous, "data_folder": previous.get("source_data_folder", ""),
@@ -214,7 +214,7 @@ def toggle_optional_reanalysis_molecule_settings(db_values, calibration):
     Input("rds_folder_reanalysis", "value"), Input("cluster_source", "value"),
     State("rds_path", "value"), prevent_initial_call=True)
 def clear_stale_reanalysis_source(folder, method, exact_path):
-    """★ verNEXT: フォルダ／手法の変更を非表示の古いRDS指定で無効化させない。"""
+    """★ ver67.0: フォルダ／手法の変更を非表示の古いRDS指定で無効化させない。"""
     if not exact_path:
         return no_update, no_update
     path = Path(exact_path)
@@ -224,8 +224,8 @@ def clear_stale_reanalysis_source(folder, method, exact_path):
     if not folder or Path(folder).resolve() not in parents:
         return "", None
     name = path.name.lower()
-    actual = ("rpca" if "rpca" in name else "pca" if "pca" in name or "singlesample" in name
-              else "harmony" if "harmony" in name else None)
+    actual = ("rpca" if "rpca" in name else "harmony" if "harmony" in name
+              else "pca" if "pca" in name or "singlesample" in name else None)
     if actual and method and actual != method:
         return "", no_update
     return no_update, no_update

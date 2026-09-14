@@ -97,6 +97,16 @@ if (!exists("RERUN_REDUCTION"))     RERUN_REDUCTION <- "umap"
 # sample + spot_index で安定に対応付け（cellname 変更に強い）
 .make_cell_key <- function(obj, sample_name_map = NULL) {
   md <- obj@meta.data
+  # ★ ver67.0: 同名ファイルや一時名でも元ファイル/元画素で対応づける。
+  if (all(c("source_file_id", "source_pixel_id") %in% colnames(md))) {
+    file_id <- as.character(md$source_file_id)
+    pixel_id <- as.character(md$source_pixel_id)
+    .stopif(all(!is.na(file_id) & nzchar(file_id) & !is.na(pixel_id) & nzchar(pixel_id)),
+            "元ファイル/元画素IDに欠損があります")
+    key <- paste(file_id, pixel_id, sep = "|")
+    .stopif(!anyDuplicated(key), "元ファイル/元画素IDが重複しています")
+    return(setNames(key, rownames(md)))
+  }
   .stopif(all(c("sample", "spot_index") %in% colnames(md)),
           "マージには meta.data に sample/spot_index が必要です。")
   sn <- as.character(md$sample)
@@ -301,7 +311,8 @@ merge_clusters <- function(base_seu, rerun_seu,
   for (bc in rep_cells) {
     k <- base_key[[bc]]
     if (!is.null(k) && k %in% names(key_to_rercl)) {
-      parent_cl <- as.character(md_base$seurat_clusters[bc])
+      # ★ ver67.0: 列ベクトルにはセル名が無く、文字添字では親クラスタがNAになる。
+      parent_cl <- as.character(md_base[bc, "seurat_clusters"])
       sub_cl <- key_to_rercl[[k]]
       base_new_label[bc] <- .make_subcluster_label(parent_cl, sub_cl, subcluster_naming)
     }

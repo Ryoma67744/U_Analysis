@@ -81,10 +81,9 @@ def test_the_reanalysis_defaults_stay_quiet_during_a_restore():
         f"復元中なのに再解析パラメータを既定へ戻している: {out}")
 
 
-def test_the_reanalysis_defaults_still_reset_on_a_manual_switch():
-    from app.config import DEFAULT_ION_MODE, DEFAULT_TOLERANCE_MZ
-    assert fh.reset_reanalysis_defaults("desi_v8", None, False) == (
-        DEFAULT_ION_MODE, DEFAULT_TOLERANCE_MZ)
+def test_the_reanalysis_ion_mode_survives_a_manual_method_switch():
+    """★ ver67.0: 解析法の切替は Negative を Positive に変更する操作ではない。"""
+    assert fh.reset_reanalysis_defaults("desi_v8", None, False) == (no_update, no_update)
 
 
 def test_the_data_folder_switch_stays_quiet_during_a_restore():

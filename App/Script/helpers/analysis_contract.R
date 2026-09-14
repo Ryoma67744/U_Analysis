@@ -1,8 +1,24 @@
-# ★ verNEXT: ファイル別選択、元画素の由来、手法別完了状態を共通化する。
+# ★ ver67.0: ファイル別選択、元画素の由来、手法別完了状態を共通化する。
 ua_value <- function(x, default = "") {
   if (is.null(x) || !length(x) || is.na(x[[1]])) default else as.character(x[[1]])
 }
 ua_path <- function(path) gsub("\\\\", "/", normalizePath(path, winslash = "/", mustWork = FALSE))
+# ★ ver67.0: 同じ表示名が複数の元ファイルを指す場合だけ安定した識別子を添える。
+ua_disambiguate_samples <- function(labels, source_ids) {
+  labels <- as.character(labels); source_ids <- as.character(source_ids)
+  if (length(labels) != length(source_ids)) stop("表示名と元ファイルIDの長さが一致しません")
+  valid <- !is.na(labels) & nzchar(labels) & !is.na(source_ids) & nzchar(source_ids)
+  sources <- split(source_ids[valid], labels[valid])
+  collisions <- names(Filter(function(x) length(unique(x)) > 1L, sources))
+  change <- valid & labels %in% collisions
+  if (any(change)) {
+    ids <- unique(source_ids[change])
+    tags <- setNames(vapply(ids, function(x) substr(digest::digest(x, algo = "xxhash64", serialize = FALSE), 1L, 12L),
+                            character(1)), ids)
+    labels[change] <- paste0(labels[change], "__", unname(tags[source_ids[change]]))
+  }
+  labels
+}
 ua_read_manifest <- function(path = "") {
   if (is.null(path) || !length(path) || !nzchar(path)) return(NULL)
   if (!file.exists(path)) stop("切片対応表が見つかりません: ", path)
@@ -55,6 +71,48 @@ ua_section_metadata <- function(md, input_path, manifest = NULL, roi_col = "anno
   if (anyNA(md$integration_unit_id) || any(!nzchar(md$integration_unit_id))) stop("統合単位IDが欠損しています")
   md
 }
+# ★ ver67.0: 表示名が同じ入力の出力も、選択時と同じ元ファイルIDで分ける。
+ua_input_metadata <- function(md, input_path, manifest = NULL) {
+  entry <- ua_manifest_entry(manifest, input_path)
+  file_id <- ua_value(entry$file_id, ua_path(input_path))
+  has_source <- "source_file_id" %in% names(md)
+  if (has_source && (!is.null(entry) || any(as.character(md$source_file_id) == file_id))) {
+    md <- md[!is.na(md$source_file_id) & as.character(md$source_file_id) == file_id, , drop = FALSE]
+  } else {
+    sn <- tools::file_path_sans_ext(basename(input_path))
+    md <- md[!is.na(md$sample) & as.character(md$sample) == sn, , drop = FALSE]
+  }
+  if (nrow(md) && (anyNA(md$spot_index) || anyDuplicated(md$spot_index)))
+    stop("出力の元ファイル/画素対応が一意ではありません: ", input_path)
+  md
+}
+# ★ ver67.0: 再出力で画素番号が変わっても、座標対応と元画素の由来を別に保持する。
+ua_match_xy <- function(px, py, rx, ry, tolerance = 0) {
+  if (length(px) != length(py) || length(rx) != length(ry) ||
+      any(!is.finite(rx)) || any(!is.finite(ry))) stop("座標対応に必要なx/yが不正です")
+  if (!is.finite(tolerance) || tolerance < 0) stop("座標許容誤差が不正です")
+  if (tolerance == 0) {
+    source_key <- paste(rx, ry, sep = "|")
+    if (anyDuplicated(source_key)) stop("元画素の座標が重複しており一意に対応できません")
+    index <- match(paste(px, py, sep = "|"), source_key)
+  } else {
+    # 隣接ビンも探索する。丸めた同一ビンだけでは境界近傍を取りこぼす。
+    bins <- split(seq_along(rx), paste(floor(rx/tolerance), floor(ry/tolerance), sep = "|"))
+    offsets <- expand.grid(x = -1:1, y = -1:1)
+    index <- vapply(seq_along(px), function(i) {
+      if (!is.finite(px[i]) || !is.finite(py[i])) return(NA_integer_)
+      keys <- paste(floor(px[i]/tolerance) + offsets$x,
+                    floor(py[i]/tolerance) + offsets$y, sep = "|")
+      candidates <- unlist(bins[keys], use.names = FALSE)
+      candidates <- candidates[abs(rx[candidates]-px[i]) <= tolerance &
+                               abs(ry[candidates]-py[i]) <= tolerance]
+      if (length(candidates) > 1L) stop("座標許容誤差内に複数の元画素があります")
+      if (length(candidates)) as.integer(candidates) else NA_integer_
+    }, integer(1))
+  }
+  if (anyDuplicated(index[!is.na(index)])) stop("複数の入力画素が同じ元画素へ対応しています")
+  index
+}
 ua_apply_sections <- function(obj,input_path,manifest=NULL,roi_col="annotation",pixel_col="spot_index",fallback_role="region") {
   md <- ua_section_metadata(obj@meta.data,input_path,manifest,roi_col,pixel_col,fallback_role)
   if (!nrow(md)) return(NULL)
@@ -79,7 +137,10 @@ ua_record_method <- function(outdir,method,status,reason="",stage="",rds_path=""
   invisible(state)
 }
 ua_stamp_checkpoint <- function(obj,signature) {
-  if(inherits(obj,"Seurat")) obj@misc$analysis_signature <- signature
+  if(inherits(obj,"Seurat")) {
+    obj@misc$analysis_signature <- signature
+    obj@misc$source_identity_policy <- "file_pixel_v1"
+  }
   else if(is.list(obj)) obj <- lapply(obj,ua_stamp_checkpoint,signature=signature)
   obj
 }

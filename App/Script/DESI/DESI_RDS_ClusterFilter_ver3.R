@@ -50,23 +50,23 @@ local({
 # ------------------------------------------------------------
 
 # (A) v8スクリプト（添付の 251219_DESI-UMAP_Template_v8.R）のパス
-V8_SCRIPT_PATH <- "C:\\Users\\Cciia\\Biochem Dropbox\\木津亮馬\\UMAP_Claudecode\\data\\DESI\\Script\\260308_DESI-UMAP_Template_v10.R"
+V8_SCRIPT_PATH <- ""
 
 # (B) v8の出力 .rds のパス（解析に使うクラスタが入っているRDSを選ぶ）
 #     例:
 #       - Multi-sample Harmony: DESI_SeuratCombined_harmony.rds
 #       - Multi-sample RPCA   : DESI_SeuratCombined_RPCA.rds
 #       - Single sample       : DESI_Seurat_SingleSample.rds
-RDS_PATH <- "C:\\Users\\Cciia\\Biochem Dropbox\\Biochem's shared workspace\\Workspace\\UMAP\\DESI\\Data\\250622_Ohashi\\250621_Ohashi_GF-AAs\\250621_Ohashi_GF-CV_120260130\\RDS_Files\\DESI_SeuratCombined_harmony.rds"
+RDS_PATH <- ""
 
 # (C) 元の .txt が置いてあるフォルダ（v8の data_folder と同じ考え方）
-ORIGINAL_DATA_FOLDER <- "C:\\Users\\Cciia\\Biochem Dropbox\\Biochem's shared workspace\\Workspace\\UMAP\\DESI\\Data\\250622_Ohashi\\250621_Ohashi_GF-AAs"
+ORIGINAL_DATA_FOLDER <- ""
 
 # (D) 元の sample_names（v8で指定した txt ファイル名（拡張子なし））
 #     ※ここに書いた順に .txt を読み、サンプル単位で新規txtを作ります
 SAMPLE_NAMES <- c(
-  "250621_Ohashi_CV-AAs",
-  "250621_Ohashi_GF-AAs"
+  "sample1",
+  "sample2"
 )
 
 # (E) クラスタ抽出モード
@@ -76,6 +76,9 @@ FILTER_MODE <- "exclude"
 
 # (F) 対象クラスタ（seurat_clusters の番号）
 TARGET_CLUSTERS <- c(3,5)
+
+# ★ ver67.0: 個人環境の既定パスを廃し、入力未設定ならファイル作成前に止める。
+if (!nzchar(RDS_PATH) || !nzchar(ORIGINAL_DATA_FOLDER)) stop("再解析するRDSまたは元データフォルダが未設定です")
 
 # (G) 新規txtの出力先フォルダ
 EXPORT_TXT_DIR <- file.path(ORIGINAL_DATA_FOLDER, "ClusterFiltered_Txt")
@@ -92,6 +95,8 @@ V8_PROJECT_PREFIX <- paste0("ClusterFiltered_", FILTER_MODE, "_", paste(TARGET_C
 
 # (K) v8解析の途中再開は使わない（新規txtからやり直す想定）
 V8_RESUME_FROM_RDS <- FALSE
+# ★ ver67.0: DESI再解析でも保存済みreduction/中間結果の再開先を本体へ渡す。
+V8_RESUME_DIR_PATH <- ""
 
 
 # ========== マージ統合（ver2 追加） ==========
@@ -144,7 +149,7 @@ V8_UMAP_DIMS_N <- NA
 #   NA / NULL なら v16 既定（FALSE / フィルタなし）＝従来挙動。
 V8_USE_ROI_AS_SAMPLE <- NA
 V8_ROI_FILTER <- NULL
-# ★ verNEXT: DB照合をパスの残存だけで有効にしない。通常解析と同じ明示値を渡す。
+# ★ ver67.0: DB照合をパスの残存だけで有効にしない。通常解析と同じ明示値を渡す。
 V8_DB_ANNOTATION_ENABLED <- FALSE
 V8_MRM_FILE_PATH <- ""
 V8_ANALYSIS_SIGNATURE <- ""
@@ -462,7 +467,7 @@ replace_assign_line <- function(code_vec, var, new_rhs) {
       paste0("c(", paste(sprintf("\"%s\"", V8_ROI_FILTER), collapse = ", "), ")"))
   }
 
-  # ★ verNEXT: 再解析TXTには由来・切片・群の対応表を同梱する。
+  # ★ ver67.0: 再解析TXTには由来・切片・群の対応表を同梱する。
   # 元ファイルのmanifestパスを一時TXTへ誤適用せず、復元済み画素メタデータを使用する。
   code <- replace_assign_line(code, "SECTION_MANIFEST_PATH", r_str(""))
   code <- replace_assign_line(code, "DB_ANNOTATION_ENABLED", if (isTRUE(V8_DB_ANNOTATION_ENABLED)) "TRUE" else "FALSE")
@@ -539,7 +544,7 @@ exported_files <- c()
 #   元 .txt の名前 (`<元名>`) との照合には逆引きが要る。
 .rds_samples_all <- unique(as.character(seu@meta.data$sample))
 
-# ★ verNEXT: 更新された切片/群情報は元ファイルに適用してからTXT対応表に保存する。
+# ★ ver67.0: 更新された切片/群情報は元ファイルに適用してからTXT対応表に保存する。
 .rerun_manifest <- ua_read_manifest(V8_SECTION_MANIFEST_PATH)
 .rerun_inputs <- if (!is.null(.rerun_manifest)) {
   Filter(function(x) !identical(x$selection_mode, "none"), .rerun_manifest$files)
@@ -558,7 +563,7 @@ for (.input_index in seq_along(.rerun_inputs)) {
   .res <- .resolve_rds_samples(
     sn, .rds_samples_all,
     if (isTRUE(V8_USE_ROI_AS_SAMPLE)) V8_ROI_FILTER else NULL)
-  # ★ verNEXT: 再解析を繰り返しても、表示名を保存したsidecarから元サンプルへ戻れる。
+  # ★ ver67.0: 再解析を繰り返しても、表示名を保存したsidecarから元サンプルへ戻れる。
   if (is.null(.res) && file.exists(paste0(original_txt, ".metadata.csv"))) {
     .previous_md <- read.csv(paste0(original_txt, ".metadata.csv"), stringsAsFactors = FALSE,
                             colClasses = "character", na.strings = character())
@@ -584,7 +589,7 @@ for (.input_index in seq_along(.rerun_inputs)) {
   }
 
   rows_sn <- md_keep[as.character(md_keep$sample) %in% .res$names, , drop = FALSE]
-  # ★ verNEXT: 同名ファイルの画素をサンプル表示名だけで混ぜない。
+  # ★ ver67.0: 同名ファイルの画素をサンプル表示名だけで混ぜない。
   .source_ids <- c(ua_value(.input$file_id), normalizePath(original_txt, winslash = "/", mustWork = FALSE))
   if (file.exists(paste0(original_txt, ".metadata.csv"))) {
     .previous_md <- read.csv(paste0(original_txt, ".metadata.csv"), stringsAsFactors = FALSE,
@@ -624,7 +629,7 @@ for (.input_index in seq_along(.rerun_inputs)) {
   stat <- export_filtered_txt_from_original(original_txt, out_txt, pix_ids, debug_tsv_path = dbg_tsv)
   message(sprintf("   kept %d / %d lines", stat$n_kept, stat$n_total))
 
-  # ★ verNEXT: TXTの再出力で失われていた元ファイル・元画素・切片・個体・群を保持する。
+  # ★ ver67.0: TXTの再出力で失われていた元ファイル・元画素・切片・個体・群を保持する。
   .meta_cols <- intersect(c("spot_index", "sample", "source_file_id", "source_pixel_id",
                              "section_id", "subject_id", "group", "integration_unit_id"), names(rows_sn))
   .export_md <- rows_sn[, .meta_cols, drop = FALSE]
@@ -677,7 +682,7 @@ if (isTRUE(RUN_V8_AFTER_EXPORT)) {
     sample_names = exported_files,
     project_prefix = V8_PROJECT_PREFIX,
     resume_from_rds = V8_RESUME_FROM_RDS,
-    resume_dir_path = NULL
+    resume_dir_path = if (nzchar(V8_RESUME_DIR_PATH)) V8_RESUME_DIR_PATH else NULL
   )
 
   message(">> Sourcing v8 copy: ", tmp_v8)
@@ -700,11 +705,24 @@ if (.should_merge && nzchar(MERGE_SCRIPT_PATH) && file.exists(MERGE_SCRIPT_PATH)
   message(">> [ver2] Running merge script for sub-cluster integration...")
 
   # rerun RDS を自動検索: v8 再解析出力から RDS を探す
-  .find_rerun_rds <- function(output_dir) {
+  .find_rerun_rds <- function(output_dir, preferred_method = "") {
     # V8_OUTPUT_DIR 以下の RDS_Files/ から Seurat RDS を探す
     rds_dirs <- list.dirs(output_dir, recursive = TRUE)
     rds_dirs <- rds_dirs[grepl("RDS_Files", rds_dirs)]
     for (rd in rds_dirs) {
+      # ★ ver67.0: 失敗した手法の途中RDSを完成済みとして貼り戻さない。
+      .status_path <- file.path(dirname(rd), "analysis_methods.json")
+      if (file.exists(.status_path)) {
+        .state <- jsonlite::fromJSON(.status_path, simplifyVector = FALSE)$methods
+        .order <- unique(c(tolower(preferred_method), "rpca", "harmony", "pca"))
+        for (.name in .order) {
+          .item <- .state[[.name]]
+          if (!is.null(.item) && identical(.item$status, "complete") &&
+              identical(.item$stage, "downstream") && nzchar(ua_value(.item$rds_path)) &&
+              file.exists(.item$rds_path)) return(.item$rds_path)
+        }
+        next
+      }
       rds_files <- list.files(rd, pattern = "\\.rds$", full.names = TRUE, ignore.case = TRUE)
       # harmony / RPCA / SingleSample の RDS を優先
       prio <- rds_files[grepl("(harmony|RPCA|SingleSample)", rds_files, ignore.case = TRUE)]
@@ -714,7 +732,12 @@ if (.should_merge && nzchar(MERGE_SCRIPT_PATH) && file.exists(MERGE_SCRIPT_PATH)
     NULL
   }
 
-  merge_rerun_rds <- .find_rerun_rds(V8_OUTPUT_DIR)
+  .preferred_method <- ua_value(seu@misc$analysis_method)
+  if (!nzchar(.preferred_method)) {
+    .preferred_method <- if (grepl("rpca", basename(RDS_PATH), ignore.case = TRUE)) "rpca" else
+      if (grepl("harmony", basename(RDS_PATH), ignore.case = TRUE)) "harmony" else "pca"
+  }
+  merge_rerun_rds <- .find_rerun_rds(V8_OUTPUT_DIR, .preferred_method)
 
   if (!is.null(merge_rerun_rds) && file.exists(merge_rerun_rds)) {
     merge_out <- MERGE_OUT_DIR_OVERRIDE

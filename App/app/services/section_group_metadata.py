@@ -36,7 +36,7 @@ def load_result_manifest(rds_path):
 
 
 def overlay_result_metadata(df, rds_path, manifest=None):
-    """★ verNEXT: 群名だけを更新し、強度・座標・クラスタ・Sampleは変えない。"""
+    """★ ver67.0: 群名だけを更新し、強度・座標・クラスタ・Sampleは変えない。"""
     if df is None or "section_id" not in df.columns:
         return df
     manifest = load_result_manifest(rds_path) if manifest is None else manifest
@@ -126,7 +126,7 @@ def export_metadata_frame(df):
 
 def normalize_pixel_id(value):
     text = str(value).strip()
-    # ★ verNEXT: 001と1は文字IDとして区別する。数値1.0と1の表現差だけを正規化する。
+    # ★ ver67.0: 001と1は文字IDとして区別する。数値1.0と1の表現差だけを正規化する。
     if re.fullmatch(r"[+-]?0[0-9]+(?:\.0+)?", text):
         return text
     try:
@@ -184,7 +184,7 @@ class SourceClusterLookup(dict):
 
 
 def append_source_clusters(df, input_path, rds_path, method_lookups):
-    """★ verNEXT: 同名切片のクラスタを座標だけで混ぜない。"""
+    """★ ver67.0: 同名切片のクラスタを座標だけで混ぜない。"""
     fid = input_source_id(input_path, rds_path)
     if fid is None or "id" not in df.columns:
         return df
@@ -195,3 +195,29 @@ def append_source_clusters(df, input_path, rds_path, method_lookups):
         if source:
             out[method if len(method_lookups) > 1 else "UMAP cluster"] = [source.get(key, "") for key in keys]
     return out
+
+
+def append_source_values(df, input_path, rds_path, lookups, *, default=""):
+    """★ ver67.0: 追加座標・品質値・H&E領域も元ファイル/画素IDで対応する。"""
+    fid = input_source_id(input_path, rds_path)
+    if fid is None or "id" not in df.columns:
+        return df
+    keys = [(fid, normalize_pixel_id(x)) for x in df["id"]]
+    out = df.copy(deep=False)
+    for column, lookup in (lookups or {}).items():
+        source = getattr(lookup, "by_source", None)
+        if source:
+            out[column] = [source.get(key, default) for key in keys]
+    return out
+
+
+def source_match_mask(df, input_path, rds_path, method_lookups):
+    """新形式の対象画素。Noneは旧結果、全Falseは対象画素なしを区別する。"""
+    fid = input_source_id(input_path, rds_path)
+    sources = [getattr(lookup, "by_source", None) for lookup in method_lookups.values()]
+    sources = [source for source in sources if source]
+    if fid is None or "id" not in df.columns or not sources:
+        return None
+    keys = [(fid, normalize_pixel_id(x)) for x in df["id"]]
+    import pandas as pd
+    return pd.Series([any(key in source for source in sources) for key in keys], index=df.index)

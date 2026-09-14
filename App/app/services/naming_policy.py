@@ -61,7 +61,7 @@ def _normalize_annotation_table(table):
 
 def copy_selected_feature_annotations(input_files, output_dir) -> Path:
     """実際の選択入力だけのサイドカーをコピーし、相対パス manifest と R 用表を保存。"""
-    # ★ verNEXT: フォルダ全体のコピーでは未選択入力の名称混入と同名ファイル上書きが起きた。
+    # ★ ver67.0: フォルダ全体のコピーでは未選択入力の名称混入と同名ファイル上書きが起きた。
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     records, frames, seen = [], [], set()
@@ -127,7 +127,7 @@ def embedded_compound(feature: str) -> str:
 
 def resolve_feature_annotations(paths, features_list, tolerance=0.005) -> dict:
     """特徴量単位で SCiLS 名を合意し、競合した特徴量のみ名前を保留する。"""
-    # ★ verNEXT: 一つの競合で他の全特徴量まで無名になる従来の全表比較を廃止。
+    # ★ ver67.0: 一つの競合で他の全特徴量まで無名になる従来の全表比較を廃止。
     tables = []
     for path in paths:
         try:

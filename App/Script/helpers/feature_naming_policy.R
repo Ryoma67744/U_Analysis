@@ -1,4 +1,4 @@
-# ★ verNEXT: 名前は特徴量 ID と分離し、選択入力の SCiLS 名を優先する。
+# ★ ver67.0: 名前は特徴量 ID と分離し、選択入力の SCiLS 名を優先する。
 # 一部の名称競合で全分子が無名になる処理と、DB による既存名の上書きを防ぐ。
 .naming_mz <- function(feature) {
   head <- trimws(strsplit(as.character(feature), "|", fixed = TRUE)[[1]][1])

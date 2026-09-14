@@ -255,13 +255,20 @@ def captured_params(monkeypatch, tmp_path):
     return _run
 
 
-def test_the_reanalysis_branch_carries_the_roi_settings(captured_params):
-    """★ 再解析でも ROI 設定を params に載せること（現状は本解析分岐だけ）。"""
-    params = captured_params(desi_use_roi_as_sample=True,
-                             desi_roi_filter_list=["Brain"])
-    assert params.get("use_roi_as_sample") is True, (
-        "再解析に ROI 設定が載っていない（ROI 分割をやり直せない）")
-    assert params.get("roi_filter") == ["Brain"]
+def test_the_reanalysis_branch_carries_file_scoped_roi_selection(captured_params):
+    """★ ver67.0: ROI選択は旧分割スイッチに依存せずファイル別に渡る。"""
+    manifest = {"schema_version": 1, "files": [
+        {"path": "/inputs/sampleA.txt", "file_id": "a", "selection_mode": "selected",
+         "roi_role": "region", "rois": ["Brain"], "sections": []},
+        {"path": "/other/sampleA.txt", "file_id": "b", "selection_mode": "none",
+         "roi_role": "region", "rois": [], "sections": []},
+    ]}
+    params = captured_params(desi_use_roi_as_sample=False,
+                             section_manifest_reanalysis=manifest)
+    assert params["section_manifest"] == manifest
+    assert params["sample_names"] == ["sampleA"]
+    assert params["use_roi_as_sample"] is False
+    assert "roi_filter" not in params
 
 
 def test_roi_off_is_carried_too(captured_params):

@@ -39,7 +39,7 @@ CATEGORIES = (
     ("id",        "識別子 (id)",            "スポット連番"),
     ("coords",    "空間座標 (x, y)",        "MSI の測定座標"),
     ("intensity", "強度 (m/z 全列)",        "数百〜数千列。外すと出力が桁で小さくなる"),
-    ("section",   "切片 (annotation)",      "SCiLS 由来の切片ラベル"),
+    ("section",   "切片 (annotation)",      "切片ラベル・群・独立試料ID・元データ対応"),
     ("umap",      "UMAP 座標",              "UMAP_1 / UMAP_2（既定 OFF）"),
     ("quality",   "品質指標",               "TotalCount / nFeature（既定 OFF・ある場合のみ）"),
     ("cluster",   "クラスタ",               "手法別の UMAP クラスタ番号"),
@@ -61,7 +61,9 @@ SPOT_CATEGORIES = tuple(k for k in CATEGORY_KEYS if k != "mzlist")
 
 # parquet 側の非強度列。ここに無い列を強度(m/z)列とみなす。
 # `interactive_data_export._apply_feature_annotation_columns` と同じ集合。
-META_COLUMNS = ("id", "x", "y", "annotation")
+from app.services.section_group_metadata import METADATA_COLUMNS
+
+META_COLUMNS = ("id", "x", "y", "annotation", *METADATA_COLUMNS)
 
 # 突合・除外判定に必要で、出力に出さなくても読まなければならない列。
 REQUIRED_FOR_JOIN = ("x", "y", "annotation")
@@ -214,7 +216,7 @@ def select_output_columns(df_columns: list, options,
             ok = "id" in cats
         elif col in ("x", "y"):
             ok = "coords" in cats
-        elif col == "annotation":
+        elif col == "annotation" or col in METADATA_COLUMNS:
             ok = "section" in cats
         elif col in UMAP_COLUMNS:
             ok = "umap" in cats

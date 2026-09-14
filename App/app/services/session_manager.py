@@ -44,6 +44,9 @@ _AUTO_SAVE_KEYS = [
     # 出さずに落ちるので、渡した側も画面側も気づけない (R13-03/R13-05)。
     "adduct_filter", "reanalysis_adduct_filter",
     "mz_align_ppm", "use_annotation_check",
+    # ★ ver67.0: ファイル別選択・群・明示DB設定を復元時に失わない。
+    "section_manifest", "section_manifest_reanalysis", "execution_policy",
+    "reanalysis_use_annotation_check",
     "resume_reanalysis", "resume_reanalysis_dir",
     # 正規化設定は run_analysis が渡していたのに、ここに無いので毎回既定へ戻っていた
     # ★ ver58.0 (A-1): DESI のバッチ補正の有無

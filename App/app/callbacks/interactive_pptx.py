@@ -306,7 +306,8 @@ def _apply_merge_view(df, display_settings, custom_colors):
         return df, custom_colors, False
 
     cols = [c for c in ("Sample", "CellID", "SpatialX", "SpatialY",
-                        "Annotation") if c in df.columns]
+                        "Annotation", "source_file_id", "source_pixel_id",
+                        "section_id", "subject_id", "group", "integration_unit_id") if c in df.columns]
     merged_df = df[cols].copy()
     merged_df["Cluster"] = df["Cluster_merged"].to_numpy()
     for src, dst in (("UMAP_1_merged", "UMAP_1"), ("UMAP_2_merged", "UMAP_2")):
@@ -1742,7 +1743,9 @@ def update_export_method_options(rds_map):
      State("export_method_selector", "value"),
      State("export_include_deg", "value"),
      State("cluster_name_map_store", "data"),
-     State("accumulated_label_positions", "data")],
+     State("accumulated_label_positions", "data"),
+     State("int_section_group_filter", "value"),
+     State("umap_color_by", "value")],
     background=True,
     running=[
         (Output("btn_export_report", "disabled"), True, False),
@@ -1762,7 +1765,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                      rotation_store, name_map, top_n, cache_dir_str,
                      mrm_path_str, rds_map, result_folder, current_method,
                      export_method_selection, include_deg, cluster_name_map,
-                     accumulated_positions):
+                     accumulated_positions, section_groups=None, group_color_by="Cluster"):
     """PPTX レポートをバックグラウンド生成してダウンロード。
 
     export_method_selection: 選択された手法名のリスト（Checklist）。空なら中止。
@@ -1771,6 +1774,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
     """
     if not n_clicks:
         raise PreventUpdate
+    from app.services.section_group_metadata import overlay_result_metadata, filter_groups
 
     set_progress((0, 100, "準備中..."))
 
@@ -1916,6 +1920,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                         meta = json.load(f)
 
             # ★ ver51.9 / B-7: 画面が「マージ統合」表示ならそれを反映する。
+            df = filter_groups(overlay_result_metadata(df, rds_path), section_groups)
             df, custom_colors, _merged = _apply_merge_view(
                 df, display_settings, custom_colors)
 
@@ -2000,8 +2005,11 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 skipped_methods.append(method_name)
                 continue
 
-            method_df = result["plot_data"]
-            method_meta = result["meta"]
+            method_df = filter_groups(overlay_result_metadata(result["plot_data"], method_rds), section_groups)
+            method_meta = dict(result["meta"])
+            if method_df is not None:
+                method_meta["n_cells"] = len(method_df)
+                method_meta["n_clusters"] = method_df["Cluster"].nunique()
             method_cache_dir = result.get("cache_dir")
 
             # DEG 結果読み込み
@@ -2289,10 +2297,12 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
             # --- UMAP 図を生成 ---
             _umap_pos_m = (method_saved_positions or {}).get("umap_integrated", {})
             method_umap_fig = _build_umap_integrated_fig(
-                method_df, color_by="Cluster",
+                method_df, color_by=group_color_by or "Cluster",
                 highlight_clusters=None,
                 show_legend=True, show_labels=True,
-                custom_colors=method_colors,
+                custom_colors=(_get_cluster_color_map(method_df["group"])
+                               if group_color_by == "group" and "group" in method_df.columns
+                               else method_colors),
                 saved_positions=_umap_pos_m,
                 cluster_name_map=method_name_map,
             )

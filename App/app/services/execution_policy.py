@@ -32,7 +32,8 @@ def result_root(path):
 
 
 def selected_manifest_paths(manifest):
-    return [str(f["path"]) for f in (manifest or {}).get("files", []) if f.get("selection_mode") != "none"]
+    return [str(Path(f["path"]).expanduser().resolve())
+            for f in (manifest or {}).get("files", []) if f.get("selection_mode") != "none"]
 
 
 def apply_group_rows(manifest, rows):
@@ -47,25 +48,54 @@ def apply_group_rows(manifest, rows):
             if row is not None:
                 for key in ("subject_id", "group"):
                     s[key] = str(row.get(key) or "").strip()
+                if "section_settings" in result:
+                    result["section_settings"][s["section_id"]] = deepcopy(s)
     return result
 
 
 def method_outcome(output_dir):
-    """プロセスの正常終了と全手法の解析完了を区別する。"""
+    """★ ver67.0: 完了記録だけでなく実在するRDSを確認し、未出力を成功扱いしない。"""
     path = Path(output_dir) / "analysis_methods.json"
     if not path.is_file():
+        # ★ ver67.0: 新方式の状態記録欠落を旧形式の正常終了と混同しない。
+        try:
+            saved = json.loads((Path(output_dir) / "analysis_params.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, AttributeError):
+            saved = {}
+        policy = saved.get("execution_policy") or (saved.get("runtime_parameters") or {}).get("execution_policy")
+        if policy == AUTO_POLICY:
+            return {"available": [], "incomplete": ["手法別状態が未保存"], "reduction_only": False}
         return None
+    invalid = {"available": [], "incomplete": ["手法別の完了状態が不正です"], "reduction_only": False}
     try:
         methods = json.loads(path.read_text(encoding="utf-8")).get("methods", {})
     except (OSError, ValueError, AttributeError):
-        return {"available": [], "incomplete": ["状態を読み込めません"], "reduction_only": False}
+        return invalid
+    if not isinstance(methods, dict) or not methods:
+        return invalid
     names = {"pca": "PCA", "harmony": "Harmony", "rpca": "RPCA"}
-    complete = [(name, row) for name, row in methods.items() if row.get("status") == "complete"]
-    return {"available": [names.get(name.lower(), name) for name, row in complete
-                          if row.get("rds_path") and Path(row["rds_path"]).is_file()],
-            "incomplete": [names.get(name.lower(), name) for name, row in methods.items()
-                           if row.get("status") in ("failed", "running")],
-            "reduction_only": bool(complete) and all(row.get("stage") == "reduction" for _, row in complete)}
+    available, incomplete, stages = [], [], []
+    for name, row in methods.items():
+        label = names.get(str(name).lower(), str(name))
+        if not isinstance(row, dict):
+            incomplete.append(label)
+            continue
+        status = row.get("status")
+        if status == "complete":
+            rds = Path(row["rds_path"]) if row.get("rds_path") else None
+            if rds is not None and not rds.is_absolute():
+                rds = Path(output_dir) / rds
+            if rds is not None and rds.is_file():
+                available.append(label)
+                stages.append(row.get("stage"))
+            else:
+                incomplete.append(label)
+        elif status in ("failed", "running") or status != "skipped":
+            incomplete.append(label)
+    if not available and not incomplete:
+        incomplete.append("利用可能な解析結果がありません")
+    return {"available": available, "incomplete": incomplete,
+            "reduction_only": bool(available) and all(stage == "reduction" for stage in stages)}
 
 
 def _numeric_manifest(manifest):
@@ -92,7 +122,7 @@ def analysis_signature(params):
 
 
 def _fingerprint(path):
-    p = Path(path)
+    p = Path(path).expanduser().resolve()
     if not p.is_file():
         return None
     st = p.stat()
@@ -101,12 +131,14 @@ def _fingerprint(path):
 
 def prepare_execution_params(params, output_dir):
     """注入する条件を確定し、R起動前に保存する（paramsを更新）。"""
-    # ★ verNEXT: 続き実行で現在画面の条件を混ぜず、元実行の条件を引き継ぐ。
+    # ★ ver67.0: 続き実行で現在画面の条件を混ぜず、元実行の条件を引き継ぐ。
     source = params.get("resume_reanalysis_dir") if params.get("resume_reanalysis") else None
     if not source and params.get("resume_from_rds"):
         paths = params.get("resume_rds_paths") or []
         source = paths[0] if paths else None
     if source:
+        # ★ ver67.0: 再開先に署名が無い旧記録へ、現在の別実行の署名を持ち込まない。
+        params.pop("analysis_signature", None)
         root = result_root(source)
         record_path = root / "analysis_params.json"
         if not record_path.is_file():
@@ -126,6 +158,9 @@ def prepare_execution_params(params, output_dir):
         for key in _INHERITED:
             if key in saved:
                 params[key] = deepcopy(saved[key])
+            else:
+                # ★ ver67.0: 保存時に未指定だった値へ、現在画面の指定を混入させない。
+                params.pop(key, None)
         params["source_result_dir"] = str(root)
         params["source_run"] = {k: record.get(k) for k in
                                 ("timestamp", "pipeline_stage", "analysis_signature", "execution_policy")}
@@ -136,7 +171,9 @@ def prepare_execution_params(params, output_dir):
         fingerprints = record.get("input_fingerprints") or saved.get("input_fingerprints") or []
         for item in fingerprints + ([saved["source_rds_fingerprint"]] if saved.get("source_rds_fingerprint") else []):
             current = _fingerprint(item["path"])
-            if current and (current["size"] != item["size"] or current["mtime_ns"] != item["mtime_ns"]):
+            if current is None:
+                raise ValueError(f"保存済み入力が見つかりません: {Path(item['path']).name}。元の入力を復元してください。")
+            if current["size"] != item["size"] or current["mtime_ns"] != item["mtime_ns"]:
                 raise ValueError(f"保存後に入力が変更されています: {Path(item['path']).name}。新規解析を実行してください。")
         if fingerprints:
             params["input_fingerprints"] = deepcopy(fingerprints)
@@ -167,11 +204,16 @@ def prepare_execution_params(params, output_dir):
         path = out / "section_manifest.json"
         atomic_write_json(params["section_manifest"], path)
         params["section_manifest_path"] = str(path)
-    if "input_fingerprints" not in params:
+    if not source or "input_fingerprints" not in params:
         paths = selected_manifest_paths(manifest) or params.get("input_paths") or params.get("original_input_paths") or []
         params["input_fingerprints"] = [item for p in paths if (item := _fingerprint(p))]
-    if "source_rds_fingerprint" not in params and params.get("rds_path"):
-        params["source_rds_fingerprint"] = _fingerprint(params["rds_path"])
-    if not params.get("analysis_signature"):
+    if not source or "source_rds_fingerprint" not in params:
+        if params.get("rds_path"):
+            params["source_rds_fingerprint"] = _fingerprint(params["rds_path"])
+        else:
+            params.pop("source_rds_fingerprint", None)
+    # ★ ver67.0: 通常実行で辞書が再利用されても古い署名を持ち越さない。
+    # 保存条件を引き継いだ再開では、その実行の署名を維持する。
+    if not source or not params.get("analysis_signature"):
         params["analysis_signature"] = analysis_signature(params)
     return params

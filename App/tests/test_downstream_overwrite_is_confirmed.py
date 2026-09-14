@@ -8,7 +8,7 @@
 
 ところが ④「reduction を再利用して UMAP 以降だけ」だけは、この確認画面の
 発火元にも実行本体の上書きゲートにも入っていなかった。④ の出力フォルダ名は
-UMAP のハイパーパラメータから自動生成される（例: `umap_nn15_md0p3_dim20`）ので、
+保存条件の続きであることを示す名前（現在は `umap_continued`）になるので、
 **同じ条件でもう一度押すと前回と同じ名前になり、前回の ④ の結果が黙って
 上書きされて消える**。しかもトーストは『解析を開始しました』と普通の成功表示。
 
@@ -55,14 +55,14 @@ def test_output_dir_is_resolved_in_one_place():
 
 
 def test_resolve_full_output_dir_matches_the_downstream_naming():
-    """④ は UMAP ハイパラのサフィックスが付いた先に書くこと。"""
+    """★ ver67.0: ④の保存条件と矛盾する画面値を出力名へ含めない。"""
     normal = ac._resolve_full_output_dir("/out", "umap", downstream=False)
     assert normal == "/out/umap"
 
     down = ac._resolve_full_output_dir(
         "/out", "umap", downstream=True,
         umap_nn=15, umap_md=0.3, umap_dims=20, umap_metric="cosine")
-    assert down == "/out/umap_nn15_md0p3_dim20", down
+    assert down == "/out/umap_continued", down
 
     # 同じ条件なら同じ先 = 上書きになる（これが症状の原因）
     again = ac._resolve_full_output_dir(
@@ -74,7 +74,7 @@ def test_resolve_full_output_dir_matches_the_downstream_naming():
     twice = ac._resolve_full_output_dir(
         "/out", "umap_nn15_md0p3_dim20", downstream=True,
         umap_nn=30, umap_md=0.3, umap_dims=20, umap_metric="cosine")
-    assert twice == "/out/umap_nn30_md0p3_dim20", twice
+    assert twice == "/out/umap_continued", twice
 
 
 def test_resolve_full_output_dir_refuses_a_blank_base():
@@ -110,7 +110,7 @@ def test_modal_opens_for_the_downstream_button(monkeypatch):
     is_open, detail, mode = _modal("btn_run_downstream", monkeypatch)
     assert is_open is True, "④ だけ確認なしで上書きしている"
     assert mode == "downstream"
-    assert "umap_nn15_md0p3_dim20" in str(detail), (
+    assert "umap_continued" in str(detail), (
         f"確認画面が ④ の実際の出力先を示していない: {detail}")
 
 
@@ -218,3 +218,15 @@ def test_confirm_restores_the_downstream_mode():
         "確認後に ④ のモードを復元していない（通常解析が走ってしまう）")
     assert "downstream_mode = False" not in head, (
         "④ のモードを無条件に潰す行が残っている")
+
+
+@pytest.mark.parametrize("old_name", [
+    "umap_continued", "umap_continued_continued", "umap_nn15_md0p3_dim20_continued",
+    "umap_continued_nn30_md0p1_dim25_euclidean", "umap_nn15", "umap_nn15_dim20",
+])
+def test_continue_name_does_not_accumulate_old_parameter_suffixes(old_name):
+    assert ac._resolve_full_output_dir(
+        "/out", old_name, downstream=True, umap_nn=99, umap_md=.8,
+        umap_dims=40, umap_metric="euclidean") == "/out/umap_continued"
+    # 旧フォルダを読む／通常解析で明示した名前は変更しない。
+    assert ac._resolve_full_output_dir("/out", old_name, downstream=False) == "/out/" + old_name
