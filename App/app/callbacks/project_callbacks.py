@@ -34,6 +34,7 @@ from app.services.share_manager import (
     cleanup_expired,
 )
 from app.services.annotation_inspect import has_compound_names
+from app.utils.integration_methods import method_display_name, method_options, resolve_method_key
 from app.utils.validation import param_default
 from app.services.persistent_share_manager import (
     create_persistent_share,
@@ -1417,7 +1418,10 @@ def open_share_modal(clicks, project):
 @callback(
     [Output("share_result_area", "style"),
      Output("share_generated_url", "children"),
-     Output("share_links_container", "children", allow_duplicate=True)],
+     Output("share_links_container", "children", allow_duplicate=True),
+     Output("notification_toast", "is_open", allow_duplicate=True),
+     Output("notification_toast", "children", allow_duplicate=True),
+     Output("notification_toast", "icon", allow_duplicate=True)],
     Input("generate_share_link", "n_clicks"),
     [State("share_target_sub_id", "data"),
      State("selected_project", "data"),
@@ -1433,33 +1437,51 @@ def generate_share_link(n_clicks, sub_id, project, share_kind, expiry_days,
     """期間付き共有 (share_manager) または無期限共有 (persistent_share_manager) を
     生成する。share_kind_radio で分岐する。"""
     if not n_clicks or not sub_id or not project:
-        return no_update, no_update, no_update
+        return (no_update,) * 6
 
     project_id = project.get("id", "") if project else ""
     project_data = get_project(project_id) or {}
     sub = get_sub_project(project_id, sub_id)
     if not sub:
-        return no_update, no_update, no_update
+        return (no_update,) * 6
 
     result_dir = sub.get("last_result_dir") or sub.get("output_dir", "")
 
     # RDSパスを結果フォルダから自動検索
-    rds_path = ""
+    rds_map = {}
     if result_dir:
         from app.callbacks.interactive_callbacks import _detect_integration_methods
         rds_map = _detect_integration_methods(result_dir)
-        rds_path = rds_map.get(integration_method, "")
+
+    # ★ ver66.4: 表示名 PCA は補正なし結果の内部名へ解決して保存する。
+    #   以前は PCA が辞書に無いと先頭の RDS を使い、指定外の Harmony などを
+    #   PCA の共有として保存していた。既定手法の選択は all のみに限定する。
+    requested_method = integration_method or "Harmony"
+    if requested_method == "all":
+        resolved_method = "all"
+        options = method_options(rds_map)
+        default_method = "Harmony" if "Harmony" in rds_map else (
+            options[0]["value"] if options else None
+        )
+        rds_path = rds_map.get(default_method, "")
+    else:
+        resolved_method = resolve_method_key(requested_method, rds_map)
+        rds_path = rds_map.get(resolved_method, "") if resolved_method else ""
         if not rds_path:
-            # integration_method に該当するRDSがなければ最初のものを使用
-            if rds_map:
-                rds_path = next(iter(rds_map.values()))
-        # ver4.4: 受信者が最初に見る既定手法の RDS を事前ウォーム (バックグラウンド)。
-        # auto_scan_rds_files の既定 (Harmony 優先、無ければ rds_path) に合わせる。
-        warm_rds = rds_map.get("Harmony") or rds_path
-        if warm_rds and Path(warm_rds).exists():
-            threading.Thread(
-                target=_prewarm_share_cache, args=(warm_rds,), daemon=True
-            ).start()
+            return (
+                {"display": "none"}, "", no_update, True,
+                f"共有リンクを作成できませんでした。"
+                f"{method_display_name(requested_method)} の解析結果が見つかりません。"
+                "結果フォルダまたは共有する手法を確認してください。",
+                "danger",
+            )
+
+    # ★ ver66.4: 個別共有では受信者が開く RDS を温める。
+    #   以前は PCA を指定しても Harmony の抽出を起動していた。
+    if rds_path and Path(rds_path).exists():
+        threading.Thread(
+            target=_prewarm_share_cache, args=(rds_path,), daemon=True
+        ).start()
 
     # ver4.2: パス要否は期限と独立。スイッチ値 (既定 True) をそのまま渡す
     require_pw = bool(require_password)
@@ -1472,7 +1494,7 @@ def generate_share_link(n_clicks, sub_id, project, share_kind, expiry_days,
             sub_project_name=sub.get("name", ""),
             result_dir=result_dir,
             rds_path=rds_path,
-            integration_method=integration_method or "Harmony",
+            integration_method=resolved_method,
             memo=memo or "",
             require_password=require_pw,
         )
@@ -1486,7 +1508,7 @@ def generate_share_link(n_clicks, sub_id, project, share_kind, expiry_days,
             sub_project_name=sub.get("name", ""),
             result_dir=result_dir,
             rds_path=rds_path,
-            integration_method=integration_method or "Harmony",
+            integration_method=resolved_method,
             expires_days=int(expiry_days) if expiry_days else None,
             memo=memo or "",
             require_password=require_pw,
@@ -1498,7 +1520,7 @@ def generate_share_link(n_clicks, sub_id, project, share_kind, expiry_days,
     # ユーザーに渡して終了)
     links_ui = _render_share_links(project_id)
 
-    return {}, url, links_ui
+    return {}, url, links_ui, no_update, no_update, no_update
 
 
 # --- 有効期限欄=期限種別に連動 / 警告=パスワード保護OFF に連動 (ver4.2) ---
@@ -1616,6 +1638,8 @@ def save_project_info(n_clicks, project, google_keep, msi_share, other,
 
 def _share_link_row(s, kind):
     """共有リンク 1 件の行を生成 (kind='expiring' or 'persistent')。"""
+    # ★ ver66.4: 保存済み共有の内部名も画面では PCA と表示する。
+    display_method = method_display_name(s.get("integration_method", ""))
     require_pw = s.get("require_password", kind == "expiring")
     pw_badge = (dbc.Badge("🔒 パス必要", color="secondary", className="ms-1")
                 if require_pw
@@ -1623,7 +1647,7 @@ def _share_link_row(s, kind):
     if kind == "persistent":
         kind_badge = dbc.Badge("無期限", color="info", className="ms-2")
         url = build_persistent_view_url(s["token"])
-        info = (f"統合: {s.get('integration_method', '')} | "
+        info = (f"統合: {display_method} | "
                 f"閲覧数: {s.get('view_count', 0)}"
                 + (f" | メモ: {s.get('memo', '')}" if s.get("memo") else ""))
     else:
@@ -1631,7 +1655,7 @@ def _share_link_row(s, kind):
                       if s.get("is_expired")
                       else dbc.Badge("期間付き", color="success", className="ms-2"))
         url = build_share_url(s["token"])
-        info = (f"統合: {s.get('integration_method', '')} | "
+        info = (f"統合: {display_method} | "
                 f"期限: {s.get('expires_at', '')}"
                 + (f" | メモ: {s.get('memo', '')}" if s.get("memo") else ""))
     return html.Div(

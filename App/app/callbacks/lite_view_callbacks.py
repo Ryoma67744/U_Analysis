@@ -35,6 +35,9 @@ from dash import (
 
 logger = logging.getLogger(__name__)
 
+from app.utils.integration_methods import (
+    method_display_name, method_options, resolve_method_key,
+)
 from app.services.project_manager import get_project, get_sub_project
 from app.callbacks.interactive_callbacks import (
     _detect_integration_methods,
@@ -154,12 +157,13 @@ def initialize_lite_view(target, method_data):
             "解析結果が見つかりません（解析がまだ実行されていない可能性があります）。",
         )
 
-    # 切り替え対応: lv_method_store 優先、無効値ならデフォルトにフォールバック
+    # ★ ver66.4: 旧 PCA 名を補正なし結果へ復元する。明示指定が消えていれば
+    #   別手法を読み込まず通知し、手法未指定時だけ従来の既定値を用いる。
     requested_method = (method_data or {}).get("method")
-    if requested_method and requested_method in rds_map:
-        integration_method = requested_method
-    else:
-        integration_method = "Harmony" if "Harmony" in rds_map else next(iter(rds_map))
+    integration_method = _resolve_lite_method(requested_method, rds_map)
+    if integration_method is None:
+        return (html.Div(), True,
+                f"指定した解析手法が見つかりません: {method_display_name(requested_method)}")
     rds_path = rds_map[integration_method]
 
     # データロード（lite 専用 cache key で _shared_data を流用）
@@ -309,6 +313,15 @@ def _read_lite_display_bundle(rds_path, integration_method, df_plot, deg_records
     }
 
 
+def _resolve_lite_method(requested_method, rds_map):
+    """保存された表示名を解決し、明示指定のない閲覧だけ既定手法を選ぶ。"""
+    if requested_method:
+        return resolve_method_key(requested_method, rds_map)
+    if not rds_map:
+        return None
+    return "Harmony" if "Harmony" in rds_map else method_options(rds_map)[0]["value"]
+
+
 def _resolve_lite_data_for_target(target, method_data):
     """target/method から per-cluster カードの展開に必要な bundle を返す。
 
@@ -338,12 +351,9 @@ def _resolve_lite_data_for_target(target, method_data):
         return None
 
     requested_method = (method_data or {}).get("method")
-    if requested_method and requested_method in rds_map:
-        integration_method = requested_method
-    else:
-        integration_method = (
-            "Harmony" if "Harmony" in rds_map else next(iter(rds_map))
-        )
+    integration_method = _resolve_lite_method(requested_method, rds_map)
+    if integration_method is None:
+        return None
     rds_path = rds_map[integration_method]
 
     cache_key = _lite_cache_key(project_id, sub_id, integration_method, rds_path)
@@ -671,14 +681,15 @@ def _build_header(project, sub, integration_method, available_methods,
     ]
 
     # 統合手法トグル（複数あるときだけ操作可能、1 つのときは表示のみ）
-    methods = list(available_methods or [integration_method])
-    if len(methods) >= 2:
+    # ★ ver66.4: 選択肢のラベルだけを変更し、保存・DEG参照に使う値は保持する。
+    options = method_options(available_methods or [integration_method])
+    if len(options) >= 2:
         method_control = html.Span(
             [
                 html.Strong("統合手法: ", className="text-secondary"),
                 dcc.RadioItems(
                     id="lv_method_selector",
-                    options=[{"label": m, "value": m} for m in methods],
+                    options=options,
                     value=integration_method,
                     inline=True,
                     inputStyle={"marginRight": "4px", "marginLeft": "8px"},
@@ -691,12 +702,11 @@ def _build_header(project, sub, integration_method, available_methods,
         method_control = html.Span(
             [
                 html.Strong("統合手法: ", className="text-secondary"),
-                html.Span(integration_method or "—"),
+                html.Span(method_display_name(integration_method) or "—"),
                 # 単一手法でも callback の Input id 解決ができるように非表示で残す
                 dcc.RadioItems(
                     id="lv_method_selector",
-                    options=[{"label": integration_method,
-                              "value": integration_method}],
+                    options=options,
                     value=integration_method,
                     style={"display": "none"},
                 ),
