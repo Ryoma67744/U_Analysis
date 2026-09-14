@@ -58,8 +58,33 @@ def _section_controls(ls, scope="initial"):
         dcc.Store(id="section_manifest_store" + suffix, data=ls.get("section_manifest" + suffix)),
         html.Div(id="section_summary" + suffix, className="alert alert-light py-2 mt-2"),
         html.Details([
-            html.Summary("群情報を設定", style={"cursor": "pointer", "fontWeight": "600"}),
-            dbc.FormText("連続切片には同じ個体／独立試料IDを指定します。群名の変更で解析結果は再計算しません。"),
+            html.Summary("群情報を設定（任意）", style={"cursor": "pointer", "fontWeight": "600"}),
+            # ★ ver67.1: 群登録で補正方法も変わるという誤解を防ぎ、実データと分けて入力例を示す。
+            html.Div([
+                html.P("群・個体情報は、色分け・表示の絞り込み・切片数と独立試料数の確認・出力に使います。未入力でも解析できます。",
+                       className="mb-1"),
+                html.P([html.Strong("解析対象と他の設定が同じなら、群名や個体IDの入力・変更だけで数値解析の結果は変わりません。"),
+                        " Harmony・RPCAの補正単位は切片のままです。この登録だけでctrl対KOの群間検定は行いません。"],
+                       className="mb-0"),
+            ], className="small mt-2 mb-2"),
+            html.Div([
+                html.Div([html.Strong("入力例："), "個体／独立試料IDは C1、K1 など、群は ctrl、KO など。"]),
+                html.Div("別の個体は別ID、同じ個体の連続切片は同じIDにします。同じ個体の切片が3枚あっても独立試料数は1例です。"),
+                html.Details([
+                    html.Summary("6切片の入力例を見る", style={"cursor": "pointer"}),
+                    html.P("6匹の別々の個体から各1切片を採取した例です。下の例は説明用で、解析データには登録されません。",
+                           className="mt-2 mb-1"),
+                    dbc.Table([
+                        html.Thead(html.Tr([html.Th("切片の例"), html.Th("個体／独立試料ID"), html.Th("群")])),
+                        html.Tbody([
+                            html.Tr([html.Td(f"{i:02d}"), html.Td(subject), html.Td(group)])
+                            for i, subject, group in [(1, "C1", "ctrl"), (2, "C2", "ctrl"),
+                                (3, "C3", "ctrl"), (4, "K1", "KO"), (5, "K2", "KO"), (6, "K3", "KO")]
+                        ]),
+                    ], bordered=True, size="sm", className="mb-0"),
+                ], className="mt-1"),
+            ], className="small bg-light border rounded p-2 mb-2"),
+            dbc.FormText("「個体／独立試料ID」「群」のセルを直接編集できます。表の左端のチェックは群名の一括設定用です。解析対象は上の切片／ROI欄で選択します。"),
             dash_table.DataTable(id="section_group_table" + suffix,
                 columns=[{"name": "切片", "id": "section", "editable": False},
                          {"name": "フォルダ", "id": "file", "editable": False},
@@ -71,7 +96,7 @@ def _section_controls(ls, scope="initial"):
                 style_cell={"textAlign": "left", "fontSize": "12px", "padding": "6px",
                             "maxWidth": "180px", "overflow": "hidden", "textOverflow": "ellipsis"},
                 css=[{"selector": ".show-hide", "rule": "display: none"}]),
-            html.Div([dbc.Input(id="section_bulk_group" + suffix, placeholder="群名（例：Ctrl）", size="sm"),
+            html.Div([dbc.Input(id="section_bulk_group" + suffix, placeholder="一括設定する群名（例：ctrl、KO）", size="sm"),
                       dbc.Button("選択行に群を設定", id="section_apply_group" + suffix,
                                  size="sm", color="secondary", n_clicks=0)],
                      style={"display": "flex", "gap": "6px", "marginTop": "8px"}),
