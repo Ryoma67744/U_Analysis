@@ -1,4 +1,4 @@
-dash[diskcache]>=2.14,<3.0
+dash[diskcache]>=2.16,<3.0  # ver68.0: MSI 任意位置クリックに clientside.set_props を使用
 flask-compress>=1.14  # Dash コールバック応答(figure JSON)の gzip 圧縮。リバースプロキシ無しの直アクセス/E2E でも効かせるためアプリ側にも入れる
 waitress>=3.0  # 本番用 WSGI サーバ（純 Python）。ワーカーは 1 のままで、プロセス内メモリに持つ plot_data/キャッシュ前提を壊さない
 dash-bootstrap-components>=1.5,<2.0

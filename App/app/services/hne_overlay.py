@@ -1,7 +1,7 @@
 # =============================================================================
 # MSI Analysis Application - H&E オーバーレイ／ポリゴン領域 純ロジック
 # =============================================================================
-# 解剖学的領域（H&E 上でポリゴン指定）を MSI の spot へ割り当て、
+# 解剖学的領域（H&E／MSI 上でポリゴン指定）を MSI の spot へ割り当て、
 # 「領域 × クラスタ」単位で集計・MetaboAnalyst 用エクスポートを行うための
 # 純粋計算ロジック（UI 非依存・テスト可能）。
 #
@@ -114,6 +114,46 @@ def apply_rotation(x, y, rotation):
     x_rot = cos_a * (x - cx) - sin_a * (y - cy) + cx
     y_rot = sin_a * (x - cx) + cos_a * (y - cy) + cy
     return x_rot, y_rot
+
+
+def rotation_center(x, y):
+    """MSI 全 spot の表示回転中心を返す（ポリゴンの重心ではない）。"""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if not np.isfinite(x).any() or not np.isfinite(y).any():
+        raise ValueError("回転中心を計算できる MSI 座標がありません")
+    return float(np.nanmean(x)), float(np.nanmean(y))
+
+
+def transform_msi_points(points, rotation, center, inverse=False):
+    """指定中心で raw MSI 座標と表示座標を相互変換する。
+
+    center は `rotation_center` に切片全体の SpatialX/Y を渡して求める。
+    inverse=False は反転→回転、True は逆回転→反転。頂点やクリックだけの
+    重心では表示 spot と中心が一致しないため、呼び出し側で共通中心を指定する。
+    入力の点列は変更しない。
+    """
+    # ★ ver68.0: MSI ポリゴンは未回転座標で保存するため、従来の全点専用回転に
+    # 対して任意の頂点を同じ中心で順変換／逆変換する処理が必要になった。
+    pts = np.asarray(points, dtype=float)
+    if pts.size == 0:
+        return pts.reshape(-1, 2).copy()
+    if pts.ndim != 2 or pts.shape[1] != 2:
+        raise ValueError("points は (N,2) が必要です")
+    origin = np.asarray(center, dtype=float)
+    if origin.shape != (2,) or not np.isfinite(origin).all():
+        raise ValueError("center は有限な (x,y) が必要です")
+    rotation = rotation or {}
+    angle = float(rotation.get("angle", 0) or 0)
+    rad = np.radians(angle)
+    cos_a, sin_a = np.cos(rad), np.sin(rad)
+    matrix = np.array([[cos_a, -sin_a], [sin_a, cos_a]])
+    flip = np.array([-1.0 if rotation.get("flip_h") else 1.0,
+                     -1.0 if rotation.get("flip_v") else 1.0])
+    relative = pts - origin
+    if inverse:
+        return (relative @ matrix) * flip + origin
+    return (relative * flip) @ matrix.T + origin
 
 
 def msi_to_hne_px(spatial_x, spatial_y, rotation, hne_landmarks, tic_landmarks):
@@ -246,6 +286,45 @@ def apply_region_groups(polygons):
     return out
 
 
+def assign_regions_from_polygons(df, polygons, M=None, rotation=None,
+                                x_col="SpatialX", y_col="SpatialY"):
+    """MSI／H&E ポリゴンが混在した領域を raw MSI spot に割り当てる。
+
+    coord_space='msi' は raw SpatialX/Y、'hne' と項目のない既存ポリゴンは
+    H&E 画素座標。M は H&E→表示 MSI のアフィンで、未指定なら H&E 領域だけ
+    割当を保留する。group と先勝ちの優先順は両座標系にまたがって維持する。
+    """
+    # ★ ver68.0: 従来は全ポリゴンを H&E とみなし位置合わせを必須としていた。
+    # MSI 上で作った領域は生座標で判定し、表示回転や H&E 登録の変更から独立させる。
+    region = np.full(len(df), None, dtype=object)
+    if df.empty or not polygons:
+        return pd.Series(region, index=df.index)
+    xs = pd.to_numeric(df[x_col], errors="coerce").to_numpy(dtype=float)
+    ys = pd.to_numeric(df[y_col], errors="coerce").to_numpy(dtype=float)
+    valid = np.isfinite(xs) & np.isfinite(ys)
+    rotated = None
+    for poly in apply_region_groups(polygons):
+        name = poly.get("name")
+        verts = poly.get("vertices") or []
+        if not name or len(verts) < 3:
+            continue
+        space = poly.get("coord_space") or "hne"
+        if space == "msi":
+            px, py = xs, ys
+        elif space == "hne" and M is not None:
+            if rotated is None:
+                rotated = apply_rotation(xs, ys, rotation)
+            px, py = rotated
+            verts = apply_affine(verts, M)
+        else:
+            # 未知の座標系も、誤った座標として解釈せず未割当にする。
+            continue
+        unassigned = region == None  # noqa: E711
+        inside = points_in_polygon(px, py, verts) & valid & unassigned
+        region[inside] = name
+    return pd.Series(region, index=df.index)
+
+
 def regions_from_overlay(sub_df, entry, x_col="SpatialX", y_col="SpatialY"):
     """1切片の H&E オーバーレイ保存状態 `entry` から、sub_df 各 spot の領域名 Series を返す。
 
@@ -256,9 +335,8 @@ def regions_from_overlay(sub_df, entry, x_col="SpatialX", y_col="SpatialY"):
     Returns:
         pd.Series（sub_df.index に揃う。割当不可は None）
 
-    affine は保存されないため対応点(landmarks)から再推定する。group 統合
-    (`apply_region_groups`) と MSI 回転(`apply_rotation`) を内部で適用。対応点が3対未満／
-    polygon が無ければ全 None を返す。
+    affine は保存されないため対応点(landmarks)から再推定する。MSI 座標の
+    ポリゴンは対応点不要。H&E 領域は対応点が3対未満なら未割当とする。
     """
     none_series = pd.Series([None] * len(sub_df), index=sub_df.index, dtype=object)
     entry = entry or {}
@@ -267,19 +345,18 @@ def regions_from_overlay(sub_df, entry, x_col="SpatialX", y_col="SpatialY"):
     tic = lm.get("tic") or []
     hne = lm.get("hne") or []
     npair = min(len(tic), len(hne))
-    if not polys or npair < 3:
+    if not polys:
         return none_series
-    try:
-        M = estimate_affine(hne[:npair], tic[:npair])
-    except Exception:
-        return none_series
-    polys_msi = transform_polygons(apply_region_groups(polys), M)
-    rx, ry = apply_rotation(
-        pd.to_numeric(sub_df[x_col], errors="coerce").to_numpy(dtype=float),
-        pd.to_numeric(sub_df[y_col], errors="coerce").to_numpy(dtype=float),
-        entry.get("rotation"))
-    tmp = pd.DataFrame({x_col: rx, y_col: ry}, index=sub_df.index)
-    return assign_regions(tmp, polys_msi, x_col=x_col, y_col=y_col)
+    M = None
+    if npair >= 3 and any((p.get("coord_space") or "hne") == "hne" for p in polys):
+        try:
+            M = estimate_affine(hne[:npair], tic[:npair])
+        except Exception:
+            # ★ ver68.0: H&E の登録が壊れていても MSI で定義した領域は有効。
+            pass
+    return assign_regions_from_polygons(
+        sub_df, polys, M=M, rotation=entry.get("rotation"),
+        x_col=x_col, y_col=y_col)
 
 
 # ---------------------------------------------------------------------------

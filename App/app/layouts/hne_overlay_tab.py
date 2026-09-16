@@ -1,8 +1,8 @@
 # =============================================================================
 # MSI Analysis Application - 解剖×クラスタ（H&E オーバーレイ）タブ
 # =============================================================================
-# インタラクティブ解析で読み込んだ解析(plot_data)を再利用し、個体ごとに H&E を
-# アップロード → 対応点（ランドマーク）で位置合わせ → ポリゴンで解剖領域を指定 →
+# インタラクティブ解析で読み込んだ解析(plot_data)を再利用し、MSI に直接、または
+# 位置合わせ済み H&E にポリゴンを描いて解剖領域を指定する。
 # 領域×クラスタを集計・MetaboAnalyst 用にエクスポートする。
 # =============================================================================
 
@@ -16,7 +16,7 @@ def create_hne_overlay_tab():
         html.H5("解剖 × クラスタ（H&E オーバーレイ）", className="mb-1"),
         html.P(
             "インタラクティブ解析で解析を読み込んだ後に使用します。"
-            "個体ごとに H&E をアップロード → 対応点で位置合わせ → ポリゴンで解剖領域を指定 → "
+            "MSI（TIC）上で直接ポリゴンを描くか、H&E 上で描いた領域を位置合わせして、"
             "領域×クラスタを集計・MetaboAnalyst 用にエクスポートします。",
             className="text-muted small",
         ),
@@ -74,7 +74,7 @@ def create_hne_overlay_tab():
                          className="small text-muted"),
 
                 html.Hr(className="my-2"),
-                dbc.Label("① 位置合わせ（対応点）", className="small fw-bold"),
+                dbc.Label("① 位置合わせ（H&E を使う場合）", className="small fw-bold"),
                 html.Div("「対応点」モードで、TIC と H&E に対応する点を同じ順番で交互にクリック"
                          "（3点以上）。", className="small text-muted"),
                 html.Div(id="hne_landmark_info", className="small mt-1"),
@@ -83,8 +83,16 @@ def create_hne_overlay_tab():
 
                 html.Hr(className="my-2"),
                 dbc.Label("② 領域（ポリゴン）", className="small fw-bold"),
-                html.Div("「領域を描く（ポリゴン）」モードで H&E 上をクリックして頂点を順に置き、"
-                         "「領域を確定」で閉じます。下表で名前変更・行削除ができます。",
+                # ★ ver68.0: H&E の位置合わせなしでも MSI 上で領域を指定できる。
+                dbc.RadioItems(
+                    id="hne_polygon_target",
+                    options=[{"label": " MSI（TIC）に描く", "value": "msi"},
+                             {"label": " H&E に描く", "value": "hne"}],
+                    value="msi", className="small mb-1",
+                ),
+                html.Div("「領域を描く（ポリゴン）」モードで、選んだ画像上をクリックして頂点を順に置き、"
+                         "「領域を確定」で閉じます。MSI は画像登録・位置合わせ不要です。"
+                         "描画先の切替で下書きは消えます。下表で名前変更・行削除ができます。",
                          className="small text-muted"),
                 html.Div(id="hne_polygon_draft_info", className="small mt-1"),
                 dbc.ButtonGroup([
@@ -100,6 +108,7 @@ def create_hne_overlay_tab():
                     columns=[{"name": "#", "id": "idx", "editable": False},
                              {"name": "グループ", "id": "group", "editable": True},
                              {"name": "領域名", "id": "name", "editable": True},
+                             {"name": "描画先", "id": "source", "editable": False},
                              {"name": "頂点数", "id": "nv", "editable": False}],
                     data=[], editable=True, row_deletable=True,
                     style_cell={"fontSize": "0.8rem", "padding": "2px"},
@@ -180,7 +189,9 @@ def create_hne_overlay_tab():
                         # 静的ラッパ Div（dcc.Loading の外）に十字カーソル用クラスを付与する。
                         html.Div(id="hne_tic_graph_wrap", children=dcc.Loading(dcc.Graph(
                             id="hne_tic_graph", style={"height": "60vh"},
-                            config={"scrollZoom": True, "displaylogo": False}))),
+                            # ★ ver68.0: 連続した頂点クリックでダブルクリックの軸リセットを起こさない。
+                            config={"scrollZoom": True, "displaylogo": False,
+                                    "doubleClick": False}))),
                         html.Div(id="hne_tic_coord_readout",
                                  className="small text-center fw-bold text-info",
                                  style={"minHeight": "1.2rem",
@@ -207,8 +218,9 @@ def create_hne_overlay_tab():
         dcc.Store(id="hne_rotation_store",                       # {"angle":0,"flip_h":False,"flip_v":False}
                   data={"angle": 0, "flip_h": False, "flip_v": False}),
         dcc.Store(id="hne_affine_store"),                        # {"M": [[...],[...]], "rms": float}
-        dcc.Store(id="hne_polygons_store", data=[]),             # [{name, vertices(px)}]
-        dcc.Store(id="hne_polygon_draft_store", data=[]),        # 下書き頂点 [[x,y],...]
+        dcc.Store(id="hne_polygons_store", data=[]),             # [{name, vertices, coord_space}]
+        dcc.Store(id="hne_polygon_draft_store", data=[]),        # {coord_space, vertices, context}
+        dcc.Store(id="hne_msi_vertex_store"),                    # MSI の任意位置クリック
         dcc.Store(id="hne_save_dummy"),                          # 自動保存 callback のダミー出力
         dcc.Store(id="hne_draft_dummy"),                         # 下書き clientside のダミー出力
         dcc.Download(id="hne_export_download"),
