@@ -15,7 +15,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = [
-    "dash[diskcache]>=2.14,<3.0",
+    "dash[diskcache]>=2.16,<3.0",  # ver68.0: MSI クリックの clientside.set_props
     "flask-compress>=1.14",  # Dash コールバック応答の gzip 圧縮
     "waitress>=3.0",  # 本番用 WSGI サーバ（1 ワーカー + マルチスレッド）
     "dash-bootstrap-components>=1.5,<2.0",

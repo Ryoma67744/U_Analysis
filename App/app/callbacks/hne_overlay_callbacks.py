@@ -7,12 +7,14 @@
 #
 # 位置合わせ: H&E を go.Image トレースとして描画 → clickData で画素座標を取得。
 #   TIC（散布）の clickData で MSI 座標を取得 → 対応点からアフィン推定（hne_overlay）。
-# ポリゴン: H&E 上をクリックして頂点を順に配置（下書き）→「領域を確定」で閉じて登録 →
-#   アフィンで MSI 座標へ変換 → 点-内包判定で spot に領域割当。
+# ポリゴン: MSI または H&E 上をクリックして頂点を配置→「領域を確定」で登録。
+#   MSI は未回転の測定座標、H&E は画像座標で保存し、それぞれの座標系で spot に割当。
 # =============================================================================
 
 import base64
 import io
+import hashlib
+import json
 import logging
 import os
 
@@ -21,7 +23,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
 from dash import (callback, Input, Output, State, no_update, ctx, html, dcc,
-                  dash_table, clientside_callback)
+                  dash_table, clientside_callback, ClientsideFunction)
 
 from app.utils.integration_methods import method_display_name, method_options
 from app.services import hne_overlay as hn
@@ -89,6 +91,7 @@ def _polygon_rows(polys):
     """ポリゴン群 → 領域テーブルの行リスト（# は並び順で振り直す）。"""
     return [{"idx": i, "group": _group_str(p.get("group")),
              "name": p.get("name") or f"領域{i + 1}",
+             "source": "MSI" if p.get("coord_space") == "msi" else "H&E",
              "nv": len(p.get("vertices") or [])} for i, p in enumerate(polys or [])]
 
 
@@ -110,7 +113,8 @@ def _centroid(verts):
 
 def _sample_df(state, sample):
     df = state.get("plot_data")
-    if df is None or not sample or "SpatialX" not in df.columns:
+    if (df is None or not sample
+            or not {"Sample", "SpatialX", "SpatialY"}.issubset(df.columns)):
         return None
     d = df[df["Sample"].astype(str) == str(sample)]
     return d if not d.empty else None
@@ -123,6 +127,40 @@ def _apply_rotation(x, y, rotation):
     表示・割当の双方に同じ個体の全 (SpatialX, SpatialY) を渡すこと（重心一致＝一貫）。
     """
     return hn.apply_rotation(x, y, rotation)
+
+
+def _draft_vertices(draft):
+    return (draft.get("vertices") or []) if isinstance(draft, dict) else (draft or [])
+
+
+def _draft_space(draft):
+    return draft.get("coord_space", "hne") if isinstance(draft, dict) else "hne"
+
+
+def _msi_drawing_context(sample, rds_path, rotation):
+    """表示中の個体・座標フレームを識別し、切替前のクリックを採用しない。"""
+    rot = rotation or {}
+    payload = [sample, rds_path, float(rot.get("angle", 0) or 0),
+               bool(rot.get("flip_h")), bool(rot.get("flip_v"))]
+    return hashlib.sha256(json.dumps(payload).encode()).hexdigest()
+
+
+def _unregistered_hne_counts(entries):
+    """MSI と混在する未登録 H&E 領域を出力の成功表示で見落とさない。"""
+    omitted = {}
+    for sample, entry in entries.items():
+        n = sum(p.get("coord_space", "hne") == "hne"
+                for p in (entry.get("polygons") or []))
+        if not n:
+            continue
+        lm = entry.get("landmarks") or {}
+        hne, tic = lm.get("hne") or [], lm.get("tic") or []
+        npair = min(len(hne), len(tic))
+        try:
+            hn.estimate_affine(hne[:npair], tic[:npair])
+        except (ValueError, np.linalg.LinAlgError):
+            omitted[sample] = n
+    return omitted
 
 
 # ---------------------------------------------------------------------------
@@ -281,31 +319,25 @@ def hne_estimate_affine(lm):
 
 
 # ---------------------------------------------------------------------------
-# ポリゴン下書き：H&E クリックで頂点を追加 / 取り消し（最後の1点）/ 下書きクリア
+# ★ ver68.0: 頂点追加をブラウザ内で処理し、連続クリック時のサーバ往復による欠落を防ぐ。
+# MSI は点のない背景も選べる専用イベント、H&E は従来の画像 clickData を使う。
 # ---------------------------------------------------------------------------
-@callback(
+clientside_callback(
+    ClientsideFunction(namespace="hnePolygon", function_name="updateDraft"),
     Output("hne_polygon_draft_store", "data"),
     Input("hne_image_graph", "clickData"),
+    Input("hne_msi_vertex_store", "data"),
     Input("hne_polygon_undo", "n_clicks"),
     Input("hne_polygon_clear_draft", "n_clicks"),
+    Input("hne_polygon_target", "value"),
+    Input("hne_rotation_store", "data"),
+    Input("hne_sample_select", "value"),
+    Input("seurat_rds_path_store", "data"),
     State("hne_mode", "value"),
     State("hne_polygon_draft_store", "data"),
+    State("hne_tic_graph", "figure"),
     prevent_initial_call=True,
 )
-def hne_polygon_draft(click, undo_n, clear_n, mode, draft):
-    trig = ctx.triggered_id
-    draft = list(draft or [])
-    if trig == "hne_polygon_clear_draft":
-        return []
-    if trig == "hne_polygon_undo":
-        return draft[:-1]
-    if trig == "hne_image_graph":
-        # ポリゴンモードの H&E クリックのみ頂点として採用
-        if mode != "polygon" or not (click and click.get("points")):
-            return no_update
-        p = click["points"][0]
-        return draft + [[p["x"], p["y"]]]
-    return no_update
 
 
 # ---------------------------------------------------------------------------
@@ -318,15 +350,36 @@ def hne_polygon_draft(click, undo_n, clear_n, mode, draft):
     Input("hne_polygon_commit", "n_clicks"),
     State("hne_polygon_draft_store", "data"),
     State("hne_polygons_store", "data"),
+    State("hne_polygon_target", "value"),
+    State("hne_rotation_store", "data"),
+    State("hne_sample_select", "value"),
+    State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
-def hne_polygon_commit(n, draft, polys):
-    draft = list(draft or [])
-    if not n or len(draft) < 3:
+def hne_polygon_commit(n, draft, polys, target, rotation, sample, rds_path):
+    vertices = _draft_vertices(draft)
+    space = _draft_space(draft)
+    if not n or len(vertices) < 3 or space != target:
         return no_update, no_update, no_update
+    if isinstance(draft, dict) and (draft.get("sample") != sample
+                                    or draft.get("rds_path") != rds_path):
+        return no_update, no_update, no_update
+    vertices = np.asarray(vertices, dtype=float)
+    if vertices.ndim != 2 or vertices.shape[1] != 2 or not np.isfinite(vertices).all():
+        return no_update, no_update, no_update
+    if space == "msi":
+        # ★ ver68.0: 表示座標のまま保存すると回転変更で ROI が別の組織へ移る。
+        # 全 spot と同じ中心で逆変換して、未回転 MSI 座標を永続保存する。
+        if draft.get("context") != _msi_drawing_context(sample, rds_path, rotation):
+            return no_update, no_update, no_update
+        d = _sample_df(_get_state(rds_path), sample)
+        if d is None:
+            return no_update, no_update, no_update
+        center = hn.rotation_center(d["SpatialX"], d["SpatialY"])
+        vertices = hn.transform_msi_points(vertices, rotation, center, inverse=True)
     polys = list(polys or [])
     polys.append({"name": f"領域{len(polys) + 1}", "group": None,
-                  "vertices": [[float(v[0]), float(v[1])] for v in draft]})
+                  "coord_space": space, "vertices": vertices.tolist()})
     return polys, [], _polygon_rows(polys)
 
 
@@ -336,12 +389,13 @@ def hne_polygon_commit(n, draft, polys):
 @callback(
     Output("hne_polygon_draft_info", "children"),
     Input("hne_polygon_draft_store", "data"),
-    prevent_initial_call=True,
+    Input("hne_polygon_target", "value"),
 )
-def hne_polygon_draft_info(draft):
-    n = len(draft or [])
+def hne_polygon_draft_info(draft, target):
+    n = len(_draft_vertices(draft))
+    label = "MSI（TIC）" if target == "msi" else "H&E"
     if n == 0:
-        return "下書き: 0 頂点（H&E をクリックして頂点を追加）"
+        return f"下書き: 0 頂点（{label} をクリックして頂点を追加）"
     if n < 3:
         return f"下書き: {n} 頂点（あと {3 - n} 点で確定可）"
     return f"下書き: {n} 頂点（「領域を確定」で閉じられます）"
@@ -402,10 +456,12 @@ def hne_polygon_table_to_store(rows, polys):
     Input("hne_polygons_store", "data"),
     Input("hne_mode", "value"),
     Input("hne_rotation_store", "data"),
+    Input("hne_polygon_target", "value"),
+    State("hne_polygon_draft_store", "data"),
     State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
-def hne_tic_figure(sample, lm, affine, polys, mode, rotation, rds_path):
+def hne_tic_figure(sample, lm, affine, polys, mode, rotation, target, draft, rds_path):
     state = _get_state(rds_path)
     d = _sample_df(state, sample)
     if d is None:
@@ -434,34 +490,51 @@ def hne_tic_figure(sample, lm, affine, polys, mode, rotation, rds_path):
                                    marker=dict(size=10, color="red", symbol="x"),
                                    text=[str(i + 1) for i in range(len(tx))],
                                    textposition="top center", name="対応点", hoverinfo="skip"))
-    # 変換済みポリゴン（アフィンがあれば）。ROIごとに色分け＋重心に領域名ラベル。
-    # 同じ「グループ」のポリゴンは代表名へ揃えてから配色（＝同グループ＝同色・同ラベル）。
-    if affine and affine.get("M") and polys:
-        M = np.array(affine["M"], dtype=float)
-        polys = hn.apply_region_groups(polys)
-        cmap = _roi_color_map(polys)
-        for i, p in enumerate(polys):
-            v = p.get("vertices") or []
-            if len(v) >= 3:
-                nm = p.get("name") or f"領域{i + 1}"
-                col = cmap.get(str(nm), CLUSTER_PRESET_COLORS[0])
-                msi = hn.apply_affine(v, M)
-                xs = list(msi[:, 0]) + [msi[0, 0]]
-                ys = list(msi[:, 1]) + [msi[0, 1]]
-                # 対応点と同じく Scattergl で WebGL canvas 前面に描く
-                fig.add_trace(go.Scattergl(x=xs, y=ys, mode="lines", fill="toself",
-                                           line=dict(color=col),
-                                           fillcolor=_hex_to_rgba(col, 0.25),
-                                           name=nm, hoverinfo="skip"))
-                cx, cy = _centroid(msi)
-                if cx is not None:
-                    fig.add_annotation(x=cx, y=cy, text=nm, showarrow=False,
-                                       font=dict(size=11, color=col),
-                                       bgcolor="rgba(255,255,255,0.6)")
+    # ★ ver68.0: MSI 由来の領域は H&E アフィンを通さず、表示の回転だけを適用する。
+    try:
+        center = hn.rotation_center(d["SpatialX"], d["SpatialY"])
+    except ValueError:
+        return _empty_fig("表示できる MSI 空間座標がありません")
+    M = np.asarray(affine["M"], dtype=float) if affine and affine.get("M") else None
+    polys = hn.apply_region_groups(polys or [])
+    cmap = _roi_color_map(polys)
+    for i, p in enumerate(polys):
+        v = p.get("vertices") or []
+        if len(v) < 3:
+            continue
+        if p.get("coord_space", "hne") == "msi":
+            msi = hn.transform_msi_points(v, rotation, center)
+        elif p.get("coord_space", "hne") == "hne" and M is not None:
+            msi = hn.apply_affine(v, M)
+        else:
+            continue
+        nm = p.get("name") or f"領域{i + 1}"
+        col = cmap.get(str(nm), CLUSTER_PRESET_COLORS[0])
+        xs = list(msi[:, 0]) + [msi[0, 0]]
+        ys = list(msi[:, 1]) + [msi[0, 1]]
+        fig.add_trace(go.Scattergl(x=xs, y=ys, mode="lines", fill="toself",
+                                   line=dict(color=col),
+                                   fillcolor=_hex_to_rgba(col, 0.25),
+                                   name=nm, hoverinfo="skip"))
+        cx, cy = _centroid(msi)
+        fig.add_annotation(x=cx, y=cy, text=nm, showarrow=False,
+                           font=dict(size=11, color=col),
+                           bgcolor="rgba(255,255,255,0.6)")
+    context = _msi_drawing_context(sample, rds_path, rotation)
+    vertices = (_draft_vertices(draft) if _draft_space(draft) == "msi"
+                and isinstance(draft, dict) and draft.get("context") == context else [])
+    # clientside 更新用に常設し、頂点追加で TIC 全体を再描画しない。
+    fig.add_trace(go.Scattergl(x=[v[0] for v in vertices], y=[v[1] for v in vertices],
+                               mode="lines+markers", line=dict(color="orange", width=2),
+                               marker=dict(size=7, color="orange"),
+                               hoverinfo="skip", name="下書き"))
     fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), template="plotly_white",
                       dragmode=_dragmode(mode), showlegend=False, hovermode="closest",
                       hoverlabel=dict(font_size=13, bgcolor="white"),
-                      uirevision=sample or "tic")
+                      uirevision=context,
+                      meta={"hne_polygon_draw": mode == "polygon" and target == "msi",
+                            "hne_polygon_context": context, "hne_sample": sample,
+                            "hne_rds_path": rds_path})
     fig.update_xaxes(**_SPIKE_AXIS)
     fig.update_yaxes(scaleanchor="x", scaleratio=1, **_SPIKE_AXIS)
     return fig
@@ -477,11 +550,14 @@ def hne_tic_figure(sample, lm, affine, polys, mode, rotation, rds_path):
     Input("hne_polygons_store", "data"),
     Input("hne_opacity", "value"),
     Input("hne_mode", "value"),
+    Input("hne_affine_store", "data"),
+    Input("hne_rotation_store", "data"),
     State("hne_polygon_draft_store", "data"),
     State("hne_sample_select", "value"),
+    State("seurat_rds_path_store", "data"),
     prevent_initial_call=True,
 )
-def hne_image_figure(img, lm, polys, opacity, mode, draft, sample):
+def hne_image_figure(img, lm, polys, opacity, mode, affine, rotation, draft, sample, rds_path):
     if not img:
         return _empty_fig("H&E をアップロードしてください")
     w, h = img["width"], img["height"]
@@ -500,7 +576,7 @@ def hne_image_figure(img, lm, polys, opacity, mode, draft, sample):
                                  textposition="top center", hoverinfo="skip"))
     # 下書きポリゴン（クリック中の頂点列）。clientside で部分更新するため常にトレースを
     # 置く（頂点追加で図全体を作り直さない＝go.Image 再描画・Loading スピナーを避ける）。
-    draft = draft or []
+    draft = _draft_vertices(draft) if _draft_space(draft) == "hne" else []
     dx = [v[0] for v in draft]; dy = [v[1] for v in draft]
     fig.add_trace(go.Scatter(x=dx, y=dy, mode="lines+markers",
                              line=dict(color="orange", width=2),
@@ -509,10 +585,26 @@ def hne_image_figure(img, lm, polys, opacity, mode, draft, sample):
     # 確定ポリゴンを shape として再注入（ROIごとに色分け＋重心に領域名ラベル）。
     # 同じ「グループ」のポリゴンは代表名へ揃えてから配色（＝同グループ＝同色・同ラベル）。
     shapes = []
+    inverse = None
+    center = None
+    if affine and affine.get("M") and any(p.get("coord_space") == "msi" for p in (polys or [])):
+        d = _sample_df(_get_state(rds_path), sample)
+        if d is not None:
+            try:
+                inverse = hn.invert_affine(np.asarray(affine["M"], dtype=float))
+                center = hn.rotation_center(d["SpatialX"], d["SpatialY"])
+            except (ValueError, np.linalg.LinAlgError):
+                pass
     polys = hn.apply_region_groups(polys or [])
     cmap = _roi_color_map(polys)
     for i, p in enumerate(polys or []):
         v = p.get("vertices") or []
+        if p.get("coord_space", "hne") == "msi":
+            if inverse is None or len(v) < 3:
+                continue
+            v = hn.apply_affine(hn.transform_msi_points(v, rotation, center), inverse).tolist()
+        elif p.get("coord_space", "hne") != "hne":
+            continue
         if len(v) >= 3:
             nm = p.get("name") or f"領域{i + 1}"
             col = cmap.get(str(nm), CLUSTER_PRESET_COLORS[0])
@@ -627,22 +719,19 @@ def hne_autosave(lm, polys, rotation, sample, rds_path):
 def hne_assign_and_summarize(n, sample, polys, affine, rotation, rds_path):
     if not n:
         return no_update
-    if not affine or not affine.get("M"):
-        return _alert("先に「対応点」で位置合わせをしてください。", "warning")
     if not polys:
-        return _alert("先に H&E 上で領域（ポリゴン）を描いてください。", "warning")
+        return _alert("先に MSI または H&E 上で領域（ポリゴン）を描いてください。", "warning")
+    has_affine = bool(affine and affine.get("M"))
+    skipped_hne = not has_affine and any(p.get("coord_space", "hne") == "hne" for p in polys)
+    if skipped_hne and not any(p.get("coord_space") == "msi" for p in polys):
+        return _alert("H&E 上の領域には「対応点」での位置合わせが必要です。", "warning")
     state = _get_state(rds_path)
     d = _sample_df(state, sample)
     if d is None:
         return _alert("空間座標つきの個体を選択してください。", "warning")
-    M = np.array(affine["M"], dtype=float)
-    # 同じ「グループ」のポリゴンは代表名へ揃えてから割当（＝同グループ＝1 ROI に合算）。
-    polys_msi = hn.transform_polygons(hn.apply_region_groups(polys), M)
-    # ポリゴン（アフィン後）は回転後フレーム → spot 座標も同じ回転をかけてから割当。
+    M = np.asarray(affine["M"], dtype=float) if has_affine else None
     dd = d.copy()
-    dd["SpatialX"], dd["SpatialY"] = _apply_rotation(
-        dd["SpatialX"].to_numpy(float), dd["SpatialY"].to_numpy(float), rotation)
-    region = hn.assign_regions(dd, polys_msi)
+    region = hn.assign_regions_from_polygons(dd, polys, M=M, rotation=rotation)
     dd["region"] = region.values
     g = hn.region_cluster_counts(dd)
     n_assigned = int(region.notna().sum())
@@ -652,6 +741,8 @@ def hne_assign_and_summarize(n, sample, polys, affine, rotation, rds_path):
     g2 = g.rename(columns={"region": "領域", "Cluster": "クラスタ",
                            "count": "spot数", "pct_in_region": "領域内%"})
     return html.Div([
+        _alert("位置合わせのない H&E 領域は未集計です。MSI 上の領域のみ集計しました。", "warning")
+        if skipped_hne else None,
         html.Div(f"割当 spot 数: {n_assigned:,} / {len(d):,}（個体 {sample}）",
                  className="small text-muted mb-1"),
         dash_table.DataTable(
@@ -715,7 +806,7 @@ def _export_cache_key(rds_path, state, intensity_repr="data", unit="mz",
                     f"methods={methods_key}", "fmt=zip", "lblfmt=cluster",
                     # 強度ソースを測定アッセイ(Spatial)へ是正した版。旧 integrated 由来の
                     # キャッシュ ZIP(負値含む)を返さないための版ソルト。
-                    "assaysrc=measured_v1", f"qea={int(bool(with_qea))}"])
+                    "assaysrc=measured_v1", "roi=mixed_msi_v1", f"qea={int(bool(with_qea))}"])
     return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -764,8 +855,10 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
     def fail(msg):
         return no_update, msg, _HNE_PROG_HIDE, "失敗", False, False
 
+    omitted_note = ""
+
     def ok(download, msg):
-        return download, msg, _HNE_PROG_HIDE, "完了", False, False
+        return download, msg + omitted_note, _HNE_PROG_HIDE, "完了", False, False
 
     import io
     import re as _re
@@ -809,6 +902,13 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
         if not selected:
             return fail("出力する手法がありません（データを読み込んでください）。")
 
+        samples = sorted(str(s) for s in plot_data["Sample"].dropna().unique())
+        entries = {sample: hp.load_hne_sample(rds_path, sample) for sample in samples}
+        omitted = _unregistered_hne_counts(entries)
+        if omitted:
+            omitted_note = (" ※位置合わせのない H&E 領域は出力対象外: "
+                            + "、".join(f"{s}（{n}件）" for s, n in omitted.items()))
+
         # --- C: キャッシュヒット（ROI/RDS/化合物名/強度/単位/手法 不変なら即返す） ---
         key = _export_cache_key(rds_path, state, repr_mode, unit, selected,
                                 with_qea=want_qea)
@@ -819,8 +919,6 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
                           f"ZIP を出力しました（キャッシュ／強度: {repr_label}"
                           f"／単位: {unit_label}／手法: {' / '.join(selected)}）。"
                           f"  保存先: {cached}")
-
-        samples = sorted(str(s) for s in plot_data["Sample"].dropna().unique())
 
         def _method_outputs(result, m_rds, m_fa):
             """1手法の (matrix_df, fmap, prep, assay_used) を作る。ROI は loaded rds の
@@ -835,7 +933,7 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
                 d = m_plot[m_plot["Sample"].astype(str) == sample]
                 if d.empty:
                     continue
-                entry = hp.load_hne_sample(rds_path, sample)   # ROI は共通(loaded)
+                entry = entries[sample]   # ROI は共通(loaded)
                 dd = d.copy()
                 dd["region"] = hn.regions_from_overlay(d, entry).values
                 frames.append(dd)
@@ -885,6 +983,8 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
         buf = io.BytesIO()
         exported, skipped, preps, assays = [], [], [], []
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            if omitted_note:
+                zf.writestr("roi_warnings.txt", omitted_note.strip() + "\n")
             for m in selected:
                 m_rds = rmap.get(m) or (rds_path if m == current_method else None)
                 # 派生PCA（未補正）はディスク未生成のことがある → Harmony から遅延生成
@@ -942,6 +1042,7 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
                     extra={"exported_file": zip_fname,
                            "hne_export_methods": exported,
                            "hne_export_skipped": skipped,
+                           "hne_unregistered_polygons": omitted,
                            "intensity_repr": repr_label,
                            "unit": unit_label,
                            "include_qea": bool(want_qea),
@@ -955,7 +1056,7 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
                 logger.warning("H&E エクスポートの条件記録に失敗: %s", e_c)
         if not exported:
             return fail("出力できる手法がありませんでした"
-                        "（ROI/対応点3点以上/RDS を確認してください）。")
+                        "（ROI と RDS、H&E 領域の場合は対応点3点以上を確認してください）。")
         zip_bytes = buf.getvalue()
 
         saved = hp.save_metaboanalyst_bytes(rds_path, zip_fname, zip_bytes)
@@ -984,14 +1085,15 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
 # ドラッグ面のカーソルを十字にする（CSS は assets/styles.css）。pan では外す。
 clientside_callback(
     """
-    function(mode) {
-        var c = (mode === 'landmark' || mode === 'polygon') ? 'hne-crosshair' : '';
-        return [c, c];
+    function(mode, target) {
+        return [(mode === 'landmark' || (mode === 'polygon' && target === 'msi')) ? 'hne-crosshair' : '',
+                (mode === 'landmark' || (mode === 'polygon' && target === 'hne')) ? 'hne-crosshair' : ''];
     }
     """,
     Output("hne_tic_graph_wrap", "className"),
     Output("hne_image_graph_wrap", "className"),
     Input("hne_mode", "value"),
+    Input("hne_polygon_target", "value"),
 )
 
 # H&E 上のカーソル座標（画素）を大きく見やすく表示。go.Image は hoverinfo="none"
@@ -1026,20 +1128,24 @@ clientside_callback(
 clientside_callback(
     """
     function(draft) {
-        try {
-            var root = document.getElementById('hne_image_graph');
-            if (!root || !window.Plotly) { return window.dash_clientside.no_update; }
-            var gd = root.querySelector('.js-plotly-plot') || root;
-            if (!gd || !gd.data) { return window.dash_clientside.no_update; }
-            var idx = -1;
-            for (var i = 0; i < gd.data.length; i++) {
-                if (gd.data[i].name === '下書き') { idx = i; break; }
-            }
-            if (idx < 0) { return window.dash_clientside.no_update; }
-            var xs = [], ys = [];
-            (draft || []).forEach(function(v) { xs.push(v[0]); ys.push(v[1]); });
-            window.Plotly.restyle(gd, {x: [xs], y: [ys]}, [idx]);
-        } catch (e) { /* no-op */ }
+        var vertices = Array.isArray(draft) ? draft : ((draft || {}).vertices || []);
+        var space = Array.isArray(draft) ? 'hne' : ((draft || {}).coord_space || 'hne');
+        ['hne_image_graph', 'hne_tic_graph'].forEach(function(id) {
+            try {
+                var root = document.getElementById(id);
+                if (!root || !window.Plotly) return;
+                var gd = root.querySelector('.js-plotly-plot') || root;
+                if (!gd || !gd.data) return;
+                var idx = gd.data.findIndex(function(t) { return t.name === '下書き'; });
+                if (idx < 0) return;
+                var active = (id === 'hne_tic_graph') === (space === 'msi');
+                if (space === 'msi' && (gd.layout.meta || {}).hne_polygon_context !== (draft || {}).context)
+                    active = false;
+                var v = active ? vertices : [];
+                window.Plotly.restyle(gd, {x: [v.map(function(p) { return p[0]; })],
+                                          y: [v.map(function(p) { return p[1]; })]}, [idx]);
+            } catch (e) { /* 次の図再描画で下書きを復元する */ }
+        });
         return window.dash_clientside.no_update;
     }
     """,
