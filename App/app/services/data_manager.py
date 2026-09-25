@@ -92,7 +92,7 @@ _SIDECAR_SUFFIX = "_feature_annotations.parquet"
 
 
 def _is_sidecar(f: Path) -> bool:
-    return f.name.endswith(_SIDECAR_SUFFIX)
+    return f.name.endswith(_SIDECAR_SUFFIX) or f.with_suffix(".imzml.pending").exists()
 
 
 def _filter_tims_candidates(folder: Path) -> list[Path]:
