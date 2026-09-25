@@ -56,6 +56,23 @@ def test_name_and_group_changes_do_not_change_numeric_signature():
     assert analysis_signature({"section_manifest": changed}) == before
 
 
+def test_explicit_float_metadata_override_wins_previous_manifest():
+    first = build_section_manifest(catalog())
+    edited = deepcopy(first["files"][0]["spatial_sections"])
+    edited[0].update(
+        section_display_name="Control 1",
+        subject_id="M1",
+        group="ctrl",
+    )
+    second = build_section_manifest(catalog(edited), previous=first)
+    spatial = second["files"][0]["spatial_sections"][0]
+    selected = second["files"][0]["sections"][0]
+    for row in (spatial, selected):
+        assert row["section_display_name"] == "Control 1"
+        assert row["subject_id"] == "M1"
+        assert row["group"] == "ctrl"
+
+
 def test_component_merge_changes_numeric_signature():
     manifest = build_section_manifest(catalog())
     before = analysis_signature({"section_manifest": manifest})

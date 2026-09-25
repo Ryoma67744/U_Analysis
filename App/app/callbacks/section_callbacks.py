@@ -37,10 +37,9 @@ def _selection_blocks(catalog, manifest, scope):
                           "value": s["section_id"]} for s in spatial_sections],
                 value=selected, inline=False, className="mt-1 imzml-spatial-compact-list"))
             children.append(html.Div(className="d-flex flex-wrap gap-1 align-items-center", children=[
-                dbc.Button("配置を確認", id={"type": "imzml_spatial_open", "scope": scope, "index": path},
+                dbc.Button("配置・切片情報を編集",
+                           id={"type": "imzml_spatial_open", "scope": scope, "index": path},
                            n_clicks=0, size="sm", color="info", outline=True),
-                dbc.Button("切片名・群を設定", id={"type": "section_group_open", "scope": scope, "index": path},
-                           n_clicks=0, size="sm", color="secondary", outline=True),
                 dbc.Button("全選択", id={"type": "section_select_all", "scope": scope, "index": path},
                            n_clicks=0, size="sm", color="link"),
                 dbc.Button("全解除", id={"type": "section_select_none", "scope": scope, "index": path},
@@ -180,26 +179,6 @@ def update_reanalysis_section_selector(samples, folder, desi_method, tims_method
             paths.append(str(p))
     catalog, manifest = make_catalog(paths, is_tims, previous, overrides)
     return catalog, _selection_blocks(catalog, manifest, "reanalysis")
-
-
-def _register_group_details(scope):
-    suffix = "" if scope == "initial" else "_reanalysis"
-
-    @callback(
-        Output("section_group_details" + suffix, "open"),
-        Input({"type": "section_group_open", "scope": scope, "index": ALL}, "n_clicks"),
-        prevent_initial_call=True,
-    )
-    def open_group_details(clicks):
-        trigger = ctx.triggered_id
-        value = (ctx.triggered[0].get("value") if getattr(ctx, "triggered", None) else None)
-        if not isinstance(trigger, dict) or trigger.get("type") != "section_group_open" or not value:
-            return no_update
-        return True
-
-
-_register_group_details("initial")
-_register_group_details("reanalysis")
 
 
 @callback(

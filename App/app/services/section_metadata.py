@@ -44,6 +44,7 @@ def _build_spatial_file(item, old, fid, selections, groups, previous):
 
     old_layout = old.get("spatial_layout") or {}
     same_layout = (not old_layout or old_layout.get("coordinate_hash") == layout.get("coordinate_hash"))
+    explicit_candidate = item.get("spatial_sections") is not None
     candidate_sections = item.get("spatial_sections")
     if candidate_sections is None and same_layout:
         candidate_sections = old.get("spatial_sections")
@@ -58,7 +59,10 @@ def _build_spatial_file(item, old, fid, selections, groups, previous):
 
     saved = _saved_section_sources(previous, old)
     for row in spatial_sections:
-        source = groups.get(row["section_id"], saved.get(row["section_id"], {}))
+        source = groups.get(row["section_id"])
+        if source is None and not explicit_candidate:
+            source = saved.get(row["section_id"], {})
+        source = source or {}
         for key in ("section_display_name", "subject_id", "group"):
             if key in source:
                 row[key] = str(source.get(key) or "").strip()

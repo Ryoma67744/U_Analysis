@@ -1,4 +1,4 @@
-"""imzML座標切片のモデルレスfloatとsection構成を同期する。"""
+"""imzML座標切片のモデルレスfloatとsection構成・メタデータを同期する。"""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -9,7 +9,6 @@ import plotly.graph_objects as go
 
 from app.services.imzml_spatial_layout import (
     SpatialLayoutError,
-    default_spatial_sections,
     merge_spatial_sections,
     normalize_spatial_sections,
     reset_spatial_sections,
@@ -28,10 +27,29 @@ def _table_rows(sections):
     return [{
         "section_id": row["section_id"],
         "section_display_name": row.get("section_display_name", row["section_id"]),
+        "subject_id": row.get("subject_id", ""),
+        "group": row.get("group", ""),
         "component_count": len(row.get("component_ids", [])),
         "pixel_count": int(row.get("pixel_count", 0)),
         "selected": "対象" if row.get("selected", True) else "除外",
     } for row in sections or []]
+
+
+def _apply_table_metadata(file_id, layout, sections, table_rows):
+    """編集表の値をsection_idでdraftへ戻し、空名・重複名を同じ契約で検査する。"""
+    edits = {
+        str(row.get("section_id")): row
+        for row in (table_rows or [])
+        if row.get("section_id")
+    }
+    updated = deepcopy(sections or [])
+    for row in updated:
+        edited = edits.get(str(row.get("section_id")))
+        if not edited:
+            continue
+        for key in ("section_display_name", "subject_id", "group"):
+            row[key] = str(edited.get(key) or "").strip()
+    return normalize_spatial_sections(file_id, layout, updated)
 
 
 def _figure(layout, sections):
@@ -126,7 +144,7 @@ def _register(scope):
             message += " ／ " + " ／ ".join(warnings[:2])
         return ({"display": "block"}, "imzml-spatial-float", path, sections,
                 _figure(layout, sections), _table_rows(sections), [],
-                f"imzML切片配置 — {Path(path).name}", message)
+                f"imzML切片配置・切片情報 — {Path(path).name}", message)
 
     @callback(
         Output("imzml_spatial_table" + suffix, "selected_rows", allow_duplicate=True),
@@ -161,24 +179,37 @@ def _register(scope):
         Input("imzml_spatial_merge" + suffix, "n_clicks"),
         Input("imzml_spatial_one" + suffix, "n_clicks"),
         Input("imzml_spatial_reset" + suffix, "n_clicks"),
+        Input("imzml_spatial_bulk_apply" + suffix, "n_clicks"),
         Input("imzml_spatial_apply" + suffix, "n_clicks"),
         Input("imzml_spatial_cancel" + suffix, "n_clicks"),
         Input("imzml_spatial_close" + suffix, "n_clicks"),
         Input("imzml_spatial_minimize" + suffix, "n_clicks"),
         State("imzml_spatial_active_path" + suffix, "data"),
         State("imzml_spatial_draft" + suffix, "data"),
+        State("imzml_spatial_table" + suffix, "data"),
         State("imzml_spatial_table" + suffix, "selected_rows"),
+        State("imzml_spatial_bulk_group" + suffix, "value"),
         State("imzml_spatial_overrides" + suffix, "data"),
         State("section_catalog_store" + suffix, "data"),
         State("section_manifest_store" + suffix, "data"),
         State(panel, "className"),
         prevent_initial_call=True,
     )
-    def act_on_panel(toggle, merge, one, reset, apply, cancel, close, minimize,
-                     path, draft, selected_rows, overrides, catalog, manifest, class_name):
+    def act_on_panel(toggle, merge, one, reset, bulk_apply, apply, cancel, close, minimize,
+                     path, draft, table_rows, selected_rows, bulk_group,
+                     overrides, catalog, manifest, class_name):
         trigger = ctx.triggered_id
         if not path:
             return (no_update,) * 8
+
+        if trigger == "imzml_spatial_minimize" + suffix:
+            minimized = "minimized" in (class_name or "")
+            next_class = "imzml-spatial-float" if minimized else "imzml-spatial-float minimized"
+            return no_update, no_update, no_update, no_update, no_update, no_update, next_class, no_update
+        if trigger in ("imzml_spatial_cancel" + suffix, "imzml_spatial_close" + suffix):
+            return (None, no_update, no_update, [], no_update, {"display": "none"},
+                    "imzml-spatial-float", "未適用の変更を破棄しました。")
+
         file_entry = _entry((manifest or {}).get("files", []), path)
         _catalog_entry, layout = _layout_for_path(catalog, path)
         file_id = (file_entry or {}).get("file_id")
@@ -186,8 +217,8 @@ def _register(scope):
             from app.services.section_metadata import stable_file_id
             file_id = stable_file_id(path)
         sections = normalize_spatial_sections(file_id, layout, draft)
-        # モデルレスfloatを開いたまま背景の切片名・個体・群を編集した場合、
-        # 同じsection_idの最新メタデータを採用し、古いdraftで巻き戻さない。
+
+        # 背景側で更新された値を取り込み、その後float表の編集値を最優先する。
         latest = {str(row.get("section_id")): row
                   for row in (file_entry or {}).get("spatial_sections", [])
                   if row.get("section_id")}
@@ -196,45 +227,73 @@ def _register(scope):
             if current:
                 for key in ("section_display_name", "subject_id", "group"):
                     row[key] = str(current.get(key) or row.get(key) or "").strip()
-        overrides = deepcopy(overrides or {})
 
-        if trigger == "imzml_spatial_minimize" + suffix:
-            minimized = "minimized" in (class_name or "")
-            next_class = "imzml-spatial-float" if minimized else "imzml-spatial-float minimized"
-            return no_update, no_update, no_update, no_update, no_update, no_update, next_class, no_update
-        if trigger in ("imzml_spatial_cancel" + suffix, "imzml_spatial_close" + suffix):
-            return None, no_update, no_update, [], no_update, {"display": "none"}, "imzml-spatial-float", "未適用の変更を破棄しました。"
+        overrides = deepcopy(overrides or {})
         try:
+            sections = _apply_table_metadata(file_id, layout, sections, table_rows)
+
             if trigger == "imzml_spatial_toggle" + suffix:
-                indices = [i for i in (selected_rows or []) if isinstance(i, int) and 0 <= i < len(sections)]
+                indices = [i for i in (selected_rows or [])
+                           if isinstance(i, int) and 0 <= i < len(sections)]
                 if not indices:
                     raise SpatialLayoutError("対象／除外を切り替える行を選択してください。")
-                # 選択行がすべて対象なら除外、1件でも除外ならすべて対象へ戻す。
                 next_value = not all(sections[i].get("selected", True) for i in indices)
                 for i in indices:
                     sections[i]["selected"] = next_value
                 message = f"選択した {len(indices)} 切片を「{'対象' if next_value else '除外'}」にしました。"
+
+            elif trigger == "imzml_spatial_bulk_apply" + suffix:
+                indices = [i for i in (selected_rows or [])
+                           if isinstance(i, int) and 0 <= i < len(sections)]
+                label = str(bulk_group or "").strip()
+                if not indices:
+                    raise SpatialLayoutError("群を一括設定する行を選択してください。")
+                if not label:
+                    raise SpatialLayoutError("一括設定する群名を入力してください。")
+                for i in indices:
+                    sections[i]["group"] = label
+                sections = normalize_spatial_sections(file_id, layout, sections)
+                message = f"選択した {len(indices)} 切片に群「{label}」を設定しました。"
+
             elif trigger == "imzml_spatial_reset" + suffix:
                 sections = reset_spatial_sections(file_id, layout, sections)
                 message = "座標の自動検出結果へ戻しました。適用するまで解析条件は変わりません。"
+
             elif trigger == "imzml_spatial_one" + suffix:
+                subject_conflict = len({row.get("subject_id", "") for row in sections}) > 1
+                group_conflict = len({row.get("group", "") for row in sections}) > 1
                 if len(sections) > 1:
                     sections = merge_spatial_sections(file_id, layout, sections, range(len(sections)))
                 message = "すべての座標成分を1切片にまとめました。"
+                if subject_conflict or group_conflict:
+                    message += " 異なる個体IDまたは群は空欄に戻しています。"
+
             elif trigger == "imzml_spatial_merge" + suffix:
-                sections = merge_spatial_sections(file_id, layout, sections, selected_rows or [])
+                indices = [i for i in (selected_rows or [])
+                           if isinstance(i, int) and 0 <= i < len(sections)]
+                chosen = [sections[i] for i in indices]
+                subject_conflict = len({row.get("subject_id", "") for row in chosen}) > 1
+                group_conflict = len({row.get("group", "") for row in chosen}) > 1
+                sections = merge_spatial_sections(file_id, layout, sections, indices)
                 message = "選択した切片を結合しました。"
+                if subject_conflict or group_conflict:
+                    message += " 異なる個体IDまたは群は空欄に戻しています。"
+
             elif trigger == "imzml_spatial_apply" + suffix:
-                overrides[path] = {"coordinate_hash": layout.get("coordinate_hash"),
-                                   "spatial_sections": sections}
-                return (sections, _figure(layout, sections), _table_rows(sections), [], overrides,
-                        {"display": "none"}, "imzml-spatial-float",
-                        "切片構成を適用しました。")
+                overrides[path] = {
+                    "coordinate_hash": layout.get("coordinate_hash"),
+                    "spatial_sections": sections,
+                }
+                return (sections, _figure(layout, sections), _table_rows(sections), [],
+                        overrides, {"display": "none"}, "imzml-spatial-float",
+                        "切片構成・切片名・個体ID・群を適用しました。")
             else:
                 return (no_update,) * 8
+
         except SpatialLayoutError as exc:
             return (no_update, no_update, no_update, no_update, no_update, no_update,
                     no_update, str(exc))
+
         return (sections, _figure(layout, sections), _table_rows(sections), [], no_update,
                 no_update, "imzml-spatial-float", message)
 
