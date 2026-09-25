@@ -1,10 +1,26 @@
 (function () {
   "use strict";
   const selector = ".imzml-spatial-float";
-  const storagePrefix = "ua-imzml-spatial-window:";
+  // v2で初期サイズを拡大したため、旧520px幅の保存値を意図的に引き継がない。
+  const storagePrefix = "ua-imzml-spatial-window:v2:";
+
+  function limits() {
+    const maxWidth = Math.max(320, window.innerWidth - 16);
+    const maxHeight = Math.max(280, window.innerHeight - 72);
+    return {
+      minWidth: Math.min(680, maxWidth),
+      minHeight: Math.min(520, maxHeight),
+      maxWidth: maxWidth,
+      maxHeight: maxHeight
+    };
+  }
 
   function clamp(panel) {
-    const rect = panel.getBoundingClientRect();
+    const lim = limits();
+    let rect = panel.getBoundingClientRect();
+    if (rect.width > lim.maxWidth) panel.style.width = lim.maxWidth + "px";
+    if (rect.height > lim.maxHeight) panel.style.height = lim.maxHeight + "px";
+    rect = panel.getBoundingClientRect();
     const margin = 8;
     let left = rect.left;
     let top = rect.top;
@@ -18,7 +34,7 @@
   }
 
   function save(panel) {
-    if (!panel.id) return;
+    if (!panel.id || panel.classList.contains("minimized")) return;
     const rect = panel.getBoundingClientRect();
     const state = {left: rect.left, top: rect.top, width: rect.width, height: rect.height};
     try { sessionStorage.setItem(storagePrefix + panel.id, JSON.stringify(state)); } catch (_) {}
@@ -30,10 +46,15 @@
       const raw = sessionStorage.getItem(storagePrefix + panel.id);
       if (!raw) return;
       const state = JSON.parse(raw);
+      const lim = limits();
       if (Number.isFinite(state.left)) panel.style.left = state.left + "px";
       if (Number.isFinite(state.top)) panel.style.top = state.top + "px";
-      if (Number.isFinite(state.width)) panel.style.width = Math.max(360, state.width) + "px";
-      if (Number.isFinite(state.height)) panel.style.height = Math.max(280, state.height) + "px";
+      if (Number.isFinite(state.width)) {
+        panel.style.width = Math.min(lim.maxWidth, Math.max(lim.minWidth, state.width)) + "px";
+      }
+      if (Number.isFinite(state.height)) {
+        panel.style.height = Math.min(lim.maxHeight, Math.max(lim.minHeight, state.height)) + "px";
+      }
       panel.style.right = "auto";
       requestAnimationFrame(() => {
         clamp(panel);
@@ -90,10 +111,11 @@
         const startHeight = rect.height;
         handle.setPointerCapture(event.pointerId);
         function move(e) {
-          panel.style.width = Math.min(window.innerWidth * 0.85,
-            Math.max(360, startWidth + e.clientX - startX)) + "px";
-          panel.style.height = Math.min(window.innerHeight * 0.85,
-            Math.max(280, startHeight + e.clientY - startY)) + "px";
+          const lim = limits();
+          panel.style.width = Math.min(lim.maxWidth,
+            Math.max(lim.minWidth, startWidth + e.clientX - startX)) + "px";
+          panel.style.height = Math.min(lim.maxHeight,
+            Math.max(lim.minHeight, startHeight + e.clientY - startY)) + "px";
         }
         function end(e) {
           handle.releasePointerCapture(e.pointerId);
