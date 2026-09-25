@@ -822,7 +822,10 @@ def run_analysis(
                         [data_folder] + (extra_data_folders or []))
                     if selected_samples:
                         all_paths = [p for p in all_paths if Path(p).stem in set(selected_samples)]
-                if not all_paths or any(not Path(p).is_file() for p in all_paths):
+                # ★ ver70.0: 続き実行ではworkerが保存条件を復元して厳密検証する。
+                # 元imzMLの移動だけで、完成済みruntimeを持つ旧結果を拒否しない。
+                saved_resume = bool(params.get("resume_from_rds") and params.get("resume_rds_paths"))
+                if not saved_resume and (not all_paths or any(not Path(p).is_file() for p in all_paths)):
                     raise ValueError("解析対象ファイルが未選択、または見つかりません。")
                 params["input_paths"] = all_paths
                 # サンプル名も実際に読むファイルから引き直す。R 側のサンプル名は
@@ -1232,8 +1235,13 @@ def run_analysis(
             _params_to_save["calibration_regression_mode"] = calibration_regression_mode
             _params_to_save["calibration_table"] = calibration_table_data
             _params_to_save["calibration_by_sample"] = params.get("calibration_by_sample")
-            atomic_write_json(_params_to_save,
-                              Path(full_output_dir) / "analysis_params.json")
+            from app.services.analysis_pipeline import DeferredAnalysis
+            if isinstance(config_path, DeferredAnalysis):
+                # ★ ver70.0: 二重クリックの敗者が実行中の条件記録を上書きしない。
+                config_path.record = _params_to_save
+            else:
+                atomic_write_json(_params_to_save,
+                                  Path(full_output_dir) / "analysis_params.json")
         except Exception as e:
             raise ValueError(f"パラメータ保存に失敗: {e}") from e
 
@@ -1436,6 +1444,28 @@ def update_progress(n_intervals, app_state, log_search, log_level, log_lines_cou
     remaining_text = _estimator.format_remaining(est)
     step_display = _estimator.format_step(est)
     section_text = f"出力: {file_count} ファイル | ステップ: {step_display} | {remaining_text}"
+    # ★ ver70.0: 変換中のファイル数を解析進捗やETAへ誤換算しない。
+    from app.services.analysis_pipeline import pipeline_state
+    preparation = pipeline_state(output_dir)
+    stage = preparation.get("stage")
+    labels = {"accepted": "入力準備の受付", "hash": "原本の一致確認", "convert": "imzML変換",
+              "validate": "変換後の検証", "reuse": "検証済みParquetを再利用", "finalizing": "成果物を確認中"}
+    if stage in labels:
+        done, total = preparation.get("done", 0), preparation.get("total", 0)
+        detail = f" {done}/{total}画素" if stage == "convert" and total else ""
+        section_text = f"{labels[stage]}: {preparation.get('sample', '')}{detail}（R解析とは別段階）"
+        progress = 0 if stage != "finalizing" else 99
+    elif stage == "r_analysis":
+        # R段階のETAから入力変換時間を除外する。
+        try:
+            r_started = datetime.fromisoformat(preparation["r_started_at"])
+            r_est = _estimator.estimate(analysis_type, log_text_for_steps, r_started)
+            progress = min(99, int(r_est.fraction * 100)) if r_est.step_current > 0 else 0
+            section_text = f"R解析 | {_estimator.format_step(r_est)} | {_estimator.format_remaining(r_est)}"
+        except (KeyError, TypeError, ValueError):
+            progress, section_text = 0, "R解析を開始しています"
+    elif stage in ("error", "stopped"):
+        section_text = preparation.get("error", "入力処理を中断しました")
 
     if status in ("finished", "error"):
         final_status = status
@@ -1482,7 +1512,8 @@ def update_progress(n_intervals, app_state, log_search, log_level, log_lines_cou
             log_header = "❌ エラー発生"
 
         return (
-            styled_log, 100, "100%", section_text,
+            styled_log, (100 if final_status == "finished" else progress),
+            ("100%" if final_status == "finished" else f"{progress}%"), section_text,
             app_state, True,  # Interval 無効化
             {"display": "none"},  # 停止ボタン非表示
             {"display": "none"},  # 進捗バー非表示
@@ -1560,11 +1591,24 @@ def handle_stop(n_clicks, app_state):
             _job.get("analyst"), _me, output_dir,
         )
 
+    # ★ ver70.0: 停止とR起動の競合を防ぎ、親にRを新規起動させない。
+    if _job.get("process_started_at") is not None:
+        from app.services.process_control import matching_process
+        if not matching_process(_job.get("pid"), _job["process_started_at"]):
+            return "ジョブのPID/開始時刻が一致しないため停止しませんでした。", True
+    (Path(output_dir) / "log" / "pipeline.cancel").touch(exist_ok=True)
+    (Path(output_dir) / "log" / "analysis_status.txt").write_text("stopped", encoding="utf-8")
     if process is None:
         job = _job
         pid = job.get("pid")
         if pid and _job_registry.is_pid_alive(pid):
-            _stop_by_pid(pid, output_dir)
+            from app.services.process_control import terminate_tree
+            if job.get("process_started_at") is not None:
+                if not terminate_tree(pid, expected_start=job["process_started_at"]):
+                    return "ジョブのPID/開始時刻が一致しないため停止しませんでした。", True
+                (Path(output_dir) / "log" / "analysis_status.txt").write_text("stopped", encoding="utf-8")
+            else:
+                _stop_by_pid(pid, output_dir)
             return "停止リクエストを送信しました", True
         return "解析プロセスが見つかりませんでした（既に終了している可能性があります）", True
 
@@ -2633,26 +2677,44 @@ def _collect_preflight_errors(desi_method, tims_method,
     is_tims = bool(tims_method)
     is_reanalysis = analysis_type in ("desi_cluster_filter", "tims_cluster_filter")
     active_manifest = section_manifest_reanalysis if is_reanalysis else section_manifest
+    # ★ ver70.0: 保存済みcacheがある再開を、移動済み原本フォルダだけで拒否しない。
+    # 重いhash検証はここでは行わず、受付後のworkerに委ねる。
+    pinned_input_mode = False
+    if is_tims and (is_reanalysis or resume_rds):
+        from app.services.input_preparation import contains_imzml, pinned_inputs_present
+        if resume_rds and not is_reanalysis and rds_folder:
+            from app.services.execution_policy import result_root
+            saved_path = result_root(rds_folder) / "analysis_params.json"
+            if saved_path.is_file():
+                try:
+                    saved_record = json.loads(saved_path.read_text(encoding="utf-8"))
+                    saved_params = saved_record.get("runtime_parameters") or saved_record
+                    if contains_imzml(saved_params):
+                        active_manifest = saved_params.get("section_manifest")
+                except (OSError, ValueError, TypeError, AttributeError) as exc:
+                    blocking.append(f"保存済み入力の対応表を読めません: {exc}")
+        pinned_input_mode = (contains_imzml({"section_manifest": active_manifest})
+                             and pinned_inputs_present(active_manifest))
     if active_manifest is not None:
         blocking.extend(validate_section_manifest(active_manifest))
         annotation_filter = annotation_filter_reanalysis = roi_filter = None
 
     if is_reanalysis:
         r = validate_data_folder(reanalysis_data_folder, is_tims=is_tims)
-        if not r["ok"]:
+        if not r["ok"] and not pinned_input_mode:
             blocking.append(f"データフォルダ: {r['msg']}")
         r = validate_rds_folder(rds_folder_reanalysis)
         if not r["ok"]:
             blocking.append(f"RDSフォルダ: {r['msg']}")
     else:
         r = validate_data_folder(data_folder, is_tims=is_tims)
-        if not r["ok"]:
+        if not r["ok"] and not pinned_input_mode:
             blocking.append(f"データフォルダ: {r['msg']}")
         # ★ ver64.0: 追加データフォルダ (TIMS) も基準フォルダと同じ基準で見る。
         #   従来は検査対象外で、存在しないパスや空のフォルダを足しても
         #   何も言われないまま「そのフォルダの分だけ黙って抜けた」結果になった。
         #   空欄の行は「これから入力する行」なので止めない。
-        if analysis_type == "tims_v8":
+        if analysis_type == "tims_v8" and not pinned_input_mode:
             for folder in (extra_data_folders or []):
                 if not folder or not str(folder).strip():
                     continue

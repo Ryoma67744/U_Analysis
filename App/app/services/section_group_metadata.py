@@ -139,7 +139,10 @@ def normalize_pixel_id(value):
 def input_source_id(input_path, rds_path):
     if not rds_path:
         return None
-    matches = [f for f in load_result_manifest(rds_path).get("files", []) if Path(f["path"]).resolve() == Path(input_path).resolve()]
+    # ★ ver70.0: cacheパスからも原本file_idを取り出す。cacheのstemを識別子にしない。
+    matches = [f for f in load_result_manifest(rds_path).get("files", [])
+               if any(Path(p).resolve() == Path(input_path).resolve()
+                      for p in (f.get("path"), f.get("runtime_path")) if p)]
     return str(matches[0]["file_id"]) if len(matches) == 1 else None
 
 
@@ -148,7 +151,9 @@ def selected_input_paths(rds_path, suffixes):
     manifest = load_result_manifest(rds_path)
     if not manifest.get("files"):
         return None
-    paths = [str(f["path"]) for f in manifest["files"] if f.get("selection_mode") != "none" and Path(f["path"]).suffix.lower() in suffixes]
+    from app.services.input_preparation import runtime_paths
+    # ★ ver70.0: 出力は旧結果の固定済み全画素runtimeを使う。更新された原本で代用しない。
+    paths = [p for p in runtime_paths(manifest, validate=True) if Path(p).suffix.lower() in suffixes]
     missing = [p for p in paths if not Path(p).is_file()]
     if missing:
         raise ValueError("解析に選択された入力が見つかりません: " + " / ".join(missing))

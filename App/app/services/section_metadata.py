@@ -65,9 +65,13 @@ def build_section_manifest(catalog, selections=None, roles=None, group_rows=None
                 sections.append({"section_id": sid, "roi": roi,
                     "subject_id": str(saved.get("subject_id") or "").strip(),
                     "group": str(saved.get("group") or "").strip(), "integration_unit_id": sid})
-        result["files"].append({"file_id": fid, "path": path, "selection_mode": mode,
+        # ★ ver70.0: GUIの再構築で原本→runtimeの対応・固定revisionを消さない。
+        from app.services.input_preparation import DESCRIPTOR_KEYS
+        descriptors = {k: deepcopy(old[k] if k in old else item[k])
+                       for k in DESCRIPTOR_KEYS if k in old or k in item}
+        result["files"].append({**descriptors, "file_id": fid, "path": path, "selection_mode": mode,
             "rois": selected, "available_rois": available, "roi_role": role, "sections": sections})
-        result["file_settings"][path] = {"file_id": fid, "roi_role": role}
+        result["file_settings"][path] = {**descriptors, "file_id": fid, "roi_role": role}
         result["section_settings"].update({r["section_id"]: r for r in sections})
     return result
 
@@ -103,6 +107,14 @@ def validate_section_manifest(manifest):
     files = (manifest or {}).get("files", [])
     if not files or not any(f.get("selection_mode") != "none" for f in files):
         errors.append("解析対象の切片／ROIを選択してください。")
+    # ★ ver70.0: 同フォルダ同名の Parquet と imzML の二重投入を禁止する。
+    from app.services.input_preparation import validate_selected_paths, InputPreparationError
+    try:
+        selected = [f["path"] for f in files if f.get("path") and f.get("selection_mode") != "none"]
+        if selected:
+            validate_selected_paths(selected)
+    except InputPreparationError as exc:
+        errors.append(str(exc))
     seen_paths = set()
     for f in files:
         path = str(Path(f.get("path") or "").expanduser().resolve())
