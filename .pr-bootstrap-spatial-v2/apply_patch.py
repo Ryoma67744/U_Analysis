@@ -77,11 +77,34 @@ for name, item in expected.items():
             raise SystemExit(f'result blob mismatch on matching base: {name}: {blob} != {item["result_blob"]}')
         strict_verified += 1
 
+# GitHub上の広い回帰試験で、非imzML入力の画素メタデータ表に
+# ua_coordinate_component が存在しないため固定スキーマ契約を満たさないことを検出。
+# 元DataFrameを変えず、物理切片成分が無い入力では空列として出力する。
+metadata_path = REPO / 'App/app/services/section_group_metadata.py'
+text = metadata_path.read_text(encoding='utf-8')
+old = '''def export_metadata_frame(df):
+    cols = [c for c in ("CellID", "Sample", *METADATA_COLUMNS, "SpatialX", "SpatialY", "UMAP_1", "UMAP_2", "Cluster") if c in df.columns]
+    return df.loc[:, cols].copy()
+'''
+new = '''def export_metadata_frame(df):
+    out = df.copy(deep=False)
+    for column in METADATA_COLUMNS:
+        if column not in out.columns:
+            out[column] = ""
+    cols = [c for c in ("CellID", "Sample", *METADATA_COLUMNS, "SpatialX", "SpatialY", "UMAP_1", "UMAP_2", "Cluster") if c in out.columns]
+    return out.loc[:, cols].copy()
+'''
+if old not in text:
+    raise SystemExit('metadata export function no longer matches the reviewed implementation')
+metadata_path.write_text(text.replace(old, new, 1), encoding='utf-8')
+run('git', 'diff', '--check')
+
 print(json.dumps({
     'base': BASE,
     'branch': FINAL_BRANCH,
     'changed_files': len(expected),
     'patch_sha256': actual_sha,
-    'strict_result_blobs_verified': strict_verified,
+    'strict_result_blobs_verified_before_ci_fix': strict_verified,
     'main_preserved_base_mismatches': base_mismatches,
+    'ci_discovered_fix': 'empty ua_coordinate_component column for non-imzML metadata export',
 }, ensure_ascii=False, indent=2))
