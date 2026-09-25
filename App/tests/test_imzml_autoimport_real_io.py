@@ -2,6 +2,7 @@
 from pathlib import Path
 import json
 import zipfile
+import xml.etree.ElementTree as ET
 import numpy as np
 import pytest
 
@@ -13,7 +14,8 @@ def test_real_four_pixel_registration_and_selected_export(tmp_path,dtype,mode):
     pytest.importorskip('pyimzml', reason='actual imzML backend is unavailable')
     from pyimzml.ImzMLWriter import ImzMLWriter
     from pyimzml.ImzMLParser import ImzMLParser
-    from app.services.input_preparation import prepare_imzml,validate_asset
+    from app.services.input_preparation import prepare_imzml,validate_asset,InputPreparationError
+    from app.services.imzml_validation import inspect_binary_contract
     from app.services.section_metadata import build_section_manifest
     from app.services.imzml_io import export_imzml
     xml=tmp_path/'sample.imzML'
@@ -22,6 +24,19 @@ def test_real_four_pixel_registration_and_selected_export(tmp_path,dtype,mode):
     values=np.asarray([[1,2,3],[4,5,6],[7,8,9],[10,11,12]],dtype=dtype)
     with ImzMLWriter(str(xml),mode=mode,spec_type='profile',mz_dtype=np.float64,intensity_dtype=dtype) as w:
         for c,v in zip(coordinates,values):w.addSpectrum(axis,v,c)
+    # ★ ver70.0: pyimzMLのwriterはms level=0を出力するため、合成MS1 fixtureを明示する。
+    # 検査本体を緩めず、0を拒否することを確認してからテスト原本の属性だけを変更する。
+    tree=ET.parse(xml)
+    levels=[e for e in tree.iter() if e.get('accession')=='MS:1000511']
+    assert levels, '合成fixtureにMS level属性が必要です'
+    assert all(e.get('value') in {'0','1'} for e in levels)
+    if any(e.get('value')=='0' for e in levels):
+        with pytest.raises(InputPreparationError, match='MS level=0'):
+            inspect_binary_contract(xml)
+    for level in levels:
+        level.set('value','1')
+    ET.register_namespace('', 'http://psi.hupo.org/ms/mzml')
+    tree.write(xml,encoding='utf-8',xml_declaration=True)
     entry=build_section_manifest([{'path':str(xml),'available_rois':[]}])['files'][0]
     prepared=prepare_imzml(entry,cache_root=tmp_path/'cache')
     validate_asset(prepared)
