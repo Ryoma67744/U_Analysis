@@ -15,7 +15,6 @@ def run(*args: str, check: bool = True) -> str:
     p = subprocess.run(args, cwd=REPO, text=True, capture_output=True)
     if check and p.returncode:
         raise SystemExit((p.stdout + '\n' + p.stderr).strip())
-    # git status --porcelain の先頭空白は追跡状態の一部なので削除しない。
     return p.stdout.rstrip()
 
 parts = sorted(ROOT.glob('part*.txt'))
@@ -37,11 +36,25 @@ if exists.returncode == 0:
     raise SystemExit(f'remote branch already exists: {FINAL_BRANCH}')
 
 run('git', 'checkout', '-B', FINAL_BRANCH, 'origin/main')
+expected = {item['path']: item for item in MANIFEST['files']}
+base_blobs = {}
+base_mismatches = []
+for name, item in expected.items():
+    probe = subprocess.run(['git', 'rev-parse', f'HEAD:{name}'], cwd=REPO,
+                           text=True, capture_output=True)
+    actual = probe.stdout.strip() if probe.returncode == 0 else None
+    base_blobs[name] = actual
+    if actual != item.get('base_blob'):
+        base_mismatches.append({
+            'path': name,
+            'package_base_blob': item.get('base_blob'),
+            'main_base_blob': actual,
+        })
+
 run('git', 'apply', '--check', '--whitespace=error-all', str(PATCH))
 run('git', 'apply', '--whitespace=error-all', str(PATCH))
 run('git', 'diff', '--check')
 
-expected = {item['path']: item for item in MANIFEST['files']}
 changed_paths = set()
 for line in run('git', 'status', '--porcelain').splitlines():
     path = line[3:]
@@ -53,18 +66,22 @@ if changed_paths != set(expected):
     extra = sorted(changed_paths - set(expected))
     raise SystemExit(f'changed path mismatch; missing={missing}; extra={extra}')
 
+strict_verified = 0
 for name, item in expected.items():
     path = REPO / name
     if not path.is_file():
         raise SystemExit(f'missing result file: {name}')
     blob = run('git', 'hash-object', f'--path={name}', str(path))
-    if blob != item['result_blob']:
-        raise SystemExit(f'result blob mismatch: {name}: {blob} != {item["result_blob"]}')
+    if base_blobs[name] == item.get('base_blob'):
+        if blob != item['result_blob']:
+            raise SystemExit(f'result blob mismatch on matching base: {name}: {blob} != {item["result_blob"]}')
+        strict_verified += 1
 
 print(json.dumps({
     'base': BASE,
     'branch': FINAL_BRANCH,
     'changed_files': len(expected),
     'patch_sha256': actual_sha,
-    'result_blobs_verified': True,
+    'strict_result_blobs_verified': strict_verified,
+    'main_preserved_base_mismatches': base_mismatches,
 }, ensure_ascii=False, indent=2))
