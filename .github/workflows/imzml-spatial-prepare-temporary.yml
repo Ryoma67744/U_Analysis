@@ -49,8 +49,7 @@ jobs:
           git fetch origin main
           test "$(git rev-parse origin/main)" = '33b2e0122d054db42e34c0951d61bacab2bec43b'
           git checkout -B claude/imzml-spatial-sections-ver71-0 origin/main
-          test ! -e .pr-bootstrap-spatial
-          test ! -e .github/workflows/imzml-spatial-prepare-temporary.yml
+          rm -rf .pr-bootstrap-spatial .github/workflows/imzml-spatial-prepare-temporary.yml
           git apply --check /tmp/imzml-spatial-filtered.patch
           git apply /tmp/imzml-spatial-filtered.patch
           cp /tmp/test_imzml_autoimport_real_io.py App/tests/test_imzml_autoimport_real_io.py
