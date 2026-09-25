@@ -1,5 +1,4 @@
-# PR作成の転送・検証にのみ使用し、PRを開く前に削除する。
-# mainには書き込まず、明示した作業ブランチ以外では起動しない。
+# 作業専用ブランチの一時転送・検証用。mainへのPR差分には含めない。
 name: imzml-pr-prepare-temporary
 on:
   push:
@@ -16,11 +15,14 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        id: checkout
         with:
           fetch-depth: 0
-      - name: 固定差分を検証して作業ブランチへ登録
+      - name: 固定差分を検証して専用PRブランチへ登録
+        id: apply
         run: python3 .pr-bootstrap/apply_imzml_patch.py
       - name: アプリ既定依存とpytestを導入
+        id: dependencies
         run: python3 -m pip install --disable-pip-version-check --quiet -r App/requirements.txt pytest
       - name: 関連109ケースを実行（RとブラウザのE2Eは対象外）
         env:
@@ -35,7 +37,7 @@ jobs:
             App/tests/test_section_execution_policy.py \
             App/tests/test_version_consistency.py
       - name: 既存imzML・データ管理・SCiLSの関連回帰
-        if: always() && steps.checkout.outcome != 'failure'
+        if: always() && steps.apply.outcome == 'success' && steps.dependencies.outcome == 'success'
         env:
           PYTHONPATH: App
         run: python3 -m pytest -q App/tests/test_imzml_io.py App/tests/test_data_manager.py App/tests/test_scils_converter.py
