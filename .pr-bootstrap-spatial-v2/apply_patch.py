@@ -15,7 +15,8 @@ def run(*args: str, check: bool = True) -> str:
     p = subprocess.run(args, cwd=REPO, text=True, capture_output=True)
     if check and p.returncode:
         raise SystemExit((p.stdout + '\n' + p.stderr).strip())
-    return p.stdout.strip()
+    # git status --porcelain の先頭空白は追跡状態の一部なので削除しない。
+    return p.stdout.rstrip()
 
 parts = sorted(ROOT.glob('part*.txt'))
 if not parts:
