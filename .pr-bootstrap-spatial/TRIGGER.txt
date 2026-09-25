@@ -2,4 +2,5 @@ base=33b2e0122d054db42e34c0951d61bacab2bec43b
 patch_sha256=664ddd9428400f119753f96ee8ee36e08750f4b16fca0c5cfe89c31b179c1a72
 overlay=main-current-tests
 cleanup=explicit
+diagnostics=changed-files
 target=claude/imzml-spatial-sections-ver71-0
