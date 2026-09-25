@@ -336,7 +336,7 @@
     <div class="subtitle">
       {% block header_subtitle %}{% endblock %}
       {% if app_version %}
-      <span class="version-badge">📌 対応バージョン: {{ app_version }}</span>
+      <span class="version-badge">📌 アプリのバージョン: {{ app_version }}</span>
       {% endif %}
     </div>
   </header>
@@ -344,6 +344,7 @@
   <nav class="help-nav">
     <a href="/help/registration" class="{% block nav_reg %}{% endblock %}">🏠 登録画面ガイド</a>
     <a href="/help/analysis" class="{% block nav_ana %}{% endblock %}">⚙️ 解析画面ガイド</a>
+    <a href="/help/analysis#imzml-io">🧬 imzML 入出力</a>
     <div class="nav-spacer"></div>
     <a href="javascript:window.print()">🖨️ 印刷</a>
     <a href="/">↩ アプリに戻る</a>
@@ -357,7 +358,7 @@
     MSI Analysis Application — このページはアプリ内ヘルプ機能で表示しています。
     アプリ本体は <a href="/">こちら</a> から。
     {% if app_version %}
-    <div class="footer-version">対応バージョン: {{ app_version }}（この説明書は本バージョンの画面・機能に対応しています）</div>
+    <div class="footer-version">アプリのバージョン: {{ app_version }} ／ HELP 更新日: 2026-09-25</div>
     {% endif %}
   </footer>
 </body>

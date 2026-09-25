@@ -105,13 +105,34 @@
 
 | データ種別 | アップロード先 |
 |---|---|
-| DESI 生データ (.imzML, .ibd, フォルダ等) | `/srv/msi/desi_data/<サンプル名>/` |
-| TIMS 生データ (.d フォルダ等) | `/srv/msi/tims_data/<サンプル名>/` |
+| DESI 解析用テーブル（`.txt`） | `/srv/msi/desi_data/<サンプル名>/` |
+| TIMS 解析用 Parquet、SCiLS 変換用 CSV | `/srv/msi/tims_data/<サンプル名>/` |
+| imzML 登録用の `.imzML` + `.ibd` ペア | `/srv/msi/tims_data/<サンプル名>/`（登録後は TIMS 互換 Parquet として使用） |
 | 解析結果のダウンロード | `/srv/msi/output/<プロジェクト名>/` から取得 |
 
+`.d` フォルダを置くだけでは解析入力になりません。SCiLS 等で対応するテーブルまたは
+imzML / ibd ペアを書き出してから、必要な変換・登録を行ってください。
+
 **ルール**:
+
 - フォルダ名はASCII英数 + アンダースコア推奨（日本語可だがトラブル時の対処が複雑になる）
 - 同名フォルダがあると上書きされるので、`_v2` `_20260520` 等の接尾辞で衝突回避
+- imzML は同じ名前の `.imzML` と `.ibd` を同じフォルダへ転送し、両方の完了を確認してから登録
+- imzML 登録後のファイルを移す場合は、`sample.parquet` と `sample.imzml.json` を一緒に保管
+
+### SFTP とアプリのパスの違い
+
+下表はホスト側を `/srv/msi/` とした標準マウント構成の例です。サーバーの設定が異なる場合は
+「データ管理」の配置表示または管理者に確認してください。
+
+| SFTP で見える場所 | アプリに入力する場所（コンテナ内） |
+|---|---|
+| `/srv/msi/desi_data/` | `/app/Data/DESI/Data/` |
+| `/srv/msi/tims_data/` | `/app/Data/TIMS/Data/` |
+| `/srv/msi/output/` | `/app/Data/Other/output/` |
+
+例えば、SFTP で `/srv/msi/tims_data/sample/sample.imzML` に置いた場合、imzML 登録画面には
+`/app/Data/TIMS/Data/sample/sample.imzML` と入力します。ブラウザを開いている PC のパスではありません。
 
 ---
 
@@ -124,7 +145,27 @@ SFTPでアップロード完了したら:
 3. 「DESI生データ」または「TIMS生データ」のショートカットをクリック
 4. 一覧にアップロードしたフォルダが表示されることを確認
 
-表示が遅い場合は **ページを再読込（F5 / Cmd+R）** で更新されます。
+表示が遅い場合は「🔄 再読込」を押します。必要に応じてページも再読込（F5 / Cmd+R）してください。
+
+### 解析に使用するまで
+
+- `.txt` / 登録済み `.parquet`: 解析設定の「データフォルダ・サンプル選択」で、
+  対応する装置・データフォルダ・対象ファイル／切片を選びます。
+- SCiLS の CSV 群: サイドバー「🔄 SCiLS 変換」で Parquet に変換してから TIMS 解析を設定します。
+- `.imzML` + `.ibd`: サイドバー「🧬 imzML 入出力」で **「imzML + ibd → Parquet 登録」**を選び、
+  入力 `.imzML` と出力 `.parquet` の絶対パスを指定します。登録完了後に、その Parquet のあるフォルダを
+  TIMS のデータフォルダに指定します。対象は共通 m/z 軸・単一 z 面のデータです。
+
+アップロードや imzML 登録だけでは、UMAP・クラスタ解析は始まりません。
+imzML の操作・対応範囲は [IMZML_IO.md](IMZML_IO.md) を参照してください。
+
+### imzML 出力 ZIP を取得する
+
+「🧬 imzML 入出力」で **「登録済み Parquet → imzML + ibd ZIP」**を選びます。
+入力には登録済み Parquet（同名の `.imzml.json` が必要）、出力には例えば
+`/app/Data/Other/output/sample_export.zip` を指定します。
+完了後、SFTP では `/srv/msi/output/sample_export.zip` から取得できます。
+現時点では imzML 入出力画面にブラウザのダウンロードボタンはありません。
 
 ---
 
@@ -136,6 +177,9 @@ SFTPでアップロード完了したら:
 | 「Permission denied」エラー | サーバー管理者に `msi-lab` グループへの追加を依頼 |
 | アップロード途中で切断 | 再接続して同じファイルを再ドロップ → レジューム機能で続きから |
 | アプリで表示されない | ページ再読込 / フォルダ名にスペースや特殊文字が無いか確認 |
+| imzML はあるのに解析対象に出ない | まず「🧬 imzML 入出力」で Parquet 登録し、TIMS のデータフォルダに登録先を指定 |
+| imzML 登録で ibd が見つからない | 両方の転送完了、同じフォルダ、拡張子を除いた名前の一致を確認 |
+| imzML 出力で manifest がないと言われる | 入力が imzML 登録済み Parquet か確認。同名 `.imzml.json` を同じフォルダに置く |
 | 接続できない（タイムアウト） | VPN/ファイアウォール設定、サーバー稼働状態を管理者に確認 |
 | パスワードを忘れた | サーバー管理者にリセット依頼 |
 
@@ -153,3 +197,5 @@ SFTPでアップロード完了したら:
 
 - `App/docs/DATA_LAYOUT.md` — サーバー上のディレクトリ構成・マウント対応
 - `App/docs/DEPLOY.md` — デプロイ全体手順
+- [IMZML_IO.md](IMZML_IO.md) — imzML / ibd の登録・出力
+- [EXPORT_DATA_FORMATS.md](EXPORT_DATA_FORMATS.md) — 出力データの形式・値の意味
