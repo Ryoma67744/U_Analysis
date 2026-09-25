@@ -10,6 +10,8 @@
   <div class="alert-title">💡 このページについて</div>
   プロジェクトを選択した後に表示される「解析画面」の使い方をまとめています。
   データフォルダ指定・解析実行・インタラクティブ解析などはここで行います。
+  imzML の登録・出力は <a href="#imzml-io">専用の操作手順</a>、MSI 上での領域作成は
+  <a href="#msi-roi">解剖×クラスタの手順</a>を参照してください。
 </div>
 
 <div class="toc">
@@ -17,6 +19,7 @@
   <ol>
     <li><a href="#intro">🌟 はじめに（DESI / TIMS 概要）</a></li>
     <li><a href="#prepare">📁 データ準備（SFTPアップロード）</a></li>
+    <li><a href="#imzml-io">🧬 imzML 登録・出力（対応範囲と手順）</a></li>
     <li><a href="#settings">⚙️ 解析設定タブ</a>
       <ul>
         <li><a href="#standard-flow">🚀 標準フロー（手法別 早見）</a></li>
@@ -33,6 +36,7 @@
         <li><a href="#onthefly-analysis">🆕 その場で実行する解析（選択統計 / 選択DE）</a></li>
         <li><a href="#feature-lists">🆕 Feature リスト + 共発現散布図</a></li>
         <li><a href="#hne-split">🆕 H&amp;E オーバーレイ / 分割表示</a></li>
+        <li><a href="#msi-roi">🖊 解剖×クラスタ：MSI に直接 ROI を描く</a></li>
       </ul>
     </li>
     <li><a href="#export-formats">📦 エクスポートデータの形式（出力ファイルの中身）</a></li>
@@ -41,7 +45,7 @@
     <li><a href="#errors">🛟 よくあるエラー</a></li>
     <li><a href="#faq">❓ FAQ</a></li>
     <li><a href="#changelog">📝 バージョン履歴</a></li>
-    <li><a href="#maintenance">🧰 保守・ツール（RDS軽量化 / Parquet 再パック / 環境設定 / SCiLS）</a></li>
+    <li><a href="#maintenance">🧰 保守・ツール（RDS軽量化 / Parquet 再パック / 環境設定 / SCiLS / imzML）</a></li>
   </ol>
 </div>
 
@@ -71,7 +75,7 @@
     <div class="ui-card">
       <span class="icon">🩻</span>
       <div class="name">解剖×クラスタ (H&amp;E)</div>
-      <p class="small mb-0">組織像(H&amp;E)の登録・位置合わせ。解剖領域とクラスタの対応付け</p>
+      <p class="small mb-0">MSI または H&amp;E に領域を描画。組織像の登録・位置合わせと領域×クラスタの集計</p>
     </div>
   </div>
 </div>
@@ -91,7 +95,8 @@
   </thead>
   <tbody>
     <tr><td>正式名称</td><td>Desorption Electrospray Ionization</td><td>Trapped Ion Mobility Spectrometry</td></tr>
-    <tr><td>入力ファイル</td><td><code>.imzML</code> + <code>.ibd</code> (Bruker/Waters)</td><td><code>.d</code> フォルダ (Bruker) + Parquet annotation</td></tr>
+    <tr><td>解析で読むファイル</td><td>所定の表形式の <code>.txt</code>。同じ形式の CSV / Excel は TXT に変換して使用</td><td><code>.parquet</code> / <code>.pq</code> を優先。Parquet がないフォルダは対応する CSV / TSV / TXT を使用</td></tr>
+    <tr><td>imzML の入口</td><td colspan="2"><code>.imzML</code> と <code>.ibd</code> は「imzML 入出力」で Parquet に変換し、TIMS 側の解析経路で使用。<code>.d</code> フォルダを直接解析する機能はありません</td></tr>
     <tr><td>解析対象の選択</td><td>ファイルごとの切片／ROI</td><td>ファイルごとの切片／annotation（追加フォルダも可）</td></tr>
     <tr><td>主な解析手法</td><td>UMAP + クラスタリング</td><td>UMAP + DBSCAN + アノテーション</td></tr>
     <tr><td>解析時間目安</td><td>5〜30分（サンプル数次第）</td><td>10〜60分（イオン数次第）</td></tr>
@@ -201,7 +206,7 @@
 
     <rect x="600" y="40" width="190" height="120" rx="8" fill="#fff" stroke="#388e3c" stroke-width="2"/>
     <text x="695" y="68" text-anchor="middle" fill="#388e3c" font-size="16" font-weight="bold">📱 アプリ</text>
-    <text x="695" y="92" text-anchor="middle" fill="#2c3e50" font-size="11">「データ管理」タブ</text>
+    <text x="695" y="92" text-anchor="middle" fill="#2c3e50" font-size="11">「解析設定」→「データ管理」</text>
     <text x="615" y="112" fill="#6c757d" font-size="11">✅ desi_data 一覧表示</text>
     <text x="615" y="128" fill="#6c757d" font-size="11">✅ tims_data 一覧表示</text>
     <text x="615" y="144" fill="#6c757d" font-size="11">✅ output 一覧表示</text>
@@ -222,6 +227,12 @@
   <code>App/docs/SFTP_GUIDE.md</code> を参照してください。
   接続情報（ホスト名・ユーザー名・パスワード）はサーバー管理者から取得します。
 </p>
+
+<p>imzML は同じ名前の <code>sample.imzML</code> と <code>sample.ibd</code> を
+同じフォルダへ配置します。アップロード後に <a href="#imzml-io">imzML 登録</a>を行い、
+作成された Parquet の保存フォルダを解析設定で指定してください。
+入力欄はアプリが動いているサーバーから見えるパスです。Docker を使用している場合は
+アプリ内のパスと SFTP 上のパスの対応を管理者に確認してください。</p>
 
 <div class="help-alert warn">
   <div class="alert-title">⚠️ フォルダ命名規則</div>
@@ -244,6 +255,9 @@
   <li>正規化・変換・m/zアライメントを確認し、「解析対象：6切片 ／ 算出する結果：PCA・Harmony・RPCA」などの実行前表示を確認して開始します。</li>
 </ol>
 <p>TIMSでSCiLS RMS正規化済みの入力は二重正規化を避けます。DESI生データの正規化など、既存の前処理設定は引き続き独立して指定できます。</p>
+<p>imzML から登録した入力の正規化状態は自動判定されません。SCiLS の出力条件を確認し、
+RMS 正規化済みなら追加の総量正規化を OFF にします。未正規化の入力に TIMS の既定設定を
+そのまま適用せず、<a href="#interpretation">前処理設定</a>を確認してください。</p>
 
 <h3 class="subsection-heading" id="tims-scenario">🧭 切片数に応じた自動解析</h3>
 <table class="help-table"><thead><tr><th>有効な切片数</th><th>計算する結果</th></tr></thead><tbody>
@@ -461,7 +475,7 @@
   </thead>
   <tbody>
     <tr><td>🎯 <strong>UMAP 表示</strong></td><td>統合 UMAP / サンプル別 UMAP。クラスタ別・サンプル別の色分け、凡例・ラベルの表示切替、マーカーサイズ調整、クラスタのハイライト</td></tr>
-    <tr><td>🗺 <strong>空間マッピング</strong></td><td>組織切片上にクラスタを色塗り表示。サンプルごとの回転（0/90/180/270°）・水平/垂直反転（§6.1）、特定 m/z 強度のオーバーレイ</td></tr>
+    <tr><td>🗺 <strong>空間マッピング</strong></td><td>組織切片上にクラスタを色塗り表示。サンプルごとの<a href="#flip-rotation">回転・水平/垂直反転</a>、特定 m/z 強度のオーバーレイ</td></tr>
     <tr><td>📈 <strong>Feature Plot</strong></td><td>m/z を検索して UMAP / 空間上に強度を表示。よく使う m/z はブックマーク可能</td></tr>
     <tr><td>🌋 <strong>DEG・Volcano</strong></td><td>クラスタ間の発現差（DEG）を Volcano plot で表示。クラスタごとの Top マーカーも確認</td></tr>
     <tr><td>🔗 <strong>クラスタ マージ</strong></td><td>複数クラスタを 1 つに統合（過分割の修正）</td></tr>
@@ -471,13 +485,13 @@
     <tr><td>🏷 <strong>ラベル位置編集</strong></td><td>クラスタ名ラベルをドラッグして位置調整（RDS 単位で保存）</td></tr>
     <tr><td>🎚 <strong>m/z キャリブレーション</strong></td><td>既知の m/z ペアで補正（線形 / 多項式）。指定クラスタを再アノテーション</td></tr>
     <tr><td>📤 <strong>エクスポート</strong></td><td>PPT レポート（クラスタ別 UMAP / 空間 / Volcano）、PNG 一括、クラスタ統計・DEG の CSV 出力</td></tr>
-    <tr><td>📌 <strong>サムネ登録</strong></td><td>UMAP / 空間プロット下の「📌 サムネ登録」で、現在の図をプロジェクト一覧のサムネに設定（§12）</td></tr>
+    <tr><td>📌 <strong>サムネ登録</strong></td><td>UMAP / 空間プロット下の「📌 サムネ登録」で、現在の図をプロジェクト一覧のサムネに設定（§11）</td></tr>
     <tr><td>🗂 <strong>プロジェクトとして保存</strong></td><td>現在のインタラクティブ結果を新規 / 既存プロジェクトに保存（結果・MSI フォルダのパスは自動補完）</td></tr>
     <tr><td>💾 <strong>結果を保存</strong></td><td>編集内容を新しい RDS として明示的に書き出し</td></tr>
-    <tr><td>🖊 <strong>ポリゴン選択</strong></td><td>🆕 UMAP 上でクリックして頂点を置き、関心領域を多角形で囲って選択（§6 <a href="#selection-groups">選択グループ</a>）</td></tr>
+    <tr><td>🖊 <strong>ポリゴン選択</strong></td><td>🆕 UMAP 上でクリックして頂点を置き、関心領域を多角形で囲って選択（§5 <a href="#selection-groups">選択グループ</a>）</td></tr>
     <tr><td>🏷 <strong>選択グループ</strong></td><td>🆕 選択に名前を付けて保存・改名・削除・結合・CSV 入出力。選択統計 / 選択DE に再利用</td></tr>
     <tr><td>📊 <strong>選択統計 / 選択DE</strong></td><td>🆕 選択範囲の構成比・平均強度を即時表示。選んだ範囲 vs 全体（Globally）や A vs B（Locally）の DE をその場で検定</td></tr>
-    <tr><td>🧪 <strong>Feature リスト / 共発現</strong></td><td>🆕 m/z を検索してリスト化。2 リストの共局在散布図を描画（§6 <a href="#feature-lists">Feature リスト</a>）</td></tr>
+    <tr><td>🧪 <strong>Feature リスト / 共発現</strong></td><td>🆕 m/z を検索してリスト化。2 リストの共局在散布図を描画（§5 <a href="#feature-lists">Feature リスト</a>）</td></tr>
     <tr><td>🩻 <strong>H&amp;E オーバーレイ / 分割表示</strong></td><td>🆕 組織像を Spatial 背景に重畳。UMAP をサンプル/クラスタ/選択グループで分割比較</td></tr>
   </tbody>
 </table>
@@ -631,9 +645,27 @@
     同じ縮尺で並べて比較できます。</li>
 </ul>
 
-<!-- ============================================ -->
+<h3 class="subsection-heading" id="msi-roi">🖊 解剖×クラスタ：MSI に直接 ROI を描く（ver68.0〜）</h3>
+<ol>
+  <li>「インタラクティブ解析」で解析結果を読み込み、「解剖×クラスタ」タブを開きます。</li>
+  <li>「個体 (Sample)」で対象を選び、描画先を <strong>「MSI（TIC）に描く」</strong>にします。
+    MSI に描く場合、H&amp;E 画像のアップロードや対応点は不要です。</li>
+  <li>「操作（拡大/移動）」で表示を調整してから、<strong>「領域を描く（ポリゴン）」</strong>に切り替えます。</li>
+  <li>MSI 上をクリックして3点以上の頂点を置き、<strong>「領域を確定」</strong>を押します。
+    頂点はスポットのない背景にも置けます。「頂点を取り消し」「下書きクリア」で修正できます。</li>
+  <li>領域一覧の「領域名」「グループ」を設定し、<strong>「③ 領域を spot に割当 → 集計」</strong>を押します。
+    割り当てた画素を確認してから、解析用データを出力します。</li>
+</ol>
+<p>描画先を切り替えると下書きは消えます。確定した MSI 領域は、表示を回転・反転しても同じ測定画素を対象にします。
+H&amp;E に描く場合は画像と MSI の位置合わせが必要です。位置合わせが未完了の H&amp;E 領域を混在させると、
+その領域は集計から除外され、画面と出力 ZIP に示されます。UMAP 上の「選択グループ」とは別の操作です。</p>
+<p>この ROI を作成しただけでは、<a href="#imzml-export">imzML 出力の画素 ID</a>には自動反映されません。</p>
+
 <!-- ============================================ -->
 <h2 class="section-heading" id="export-formats">📦 エクスポートデータの形式（インタラクティブ / MetaboAnalyst）</h2>
+
+<p>imzML＋ibd の出力は、サイドバーの <a href="#imzml-export">「imzML 入出力」</a>を使用します。
+以下の「データ出力」の形式選択は Parquet / CSV / Excel です。</p>
 
 <div class="help-alert tip">
   <div class="alert-title">💡 このセクションの使い方</div>
@@ -646,7 +678,7 @@
 <p class="small">
   用語: <strong>統合手法</strong>（Harmony / RPCA / PCA）は UMAP・クラスタリングの手法で、
   <strong>強度には影響せずクラスタ割当のみが変わる</strong>。<code>annotation</code> は変換データ由来の
-  スポット注釈（SCiLS 由来）、<strong>領域名(ROI)</strong> は H&amp;E オーバーレイで描いた領域ラベルで、両者は別物。
+  スポット注釈、<strong>領域名(ROI)</strong> は「解剖×クラスタ」で MSI または H&amp;E に描いた領域ラベルで、両者は別物。
 </p>
 
 <h3 class="subsection-heading">1) TIMS / インタラクティブ画面「データ出力」</h3>
@@ -654,7 +686,7 @@
 <pre>【MSI解析アプリ 出力ファイル形式：TIMS / インタラクティブ画面「データ出力」】
 
 ファイル名: UMAP_cluster_TIMS.xlsx / UMAP_cluster_TIMS.csv / UMAP_cluster_TIMS.parquet
-           （出力時に xlsx / csv / parquet から選択。xlsx はシート名 "Data"）
+           （既定は Parquet。出力時に xlsx / csv / parquet から選択。xlsx はシート名 "Data"）
 概要: TIMS の元MSIデータ（全スポット × 全m/z強度）に、UMAPクラスタ列と領域名(ROI)列を付加した
       1つの表。全切片(セクション)を縦に連結した単一テーブル。
 
@@ -669,25 +701,25 @@
   [1]    id          : スポット連番（整数）
   [2]    x           : 空間X座標（数値）
   [3]    y           : 空間Y座標（数値）
-  [4..N] &lt;m/z 列群&gt;  : 各 m/z の強度（数値, float32）。列は数百〜数千。
+  [4..N] &lt;m/z 列群&gt;  : 各 m/z の保存強度（数値, 入力により float32 / float64）。列数は入力による。
                         列名は「化合物名付き」(例: Glutathione_611.1439 | [M-H]-)
                         または m/z 数値文字列(例: 611.143900)。値=そのスポットでのその m/z の強度。
-  [N+1]  annotation  : スポットの注釈ラベル（文字列, SCiLS由来）。切片/サンプルの識別子。
+  [N+1]  annotation  : スポットの注釈ラベル（文字列）。imzML登録直後は Unannotated。
   --- ここから下はアプリが追加する列（右端に付く）---
   [UMAPクラスタ列]    : ・複数の統合手法を出力した場合 → 手法ごとに1列。
                           列名 = 手法名（"RPCA" / "Harmony" / "PCA"）。値 = クラスタ番号(例 cluster3)。
                         ・統合手法が1つの場合 → 列名 "UMAP cluster" の1列。
                         ・未該当スポットは空欄。クラスタ番号は手法ごとに変わる（強度は手法非依存）。
-  [最終列] 領域名     : H&amp;Eオーバーレイで割り当てた ROI 領域名（例 Brain）。未割当は空欄。
+  [最終列] 領域名     : 解剖×クラスタで割り当てた MSI / H&amp;E の ROI 領域名（例 Brain）。未割当は空欄。
 
 ■ 値・突合の注意
-  ・m/z強度 = 測定強度（変換後の生値）。
-  ・新形式のクラスタと群情報は元ファイルID＋元画素IDで照合。旧結果とH&amp;E領域名には従来のサンプル＋座標照合を使います。
+  ・m/z強度 = 登録ファイルの保存値。元ファイルで正規化済みなら、その正規化済み強度。
+  ・新形式のクラスタと群情報は元ファイルID＋元画素IDで照合。旧結果とMSI / H&amp;E領域名には従来のサンプル＋座標照合を使います。
   ・ver59.0: 既定では「UMAP 解析に使っていない切片」の行を出力しない。したがって出力に残る
      空欄は「クラスタ未割当」だけを意味する（「そもそも解析していない」ではない）。
      除外した切片名と行数は生成時のステータスに必ず表示される。
-  ・「annotation」(SCiLS由来スポット注釈) と「領域名」(H&amp;E ROI) は別物。
-  ・領域名は H&amp;E オーバーレイで ROI を割り当てて初めて値が入る（未設定なら列はあるが全空欄）。</pre>
+  ・「annotation」(入力のスポット注釈) と「領域名」(MSI / H&amp;E ROI) は別物。
+  ・領域名は解剖×クラスタで ROI を割り当てて初めて値が入る（未設定なら列はあるが全空欄）。</pre>
 
 <h3 class="subsection-heading">2) DESI / インタラクティブ画面「データ出力」</h3>
 <p class="small">元の DESI <code>.txt</code> を切片ごとに保持し（1切片=1シート）、各スポット行の右端に UMAP クラスタ列と領域名(ROI)列を付加。</p>
@@ -717,7 +749,7 @@
   --- ここから下はアプリが追加する列（各データ行の右端に付く）---
   [UMAPクラスタ列]    : ・複数手法 → 手法ごとに1列（列名 = "RPCA"/"Harmony"/"PCA"）。値=クラスタ番号。
                         ・単一手法 → 列名 "UMAP cluster" の1列。未該当は空欄。
-  [最終列] 領域名     : H&amp;Eオーバーレイの ROI 領域名。未割当スポットは空欄。
+  [最終列] 領域名     : 解剖×クラスタの MSI / H&amp;E ROI 領域名。未割当スポットは空欄。
 
 ■ 値・突合の注意
   ・クラスタ列・領域名は (サンプル名, x, y) を小数4桁に丸めて照合し付与。
@@ -778,14 +810,14 @@ ZIP名: metaboanalyst_&lt;強度種別&gt;_&lt;単位&gt;[_qea].zip
   技術差を生物差と取り違える恐れがあります。解析前・結果確認前に必ず一読してください。
 </div>
 
-<h3 class="subsection-heading">7.1 データの前提（交絡）</h3>
+<h3 class="subsection-heading">6.1 データの前提（交絡）</h3>
 <p>
   典型例として、<code>E14 / E16 / E18 / P0</code> などの発生段階を<strong>各1切片</strong>で測定し、
   各切片を独立に取得（別ラン）、入力は <strong>SCiLS の RMS で正規化済み</strong>、というケースがあります。
   この場合 <strong>「測定（ラン/切片）」と「生物条件（段階）」が1対1で対応＝交絡</strong>しています。
 </p>
 
-<h3 class="subsection-heading">7.2 正規化（RMS / TIC / LogNormalize）</h3>
+<h3 class="subsection-heading">6.2 正規化（RMS / TIC / LogNormalize）</h3>
 <table class="help-table">
   <thead><tr><th>用語</th><th>内容</th></tr></thead>
   <tbody>
@@ -800,21 +832,21 @@ ZIP名: metaboanalyst_&lt;強度種別&gt;_&lt;単位&gt;[_qea].zip
   scRNA で library-size 正規化をしても別途バッチ補正が要るのと同じで、<strong>正規化とバッチ補正は別レイヤ</strong>です。
 </div>
 
-<h3 class="subsection-heading">7.3 バッチ効果と交絡</h3>
+<h3 class="subsection-heading">6.3 バッチ効果と交絡</h3>
 <ul>
   <li>各段階1切片＝<strong>バッチが段階と完全交絡</strong> → 技術差と生物差を<strong>数学的に分離できない</strong>（計算困難でなく原理的に不可）。</li>
   <li>空間トランスクリプトーム・メタボロミクス両分野の共通見解：「全条件が各1バッチなら補正不能。<strong>反復</strong>か<strong>共有参照（QC/内部標準）</strong>が必要」。</li>
   <li>発生空間アトラス MOSTA は<strong>各段階4〜6切片の反復</strong>を置いて交絡を回避している。</li>
 </ul>
 
-<h3 class="subsection-heading">7.4 Harmony / RPCA の挙動と限界</h3>
+<h3 class="subsection-heading">6.4 Harmony / RPCA の挙動と限界</h3>
 <ul>
   <li>交絡下で段階をバッチとして補正すると、<strong>技術差と生物差を一体で除去</strong>（過補正）。両者を区別する機能はない。</li>
   <li>調整の程度はデータとパラメータに依存し、HarmonyとRPCAの強弱を一律には順位づけられません。補正だけで技術差と生物差を分離できるとは限りません。</li>
   <li>条件とバッチを分離する専用手法（scDisInFact 等）も <em>multi-batch × multi-condition</em> 設計が前提＝1切片/段階では使えない。</li>
 </ul>
 
-<h3 class="subsection-heading">7.5 結果の読み方（PCA / Harmony・RPCA / UMAP）</h3>
+<h3 class="subsection-heading">6.5 結果の読み方（PCA / Harmony・RPCA / UMAP）</h3>
 <table class="help-table">
   <thead><tr><th>ビュー</th><th>映るもの</th><th>段階の生物差として</th></tr></thead>
   <tbody>
@@ -829,7 +861,7 @@ ZIP名: metaboanalyst_&lt;強度種別&gt;_&lt;単位&gt;[_qea].zip
   差の定量は <strong>PCA 分散・統計検定（DE 等）</strong>で行います。
 </div>
 
-<h3 class="subsection-heading">7.6 解剖アンカーによる解釈</h3>
+<h3 class="subsection-heading">6.6 解剖アンカーによる解釈</h3>
 <p>
   「<strong>解剖学的に同じ領域なのに ROI の色（クラスタ/発現）が違う</strong>」＝ 生物差の<strong>有力な候補</strong>です。
   解剖は外部の生物学的アンカーで計算統合より頑健（「別構造だから違う」交絡を除ける）。
@@ -840,15 +872,15 @@ ZIP名: metaboanalyst_&lt;強度種別&gt;_&lt;単位&gt;[_qea].zip
   <li>確証は<strong>反復／直交検証</strong>（既知マーカー・別手法・共有参照）。</li>
 </ul>
 
-<h3 class="subsection-heading">7.7 推奨運用</h3>
+<h3 class="subsection-heading">6.7 推奨運用</h3>
 <ul>
-  <li><strong>正規化</strong>：RMS済み → 「正規化 OFF」(<code>INPUT_NORMALIZED=TRUE</code>) ＋ <code>NORM_MODE=log1p</code>。生データの直入れは不可。</li>
+  <li><strong>正規化</strong>：RMS済み → 「正規化 OFF」(<code>INPUT_NORMALIZED=TRUE</code>) ＋ <code>NORM_MODE=log1p</code>。未正規化の入力は対応する総量正規化を設定します。入力形式と正規化状態は別に確認してください。</li>
   <li><strong>表示</strong>：<strong>未補正(PCA)を必ず併記</strong>（基準・段階比較の本命）。Harmony/RPCA は「共通性」ビューと役割を明示。</li>
   <li><strong>補正手法</strong>：自動計算した各結果とPCAを比較し、切片・群・組織構造との対応を確認します。</li>
   <li><strong>診断</strong>：未補正 UMAP を総強度/QC で色分け（残存技術チェック）、組成ビュー、PreFlight の交絡判定（<code>not_identifiable</code>）を確認。</li>
 </ul>
 
-<h3 class="subsection-heading">7.8 確証に必要なこと</h3>
+<h3 class="subsection-heading">6.8 確証に必要なこと</h3>
 <div class="help-alert warn">
   <div class="alert-title">⚠️ 確証には実験デザインが必要</div>
   <strong>各段階に反復切片（≥2）</strong>、または<strong>全ランで測る共有参照（プールQC/内部標準）</strong>があって
@@ -1058,11 +1090,32 @@ ZIP名: metaboanalyst_&lt;強度種別&gt;_&lt;単位&gt;[_qea].zip
 <!-- ============================================ -->
 <h2 class="section-heading" id="changelog">📝 10. バージョン履歴</h2>
 
+<p>主な変更の抜粋です。imzML の対応範囲は <a href="#imzml-io">操作手順と制限</a>を確認してください。</p>
+
 <table class="help-table">
   <thead>
     <tr><th>バージョン</th><th>主要変更点</th></tr>
   </thead>
   <tbody>
+    <tr>
+      <td><strong>ver69.1</strong><br><span class="text-muted small">2026-09-25</span></td>
+      <td>HELP に imzML 登録・出力と MSI 上の ROI 作成の手順を追加。入力形式、取得方法、現在の制限を現行実装に合わせて更新しました。</td>
+    </tr>
+    <tr>
+      <td><strong>ver69.0</strong><br><span class="text-muted small">2026-09-25</span></td>
+      <td>「imzML 入出力」を追加。共通軸の imzML＋ibd を Parquet に登録し、登録した全画素／指定画素を
+        imzML＋ibd の ZIP に出力する初期対応。ROI 選択・GPT API・既存ダウンロードとの連携は未対応。</td>
+    </tr>
+    <tr>
+      <td><strong>ver68.0</strong><br><span class="text-muted small">2026-09-16</span></td>
+      <td>「解剖×クラスタ」で MSI（TIC）に直接ポリゴンを描けるようになりました。
+        H&amp;E 画像なしで領域を作成し、画素への割当・領域×クラスタ集計へ進めます。</td>
+    </tr>
+    <tr>
+      <td><strong>ver67.0〜67.1</strong><br><span class="text-muted small">2026-09-14</span></td>
+      <td>ファイルごとの切片／ROI 選択を中心とした解析に整理。
+        群・個体情報の任意登録と、同一個体の連続切片を扱う入力例を追加しました。</td>
+    </tr>
     <tr>
       <td><strong>ver28.0〜32.0</strong><br><span class="text-muted small">2026-06</span></td>
       <td>
@@ -1082,7 +1135,7 @@ ZIP名: metaboanalyst_&lt;強度種別&gt;_&lt;単位&gt;[_qea].zip
         🆕 <strong>Loupe Browser 9 を参考にしたインタラクティブ解析の大幅拡張</strong>：<br>
         ① <strong>選択基盤</strong>（共有選択 + 選択範囲のライブ統計カード）<br>
         ② <strong>選択DE</strong>（選択 vs 全体＝Globally / A vs B＝Locally をその場で検定 → Volcano/表/violin に反映）<br>
-        ③ <strong>選択グループ</strong>（名前付き選択の保存・改名・削除・結合・CSV 入出力・下流再利用、§6 <a href="#selection-groups">使用例</a>）<br>
+        ③ <strong>選択グループ</strong>（名前付き選択の保存・改名・削除・結合・CSV 入出力・下流再利用、§5 <a href="#selection-groups">使用例</a>）<br>
         ④ <strong>H&amp;E オーバーレイ</strong>（組織像を Spatial 背景に重畳 + 透明度 + 残差 px）<br>
         ⑤ <strong>分割表示 / Feature リスト + 共発現散布図 / 選択クラスタ→再解析の橋渡し</strong><br>
         ⑥ <strong>非機能改善</strong>：入力バリデーション + リセット / 削除取り消し（Undo）、エクスポート文言統一、Playwright 自動 E2E<br>
@@ -1110,7 +1163,7 @@ ZIP名: metaboanalyst_&lt;強度種別&gt;_&lt;単位&gt;[_qea].zip
         <strong>プロジェクトサムネ表示</strong>（一覧カード、インタラクティブから登録）/
         サブプロ一覧で<strong>プロジェクト関連情報を編集可能化</strong> /
         <strong>RDS 軽量化</strong>・<strong>環境設定（.env）</strong>・<strong>SCiLS 変換</strong>などの保守ツール追加
-        （詳細は §12）
+        （詳細は §11）
       </td>
     </tr>
     <tr>
@@ -1153,12 +1206,12 @@ ZIP名: metaboanalyst_&lt;強度種別&gt;_&lt;単位&gt;[_qea].zip
 </table>
 
 <!-- ============================================ -->
-<h2 class="section-heading" id="maintenance">🧰 11. 保守・ツール（RDS軽量化 / Parquet 再パック / 環境設定 / SCiLS 変換）</h2>
+<h2 class="section-heading" id="maintenance">🧰 11. 保守・ツール（変換・imzML 入出力など）</h2>
 
 <p>
   日常解析以外の保守系ツールです。<strong>RDS軽量化</strong>・<strong>Parquet 再パック</strong>・
   <strong>環境設定</strong>はランディングページ（プロジェクト一覧）右上のボタンから、
-  <strong>SCiLS 変換</strong>は解析設定タブのサイドバーの「🔄 SCiLS 変換」ボタンから開きます。
+  <strong>SCiLS 変換</strong>と<strong>imzML 入出力</strong>は解析設定タブのサイドバーから開きます。
   RDS軽量化と Parquet 再パックは解析設定タブのサイドバーからも開けます。
 </p>
 
@@ -1206,7 +1259,7 @@ ZIP名: metaboanalyst_&lt;強度種別&gt;_&lt;単位&gt;[_qea].zip
 </p>
 <ul>
   <li><strong>入力フォルダ</strong>: SCiLS 出力フォルダ</li>
-  <li><strong>出力先フォルダ</strong>: 既定は <code>TIMS_DATA_DIR</code>（変換後すぐ解析タブの候補に出る）</li>
+  <li><strong>出力先フォルダ</strong>: 既定は <code>TIMS_DATA_DIR</code>。変換完了後、そのフォルダを解析設定で選び直して候補を確認します</li>
   <li><strong>サンプル名</strong>: 出力ファイル名（拡張子は自動付与）</li>
   <li>詳細設定: 変換後に元 CSV を <code>&lt;BASE&gt;_Transform/</code> へ移動 / Parquet を float32 で保存（容量半減）/
     spot ブロックサイズ＝<strong>読み込み単位</strong>（既定 200。出力の row group サイズとは無関係）</li>
@@ -1215,6 +1268,88 @@ ZIP名: metaboanalyst_&lt;強度種別&gt;_&lt;単位&gt;[_qea].zip
     メモリが足りない場合のみ自動で分割し、変換結果に警告が出ます。
     <strong>以前に変換した parquet（200 行/row group）もそのまま読めます</strong>ので再変換は不要です</li>
 </ul>
+
+<h3 class="subsection-heading" id="imzml-io">🧬 imzML 登録・出力（ver69.0〜・初期対応）</h3>
+<p>解析設定の左サイドバー「🗂 プリセット・バックアップ」にある
+<strong>「🧬 imzML 入出力」</strong>を開きます。ファイルの絶対パスを入力する方式です。
+共通の m/z 軸を持つ単一 z 面のスペクトルを対象とします。</p>
+
+<table class="help-table">
+  <thead><tr><th>操作</th><th>入力</th><th>出力</th></tr></thead>
+  <tbody>
+    <tr><td>imzML + ibd → Parquet 登録</td><td>同じフォルダの同名 <code>.imzML</code> と <code>.ibd</code></td>
+      <td><code>.parquet</code> と同名の <code>.imzml.json</code></td></tr>
+    <tr><td>登録済み Parquet → imzML + ibd ZIP</td><td>この機能で登録した <code>.parquet</code> と <code>.imzml.json</code></td>
+      <td><code>.imzML</code>、<code>.ibd</code>、出力条件をまとめた ZIP</td></tr>
+  </tbody>
+</table>
+
+<h4 id="imzml-import">登録する</h4>
+<ol>
+  <li><code>sample.imzML</code> と <code>sample.ibd</code> をサーバーの同じフォルダに置きます。
+    入力するのは <code>.imzML</code> のパスです。</li>
+  <li>「操作」で <strong>「imzML + ibd → Parquet 登録」</strong>を選びます。</li>
+  <li>「入力 .imzML または登録済み .parquet」に元ファイルのパスを入力します。</li>
+  <li>「出力 .parquet または .zip」に、ファイル名まで含めた新しい <code>.parquet</code> のパスを入力します。
+    フォルダだけの指定や、既存の出力への上書きはできません。「出力画素 ID」は登録時には使用しません。</li>
+  <li>「実行」を1回押し、<strong>「完了」</strong>表示を待ちます。元の imzML / ibd は変更しません。</li>
+  <li>解析設定で <strong>TIMS</strong> を選び、作成した Parquet のあるフォルダを選び直します。
+    対象ファイル、切片／ROI、正規化設定を確認して解析します。登録だけでは解析は開始しません。</li>
+</ol>
+<p>同時に作られる <code>sample.imzml.json</code> は、精密な m/z 軸・元画素との対応・元座標を保存する付属ファイルです。
+後から imzML 出力を行うため、Parquet と一緒に保管してください。登録時の領域ラベルは全画素
+<code>Unannotated</code> です。元の SCiLS の ROI・化合物名が自動登録される機能ではありません。</p>
+
+<div class="help-alert warn">
+  <div class="alert-title">正規化は元の出力条件を確認してください</div>
+  登録処理では強度の追加正規化を行わず、float32 / float64 の元精度を保持します。
+  ただし、元強度が RMS 正規化済みかどうかは自動判定できません。
+  SCiLS の出力条件を確認して解析側の設定を選んでください。
+  <code>.imzML</code> という拡張子だけでは、未正規化の強度か正規化済みかは分かりません。
+</div>
+
+<h4 id="imzml-export">imzML＋ibd を出力する</h4>
+<ol>
+  <li>「操作」で <strong>「登録済み Parquet → imzML + ibd ZIP」</strong>を選びます。</li>
+  <li>入力に登録済み <code>.parquet</code>、出力に新しい <code>.zip</code> の絶対パスを指定します。</li>
+  <li><strong>全画素なら「出力画素 ID」を空欄</strong>にします。一部だけ出す場合は、入力 Parquet の
+    <code>id</code> 列を確認し、対象 ID をカンマ区切りで入力します（例：<code>12,13,27,28</code>）。</li>
+  <li>「実行」を押して完了を待ち、指定した保存先の ZIP を SFTP 等で取得します。
+    現在、この画面にはブラウザのダウンロードボタンはありません。</li>
+  <li>ZIP 内の <code>.imzML</code> と <code>.ibd</code> を同じフォルダに展開し、対応ソフトで開きます。</li>
+</ol>
+<p><strong>2×2 の ROI でも、画素 ID が 1,2,3,4 になるとは限りません。</strong>
+登録時の ID は座標の y、x 順に付与されるため、元 imzML のスペクトル番号とも異なる場合があります。
+現在の ROI・クラスタ選択や表示の回転・反転は、この出力欄へ自動で反映されません。
+対象 ID を確認できない場合、表示だけを頼りに ID を推定しないでください。</p>
+<p>出力値は Parquet に保存した強度、座標は登録時に保持した元座標です。
+RDS の解析後の値や ROI の平均値は出力しません。出力範囲は ZIP 内の
+<code>export_manifest.json</code> に記録されます。旧来の CSV 変換で作成した Parquet は、
+imzML 用の付属ファイルがないため、この出力機能の対象外です。</p>
+
+<h4>現在の対応範囲と処理中の注意</h4>
+<ul>
+  <li>全画素で m/z 軸が一致するデータを扱います。個別軸、複数 z 面、重複座標、非有限値、負の強度は停止します。</li>
+  <li>m/z を小数6桁の列名、または小数5桁の解析用名にした際に重複するデータは登録できません。
+    任意の丸め・補間でまとめて取り込む機能はありません。</li>
+  <li>処理中に「実行」を再度押すと進捗表示と停止ボタンが無効になる既知の問題があります。
+    再クリックせず完了を待ち、必要な場合だけ「停止」を使用してください。</li>
+  <li>他の大容量解析と同時に実行しないでください。中断・再起動時の復旧には未対応の部分があります。
+    「完了」が表示されない出力は、完成済みと扱わないでください。</li>
+  <li>現在の初期対応では、極性・画素サイズなどの測定情報をすべて保持することはできません。
+    対象の SCiLS での往復検証と大容量データの性能確認は未実施です。</li>
+  <li>既存の「データ出力」の形式選択、ROI／クラスタとの自動連携、GPT API には未接続です。</li>
+</ul>
+
+<table class="help-table">
+  <thead><tr><th>表示されるエラーの例</th><th>確認する内容</th></tr></thead>
+  <tbody>
+    <tr><td><code>Exactly one matching .ibd file is required</code></td><td>同名の ibd が同じフォルダに1つあるか確認します。</td></tr>
+    <tr><td><code>Sample already exists</code></td><td>別の出力ファイル名を指定します。</td></tr>
+    <tr><td><code>individual m/z axis is unsupported</code> / <code>collide</code></td><td>現在の登録対象外の m/z 軸です。元データを保存し、対応形式を確認します。</td></tr>
+    <tr><td><code>An imzML import manifest is required</code></td><td>この機能で登録した Parquet と、同名の imzml.json が揃っているか確認します。</td></tr>
+  </tbody>
+</table>
 
 <h3 class="subsection-heading" id="parquet-repack">🆕 📦 Parquet 再パック（row group）</h3>
 <p>

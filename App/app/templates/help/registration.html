@@ -10,6 +10,8 @@
   <div class="alert-title">💡 このページについて</div>
   ログイン直後に表示される「登録画面（ランディングページ）」の使い方をまとめています。
   プロジェクトの作成・サブプロジェクトの管理・復元・共有URL発行などはここで行います。
+  imzML ファイルの取り込みは解析設定のサイドバーで行います。
+  <a href="/help/analysis#imzml-io">imzML 登録・出力の手順</a>を参照してください。
 </div>
 
 <div class="toc">
@@ -46,7 +48,8 @@
     <tr><td>⚡ <strong>TIMS</strong></td><td>Trapped Ion Mobility Spectrometry。イオンの移動度で分離する手法</td></tr>
     <tr><td>🗂 <strong>プロジェクト</strong></td><td>研究テーマ単位。サブプロジェクトを束ねる箱</td></tr>
     <tr><td>📊 <strong>サブプロジェクト</strong></td><td>個別の解析実行単位。1サブプロ＝1解析結果</td></tr>
-    <tr><td>📁 <strong>生データ</strong></td><td>.imzML / .ibd / .d などの未加工データ</td></tr>
+    <tr><td>📁 <strong>解析入力</strong></td><td>DESI は所定の TXT 表（同形式の CSV / Excel も変換可能）、TIMS は Parquet 等の対応表形式。装置の .d フォルダは直接読み込みません</td></tr>
+    <tr><td>🧬 <strong>imzML / ibd</strong></td><td>スペクトルと座標を扱う2ファイルの組。「imzML 入出力」で Parquet に登録して使用します。正規化の有無は形式だけでは判断できません</td></tr>
     <tr><td>📈 <strong>UMAP</strong></td><td>次元削減アルゴリズム。代謝物パターンをクラスタリング</td></tr>
   </tbody>
 </table>
@@ -188,9 +191,9 @@
     <tr><th>ボタン</th><th>用途</th><th>参照先</th></tr>
   </thead>
   <tbody>
-    <tr><td>🧹 <strong>RDS 軽量化</strong></td><td>過去の <code>.rds</code> を一括圧縮してディスクを節約</td><td><a href="/help/analysis#maintenance">解析ガイド §12</a></td></tr>
-    <tr><td>⚙ <strong>環境設定</strong></td><td>データフォルダ・R 環境・ポート等（<code>.env</code>）を GUI 編集</td><td><a href="/help/analysis#maintenance">解析ガイド §12</a></td></tr>
-    <tr><td><strong>インタラクティブ解析</strong></td><td>プロジェクトを介さず、結果フォルダを直接指定してインタラクティブ解析を開く（手動読込）</td><td><a href="/help/analysis#interactive">解析ガイド §6</a></td></tr>
+    <tr><td>🧹 <strong>RDS 軽量化</strong></td><td>過去の <code>.rds</code> を一括圧縮してディスクを節約</td><td><a href="/help/analysis#maintenance">解析ガイド §11</a></td></tr>
+    <tr><td>⚙ <strong>環境設定</strong></td><td>データフォルダ・R 環境・ポート等（<code>.env</code>）を GUI 編集</td><td><a href="/help/analysis#maintenance">解析ガイド §11</a></td></tr>
+    <tr><td><strong>インタラクティブ解析</strong></td><td>プロジェクトを介さず、結果フォルダを直接指定してインタラクティブ解析を開く（手動読込）</td><td><a href="/help/analysis#interactive">解析ガイド §5</a></td></tr>
     <tr><td><strong>復元</strong></td><td>結果フォルダのメタデータからプロジェクト一覧を復元（下記 §7）</td><td>§7</td></tr>
     <tr><td>➕ <strong>新規プロジェクト</strong></td><td>新しいプロジェクトを作成（下記 §4）</td><td>§4</td></tr>
   </tbody>
@@ -377,7 +380,7 @@
   方式に変わりました。共有先の操作（色変更・クラスタマージ・ラベル編集など）は
   <strong>元プロジェクトに保存されます</strong>。共有 URL では「インタラクティブ解析」だけが表示され、
   他のタブ・サイドバー・戻るボタンは隠れます。詳細は
-  <a href="/help/analysis#sharing">解析ガイド §8 共有機能</a> を参照。
+  <a href="/help/analysis#sharing">解析ガイド §7 共有機能</a> を参照。
 </div>
 
 <p>解析結果を <strong>ラボ外の協力者</strong> と共有したい場合:</p>
