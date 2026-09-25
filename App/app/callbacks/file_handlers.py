@@ -280,8 +280,10 @@ def _sample_group_block(folder: str, options: list[dict], values: list[str],
      Input("analysis_method", "value"),
      Input("analysis_method_tims", "value"),
      Input("extra_data_folders_store", "data")],
+    [State({"type": "sample_check", "index": ALL}, "value"),
+     State({"type": "sample_check", "index": ALL}, "id")],
 )
-def update_sample_selector(data_folder, desi_method, tims_method, extra_folders):
+def update_sample_selector(data_folder, desi_method, tims_method, extra_folders, current_values=None, current_ids=None):
     """データフォルダ + 追加データフォルダのサンプル一覧を作る。
 
     ★ ver64.0: TIMS はフォルダごとに区切って並べ、チェックの値を
@@ -315,9 +317,15 @@ def update_sample_selector(data_folder, desi_method, tims_method, extra_folders)
             if not g["paths"]:
                 continue
             total += len(g["paths"])
-            opts = [{"label": f" {Path(p).stem}", "value": p} for p in g["paths"]]
+            # ★ ver70.0: 拡張子を表示し、不完全なペアは理由付きで無効にする。
+            from app.services.input_preparation import candidate_info, default_candidates
+            infos = [candidate_info(p) for p in g["paths"]]
+            opts = [{"label": " " + i["label"], "value": i["path"], "disabled": i["disabled"]}
+                    for i in infos]
             blocks.append(_sample_group_block(
-                g["folder"], opts, [o["value"] for o in opts], show_header))
+                g["folder"], opts, default_candidates(g["paths"],
+                    {i["index"]: v for i, v in zip(current_ids or [], current_values or [])}.get(g["folder"])),
+                show_header))
         if not blocks:
             return html.Div("対応ファイルが見つかりません", className="text-warning")
         if show_header:

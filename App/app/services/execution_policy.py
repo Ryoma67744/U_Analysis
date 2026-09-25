@@ -102,6 +102,8 @@ def _numeric_manifest(manifest):
     return [{"file_id": f.get("file_id"), "path": f.get("path"),
              "selection_mode": f.get("selection_mode"), "rois": sorted(f.get("rois") or []),
              "roi_role": f.get("roi_role"),
+             # ★ ver70.0: 同じ原本パスでも変換revisionが異なれば別の数値入力。
+             "conversion_key": f.get("conversion_key"),
              "sections": [{k: s.get(k) for k in ("section_id", "roi", "integration_unit_id")}
                           for s in f.get("sections", [])]} for f in (manifest or {}).get("files", [])]
 
@@ -170,6 +172,14 @@ def prepare_execution_params(params, output_dir):
             params["execution_policy"] = "legacy_saved"
         fingerprints = record.get("input_fingerprints") or saved.get("input_fingerprints") or []
         for item in fingerprints + ([saved["source_rds_fingerprint"]] if saved.get("source_rds_fingerprint") else []):
+            # ★ ver70.0: 旧imzML結果の入力はimmutable cache。原本の移動/更新を誤検出しない。
+            pinned = [f for f in (params.get("section_manifest") or {}).get("files", [])
+                      if f.get("conversion_key") and Path(f.get("path", "")).resolve() == Path(item["path"]).resolve()]
+            if pinned:
+                if not params.get("_imzml_defer_validation"):
+                    from app.services.input_preparation import validate_asset
+                    validate_asset(pinned[0])
+                continue
             current = _fingerprint(item["path"])
             if current is None:
                 raise ValueError(f"保存済み入力が見つかりません: {Path(item['path']).name}。元の入力を復元してください。")
@@ -206,7 +216,18 @@ def prepare_execution_params(params, output_dir):
         params["section_manifest_path"] = str(path)
     if not source or "input_fingerprints" not in params:
         paths = selected_manifest_paths(manifest) or params.get("input_paths") or params.get("original_input_paths") or []
-        params["input_fingerprints"] = [item for p in paths if (item := _fingerprint(p))]
+        entries = {str(Path(f["path"]).resolve()): f for f in (manifest or {}).get("files", [])}
+        fingerprints = []
+        for p in paths:
+            entry = entries.get(str(Path(p).resolve()), {})
+            if entry.get("conversion_key"):
+                # ★ ver70.0: XML/ibdの両方と固定runtimeのhashを記録する。
+                fingerprints.append({**entry["source_fingerprint"]["xml"],
+                    "ibd": entry["source_fingerprint"]["ibd"], "conversion_key": entry["conversion_key"],
+                    "validation": entry["validation"]})
+            elif (item := _fingerprint(p)):
+                fingerprints.append(item)
+        params["input_fingerprints"] = fingerprints
     if not source or "source_rds_fingerprint" not in params:
         if params.get("rds_path"):
             params["source_rds_fingerprint"] = _fingerprint(params["rds_path"])

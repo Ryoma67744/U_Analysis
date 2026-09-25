@@ -98,13 +98,17 @@ def _is_sidecar(f: Path) -> bool:
 def _filter_tims_candidates(folder: Path) -> list[Path]:
     """TIMS 解析対象候補ファイルを優先度ルールで絞り込む。
 
-    - Parquet (.parquet/.pq) が 1 本以上あれば Parquet のみを返す
+    - Parquet (.parquet/.pq) があれば CSV 等より優先する。imzML は別候補として併記する
     - それ以外は CSV/TSV/TXT を返す
     - `*_feature_annotations.parquet`（注釈サイドカー）はサンプルではないので常に除外
     - いずれもソート済み
     """
     if not folder.is_dir():
         return []
+    # ★ ver70.0: 管理cacheと途中生成物は独立の試料として再登録させない。
+    if any((p / ".ua_imzml_assets").exists() for p in (folder, *folder.parents)):
+        return []
+    imzmls = sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".imzml")
     parquets = sorted(
         f for f in folder.iterdir()
         if f.is_file() and f.suffix.lower() in _PARQUET_EXTS and not _is_sidecar(f)
@@ -119,17 +123,17 @@ def _filter_tims_candidates(folder: Path) -> list[Path]:
                 "Parquet 優先: %d 件の CSV/TSV/TXT をサンプル候補から除外 (%s)",
                 csv_count, folder,
             )
-        return parquets
-    return sorted(
+        return sorted(parquets + imzmls)
+    return sorted(imzmls + [
         f for f in folder.iterdir()
         if f.is_file() and f.suffix.lower() in _CSV_EXTS
-    )
+    ])
 
 
 def list_tims_files(data_folder: str) -> list[str]:
     """データフォルダ内のTIMSファイル一覧を取得（拡張子なし）
 
-    対応形式: .parquet, .pq, .csv, .tsv, .txt
+    対応形式: .parquet, .pq, .imzML, .csv, .tsv, .txt
     優先度: Parquet があれば Parquet のみ、無ければ CSV/TSV/TXT
     """
     return [f.stem for f in _filter_tims_candidates(Path(data_folder))]
@@ -253,7 +257,30 @@ def _read_mz_sorted_metadata(pf) -> Optional[list]:
         raw = md.get(b"mz_sorted")
         if raw is None:
             return None
-        return [float(x) for x in raw.decode("utf-8").split(",") if x.strip()]
+        # ★ ver70.0: imzMLのJSON配列と従来CSVを両方解釈し、誤った軸を使わない。
+        import json
+        import math
+        text = raw.decode("utf-8").strip()
+        obj = json.loads(text) if text.startswith("[") else [x for x in text.split(",") if x.strip()]
+        if not isinstance(obj, list) or any(isinstance(x, (bool, list, dict)) for x in obj):
+            return None
+        values = [float(x) for x in obj]
+        if not values or not all(math.isfinite(v) and v > 0 for v in values):
+            return None
+        if any(a >= b for a, b in zip(values, values[1:])):
+            return None
+        metadata_columns = {"id", "x", "y", "annotation"}
+        columns = [c for c in pf.schema_arrow.names if c not in metadata_columns]
+        if len(values) != len(columns):
+            return None
+        for value, name in zip(values, columns):
+            try:
+                encoded = float(name)
+            except (TypeError, ValueError):
+                encoded = _mz_from_embedded_name(name)
+            if encoded is not None and abs(value - encoded) > 0.000051:
+                return None
+        return values
     except Exception:
         return None
 
@@ -299,6 +326,10 @@ def _read_tims_raw(folder: Path, sample_name: str = None) -> Optional[pd.DataFra
     else:
         fp = files[0]
     ext = fp.suffix.lower()
+    # ★ ver70.0: 未変換XMLをCSVとして解釈したり、別試料へすり替えたりしない。
+    if ext == ".imzml":
+        logger.warning("未変換imzMLの解析前キャリブレーション自動検出は対象外です: %s", fp)
+        return None
 
     if ext in (".parquet", ".pq"):
         import pyarrow.parquet as pq
@@ -453,6 +484,9 @@ def read_parquet_annotations(file_path: str) -> list[str]:
     フッタの `annotation_source` が 'none' ならその場で空を返し、無い旧ファイルでも
     ラベルが 1 種類だけならユーザーが領域を分けていないと判断できる。
     """
+    # ★ ver70.0: XMLをParquetとして開かない。imzML全体は1切片として扱う。
+    if Path(file_path).suffix.lower() == ".imzml":
+        return []
     try:
         import pyarrow.parquet as pq
 

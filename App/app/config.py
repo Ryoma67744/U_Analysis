@@ -61,6 +61,8 @@ TIMS_DATA_CANDIDATES = [TIMS_DATA_DIR, TIMS_DATA_DIR_LEGACY]
 COMMON_SCRIPT_DIR = APP_DIR / "Script" / "Common"
 # Data/Other/ — アプリ内部データ (セッション/プロジェクト/プリセット/共有/キャッシュ/ログ/出力/Common)
 OTHER_DIR = DATA_DIR / "Other"
+# ★ ver70.0: 元フォルダ・Seuratキャッシュとは別の永続領域。Data/Other と一緒に保管する。
+IMZML_CACHE_DIR = Path(os.environ.get("IMZML_CACHE_DIR", str(OTHER_DIR / "imzml_assets")))
 COMMON_DIR = OTHER_DIR / "Common"  # 後方互換
 MERGE_CLUSTERS_SCRIPT_PATH = COMMON_SCRIPT_DIR / "UMAP_Merge_Clusters_ver1.R"
 

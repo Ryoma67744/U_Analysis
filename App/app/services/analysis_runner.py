@@ -102,21 +102,9 @@ def _schedule_watchdog(process: subprocess.Popen, log_file_handle=None) -> None:
                         log_file_handle.flush()
                     except Exception as e:
                         logger.debug(f"タイムアウト理由のログ追記に失敗（非重大）: {e}")
-                process.terminate()
-                # 5 秒待って強制 kill
-                def _force_kill():
-                    try:
-                        if process.poll() is None:
-                            logger.warning(
-                                "R subprocess pid=%s が SIGTERM 後も生存、SIGKILL 送信",
-                                process.pid,
-                            )
-                            process.kill()
-                    except Exception:
-                        pass
-                t2 = threading.Timer(5.0, _force_kill)
-                t2.daemon = True
-                t2.start()
+                # ★ ver70.0: 親だけのkillでは並列Rワーカーが残るためツリーを停止。
+                from app.services.process_control import terminate_tree
+                terminate_tree(process.pid, timeout=5)
         except Exception:
             pass
 
@@ -452,6 +440,11 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
     """v8 Templateスクリプト用の設定生成（DESI/TIMS共通）
     R版: generate_v8_config() in analysis_runner.R
     """
+    # ★ ver70.0: GUIのHTTP処理ではhash/変換/設定ファイルの書込みをしない。
+    from app.services.analysis_pipeline import defer_analysis
+    deferred = defer_analysis(params, "reanalysis" if "original_data_folder" in params else "initial")
+    if deferred is not None:
+        return deferred
     from app.services.execution_policy import prepare_execution_params
     from app.services.naming_policy import db_annotation_enabled
     if params.get("execution_policy") or params.get("section_manifest") is not None:
@@ -469,7 +462,11 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
         lines = [line.rstrip("\n") for line in f.readlines()]
 
     # data_folder が存在しない場合 (別マシン由来の古いパス) は自動補正を試行
-    resolved_data_folder = _resolve_or_raise(params["data_folder"])
+    # ★ ver70.0: 原本フォルダが移動しても、検証済み旧runtimeをRへ渡す。
+    if params.get("_imzml_pipeline_prepared") and params.get("input_paths") and not Path(params["data_folder"]).is_dir():
+        resolved_data_folder = str(Path(params["input_paths"][0]).parent)
+    else:
+        resolved_data_folder = _resolve_or_raise(params["data_folder"])
 
     # DESI: Excel/CSV で登録されたサンプルを正規 .txt に変換してから R に渡す。
     # （R は data_folder/<sample>.txt を決め打ちで読むため。TIMS は input_paths を
@@ -532,7 +529,9 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
     # ★ ver67.0: フォルダ全件では未選択ファイルの名前が混ざるため実入力だけを保存。
     from app.services.naming_policy import copy_selected_feature_annotations
     from app.services.execution_policy import selected_manifest_paths
-    annotation_inputs = (selected_manifest_paths(params.get("section_manifest")) or params.get("input_paths")
+    from app.services.input_preparation import runtime_paths
+    annotation_inputs = ((runtime_paths(params.get("section_manifest")) if params.get("_imzml_pipeline_prepared")
+                          else selected_manifest_paths(params.get("section_manifest"))) or params.get("input_paths")
                          or [str(Path(params["data_folder"]) / f"{name}.txt") for name in params.get("sample_names", [])])
     copy_selected_feature_annotations(annotation_inputs, output_dir)
     for var, value in (("SECTION_MANIFEST_PATH", params.get("section_manifest_path", "")),
@@ -718,6 +717,11 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
     """Cluster Filterスクリプト用の設定生成
     R版: generate_cluster_filter_config() in analysis_runner.R
     """
+    # ★ ver70.0: GUIのHTTP処理ではhash/変換/設定ファイルの書込みをしない。
+    from app.services.analysis_pipeline import defer_analysis
+    deferred = defer_analysis(params, "reanalysis" if "original_data_folder" in params else "initial")
+    if deferred is not None:
+        return deferred
     from app.services.execution_policy import prepare_execution_params
     from app.services.naming_policy import db_annotation_enabled
     if params.get("execution_policy") or params.get("section_manifest") is not None:
@@ -828,7 +832,9 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
             lines = _replace_assign(lines, var, _r_str(value))
     from app.services.naming_policy import copy_selected_feature_annotations
     from app.services.execution_policy import selected_manifest_paths
-    annotation_inputs = (selected_manifest_paths(params.get("section_manifest")) or params.get("original_input_paths")
+    from app.services.input_preparation import runtime_paths
+    annotation_inputs = ((runtime_paths(params.get("section_manifest")) if params.get("_imzml_pipeline_prepared")
+                          else selected_manifest_paths(params.get("section_manifest"))) or params.get("original_input_paths")
                          or [str(Path(params["original_data_folder"]) / f"{name}.txt") for name in params.get("sample_names", [])])
     copy_selected_feature_annotations(annotation_inputs, output_dir)
 
@@ -1065,7 +1071,12 @@ def start_analysis_process(
     実体は _start_analysis_process_locked。確認と起動の間に他スレッドが
     割り込めないよう、全体を 1 つのロックで囲む。
     """
-    with _start_lock:
+    # ★ ver70.0: 別Dashプロセス/保守ツールと受付区間を共有する。
+    from filelock import FileLock, Timeout
+    from app.config import OTHER_DIR
+    lock_path = OTHER_DIR / "logs" / "analysis_admission.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with _start_lock, FileLock(str(lock_path), timeout=30):
         return _start_analysis_process_locked(
             script_path, output_dir,
             extra_args=extra_args, env_extra=env_extra,
@@ -1131,7 +1142,11 @@ def _start_analysis_process_locked(
     #   保守ツール（job_meta is None）もここで弾く。preflight_callbacks.py の
     #   「解析中は診断を起動できない＝想定どおり」を保つため。逆向き（保守ツールが
     #   解析を弾く）は台帳に載らないので効かない。既知の穴。
-    busy = _find_running_job_for_guard()
+    from app.services.process_control import active_lease
+    try:
+        busy = active_lease() or _find_running_job_for_guard()
+    except Exception:
+        busy = {"_scan_failed": True}
     if busy is not None:
         if busy.get("_scan_failed"):
             return {
@@ -1227,6 +1242,17 @@ def _start_analysis_process_locked(
             except OSError:
                 pass
 
+    from app.services.analysis_pipeline import DeferredAnalysis, save_request
+    pipeline = isinstance(script_path, DeferredAnalysis)
+    if pipeline:
+        import sys
+        extra_args = [save_request(script_path, output_dir, job_meta)]
+        interpreter = [sys.executable, "-u"]
+        if job_meta is None:
+            job_meta = {"analysis_type": "tims_v8", "data_folder": script_path.params.get("data_folder", "")}
+    else:
+        # 同じ結果フォルダを明示的に再利用したとき古い準備段階を表示しない。
+        (log_dir / "input_pipeline.json").unlink(missing_ok=True)
     # 新規ログ初期化
     progress_file.write_text("0|準備中|0|1", encoding="utf-8")
     log_file.write_text("解析を開始しています...\n", encoding="utf-8")
@@ -1314,7 +1340,15 @@ def _start_analysis_process_locked(
         pid_file.write_text(str(process.pid), encoding="utf-8")
         # PR-H3 C2: wallclock timeout 監視を開始
         # ver45.8: kill 理由を解析ログにも書けるようログハンドルを渡す
-        _schedule_watchdog(process, log_fh)
+        from app.services.process_control import record_lease
+        try:
+            record_lease(process, output_dir, (job_meta or {}).get("analyst", ""))
+        except Exception:
+            from app.services.process_control import terminate_tree
+            terminate_tree(process.pid)
+            raise
+        if not pipeline:
+            _schedule_watchdog(process, log_fh)
 
         # [ver51.0] ジョブ台帳とサーバ側ウォッチャー。
         #   これが無いと、ブラウザを閉じた瞬間に完了処理の実行者がいなくなり、
@@ -1335,7 +1369,7 @@ def _start_analysis_process_locked(
                     "script_path": str(script_path),
                     "analyst": job_meta.get("analyst", ""),
                 }
-                job_registry.write_job(
+                job_path = job_registry.write_job(
                     output_dir, pid=process.pid,
                     analysis_type=job["analysis_type"],
                     project_id=job["project_id"],
@@ -1344,16 +1378,28 @@ def _start_analysis_process_locked(
                     script_path=job["script_path"],
                     analyst=job["analyst"],
                 )
-                job_watcher.watch(
+                if pipeline and job_path is None:
+                    raise RuntimeError("ジョブ台帳の書き込みに失敗しました。")
+                watcher = job_watcher.watch(
                     process, output_dir,
                     status_file=str(status_file),
                     log_file_handle=log_fh,
                     job=job,
                 )
+                if pipeline:
+                    if watcher is None:
+                        raise RuntimeError("終了監視を設定できませんでした。")
+                    from app.services.input_preparation import write_json
+                    write_json(script_path.gate, {"pid": process.pid,
+                        "request_id": Path(script_path.request_path).stem.replace("pipeline_request_", "")})
                 # [ver51.5] 実行ボタンの無効化表示が最大 TTL 秒ぶん遅れるのを防ぐ。
                 job_registry.invalidate_scan_cache()
             except Exception as e:  # noqa: BLE001
-                # 監視が付かないだけで解析自体は従来どおり動く
+                if pipeline:
+                    from app.services.process_control import terminate_tree
+                    terminate_tree(process.pid)
+                    raise
+                # 従来ジョブの動作は維持する。imzML経路は上でfail-closed。
                 logger.warning("ジョブ監視の設定に失敗（解析は続行）: %s", e)
     except Exception as e:
         if log_fh:

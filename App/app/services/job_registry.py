@@ -67,6 +67,12 @@ def write_job(output_dir, *, pid: int, analysis_type: str = "",
         "host": host_id(),
     }
     try:
+        # ★ ver70.0: PID再利用による別ジョブの誤停止を防ぐ。
+        import psutil
+        try:
+            payload["process_started_at"] = psutil.Process(int(pid)).create_time()
+        except psutil.NoSuchProcess:
+            payload["process_started_at"] = None
         path.parent.mkdir(parents=True, exist_ok=True)
         from app.utils.file_locks import atomic_write_json
         atomic_write_json(payload, path)
