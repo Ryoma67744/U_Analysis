@@ -56,14 +56,16 @@ jobs:
           cp /tmp/test_imzml_io.py App/tests/test_imzml_io.py
           git diff --check
           echo '--- changed files ---'
-          git diff --name-only origin/main
-          count="$(git diff --name-only origin/main | sed '/^$/d' | wc -l | tr -d ' ')"
-          version="$(grep -oP 'APP_VERSION = "\K[^"]+' App/app/version.py)"
-          echo "changed_count=${count}"
-          echo "app_version=${version}"
           git status --short
-          if [ "${count}" -ne 30 ]; then echo "差分件数が想定外: ${count}"; exit 21; fi
-          if [ "${version}" != '71.0' ]; then echo "版番号が想定外: ${version}"; exit 22; fi
+          tracked="$(git diff --name-only origin/main | sed '/^$/d' | wc -l | tr -d ' ')"
+          total="$(git status --porcelain | sed '/^$/d' | wc -l | tr -d ' ')"
+          version="$(grep -oP 'APP_VERSION = "\K[^"]+' App/app/version.py)"
+          echo "tracked_changed_count=${tracked}"
+          echo "all_changed_count=${total}"
+          echo "app_version=${version}"
+          if [ "${tracked}" -ne 25 ]; then echo "追跡済み差分件数が想定外: ${tracked}"; exit 21; fi
+          if [ "${total}" -ne 30 ]; then echo "全差分件数が想定外: ${total}"; exit 22; fi
+          if [ "${version}" != '71.0' ]; then echo "版番号が想定外: ${version}"; exit 23; fi
       - name: Python依存とpytestを導入
         run: python3 -m pip install --disable-pip-version-check --quiet -r App/requirements.txt pytest
       - name: 構文・UI資産・テンプレートを検査
@@ -75,7 +77,9 @@ jobs:
           import subprocess
           from pathlib import Path
           from jinja2 import Environment
-          changed = subprocess.check_output(['git', 'diff', '--name-only', 'origin/main'], text=True).splitlines()
+          tracked = subprocess.check_output(['git', 'diff', '--name-only', 'origin/main'], text=True).splitlines()
+          untracked = subprocess.check_output(['git', 'ls-files', '--others', '--exclude-standard'], text=True).splitlines()
+          changed = tracked + untracked
           for name in changed:
               path = Path(name)
               if name.endswith('.py'):
