@@ -17,19 +17,44 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
-      - name: 固定差分をmainへ適用して検査
+      - name: 固定差分とmain基準overlayを適用して検査
         shell: bash
         run: |
           set -euo pipefail
           cat .pr-bootstrap-spatial/part*.txt | base64 -d | gzip -d > /tmp/imzml-spatial.patch
           echo '664ddd9428400f119753f96ee8ee36e08750f4b16fca0c5cfe89c31b179c1a72  /tmp/imzml-spatial.patch' | sha256sum -c -
+          cp .pr-bootstrap-spatial/overlays/test_imzml_autoimport_real_io.py /tmp/test_imzml_autoimport_real_io.py
+          cp .pr-bootstrap-spatial/overlays/test_imzml_io.py /tmp/test_imzml_io.py
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('/tmp/imzml-spatial.patch').read_text(encoding='utf-8')
+          skip = {
+              'App/tests/test_imzml_autoimport_real_io.py',
+              'App/tests/test_imzml_io.py',
+          }
+          pieces = source.split('diff --git ')
+          kept = [pieces[0]]
+          removed = set()
+          for piece in pieces[1:]:
+              header = piece.splitlines()[0]
+              path = header.split(' b/', 1)[1]
+              if path in skip:
+                  removed.add(path)
+                  continue
+              kept.append('diff --git ' + piece)
+          if removed != skip:
+              raise SystemExit(f'overlay対象のpatch区間が不足: {skip - removed}')
+          Path('/tmp/imzml-spatial-filtered.patch').write_text(''.join(kept), encoding='utf-8')
+          PY
           git fetch origin main
           test "$(git rev-parse origin/main)" = '33b2e0122d054db42e34c0951d61bacab2bec43b'
           git checkout -B claude/imzml-spatial-sections-ver71-0 origin/main
           test ! -e .pr-bootstrap-spatial
           test ! -e .github/workflows/imzml-spatial-prepare-temporary.yml
-          git apply --check /tmp/imzml-spatial.patch
-          git apply /tmp/imzml-spatial.patch
+          git apply --check /tmp/imzml-spatial-filtered.patch
+          git apply /tmp/imzml-spatial-filtered.patch
+          cp /tmp/test_imzml_autoimport_real_io.py App/tests/test_imzml_autoimport_real_io.py
+          cp /tmp/test_imzml_io.py App/tests/test_imzml_io.py
           git diff --check
           test "$(git diff --name-only origin/main | sed '/^$/d' | wc -l)" -eq 30
           test "$(grep -oP 'APP_VERSION = "\K[^"]+' App/app/version.py)" = '71.0'
