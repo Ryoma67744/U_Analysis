@@ -9,7 +9,7 @@ import re
 import tempfile
 from filelock import FileLock
 
-METADATA_COLUMNS = ("source_file_id", "source_pixel_id", "section_id", "subject_id", "group", "integration_unit_id")
+METADATA_COLUMNS = ("ua_coordinate_component", "source_file_id", "source_pixel_id", "section_id", "section_display_name", "subject_id", "group", "integration_unit_id")
 UNASSIGNED_GROUP = "（群未設定）"
 
 
@@ -44,7 +44,7 @@ def overlay_result_metadata(df, rds_path, manifest=None):
     if not rows:
         return df
     out = df.copy(deep=False)
-    for col in ("subject_id", "group"):
+    for col in ("section_display_name", "subject_id", "group"):
         mapping = {str(s["section_id"]): str(s.get(col) or "") for s in rows}
         mapped = out["section_id"].astype(str).map(mapping)
         out[col] = mapped.where(mapped.notna(), out[col] if col in out.columns else "").fillna("")
@@ -54,10 +54,13 @@ def overlay_result_metadata(df, rds_path, manifest=None):
 def group_rows(df):
     if df is None or "section_id" not in df.columns:
         return []
-    cols = [c for c in ("section_id", "Sample", "subject_id", "group") if c in df.columns]
+    cols = [c for c in ("section_id", "section_display_name", "Sample", "subject_id", "group") if c in df.columns]
     result = []
     for record in df[cols].fillna("").astype(str).drop_duplicates("section_id").to_dict("records"):
-        record["section"] = record.pop("Sample", record["section_id"])
+        sample = record.pop("Sample", record["section_id"])
+        display = record.get("section_display_name", "").strip()
+        record["section"] = sample
+        record["section_display_name"] = display or sample
         record.setdefault("subject_id", "")
         record.setdefault("group", "")
         result.append(record)
@@ -93,7 +96,14 @@ def save_group_edits(rds_path, rows):
     target = root / "section_manifest.json"
     with FileLock(str(target) + ".lock", timeout=30):
         manifest = deepcopy(load_result_manifest(rds_path))
-        sections = {str(s["section_id"]): s for f in manifest.get("files", []) for s in f.get("sections", [])}
+        selected_sections = {str(s["section_id"]): s for f in manifest.get("files", []) for s in f.get("sections", [])}
+        all_sections = {}
+        for f in manifest.get("files", []):
+            for section in f.get("spatial_sections", f.get("sections", [])):
+                all_sections.setdefault(str(section["section_id"]), []).append(section)
+            for section in f.get("sections", []):
+                all_sections.setdefault(str(section["section_id"]), []).append(section)
+        sections = selected_sections
         if not sections:
             raise ValueError("切片IDを持つ解析結果で群情報を編集できます。")
         seen = set()
@@ -102,8 +112,14 @@ def save_group_edits(rds_path, rows):
             if sid not in sections or sid in seen:
                 raise ValueError("切片の対応が変わりました。解析結果を読み込み直してください。")
             seen.add(sid)
-            for key in ("subject_id", "group"):
-                sections[sid][key] = str(row.get(key) or "").strip()
+            for key in ("section_display_name", "subject_id", "group"):
+                if key not in row:
+                    continue
+                value = str(row.get(key) or "").strip()
+                for target_section in all_sections.get(sid, [sections[sid]]):
+                    target_section[key] = value
+                if "section_settings" in manifest and sid in manifest["section_settings"]:
+                    manifest["section_settings"][sid][key] = value
         from app.services.section_metadata import validate_section_manifest
         errors = validate_section_manifest(manifest)
         if errors:
@@ -120,8 +136,12 @@ def save_group_edits(rds_path, rows):
 
 
 def export_metadata_frame(df):
-    cols = [c for c in ("CellID", "Sample", *METADATA_COLUMNS, "SpatialX", "SpatialY", "UMAP_1", "UMAP_2", "Cluster") if c in df.columns]
-    return df.loc[:, cols].copy()
+    out = df.copy(deep=False)
+    for column in METADATA_COLUMNS:
+        if column not in out.columns:
+            out[column] = ""
+    cols = [c for c in ("CellID", "Sample", *METADATA_COLUMNS, "SpatialX", "SpatialY", "UMAP_1", "UMAP_2", "Cluster") if c in out.columns]
+    return out.loc[:, cols].copy()
 
 
 def normalize_pixel_id(value):

@@ -46,7 +46,9 @@ def terms(root,term):return [e for e in root.iter('cvParam') if e.get('accession
 def test_valid_independent_xml_ibd(width,tmp_path):
     p,_=fixture_pair(tmp_path,width)
     result=inspect_binary_contract(p)
-    assert result==dict(pixels=4,features=2,intensity_bytes=width,spectrum_type='profile',polarity='positive',uuid_verified=True,checksums_verified=['sha1'])
+    assert {k: result[k] for k in ('pixels','features','intensity_bytes','spectrum_type','polarity','uuid_verified','checksums_verified')} == dict(pixels=4,features=2,intensity_bytes=width,spectrum_type='profile',polarity='positive',uuid_verified=True,checksums_verified=['sha1'])
+    assert result['spatial_layout']['component_count'] == 1
+    assert result['spatial_layout']['pixel_count'] == 4
 
 
 @pytest.mark.parametrize('term,value',[

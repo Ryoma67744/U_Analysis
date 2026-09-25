@@ -1234,7 +1234,7 @@ for (fp in ORIGINAL_INPUT_PATHS) {
   exported <- c(exported, out_fp)
   # 元画素IDを保持した対応表を一時入力に添える。
   .side_rows <- if (is.null(.matched_source_rows)) rows_sn else rows_sn[.matched_source_rows, , drop = FALSE]
-  side <- .side_rows[, intersect(c("source_file_id", "source_pixel_id", "section_id", "subject_id",
+  side <- .side_rows[, intersect(c("ua_coordinate_component", "source_file_id", "source_pixel_id", "section_id", "section_display_name", "subject_id",
                                 "group", "integration_unit_id"), names(.side_rows)), drop = FALSE]
   side$spot_index <- if (is.null(.matched_source_rows)) .side_rows$ID_for_export else keep_ids
   side <- side[!duplicated(side$spot_index), , drop = FALSE]

@@ -42,12 +42,16 @@ def test_real_four_pixel_registration_and_selected_export(tmp_path,dtype,mode):
     validate_asset(prepared)
     df=pq.read_table(prepared['runtime_path']).to_pandas()
     assert df[['id','x','y']].values.tolist()==[[1,5,9],[2,6,9],[3,5,10],[4,6,10]]
+    assert df['ua_coordinate_component'].nunique()==1
     columns=[f'{m:.6f}' for m in axis]
     np.testing.assert_array_equal(df[columns].values,values[[1,2,3,0]])
     assert df[columns].values.dtype==np.dtype(dtype)
     manifest=json.loads(Path(prepared['conversion_manifest_path']).read_text())
+    assert manifest['schema_version']==2
     np.testing.assert_array_equal(np.asarray(manifest['mz_axis']),axis)
     assert [m['source_index'] for m in manifest['source_coordinates']]==[1,2,3,0]
+    assert manifest['spatial_layout']['component_count']==1
+    assert all(m['component_id']==df['ua_coordinate_component'].iloc[i] for i,m in enumerate(manifest['source_coordinates']))
     receipt=export_imzml(prepared['runtime_path'],tmp_path/'out.zip',pixel_ids=[1,4])
     assert receipt['pixels']==2
     out=tmp_path/'export';out.mkdir()

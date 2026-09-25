@@ -39,7 +39,7 @@ read_parquet_legacy <- function(file_path, sample_prefix = NULL) {
   is_bare_numeric <- FALSE
   is_annotated <- FALSE
   if (length(mz_cols) == 0) {
-    non_meta <- setdiff(all_names, c("id", "x", "y", "annotation"))
+    non_meta <- setdiff(all_names, c("id", "x", "y", "ua_coordinate_component", "annotation"))
     bare_num <- non_meta[!is.na(suppressWarnings(as.numeric(non_meta)))]
     if (length(bare_num) > 0) {
       mz_cols <- bare_num

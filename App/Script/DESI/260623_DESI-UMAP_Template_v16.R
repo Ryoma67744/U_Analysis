@@ -2325,7 +2325,7 @@ if (RESUME_FROM_RDS && file.exists(rds_path1_in)) {
                               colClasses = "character", na.strings = character())
         .mi <- match(as.character(seurat_obj$spot_index), .source_md$spot_index)
         if (anyNA(.mi)) stop("再解析画素の対応表に不足があります: ", .sidecar)
-        for (.col in intersect(c("sample", "source_file_id", "source_pixel_id", "section_id", "subject_id", "group", "integration_unit_id"), names(.source_md))) {
+        for (.col in intersect(c("sample", "ua_coordinate_component", "source_file_id", "source_pixel_id", "section_id", "section_display_name", "subject_id", "group", "integration_unit_id"), names(.source_md))) {
           seurat_obj@meta.data[[.col]] <- .source_md[[.col]][.mi]
         }
       }

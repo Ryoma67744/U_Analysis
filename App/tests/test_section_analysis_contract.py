@@ -208,3 +208,27 @@ loops <- Filter(function(x) is.call(x) && identical(x[[1]],as.name('for')) &&
 stopifnot(length(loops)==1L);eval(loops[[1]])
 stopifnot(identical(unname(base_new_label),c('1-a','2-b','3')))
 """)
+
+
+def test_spatial_components_assign_three_sections_and_reject_unknown(tmp_path):
+    run_r(tmp_path, """
+md <- data.frame(ua_coordinate_component=c('a','a','b','c'),spot_index=1:4,sample='same')
+entry <- list(path='/x/a.parquet',file_id='file_a',selection_mode='selected',roi_role='spatial',
+ spatial_sections=list(
+  list(component_ids=list('a'),section_id='s1',section_display_name='Section 01',integration_unit_id='s1'),
+  list(component_ids=list('b'),section_id='s2',section_display_name='Section 02',integration_unit_id='s2'),
+  list(component_ids=list('c'),section_id='s3',section_display_name='Section 03',integration_unit_id='s3')),
+ sections=list(
+  list(component_ids=list('a'),section_id='s1',section_display_name='Section 01',integration_unit_id='s1'),
+  list(component_ids=list('b'),section_id='s2',section_display_name='Section 02',integration_unit_id='s2'),
+  list(component_ids=list('c'),section_id='s3',section_display_name='Section 03',integration_unit_id='s3')))
+x <- ua_section_metadata(md,'/x/a.parquet',list(files=list(entry)))
+stopifnot(identical(as.character(x$section_id),c('s1','s1','s2','s3')),
+          length(unique(x$integration_unit_id))==3L,
+          identical(as.character(x$section_display_name),c('Section 01','Section 01','Section 02','Section 03')))
+entry$sections <- entry$sections[1:2]
+y <- ua_section_metadata(md,'/x/a.parquet',list(files=list(entry)))
+stopifnot(nrow(y)==3L,!('c'%in%y$ua_coordinate_component))
+md$ua_coordinate_component[4] <- 'unknown'
+stopifnot(inherits(try(ua_section_metadata(md,'/x/a.parquet',list(files=list(entry))),silent=TRUE),'try-error'))
+""")

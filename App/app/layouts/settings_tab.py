@@ -20,6 +20,7 @@ from app.services.session_manager import load_last_settings
 from app.services.calibration_preset_manager import list_calibration_presets
 from app.layouts.tooltips import help_badge
 from app.layouts.data_management_subtab import create_data_management_subtab
+from app.layouts.imzml_spatial_float import create_imzml_spatial_float
 
 
 def _cal_preset_options():
@@ -56,9 +57,10 @@ def _section_controls(ls, scope="initial"):
         html.Div(id="section_selector" + suffix),
         dcc.Store(id="section_catalog_store" + suffix, data=[]),
         dcc.Store(id="section_manifest_store" + suffix, data=ls.get("section_manifest" + suffix)),
+        create_imzml_spatial_float(scope),
         html.Div(id="section_summary" + suffix, className="alert alert-light py-2 mt-2"),
-        html.Details([
-            html.Summary("群情報を設定（任意）", style={"cursor": "pointer", "fontWeight": "600"}),
+        html.Details(id="section_group_details" + suffix, children=[
+            html.Summary("切片名・群情報を設定（任意）", style={"cursor": "pointer", "fontWeight": "600"}),
             # ★ ver67.1: 群登録で補正方法も変わるという誤解を防ぎ、実データと分けて入力例を示す。
             html.Div([
                 html.P("群・個体情報は、色分け・表示の絞り込み・切片数と独立試料数の確認・出力に使います。未入力でも解析できます。",
@@ -84,9 +86,10 @@ def _section_controls(ls, scope="initial"):
                     ], bordered=True, size="sm", className="mb-0"),
                 ], className="mt-1"),
             ], className="small bg-light border rounded p-2 mb-2"),
-            dbc.FormText("「個体／独立試料ID」「群」のセルを直接編集できます。表の左端のチェックは群名の一括設定用です。解析対象は上の切片／ROI欄で選択します。"),
+            dbc.FormText("「切片名」「個体／独立試料ID」「群」のセルを直接編集できます。表の左端のチェックは群名の一括設定用です。解析対象は上の切片／ROI欄で選択します。"),
             dash_table.DataTable(id="section_group_table" + suffix,
                 columns=[{"name": "切片", "id": "section", "editable": False},
+                         {"name": "切片名", "id": "section_display_name", "editable": True},
                          {"name": "フォルダ", "id": "file", "editable": False},
                          {"name": "個体／独立試料ID", "id": "subject_id"},
                          {"name": "群", "id": "group"},

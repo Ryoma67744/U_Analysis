@@ -37,19 +37,28 @@ def selected_manifest_paths(manifest):
 
 
 def apply_group_rows(manifest, rows):
-    """実行直前の表を採用し、Store更新の遅れで編集値を失わない。"""
+    """実行直前の表を採用し、Store更新の遅れで名称・群を失わない。"""
     if manifest is None or rows is None:
         return manifest
     result = deepcopy(manifest)
-    lookup = {r.get("section_id"): r for r in rows if r.get("section_id")}
-    for f in result.get("files", []):
-        for s in f.get("sections", []):
-            row = lookup.get(s.get("section_id"))
-            if row is not None:
-                for key in ("subject_id", "group"):
-                    s[key] = str(row.get(key) or "").strip()
-                if "section_settings" in result:
-                    result["section_settings"][s["section_id"]] = deepcopy(s)
+    lookup = {str(r.get("section_id")): r for r in rows if r.get("section_id")}
+    for file_entry in result.get("files", []):
+        targets = list(file_entry.get("sections", []))
+        targets.extend(file_entry.get("spatial_sections", []))
+        seen = set()
+        for section in targets:
+            sid = str(section.get("section_id") or "")
+            if not sid or id(section) in seen:
+                continue
+            seen.add(id(section))
+            row = lookup.get(sid)
+            if row is None:
+                continue
+            for key in ("section_display_name", "subject_id", "group"):
+                if key in row:
+                    section[key] = str(row.get(key) or "").strip()
+            if "section_settings" in result:
+                result["section_settings"][sid] = deepcopy(section)
     return result
 
 
@@ -102,10 +111,15 @@ def _numeric_manifest(manifest):
     return [{"file_id": f.get("file_id"), "path": f.get("path"),
              "selection_mode": f.get("selection_mode"), "rois": sorted(f.get("rois") or []),
              "roi_role": f.get("roi_role"),
-             # ★ ver70.0: 同じ原本パスでも変換revisionが異なれば別の数値入力。
+             "coordinate_hash": (f.get("spatial_layout") or {}).get("coordinate_hash"),
+             # 同じ原本パスでも変換revisionまたは座標切片構成が異なれば別の数値入力。
              "conversion_key": f.get("conversion_key"),
-             "sections": [{k: s.get(k) for k in ("section_id", "roi", "integration_unit_id")}
-                          for s in f.get("sections", [])]} for f in (manifest or {}).get("files", [])]
+             "sections": [{
+                 "section_id": s.get("section_id"),
+                 "roi": s.get("roi"),
+                 "integration_unit_id": s.get("integration_unit_id"),
+                 "component_ids": sorted(s.get("component_ids") or []),
+             } for s in f.get("sections", [])]} for f in (manifest or {}).get("files", [])]
 
 
 def analysis_signature(params):

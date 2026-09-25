@@ -45,7 +45,7 @@ def _read_feature_mz(data_folder) -> np.ndarray:
         return np.asarray(sorted(mz), dtype=float)
 
     # フォールバック: 列名から m/z を復元
-    non_meta = {"id", "x", "y", "annotation"}
+    non_meta = {"id", "x", "y", "ua_coordinate_component", "annotation"}
     vals: list[float] = []
     for n in pf.schema.names:
         if n in non_meta:

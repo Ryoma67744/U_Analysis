@@ -45,7 +45,7 @@ def save_section_groups(n_clicks, rows, rds_path, updated):
         _data(rds_path)
     except (ValueError, OSError) as exc:
         return f"保存できません: {exc}", no_update
-    return "群・個体情報を保存しました。", int(updated or 0) + 1
+    return "切片名・群・個体情報を保存しました。", int(updated or 0) + 1
 
 
 @callback(Output("int_section_metadata_download", "data"), Input("int_section_metadata_export", "n_clicks"),
