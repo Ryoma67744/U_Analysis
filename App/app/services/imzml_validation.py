@@ -5,6 +5,7 @@ CV 定義: imzML/imzML imagingMS.obo（IMS:1000080 / 1000090-92 / 1000102-04）�
 """
 from __future__ import annotations
 
+from collections import Counter
 from hashlib import new as new_hash
 import json
 import os
@@ -15,6 +16,7 @@ import uuid
 import xml.etree.ElementTree as ET
 
 from app.services.input_preparation import InputPreparationError, check_cancel, pair_paths
+from app.services.imzml_spatial_layout import build_spatial_layout, strip_runtime_layout
 
 
 def inspect_binary_contract(path, *, cancel=None):
@@ -167,9 +169,15 @@ def inspect_binary_contract(path, *, cancel=None):
                     h.update(chunk)
         if any(digests[a].hexdigest() != value for a, value in checksum.items()):
             raise InputPreparationError("ibd の既知 checksum が一致しません。")
+    spatial_layout = strip_runtime_layout(
+        build_spatial_layout(sorted(coordinates, key=lambda c: (c[1], c[0], c[2])),
+                             include_preview=False),
+        strip_preview=True,
+    )
     return {"pixels": count, "features": features, "intensity_bytes": byte_width,
             "spectrum_type": next(iter(modes)), "polarity": next(iter(polarities)),
-            "uuid_verified": True, "checksums_verified": sorted(checksum)}
+            "uuid_verified": True, "checksums_verified": sorted(checksum),
+            "spatial_layout": spatial_layout}
 
 
 def _bounded_block(features, width, requested, budget_mb):
@@ -257,6 +265,8 @@ def validate_converted_table(output, *, cancel=None, memory_budget_mb=None):
     from app.services.imzml_io import _axis_names
     output = Path(output)
     manifest = json.loads(output.with_suffix(".imzml.json").read_text(encoding="utf-8"))
+    if manifest.get("schema_version") != 2:
+        raise InputPreparationError("座標component付き変換manifestのschema版が不正です。")
     axis = np.asarray(manifest["mz_axis"], dtype=manifest["mz_dtype"])
     if not len(axis) or not np.isfinite(axis).all() or np.any(axis <= 0) or np.any(np.diff(axis) <= 0):
         raise InputPreparationError("保存した精密 m/z 軸が不正です。")
@@ -270,6 +280,22 @@ def validate_converted_table(output, *, cancel=None, memory_budget_mb=None):
     coords = [tuple(m["coordinate"]) for m in mapping]
     if len(set(coords)) != n or len({c[2] for c in coords}) != 1:
         raise InputPreparationError("保存座標の重複または複数 z 面を検出しました。")
+    components = [str(m.get("component_id") or "") for m in mapping]
+    if any(not value for value in components):
+        raise InputPreparationError("元画素と座標componentの対応が欠落しています。")
+    rebuilt_layout = strip_runtime_layout(build_spatial_layout(coords, include_preview=False),
+                                           strip_preview=True)
+    saved_layout = manifest.get("spatial_layout")
+    if not isinstance(saved_layout, dict) or saved_layout.get("coordinate_hash") != rebuilt_layout.get("coordinate_hash"):
+        raise InputPreparationError("保存した座標layoutと元画素座標が一致しません。")
+    expected_components = {c["component_id"]: int(c["pixel_count"])
+                           for c in rebuilt_layout.get("components", [])}
+    saved_components = {str(c.get("component_id")): int(c.get("pixel_count", -1))
+                        for c in saved_layout.get("components", [])}
+    if saved_components != expected_components:
+        raise InputPreparationError("保存した座標component要約が元画素座標と一致しません。")
+    if dict(Counter(components)) != expected_components:
+        raise InputPreparationError("座標componentの画素数が一致しません。")
     dtype = np.dtype(manifest["intensity_dtype"])
     if dtype not in (np.dtype("float32"), np.dtype("float64")):
         raise InputPreparationError("保存した強度精度が不正です。")
@@ -279,10 +305,20 @@ def validate_converted_table(output, *, cancel=None, memory_budget_mb=None):
         raise InputPreparationError("原本ヘッダーと保存後の画素数・feature数が一致しません。")
     seen = 0
     with pq.ParquetFile(output) as pf:
-        if pf.metadata.num_rows != n or pf.schema_arrow.names != ["id", "x", "y", *names, "annotation"]:
+        expected_names = ["id", "x", "y", "ua_coordinate_component", *names, "annotation"]
+        if pf.metadata.num_rows != n or pf.schema_arrow.names != expected_names:
             raise InputPreparationError("Parquet の列順または行数が一致しません。")
-        if [pf.schema_arrow.field(name).type for name in ("id", "x", "y", "annotation")] != [pa.int64(), pa.float64(), pa.float64(), pa.string()]:
-            raise InputPreparationError("画素ID/座標/annotationの保存型が不正です。")
+        schema_metadata = pf.schema_arrow.metadata or {}
+        try:
+            parquet_layout = json.loads(schema_metadata[b"ua_spatial_layout"].decode("utf-8"))
+        except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise InputPreparationError("Parquet の座標layoutメタデータがありません。") from exc
+        if parquet_layout != saved_layout:
+            raise InputPreparationError("Parquet と変換manifestの座標layoutが一致しません。")
+        typed = ("id", "x", "y", "ua_coordinate_component", "annotation")
+        expected_types = [pa.int64(), pa.float64(), pa.float64(), pa.string(), pa.string()]
+        if [pf.schema_arrow.field(name).type for name in typed] != expected_types:
+            raise InputPreparationError("画素ID/座標/component/annotationの保存型が不正です。")
         if any(pf.schema_arrow.field(name).type != expected_type for name in names):
             raise InputPreparationError("強度 dtype が保存前の型と一致しません。")
         batch_size = _bounded_block(len(names), dtype.itemsize, 128,
@@ -293,12 +329,18 @@ def validate_converted_table(output, *, cancel=None, memory_budget_mb=None):
                 values = batch.column(batch.schema.get_field_index(name)).to_numpy()
                 if not np.isfinite(values).all() or np.any(values < 0):
                     raise InputPreparationError("保存後の強度に不正な値を検出しました。")
-            ids = batch.column(0).to_pylist()
-            xs, ys = batch.column(1).to_pylist(), batch.column(2).to_pylist()
+            ids = batch.column(batch.schema.get_field_index("id")).to_pylist()
+            xs = batch.column(batch.schema.get_field_index("x")).to_pylist()
+            ys = batch.column(batch.schema.get_field_index("y")).to_pylist()
+            saved_components = batch.column(batch.schema.get_field_index("ua_coordinate_component")).to_pylist()
             for j, sample_id in enumerate(ids):
-                if sample_id != seen + j + 1 or (xs[j], ys[j]) != coords[seen + j][:2]:
-                    raise InputPreparationError("id・座標・元スペクトル対応が一致しません。")
+                absolute = seen + j
+                if (sample_id != absolute + 1 or (xs[j], ys[j]) != coords[absolute][:2]
+                        or saved_components[j] != components[absolute]):
+                    raise InputPreparationError("id・座標・component・元スペクトル対応が一致しません。")
             seen += len(ids)
     if seen != n:
         raise InputPreparationError("保存後の画素数が一致しません。")
-    return {"pixels": n, "features": len(axis), "intensity_dtype": str(dtype), "all_pixels_checked": True}
+    return {"pixels": n, "features": len(axis), "intensity_dtype": str(dtype),
+            "spatial_components": len(expected_components), "coordinate_hash": rebuilt_layout["coordinate_hash"],
+            "all_pixels_checked": True}

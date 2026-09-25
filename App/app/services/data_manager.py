@@ -269,7 +269,7 @@ def _read_mz_sorted_metadata(pf) -> Optional[list]:
             return None
         if any(a >= b for a, b in zip(values, values[1:])):
             return None
-        metadata_columns = {"id", "x", "y", "annotation"}
+        metadata_columns = {"id", "x", "y", "ua_coordinate_component", "annotation"}
         columns = [c for c in pf.schema_arrow.names if c not in metadata_columns]
         if len(values) != len(columns):
             return None
@@ -336,7 +336,7 @@ def _read_tims_raw(folder: Path, sample_name: str = None) -> Optional[pd.DataFra
 
         pf = pq.ParquetFile(fp)
         all_names = pf.schema.names
-        non_meta = {"id", "x", "y", "annotation"}
+        non_meta = {"id", "x", "y", "ua_coordinate_component", "annotation"}
         # 旧形式: mz_ 接頭辞 / 裸の数値列名
         mz_cols = [n for n in all_names if n.startswith("mz_")]
         if not mz_cols:
@@ -445,16 +445,18 @@ def _read_desi_raw(folder: Path, sample_name: str = None) -> Optional[pd.DataFra
 
 
 def find_tims_file_path(data_folder: str, stem: str) -> Optional[str]:
-    """ファイル名（拡張子なし）からフルパスを解決する。"""
+    """ファイル名（拡張子なし）から解析候補を大文字小文字を問わず解決する。
+
+    imzMLを通常解析へ追加したため、拡張子の固定組立てでは再解析時に原本を
+    見失う。候補抽出と同じ規則を使い、同stemでは既存Parquetを優先する。
+    """
     folder = Path(data_folder)
     if not folder.is_dir():
         return None
-    extensions = [".parquet", ".pq", ".csv", ".tsv", ".txt"]
-    for ext in extensions:
-        fp = folder / f"{stem}{ext}"
-        if fp.exists():
-            return str(fp)
-    return None
+    candidates = [p for p in _filter_tims_candidates(folder) if p.stem == stem]
+    priority = {".parquet": 0, ".pq": 1, ".imzml": 2, ".csv": 3, ".tsv": 4, ".txt": 5}
+    candidates.sort(key=lambda p: (priority.get(p.suffix.lower(), 99), p.name.lower()))
+    return str(candidates[0]) if candidates else None
 
 
 def find_tims_file_path_multi(data_folders, stem: str) -> Optional[str]:

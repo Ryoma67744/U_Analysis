@@ -22,7 +22,8 @@ DESCRIPTOR_KEYS = (
 )
 RECEIPT = "conversion_complete.json"
 CACHE_MARKER = ".ua_imzml_assets"
-CONTRACT_VERSION = "common-axis-ms1-v2"
+# ★ ver71.0: component列と座標layoutを含まないver70 cacheを新規解析で再利用しない。
+CONTRACT_VERSION = "common-axis-ms1-spatial-v3"
 
 
 class InputPreparationError(ValueError):
@@ -192,9 +193,10 @@ def _versions():
 def conversion_spec():
     # 保存バイトへ影響するコードと依存版を含める。UMAP の設定は含めない。
     here = Path(__file__).parent
-    return {"contract": CONTRACT_VERSION, "schema": 1, "dependencies": _versions(),
+    return {"contract": CONTRACT_VERSION, "schema": 2, "dependencies": _versions(),
             "converter_sha256": sha256_file(here / "imzml_io.py"),
             "validator_sha256": sha256_file(here / "imzml_validation.py"),
+            "spatial_layout_sha256": sha256_file(here / "imzml_spatial_layout.py"),
             "block_size": 128, "memory_budget_mb": int(os.environ.get("IMZML_BLOCK_MB", "64"))}
 
 
@@ -227,6 +229,10 @@ def validate_asset(entry, *, cancel=None):
         expected = entry["validation"]
         if receipt["validation"] != expected or receipt["file_id"] != entry["file_id"]:
             raise InputPreparationError("結果に固定した検証記録と cache が一致しません。")
+        layout_hash = (entry.get("spatial_layout") or {}).get("coordinate_hash")
+        saved_hash = (expected.get("summary") or {}).get("coordinate_hash")
+        if layout_hash and saved_hash and layout_hash != saved_hash:
+            raise InputPreparationError("画面で確定した座標layoutと変換資産が一致しません。")
         for kind, path in (("parquet", entry["runtime_path"]), ("manifest", entry["conversion_manifest_path"])):
             if Path(path).resolve().parent != root:
                 raise InputPreparationError("変換ファイルの所属 revision が一致しません。")
@@ -355,6 +361,9 @@ def prepare_imzml(entry, *, cache_root=None, project_id="", pinned=False,
             if progress:
                 progress({"stage": "validate", "sample": xml.name})
             validation_summary = validator(output, cancel=cancel)
+            layout_hash = (entry.get("spatial_layout") or {}).get("coordinate_hash")
+            if layout_hash and validation_summary.get("coordinate_hash") != layout_hash:
+                raise InputPreparationError("選択時と変換時でimzML座標が変わったため解析を開始しません。")
             manifest_path = output.with_suffix(".imzml.json")
             validation = {"parquet": _file_validation(output, cancel),
                           "manifest": _file_validation(manifest_path, cancel),

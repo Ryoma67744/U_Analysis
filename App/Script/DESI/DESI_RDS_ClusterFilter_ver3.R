@@ -630,8 +630,8 @@ for (.input_index in seq_along(.rerun_inputs)) {
   message(sprintf("   kept %d / %d lines", stat$n_kept, stat$n_total))
 
   # ★ ver67.0: TXTの再出力で失われていた元ファイル・元画素・切片・個体・群を保持する。
-  .meta_cols <- intersect(c("spot_index", "sample", "source_file_id", "source_pixel_id",
-                             "section_id", "subject_id", "group", "integration_unit_id"), names(rows_sn))
+  .meta_cols <- intersect(c("spot_index", "sample", "ua_coordinate_component", "source_file_id", "source_pixel_id",
+                             "section_id", "section_display_name", "subject_id", "group", "integration_unit_id"), names(rows_sn))
   .export_md <- rows_sn[, .meta_cols, drop = FALSE]
   .export_md$spot_index <- rows_sn$PixelID_for_export
   if (!("source_file_id" %in% names(.export_md))) .export_md$source_file_id <- normalizePath(original_txt, winslash = "/", mustWork = FALSE)

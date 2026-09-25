@@ -905,7 +905,7 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
     is_annotated <- FALSE
     resolved_mz <- NULL          # mz_cols と同じ並びの m/z（解決できた場合）
     if (length(mz_cols) == 0) {
-      non_meta <- setdiff(all_names, c("id", "x", "y", "annotation"))
+      non_meta <- setdiff(all_names, c("id", "x", "y", "ua_coordinate_component", "annotation"))
       # ★ ver55.0: 以前は「素の数値列」と「注釈付き列」を if / else if の**排他分岐**で
       #   扱っていた。しかし両者は同じ parquet に**混在する** — peak-list に一致しなかった
       #   feature は数値名のまま書かれるため、旧データではこれが普通の状態だった。
@@ -935,7 +935,7 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
     # t() / dgCMatrix と密コピーを 4〜5 個同時に抱え、取り込みだけでデータ実体の数倍を要した
     # （10万px 級で 12GB コンテナを超過）。ここではメタ列だけ先に読み、強度は m/z 列を
     # ブロック単位で読んで逐次スパース化して積む。全体の密行列・論理行列・t() を作らない。
-    meta_cols <- intersect(c("id", "x", "y", "annotation"), all_names)
+    meta_cols <- intersect(c("id", "x", "y", "ua_coordinate_component", "annotation"), all_names)
     df <- arrow::read_parquet(file_path, col_select = dplyr::all_of(meta_cols), as_data_frame = TRUE)
 
     miss <- setdiff(c("id", "x", "y"), colnames(df))
@@ -999,6 +999,9 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
       row.names = spot_id
     )
 
+    if ("ua_coordinate_component" %in% colnames(df)) {
+      coordinates$ua_coordinate_component <- as.character(df$ua_coordinate_component)
+    }
     if ("annotation" %in% colnames(df)) {
       coordinates$annotation <- as.character(df$annotation)
     }
@@ -1813,7 +1816,7 @@ assign_xy_grid <- function(seu, nx=NULL, ny=NULL){
   # PixelTable: meta.data から描画材料（x/y/cluster/TIC/条件など）を保存
   md <- obj@meta.data
   keep_md <- intersect(c("x_coord","y_coord","seurat_clusters","nCount_Spatial","slice_id","condition","sample",
-                         "spot_index","source_file_id","source_pixel_id","section_id","subject_id","group","integration_unit_id"),
+                         "spot_index","ua_coordinate_component","source_file_id","source_pixel_id","section_id","section_display_name","subject_id","group","integration_unit_id"),
                        colnames(md))
   if (length(keep_md) > 0) {
     pix <- md[, keep_md, drop = FALSE]
@@ -2438,8 +2441,8 @@ if (exists("RDS_SAVE_DIR", envir = .GlobalEnv)) {
       sn <- .export_names[match(fp, .export_paths)]
       # ★ ver67.0: basenameの一致だけで結合すると同名入力間で画素が交差する。
       meta <- ua_input_metadata(obj@meta.data, fp, SECTION_MANIFEST)
-      .export_metadata <- intersect(c("source_file_id", "source_pixel_id", "section_id",
-        "subject_id", "group", "integration_unit_id"), names(meta))
+      .export_metadata <- intersect(c("ua_coordinate_component", "source_file_id", "source_pixel_id", "section_id",
+        "section_display_name", "subject_id", "group", "integration_unit_id"), names(meta))
       meta <- meta[, c("spot_index", "seurat_clusters", .export_metadata), drop = FALSE]
 
       if(nrow(meta) == 0) next
@@ -2593,6 +2596,9 @@ if (!step1_done && !.stage_downstream) {
     seu <- CreateSeuratObject(counts=dat$count_matrix, project="DESI", assay="Spatial")
     seu@misc$input_basename <- tools::file_path_sans_ext(basename(fp))
     seu$sample <- sn; seu$x_coord <- dat$coordinates$x; seu$y_coord <- dat$coordinates$y; seu$spot_index <- dat$coordinates$spot_index
+    # ★ ver71.0: 座標componentは特徴量ではなく画素metadataとしてSeuratへ渡す。
+    if ("ua_coordinate_component" %in% colnames(dat$coordinates))
+      seu$ua_coordinate_component <- dat$coordinates$ua_coordinate_component
     if ("annotation" %in% colnames(dat$coordinates)) seu$annotation <- dat$coordinates$annotation
     seu <- assign_xy_grid(seu)
     # condition は slice_id（= annotation名）をそのまま使用
@@ -2605,7 +2611,7 @@ seu$condition <- seu$slice_id
       if (!"spot_index" %in% names(.side) || anyDuplicated(.side$spot_index)) stop("再解析の画素対応表が不正です")
       .idx <- match(as.character(seu$spot_index), .side$spot_index)
       if (anyNA(.idx)) stop("再解析の元画素IDに対応しない画素があります")
-      for (.key in intersect(c("source_file_id", "source_pixel_id", "section_id", "subject_id", "group", "integration_unit_id"), names(.side)))
+      for (.key in intersect(c("ua_coordinate_component", "source_file_id", "source_pixel_id", "section_id", "section_display_name", "subject_id", "group", "integration_unit_id"), names(.side)))
         seu@meta.data[[.key]] <- .side[[.key]][.idx]
     }
     seu <- ua_apply_sections(seu, fp, SECTION_MANIFEST,

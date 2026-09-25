@@ -20,6 +20,8 @@ import pyarrow.parquet as pq
 from pyimzml.ImzMLParser import ImzMLParser
 from pyimzml.ImzMLWriter import ImzMLWriter
 
+from app.services.imzml_spatial_layout import build_spatial_layout, strip_runtime_layout
+
 
 class ImzMLContractError(ValueError):
     """The input cannot be represented without inventing or losing spectra."""
@@ -78,6 +80,8 @@ def inspect_imzml(path: str | Path) -> dict:
     with ibd.open("rb") as binary:
         parser = ImzMLParser(str(xml), ibd_file=binary)
         coords = _coordinates(parser)
+        # ★ ver71.0: annotationとは別に、座標由来の物理componentを全画素へ固定する。
+        spatial_layout = build_spatial_layout(coords, include_preview=False)
         axis, first = _spectrum(parser, 0)
         _axis_names(axis)
         for i in range(1, len(coords)):
@@ -86,6 +90,7 @@ def inspect_imzml(path: str | Path) -> dict:
                 "mz_dtype": str(axis.dtype), "intensity_dtype": str(first.dtype),
                 "coordinates_min": list(map(min, zip(*coords))),
                 "coordinates_max": list(map(max, zip(*coords))),
+                "spatial_layout": strip_runtime_layout(spatial_layout, strip_preview=True),
                 "xml": str(xml), "ibd": str(ibd)}
 
 
@@ -105,6 +110,8 @@ def import_imzml(path: str | Path, output: str | Path, *, block_size=128,
     temp_dir = Path(tempfile.mkdtemp(prefix=".imzml-", dir=output.parent))
     try:
         coords = _coordinates(parser)
+        spatial_layout = build_spatial_layout(coords, include_preview=False)
+        component_by_source = spatial_layout["_source_components"]
         axis, first = _spectrum(parser, 0)
         names = _axis_names(axis)
         dtype = np.dtype(first.dtype)
@@ -112,12 +119,17 @@ def import_imzml(path: str | Path, output: str | Path, *, block_size=128,
             raise ImzMLContractError(f"Unsupported intensity precision: {dtype}")
         order = sorted(range(len(coords)), key=lambda i: (coords[i][1], coords[i][0]))
         fields = [pa.field("id", pa.int64()), pa.field("x", pa.float64()),
-                  pa.field("y", pa.float64())]
+                  pa.field("y", pa.float64()), pa.field("ua_coordinate_component", pa.string())]
         fields += [pa.field(name, pa.float32() if dtype == np.float32 else pa.float64())
                    for name in names]
         fields += [pa.field("annotation", pa.string())]
-        schema = pa.schema(fields, metadata={b"mz_sorted": json.dumps(axis.tolist()).encode(),
-                                            b"imzml_origin": b"1"})
+        persisted_layout = strip_runtime_layout(spatial_layout, strip_preview=True)
+        schema = pa.schema(fields, metadata={
+            b"mz_sorted": json.dumps(axis.tolist()).encode(),
+            b"imzml_origin": b"1",
+            b"ua_spatial_layout": json.dumps(persisted_layout, ensure_ascii=False,
+                                               sort_keys=True).encode("utf-8"),
+        })
         temp_parquet = temp_dir / output.name
         mapping = []
         with pq.ParquetWriter(temp_parquet, schema, compression="zstd") as writer:
@@ -129,18 +141,21 @@ def import_imzml(path: str | Path, output: str | Path, *, block_size=128,
                     if intensities.dtype != dtype:
                         raise ImzMLContractError(f"Spectrum {i}: mixed intensity precision")
                     matrix[j] = intensities
-                    mapping.append({"source_index": i, "coordinate": coords[i]})
+                    mapping.append({"source_index": i, "coordinate": coords[i],
+                                    "component_id": component_by_source[i]})
                 arrays = [pa.array(range(start + 1, start + len(indices) + 1), type=pa.int64()),
                           pa.array([coords[i][0] for i in indices], type=pa.float64()),
-                          pa.array([coords[i][1] for i in indices], type=pa.float64())]
+                          pa.array([coords[i][1] for i in indices], type=pa.float64()),
+                          pa.array([component_by_source[i] for i in indices], type=pa.string())]
                 arrays.extend(pa.array(matrix[:, j]) for j in range(len(axis)))
                 arrays.append(pa.array(["Unannotated"] * len(indices)))
                 writer.write_table(pa.Table.from_arrays(arrays, schema=schema))
                 if progress:
                     progress(min(start + len(indices), len(order)), len(order))
-        manifest = {"schema_version": 1, "source_xml": str(xml), "source_ibd": str(ibd),
+        manifest = {"schema_version": 2, "source_xml": str(xml), "source_ibd": str(ibd),
                     "mz_axis": axis.tolist(), "mz_dtype": str(axis.dtype),
                     "intensity_dtype": str(dtype), "source_coordinates": mapping,
+                    "spatial_layout": persisted_layout,
                     "normalization": "unknown", "spectrum_type": str(parser.spectrum_mode),
                     "pixel_count": len(coords), "feature_count": len(axis)}
         temp_manifest = temp_dir / manifest_path.name
@@ -171,7 +186,7 @@ def export_imzml(sample: str | Path, output_zip: str | Path, *, pixel_ids=None,
     if not manifest_path.is_file():
         raise ImzMLContractError("An imzML import manifest is required for exact export")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != 1:
+    if manifest.get("schema_version") not in {1, 2}:
         raise ImzMLContractError("Unsupported import manifest")
     parquet = pq.ParquetFile(sample)
     names = _axis_names(np.asarray(manifest["mz_axis"], dtype=np.float64))

@@ -1573,7 +1573,8 @@ def _aggregate_tims(dfs: list, method_lookups: OrderedDict,
     # ★ ver67.0: 同名annotationの別ファイルを集計で混ぜない。
     section_keys = []
     if "section" in _eo.normalize(options)["group_keys"]:
-        section_keys = [c for c in ("source_file_id", "section_id", "subject_id", "group", "integration_unit_id") if c in all_cols]
+        section_keys = [c for c in ("source_file_id", "section_id", "section_display_name",
+                                    "subject_id", "group", "integration_unit_id") if c in all_cols]
 
     if "cluster" not in _eo.normalize(options)["group_keys"]:
         group_cols = _eo.resolve_group_columns(options, []) + section_keys

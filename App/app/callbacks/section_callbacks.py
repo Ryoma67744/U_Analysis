@@ -14,38 +14,83 @@ def _selection_blocks(catalog, manifest, scope):
     for item in catalog:
         path = item["path"]
         f = saved[path]
-        options = item["available_rois"]
-        values = f["rois"] if options else (["__all__"] if f["selection_mode"] != "none" else [])
         children = [html.Small(Path(path).name, className="fw-bold", title=path)]
         if names.count(Path(path).name) > 1:
             children.append(html.Small(str(Path(path).parent), className="d-block text-muted"))
-        if options:
-            children.append(dbc.Select(
-                id={"type": "section_roi_role", "scope": scope, "index": path},
-                options=[{"label": "ROIの意味を選択（初回のみ）", "value": ""},
-                         {"label": "各ROIが別の切片", "value": "section"},
-                         {"label": "同じ切片内の領域（臓器など）", "value": "region"}],
-                value=f.get("roi_role") or "", className="mt-1", size="sm"))
-        children.append(dbc.Checklist(
-            id={"type": "section_roi_check", "scope": scope, "index": path},
-            options=([{"label": " " + r, "value": r} for r in options] if options else
-                     [{"label": " 全画素", "value": "__all__"}]),
-            value=values, inline=True, className="mt-1"))
-        children.append(html.Div([
-            dbc.Button("全選択", id={"type": "section_select_all", "scope": scope, "index": path},
-                       n_clicks=0, size="sm", color="link"),
-            dbc.Button("全解除", id={"type": "section_select_none", "scope": scope, "index": path},
-                       n_clicks=0, size="sm", color="link")]))
+
+        if f.get("roi_role") == "spatial" or item.get("spatial_layout") or item.get("spatial_error"):
+            if f.get("spatial_error"):
+                children.append(dbc.Alert(f["spatial_error"], color="warning", className="py-1 px-2 my-1 small"))
+                result.append(html.Div(children, className="border rounded p-2 mb-2"))
+                continue
+            spatial_sections = f.get("spatial_sections", [])
+            selected = [s["section_id"] for s in spatial_sections if s.get("selected", True)]
+            children.append(html.Div(
+                f"座標から {len(spatial_sections)} 切片候補を検出",
+                className="small text-success mt-1"))
+            warnings = (f.get("spatial_layout") or {}).get("warnings") or []
+            if warnings:
+                children.append(html.Small(" / ".join(warnings[:2]), className="d-block text-warning"))
+            children.append(dbc.Checklist(
+                id={"type": "section_roi_check", "scope": scope, "index": path},
+                options=[{"label": f" {s['section_display_name']}  {int(s.get('pixel_count', 0)):,} pixels",
+                          "value": s["section_id"]} for s in spatial_sections],
+                value=selected, inline=False, className="mt-1 imzml-spatial-compact-list"))
+            children.append(html.Div(className="d-flex flex-wrap gap-1 align-items-center", children=[
+                dbc.Button("配置を確認", id={"type": "imzml_spatial_open", "scope": scope, "index": path},
+                           n_clicks=0, size="sm", color="info", outline=True),
+                dbc.Button("切片名・群を設定", id={"type": "section_group_open", "scope": scope, "index": path},
+                           n_clicks=0, size="sm", color="secondary", outline=True),
+                dbc.Button("全選択", id={"type": "section_select_all", "scope": scope, "index": path},
+                           n_clicks=0, size="sm", color="link"),
+                dbc.Button("全解除", id={"type": "section_select_none", "scope": scope, "index": path},
+                           n_clicks=0, size="sm", color="link"),
+            ]))
+        else:
+            options = item["available_rois"]
+            values = f["rois"] if options else (["__all__"] if f["selection_mode"] != "none" else [])
+            if options:
+                children.append(dbc.Select(
+                    id={"type": "section_roi_role", "scope": scope, "index": path},
+                    options=[{"label": "ROIの意味を選択（初回のみ）", "value": ""},
+                             {"label": "各ROIが別の切片", "value": "section"},
+                             {"label": "同じ切片内の領域（臓器など）", "value": "region"}],
+                    value=f.get("roi_role") or "", className="mt-1", size="sm"))
+            children.append(dbc.Checklist(
+                id={"type": "section_roi_check", "scope": scope, "index": path},
+                options=([{"label": " " + r, "value": r} for r in options] if options else
+                         [{"label": " 全画素", "value": "__all__"}]),
+                value=values, inline=True, className="mt-1"))
+            children.append(html.Div([
+                dbc.Button("全選択", id={"type": "section_select_all", "scope": scope, "index": path},
+                           n_clicks=0, size="sm", color="link"),
+                dbc.Button("全解除", id={"type": "section_select_none", "scope": scope, "index": path},
+                           n_clicks=0, size="sm", color="link")]))
         result.append(html.Div(children, className="border rounded p-2 mb-2"))
     return result or html.Small("上で解析するファイルを選択してください。", className="text-muted")
 
 
-def make_catalog(paths, is_tims, previous):
+# ★ ver71.0: imzMLは切片名ではなくXMLのx–y座標componentを候補化する。
+def make_catalog(paths, is_tims, previous, overrides=None):
     catalog = []
+    overrides = overrides or {}
     for path in list(dict.fromkeys(paths or [])):
         p = str(Path(path).expanduser().resolve())
-        rois = read_parquet_annotations(p) if is_tims else read_desi_roi_list(p)
-        catalog.append({"path": p, "available_rois": rois})
+        if is_tims and Path(p).suffix.lower() == ".imzml":
+            item = {"path": p, "available_rois": [], "input_format": "imzml"}
+            from app.services.imzml_spatial_layout import inspect_imzml_spatial_layout, SpatialLayoutError
+            try:
+                layout = inspect_imzml_spatial_layout(p)
+                item["spatial_layout"] = layout
+                override = overrides.get(p) or {}
+                if override.get("coordinate_hash") == layout.get("coordinate_hash"):
+                    item["spatial_sections"] = override.get("spatial_sections")
+            except (OSError, SpatialLayoutError) as exc:  # 入力エラーはmanifestへ残し、黙って1切片にしない。
+                item["spatial_error"] = str(exc)
+            catalog.append(item)
+        else:
+            rois = read_parquet_annotations(p) if is_tims else read_desi_roi_list(p)
+            catalog.append({"path": p, "available_rois": rois})
     return catalog, build_section_manifest(catalog, previous=previous)
 
 
@@ -53,19 +98,20 @@ def make_catalog(paths, is_tims, previous):
     Output("section_catalog_store", "data"), Output("section_selector", "children"),
     Input("selected_sample_paths_store", "data"), Input("selected_samples_store", "data"),
     Input("data_folder", "value"), Input("analysis_method", "value"),
-    Input("analysis_method_tims", "value"), State("section_manifest_store", "data"))
-def update_section_selector(paths, samples, folder, desi_method, tims_method, previous):
+    Input("analysis_method_tims", "value"), Input("imzml_spatial_overrides", "data"),
+    State("section_manifest_store", "data"))
+def update_section_selector(paths, samples, folder, desi_method, tims_method, overrides, previous):
     active = desi_method or tims_method or "desi_v8"
     if active not in ("desi_v8", "tims_v8"):
         return no_update, no_update
     is_tims = active == "tims_v8"
     selected = paths if is_tims else [str(Path(folder) / (s + ".txt")) for s in (samples or [])] if folder else []
-    catalog, manifest = make_catalog(selected, is_tims, previous)
+    catalog, manifest = make_catalog(selected, is_tims, previous, overrides)
     return catalog, _selection_blocks(catalog, manifest, "initial")
 
 
 def reanalysis_source_manifest(source, folder, rds_path="", previous=None):
-    """★ ver67.0: 元結果の対応表が現在の再解析対象と一致する時だけ選択の正にする。"""
+    """元結果の対応表が現在の再解析対象と一致する時だけ選択の正にする。"""
     candidates = [source or {}]
     if (previous or {}).get("source_rds_path"):
         candidates.append({"manifest": previous, "data_folder": previous.get("source_data_folder", ""),
@@ -92,8 +138,12 @@ def source_reanalysis_catalog(manifest):
         if f.get("selection_mode") == "none":
             continue
         rois = f.get("rois", []) if f.get("selection_mode") == "selected" else f.get("available_rois", [])
-        result.append({"path": f["path"], "file_id": f["file_id"],
-                       "available_rois": list(rois), "roi_role": f.get("roi_role")})
+        item = {"path": f["path"], "file_id": f["file_id"],
+                "available_rois": list(rois), "roi_role": f.get("roi_role")}
+        for key in ("spatial_layout", "spatial_sections", "spatial_error", "input_format"):
+            if key in f:
+                item[key] = f[key]
+        result.append(item)
     return result
 
 
@@ -102,9 +152,10 @@ def source_reanalysis_catalog(manifest):
     Input("selected_samples_reanalysis", "value"), Input("reanalysis_data_folder", "value"),
     Input("analysis_method", "value"), Input("analysis_method_tims", "value"),
     Input("reanalysis_source_manifest_store", "data"), Input("rds_path", "value"),
+    Input("imzml_spatial_overrides_reanalysis", "data"),
     State("section_manifest_store_reanalysis", "data"))
 def update_reanalysis_section_selector(samples, folder, desi_method, tims_method,
-                                       source=None, rds_path="", previous=None):
+                                       source=None, rds_path="", overrides=None, previous=None):
     active = desi_method or tims_method or "desi_v8"
     if active not in ("desi_cluster_filter", "tims_cluster_filter"):
         return no_update, no_update
@@ -112,6 +163,11 @@ def update_reanalysis_section_selector(samples, folder, desi_method, tims_method
     saved = reanalysis_source_manifest(source, folder, rds_path, previous)
     if saved:
         catalog = source_reanalysis_catalog(saved)
+        for item in catalog:
+            override = (overrides or {}).get(item["path"]) or {}
+            layout = item.get("spatial_layout") or {}
+            if override.get("coordinate_hash") == layout.get("coordinate_hash"):
+                item["spatial_sections"] = override.get("spatial_sections")
         same_source = (previous or {}).get("source_rds_path") == saved.get("source_rds_path")
         manifest = build_section_manifest(catalog, previous=previous if same_source else saved)
         return catalog, _selection_blocks(catalog, manifest, "reanalysis")
@@ -122,8 +178,28 @@ def update_reanalysis_section_selector(samples, folder, desi_method, tims_method
         p = find_tims_file_path(folder, sample) if is_tims else str(Path(folder) / (sample + ".txt"))
         if p:
             paths.append(str(p))
-    catalog, manifest = make_catalog(paths, is_tims, previous)
+    catalog, manifest = make_catalog(paths, is_tims, previous, overrides)
     return catalog, _selection_blocks(catalog, manifest, "reanalysis")
+
+
+def _register_group_details(scope):
+    suffix = "" if scope == "initial" else "_reanalysis"
+
+    @callback(
+        Output("section_group_details" + suffix, "open"),
+        Input({"type": "section_group_open", "scope": scope, "index": ALL}, "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def open_group_details(clicks):
+        trigger = ctx.triggered_id
+        value = (ctx.triggered[0].get("value") if getattr(ctx, "triggered", None) else None)
+        if not isinstance(trigger, dict) or trigger.get("type") != "section_group_open" or not value:
+            return no_update
+        return True
+
+
+_register_group_details("initial")
+_register_group_details("reanalysis")
 
 
 @callback(

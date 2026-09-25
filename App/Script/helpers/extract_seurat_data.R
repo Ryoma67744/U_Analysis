@@ -140,7 +140,8 @@ plot_data <- data.frame(
 
 # ★ ver67.0: 固定列の抽出で脱落していた切片・個体・群を専用列のまま渡す。
 # Sample は H&E 対応キーとして従来値を維持する。
-section_columns <- c("source_file_id", "source_pixel_id", "section_id", "subject_id",
+section_columns <- c("ua_coordinate_component", "source_file_id", "source_pixel_id",
+                     "section_id", "section_display_name", "subject_id",
                      "group", "integration_unit_id")
 for (field in intersect(section_columns, colnames(meta))) {
   plot_data[[field]] <- as.character(meta[[field]])

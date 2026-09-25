@@ -37,35 +37,81 @@ ua_manifest_entry <- function(manifest, path) {
   hits[[1]]
 }
 ua_section_metadata <- function(md, input_path, manifest = NULL, roi_col = "annotation",
-                                pixel_col = "spot_index", fallback_role = "region") {
+                                pixel_col = "spot_index", fallback_role = "region",
+                                component_col = "ua_coordinate_component") {
   entry <- ua_manifest_entry(manifest, input_path)
   mode <- ua_value(entry$selection_mode, "all")
   if (!mode %in% c("all", "selected", "none")) stop("selection_mode が不正です")
+  file_id <- ua_value(entry$file_id, ua_path(input_path))
+  role <- ua_value(entry$roi_role, fallback_role)
+
+  # ★ ver71.0: imzMLの物理切片はROI名ではなく固定component列から割り当てる。
+  if (!is.null(entry) && identical(role, "spatial")) {
+    if (!component_col %in% names(md)) stop("imzML座標切片に必要な component 列がありません")
+    component <- as.character(md[[component_col]]); component[is.na(component)] <- ""
+    if (any(!nzchar(component))) stop("imzML座標componentが欠損しています")
+    all_rows <- if (!is.null(entry$spatial_sections) && length(entry$spatial_sections)) entry$spatial_sections else entry$sections
+    registered_components <- unique(as.character(unlist(lapply(all_rows, function(section)
+      section$component_ids), use.names = FALSE)))
+    unknown_components <- setdiff(unique(component[nzchar(component)]), registered_components)
+    if (length(unknown_components))
+      stop("変換入力にmanifest未登録の座標componentがあります: ", paste(unknown_components, collapse=", "))
+    owners <- list()
+    for (section in entry$sections) {
+      ids <- as.character(unlist(section$component_ids, use.names = FALSE))
+      if (!length(ids)) stop("座標切片に component が登録されていません")
+      for (cid in ids) {
+        if (!is.null(owners[[cid]])) stop("同じ座標componentが複数切片へ登録されています: ", cid)
+        owners[[cid]] <- list(
+          section_id = ua_value(section$section_id),
+          section_display_name = ua_value(section$section_display_name, ua_value(section$section_id)),
+          subject_id = ua_value(section$subject_id),
+          group = ua_value(section$group),
+          integration_unit_id = ua_value(section$integration_unit_id, ua_value(section$section_id))
+        )
+      }
+    }
+    keep <- if (identical(mode, "none")) rep(FALSE, nrow(md)) else component %in% names(owners)
+    md <- md[keep, , drop = FALSE]; component <- component[keep]
+    if (!nrow(md)) return(md)
+    if (any(!component %in% names(owners))) stop("選択画素に対応する座標切片がありません")
+    if (!"source_file_id" %in% names(md)) md$source_file_id <- file_id
+    if (!"source_pixel_id" %in% names(md))
+      md$source_pixel_id <- if (pixel_col %in% names(md)) as.character(md[[pixel_col]]) else rownames(md)
+    values <- lapply(c("section_id", "section_display_name", "subject_id", "group", "integration_unit_id"),
+      function(key) vapply(component, function(cid) ua_value(owners[[cid]][[key]]), character(1)))
+    names(values) <- c("section_id", "section_display_name", "subject_id", "group", "integration_unit_id")
+    for (key in names(values)) md[[key]] <- values[[key]]
+    if (anyNA(md$integration_unit_id) || any(!nzchar(md$integration_unit_id)))
+      stop("統合単位IDが欠損しています")
+    return(md)
+  }
+
   roi <- if (roi_col %in% names(md)) as.character(md[[roi_col]]) else rep("", nrow(md))
   roi[is.na(roi)] <- ""
   keep <- if (mode == "none") rep(FALSE, nrow(md)) else if (mode == "selected")
     roi %in% unlist(entry$rois, use.names = FALSE) else rep(TRUE, nrow(md))
   md <- md[keep, , drop = FALSE]; roi <- roi[keep]
   if (!nrow(md)) return(md)
-  file_id <- ua_value(entry$file_id, ua_path(input_path))
   if (!"source_file_id" %in% names(md)) md$source_file_id <- file_id
   if (!"source_pixel_id" %in% names(md))
     md$source_pixel_id <- if (pixel_col %in% names(md)) as.character(md[[pixel_col]]) else rownames(md)
-  role <- ua_value(entry$roi_role, fallback_role)
   if (!role %in% c("section", "region")) stop("ROIの意味は section / region で指定してください")
   if (!is.null(entry) && role == "section") {
-    registered <- vapply(entry$sections, function(s) ua_value(s$roi), character(1))
+    registered <- vapply(entry$sections, function(section) ua_value(section$roi), character(1))
     if (any(!roi %in% registered)) stop("選択画素に対応する切片の登録がありません")
   }
   section <- if (role == "section") paste0(file_id, "::", roi) else rep(file_id, nrow(md))
-  values <- list(section_id=section, subject_id=rep("",nrow(md)), group=rep("",nrow(md)), integration_unit_id=section)
-  for (s in entry$sections) {
-    idx <- if (role == "section") roi == ua_value(s$roi) else rep(TRUE,nrow(md))
-    sid <- ua_value(s$section_id, if (role == "section") paste0(file_id,"::",ua_value(s$roi)) else file_id)
+  values <- list(section_id=section, section_display_name=section,
+                 subject_id=rep("",nrow(md)), group=rep("",nrow(md)), integration_unit_id=section)
+  for (section_row in entry$sections) {
+    idx <- if (role == "section") roi == ua_value(section_row$roi) else rep(TRUE,nrow(md))
+    sid <- ua_value(section_row$section_id, if (role == "section") paste0(file_id,"::",ua_value(section_row$roi)) else file_id)
     values$section_id[idx] <- sid
-    values$integration_unit_id[idx] <- ua_value(s$integration_unit_id,sid)
-    values$subject_id[idx] <- ua_value(s$subject_id)
-    values$group[idx] <- ua_value(s$group)
+    values$section_display_name[idx] <- ua_value(section_row$section_display_name, sid)
+    values$integration_unit_id[idx] <- ua_value(section_row$integration_unit_id,sid)
+    values$subject_id[idx] <- ua_value(section_row$subject_id)
+    values$group[idx] <- ua_value(section_row$group)
   }
   for (key in names(values)) if (!is.null(entry) || !key %in% names(md)) md[[key]] <- values[[key]]
   if (anyNA(md$integration_unit_id) || any(!nzchar(md$integration_unit_id))) stop("統合単位IDが欠損しています")

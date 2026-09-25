@@ -39,7 +39,7 @@ CATEGORIES = (
     ("id",        "識別子 (id)",            "スポット連番"),
     ("coords",    "空間座標 (x, y)",        "MSI の測定座標"),
     ("intensity", "強度 (m/z 全列)",        "数百〜数千列。外すと出力が桁で小さくなる"),
-    ("section",   "切片 (annotation)",      "切片ラベル・群・独立試料ID・元データ対応"),
+    ("section",   "切片・群情報",            "annotation、座標切片、群・独立試料ID・元データ対応"),
     ("umap",      "UMAP 座標",              "UMAP_1 / UMAP_2（既定 OFF）"),
     ("quality",   "品質指標",               "TotalCount / nFeature（既定 OFF・ある場合のみ）"),
     ("cluster",   "クラスタ",               "手法別の UMAP クラスタ番号"),
@@ -136,6 +136,8 @@ def parquet_columns(available: list, options) -> "list | None":
         if col in REQUIRED_FOR_JOIN:
             keep.append(col)                          # 出力に出さなくても必要
         elif col == "id" and "id" in opt["categories"]:
+            keep.append(col)
+        elif col in METADATA_COLUMNS and "section" in opt["categories"]:
             keep.append(col)
     # 元の並び順を保つ（読み込み後の列順が従来と変わらないように）
     return [c for c in available if c in set(keep)]

@@ -33,7 +33,7 @@ from app.utils.color_utils import get_cluster_color_map
 
 logger = logging.getLogger("msi.hne_overlay")
 
-_NONMETA = {"id", "x", "y", "annotation"}
+_NONMETA = {"id", "x", "y", "ua_coordinate_component", "annotation"}
 
 
 # ---------------------------------------------------------------------------

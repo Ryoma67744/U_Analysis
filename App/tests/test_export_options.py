@@ -273,3 +273,20 @@ def test_mzlist_is_not_a_spot_column():
         _FULL_COLS, {"categories": ["coords", "mzlist"]}, ["UMAP cluster"])
     assert cols == ["x", "y"]
     assert "mzlist" not in cols
+
+
+def test_coordinate_component_is_section_metadata_not_intensity():
+    """座標component列をm/z強度として読み込み・平均しない。"""
+    cols = ["id", "x", "y", "ua_coordinate_component", "100.0001", "annotation",
+            "section_id", "section_display_name"]
+    assert intensity_columns(cols) == ["100.0001"]
+    selected = select_output_columns(cols, {"categories": ["section"]}, [])
+    assert "ua_coordinate_component" in selected
+    assert "100.0001" not in selected
+
+
+def test_coordinate_component_can_be_read_without_intensity_block():
+    cols = ["id", "x", "y", "ua_coordinate_component", "100.0001", "annotation"]
+    selected = parquet_columns(cols, {"categories": ["section"]})
+    assert "ua_coordinate_component" in selected
+    assert "100.0001" not in selected
