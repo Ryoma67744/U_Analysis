@@ -55,8 +55,15 @@ jobs:
           cp /tmp/test_imzml_autoimport_real_io.py App/tests/test_imzml_autoimport_real_io.py
           cp /tmp/test_imzml_io.py App/tests/test_imzml_io.py
           git diff --check
-          test "$(git diff --name-only origin/main | sed '/^$/d' | wc -l)" -eq 30
-          test "$(grep -oP 'APP_VERSION = "\K[^"]+' App/app/version.py)" = '71.0'
+          echo '--- changed files ---'
+          git diff --name-only origin/main
+          count="$(git diff --name-only origin/main | sed '/^$/d' | wc -l | tr -d ' ')"
+          version="$(grep -oP 'APP_VERSION = "\K[^"]+' App/app/version.py)"
+          echo "changed_count=${count}"
+          echo "app_version=${version}"
+          git status --short
+          if [ "${count}" -ne 30 ]; then echo "差分件数が想定外: ${count}"; exit 21; fi
+          if [ "${version}" != '71.0' ]; then echo "版番号が想定外: ${version}"; exit 22; fi
       - name: Python依存とpytestを導入
         run: python3 -m pip install --disable-pip-version-check --quiet -r App/requirements.txt pytest
       - name: 構文・UI資産・テンプレートを検査
@@ -68,10 +75,7 @@ jobs:
           import subprocess
           from pathlib import Path
           from jinja2 import Environment
-
-          changed = subprocess.check_output(
-              ['git', 'diff', '--name-only', 'origin/main'], text=True
-          ).splitlines()
+          changed = subprocess.check_output(['git', 'diff', '--name-only', 'origin/main'], text=True).splitlines()
           for name in changed:
               path = Path(name)
               if name.endswith('.py'):
@@ -128,7 +132,9 @@ jobs:
           git config user.name 'Ryoma67744'
           git config user.email '76196606+Ryoma67744@users.noreply.github.com'
           git add -A
-          test "$(git diff --cached --name-only | sed '/^$/d' | wc -l)" -eq 30
+          staged="$(git diff --cached --name-only | sed '/^$/d' | wc -l | tr -d ' ')"
+          echo "staged_count=${staged}"
+          test "${staged}" -eq 30
           git commit -m 'imzML座標から複数切片を認識して配置floatを追加 [ver71.0]'
           git push origin HEAD:refs/heads/claude/imzml-spatial-sections-ver71-0
           git rev-parse HEAD
