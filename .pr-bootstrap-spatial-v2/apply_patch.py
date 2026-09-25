@@ -4,7 +4,7 @@ import base64, gzip, hashlib, json, subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-REPO = ROOT.parents[1]
+REPO = ROOT.parent
 MANIFEST = json.loads(gzip.decompress(base64.b64decode((ROOT / 'manifest.txt').read_text(encoding='ascii').strip())).decode('utf-8'))
 BASE = MANIFEST['target_base_commit']
 FINAL_BRANCH = 'claude/imzml-spatial-sections-ver71-0'
