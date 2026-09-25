@@ -12,6 +12,7 @@ from app.layouts.interactive_tab import create_interactive_tab
 from app.layouts.hne_overlay_tab import create_hne_overlay_tab
 from app.layouts.file_browser_modal import create_file_browser_modal
 from app.layouts.scils_converter_modal import create_scils_converter_modal
+from app.layouts.imzml_io_modal import create_imzml_io_modal
 from app.layouts.annotation_preview_modal import create_annotation_preview_modal
 from app.layouts.add_molinfo_modal import create_add_molinfo_modal
 from app.layouts.env_settings_modal import create_env_settings_modal
@@ -369,6 +370,7 @@ def create_main_layout():
 
                         # SCiLS 変換モーダル
                         create_scils_converter_modal(),
+                        create_imzml_io_modal(),
 
                         # 化合物名アノテーション・プレビューモーダル
                         create_annotation_preview_modal(),
