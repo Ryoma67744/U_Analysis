@@ -1,0 +1,5 @@
+            import signal as _signal
+            try:
+                name = _signal.Signals(-returncode).name
+            except (ValueError, AttributeError):
+                name = "UNKNOWN"
