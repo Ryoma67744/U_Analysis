@@ -1,0 +1,26 @@
+name: export-source-temporary-ver74
+
+on:
+  push:
+    branches:
+      - claude/imzml-registered-parquet-bootstrap-ver74-0
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create source archive
+        run: git archive --format=tar.gz --output=source.tar.gz HEAD
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: u-analysis-source-ver74
+          path: source.tar.gz
+          if-no-files-found: error
+          retention-days: 1
