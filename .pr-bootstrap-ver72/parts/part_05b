@@ -1,0 +1,47 @@
+                item["spectral_preflight"] = inspect_spectral_preflight(p)
+            except (OSError, InputPreparationError) as exc:
+                item["spectral_preflight"] = {
+                    "schema_version": 1, "status": "invalid", "error": str(exc),
+                }
+            try:
+                layout = inspect_imzml_spatial_layout(p)
+                item["spatial_layout"] = layout
+                override = overrides.get(p) or {}
+                if override.get("coordinate_hash") == layout.get("coordinate_hash"):
+                    item["spatial_sections"] = override.get("spatial_sections")
+            except (OSError, SpatialLayoutError) as exc:  # 入力エラーはmanifestへ残し、黙って1切片にしない。
+                item["spatial_error"] = str(exc)
+'''
+text = replace_once(text, old_catalog, new_catalog, label="catalog preflight")
+text = replace_once(
+    text,
+    '        for key in ("spatial_layout", "spatial_sections", "spatial_error", "input_format"):\n',
+    '        for key in ("spatial_layout", "spatial_sections", "spatial_error",\n'
+    '                    "input_format", "spectral_preflight"):\n',
+    label="reanalysis preflight preservation",
+)
+write(path, text)
+
+
+# ---------------------------------------------------------------------------
+# Exit log: distinguish Python input preparation from R execution.
+# ---------------------------------------------------------------------------
+path = "App/app/services/job_watcher.py"
+text = read(path)
+text = replace_once(text, "import logging\n", "import json\nimport logging\n", label="job watcher json import")
+text = replace_once(
+    text,
+    "        _write_exit_note(log_file_handle, returncode)\n",
+    "        _write_exit_note(log_file_handle, returncode, output_dir=output_dir)\n",
+    label="job watcher call",
+)
+old_exit = '''def _write_exit_note(log_file_handle, returncode) -> None:
+    """終了コード/シグナルを解析ログにも残す。
+
+    check_process_completion と同じ情報を、ブラウザが無くても残すため。
+    負値はシグナルによる強制終了（-9 OOM killer / -15 停止要求 など）。
+    """
+    if log_file_handle is None or returncode in (None, 0):
+        return
+    try:
+        if returncode < 0:
