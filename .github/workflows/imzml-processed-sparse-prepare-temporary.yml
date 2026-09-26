@@ -45,6 +45,17 @@ jobs:
           cp /tmp/ver73/imzml_processed.py .pr-bootstrap-ver73/files/
           cp /tmp/ver73/test_imzml_processed_sparse.py .pr-bootstrap-ver73/files/
           python3 /tmp/ver73/apply_ver73.py
+          python3 - <<'PY'
+          from pathlib import Path
+          for name in [
+              'App/app/services/imzml_io.py',
+              'App/app/services/imzml_validation.py',
+              'App/docs/IMZML_AUTOIMPORT.md',
+              'App/tests/test_imzml_spatial_static_contract.py',
+          ]:
+              path = Path(name)
+              path.write_text(path.read_text(encoding='utf-8').rstrip() + '\n', encoding='utf-8')
+          PY
           rm -rf .pr-bootstrap-ver73
       - name: Python依存とpytestを導入
         run: python3 -m pip install --disable-pip-version-check --quiet -r App/requirements.txt pytest
