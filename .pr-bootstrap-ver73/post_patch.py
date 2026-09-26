@@ -29,26 +29,8 @@ write(help_path, help_text.replace(old, new, 1))'''
 
 
 def after() -> None:
-    replace_once(
-        "App/app/services/imzml_validation.py",
-        '''                    if numeric_level != 1:
-                        raise InputPreparationError(
-                            f"スペクトル {count}: MS level={raw_level} は通常MS1解析の対象外です。"
-                        )
-                    explicit_ms1 = True
-''',
-        '''                    if numeric_level == 1:
-                        explicit_ms1 = True
-                    elif numeric_level == 0:
-                        # 一部writerは未指定MS levelを0で出力する。MSnの証拠が無ければ
-                        # 明示MS1ではなく、下段のfull-scan構造から推定する。
-                        explicit_ms1 = False
-                    else:
-                        raise InputPreparationError(
-                            f"スペクトル {count}: MS level={raw_level} は通常MS1解析の対象外です。"
-                        )
-''',
-    )
+    # 既存テストのconversion_spec monkeypatch（引数なしlambda）を壊さず、
+    # 実行時のprocessed alignment ppmだけを派生specへ固定する。
     replace_once(
         "App/app/services/input_preparation.py",
         '''    current_spec = deepcopy(
@@ -91,11 +73,53 @@ def after() -> None:
                 options["spec"] = current_spec
 ''',
     )
+
+    # pyimzML writerは合成fixtureへMS level=0を出力する。実装本体を緩めず、
+    # processed-centroidの新規試験だけを明示MS1へ正規化する。
+    replace_once(
+        "App/tests/test_imzml_processed_sparse.py",
+        '''import json
+import zipfile
+
+import numpy as np
+''',
+        '''import json
+import zipfile
+import xml.etree.ElementTree as ET
+
+import numpy as np
+''',
+    )
+    replace_once(
+        "App/tests/test_imzml_processed_sparse.py",
+        '''        for index, axis in enumerate(axes):
+            writer.addSpectrum(np.asarray(axis, dtype=np.float64),
+                               np.asarray(intensities[index], dtype=np.float32),
+                               coords[index])
+    return path
+''',
+        '''        for index, axis in enumerate(axes):
+            writer.addSpectrum(np.asarray(axis, dtype=np.float64),
+                               np.asarray(intensities[index], dtype=np.float32),
+                               coords[index])
+    tree = ET.parse(path)
+    levels = [elem for elem in tree.iter() if elem.get("accession") == "MS:1000511"]
+    if not levels:
+        raise AssertionError("合成fixtureにMS level属性がありません")
+    for level in levels:
+        if level.get("value") == "0":
+            level.set("value", "1")
+    tree.write(path, encoding="UTF-8", xml_declaration=True)
+    return path
+''',
+    )
+
     for name in [
         "App/app/services/imzml_io.py",
         "App/app/services/imzml_validation.py",
         "App/app/services/input_preparation.py",
         "App/docs/IMZML_AUTOIMPORT.md",
+        "App/tests/test_imzml_processed_sparse.py",
         "App/tests/test_imzml_spatial_static_contract.py",
     ]:
         path = Path(name)
