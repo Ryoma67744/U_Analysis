@@ -1,0 +1,100 @@
+old_import_call = "            result = import_imzml(path, staged, block_size=block, progress=checked_progress)\n            check_cancel(cancel)\n"
+new_import_call = textwrap.indent(textwrap.dedent(r'''
+try:
+    result = import_imzml(path, staged, block_size=block,
+                          progress=checked_progress)
+except ImzMLContractError as exc:
+    if "individual m/z axis" in str(exc):
+        meta["mz_axis_contract"].update({
+            "status": "individual_axis",
+            "reason": "mz_values_differ",
+            "value_equality_verified": True,
+            "direct_matrix_conversion": False,
+        })
+        raise InputPreparationError(individual_axis_message(meta)) from exc
+    raise InputPreparationError(f"imzML変換契約に適合しません: {exc}") from exc
+check_cancel(cancel)
+meta["mz_axis_contract"].update({
+    "status": "common_axis",
+    "reason": "all_mz_values_equal",
+    "value_equality_verified": True,
+    "direct_matrix_conversion": True,
+})
+''').lstrip("\n"), "            ")
+text = replace_once(text, old_import_call, new_import_call, label="checked_import call")
+text = text.replace("★ ver70.0: MS1 行列へ忠実に移せる入力だけを既存 converter に渡す。",
+                    "★ ver72.0: explicit/inferred MS1とm/z軸契約を分離して検証する。", 1)
+write(path, text)
+
+
+# ---------------------------------------------------------------------------
+# Persist preflight and invalidate old cache contract.
+# ---------------------------------------------------------------------------
+path = "App/app/services/input_preparation.py"
+text = read(path)
+text = replace_once(
+    text,
+    '    "normalization", "conversion_receipt_path",\n',
+    '    "normalization", "conversion_receipt_path", "spectral_preflight",\n',
+    label="descriptor keys",
+)
+text = replace_once(
+    text,
+    'CONTRACT_VERSION = "common-axis-ms1-spatial-v3"',
+    'CONTRACT_VERSION = "common-axis-ms1-spatial-v4"',
+    label="contract version",
+)
+write(path, text)
+
+
+# ---------------------------------------------------------------------------
+# Selection UI: show inferred MS1 and individual-axis scientific warning.
+# ---------------------------------------------------------------------------
+path = "App/app/callbacks/section_callbacks.py"
+text = read(path)
+insert_anchor = "\n\ndef _selection_blocks(catalog, manifest, scope):\n"
+helper = textwrap.dedent(r'''
+
+
+def _spectral_preflight_notice(preflight):
+    if not preflight:
+        return None
+    if preflight.get("status") != "ok":
+        return dbc.Alert(
+            "スペクトル事前検査に失敗しました: " + str(preflight.get("error") or "詳細不明"),
+            color="danger", className="py-2 px-2 my-2 small",
+        )
+    ms = preflight.get("ms_level_interpretation") or {}
+    axis = preflight.get("mz_axis_contract") or {}
+    ms_status = ms.get("status")
+    ms_label = ("明示MS1" if ms_status == "explicit_ms1" else
+                "推定MS1（高信頼）" if ms.get("confidence") == "high" else
+                "推定MS1")
+    axis_status = axis.get("status")
+    minimum = axis.get("feature_count_min")
+    maximum = axis.get("feature_count_max")
+    unique = axis.get("feature_count_unique")
+    peak_text = ""
+    if isinstance(minimum, int) and isinstance(maximum, int):
+        peak_text = f"{minimum:,}–{maximum:,} peaks/pixel"
+        if isinstance(unique, int):
+            peak_text += f"（{unique}種類）"
+
+    if axis_status == "individual_axis":
+        return dbc.Alert([
+            html.Div([html.Strong(f"△ {ms_label}"),
+                      html.Span(f" ／ {preflight.get('representation', 'unknown')}-"
+                                f"{preflight.get('spectrum_type', 'unknown')}")]),
+            html.Div(f"× 画素ごとに異なるm/zピークリスト: {peak_text}"),
+            html.Div("直接解析: 現在は非対応。R・UMAPは開始しません。"),
+            html.Details([
+                html.Summary("科学的背景と推奨入力", style={"cursor": "pointer"}),
+                html.P(
+                    "Mass alignment後に共通consensus feature行列を作ればPCA・UMAPは可能です。"
+                    "ただしSCiLS等のTop-N／閾値付きpeak listでは、未出力と真の0を区別できません。",
+                    className="mb-1 mt-1",
+                ),
+                html.P(
+                    "そのためU_Analysisは自動union・0補完・広いbinning・mass alignmentを行いません。"
+                    "共通feature listに対する全pixel強度行列、または共通m/z軸Parquetを使用してください。"
+                    "全pixelのintersectionだけを使う方法も、局在分子を失うため推奨しません。",
