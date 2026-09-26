@@ -1,0 +1,51 @@
+name: imzml-inferred-ms1-cleanup-temporary
+on:
+  push:
+    branches: [claude/imzml-inferred-ms1-bootstrap-ver72-0]
+permissions:
+  contents: write
+jobs:
+  cleanup:
+    if: startsWith(github.event.head_commit.message, '[cleanup-imzml-inferred-ms1]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: 最終ブランチの重複代入を整理
+        run: |
+          set -euo pipefail
+          git checkout -B claude/imzml-inferred-ms1-preflight-ver72-0 origin/claude/imzml-inferred-ms1-preflight-ver72-0
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('App/app/services/imzml_validation.py')
+          text = path.read_text(encoding='utf-8')
+          old = '                result[key] = value\n                result[key] = value\n'
+          if text.count(old) != 1:
+              raise SystemExit(f'unexpected duplicate count: {text.count(old)}')
+          path.write_text(text.replace(old, '                result[key] = value\n', 1), encoding='utf-8')
+          PY
+          python3 -m py_compile App/app/services/imzml_validation.py
+          git diff --check
+      - name: 対象契約テスト
+        env:
+          PYTHONPATH: App
+          FLASK_SECRET_KEY: test-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+          MASTER_PASSWORD: runtime-test-password
+          INITIAL_PASSWORD_B: runtime-share
+        run: |
+          python3 -m pip install --disable-pip-version-check --quiet -r App/requirements.txt pytest
+          python3 -m pytest -q \
+            App/tests/test_imzml_ms_inference.py \
+            App/tests/test_job_watcher_input_exit.py \
+            App/tests/test_imzml_spatial_static_contract.py \
+            App/tests/test_version_consistency.py
+      - name: 整理コミットをpush
+        run: |
+          set -euo pipefail
+          git config user.name 'Ryoma67744'
+          git config user.email '76196606+Ryoma67744@users.noreply.github.com'
+          git add App/app/services/imzml_validation.py
+          git commit -m 'imzML契約判定の重複代入を整理 [ver72.0]'
+          git push origin HEAD:refs/heads/claude/imzml-inferred-ms1-preflight-ver72-0
