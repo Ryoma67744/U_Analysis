@@ -1,0 +1,28 @@
+name: export-repo-snapshot-ver74
+
+on:
+  push:
+    branches:
+      - claude/imzml-registration-bootstrap-ver74-0
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Build source archive
+        run: |
+          set -euo pipefail
+          git archive --format=tar.gz --output=/tmp/U_Analysis_main_ver73_snapshot.tar.gz 732ff0207dffff7875515ac65b245d02970d170b
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: U_Analysis_main_ver73_snapshot
+          path: /tmp/U_Analysis_main_ver73_snapshot.tar.gz
+          if-no-files-found: error
+          retention-days: 1
