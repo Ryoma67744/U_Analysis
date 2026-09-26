@@ -1,0 +1,114 @@
+        "status": "individual_axis" if individual_axis else "common_length_unverified_values",
+        "reason": "feature_count_varies" if individual_axis else "mz_values_not_checked",
+        "pixel_count": count,
+        "feature_count_min": min(feature_counts),
+        "feature_count_max": max(feature_counts),
+        "feature_count_unique": len(feature_counts_unique),
+        "common_feature_count": feature_counts_unique[0] if not individual_axis else None,
+        "value_equality_verified": False,
+        "direct_matrix_conversion": False if individual_axis else None,
+        "top_n_truncation": "unknown",
+    }
+    if explicit_ms1_spectra == count:
+        ms_status = "explicit_ms1"
+        confidence = "explicit"
+        basis = ["ms_level_1_or_ms1_spectrum"]
+    else:
+        ms_status = "inferred_ms1"
+        confidence = "high" if next(iter(polarities)) != "unknown" else "moderate"
+        basis = [
+            "mass_spectrum", f"{next(iter(modes))}_spectrum",
+            "mz_and_intensity_arrays_only", "single_scan_per_pixel",
+            "consistent_polarity", "no_msn_terms", "no_precursor_or_product",
+            "no_activation_or_fragmentation",
+        ]
+    meta = {
+        "pixels": count,
+        "features": feature_counts_unique[0] if not individual_axis else None,
+        "intensity_bytes": byte_width,
+        "spectrum_type": next(iter(modes)),
+        "polarity": next(iter(polarities)),
+        "representation": representation,
+        "ms_level_interpretation": {
+            "status": ms_status,
+            "confidence": confidence,
+            "explicit_ms_level": 1 if explicit_ms1_spectra == count else None,
+            "explicit_spectra": explicit_ms1_spectra,
+            "inferred_spectra": inferred_ms1_spectra,
+            "basis": basis,
+        },
+        "mz_axis_contract": axis_contract,
+        "uuid_verified": True,
+        "checksums_verified": [],
+    }
+
+    if reject_individual_axis and individual_axis:
+        raise InputPreparationError(individual_axis_message(meta))
+
+    if verify_checksum and checksum:
+        digests = {algo: new_hash(algo) for algo in checksum}
+        with ibd.open("rb") as fh:
+            while True:
+                check_cancel(cancel)
+                chunk = fh.read(4 * 1024 * 1024)
+                if not chunk:
+                    break
+                for digest in digests.values():
+                    digest.update(chunk)
+        if any(digests[algo].hexdigest() != value for algo, value in checksum.items()):
+            raise InputPreparationError("ibdの既知checksumが一致しません。")
+        meta["checksums_verified"] = sorted(checksum)
+
+    meta["spatial_layout"] = strip_runtime_layout(
+        build_spatial_layout(sorted(coordinates, key=lambda coord: (coord[1], coord[0], coord[2])),
+                             include_preview=False),
+        strip_preview=True,
+    )
+    return meta
+
+
+@lru_cache(maxsize=64)
+def _cached_spectral_preflight(path, xml_size, xml_mtime_ns, ibd_size, ibd_mtime_ns):
+    del xml_size, xml_mtime_ns, ibd_size, ibd_mtime_ns
+    return _scan_contract(path, verify_checksum=False, reject_individual_axis=False)
+
+
+def inspect_spectral_preflight(path, *, cancel=None):
+    """選択画面用の軽量判定。checksumとm/z値一致は解析開始時に確認する。"""
+    xml, ibd = pair_paths(path)
+    if cancel is not None:
+        meta = _scan_contract(xml, cancel=cancel, verify_checksum=False,
+                              reject_individual_axis=False)
+    else:
+        xml_stat = xml.stat()
+        ibd_stat = ibd.stat()
+        meta = deepcopy(_cached_spectral_preflight(
+            str(xml), xml_stat.st_size, xml_stat.st_mtime_ns,
+            ibd_stat.st_size, ibd_stat.st_mtime_ns,
+        ))
+    return {
+        "schema_version": 1,
+        "status": "ok",
+        "pixels": meta["pixels"],
+        "spectrum_type": meta["spectrum_type"],
+        "polarity": meta["polarity"],
+        "representation": meta["representation"],
+        "ms_level_interpretation": deepcopy(meta["ms_level_interpretation"]),
+        "mz_axis_contract": deepcopy(meta["mz_axis_contract"]),
+    }
+
+
+def inspect_binary_contract(path, *, cancel=None):
+    """変換前の完全検査。個別m/z軸は説明付きでR開始前に停止する。"""
+    return _scan_contract(path, cancel=cancel, verify_checksum=True,
+                          reject_individual_axis=True)
+''').strip() + "\n\n"
+text = text[:start] + replacement + text[end + 1:]
+
+# Catch equal-length but different-value axes during actual binary import.
+text = replace_once(
+    text,
+    "    from app.services.imzml_io import import_imzml\n",
+    "    from app.services.imzml_io import import_imzml, ImzMLContractError\n",
+    label="checked_import import",
+)
