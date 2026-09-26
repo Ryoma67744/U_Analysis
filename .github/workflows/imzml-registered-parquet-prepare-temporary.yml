@@ -40,6 +40,23 @@ jobs:
           cp /tmp/ver74/apply_ver74.py .pr-bootstrap-ver74/apply_ver74.py
           cp /tmp/ver74/files/*.py .pr-bootstrap-ver74/files/
           python3 .pr-bootstrap-ver74/apply_ver74.py
+          python3 - <<'PY'
+          from pathlib import Path
+          for name in [
+              "App/app/services/imzml_validation.py",
+              "App/app/services/input_preparation.py",
+              "App/app/services/section_metadata.py",
+              "App/app/services/data_manager.py",
+              "App/app/services/imzml_io.py",
+              "App/app/services/imzml_processed.py",
+              "App/Script/helpers/analysis_contract.R",
+              "App/docs/IMZML_AUTOIMPORT.md",
+              "App/app/templates/help/imzml_autoimport.html",
+              "CHANGELOG.md",
+          ]:
+              path = Path(name)
+              path.write_text(path.read_text(encoding="utf-8").rstrip() + "\n", encoding="utf-8")
+          PY
           rm -rf .pr-bootstrap-ver74
 
       - name: Python依存とpytestを導入
