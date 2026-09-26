@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+from pathlib import Path
+import textwrap
+
+ROOT = Path.cwd()
+
+
+def read(path: str) -> str:
+    return (ROOT / path).read_text(encoding="utf-8")
+
+
+def write(path: str, content: str) -> None:
+    target = ROOT / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+
+
+def replace_once(text: str, old: str, new: str, *, label: str) -> str:
+    count = text.count(old)
+    if count != 1:
+        raise RuntimeError(f"{label}: expected exactly one match, found {count}")
+    return text.replace(old, new, 1)
+
+
+# ---------------------------------------------------------------------------
+# imzML spectral contract: explicit/inferred MS1 + individual-axis diagnosis
+# ---------------------------------------------------------------------------
+path = "App/app/services/imzml_validation.py"
+text = read(path)
+text = replace_once(
+    text,
+    "from collections import Counter\n",
+    "from collections import Counter\nfrom copy import deepcopy\nfrom functools import lru_cache\n",
+    label="imzml_validation imports",
+)
+start = text.index("def inspect_binary_contract")
+end = text.index("\ndef _bounded_block", start)
+replacement = textwrap.dedent(r'''
+_MSN_STRUCTURE_TAGS = {
+    "precursor", "precursorList", "product", "productList",
+    "selectedIon", "selectedIonList", "activation", "isolationWindow",
+}
+_MSN_NAME_TOKENS = (
+    "msn spectrum", "ms2 spectrum", "precursor ion spectrum",
+    "product ion spectrum", "collision-induced dissociation",
+    "higher energy collisional dissociation", "electron transfer dissociation",
+)
+
+
+def _tag(elem):
+    return elem.tag.rsplit("}", 1)[-1]
+
+
+def individual_axis_message(meta: dict) -> str:
+    """個別m/z軸を無断で共通行列化しない理由を、画面とログで共通化する。"""
+    axis = (meta or {}).get("mz_axis_contract") or {}
+    minimum = axis.get("feature_count_min")
+    maximum = axis.get("feature_count_max")
+    unique = axis.get("feature_count_unique")
+    if isinstance(minimum, int) and isinstance(maximum, int):
+        peak_range = f"{minimum:,}–{maximum:,} peaks/pixel"
+        if isinstance(unique, int):
+            peak_range += f"（{unique}種類）"
+    else:
+        peak_range = "peak数は未確定"
+    representation = str((meta or {}).get("representation") or "unknown")
+    mode = str((meta or {}).get("spectrum_type") or "unknown")
+    form = f"{representation}-{mode}"
+    return (
+        f"画素ごとにm/zピークリストが異なる {form} imzMLです（{peak_range}）。"
+        "現在のU_Analysisは、全pixelを同じm/z featureで表せる共通行列だけを直接解析します。"
+        "SCiLS等のTop-N／閾値付きpeak listでは、未出力と真の0を区別できないため、"
+        "自動union・0補完・広いbinning・mass alignmentは行いません。"
+        "共通feature listに対する全pixel強度行列、または共通m/z軸を持つParquetを使用してください。"
+    )
+
+
+def _scan_contract(path, *, cancel=None, verify_checksum=False,
+                   reject_individual_axis=False):
+    """XML/外部配列を走査し、MS level解釈とm/z軸契約を分けて判定する。"""
+    xml, ibd = pair_paths(path)
+    size = ibd.stat().st_size
+    with ibd.open("rb") as fh:
+        binary_uuid = fh.read(16)
+    if len(binary_uuid) != 16:
+        raise InputPreparationError("ibd の UUID ヘッダーが欠落しています。")
+
+    refs, file_cv, modes, polarities, coordinates = {}, {}, set(), set(), set()
+    checksum, declared_uuid = {}, None
+    count, byte_width, declared_count = 0, None, None
+    array_widths = {}
+    feature_counts = []
+    explicit_ms1_spectra = 0
+    inferred_ms1_spectra = 0
+
+    def cv(node):
+        result = {}
+
+        def descendants(elem):
+            yield elem
+            for child in elem:
+                # spectrum全体の属性に別々の外部offsetを混ぜない。
+                if _tag(child) == "binaryDataArray" and _tag(node) != "binaryDataArray":
+                    continue
+                yield from descendants(child)
+
+        for elem in descendants(node):
+            if _tag(elem) == "referenceableParamGroupRef":
+                name = elem.get("ref")
+                if name not in refs:
+                    raise InputPreparationError(f"未定義の parameter group: {name}")
+                result.update(refs[name])
+            elif _tag(elem) == "cvParam":
+                key = elem.get("accession")
+                value = (elem.get("value", ""), elem.get("name", ""))
+                if key in result and result[key][0] != value[0]:
+                    raise InputPreparationError(f"矛盾する測定属性: {key}")
+                result[key] = value
