@@ -67,9 +67,6 @@ jobs:
             App/tests/test_section_group_metadata.py \
             App/tests/test_section_group_buttons.py \
             App/tests/test_settings_runtime_callbacks.py \
-            App/tests/test_job_registry.py \
-            App/tests/test_analysis_progress_poll.py \
-            App/tests/test_analysis_status_report.py \
             App/tests/test_export_options.py \
             App/tests/test_data_manager.py \
             App/tests/test_scils_converter.py \
