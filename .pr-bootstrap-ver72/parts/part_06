@@ -1,0 +1,69 @@
+            detail = f"シグナル {name}({-returncode}) による強制終了"
+        else:
+            detail = f"終了コード {returncode}"
+        log_file_handle.write(f"\\n[EXIT] R プロセスは {detail} で終了しました。\\n")
+        log_file_handle.flush()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("終了コードのログ追記に失敗（非重大）: %s", e)
+'''
+new_exit = '''def _write_exit_note(log_file_handle, returncode, *, output_dir=None) -> None:
+    """終了段階を確認し、R未開始の入力エラーをRエラーと誤表示しない。"""
+    if log_file_handle is None or returncode in (None, 0):
+        return
+    try:
+        if returncode < 0:
+            import signal as _signal
+            try:
+                name = _signal.Signals(-returncode).name
+            except (ValueError, AttributeError):
+                name = "UNKNOWN"
+            detail = f"シグナル {name}({-returncode}) による強制終了"
+        else:
+            detail = f"終了コード {returncode}"
+
+        process_label = "R プロセス"
+        suffix = ""
+        if output_dir:
+            try:
+                pipeline = json.loads(
+                    (Path(output_dir) / "log" / "input_pipeline.json").read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError, TypeError):
+                pipeline = {}
+            if not pipeline.get("r_started_at"):
+                process_label = "入力準備プロセス"
+                suffix = "\\nR解析は開始されていません。"
+        log_file_handle.write(
+            f"\\n[EXIT] {process_label}は {detail} で終了しました。{suffix}\\n"
+        )
+        log_file_handle.flush()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("終了コードのログ追記に失敗（非重大）: %s", e)
+'''
+text = replace_once(text, old_exit, new_exit, label="job watcher exit function")
+write(path, text)
+
+# Browser-side completion polling observes the same Python pipeline worker.
+path = "App/app/services/analysis_runner.py"
+text = read(path)
+old = '    # 解析ログの末尾にも残す（ユーザーがエラーを見る場所そのものに出す）\n    if log_file_handle and exit_code != 0:\n        try:\n            log_file_handle.write(f"\\n[EXIT] R プロセスは {detail} で終了しました。\\n")\n            log_file_handle.flush()\n        except Exception as e:\n            logger.debug(f"終了コードのログ追記に失敗（非重大）: {e}")\n'
+new = '    # 解析ログの末尾にも残す。imzML入力準備で停止したPython workerを\n    # R subprocessと誤表示しない。\n    if log_file_handle and exit_code != 0:\n        try:\n            process_label = "R プロセス"\n            suffix = ""\n            try:\n                pipeline = json.loads(\n                    (Path(status_file).parent / "input_pipeline.json").read_text(encoding="utf-8")\n                )\n            except (OSError, json.JSONDecodeError, TypeError):\n                pipeline = {}\n            if not pipeline.get("r_started_at"):\n                process_label = "入力準備プロセス"\n                suffix = "\\nR解析は開始されていません。"\n            log_file_handle.write(\n                f"\\n[EXIT] {process_label}は {detail} で終了しました。{suffix}\\n"\n            )\n            log_file_handle.flush()\n        except Exception as e:\n            logger.debug(f"終了コードのログ追記に失敗（非重大）: {e}")\n'
+text = replace_once(text, old, new, label="analysis runner exit label")
+write(path, text)
+
+
+# ---------------------------------------------------------------------------
+# Help and technical documentation.
+# ---------------------------------------------------------------------------
+path = "App/app/templates/help/imzml_autoimport.html"
+text = read(path)
+text = replace_once(
+    text,
+    '<div class="alert-title">ver71.0：imzMLの座標から物理切片候補を認識します</div>',
+    '<div class="alert-title">ver72.0：推定MS1とm/z軸契約を解析前に表示します</div>',
+    label="help title",
+)
+insert = '''  <p><strong>MS level判定：</strong>明示的なMS1タグがなくても、MSn、precursor、product、
+  activation、fragmentation情報がなく、m/z・intensity配列だけを持つfull-scan MSIとして整合する場合は、
+  <em>推定MS1</em>として警告付きで受け入れます。判定根拠はmanifestへ保存し、元imzMLには追記しません。</p>
+  <p><strong>個別m/z軸：</strong>processed-centroid imzMLでpixelごとのpeak listが異なる場合、
