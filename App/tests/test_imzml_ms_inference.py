@@ -106,19 +106,20 @@ def test_msn_evidence_is_rejected(tmp_path):
         inspect_spectral_preflight(path)
 
 
-def test_individual_axis_is_explained_before_r(tmp_path):
+
+def test_variable_length_centroid_is_a_supported_sparse_candidate(tmp_path):
     path = _scils_pair(tmp_path, (4, 3, 5))
     preflight = inspect_spectral_preflight(path)
     axis = preflight["mz_axis_contract"]
-    assert axis["status"] == "individual_axis"
+    assert axis["status"] == "processed_sparse_candidate"
     assert (axis["feature_count_min"], axis["feature_count_max"],
             axis["feature_count_unique"]) == (3, 5, 3)
-    with pytest.raises(InputPreparationError) as exc:
-        inspect_binary_contract(path)
-    message = str(exc.value)
-    assert "画素ごとにm/zピークリスト" in message
-    assert "Top-N" in message
-    assert "自動union" in message
+    assert axis["source_peak_count"] == 12
+    meta = inspect_binary_contract(path)
+    assert meta["features"] is None
+    assert meta["source_peak_count"] == 12
+    assert meta["ms_level_interpretation"]["status"] == "inferred_ms1"
+
 
 
 def test_spectral_preflight_survives_manifest_rebuild(tmp_path):

@@ -1,4 +1,4 @@
-# imzML 通常解析への自動取り込み・座標切片（ver72.0）
+# imzML 通常解析への自動取り込み・座標切片（ver73.0）
 
 ## 操作
 
@@ -37,14 +37,16 @@ ROI/クラスタを imzML 出力欄へ自動反映する新しい UI は今回�
 
 ## 対応境界と数値
 
-MS1 と確認でき、全画素共通 m/z 軸・単一 z 面・float32/float64 強度を持つデータが対象です。
+MS1 と確認または高信頼に推定でき、単一 z 面・float32/float64 強度を持つデータが対象です。
 UUID、宣言されたMD5/SHA-1/SHA-256、外部offset・配列長・ファイル境界、
 画素数・重複座標、MS level・スペクトル種別・極性混在、配列型と精度を検査します。
-元 m/z 軸の値・強度値・dtype・画素対応を保持し、補間・補完・正規化・m/z結合は行いません。
-5桁のR特徴名または6桁の列名で衝突する m/z は停止します。
+全画素共通m/z軸は元の値・強度・dtype・画素対応を保持してlosslessに変換します。
+processed-centroidの可変長peak listは、指定ppmでmaster feature辞書を作り、記録されていない
+pixel-featureを0とする行列へ変換します。0はexported spectrumに対応peakが記録されなかった
+ことを表し、生体内での絶対的不在を意味しません。
 
 これは完全な imzML XSD/CV validator ではありません。追加配列・イオンモビリティ次元・
-MS/MS・複数scan・混合精度・個別m/z軸は自動集約せず停止します。
+MS/MS・複数scan・混合精度は自動集約せず停止します。
 正規化の状態は unknown と記録し、既存の解析設定は変更しません。
 SCiLS 側で RMS 正規化済みの場合は利用者が追加正規化の設定を確認してください。
 装置メタデータの完全な往復複製を保証する機能ではありません。
@@ -134,3 +136,23 @@ processed-centroid MSIでも、mass alignment後に共通consensus feature行列
 共通m/z軸を持つParquetを使用してください。
 
 入力準備中に停止した場合は、ログを「入力準備プロセス」と表示し、R解析が未開始であることを明記します。
+
+## processed-centroid疎ピークリストの共通行列化（ver73.0）
+
+pixelごとにピーク数が異なることは、processed imzMLでは疎な表現として正常です。全pixelの
+m/zを集め、画面の `m/zアライメント（ppm）` に従ってmaster featureを決定します。0 ppmは
+完全一致m/zのunion、正値は小さいm/zから決定論的にppm範囲をまとめ、各groupの中央値を
+代表m/zとします。現在のTIMS R readerが5桁feature名を使うため、5桁で衝突する隣接groupは
+サブ0.00001 Daの互換処理として統合します。
+
+同一pixelで複数peakが同じfeatureへ対応した場合は強度を合計します。原peak数、master feature数、
+collision数、検出pixel数、m/z spread、変換前後の強度合計、0割合をsidecarへ保存します。
+全pixelに共通するpeakのintersectionへ縮約しないため、局在featureを保持できます。
+
+内部Parquetは既存R loaderと互換なwide tableですが、0が多いデータです。R側はfeature列をblockで
+読み、`dgCMatrix`へ逐次変換します。変換時の密blockは `IMZML_BLOCK_MB` で制限し、master feature数は
+`IMZML_PROCESSED_MAX_FEATURES`（既定100,000）でfail-closedに制限します。ppmを変更するとcache keyが
+変わり、既存revisionを上書きしません。
+
+processed入力から再出力するimzMLは、alignment後の共通軸と0補完値を持つ派生データです。元の
+可変長centroid listへのlossless round-tripではないことをexport receiptへ記録します。

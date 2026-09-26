@@ -12,6 +12,16 @@
 
 ---
 
+## 2026-09-26_ver73.0
+
+### processed-centroid imzMLの疎な共通feature行列化
+
+- pixelごとに異なる長さのcentroid peak listを異常入力として拒否せず、全pixel横断のmaster m/z feature辞書へ展開する。未記録featureは0とし、0は「exported spectrumに記録なし」であって絶対的不在ではないとmanifestへ固定する。
+- 画面のm/zアライメント(ppm)を変換時に適用する。0 ppmは完全一致union、正値は既存TIMS R解析と同じsorted-unique greedy ppm groupingを用い、代表m/zは中央値とする。5桁feature名の衝突は最小限の互換統合を行う。
+- 同一pixelの複数peakが同じmaster featureへ対応した場合は強度を合計し、collision数、検出pixel数、mass spread、強度合計、0割合を変換QCへ保存する。
+- 出力は既存TIMS readerがfeature blockごとに`dgCMatrix`へ変換できるzero-filled wide Parquetとし、common-axis入力のlossless経路は変更しない。processed由来のimzML再出力はaligned common-axis derivativeであり、原本へのlossless round-tripではないことをreceiptへ記録する。
+- alignment ppm、変換コード、0値定義をcache keyへ含め、設定変更時は別revisionを作成する。可変長peak数の画面表示は「N種類」ではなく「pixelごとのピーク数がN通り」と明示する。
+
 
 ## 2026-09-26_ver72.0
 
