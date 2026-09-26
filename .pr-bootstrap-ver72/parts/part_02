@@ -1,0 +1,77 @@
+                    raise InputPreparationError("複数のz面は別試料として登録してください。")
+                coordinates.add(coords)
+
+                arrays = [node for node in elem.iter() if _tag(node) == "binaryDataArray"]
+                if len(arrays) != 2:
+                    raise InputPreparationError("m/zと強度以外の配列・追加次元は対象外です。")
+                lengths_by_type = {}
+                array_types = set()
+                for array in arrays:
+                    array_cv = cv(array)
+                    types = {key for key in ("MS:1000514", "MS:1000515") if key in array_cv}
+                    widths = {value for key, value in (("MS:1000521", 4),
+                                                        ("MS:1000523", 8))
+                              if key in array_cv}
+                    if len(types) != 1 or len(widths) != 1 or "MS:1000574" in array_cv:
+                        raise InputPreparationError(
+                            "配列型/精度が不明、または圧縮配列は現在の変換対象外です。"
+                        )
+                    if array_cv.get("IMS:1000101", ("", ""))[0].lower() not in ("true", "1"):
+                        raise InputPreparationError("外部配列の宣言がありません。")
+                    array_kind = next(iter(types))
+                    width = next(iter(widths))
+                    array_types.add(array_kind)
+                    if array_kind in array_widths and array_widths[array_kind] != width:
+                        raise InputPreparationError("m/zまたは強度の精度が混在しています。")
+                    array_widths[array_kind] = width
+                    try:
+                        offset, length, encoded = (
+                            int(array_cv[key][0])
+                            for key in ("IMS:1000102", "IMS:1000103", "IMS:1000104")
+                        )
+                    except (KeyError, ValueError) as exc:
+                        raise InputPreparationError("外部配列のoffset / lengthが不正です。") from exc
+                    if offset < 16 or length < 1 or encoded != length * width or offset + encoded > size:
+                        raise InputPreparationError(
+                            "外部配列がibdの範囲外、または長さが矛盾しています。"
+                        )
+                    lengths_by_type[array_kind] = length
+                    if array_kind == "MS:1000515":
+                        if byte_width is not None and byte_width != width:
+                            raise InputPreparationError("強度精度が混在しています。")
+                        byte_width = width
+
+                if array_types != {"MS:1000514", "MS:1000515"}:
+                    raise InputPreparationError("m/z配列と強度配列の対応が不正です。")
+                if lengths_by_type["MS:1000514"] != lengths_by_type["MS:1000515"]:
+                    raise InputPreparationError("同一pixel内でm/z配列と強度配列の長さが異なります。")
+                feature_counts.append(lengths_by_type["MS:1000514"])
+
+                if explicit_ms1:
+                    explicit_ms1_spectra += 1
+                else:
+                    # SCiLS等はMS levelタグを省略することがある。MSnの証拠がなく、
+                    # full-scan mass spectrumの構造が揃う場合だけ推定MS1とする。
+                    if "MS:1000294" not in effective:
+                        raise InputPreparationError(
+                            "明示的なMS1タグがなく、full-scan mass spectrumとも確認できません。"
+                        )
+                    inferred_ms1_spectra += 1
+                count += 1
+                elem.clear()
+    except ET.ParseError as exc:
+        raise InputPreparationError(f"imzML XMLが不正です: {exc}") from exc
+
+    try:
+        if declared_uuid is None or uuid.UUID(declared_uuid).bytes != binary_uuid:
+            raise InputPreparationError("imzMLとibdのUUIDが一致しません。")
+        if not count or declared_count is None or int(declared_count) != count:
+            raise InputPreparationError("スペクトル件数の宣言と内容が一致しません。")
+    except (ValueError, AttributeError) as exc:
+        raise InputPreparationError("UUID / スペクトル件数が不正です。") from exc
+
+    representation = ("processed" if "IMS:1000031" in file_cv else
+                      "continuous" if "IMS:1000030" in file_cv else "unknown")
+    feature_counts_unique = sorted(set(feature_counts))
+    individual_axis = len(feature_counts_unique) > 1
+    axis_contract = {
