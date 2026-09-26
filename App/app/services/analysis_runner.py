@@ -1613,10 +1613,24 @@ def check_process_completion(
         detail = f"終了コード {exit_code}"
     logger.info("R subprocess pid=%s 終了: %s (status=%s)", process.pid, detail, status)
 
-    # 解析ログの末尾にも残す（ユーザーがエラーを見る場所そのものに出す）
+    # 解析ログの末尾にも残す。imzML入力準備で停止したPython workerを
+    # R subprocessと誤表示しない。
     if log_file_handle and exit_code != 0:
         try:
-            log_file_handle.write(f"\n[EXIT] R プロセスは {detail} で終了しました。\n")
+            process_label = "R プロセス"
+            suffix = ""
+            try:
+                pipeline = json.loads(
+                    (Path(status_file).parent / "input_pipeline.json").read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError, TypeError):
+                pipeline = {}
+            if not pipeline.get("r_started_at"):
+                process_label = "入力準備プロセス"
+                suffix = "\nR解析は開始されていません。"
+            log_file_handle.write(
+                f"\n[EXIT] {process_label}は {detail} で終了しました。{suffix}\n"
+            )
             log_file_handle.flush()
         except Exception as e:
             logger.debug(f"終了コードのログ追記に失敗（非重大）: {e}")

@@ -1,4 +1,4 @@
-# imzML 通常解析への自動取り込み・座標切片（ver71.0）
+# imzML 通常解析への自動取り込み・座標切片（ver72.0）
 
 ## 操作
 
@@ -112,3 +112,25 @@ R側は `ua_coordinate_component` を最優先して各画素へ `section_id` �
 座標間の背景まで連続して測定されている場合、座標上は1つの連結領域になるため、この機能だけで
 複数切片へ自動分割できません。その場合は「座標上は1領域」と表示します。TIC閾値による組織マスク、
 自由矩形・ポリゴン分割、複数z面、3D、MS/MS、イオンモビリティ次元は今回の対象外です。
+
+
+## MS level推定とm/z軸事前検査（ver72.0）
+
+明示的な `MS level=1` または `MS1 spectrum` がある場合は `explicit_ms1` と記録します。
+明示タグが無くても、mass spectrum、centroid/profile、m/z+intensity配列、1 pixel 1 scan、
+一貫したpolarityを確認し、MSn、precursor、product、selected ion、activation、fragmentationの
+証拠が無い場合は `inferred_ms1` として受け入れます。元imzMLへタグは追加せず、判定根拠を
+変換manifestへ保存します。MS level>1またはMSn構造がある入力は通常MS1解析では停止します。
+
+ファイル選択時にはXMLとibdの境界情報から、pixelごとのpeak数を確認します。peak数が異なる場合は
+`individual_axis` と判定し、理由・peak数範囲・科学的注意を画面へ表示します。同じpeak数であっても
+m/z値の完全一致は解析開始時にibdを読んで確認し、一致した場合だけ `common_axis` とします。
+
+processed-centroid MSIでも、mass alignment後に共通consensus feature行列を作ればPCA・UMAPは可能です。
+ただしSCiLS等のTop-N／閾値付きpeak listでは、あるpeakの欠落が真の未検出か、順位・閾値で
+出力されなかっただけかを区別できません。そのため現在のU_Analysisは個別m/z軸に対して
+自動union、0補完、広いbinning、mass alignmentを行いません。全pixelのintersectionだけを使う方法も、
+局在分子を除外するため推奨しません。共通feature listに対する全pixel強度行列、または
+共通m/z軸を持つParquetを使用してください。
+
+入力準備中に停止した場合は、ログを「入力準備プロセス」と表示し、R解析が未開始であることを明記します。

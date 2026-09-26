@@ -18,12 +18,12 @@ from filelock import FileLock, Timeout
 DESCRIPTOR_KEYS = (
     "input_format", "source_ibd", "runtime_path", "conversion_manifest_path",
     "conversion_key", "source_fingerprint", "conversion_spec", "validation",
-    "normalization", "conversion_receipt_path",
+    "normalization", "conversion_receipt_path", "spectral_preflight",
 )
 RECEIPT = "conversion_complete.json"
 CACHE_MARKER = ".ua_imzml_assets"
 # ★ ver71.0: component列と座標layoutを含まないver70 cacheを新規解析で再利用しない。
-CONTRACT_VERSION = "common-axis-ms1-spatial-v3"
+CONTRACT_VERSION = "common-axis-ms1-spatial-v4"
 
 
 class InputPreparationError(ValueError):

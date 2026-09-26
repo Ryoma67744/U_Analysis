@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from pathlib import Path
@@ -70,7 +71,7 @@ def watch(process, output_dir, *, status_file: Optional[str] = None,
         logger.info("解析プロセス終了を検出: pid=%s rc=%s → status=%s",
                     pid, returncode, status)
 
-        _write_exit_note(log_file_handle, returncode)
+        _write_exit_note(log_file_handle, returncode, output_dir=output_dir)
         _close_handle(log_file_handle)
         _write_status(status_path, status)
 
@@ -110,12 +111,8 @@ def _write_status(status_path: str, status: str) -> None:
         logger.warning("ステータスの書き込みに失敗: %s", e)
 
 
-def _write_exit_note(log_file_handle, returncode) -> None:
-    """終了コード/シグナルを解析ログにも残す。
-
-    check_process_completion と同じ情報を、ブラウザが無くても残すため。
-    負値はシグナルによる強制終了（-9 OOM killer / -15 停止要求 など）。
-    """
+def _write_exit_note(log_file_handle, returncode, *, output_dir=None) -> None:
+    """終了段階を確認し、R未開始の入力エラーをRエラーと誤表示しない。"""
     if log_file_handle is None or returncode in (None, 0):
         return
     try:
@@ -128,7 +125,22 @@ def _write_exit_note(log_file_handle, returncode) -> None:
             detail = f"シグナル {name}({-returncode}) による強制終了"
         else:
             detail = f"終了コード {returncode}"
-        log_file_handle.write(f"\n[EXIT] R プロセスは {detail} で終了しました。\n")
+
+        process_label = "R プロセス"
+        suffix = ""
+        if output_dir:
+            try:
+                pipeline = json.loads(
+                    (Path(output_dir) / "log" / "input_pipeline.json").read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError, TypeError):
+                pipeline = {}
+            if not pipeline.get("r_started_at"):
+                process_label = "入力準備プロセス"
+                suffix = "\nR解析は開始されていません。"
+        log_file_handle.write(
+            f"\n[EXIT] {process_label}は {detail} で終了しました。{suffix}\n"
+        )
         log_file_handle.flush()
     except Exception as e:  # noqa: BLE001
         logger.debug("終了コードのログ追記に失敗（非重大）: %s", e)
