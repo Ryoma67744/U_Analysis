@@ -21,7 +21,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/ver74
-          cat .pr-bootstrap-ver74/bundle/part_* | base64 -d > /tmp/ver74.tar.xz
+          {
+            cat .pr-bootstrap-ver74/bundle/part_00
+            cat .pr-bootstrap-ver74/correct/part_01_*
+            cat .pr-bootstrap-ver74/bundle/part_02
+            cat .pr-bootstrap-ver74/bundle/part_03
+            cat .pr-bootstrap-ver74/bundle/part_04
+            cat .pr-bootstrap-ver74/bundle/part_05
+            cat .pr-bootstrap-ver74/bundle/part_06
+            cat .pr-bootstrap-ver74/bundle/part_07
+            cat .pr-bootstrap-ver74/correct/part_08_*
+          } | base64 -d > /tmp/ver74.tar.xz
           echo "6c25e1f57b2f4c7e6b8b70eebdac0f46c623114ca4bb785696afd702884671d9  /tmp/ver74.tar.xz" | sha256sum -c -
           tar -xJf /tmp/ver74.tar.xz -C /tmp/ver74
           python3 -m py_compile /tmp/ver74/apply_ver74.py /tmp/ver74/files/*.py
