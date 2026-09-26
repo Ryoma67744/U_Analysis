@@ -73,26 +73,10 @@ jobs:
           fi
           git diff --check
 
-      - name: 全回帰テスト
+      - name: 最初の回帰失敗を特定
         env:
           PYTHONPATH: App
           FLASK_SECRET_KEY: test-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
           MASTER_PASSWORD: runtime-test-password
           INITIAL_PASSWORD_B: runtime-share
-        run: python3 -m pytest -q App/tests
-
-      - name: 検証済み実装をPR用ブランチへ登録
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(grep -oP 'APP_VERSION = "\K[^"]+' App/app/version.py)" = '74.0'
-          test "$(grep -oP 'RELEASE_DATE = "\K[^"]+' App/app/version.py)" = '2026-09-27'
-          find App -type d -name __pycache__ -prune -exec rm -rf {} +
-          find App -name '*.pyc' -delete
-          rm -rf .pytest_cache App/.pytest_cache
-          git config user.name 'Ryoma67744'
-          git config user.email '76196606+Ryoma67744@users.noreply.github.com'
-          git add -A
-          git diff --cached --check
-          git commit -m 'imzML全切片を標準Parquetへ登録し解析選択を分離 [ver74.0]'
-          git push origin HEAD:refs/heads/claude/imzml-registered-parquet-ver74-0
+        run: python3 -m pytest -x -vv App/tests
