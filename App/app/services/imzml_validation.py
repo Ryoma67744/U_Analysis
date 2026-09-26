@@ -101,7 +101,6 @@ def _scan_contract(path, *, cancel=None, verify_checksum=False,
                 if key in result and result[key][0] != value[0]:
                     raise InputPreparationError(f"矛盾する測定属性: {key}")
                 result[key] = value
-                result[key] = value
         return result
 
     try:
