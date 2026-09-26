@@ -1,0 +1,81 @@
+  現在はParquet変換・R・UMAPを開始しません。Mass alignment後のconsensus feature行列という考え方は
+  妥当ですが、SCiLS等のTop-N／閾値付き出力では未出力と真の0を区別できないため、
+  自動union、0補完、広いbinning、mass alignmentは行いません。共通feature listに対する
+  全pixel強度行列、または共通m/z軸Parquetを使用してください。</p>
+'''
+text = replace_once(text, '  <p>imzMLに切片名が無い場合でも、', insert + '  <p>imzMLに切片名が無い場合でも、', label="help preflight section")
+text = text.replace("対応範囲は MS1、共通 m/z 軸、単一 z 面、float32/float64 強度です。",
+                    "対応範囲は明示または条件付き推定MS1、共通m/z軸、単一z面、float32/float64強度です。", 1)
+write(path, text)
+
+path = "App/docs/IMZML_AUTOIMPORT.md"
+text = read(path)
+text = text.replace("# imzML 通常解析への自動取り込み・座標切片（ver71.0）",
+                    "# imzML 通常解析への自動取り込み・座標切片（ver72.0）", 1)
+section = textwrap.dedent(r'''
+
+## MS level推定とm/z軸事前検査（ver72.0）
+
+明示的な `MS level=1` または `MS1 spectrum` がある場合は `explicit_ms1` と記録します。
+明示タグが無くても、mass spectrum、centroid/profile、m/z+intensity配列、1 pixel 1 scan、
+一貫したpolarityを確認し、MSn、precursor、product、selected ion、activation、fragmentationの
+証拠が無い場合は `inferred_ms1` として受け入れます。元imzMLへタグは追加せず、判定根拠を
+変換manifestへ保存します。MS level>1またはMSn構造がある入力は通常MS1解析では停止します。
+
+ファイル選択時にはXMLとibdの境界情報から、pixelごとのpeak数を確認します。peak数が異なる場合は
+`individual_axis` と判定し、理由・peak数範囲・科学的注意を画面へ表示します。同じpeak数であっても
+m/z値の完全一致は解析開始時にibdを読んで確認し、一致した場合だけ `common_axis` とします。
+
+processed-centroid MSIでも、mass alignment後に共通consensus feature行列を作ればPCA・UMAPは可能です。
+ただしSCiLS等のTop-N／閾値付きpeak listでは、あるpeakの欠落が真の未検出か、順位・閾値で
+出力されなかっただけかを区別できません。そのため現在のU_Analysisは個別m/z軸に対して
+自動union、0補完、広いbinning、mass alignmentを行いません。全pixelのintersectionだけを使う方法も、
+局在分子を除外するため推奨しません。共通feature listに対する全pixel強度行列、または
+共通m/z軸を持つParquetを使用してください。
+
+入力準備中に停止した場合は、ログを「入力準備プロセス」と表示し、R解析が未開始であることを明記します。
+''')
+if "## MS level推定とm/z軸事前検査（ver72.0）" in text:
+    raise RuntimeError("documentation section already exists")
+text += section
+write(path, text)
+
+
+# ---------------------------------------------------------------------------
+# Tests: SCiLS-like inferred MS1, individual axis, manifest, exit labels.
+# ---------------------------------------------------------------------------
+new_test = r'''"""SCiLS型processed-centroid imzMLのMS1推定とm/z軸診断。"""
+import io
+import json
+import struct
+import uuid
+import xml.etree.ElementTree as ET
+
+import pytest
+
+from app.services.imzml_validation import inspect_binary_contract, inspect_spectral_preflight
+from app.services.input_preparation import InputPreparationError
+from app.services.section_metadata import build_section_manifest
+
+
+def _scils_pair(tmp_path, lengths=(3, 3), *, explicit=False, ms_level=None,
+                add_precursor=False):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    identity = uuid.UUID("11111111-2222-3333-4444-555555555555")
+    binary = bytearray(identity.bytes)
+    root = ET.Element("mzML")
+
+    def cv(parent, accession, value="", name=""):
+        return ET.SubElement(parent, "cvParam", accession=accession,
+                             value=str(value), name=name)
+
+    content = ET.SubElement(ET.SubElement(root, "fileDescription"), "fileContent")
+    cv(content, "IMS:1000080", identity)
+    cv(content, "IMS:1000031", name="processed")
+    cv(content, "MS:1000294", name="mass spectrum")
+
+    groups = ET.SubElement(root, "referenceableParamGroupList")
+    mz_group = ET.SubElement(groups, "referenceableParamGroup", id="mzArray")
+    cv(mz_group, "MS:1000514", name="m/z array")
+    cv(mz_group, "MS:1000523", name="64-bit float")
+    cv(mz_group, "MS:1000576", name="no compression")
