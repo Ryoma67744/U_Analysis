@@ -1,0 +1,84 @@
+                result[key] = value
+        return result
+
+    try:
+        for _event, elem in ET.iterparse(xml, events=("end",)):
+            kind = _tag(elem)
+            if kind == "referenceableParamGroup":
+                refs[elem.get("id")] = cv(elem)
+                elem.clear()
+            elif kind == "fileContent":
+                file_cv = cv(elem)
+                declared_uuid = file_cv.get("IMS:1000080", (None, ""))[0]
+                for term, algo in (("IMS:1000090", "md5"),
+                                   ("IMS:1000091", "sha1"),
+                                   ("IMS:1000092", "sha256")):
+                    if term in file_cv:
+                        checksum[algo] = file_cv[term][0].strip().lower()
+                elem.clear()
+            elif kind == "chromatogram":
+                raise InputPreparationError("クロマトグラムをMSIの2次元画像へ集約しません。")
+            elif kind == "spectrumList":
+                declared_count = elem.get("count")
+            elif kind == "spectrum":
+                check_cancel(cancel)
+                attrs = cv(elem)
+                effective = {**file_cv, **attrs}
+
+                level = attrs.get("MS:1000511", file_cv.get("MS:1000511", (None, "")))[0]
+                explicit_ms1 = "MS:1000579" in effective
+                if level is not None:
+                    raw_level = str(level).strip()
+                    try:
+                        numeric_level = float(raw_level)
+                    except ValueError as exc:
+                        raise InputPreparationError(
+                            f"スペクトル {count}: MS level={raw_level!r} は解釈できません。"
+                        ) from exc
+                    if numeric_level != 1:
+                        raise InputPreparationError(
+                            f"スペクトル {count}: MS level={raw_level} は通常MS1解析の対象外です。"
+                        )
+                    explicit_ms1 = True
+
+                structure_tags = {_tag(node) for node in elem.iter()}
+                if "MS:1000580" in effective or structure_tags.intersection(_MSN_STRUCTURE_TAGS):
+                    raise InputPreparationError(
+                        "MS/MS・前駆体・生成物・fragmentation情報を持つ入力は通常MS1解析の対象外です。"
+                    )
+                names = [str(name or "").lower() for _value, name in effective.values()]
+                if any(token in name for name in names for token in _MSN_NAME_TOKENS):
+                    raise InputPreparationError("MSn／fragment spectrumを示す測定属性があります。")
+
+                mode = {value for key, value in (("MS:1000127", "centroid"),
+                                                  ("MS:1000128", "profile"))
+                        if key in effective}
+                if len(mode) != 1:
+                    raise InputPreparationError("profile / centroid を一意に確認できません。")
+                modes.update(mode)
+                polarity = {value for key, value in (("MS:1000130", "positive"),
+                                                      ("MS:1000129", "negative"))
+                            if key in effective}
+                polarities.update(polarity or {"unknown"})
+                if len(modes) != 1 or len(polarities) != 1:
+                    raise InputPreparationError("スペクトル種別または極性が混在しています。")
+                for _value, name in attrs.values():
+                    lowered = str(name or "").lower()
+                    if "mobility" in lowered or "drift time" in lowered:
+                        raise InputPreparationError("イオンモビリティ次元をMS1行列へ集約しません。")
+
+                scans = [node for node in elem.iter() if _tag(node) == "scan"]
+                if len(scans) != 1:
+                    raise InputPreparationError("1画素の複数scanは対象外です。")
+                xyz = []
+                for term, default in (("IMS:1000050", None),
+                                      ("IMS:1000051", None),
+                                      ("IMS:1000052", "1")):
+                    raw = attrs.get(term, (default, ""))[0]
+                    if raw is None or not str(raw).isdigit():
+                        raise InputPreparationError("画素座標は非負の整数である必要があります。")
+                    xyz.append(int(raw))
+                coords = tuple(xyz)
+                if coords in coordinates:
+                    raise InputPreparationError("画素座標が重複しています。")
+                if coordinates and coords[2] != next(iter(coordinates))[2]:
