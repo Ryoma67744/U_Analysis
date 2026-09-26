@@ -56,17 +56,22 @@ def test_section_aggregate_keeps_display_name():
 
 
 
-def test_inferred_ms1_preflight_and_individual_axis_notice_are_wired():
+
+def test_inferred_ms1_and_processed_sparse_conversion_are_wired():
     validation = text("app/services/imzml_validation.py")
+    processed = text("app/services/imzml_processed.py")
     callbacks = text("app/callbacks/section_callbacks.py")
     preparation = text("app/services/input_preparation.py")
     watcher = text("app/services/job_watcher.py")
     runner = text("app/services/analysis_runner.py")
     assert "inspect_spectral_preflight" in validation
     assert '"inferred_ms1"' in validation and '"explicit_ms1"' in validation
-    assert "Top-N／閾値付きpeak list" in validation
-    assert "科学的背景と推奨入力" in callbacks
-    assert "直接解析: 現在は非対応" in callbacks
-    assert 'CONTRACT_VERSION = "common-axis-ms1-spatial-v4"' in preparation
+    assert "import_processed_imzml" in validation
+    assert "processed_sparse_candidate" in validation
+    assert "not_recorded_in_exported_centroid_spectrum" in processed
+    assert "master feature" in callbacks and "PCA・UMAP" in callbacks
+    assert "直接解析: 現在は非対応" not in callbacks
+    assert 'CONTRACT_VERSION = "imzml-ms1-spatial-processed-v5"' in preparation
+    assert "processed_alignment_ppm" in preparation
     assert "入力準備プロセス" in watcher and "R解析は開始されていません" in watcher
     assert "入力準備プロセス" in runner and "R解析は開始されていません" in runner

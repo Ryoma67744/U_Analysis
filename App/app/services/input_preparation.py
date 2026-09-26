@@ -4,7 +4,9 @@ from __future__ import annotations
 from copy import deepcopy
 from hashlib import sha256
 from importlib.metadata import version, PackageNotFoundError
+import inspect
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -23,7 +25,7 @@ DESCRIPTOR_KEYS = (
 RECEIPT = "conversion_complete.json"
 CACHE_MARKER = ".ua_imzml_assets"
 # ★ ver71.0: component列と座標layoutを含まないver70 cacheを新規解析で再利用しない。
-CONTRACT_VERSION = "common-axis-ms1-spatial-v4"
+CONTRACT_VERSION = "imzml-ms1-spatial-processed-v5"
 
 
 class InputPreparationError(ValueError):
@@ -190,14 +192,33 @@ def _versions():
     return versions
 
 
-def conversion_spec():
-    # 保存バイトへ影響するコードと依存版を含める。UMAP の設定は含めない。
+
+def conversion_spec(processed_alignment_ppm=0.0):
+    """Return all settings and code hashes that can change converted bytes."""
+    try:
+        processed_alignment_ppm = float(processed_alignment_ppm)
+    except (TypeError, ValueError) as exc:
+        raise InputPreparationError("m/zアライメント(ppm)は数値で指定してください。") from exc
+    if not math.isfinite(processed_alignment_ppm) or processed_alignment_ppm < 0:
+        raise InputPreparationError("m/zアライメント(ppm)は0以上の有限値で指定してください。")
     here = Path(__file__).parent
-    return {"contract": CONTRACT_VERSION, "schema": 2, "dependencies": _versions(),
-            "converter_sha256": sha256_file(here / "imzml_io.py"),
-            "validator_sha256": sha256_file(here / "imzml_validation.py"),
-            "spatial_layout_sha256": sha256_file(here / "imzml_spatial_layout.py"),
-            "block_size": 128, "memory_budget_mb": int(os.environ.get("IMZML_BLOCK_MB", "64"))}
+    return {
+        "contract": CONTRACT_VERSION,
+        "schema": 3,
+        "dependencies": _versions(),
+        "converter_sha256": sha256_file(here / "imzml_io.py"),
+        "processed_converter_sha256": sha256_file(here / "imzml_processed.py"),
+        "validator_sha256": sha256_file(here / "imzml_validation.py"),
+        "spatial_layout_sha256": sha256_file(here / "imzml_spatial_layout.py"),
+        "processed_alignment_ppm": processed_alignment_ppm,
+        "zero_semantics": "not_recorded_in_exported_centroid_spectrum",
+        "block_size": 128,
+        "memory_budget_mb": int(os.environ.get("IMZML_BLOCK_MB", "64")),
+        "processed_max_features": int(
+            os.environ.get("IMZML_PROCESSED_MAX_FEATURES", "100000")
+        ),
+    }
+
 
 
 def _key(source, spec):
@@ -255,7 +276,8 @@ def _entry_from_receipt(entry, root, receipt):
 
 
 def prepare_imzml(entry, *, cache_root=None, project_id="", pinned=False,
-                  progress=None, cancel=None, converter=None, validator=None, spec=None):
+                  progress=None, cancel=None, converter=None, validator=None, spec=None,
+                  alignment_ppm=0.0):
     """原本は読み取り専用。公開済み revision を上書きせず、未完了品は使わない。"""
     entry = deepcopy(entry)
     check_cancel(cancel)
@@ -274,7 +296,14 @@ def prepare_imzml(entry, *, cache_root=None, project_id="", pinned=False,
         progress({"stage": "hash", "sample": Path(entry["path"]).name})
     xml, ibd = pair_paths(entry["path"])
     source = {"xml": fingerprint(xml, cancel), "ibd": fingerprint(ibd, cancel)}
-    current_spec = deepcopy(spec if spec is not None else conversion_spec())
+    if spec is None:
+        current_spec = deepcopy(conversion_spec())
+        current_spec["processed_alignment_ppm"] = float(alignment_ppm)
+    else:
+        current_spec = deepcopy(spec)
+    expected_ppm = float(current_spec.get("processed_alignment_ppm", alignment_ppm))
+    if float(alignment_ppm) != expected_ppm:
+        raise InputPreparationError("変換仕様とm/zアライメント(ppm)が一致しません。")
     if pinned and entry.get("conversion_key"):
         if not _same_content(source, entry["source_fingerprint"]) or current_spec != entry["conversion_spec"]:
             raise InputPreparationError("旧解析の変換資産を復元できません。原本内容または変換仕様が保存時と異なります。")
@@ -354,9 +383,23 @@ def prepare_imzml(entry, *, cache_root=None, project_id="", pinned=False,
                 check_cancel(cancel)
                 if progress:
                     progress({"stage": "convert", "sample": xml.name, "done": done, "total": total})
-            result = converter(xml, output, block_size=current_spec["block_size"],
-                               memory_budget_mb=current_spec["memory_budget_mb"],
-                               progress=on_pixels, cancel=cancel)
+            converter_kwargs = {
+                "block_size": current_spec["block_size"],
+                "memory_budget_mb": current_spec["memory_budget_mb"],
+                "progress": on_pixels,
+                "cancel": cancel,
+            }
+            try:
+                parameters = inspect.signature(converter).parameters
+                accepts_kwargs = any(
+                    parameter.kind == inspect.Parameter.VAR_KEYWORD
+                    for parameter in parameters.values()
+                )
+                if "alignment_ppm" in parameters or accepts_kwargs:
+                    converter_kwargs["alignment_ppm"] = expected_ppm
+            except (TypeError, ValueError):
+                pass
+            result = converter(xml, output, **converter_kwargs)
             check_cancel(cancel)
             if progress:
                 progress({"stage": "validate", "sample": xml.name})
@@ -413,8 +456,26 @@ def prepare_inputs(params, *, cache_root=None, project_id="", progress=None, can
             if progress:
                 progress({**state, "sample_number": number, "sample_total": len(entries)})
         if Path(entry["path"]).suffix.lower() == ".imzml":
-            prepared[entry["file_id"]] = prepare_imzml(entry, cache_root=cache_root,
-                project_id=project_id, pinned=pinned, progress=notify, cancel=cancel, **kwargs)
+            try:
+                alignment_ppm = float(params.get("mz_align_ppm") or 0.0)
+            except (TypeError, ValueError) as exc:
+                raise InputPreparationError(
+                    "m/zアライメント(ppm)は数値で指定してください。"
+                ) from exc
+            if not math.isfinite(alignment_ppm) or alignment_ppm < 0:
+                raise InputPreparationError(
+                    "m/zアライメント(ppm)は0以上の有限値で指定してください。"
+                )
+            options = dict(kwargs)
+            options.setdefault("alignment_ppm", alignment_ppm)
+            if "spec" not in options:
+                current_spec = deepcopy(conversion_spec())
+                current_spec["processed_alignment_ppm"] = alignment_ppm
+                options["spec"] = current_spec
+            prepared[entry["file_id"]] = prepare_imzml(
+                entry, cache_root=cache_root, project_id=project_id,
+                pinned=pinned, progress=notify, cancel=cancel, **options
+            )
         else:
             if not Path(entry["path"]).is_file():
                 raise InputPreparationError(f"入力が見つかりません: {entry['path']}")

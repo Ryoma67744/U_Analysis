@@ -178,23 +178,29 @@ def import_imzml(path: str | Path, output: str | Path, *, block_size=128,
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+
 def export_imzml(sample: str | Path, output_zip: str | Path, *, pixel_ids=None,
                  progress=None) -> dict:
-    """Export stored spectra with original coordinates; package a verified pair."""
+    """Export stored spectra; schema3 exports the aligned zero-filled matrix."""
     sample = Path(sample).resolve()
     manifest_path = sample.with_suffix(".imzml.json")
     if not manifest_path.is_file():
         raise ImzMLContractError("An imzML import manifest is required for exact export")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") not in {1, 2}:
+    schema_version = manifest.get("schema_version")
+    if schema_version not in {1, 2, 3}:
         raise ImzMLContractError("Unsupported import manifest")
     parquet = pq.ParquetFile(sample)
-    names = _axis_names(np.asarray(manifest["mz_axis"], dtype=np.float64))
+    axis = np.asarray(manifest["mz_axis"], dtype=manifest["mz_dtype"])
+    names = list(manifest.get("column_names") or _axis_names(
+        np.asarray(axis, dtype=np.float64)
+    ))
+    if len(names) != len(axis) or len(set(names)) != len(names):
+        raise ImzMLContractError("Invalid feature column mapping")
     if not set(["id", *names]).issubset(parquet.schema_arrow.names):
         raise ImzMLContractError("Missing spectral columns")
-    axis = np.asarray(manifest["mz_axis"], dtype=manifest["mz_dtype"])
     mapping = manifest["source_coordinates"]
-    ids = None if pixel_ids is None else set(int(i) for i in pixel_ids)
+    ids = None if pixel_ids is None else set(int(value) for value in pixel_ids)
     if ids is not None and (not ids or min(ids) < 1 or max(ids) > len(mapping)):
         raise ImzMLContractError("Pixel selection is empty or outside the sample")
     output_zip = Path(output_zip).resolve()
@@ -209,23 +215,27 @@ def export_imzml(sample: str | Path, output_zip: str | Path, *, pixel_ids=None,
         spectrum_type = manifest.get("spectrum_type")
         if spectrum_type not in {"profile", "centroid"}:
             raise ImzMLContractError("Unrecognized spectrum type")
-        with ImzMLWriter(str(xml), mz_dtype=axis.dtype.type,
-                         intensity_dtype=np.dtype(manifest["intensity_dtype"]).type,
-                         spec_type=spectrum_type) as writer:
+        with ImzMLWriter(
+            str(xml), mz_dtype=axis.dtype.type,
+            intensity_dtype=np.dtype(manifest["intensity_dtype"]).type,
+            spec_type=spectrum_type,
+        ) as writer:
             for batch in parquet.iter_batches(batch_size=128, columns=["id", *names]):
                 data = batch.to_pydict()
                 for row, sample_id in enumerate(data["id"]):
-                    i = int(sample_id) - 1
-                    if i < 0 or i >= len(mapping) or i in seen:
+                    index = int(sample_id) - 1
+                    if index < 0 or index >= len(mapping) or index in seen:
                         raise ImzMLContractError("Invalid or duplicate sample pixel ID")
-                    seen.add(i)
+                    seen.add(index)
                     if ids is not None and sample_id not in ids:
                         continue
-                    values = np.asarray([data[name][row] for name in names],
-                                        dtype=manifest["intensity_dtype"])
+                    values = np.asarray(
+                        [data[name][row] for name in names],
+                        dtype=manifest["intensity_dtype"],
+                    )
                     if not np.isfinite(values).all():
                         raise ImzMLContractError("Non-finite output intensity")
-                    writer.addSpectrum(axis, values, tuple(mapping[i]["coordinate"]))
+                    writer.addSpectrum(axis, values, tuple(mapping[index]["coordinate"]))
                     count += 1
                     if progress:
                         progress(count, len(ids) if ids is not None else len(mapping))
@@ -234,16 +244,32 @@ def export_imzml(sample: str | Path, output_zip: str | Path, *, pixel_ids=None,
         check = inspect_imzml(xml)
         if check["pixels"] != count or check["features"] != len(axis):
             raise ImzMLContractError("Written pair did not validate")
-        receipt = {"schema_version": 1, "source": str(sample),
-                   "pixels": count, "features": len(axis),
-                   "pixel_ids": sorted(ids) if ids is not None else "all",
-                   "normalization": manifest["normalization"]}
+        processed = schema_version == 3
+        receipt = {
+            "schema_version": 2,
+            "source": str(sample),
+            "pixels": count,
+            "features": len(axis),
+            "pixel_ids": sorted(ids) if ids is not None else "all",
+            "normalization": manifest["normalization"],
+            "source_representation": manifest.get(
+                "input_representation", "common_axis"
+            ),
+            "export_representation": (
+                "aligned_zero_filled_common_axis" if processed else "source_common_axis"
+            ),
+            "lossless_to_source": not processed,
+            "alignment_ppm": manifest.get("alignment_ppm"),
+            "zero_semantics": manifest.get("zero_semantics"),
+        }
         receipt_path = temp_dir / "export_manifest.json"
-        receipt_path.write_text(json.dumps(receipt, ensure_ascii=False), encoding="utf-8")
+        receipt_path.write_text(
+            json.dumps(receipt, ensure_ascii=False), encoding="utf-8"
+        )
         tmp_zip = temp_dir / "output.zip"
-        with zipfile.ZipFile(tmp_zip, "w", allowZip64=True) as zf:
+        with zipfile.ZipFile(tmp_zip, "w", allowZip64=True) as archive:
             for entry in (xml, xml.with_suffix(".ibd"), receipt_path):
-                zf.write(entry, entry.name, compress_type=zipfile.ZIP_STORED)
+                archive.write(entry, entry.name, compress_type=zipfile.ZIP_STORED)
         os.replace(tmp_zip, output_zip)
         return {"zip": str(output_zip), **receipt}
     finally:

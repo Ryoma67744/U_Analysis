@@ -8,6 +8,7 @@ from app.services.session_manager import save_last_settings
 
 
 
+
 def _spectral_preflight_notice(preflight):
     if not preflight:
         return None
@@ -30,30 +31,34 @@ def _spectral_preflight_notice(preflight):
     if isinstance(minimum, int) and isinstance(maximum, int):
         peak_text = f"{minimum:,}–{maximum:,} peaks/pixel"
         if isinstance(unique, int):
-            peak_text += f"（{unique}種類）"
+            peak_text += f"（pixelごとのピーク数が{unique:,}通り）"
 
-    if axis_status == "individual_axis":
+    if axis_status in {"processed_sparse_candidate", "individual_axis"}:
         return dbc.Alert([
             html.Div([html.Strong(f"△ {ms_label}"),
                       html.Span(f" ／ {preflight.get('representation', 'unknown')}-"
                                 f"{preflight.get('spectrum_type', 'unknown')}")]),
-            html.Div(f"× 画素ごとに異なるm/zピークリスト: {peak_text}"),
-            html.Div("直接解析: 現在は非対応。R・UMAPは開始しません。"),
+            html.Div(f"✓ 可変長の疎なピークリストとして行列化: {peak_text}"),
+            html.Div(
+                "解析開始時に画面のm/zアライメント(ppm)でmaster featureを作成し、"
+                "各pixelに記録されていないfeatureを0としてPCA・UMAPへ渡します。"
+            ),
             html.Details([
-                html.Summary("科学的背景と推奨入力", style={"cursor": "pointer"}),
+                html.Summary("0値とfeature対応の定義", style={"cursor": "pointer"}),
                 html.P(
-                    "Mass alignment後に共通consensus feature行列を作ればPCA・UMAPは可能です。"
-                    "ただしSCiLS等のTop-N／閾値付きpeak listでは、未出力と真の0を区別できません。",
+                    "0は、そのpixelのexported centroid spectrumに対応peakが記録されていない"
+                    "ことを表し、生体内での絶対的不在を意味しません。全pixelのintersectionへ"
+                    "縮約せず、局在featureを保持します。",
                     className="mb-1 mt-1",
                 ),
                 html.P(
-                    "そのためU_Analysisは自動union・0補完・広いbinning・mass alignmentを行いません。"
-                    "共通feature listに対する全pixel強度行列、または共通m/z軸Parquetを使用してください。"
-                    "全pixelのintersectionだけを使う方法も、局在分子を失うため推奨しません。",
+                    "ppm=0では完全一致m/zのunion、ppm>0では既存TIMS解析と同じ決定論的な"
+                    "ppm groupingを用います。同一pixelの複数peakが同じfeatureへ入る場合は"
+                    "強度を合計し、変換QCへ記録します。",
                     className="mb-0",
                 ),
             ]),
-        ], color="warning", className="py-2 px-2 my-2 small")
+        ], color="info", className="py-2 px-2 my-2 small")
 
     if ms_status == "inferred_ms1":
         return dbc.Alert(
@@ -66,6 +71,7 @@ def _spectral_preflight_notice(preflight):
         "✓ 明示MS1 ／ 共通m/z軸候補（全m/z値は解析開始時に検証）",
         className="d-block text-success my-1",
     )
+
 
 
 def _selection_blocks(catalog, manifest, scope):

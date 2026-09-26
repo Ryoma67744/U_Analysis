@@ -1,5 +1,6 @@
 <div class="help-alert tip" id="imzml-autoimport">
-  <div class="alert-title">ver72.0：推定MS1とm/z軸契約を解析前に表示します</div>
+  <div class="alert-title">ver72.0：推定MS1とm/z軸契約を解析前に表示します  <p class="small">processed-centroidの可変長peak listは、m/zアライメント(ppm)でmaster featureへ対応付け、未記録featureを0とする共通行列へ変換します。0はexported spectrumへの未記録であり、絶対的不在ではありません。MS/MS・追加次元は集約しません。</p>
+</div>
   <p>「解析設定」で TIMS を選び、同じ名前の <code>.imzML</code> と <code>.ibd</code> が入った
   フォルダを指定してください。対象の imzML をチェックして通常の解析開始ボタンを押すと、
   入力検査 → 内部 Parquet 作成または検証済みデータの再利用 → R 解析を順に実行します。
