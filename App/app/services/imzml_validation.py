@@ -1,4 +1,4 @@
-"""★ ver70.0: MS1 行列へ忠実に移せる入力だけを既存 converter に渡す。
+"""★ ver72.0: explicit/inferred MS1とm/z軸契約を分離して検証する。
 
 CV 定義: imzML/imzML imagingMS.obo（IMS:1000080 / 1000090-92 / 1000102-04）。
 完全な XSD/CV validator ではない。未知の次元を自動集約しない境界検査。
@@ -6,6 +6,8 @@ CV 定義: imzML/imzML imagingMS.obo（IMS:1000080 / 1000090-92 / 1000102-04）�
 from __future__ import annotations
 
 from collections import Counter
+from copy import deepcopy
+from functools import lru_cache
 from hashlib import new as new_hash
 import json
 import os
@@ -19,89 +21,161 @@ from app.services.input_preparation import InputPreparationError, check_cancel, 
 from app.services.imzml_spatial_layout import build_spatial_layout, strip_runtime_layout
 
 
-def inspect_binary_contract(path, *, cancel=None):
-    """XML/外部配列の属性を走査する。強度行列は読み込まない。"""
+_MSN_STRUCTURE_TAGS = {
+    "precursor", "precursorList", "product", "productList",
+    "selectedIon", "selectedIonList", "activation", "isolationWindow",
+}
+_MSN_NAME_TOKENS = (
+    "msn spectrum", "ms2 spectrum", "precursor ion spectrum",
+    "product ion spectrum", "collision-induced dissociation",
+    "higher energy collisional dissociation", "electron transfer dissociation",
+)
+
+
+def _tag(elem):
+    return elem.tag.rsplit("}", 1)[-1]
+
+
+def individual_axis_message(meta: dict) -> str:
+    """個別m/z軸を無断で共通行列化しない理由を、画面とログで共通化する。"""
+    axis = (meta or {}).get("mz_axis_contract") or {}
+    minimum = axis.get("feature_count_min")
+    maximum = axis.get("feature_count_max")
+    unique = axis.get("feature_count_unique")
+    if isinstance(minimum, int) and isinstance(maximum, int):
+        peak_range = f"{minimum:,}–{maximum:,} peaks/pixel"
+        if isinstance(unique, int):
+            peak_range += f"（{unique}種類）"
+    else:
+        peak_range = "peak数は未確定"
+    representation = str((meta or {}).get("representation") or "unknown")
+    mode = str((meta or {}).get("spectrum_type") or "unknown")
+    form = f"{representation}-{mode}"
+    return (
+        f"画素ごとにm/zピークリストが異なる {form} imzMLです（{peak_range}）。"
+        "現在のU_Analysisは、全pixelを同じm/z featureで表せる共通行列だけを直接解析します。"
+        "SCiLS等のTop-N／閾値付きpeak listでは、未出力と真の0を区別できないため、"
+        "自動union・0補完・広いbinning・mass alignmentは行いません。"
+        "共通feature listに対する全pixel強度行列、または共通m/z軸を持つParquetを使用してください。"
+    )
+
+
+def _scan_contract(path, *, cancel=None, verify_checksum=False,
+                   reject_individual_axis=False):
+    """XML/外部配列を走査し、MS level解釈とm/z軸契約を分けて判定する。"""
     xml, ibd = pair_paths(path)
     size = ibd.stat().st_size
     with ibd.open("rb") as fh:
         binary_uuid = fh.read(16)
     if len(binary_uuid) != 16:
         raise InputPreparationError("ibd の UUID ヘッダーが欠落しています。")
+
     refs, file_cv, modes, polarities, coordinates = {}, {}, set(), set(), set()
     checksum, declared_uuid = {}, None
-    count, features, byte_width, declared_count = 0, None, None, None
+    count, byte_width, declared_count = 0, None, None
     array_widths = {}
-
-    def tag(e):
-        return e.tag.rsplit("}", 1)[-1]
+    feature_counts = []
+    explicit_ms1_spectra = 0
+    inferred_ms1_spectra = 0
 
     def cv(node):
         result = {}
-        def descendants(e):
-            yield e
-            for child in e:
+
+        def descendants(elem):
+            yield elem
+            for child in elem:
                 # spectrum全体の属性に別々の外部offsetを混ぜない。
-                if tag(child) == "binaryDataArray" and tag(node) != "binaryDataArray":
+                if _tag(child) == "binaryDataArray" and _tag(node) != "binaryDataArray":
                     continue
                 yield from descendants(child)
-        for e in descendants(node):
-            if tag(e) == "referenceableParamGroupRef":
-                name = e.get("ref")
+
+        for elem in descendants(node):
+            if _tag(elem) == "referenceableParamGroupRef":
+                name = elem.get("ref")
                 if name not in refs:
                     raise InputPreparationError(f"未定義の parameter group: {name}")
                 result.update(refs[name])
-            elif tag(e) == "cvParam":
-                key = e.get("accession")
-                value = (e.get("value", ""), e.get("name", ""))
+            elif _tag(elem) == "cvParam":
+                key = elem.get("accession")
+                value = (elem.get("value", ""), elem.get("name", ""))
                 if key in result and result[key][0] != value[0]:
                     raise InputPreparationError(f"矛盾する測定属性: {key}")
                 result[key] = value
         return result
 
     try:
-        for event, elem in ET.iterparse(xml, events=("end",)):
-            kind = tag(elem)
+        for _event, elem in ET.iterparse(xml, events=("end",)):
+            kind = _tag(elem)
             if kind == "referenceableParamGroup":
                 refs[elem.get("id")] = cv(elem)
                 elem.clear()
             elif kind == "fileContent":
                 file_cv = cv(elem)
                 declared_uuid = file_cv.get("IMS:1000080", (None, ""))[0]
-                for term, algo in (("IMS:1000090", "md5"), ("IMS:1000091", "sha1"), ("IMS:1000092", "sha256")):
+                for term, algo in (("IMS:1000090", "md5"),
+                                   ("IMS:1000091", "sha1"),
+                                   ("IMS:1000092", "sha256")):
                     if term in file_cv:
                         checksum[algo] = file_cv[term][0].strip().lower()
                 elem.clear()
             elif kind == "chromatogram":
-                raise InputPreparationError("クロマトグラムを MS1 の2次元画像へ集約しません。")
+                raise InputPreparationError("クロマトグラムをMSIの2次元画像へ集約しません。")
             elif kind == "spectrumList":
                 declared_count = elem.get("count")
             elif kind == "spectrum":
                 check_cancel(cancel)
                 attrs = cv(elem)
                 effective = {**file_cv, **attrs}
+
                 level = attrs.get("MS:1000511", file_cv.get("MS:1000511", (None, "")))[0]
-                if level is not None and str(level) != "1":
-                    raise InputPreparationError(f"スペクトル {count}: MS level={level} は対象外です。")
-                if "MS:1000580" in effective or any(tag(e) in ("precursor", "product") for e in elem.iter()):
-                    raise InputPreparationError("MS/MS・前駆体/生成物情報を持つ入力は対象外です。")
-                if level is None and "MS:1000579" not in effective:
-                    raise InputPreparationError("MS1 と確認できる測定属性がありません。")
-                mode = {v for k, v in (("MS:1000127", "centroid"), ("MS:1000128", "profile")) if k in effective}
+                explicit_ms1 = "MS:1000579" in effective
+                if level is not None:
+                    raw_level = str(level).strip()
+                    try:
+                        numeric_level = float(raw_level)
+                    except ValueError as exc:
+                        raise InputPreparationError(
+                            f"スペクトル {count}: MS level={raw_level!r} は解釈できません。"
+                        ) from exc
+                    if numeric_level != 1:
+                        raise InputPreparationError(
+                            f"スペクトル {count}: MS level={raw_level} は通常MS1解析の対象外です。"
+                        )
+                    explicit_ms1 = True
+
+                structure_tags = {_tag(node) for node in elem.iter()}
+                if "MS:1000580" in effective or structure_tags.intersection(_MSN_STRUCTURE_TAGS):
+                    raise InputPreparationError(
+                        "MS/MS・前駆体・生成物・fragmentation情報を持つ入力は通常MS1解析の対象外です。"
+                    )
+                names = [str(name or "").lower() for _value, name in effective.values()]
+                if any(token in name for name in names for token in _MSN_NAME_TOKENS):
+                    raise InputPreparationError("MSn／fragment spectrumを示す測定属性があります。")
+
+                mode = {value for key, value in (("MS:1000127", "centroid"),
+                                                  ("MS:1000128", "profile"))
+                        if key in effective}
                 if len(mode) != 1:
                     raise InputPreparationError("profile / centroid を一意に確認できません。")
                 modes.update(mode)
-                polarity = {v for k, v in (("MS:1000130", "positive"), ("MS:1000129", "negative")) if k in effective}
+                polarity = {value for key, value in (("MS:1000130", "positive"),
+                                                      ("MS:1000129", "negative"))
+                            if key in effective}
                 polarities.update(polarity or {"unknown"})
                 if len(modes) != 1 or len(polarities) != 1:
                     raise InputPreparationError("スペクトル種別または極性が混在しています。")
-                for _, name in attrs.values():
-                    if "mobility" in name.lower() or "drift time" in name.lower():
-                        raise InputPreparationError("イオンモビリティ次元を MS1 行列へ集約しません。")
-                scans = [e for e in elem.iter() if tag(e) == "scan"]
+                for _value, name in attrs.values():
+                    lowered = str(name or "").lower()
+                    if "mobility" in lowered or "drift time" in lowered:
+                        raise InputPreparationError("イオンモビリティ次元をMS1行列へ集約しません。")
+
+                scans = [node for node in elem.iter() if _tag(node) == "scan"]
                 if len(scans) != 1:
-                    raise InputPreparationError("1画素の複数 scan は対象外です。")
+                    raise InputPreparationError("1画素の複数scanは対象外です。")
                 xyz = []
-                for term, default in (("IMS:1000050", None), ("IMS:1000051", None), ("IMS:1000052", "1")):
+                for term, default in (("IMS:1000050", None),
+                                      ("IMS:1000051", None),
+                                      ("IMS:1000052", "1")):
                     raw = attrs.get(term, (default, ""))[0]
                     if raw is None or not str(raw).isdigit():
                         raise InputPreparationError("画素座標は非負の整数である必要があります。")
@@ -110,54 +184,131 @@ def inspect_binary_contract(path, *, cancel=None):
                 if coords in coordinates:
                     raise InputPreparationError("画素座標が重複しています。")
                 if coordinates and coords[2] != next(iter(coordinates))[2]:
-                    raise InputPreparationError("複数の z 面は別試料として登録してください。")
+                    raise InputPreparationError("複数のz面は別試料として登録してください。")
                 coordinates.add(coords)
-                arrays = [e for e in elem.iter() if tag(e) == "binaryDataArray"]
+
+                arrays = [node for node in elem.iter() if _tag(node) == "binaryDataArray"]
                 if len(arrays) != 2:
-                    raise InputPreparationError("m/z と強度以外の配列・追加次元は対象外です。")
-                lengths, array_types = [], set()
+                    raise InputPreparationError("m/zと強度以外の配列・追加次元は対象外です。")
+                lengths_by_type = {}
+                array_types = set()
                 for array in arrays:
-                    a = cv(array)
-                    types = {k for k in ("MS:1000514", "MS:1000515") if k in a}
-                    widths = {v for k, v in (("MS:1000521", 4), ("MS:1000523", 8)) if k in a}
-                    if len(types) != 1 or len(widths) != 1 or "MS:1000574" in a:
-                        raise InputPreparationError("配列型/精度が不明、または圧縮配列は現在の変換対象外です。")
-                    if a.get("IMS:1000101", ("", ""))[0].lower() not in ("true", "1"):
+                    array_cv = cv(array)
+                    types = {key for key in ("MS:1000514", "MS:1000515") if key in array_cv}
+                    widths = {value for key, value in (("MS:1000521", 4),
+                                                        ("MS:1000523", 8))
+                              if key in array_cv}
+                    if len(types) != 1 or len(widths) != 1 or "MS:1000574" in array_cv:
+                        raise InputPreparationError(
+                            "配列型/精度が不明、または圧縮配列は現在の変換対象外です。"
+                        )
+                    if array_cv.get("IMS:1000101", ("", ""))[0].lower() not in ("true", "1"):
                         raise InputPreparationError("外部配列の宣言がありません。")
-                    array_types.update(types)
-                    width = next(iter(widths))
                     array_kind = next(iter(types))
+                    width = next(iter(widths))
+                    array_types.add(array_kind)
                     if array_kind in array_widths and array_widths[array_kind] != width:
-                        raise InputPreparationError("m/z または強度の精度が混在しています。")
+                        raise InputPreparationError("m/zまたは強度の精度が混在しています。")
                     array_widths[array_kind] = width
                     try:
-                        offset, length, encoded = (int(a[k][0]) for k in ("IMS:1000102", "IMS:1000103", "IMS:1000104"))
+                        offset, length, encoded = (
+                            int(array_cv[key][0])
+                            for key in ("IMS:1000102", "IMS:1000103", "IMS:1000104")
+                        )
                     except (KeyError, ValueError) as exc:
-                        raise InputPreparationError("外部配列の offset / length が不正です。") from exc
+                        raise InputPreparationError("外部配列のoffset / lengthが不正です。") from exc
                     if offset < 16 or length < 1 or encoded != length * width or offset + encoded > size:
-                        raise InputPreparationError("外部配列が ibd の範囲外、または長さが矛盾しています。")
-                    lengths.append(length)
-                    if "MS:1000515" in a:
+                        raise InputPreparationError(
+                            "外部配列がibdの範囲外、または長さが矛盾しています。"
+                        )
+                    lengths_by_type[array_kind] = length
+                    if array_kind == "MS:1000515":
                         if byte_width is not None and byte_width != width:
                             raise InputPreparationError("強度精度が混在しています。")
                         byte_width = width
-                if len(array_types) != 2 or len(set(lengths)) != 1:
-                    raise InputPreparationError("m/z 配列と強度配列の対応が不正です。")
-                if features is not None and features != lengths[0]:
-                    raise InputPreparationError("画素ごとの feature 数が異なります。")
-                features = lengths[0]
+
+                if array_types != {"MS:1000514", "MS:1000515"}:
+                    raise InputPreparationError("m/z配列と強度配列の対応が不正です。")
+                if lengths_by_type["MS:1000514"] != lengths_by_type["MS:1000515"]:
+                    raise InputPreparationError("同一pixel内でm/z配列と強度配列の長さが異なります。")
+                feature_counts.append(lengths_by_type["MS:1000514"])
+
+                if explicit_ms1:
+                    explicit_ms1_spectra += 1
+                else:
+                    # SCiLS等はMS levelタグを省略することがある。MSnの証拠がなく、
+                    # full-scan mass spectrumの構造が揃う場合だけ推定MS1とする。
+                    if "MS:1000294" not in effective:
+                        raise InputPreparationError(
+                            "明示的なMS1タグがなく、full-scan mass spectrumとも確認できません。"
+                        )
+                    inferred_ms1_spectra += 1
                 count += 1
                 elem.clear()
     except ET.ParseError as exc:
-        raise InputPreparationError(f"imzML XML が不正です: {exc}") from exc
+        raise InputPreparationError(f"imzML XMLが不正です: {exc}") from exc
+
     try:
         if declared_uuid is None or uuid.UUID(declared_uuid).bytes != binary_uuid:
-            raise InputPreparationError("imzML と ibd の UUID が一致しません。")
+            raise InputPreparationError("imzMLとibdのUUIDが一致しません。")
         if not count or declared_count is None or int(declared_count) != count:
             raise InputPreparationError("スペクトル件数の宣言と内容が一致しません。")
     except (ValueError, AttributeError) as exc:
         raise InputPreparationError("UUID / スペクトル件数が不正です。") from exc
-    if checksum:
+
+    representation = ("processed" if "IMS:1000031" in file_cv else
+                      "continuous" if "IMS:1000030" in file_cv else "unknown")
+    feature_counts_unique = sorted(set(feature_counts))
+    individual_axis = len(feature_counts_unique) > 1
+    axis_contract = {
+        "status": "individual_axis" if individual_axis else "common_length_unverified_values",
+        "reason": "feature_count_varies" if individual_axis else "mz_values_not_checked",
+        "pixel_count": count,
+        "feature_count_min": min(feature_counts),
+        "feature_count_max": max(feature_counts),
+        "feature_count_unique": len(feature_counts_unique),
+        "common_feature_count": feature_counts_unique[0] if not individual_axis else None,
+        "value_equality_verified": False,
+        "direct_matrix_conversion": False if individual_axis else None,
+        "top_n_truncation": "unknown",
+    }
+    if explicit_ms1_spectra == count:
+        ms_status = "explicit_ms1"
+        confidence = "explicit"
+        basis = ["ms_level_1_or_ms1_spectrum"]
+    else:
+        ms_status = "inferred_ms1"
+        confidence = "high" if next(iter(polarities)) != "unknown" else "moderate"
+        basis = [
+            "mass_spectrum", f"{next(iter(modes))}_spectrum",
+            "mz_and_intensity_arrays_only", "single_scan_per_pixel",
+            "consistent_polarity", "no_msn_terms", "no_precursor_or_product",
+            "no_activation_or_fragmentation",
+        ]
+    meta = {
+        "pixels": count,
+        "features": feature_counts_unique[0] if not individual_axis else None,
+        "intensity_bytes": byte_width,
+        "spectrum_type": next(iter(modes)),
+        "polarity": next(iter(polarities)),
+        "representation": representation,
+        "ms_level_interpretation": {
+            "status": ms_status,
+            "confidence": confidence,
+            "explicit_ms_level": 1 if explicit_ms1_spectra == count else None,
+            "explicit_spectra": explicit_ms1_spectra,
+            "inferred_spectra": inferred_ms1_spectra,
+            "basis": basis,
+        },
+        "mz_axis_contract": axis_contract,
+        "uuid_verified": True,
+        "checksums_verified": [],
+    }
+
+    if reject_individual_axis and individual_axis:
+        raise InputPreparationError(individual_axis_message(meta))
+
+    if verify_checksum and checksum:
         digests = {algo: new_hash(algo) for algo in checksum}
         with ibd.open("rb") as fh:
             while True:
@@ -165,20 +316,55 @@ def inspect_binary_contract(path, *, cancel=None):
                 chunk = fh.read(4 * 1024 * 1024)
                 if not chunk:
                     break
-                for h in digests.values():
-                    h.update(chunk)
-        if any(digests[a].hexdigest() != value for a, value in checksum.items()):
-            raise InputPreparationError("ibd の既知 checksum が一致しません。")
-    spatial_layout = strip_runtime_layout(
-        build_spatial_layout(sorted(coordinates, key=lambda c: (c[1], c[0], c[2])),
+                for digest in digests.values():
+                    digest.update(chunk)
+        if any(digests[algo].hexdigest() != value for algo, value in checksum.items()):
+            raise InputPreparationError("ibdの既知checksumが一致しません。")
+        meta["checksums_verified"] = sorted(checksum)
+
+    meta["spatial_layout"] = strip_runtime_layout(
+        build_spatial_layout(sorted(coordinates, key=lambda coord: (coord[1], coord[0], coord[2])),
                              include_preview=False),
         strip_preview=True,
     )
-    return {"pixels": count, "features": features, "intensity_bytes": byte_width,
-            "spectrum_type": next(iter(modes)), "polarity": next(iter(polarities)),
-            "uuid_verified": True, "checksums_verified": sorted(checksum),
-            "spatial_layout": spatial_layout}
+    return meta
 
+
+@lru_cache(maxsize=64)
+def _cached_spectral_preflight(path, xml_size, xml_mtime_ns, ibd_size, ibd_mtime_ns):
+    del xml_size, xml_mtime_ns, ibd_size, ibd_mtime_ns
+    return _scan_contract(path, verify_checksum=False, reject_individual_axis=False)
+
+
+def inspect_spectral_preflight(path, *, cancel=None):
+    """選択画面用の軽量判定。checksumとm/z値一致は解析開始時に確認する。"""
+    xml, ibd = pair_paths(path)
+    if cancel is not None:
+        meta = _scan_contract(xml, cancel=cancel, verify_checksum=False,
+                              reject_individual_axis=False)
+    else:
+        xml_stat = xml.stat()
+        ibd_stat = ibd.stat()
+        meta = deepcopy(_cached_spectral_preflight(
+            str(xml), xml_stat.st_size, xml_stat.st_mtime_ns,
+            ibd_stat.st_size, ibd_stat.st_mtime_ns,
+        ))
+    return {
+        "schema_version": 1,
+        "status": "ok",
+        "pixels": meta["pixels"],
+        "spectrum_type": meta["spectrum_type"],
+        "polarity": meta["polarity"],
+        "representation": meta["representation"],
+        "ms_level_interpretation": deepcopy(meta["ms_level_interpretation"]),
+        "mz_axis_contract": deepcopy(meta["mz_axis_contract"]),
+    }
+
+
+def inspect_binary_contract(path, *, cancel=None):
+    """変換前の完全検査。個別m/z軸は説明付きでR開始前に停止する。"""
+    return _scan_contract(path, cancel=cancel, verify_checksum=True,
+                          reject_individual_axis=True)
 
 def _bounded_block(features, width, requested, budget_mb):
     if int(requested) < 1 or int(budget_mb) < 1:
@@ -193,7 +379,7 @@ def _bounded_block(features, width, requested, budget_mb):
 
 def checked_import(path, output, *, block_size=128, memory_budget_mb=64, progress=None, cancel=None):
     """全強度の検査は既存 import の1走査で行う。元の精度・正規化は変更しない。"""
-    from app.services.imzml_io import import_imzml
+    from app.services.imzml_io import import_imzml, ImzMLContractError
     from filelock import FileLock
     meta = inspect_binary_contract(path, cancel=cancel)
     block = _bounded_block(meta["features"], meta["intensity_bytes"], block_size, memory_budget_mb)
@@ -227,8 +413,26 @@ def checked_import(path, output, *, block_size=128, memory_budget_mb=64, progres
         published = False
         owns_pending = False
         try:
-            result = import_imzml(path, staged, block_size=block, progress=checked_progress)
+            try:
+                result = import_imzml(path, staged, block_size=block,
+                                      progress=checked_progress)
+            except ImzMLContractError as exc:
+                if "individual m/z axis" in str(exc):
+                    meta["mz_axis_contract"].update({
+                        "status": "individual_axis",
+                        "reason": "mz_values_differ",
+                        "value_equality_verified": True,
+                        "direct_matrix_conversion": False,
+                    })
+                    raise InputPreparationError(individual_axis_message(meta)) from exc
+                raise InputPreparationError(f"imzML変換契約に適合しません: {exc}") from exc
             check_cancel(cancel)
+            meta["mz_axis_contract"].update({
+                "status": "common_axis",
+                "reason": "all_mz_values_equal",
+                "value_equality_verified": True,
+                "direct_matrix_conversion": True,
+            })
             from app.services.input_preparation import write_json
             staged_sidecar = staged.with_suffix(".imzml.json")
             manifest = json.loads(staged_sidecar.read_text(encoding="utf-8"))

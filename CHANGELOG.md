@@ -12,6 +12,18 @@
 
 ---
 
+
+## 2026-09-26_ver72.0
+
+### SCiLS型imzMLの推定MS1判定と個別m/z軸の事前診断
+
+- 明示的なMS1タグがなくても、MSn・precursor・product・activation・fragmentation情報がなく、full-scan mass spectrumとして整合する入力を `inferred_ms1` として受け入れる。元imzMLは変更せず、判定根拠をmanifestへ保存する。
+- ファイル選択時にprocessed/continuous、centroid/profile、polarity、pixelごとのpeak数を表示。個別m/z軸を検出した場合は、Top-N／閾値付きpeak listで未出力と真の0を区別できない科学的制約を説明する。
+- 個別m/z軸では自動union・0補完・広いbinning・mass alignmentを行わず、Parquet変換・R・UMAP開始前に説明付きで停止する。同じpeak数でもm/z値が異なる入力はbinary読取時に同じ契約で停止する。
+- common-axis変換cacheをv4へ更新し、MS level解釈とm/z軸検証結果をsidecarへ保存する。
+- 入力準備段階の失敗を「Rプロセス」と誤表示せず、「入力準備プロセス」「R解析は開始されていません」と記録する。
+- SCiLS型processed-centroid fixture、明示／推定MS1、MSn拒否、個別軸、manifest保持、終了表示の回帰試験を追加する。
+
 ## 2026-09-26_ver71.1
 
 ### imzML切片floatの大型化と切片情報編集の統合

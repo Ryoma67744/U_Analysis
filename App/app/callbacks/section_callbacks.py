@@ -7,6 +7,67 @@ from app.services.section_metadata import assign_group, build_section_manifest, 
 from app.services.session_manager import save_last_settings
 
 
+
+def _spectral_preflight_notice(preflight):
+    if not preflight:
+        return None
+    if preflight.get("status") != "ok":
+        return dbc.Alert(
+            "スペクトル事前検査に失敗しました: " + str(preflight.get("error") or "詳細不明"),
+            color="danger", className="py-2 px-2 my-2 small",
+        )
+    ms = preflight.get("ms_level_interpretation") or {}
+    axis = preflight.get("mz_axis_contract") or {}
+    ms_status = ms.get("status")
+    ms_label = ("明示MS1" if ms_status == "explicit_ms1" else
+                "推定MS1（高信頼）" if ms.get("confidence") == "high" else
+                "推定MS1")
+    axis_status = axis.get("status")
+    minimum = axis.get("feature_count_min")
+    maximum = axis.get("feature_count_max")
+    unique = axis.get("feature_count_unique")
+    peak_text = ""
+    if isinstance(minimum, int) and isinstance(maximum, int):
+        peak_text = f"{minimum:,}–{maximum:,} peaks/pixel"
+        if isinstance(unique, int):
+            peak_text += f"（{unique}種類）"
+
+    if axis_status == "individual_axis":
+        return dbc.Alert([
+            html.Div([html.Strong(f"△ {ms_label}"),
+                      html.Span(f" ／ {preflight.get('representation', 'unknown')}-"
+                                f"{preflight.get('spectrum_type', 'unknown')}")]),
+            html.Div(f"× 画素ごとに異なるm/zピークリスト: {peak_text}"),
+            html.Div("直接解析: 現在は非対応。R・UMAPは開始しません。"),
+            html.Details([
+                html.Summary("科学的背景と推奨入力", style={"cursor": "pointer"}),
+                html.P(
+                    "Mass alignment後に共通consensus feature行列を作ればPCA・UMAPは可能です。"
+                    "ただしSCiLS等のTop-N／閾値付きpeak listでは、未出力と真の0を区別できません。",
+                    className="mb-1 mt-1",
+                ),
+                html.P(
+                    "そのためU_Analysisは自動union・0補完・広いbinning・mass alignmentを行いません。"
+                    "共通feature listに対する全pixel強度行列、または共通m/z軸Parquetを使用してください。"
+                    "全pixelのintersectionだけを使う方法も、局在分子を失うため推奨しません。",
+                    className="mb-0",
+                ),
+            ]),
+        ], color="warning", className="py-2 px-2 my-2 small")
+
+    if ms_status == "inferred_ms1":
+        return dbc.Alert(
+            f"△ {ms_label}: MSn・precursor・product・fragmentation情報がなく、"
+            "full-scan MSIとして整合するためMS1として処理します。 "
+            "m/z配列長は共通候補で、全m/z値の一致は解析開始時に検証します。",
+            color="info", className="py-2 px-2 my-2 small",
+        )
+    return html.Small(
+        "✓ 明示MS1 ／ 共通m/z軸候補（全m/z値は解析開始時に検証）",
+        className="d-block text-success my-1",
+    )
+
+
 def _selection_blocks(catalog, manifest, scope):
     saved = {f["path"]: f for f in manifest.get("files", [])}
     result = []
@@ -31,6 +92,9 @@ def _selection_blocks(catalog, manifest, scope):
             warnings = (f.get("spatial_layout") or {}).get("warnings") or []
             if warnings:
                 children.append(html.Small(" / ".join(warnings[:2]), className="d-block text-warning"))
+            notice = _spectral_preflight_notice(f.get("spectral_preflight"))
+            if notice is not None:
+                children.append(notice)
             children.append(dbc.Checklist(
                 id={"type": "section_roi_check", "scope": scope, "index": path},
                 options=[{"label": f" {s['section_display_name']}  {int(s.get('pixel_count', 0)):,} pixels",
@@ -78,6 +142,14 @@ def make_catalog(paths, is_tims, previous, overrides=None):
         if is_tims and Path(p).suffix.lower() == ".imzml":
             item = {"path": p, "available_rois": [], "input_format": "imzml"}
             from app.services.imzml_spatial_layout import inspect_imzml_spatial_layout, SpatialLayoutError
+            from app.services.imzml_validation import inspect_spectral_preflight
+            from app.services.input_preparation import InputPreparationError
+            try:
+                item["spectral_preflight"] = inspect_spectral_preflight(p)
+            except (OSError, InputPreparationError) as exc:
+                item["spectral_preflight"] = {
+                    "schema_version": 1, "status": "invalid", "error": str(exc),
+                }
             try:
                 layout = inspect_imzml_spatial_layout(p)
                 item["spatial_layout"] = layout
@@ -139,7 +211,8 @@ def source_reanalysis_catalog(manifest):
         rois = f.get("rois", []) if f.get("selection_mode") == "selected" else f.get("available_rois", [])
         item = {"path": f["path"], "file_id": f["file_id"],
                 "available_rois": list(rois), "roi_role": f.get("roi_role")}
-        for key in ("spatial_layout", "spatial_sections", "spatial_error", "input_format"):
+        for key in ("spatial_layout", "spatial_sections", "spatial_error",
+                    "input_format", "spectral_preflight"):
             if key in f:
                 item[key] = f[key]
         result.append(item)
