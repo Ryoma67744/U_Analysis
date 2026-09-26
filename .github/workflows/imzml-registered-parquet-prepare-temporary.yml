@@ -1,0 +1,71 @@
+name: imzml-registered-parquet-prepare-temporary
+
+on:
+  push:
+    branches:
+      - claude/imzml-registered-parquet-bootstrap-ver74-0
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Bundleを検証しmainから実装ブランチを作成
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ver74
+          cat .pr-bootstrap-ver74/bundle/part_* | base64 -d > /tmp/ver74.tar.xz
+          echo "6c25e1f57b2f4c7e6b8b70eebdac0f46c623114ca4bb785696afd702884671d9  /tmp/ver74.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/ver74.tar.xz -C /tmp/ver74
+          python3 -m py_compile /tmp/ver74/apply_ver74.py /tmp/ver74/files/*.py
+          git checkout -B claude/imzml-registered-parquet-ver74-0 origin/main
+          mkdir -p .pr-bootstrap-ver74/files
+          cp /tmp/ver74/apply_ver74.py .pr-bootstrap-ver74/apply_ver74.py
+          cp /tmp/ver74/files/*.py .pr-bootstrap-ver74/files/
+          python3 .pr-bootstrap-ver74/apply_ver74.py
+          rm -rf .pr-bootstrap-ver74
+
+      - name: Python依存とpytestを導入
+        run: python3 -m pip install --disable-pip-version-check --quiet -r App/requirements.txt pytest
+
+      - name: 構文・テンプレート・差分検査
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q App/app App/tests
+          python3 -c "from pathlib import Path; from jinja2 import Environment; [Environment().parse(p.read_text(encoding='utf-8')) for p in Path('App/app/templates').rglob('*.html')]"
+          if command -v Rscript >/dev/null 2>&1; then
+            Rscript -e "parse(file='App/Script/helpers/analysis_contract.R')"
+          fi
+          git diff --check
+
+      - name: 全回帰テスト
+        env:
+          PYTHONPATH: App
+          FLASK_SECRET_KEY: test-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+          MASTER_PASSWORD: runtime-test-password
+          INITIAL_PASSWORD_B: runtime-share
+        run: python3 -m pytest -q App/tests
+
+      - name: 検証済み実装をPR用ブランチへ登録
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(grep -oP 'APP_VERSION = "\K[^"]+' App/app/version.py)" = '74.0'
+          test "$(grep -oP 'RELEASE_DATE = "\K[^"]+' App/app/version.py)" = '2026-09-27'
+          find App -type d -name __pycache__ -prune -exec rm -rf {} +
+          find App -name '*.pyc' -delete
+          rm -rf .pytest_cache App/.pytest_cache
+          git config user.name 'Ryoma67744'
+          git config user.email '76196606+Ryoma67744@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'imzML全切片を標準Parquetへ登録し解析選択を分離 [ver74.0]'
+          git push origin HEAD:refs/heads/claude/imzml-registered-parquet-ver74-0
