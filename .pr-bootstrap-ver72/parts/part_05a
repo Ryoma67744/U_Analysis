@@ -1,0 +1,43 @@
+                    className="mb-0",
+                ),
+            ]),
+        ], color="warning", className="py-2 px-2 my-2 small")
+
+    if ms_status == "inferred_ms1":
+        return dbc.Alert(
+            f"△ {ms_label}: MSn・precursor・product・fragmentation情報がなく、"
+            "full-scan MSIとして整合するためMS1として処理します。 "
+            "m/z配列長は共通候補で、全m/z値の一致は解析開始時に検証します。",
+            color="info", className="py-2 px-2 my-2 small",
+        )
+    return html.Small(
+        "✓ 明示MS1 ／ 共通m/z軸候補（全m/z値は解析開始時に検証）",
+        className="d-block text-success my-1",
+    )
+''')
+text = replace_once(text, insert_anchor, helper + insert_anchor, label="preflight helper insertion")
+
+warning_anchor = '''            warnings = (f.get("spatial_layout") or {}).get("warnings") or []
+            if warnings:
+                children.append(html.Small(" / ".join(warnings[:2]), className="d-block text-warning"))
+'''
+warning_replacement = warning_anchor + '''            notice = _spectral_preflight_notice(f.get("spectral_preflight"))
+            if notice is not None:
+                children.append(notice)
+'''
+text = replace_once(text, warning_anchor, warning_replacement, label="preflight UI insertion")
+
+old_catalog = '''            from app.services.imzml_spatial_layout import inspect_imzml_spatial_layout, SpatialLayoutError
+            try:
+                layout = inspect_imzml_spatial_layout(p)
+                item["spatial_layout"] = layout
+                override = overrides.get(p) or {}
+                if override.get("coordinate_hash") == layout.get("coordinate_hash"):
+                    item["spatial_sections"] = override.get("spatial_sections")
+            except (OSError, SpatialLayoutError) as exc:  # 入力エラーはmanifestへ残し、黙って1切片にしない。
+                item["spatial_error"] = str(exc)
+'''
+new_catalog = '''            from app.services.imzml_spatial_layout import inspect_imzml_spatial_layout, SpatialLayoutError
+            from app.services.imzml_validation import inspect_spectral_preflight
+            from app.services.input_preparation import InputPreparationError
+            try:
