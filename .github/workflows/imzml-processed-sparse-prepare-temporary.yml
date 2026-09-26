@@ -21,6 +21,24 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/ver73
           cat .pr-bootstrap-ver73/bundle/part_* | base64 -d | xz -d | tar -xf - -C /tmp/ver73
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('/tmp/ver73/apply_ver73.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''if help_text.count(old) != 1:
+              raise SystemExit("help limitation paragraph not found")
+          write(help_path, help_text.replace(old, new, 1))'''
+          new = '''if help_text.count(old) != 1:
+              old = "</div>"
+              new = ("  <p class=\\\"small\\\">processed-centroidの可変長peak listは、"
+                     "m/zアライメント(ppm)でmaster featureへ対応付け、未記録featureを0とする"
+                     "共通行列へ変換します。0はexported spectrumへの未記録であり、絶対的不在では"
+                     "ありません。MS/MS・追加次元は集約しません。</p>\\n</div>")
+          write(help_path, help_text.replace(old, new, 1))'''
+          if text.count(old) != 1:
+              raise SystemExit('runtime help patch target not found')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
           python3 -m py_compile /tmp/ver73/apply_ver73.py /tmp/ver73/imzml_processed.py /tmp/ver73/test_imzml_processed_sparse.py
           git checkout -B claude/imzml-processed-sparse-ver73-0 origin/main
           mkdir -p .pr-bootstrap-ver73/files
