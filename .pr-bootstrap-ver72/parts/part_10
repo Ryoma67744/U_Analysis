@@ -1,0 +1,8 @@
+- 入力準備段階の失敗を「Rプロセス」と誤表示せず、「入力準備プロセス」「R解析は開始されていません」と記録する。
+- SCiLS型processed-centroid fixture、明示／推定MS1、MSn拒否、個別軸、manifest保持、終了表示の回帰試験を追加する。
+''')
+marker = "\n## 2026-09-26_ver71.1\n"
+text = replace_once(text, marker, entry + marker, label="changelog insertion")
+write(path, text)
+
+print("ver72.0 inferred-MS1 and axis-contract changes applied")
