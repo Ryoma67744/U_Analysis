@@ -1,0 +1,92 @@
+name: imzml-processed-sparse-prepare-temporary
+on:
+  push:
+    branches: [claude/imzml-processed-sparse-bootstrap-ver73-0]
+permissions:
+  contents: write
+concurrency:
+  group: imzml-processed-sparse-ver73-0
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: startsWith(github.event.head_commit.message, '[apply-imzml-processed-sparse]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: bundleを展開しmainから最終ブランチを作成
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ver73
+          cat .pr-bootstrap-ver73/bundle/part_* | base64 -d | xz -d | tar -xf - -C /tmp/ver73
+          python3 -m py_compile /tmp/ver73/apply_ver73.py /tmp/ver73/imzml_processed.py /tmp/ver73/test_imzml_processed_sparse.py
+          git checkout -B claude/imzml-processed-sparse-ver73-0 origin/main
+          mkdir -p .pr-bootstrap-ver73/files
+          cp /tmp/ver73/imzml_processed.py .pr-bootstrap-ver73/files/
+          cp /tmp/ver73/test_imzml_processed_sparse.py .pr-bootstrap-ver73/files/
+          python3 /tmp/ver73/apply_ver73.py
+          rm -rf .pr-bootstrap-ver73
+      - name: Python依存とpytestを導入
+        run: python3 -m pip install --disable-pip-version-check --quiet -r App/requirements.txt pytest
+      - name: 構文・テンプレート・差分検査
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import ast
+          import subprocess
+          from pathlib import Path
+          from jinja2 import Environment
+          names = subprocess.check_output(['git','diff','--name-only'], text=True).splitlines()
+          for name in names:
+              path = Path(name)
+              if name.endswith('.py'):
+                  ast.parse(path.read_text(encoding='utf-8'), filename=name)
+              elif name.endswith('.html'):
+                  Environment().parse(path.read_text(encoding='utf-8'))
+          print(f'validated changed files: {len(names)}')
+          PY
+          git diff --check
+      - name: processed-centroid変換と既存回帰テスト
+        env:
+          PYTHONPATH: App
+          FLASK_SECRET_KEY: test-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+          MASTER_PASSWORD: runtime-test-password
+          INITIAL_PASSWORD_B: runtime-share
+        run: |
+          python3 -m pytest -q \
+            App/tests/test_imzml_processed_sparse.py \
+            App/tests/test_imzml_ms_inference.py \
+            App/tests/test_imzml_io.py \
+            App/tests/test_imzml_autoimport_core.py \
+            App/tests/test_imzml_autoimport_validation.py \
+            App/tests/test_imzml_autoimport_pipeline.py \
+            App/tests/test_imzml_autoimport_real_io.py \
+            App/tests/test_imzml_spatial_layout.py \
+            App/tests/test_imzml_spatial_manifest.py \
+            App/tests/test_imzml_spatial_static_contract.py \
+            App/tests/test_section_metadata_workflow.py \
+            App/tests/test_section_execution_policy.py \
+            App/tests/test_section_analysis_contract.py \
+            App/tests/test_section_group_metadata.py \
+            App/tests/test_section_group_buttons.py \
+            App/tests/test_settings_runtime_callbacks.py \
+            App/tests/test_export_options.py \
+            App/tests/test_data_manager.py \
+            App/tests/test_scils_converter.py \
+            App/tests/test_data_export.py \
+            App/tests/test_export_column_selection.py \
+            App/tests/test_pptx_per_method_names.py \
+            App/tests/test_version_consistency.py
+      - name: 検証済み実装をPR用ブランチへ登録
+        run: |
+          set -euo pipefail
+          test "$(grep -oP 'APP_VERSION = "\K[^"]+' App/app/version.py)" = '73.0'
+          test ! -e .pr-bootstrap-ver73
+          git config user.name 'Ryoma67744'
+          git config user.email '76196606+Ryoma67744@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'processed-centroid imzMLを共通feature疎行列へ変換 [ver73.0]'
+          git push origin HEAD:refs/heads/claude/imzml-processed-sparse-ver73-0
