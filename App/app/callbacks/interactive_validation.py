@@ -46,6 +46,7 @@ _VALIDATED_INPUTS = [
     "reanalysis_tolerance_mz",
     "reann_tolerance",
     "mz_align_ppm",
+    "imzml_alignment_ppm",
     "calibration_search_window",
     "calibration_min_peaks",
     "int_cal_search_window",

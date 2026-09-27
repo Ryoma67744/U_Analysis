@@ -96,7 +96,7 @@
   <tbody>
     <tr><td>正式名称</td><td>Desorption Electrospray Ionization</td><td>Trapped Ion Mobility Spectrometry</td></tr>
     <tr><td>解析で読むファイル</td><td>所定の表形式の <code>.txt</code>。同じ形式の CSV / Excel は TXT に変換して使用</td><td><code>.parquet</code> / <code>.pq</code> を優先。Parquet がないフォルダは対応する CSV / TSV / TXT を使用</td></tr>
-    <tr><td>imzML の入口</td><td colspan="2"><code>.imzML</code> と <code>.ibd</code> は「imzML 入出力」で Parquet に変換し、TIMS 側の解析経路で使用。<code>.d</code> フォルダを直接解析する機能はありません</td></tr>
+    <tr><td>imzML の入口</td><td colspan="2"><code>.imzML</code> と <code>.ibd</code> はTIMSの通常解析画面で選択でき、全切片登録後にParquetへ自動変換します。手動変換も利用できます。<code>.d</code> フォルダを直接解析する機能はありません</td></tr>
     <tr><td>解析対象の選択</td><td>ファイルごとの切片／ROI</td><td>ファイルごとの切片／annotation（追加フォルダも可）</td></tr>
     <tr><td>主な解析手法</td><td>UMAP + クラスタリング</td><td>UMAP + DBSCAN + アノテーション</td></tr>
     <tr><td>解析時間目安</td><td>5〜30分（サンプル数次第）</td><td>10〜60分（イオン数次第）</td></tr>
@@ -229,8 +229,8 @@
 </p>
 
 <p>imzML は同じ名前の <code>sample.imzML</code> と <code>sample.ibd</code> を
-同じフォルダへ配置します。アップロード後に <a href="#imzml-io">imzML 登録</a>を行い、
-作成された Parquet の保存フォルダを解析設定で指定してください。
+同じフォルダへ配置します。TIMSの通常解析画面でimzMLを選択して全切片を登録するか、
+<a href="#imzml-io">手動変換</a>でParquetを作成してから解析入力として指定します。
 入力欄はアプリが動いているサーバーから見えるパスです。Docker を使用している場合は
 アプリ内のパスと SFTP 上のパスの対応を管理者に確認してください。</p>
 
@@ -267,6 +267,8 @@ RMS 正規化済みなら追加の総量正規化を OFF にします。未正�
 <p><strong>バッチ補正のON/OFFや解析シナリオの選択は不要です。</strong>補正前の結果を見る場合は、閲覧画面でPCAを選択します。補正後の結果が生物学的に妥当かはPCAと比較して判断してください。</p>
 <div class="help-alert tip"><div class="alert-title">再解析・段階実行</div>
 <ul><li>クラスタ抽出／除外後の再解析では、選択後の画素でPCAを再計算します。</li>
+<!-- ★ ver74.0: 全切片登録済みでも元RDSにない画素は再解析へ追加できない。 -->
+<li>再解析で選べる切片は、元のRDSに含まれる切片だけです。元解析で未選択だった切片の追加や、imzMLの切片結合・分割は新規解析から行ってください。全切片の登録情報は保持されます。</li>
 <li>①「reductionのみ」は下流のUMAP・クラスタ・マーカー計算が未完了です。④「保存条件で続きを実行」は保存済みreductionと元のUMAP・クラスタ条件を使用して完成させます。出力フォルダには <code>_continued</code> を付けます。</li>
 <li>②の診断後、③「推奨値を新しい解析へ反映」で入力欄を更新できます。推奨値を使用する場合は、新しい通常解析または①から実行してください。③で更新した画面値は④には適用されません。</li>
 <li>Harmony／RPCAが失敗しても、すでに保存されたPCAは利用できます。手法ごとの完了・未実行・失敗を確認してください。</li></ul></div>
@@ -704,7 +706,7 @@ H&amp;E に描く場合は画像と MSI の位置合わせが必要です。位�
   [4..N] &lt;m/z 列群&gt;  : 各 m/z の保存強度（数値, 入力により float32 / float64）。列数は入力による。
                         列名は「化合物名付き」(例: Glutathione_611.1439 | [M-H]-)
                         または m/z 数値文字列(例: 611.143900)。値=そのスポットでのその m/z の強度。
-  [N+1]  annotation  : スポットの注釈ラベル（文字列）。imzML登録直後は Unannotated。
+  [N+1]  annotation  : スポットの注釈ラベル（文字列）。ver74以降のimzML登録では登録した切片名。
   --- ここから下はアプリが追加する列（右端に付く）---
   [UMAPクラスタ列]    : ・複数の統合手法を出力した場合 → 手法ごとに1列。
                           列名 = 手法名（"RPCA" / "Harmony" / "PCA"）。値 = クラスタ番号(例 cluster3)。
@@ -1269,85 +1271,88 @@ ZIP名: metaboanalyst_&lt;強度種別&gt;_&lt;単位&gt;[_qea].zip
     <strong>以前に変換した parquet（200 行/row group）もそのまま読めます</strong>ので再変換は不要です</li>
 </ul>
 
-<h3 class="subsection-heading" id="imzml-io">🧬 imzML 登録・出力（ver69.0〜・初期対応）</h3>
-<p>解析設定の左サイドバー「🗂 プリセット・バックアップ」にある
-<strong>「🧬 imzML 入出力」</strong>を開きます。ファイルの絶対パスを入力する方式です。
-共通の m/z 軸を持つ単一 z 面のスペクトルを対象とします。</p>
+<!-- ★ ver74.0: 旧共通軸限定・Unannotatedの説明を現行の全切片登録契約へ統一。 -->
+<h3 class="subsection-heading" id="imzml-io">🧬 imzMLの全切片登録・Parquet変換・再出力</h3>
+<p>TIMSの通常解析画面でimzMLを選択すると、全切片の登録後にParquet変換から解析まで進みます。
+解析前に変換だけ行う場合は、サイドバーの<strong>「imzML 登録／Parquet変換／再出力」</strong>を開きます。
+共通m/z軸のMS1と、pixelごとにpeak数が異なるprocessed-centroidのMS1に対応します。</p>
 
 <table class="help-table">
-  <thead><tr><th>操作</th><th>入力</th><th>出力</th></tr></thead>
+  <thead><tr><th>操作</th><th>必要な入力</th><th>結果</th></tr></thead>
   <tbody>
-    <tr><td>imzML + ibd → Parquet 登録</td><td>同じフォルダの同名 <code>.imzML</code> と <code>.ibd</code></td>
-      <td><code>.parquet</code> と同名の <code>.imzml.json</code></td></tr>
-    <tr><td>登録済み Parquet → imzML + ibd ZIP</td><td>この機能で登録した <code>.parquet</code> と <code>.imzml.json</code></td>
-      <td><code>.imzML</code>、<code>.ibd</code>、出力条件をまとめた ZIP</td></tr>
+    <tr><td>通常解析でimzMLを選択</td><td>同じフォルダの同名imzMLとibd、全切片の登録情報、今回の解析選択</td>
+      <td>全pixelを保存したParquetを準備し、選択切片を解析</td></tr>
+    <tr><td>imzML → 標準TIMS Parquet</td><td>同名imzMLとibd、全切片の登録情報</td>
+      <td>標準Parquetと監査sidecar。解析は別途開始</td></tr>
+    <tr><td>標準Parquetを解析</td><td>全切片registryを埋め込んだParquet</td>
+      <td>Parquet単体から解析する切片を選択</td></tr>
+    <tr><td>Parquet → imzML ZIP</td><td>この機能で登録したParquetと対応するimzml.json</td>
+      <td>imzML、ibd、export_manifest.jsonを含むZIP</td></tr>
   </tbody>
 </table>
 
-<h4 id="imzml-import">登録する</h4>
+<h4 id="imzml-import">手動でParquetへ登録する</h4>
 <ol>
-  <li><code>sample.imzML</code> と <code>sample.ibd</code> をサーバーの同じフォルダに置きます。
-    入力するのは <code>.imzML</code> のパスです。</li>
-  <li>「操作」で <strong>「imzML + ibd → Parquet 登録」</strong>を選びます。</li>
-  <li>「入力 .imzML または登録済み .parquet」に元ファイルのパスを入力します。</li>
-  <li>「出力 .parquet または .zip」に、ファイル名まで含めた新しい <code>.parquet</code> のパスを入力します。
-    フォルダだけの指定や、既存の出力への上書きはできません。「出力画素 ID」は登録時には使用しません。</li>
-  <li>「実行」を1回押し、<strong>「完了」</strong>表示を待ちます。元の imzML / ibd は変更しません。</li>
-  <li>解析設定で <strong>TIMS</strong> を選び、作成した Parquet のあるフォルダを選び直します。
-    対象ファイル、切片／ROI、正規化設定を確認して解析します。登録だけでは解析は開始しません。</li>
+  <li>同じ名前の<code>sample.imzML</code>と<code>sample.ibd</code>をサーバーの同じフォルダに置きます。</li>
+  <li>操作を<strong>「imzML → 標準TIMS Parquet」</strong>にし、入力imzMLと出力Parquetの絶対パスを入力します。
+    既存出力を上書きせず、新しいファイル名を指定します。</li>
+  <li><strong>「座標切片を読み込む」→「全切片の配置・登録情報を編集」</strong>を開きます。
+    座標の自動候補を確認し、必要なら切片を結合します。</li>
+  <li>解析しない切片も含め、<strong>全切片の切片名・個体／独立試料ID・群</strong>を入力します。
+    個体の対応が分からない場合に同一個体と推定しないでください。</li>
+  <li>内容を確認して<strong>「全切片を確認済みにする」→「適用」</strong>を押します。
+    確認後に編集した場合は、変更後の内容を再び確認してください。</li>
+  <li>m/zアライメントを指定します。手動変換の既定は<strong>5 ppm</strong>、<strong>0は完全一致m/zのみの対応付け</strong>です。
+    空欄・負数・非有限値では実行できません。通常解析側の既定は0 ppmで、各画面で指定した値を記録します。</li>
+  <li><strong>「実行」</strong>を押し、完了を待ちます。登録だけでは解析は開始しません。</li>
+  <li>TIMSの解析入力に作成したParquetを選び、解析対象切片と正規化設定を確認して解析します。</li>
 </ol>
-<p>同時に作られる <code>sample.imzml.json</code> は、精密な m/z 軸・元画素との対応・元座標を保存する付属ファイルです。
-後から imzML 出力を行うため、Parquet と一緒に保管してください。登録時の領域ラベルは全画素
-<code>Unannotated</code> です。元の SCiLS の ROI・化合物名が自動登録される機能ではありません。</p>
+<p>Parquetには常に<strong>全切片・全pixel</strong>を保存します。今回の解析選択は保存範囲を削りません。
+<code>id, x, y, m/z列, annotation</code>の順で、m/z列名は小数6桁、強度はfloat32、annotationは登録切片名です。
+全切片registryもParquet内に保存されるため通常解析はParquet単体で可能です。
+imzML再出力と監査のため、同時に生成される<code>.imzml.json</code>等のsidecarも保管してください。</p>
+<p>processed-centroidでは全pixelのpeakからmaster featureを作り、各pixelに記録がないfeatureを0として保存します。
+この0はexportされたspectrumに対応peakがないことを表し、生体内での絶対的不在を意味しません。
+解析では選択切片を抽出し、その中の全0featureを除去してから正規化・PCA・UMAPへ進みます。</p>
+<p>Parquetを入力した後の表示名・群情報の編集は解析用の追加情報として保持し、固定annotationや元の登録情報を上書きしません。
+raw imzMLの登録内容を変更する場合は新しい登録revisionを作成します。切片選択だけの変更ではParquetを再変換しません。</p>
 
 <div class="help-alert warn">
-  <div class="alert-title">正規化は元の出力条件を確認してください</div>
-  登録処理では強度の追加正規化を行わず、float32 / float64 の元精度を保持します。
-  ただし、元強度が RMS 正規化済みかどうかは自動判定できません。
-  SCiLS の出力条件を確認して解析側の設定を選んでください。
-  <code>.imzML</code> という拡張子だけでは、未正規化の強度か正規化済みかは分かりません。
+  <div class="alert-title">正規化と保存精度</div>
+  変換時に追加の正規化は行いません。標準Parquetの強度はfloat32へ変換されるため、元のfloat64と完全に同じ精度とは限りません。
+  元強度がRMS等で正規化済みかどうかは形式から判断できません。SCiLSの出力条件を確認して解析側の設定を選びます。
 </div>
 
-<h4 id="imzml-export">imzML＋ibd を出力する</h4>
+<h4 id="imzml-export">imzML＋ibdを再出力する</h4>
 <ol>
-  <li>「操作」で <strong>「登録済み Parquet → imzML + ibd ZIP」</strong>を選びます。</li>
-  <li>入力に登録済み <code>.parquet</code>、出力に新しい <code>.zip</code> の絶対パスを指定します。</li>
-  <li><strong>全画素なら「出力画素 ID」を空欄</strong>にします。一部だけ出す場合は、入力 Parquet の
-    <code>id</code> 列を確認し、対象 ID をカンマ区切りで入力します（例：<code>12,13,27,28</code>）。</li>
-  <li>「実行」を押して完了を待ち、指定した保存先の ZIP を SFTP 等で取得します。
-    現在、この画面にはブラウザのダウンロードボタンはありません。</li>
-  <li>ZIP 内の <code>.imzML</code> と <code>.ibd</code> を同じフォルダに展開し、対応ソフトで開きます。</li>
+  <li>操作を<strong>「Parquet → imzML ZIP」</strong>にし、登録Parquetと新しい出力ZIPの絶対パスを指定します。</li>
+  <li>全pixelなら「出力画素ID」は空欄にします。一部を出す場合はParquetの<code>id</code>をカンマ区切りで入力します。</li>
+  <li>実行後、完了したZIPを保存先から取得します。この画面にブラウザのダウンロードボタンはありません。</li>
+  <li>ZIPのimzMLとibdを同じフォルダに展開します。出力の来歴・変換条件は<code>export_manifest.json</code>で確認します。</li>
 </ol>
-<p><strong>2×2 の ROI でも、画素 ID が 1,2,3,4 になるとは限りません。</strong>
-登録時の ID は座標の y、x 順に付与されるため、元 imzML のスペクトル番号とも異なる場合があります。
-現在の ROI・クラスタ選択や表示の回転・反転は、この出力欄へ自動で反映されません。
-対象 ID を確認できない場合、表示だけを頼りに ID を推定しないでください。</p>
-<p>出力値は Parquet に保存した強度、座標は登録時に保持した元座標です。
-RDS の解析後の値や ROI の平均値は出力しません。出力範囲は ZIP 内の
-<code>export_manifest.json</code> に記録されます。旧来の CSV 変換で作成した Parquet は、
-imzML 用の付属ファイルがないため、この出力機能の対象外です。</p>
+<p>出力強度はParquetに保存された値、座標は登録時の元座標です。RDSの解析値やROI平均値ではありません。
+processed-centroid入力の再出力は共通master軸と未記録featureの0を含む表現になり、元の可変長peak listと完全同一ではありません。
+ROI・クラスタ選択、表示の回転・反転は出力画素ID欄へ自動反映されません。
+2×2のROIでもIDが1,2,3,4とは限らないため、実際のid列を確認してください。</p>
 
-<h4>現在の対応範囲と処理中の注意</h4>
+<h4>対応範囲と処理中の注意</h4>
 <ul>
-  <li>全画素で m/z 軸が一致するデータを扱います。個別軸、複数 z 面、重複座標、非有限値、負の強度は停止します。</li>
-  <li>m/z を小数6桁の列名、または小数5桁の解析用名にした際に重複するデータは登録できません。
-    任意の丸め・補間でまとめて取り込む機能はありません。</li>
-  <li>処理中に「実行」を再度押すと進捗表示と停止ボタンが無効になる既知の問題があります。
-    再クリックせず完了を待ち、必要な場合だけ「停止」を使用してください。</li>
-  <li>他の大容量解析と同時に実行しないでください。中断・再起動時の復旧には未対応の部分があります。
-    「完了」が表示されない出力は、完成済みと扱わないでください。</li>
-  <li>現在の初期対応では、極性・画素サイズなどの測定情報をすべて保持することはできません。
-    対象の SCiLS での往復検証と大容量データの性能確認は未実施です。</li>
-  <li>既存の「データ出力」の形式選択、ROI／クラスタとの自動連携、GPT API には未接続です。</li>
+  <li>MS/MS、複数z面、ion mobilityを自動集約しません。重複座標・非有限値・負の強度は拒否します。</li>
+  <li>m/zを小数6桁の一意な列名へ表現できない入力は停止します。ppmによるpeak統合は指定した変換条件として記録します。</li>
+  <li>全切片の登録が未完了なら、スペクトル変換前に停止します。</li>
+  <li>二重起動時は実行中の監視を維持します。必要な場合は「停止」を使い、完了が確認できない出力は使用しないでください。</li>
+  <li>既存CSV変換のParquetなど、imzML登録sidecarがない入力はこの再出力の対象外です。</li>
+  <li>極性・画素サイズなどの測定属性すべての保持や、外部ソフトとの完全な往復互換を保証するものではありません。</li>
 </ul>
 
 <table class="help-table">
-  <thead><tr><th>表示されるエラーの例</th><th>確認する内容</th></tr></thead>
+  <thead><tr><th>表示内容</th><th>確認する内容</th></tr></thead>
   <tbody>
-    <tr><td><code>Exactly one matching .ibd file is required</code></td><td>同名の ibd が同じフォルダに1つあるか確認します。</td></tr>
-    <tr><td><code>Sample already exists</code></td><td>別の出力ファイル名を指定します。</td></tr>
-    <tr><td><code>individual m/z axis is unsupported</code> / <code>collide</code></td><td>現在の登録対象外の m/z 軸です。元データを保存し、対応形式を確認します。</td></tr>
-    <tr><td><code>An imzML import manifest is required</code></td><td>この機能で登録した Parquet と、同名の imzml.json が揃っているか確認します。</td></tr>
+    <tr><td>必須情報・登録確認の不足</td><td>解析対象外を含め全切片を入力し、内容を確認して適用します。</td></tr>
+    <tr><td>編集中に背景の切片情報が変更</td><td>編集中の内容を控えて画面を開き直し、最新状態で設定します。</td></tr>
+    <tr><td>ibd不足・複数候補</td><td>同名のibdが同じフォルダに1つあるか確認します。</td></tr>
+    <tr><td>出力先が既存</td><td>新しいファイル名を指定します。</td></tr>
+    <tr><td>registry・登録hashの不一致</td><td>Parquetとsidecarの組を確認します。検証を回避せず、元の登録出力へ戻します。</td></tr>
   </tbody>
 </table>
 

@@ -18,6 +18,18 @@ from dash import no_update
 from app.services import analysis_finalizer, job_registry, job_watcher
 
 
+@pytest.fixture(autouse=True)
+def isolated_job_admission(tmp_path, monkeypatch):
+    # ★ ver74.0: 小さな試験用子プロセスの受付をホストの空き10GB条件に依存させない。
+    # メモリ不足gate自体は専用試験で確認し、ここは台帳/排他/終了監視を検証する。
+    from types import SimpleNamespace
+    import psutil
+    from app.services import process_control
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: SimpleNamespace(available=32 * 1024**3))
+    monkeypatch.setattr(psutil, "disk_usage", lambda path: SimpleNamespace(free=64 * 1024**3))
+    monkeypatch.setattr(process_control, "admission_path", lambda: tmp_path / "heavy_job.json")
+
+
 # ---------------------------------------------------------------------------
 # ジョブ台帳
 # ---------------------------------------------------------------------------
@@ -737,6 +749,14 @@ class TestStopCallbackGuard:
         killed = []
         monkeypatch.setattr(ac, "_stop_by_pid",
                             lambda pid, od: killed.append((pid, od)) or True)
+        # ★ ver74.0: ver70以降は開始時刻付き台帳からterminate_treeへ進む。
+        # 旧入口だけmockすると試験自身のPIDを実際に停止してしまう。
+        from app.services import process_control
+        # 本fixtureは認可判定の試験。PID可視性/再利用はprocess_control側で別途検証。
+        monkeypatch.setattr(process_control, "matching_process", lambda *args: True)
+        monkeypatch.setattr(job_registry, "is_pid_alive", lambda pid: True)
+        monkeypatch.setattr(process_control, "terminate_tree",
+                            lambda pid, **kw: killed.append((pid, str(out))) or True)
         monkeypatch.setitem(ac._process_state, "process", None)
         return ac, {"full_output_dir": str(out)}, killed
 

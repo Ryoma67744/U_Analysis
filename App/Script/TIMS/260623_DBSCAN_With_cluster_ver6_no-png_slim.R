@@ -233,6 +233,9 @@ local({
 # ★ ver67.0: 元の表示名と独立した選択・由来・再開条件。
 SECTION_MANIFEST_PATH <- ""
 ANALYSIS_SIGNATURE <- ""
+# ★ ver74.0: 数値条件とmetadata履歴を分け、同じreductionだけ再利用する。
+REDUCTION_SIGNATURE <- ""
+METADATA_SIGNATURE <- ""
 # ★ ver67.0: 入力はアプリで注入する。テンプレートに個人環境のパスを保存しない。
 # 解析したいCSVファイルのパス (複数可)
 INPUT_PATHS <- c(
@@ -972,14 +975,17 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
       compound  <- sub("_[0-9]+\\.?[0-9]*$", "", head_tok)                         # 化合物名のみ（末尾 _m/z を除去）
       # 化合物名を持たない列（peak-list に一致しなかった素の数値名）は m/z 表示に揃える。
       has_comp  <- is.na(suppressWarnings(as.numeric(raw_names)))
-      disp      <- ifelse(has_comp, head_tok, sprintf("m/z %.5f", mz_num))
+      # ★ ver74.0: 既存の化合物付きIDは保持し、素のm/z列だけ6桁へ揃える。
+      # ifelseのno側で全m/zを検証すると、異なる化合物IDの同一質量まで誤って拒否する。
+      disp <- head_tok
+      if (any(!has_comp)) disp[!has_comp] <- ua_tims_feature_ids(mz_num[!has_comp])
       metabolite_names <- make.unique(disp)
       feature_annotations <- .parse_feature_annotations(raw_names, metabolite_names, mz_num, compound)
       cat(sprintf("  [Info] Using compound_m/z feature names; metadata preserved (%d features)\n",
                   length(metabolite_names)))
     } else {
-      # Build metabolite names to MATCH CSV pipeline naming exactly: "m/z %.5f"
-      metabolite_names <- make.unique(sprintf("m/z %.5f", mz_num))
+      # Build metabolite names to MATCH CSV pipeline naming exactly: "m/z %.6f"
+      metabolite_names <- ua_tims_feature_ids(mz_num)
       if (is_annotated) {
         cat("  [Info] USE_EMBEDDED_COMPOUND_NAMES=FALSE -> feature names are m/z\n")
       }
@@ -1107,7 +1113,7 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
   d <- if (grepl(",", hdr[1], fixed = TRUE)) "," else "	"
   tokens3 <- strsplit(hdr[3], d, fixed = TRUE)[[1]]
   mz_vals <- suppressWarnings(as.numeric(tokens3[4:(length(tokens3) - 2)]))
-  metabolite_names <- make.unique(sprintf("m/z %.5f", mz_vals))
+  metabolite_names <- ua_tims_feature_ids(mz_vals)
   dt <- data.table::fread(file_path, skip = 4, header = FALSE, sep = d, colClasses = "numeric", fill = TRUE, showProgress = FALSE)
   raw_spot <- dt[[1]]; if (anyNA(raw_spot)) raw_spot[is.na(raw_spot)] <- seq_len(sum(is.na(raw_spot)))
   base_prefix <- gsub("[^A-Za-z0-9_-]", "_", sample_prefix %||% "Sample")
@@ -1178,7 +1184,8 @@ read_desi_data <- function(file_path, sample_prefix = NULL) {
   emb <- if (exists("USE_EMBEDDED_COMPOUND_NAMES")) {
     as.character(isTRUE(USE_EMBEDDED_COMPOUND_NAMES))
   } else "NA"
-  paste(af, emb, sep = "::")
+  # ★ ver74.0: 旧5桁IDの読込cacheを6桁ID解析へ再利用しない。
+  paste("tims_mz6_v1", af, emb, sep = "::")
 }
 
 read_desi_data_cached <- function(file_path, sample_prefix = NULL, cache_dir = RDS_CACHE_DIR, enable_cache = RDS_CACHE_ENABLE, force_rebuild = RDS_CACHE_FORCE_REBUILD) {
@@ -1235,32 +1242,31 @@ calibrate_feature_names <- function(seu_list) {
   has_per_sample <- length(CALIBRATION_BY_SAMPLE) > 0
 
   for (i in seq_along(seu_list)) {
-    sname <- seu_list[[i]]$sample[1]
-
-    # サンプル固有 or グローバルフォールバック
-    # 表示名の同名対策では既存の試料別キャリブレーション条件を変更しない。
-    if (has_per_sample && !sname %in% names(CALIBRATION_BY_SAMPLE) &&
-        nzchar(ua_value(seu_list[[i]]@misc$input_basename)))
-      sname <- ua_value(seu_list[[i]]@misc$input_basename)
-    if (has_per_sample && !is.null(sname) && sname %in% names(CALIBRATION_BY_SAMPLE)) {
-      coefs <- CALIBRATION_BY_SAMPLE[[sname]]
-      cat(sprintf("  [Calibration] Sample '%s': per-sample coefficients\n", sname))
+    sname <- as.character(seu_list[[i]]$sample[1])
+    # ★ ver74.0: KEEP/EXCLの接尾辞で元サンプルの校正係数を見失わない。
+    source_key <- ua_calibration_source_key(seu_list[[i]]@meta.data,
+      CALIBRATION_BY_SAMPLE, c(seu_list[[i]]@meta.data$source_file_id,
+        ua_value(seu_list[[i]]@misc$input_basename), sname))
+    if (nzchar(source_key)) {
+      coefs <- CALIBRATION_BY_SAMPLE[[source_key]]
+      seu_list[[i]]$calibration_source_key <- source_key
+      cat(sprintf("  [Calibration] Sample '%s': source key '%s'\n", sname, source_key))
     } else {
       coefs <- CALIBRATION_COEFFICIENTS
-      if (has_per_sample) {
-        cat(sprintf("  [Calibration] Sample '%s': global fallback\n", sname))
-      }
+      if (has_per_sample) cat(sprintf("  [Calibration] Sample '%s': global fallback\n", sname))
     }
+    seu_list[[i]]@misc$calibration <- list(source_key = source_key,
+      coefficients = as.numeric(coefs), input_sample = sname)
 
     old_names <- rownames(seu_list[[i]])
     old_mz <- .feature_mz(old_names)
     new_mz <- calibrate_mz(old_mz, coefs, TRUE)
-    new_names <- sprintf("m/z %.5f", new_mz)
-    if (any(duplicated(new_names))) {
-      seu_list[[i]] <- merge_duplicate_features(seu_list[[i]], new_names)
-    } else {
-      seu_list[[i]] <- rename_seurat_features(seu_list[[i]], new_names)
-    }
+    # ★ ver74.0: 校正後の表示丸めだけで別featureを合算しない。
+    new_names <- ua_tims_feature_ids(new_mz)
+    seu_list[[i]] <- rename_seurat_features(seu_list[[i]], new_names)
+    seu_list[[i]]@misc$calibration$feature_map <- data.frame(
+      input_feature = old_names, input_mz = old_mz,
+      output_feature = new_names, output_mz = new_mz, stringsAsFactors = FALSE)
   }
   n_feat <- length(rownames(seu_list[[1]]))
   cat(sprintf("  [Calibration] Done (%d features)\n", n_feat))
@@ -1288,10 +1294,13 @@ align_mz_features <- function(seu_list, ppm_tol) {
     groups[[length(groups) + 1]] <- list(
       members = all_mz[within],
       rep_mz = representative,
-      rep_name = sprintf("m/z %.5f", representative)
+      rep_name = ua_tims_feature_ids(representative)
     )
   }
 
+  # ★ ver74.0: ppmで別groupの代表質量が表示丸めだけで合流するのを拒否する。
+  group_names <- vapply(groups, function(g) g$rep_name, character(1))
+  if (anyDuplicated(group_names)) stop("別alignment groupの代表m/zが6桁で衝突します")
   for (i in seq_along(seu_list)) {
     old_names <- rownames(seu_list[[i]])
     old_mz <- .feature_mz(old_names)
@@ -1311,6 +1320,11 @@ align_mz_features <- function(seu_list, ppm_tol) {
     }
   }
 
+  for (i in seq_along(seu_list)) {
+    seu_list[[i]]@misc$mz_alignment <- list(ppm = ppm_tol,
+      groups = lapply(groups, function(g) list(members = g$members,
+        representative_mz = g$rep_mz, output_feature = g$rep_name)))
+  }
   n_groups <- length(groups)
   n_multi <- sum(sapply(groups, function(g) length(g$members) > 1))
   cat(sprintf("  [m/z Align] %d unique m/z -> %d groups (%d merged, ppm=%g)\n",
@@ -2565,10 +2579,11 @@ if (RESUME_FROM_RDS && file.exists(rds_step1_in)) {
   tryCatch({
     seu_list <- load_rds_compact(rds_step1_in)
     if (length(seu_list) > 0 && ua_checkpoint_matches(seu_list, ANALYSIS_SIGNATURE)) {
+      seu_list <- ua_refresh_checkpoint_metadata(seu_list, SECTION_MANIFEST, ANALYSIS_SIGNATURE)
       step1_done <- TRUE
       # 読み込み成功したら今回のフォルダにもコピーして保存
       if (normalizePath(rds_step1_in) != normalizePath(rds_step1_out, mustWork=FALSE)) {
-        file.copy(rds_step1_in, rds_step1_out, overwrite=TRUE)
+        save_rds_compact(seu_list, rds_step1_out)
       }
     }
   }, error = function(e) {
@@ -2595,6 +2610,7 @@ if (!step1_done && !.stage_downstream) {
     }
     seu <- CreateSeuratObject(counts=dat$count_matrix, project="DESI", assay="Spatial")
     seu@misc$input_basename <- tools::file_path_sans_ext(basename(fp))
+    seu@misc$feature_id_policy <- "tims_mz6_v1"
     seu$sample <- sn; seu$x_coord <- dat$coordinates$x; seu$y_coord <- dat$coordinates$y; seu$spot_index <- dat$coordinates$spot_index
     # ★ ver71.0: 座標componentは特徴量ではなく画素metadataとしてSeuratへ渡す。
     if ("ua_coordinate_component" %in% colnames(dat$coordinates))
@@ -2611,7 +2627,7 @@ seu$condition <- seu$slice_id
       if (!"spot_index" %in% names(.side) || anyDuplicated(.side$spot_index)) stop("再解析の画素対応表が不正です")
       .idx <- match(as.character(seu$spot_index), .side$spot_index)
       if (anyNA(.idx)) stop("再解析の元画素IDに対応しない画素があります")
-      for (.key in intersect(c("ua_coordinate_component", "source_file_id", "source_pixel_id", "section_id", "section_display_name", "subject_id", "group", "integration_unit_id"), names(.side)))
+      for (.key in intersect(c("ua_coordinate_component", "source_file_id", "source_pixel_id", "section_id", "section_display_name", "subject_id", "group", "integration_unit_id", "calibration_source_key"), names(.side)))
         seu@meta.data[[.key]] <- .side[[.key]][.idx]
     }
     seu <- ua_apply_sections(seu, fp, SECTION_MANIFEST,
@@ -2623,6 +2639,10 @@ seu$condition <- seu$slice_id
   }
 
   if (!length(seu_list)) stop("解析対象の画素がありません。切片/ROI選択を確認してください。")
+
+  # ★ ver74.0: 全切片保持Parquetから今回の切片を抽出した後に、全0 featureを除外する。
+  # 未選択切片だけに存在するfeatureを正規化・PCAへ持ち込まない。
+  seu_list <- lapply(seu_list, ua_drop_all_zero_features)
 
   # ---- feature_annotations を出力に保存（要件: |以降のメタ情報を保持し将来参照可能に）----
   if (length(fa_all) > 0) {
@@ -2743,6 +2763,7 @@ if (RESUME_FROM_RDS) {
     if (!file.exists(.path)) next
     .saved <- tryCatch(load_rds_compact(.path), error = function(e) NULL)
     if (!is.null(.saved) && ua_checkpoint_matches(.saved, ANALYSIS_SIGNATURE)) {
+      .saved <- ua_refresh_checkpoint_metadata(.saved, SECTION_MANIFEST, ANALYSIS_SIGNATURE)
       seu_pca <- if (inherits(.saved, "Seurat")) .saved else .saved$obj
       if (!is.null(seu_pca)) break
     }
@@ -2750,15 +2771,16 @@ if (RESUME_FROM_RDS) {
   if (file.exists(rds_step2_in)) {
     .saved <- tryCatch(load_rds_compact(rds_step2_in), error = function(e) NULL)
     if (!is.null(.saved) && ua_checkpoint_matches(.saved, ANALYSIS_SIGNATURE)) {
+      .saved <- ua_refresh_checkpoint_metadata(.saved, SECTION_MANIFEST, ANALYSIS_SIGNATURE)
       .old_obj <- if (inherits(.saved, "Seurat")) .saved else .saved$obj
       .old_red <- if (inherits(.saved, "Seurat")) "harmony" else .saved$reduction
       if (!is.null(.old_obj)) {
         if (identical(.old_red, "harmony") && "harmony" %in% names(.old_obj@reductions)) {
           seu_harmony <- .old_obj
           # ★ ver67.0: 別出力先への段階再開でも保存済みHarmonyを引き継ぐ。
-          if (ua_path(rds_step2_in) != ua_path(rds_step2_out) &&
-              !file.copy(rds_step2_in, rds_step2_out, overwrite = TRUE))
-            stop("Harmonyの保存済み結果を出力先へコピーできません")
+          if (ua_path(rds_step2_in) != ua_path(rds_step2_out) ||
+              isTRUE(.old_obj@misc$metadata_changed_on_resume))
+            save_rds_compact(list(obj = .old_obj, reduction = "harmony"), rds_step2_out, keep_counts = FALSE)
           step2_done <- TRUE
         }
         if (is.null(seu_pca) && "pca" %in% names(.old_obj@reductions)) {
@@ -2851,7 +2873,8 @@ ua_record_method(od, "pca", "complete", stage = "reduction", rds_path = rds_pca_
     save_rds_compact(list(obj = obj, reduction = method), path, keep_counts = method == "pca")
     # 新しいクラスタに過去のDEG/UMAPキャッシュを適用しない。
     .old_resume <- RESUME_FROM_RDS
-    if (force_recluster) RESUME_FROM_RDS <<- FALSE
+    # ★ ver74.0: metadataのみ変えた再開でも旧DEG/集計cacheを流用しない。
+    if (force_recluster || isTRUE(obj@misc$metadata_changed_on_resume)) RESUME_FROM_RDS <<- FALSE
     .started <- TRUE
     completed <- tryCatch(run_downstream_analysis(obj, prefix, od, ann_db,
       generate_mz_only = method != "rpca"), finally = { RESUME_FROM_RDS <<- .old_resume })
@@ -2918,12 +2941,13 @@ if (RESUME_FROM_RDS && file.exists(rds_step3_in)) {
   tryCatch({
     res_obj <- load_rds_compact(rds_step3_in)
     if (!ua_checkpoint_matches(res_obj, ANALYSIS_SIGNATURE)) stop("RPCAの保存条件が一致しません")
+    res_obj <- ua_refresh_checkpoint_metadata(res_obj, SECTION_MANIFEST, ANALYSIS_SIGNATURE)
     seu_rpca <- res_obj$obj
     step3_done <- !is.null(seu_rpca)
     # コピー保存
-    if (normalizePath(rds_step3_in) != normalizePath(rds_step3_out, mustWork=FALSE)) {
-      if (!file.copy(rds_step3_in, rds_step3_out, overwrite=TRUE))
-        stop("RPCAの保存済み結果を出力先へコピーできません")
+    if (normalizePath(rds_step3_in) != normalizePath(rds_step3_out, mustWork=FALSE) ||
+        isTRUE(seu_rpca@misc$metadata_changed_on_resume)) {
+      save_rds_compact(res_obj, rds_step3_out, keep_counts = FALSE)
     }
   }, error = function(e) {
     message("!! Resume failed (Step3 broken?): ", e$message)

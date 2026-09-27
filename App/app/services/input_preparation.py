@@ -19,13 +19,13 @@ from filelock import FileLock, Timeout
 
 DESCRIPTOR_KEYS = (
     "input_format", "source_ibd", "runtime_path", "conversion_manifest_path",
-    "conversion_key", "source_fingerprint", "conversion_spec", "validation",
-    "normalization", "conversion_receipt_path", "spectral_preflight",
+    "conversion_key", "spectral_key", "source_fingerprint", "conversion_spec", "validation",
+    "normalization", "conversion_receipt_path", "spectral_preflight", "source_peak_count", "registration_history", "source_selected_section_ids",
 )
 RECEIPT = "conversion_complete.json"
 CACHE_MARKER = ".ua_imzml_assets"
 # ★ ver71.0: component列と座標layoutを含まないver70 cacheを新規解析で再利用しない。
-CONTRACT_VERSION = "imzml-ms1-spatial-processed-v5"
+CONTRACT_VERSION = "tims-standard-all-sections-v6"
 
 
 class InputPreparationError(ValueError):
@@ -192,9 +192,8 @@ def _versions():
     return versions
 
 
-
-def conversion_spec(processed_alignment_ppm=0.0):
-    """Return all settings and code hashes that can change converted bytes."""
+def conversion_spec(*, processed_alignment_ppm=0.0, registration_hash=""):
+    # 保存バイトへ影響するコード・登録情報と依存版を含める。解析切片選択は含めない。
     try:
         processed_alignment_ppm = float(processed_alignment_ppm)
     except (TypeError, ValueError) as exc:
@@ -203,22 +202,22 @@ def conversion_spec(processed_alignment_ppm=0.0):
         raise InputPreparationError("m/zアライメント(ppm)は0以上の有限値で指定してください。")
     here = Path(__file__).parent
     return {
-        "contract": CONTRACT_VERSION,
-        "schema": 3,
-        "dependencies": _versions(),
+        "contract": CONTRACT_VERSION, "schema": 4, "dependencies": _versions(),
         "converter_sha256": sha256_file(here / "imzml_io.py"),
         "processed_converter_sha256": sha256_file(here / "imzml_processed.py"),
         "validator_sha256": sha256_file(here / "imzml_validation.py"),
         "spatial_layout_sha256": sha256_file(here / "imzml_spatial_layout.py"),
+        "registration_sha256": sha256_file(here / "imzml_registration.py"),
+        "parquet_contract_sha256": sha256_file(here / "tims_parquet_contract.py"),
         "processed_alignment_ppm": processed_alignment_ppm,
-        "zero_semantics": "not_recorded_in_exported_centroid_spectrum",
+        "registration_hash": str(registration_hash or ""),
+        "intensity_dtype": "float32",
+        "mz_name_decimals": 6,
+        "all_sections_preserved": True,
         "block_size": 128,
         "memory_budget_mb": int(os.environ.get("IMZML_BLOCK_MB", "64")),
-        "processed_max_features": int(
-            os.environ.get("IMZML_PROCESSED_MAX_FEATURES", "100000")
-        ),
+        "processed_max_features": int(os.environ.get("IMZML_PROCESSED_MAX_FEATURES", "100000")),
     }
-
 
 
 def _key(source, spec):
@@ -245,7 +244,8 @@ def validate_asset(entry, *, cancel=None):
     receipt_path = root / RECEIPT
     try:
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        if receipt.get("schema") != 1 or receipt.get("state") != "complete" or receipt["conversion_key"] != entry["conversion_key"]:
+        if receipt.get("schema") not in {1, 2} or receipt.get("state") != "complete" \
+                or receipt["conversion_key"] != entry["conversion_key"]:
             raise InputPreparationError("変換完了記録または revision が一致しません。")
         expected = entry["validation"]
         if receipt["validation"] != expected or receipt["file_id"] != entry["file_id"]:
@@ -266,8 +266,22 @@ def validate_asset(entry, *, cancel=None):
 
 def _entry_from_receipt(entry, root, receipt):
     out = deepcopy(entry)
+    if out.pop("registration_revision_requested", False):
+        from app.services.section_metadata import effective_registered_sections
+        from app.services.section_completeness import normalized_registered_sections
+        out.setdefault("registration_history", []).append({
+            "conversion_key": entry.get("conversion_key"),
+            "registered_sections": deepcopy(entry.get("registration_parent_sections") or entry.get("registered_sections"))})
+        rows = effective_registered_sections(entry)
+        for row in rows:
+            row.pop("annotation_label", None)
+        out["registered_sections"] = normalized_registered_sections(rows)
+        out.pop("metadata_overlay", None)
+        out.pop("registration_parent_sections", None)
     out.update({key: deepcopy(receipt[key]) for key in
                 ("source_fingerprint", "conversion_spec", "conversion_key", "validation")})
+    if receipt.get("spectral_key"):
+        out["spectral_key"] = str(receipt["spectral_key"])
     out.update(input_format="imzml", source_ibd=receipt["source_fingerprint"]["ibd"]["path"],
                runtime_path=str(root / receipt["parquet_name"]),
                conversion_manifest_path=str(root / receipt["manifest_name"]),
@@ -275,11 +289,42 @@ def _entry_from_receipt(entry, root, receipt):
     return out
 
 
+def _spectral_spec(spec: dict) -> dict:
+    """切片名・個体・群を除いた、数値行列だけを決める変換仕様。"""
+    value = deepcopy(spec)
+    value["registration_hash"] = ""
+    return value
+
+
+def _find_spectral_asset(parent: Path, spectral_key: str, source: dict, entry: dict, *, cancel=None):
+    """同じraw/feature条件から完成済みの標準Parquetを1件返す。"""
+    for receipt_path in sorted(parent.glob(f"*/{RECEIPT}"), key=lambda path: path.stat().st_mtime_ns,
+                               reverse=True):
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            if receipt.get("state") != "complete" or receipt.get("spectral_key") != spectral_key:
+                continue
+            candidate = _entry_from_receipt(entry, receipt_path.parent, receipt)
+            candidate_source = receipt.get("source_fingerprint") or {}
+            if not _same_content(source, candidate_source):
+                continue
+            validate_asset(candidate, cancel=cancel)
+            return candidate, receipt
+        except PreparationCancelled:
+            raise
+        except (OSError, KeyError, TypeError, json.JSONDecodeError, InputPreparationError):
+            continue
+    return None, None
+
+
 def prepare_imzml(entry, *, cache_root=None, project_id="", pinned=False,
                   progress=None, cancel=None, converter=None, validator=None, spec=None,
                   alignment_ppm=0.0):
     """原本は読み取り専用。公開済み revision を上書きせず、未完了品は使わない。"""
     entry = deepcopy(entry)
+    # ★ ver74.0: 明示編集は旧revisionの復元ではなく新revision。旧assetは変更しない。
+    if entry.get("registration_revision_requested"):
+        pinned = False
     check_cancel(cancel)
     if pinned and entry.get("conversion_key"):
         try:
@@ -295,15 +340,20 @@ def prepare_imzml(entry, *, cache_root=None, project_id="", pinned=False,
     if progress:
         progress({"stage": "hash", "sample": Path(entry["path"]).name})
     xml, ibd = pair_paths(entry["path"])
+    from app.services.imzml_registration import build_registration_spec
+    registration = build_registration_spec(entry)
     source = {"xml": fingerprint(xml, cancel), "ibd": fingerprint(ibd, cancel)}
-    if spec is None:
-        current_spec = deepcopy(conversion_spec())
-        current_spec["processed_alignment_ppm"] = float(alignment_ppm)
-    else:
-        current_spec = deepcopy(spec)
+    current_spec = deepcopy(spec if spec is not None else conversion_spec(
+        processed_alignment_ppm=alignment_ppm,
+        registration_hash=registration["registration_hash"],
+    ))
     expected_ppm = float(current_spec.get("processed_alignment_ppm", alignment_ppm))
-    if float(alignment_ppm) != expected_ppm:
+    if expected_ppm != float(alignment_ppm):
         raise InputPreparationError("変換仕様とm/zアライメント(ppm)が一致しません。")
+    if current_spec.get("registration_hash") != registration["registration_hash"]:
+        raise InputPreparationError("変換仕様と全切片登録情報が一致しません。")
+    spectral_spec = _spectral_spec(current_spec)
+    spectral_key = _key(source, spectral_spec)
     if pinned and entry.get("conversion_key"):
         if not _same_content(source, entry["source_fingerprint"]) or current_spec != entry["conversion_spec"]:
             raise InputPreparationError("旧解析の変換資産を復元できません。原本内容または変換仕様が保存時と異なります。")
@@ -384,6 +434,8 @@ def prepare_imzml(entry, *, cache_root=None, project_id="", pinned=False,
                 if progress:
                     progress({"stage": "convert", "sample": xml.name, "done": done, "total": total})
             converter_kwargs = {
+                "registration": registration,
+                "alignment_ppm": expected_ppm,
                 "block_size": current_spec["block_size"],
                 "memory_budget_mb": current_spec["memory_budget_mb"],
                 "progress": on_pixels,
@@ -395,15 +447,34 @@ def prepare_imzml(entry, *, cache_root=None, project_id="", pinned=False,
                     parameter.kind == inspect.Parameter.VAR_KEYWORD
                     for parameter in parameters.values()
                 )
-                if "alignment_ppm" in parameters or accepts_kwargs:
-                    converter_kwargs["alignment_ppm"] = expected_ppm
+                converter_kwargs = {
+                    key: value for key, value in converter_kwargs.items()
+                    if accepts_kwargs or key in parameters
+                }
             except (TypeError, ValueError):
                 pass
-            result = converter(xml, output, **converter_kwargs)
+            reusable_entry, reusable_receipt = _find_spectral_asset(
+                parent, spectral_key, source, entry, cancel=cancel
+            )
+            if reusable_entry is not None:
+                if progress:
+                    progress({"stage": "register", "sample": xml.name, "reused_spectral_core": True})
+                from app.services.imzml_registration import rewrite_registered_parquet
+                result = rewrite_registered_parquet(
+                    reusable_entry["runtime_path"],
+                    reusable_entry["conversion_manifest_path"],
+                    registration, output, progress=on_pixels, cancel=cancel,
+                )
+                result["derived_from_conversion_key"] = reusable_receipt.get("conversion_key")
+            else:
+                result = converter(xml, output, **converter_kwargs)
             check_cancel(cancel)
             if progress:
                 progress({"stage": "validate", "sample": xml.name})
-            validation_summary = validator(output, cancel=cancel)
+            # checked_importは全量検証済みsummaryを返す。登録情報だけの書替えと代替converterはここで1回検証する。
+            validation_summary = result.get("validation_summary") if isinstance(result, dict) else None
+            if validation_summary is None:
+                validation_summary = validator(output, cancel=cancel)
             layout_hash = (entry.get("spatial_layout") or {}).get("coordinate_hash")
             if layout_hash and validation_summary.get("coordinate_hash") != layout_hash:
                 raise InputPreparationError("選択時と変換時でimzML座標が変わったため解析を開始しません。")
@@ -416,10 +487,13 @@ def prepare_imzml(entry, *, cache_root=None, project_id="", pinned=False,
                 raise InputPreparationError("変換中に原本が変更されたため完成品を公開しません。")
             if expected is not None and validation != expected:
                 raise InputPreparationError("同じ revision の出力 hash を再現できません。過去の入力は置き換えません。")
-            receipt = {"state": "complete", "schema": 1, "file_id": fid,
+            receipt = {"state": "complete", "schema": 2, "file_id": fid,
                        "conversion_key": key, "conversion_spec": current_spec,
+                       "spectral_key": spectral_key, "spectral_spec": spectral_spec,
                        "source_fingerprint": source, "validation": validation,
                        "parquet_name": output.name, "manifest_name": manifest_path.name,
+                       "derived_from_conversion_key": (result.get("derived_from_conversion_key")
+                                                       if isinstance(result, dict) else None),
                        "created_at": time.time(), "restored": expected is not None}
             write_json(stage / RECEIPT, receipt)
             check_cancel(cancel)
@@ -432,6 +506,113 @@ def prepare_imzml(entry, *, cache_root=None, project_id="", pinned=False,
         lock.release()
 
 
+
+
+def _catalog_from_paths_for_backend(paths):
+    """UIを経由しないAPI/CLIでも、実ファイルから全切片registryを復元する。"""
+    from app.services.data_manager import read_parquet_annotations, read_parquet_section_registry
+    result = []
+    for raw in paths or []:
+        path = str(Path(raw).expanduser().resolve())
+        suffix = Path(path).suffix.lower()
+        if suffix == ".imzml":
+            from app.services.imzml_spatial_layout import (
+                inspect_imzml_spatial_layout, default_spatial_sections,
+            )
+            from app.services.section_metadata import stable_file_id
+            layout = inspect_imzml_spatial_layout(path)
+            file_id = stable_file_id(path)
+            sections = default_spatial_sections(file_id, layout)
+            result.append({
+                "path": path, "file_id": file_id, "available_rois": [],
+                "roi_role": "spatial", "spatial_layout": layout,
+                "spatial_sections": sections, "registered_sections": sections,
+            })
+            continue
+        registry = read_parquet_section_registry(path) if suffix in {".parquet", ".pq"} else []
+        if registry:
+            result.append({
+                "path": path, "available_rois": [
+                    str(row.get("section_display_name") or "").strip()
+                    for row in registry
+                ],
+                "roi_role": "section", "section_registry": registry,
+                "registered_sections": registry,
+            })
+        else:
+            rois = read_parquet_annotations(path) if suffix in {".parquet", ".pq"} else []
+            result.append({"path": path, "available_rois": rois})
+    return result
+
+
+def _hydrate_parquet_registries(manifest):
+    """Parquet footerを切片registryの正本として採用し、改変・欠落を拒否する。
+
+    直接Parquet入力だけでなく、raw imzMLを指す固定revisionの``runtime_path``も
+    検査する。これにより、再解析manifestだけを書き換えて未選択切片の必須情報を
+    回避することはできない。
+    """
+    from app.services.data_manager import read_parquet_section_registry
+    from app.services.section_completeness import normalized_registered_sections
+
+    result = deepcopy(manifest or {})
+    files = []
+    for raw in result.get("files", []):
+        entry = deepcopy(raw)
+        source_path = Path(entry.get("path") or "").expanduser()
+        runtime_path = Path(entry.get("runtime_path") or "").expanduser()
+        registry_path = None
+        if source_path.suffix.lower() in {".parquet", ".pq"} and source_path.is_file():
+            registry_path = source_path
+        elif runtime_path.suffix.lower() in {".parquet", ".pq"} and runtime_path.is_file():
+            registry_path = runtime_path
+
+        if registry_path is not None:
+            registry = read_parquet_section_registry(str(registry_path))
+            if registry:
+                supplied = (entry.get("registration_parent_sections")
+                            if entry.get("registration_revision_requested") else None)
+                supplied = supplied or entry.get("registered_sections") or entry.get("spatial_sections") or []
+                if supplied and normalized_registered_sections(supplied) != normalized_registered_sections(registry):
+                    raise InputPreparationError(
+                        f"{registry_path.name}: 解析条件の全切片情報がParquet内registryと一致しません。"
+                    )
+                from app.services.section_metadata import restore_registered_selection
+                if source_path.suffix.lower() in {".parquet", ".pq"}:
+                    entry["roi_role"] = "section"
+                else:
+                    entry["roi_role"] = "spatial"
+                # ★ ver74.0: 登録は不変、選択/overlayは別に復元。geometry新revisionは旧assetを照合するだけ。
+                if not entry.get("registration_parent_sections"):
+                    entry = restore_registered_selection(entry, registry)
+        files.append(entry)
+    result["files"] = files
+    return result
+
+def preflight_registered_inputs(params):
+    """★ ver74.0: 直接ParquetもR設定生成前に同じfooter/選択検証を通す。"""
+    manifest = params.get("section_manifest")
+    paths = params.get("original_input_paths") or params.get("input_paths") or []
+    if not manifest:
+        from app.services.data_manager import read_parquet_section_registry
+        registry_found = False
+        for value in paths:
+            path = Path(value)
+            if path.suffix.lower() in {".parquet", ".pq"} and path.is_file():
+                registry_found = bool(read_parquet_section_registry(str(path))) or registry_found
+        if not registry_found:
+            return params
+        from app.services.section_metadata import build_section_manifest
+        manifest = build_section_manifest(_catalog_from_paths_for_backend(paths))
+    from app.services.section_metadata import validate_section_manifest
+    manifest = _hydrate_parquet_registries(manifest)
+    errors = validate_section_manifest(manifest)
+    if errors:
+        raise InputPreparationError(" / ".join(errors))
+    params["section_manifest"] = manifest
+    return params
+
+
 def prepare_inputs(params, *, cache_root=None, project_id="", progress=None, cancel=None, **kwargs):
     """すべての選択入力が完成してから、新しい manifest / runtime paths を返す。"""
     params = deepcopy(params)
@@ -439,8 +620,8 @@ def prepare_inputs(params, *, cache_root=None, project_id="", progress=None, can
     manifest = params.get("section_manifest")
     if not manifest:
         paths = params.get("original_input_paths") or params.get("input_paths") or []
-        manifest = build_section_manifest([{"path": p, "available_rois": []} for p in paths])
-    manifest = deepcopy(manifest)
+        manifest = build_section_manifest(_catalog_from_paths_for_backend(paths))
+    manifest = _hydrate_parquet_registries(manifest)
     errors = validate_section_manifest(manifest)
     if errors:
         raise InputPreparationError(" / ".join(errors))
@@ -459,28 +640,22 @@ def prepare_inputs(params, *, cache_root=None, project_id="", progress=None, can
             try:
                 alignment_ppm = float(params.get("mz_align_ppm") or 0.0)
             except (TypeError, ValueError) as exc:
-                raise InputPreparationError(
-                    "m/zアライメント(ppm)は数値で指定してください。"
-                ) from exc
+                raise InputPreparationError("m/zアライメント(ppm)は数値で指定してください。") from exc
             if not math.isfinite(alignment_ppm) or alignment_ppm < 0:
-                raise InputPreparationError(
-                    "m/zアライメント(ppm)は0以上の有限値で指定してください。"
-                )
-            options = dict(kwargs)
-            options.setdefault("alignment_ppm", alignment_ppm)
-            if "spec" not in options:
-                current_spec = deepcopy(conversion_spec())
-                current_spec["processed_alignment_ppm"] = alignment_ppm
-                options["spec"] = current_spec
+                raise InputPreparationError("m/zアライメント(ppm)は0以上の有限値で指定してください。")
             prepared[entry["file_id"]] = prepare_imzml(
-                entry, cache_root=cache_root, project_id=project_id,
-                pinned=pinned, progress=notify, cancel=cancel, **options
+                entry, cache_root=cache_root, project_id=project_id, pinned=pinned,
+                progress=notify, cancel=cancel, alignment_ppm=alignment_ppm, **kwargs
             )
         else:
             if not Path(entry["path"]).is_file():
                 raise InputPreparationError(f"入力が見つかりません: {entry['path']}")
             prepared[entry["file_id"]] = {**entry, "runtime_path": entry["path"]}
     manifest["files"] = [prepared.get(e["file_id"], e) for e in manifest["files"]]
+    manifest = _hydrate_parquet_registries(manifest)
+    post_errors = validate_section_manifest(manifest)
+    if post_errors:
+        raise InputPreparationError(" / ".join(post_errors))
     params["section_manifest"] = manifest
     paths = runtime_paths(manifest)
     params["input_paths"] = paths

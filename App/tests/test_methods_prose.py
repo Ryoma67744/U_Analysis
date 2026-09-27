@@ -176,7 +176,12 @@ def test_onthefly_section_absent_when_not_run():
 
 def test_onthefly_section_present_when_run():
     c = json.loads(json.dumps(FULL))
-    c["interactive"]["onthefly_de"] = {"mode": "local", "target_clusters": ["3"]}
+    # ★ ver74.0: 実行時固定値を持つ成功receiptだけが解析の実施証拠となる。
+    c["rds_path"] = "/out/Harmony.rds"
+    c["interactive"]["onthefly_de_receipt::/out/Harmony.rds"] = {
+        "rds_path": "/out/Harmony.rds",
+        "status": "complete", "mode": "local", "target_clusters": ["3"],
+        "fixed_params": dict(c["onthefly_de_fixed_params"])}
     assert "選択領域の差次発現解析" in _headings(c, "ja")
     assert "wilcox" in _flat(c, "ja")
 
@@ -188,9 +193,10 @@ def test_roi_section_absent_without_export():
 
 def test_roi_section_reports_intensity_representation():
     c = json.loads(json.dumps(FULL))
-    c["interactive"]["hne_export_options"] = {"intensity_repr": "linear",
-                                              "unit": "compound",
-                                              "include_qea": True}
+    # ★ ver74.0: 値の変更は実行証拠ではないため、保存済み表の完了receiptを使う。
+    c["interactive"]["hne_export_receipts"] = {c["integration_method"]: {
+        "status": "complete", "intensity_repr": "linear", "unit": "compound",
+        "qea_files": ["Harmony/exploratory_QEA_cluster_all_raw.csv"]}}
     ja = _flat(c, "ja")
     assert "対数変換を戻した線形強度" in ja
     assert "MetaboAnalyst" in ja

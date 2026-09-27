@@ -9,7 +9,7 @@ from app.utils.file_locks import atomic_write_json
 
 AUTO_POLICY = "section_auto_v1"
 _INHERITED = (
-    "data_folder", "original_data_folder", "input_paths", "original_input_paths", "sample_names",
+    "template_path", "data_folder", "original_data_folder", "input_paths", "original_input_paths", "sample_names",
     "filter_mode", "target_clusters", "cluster_source", "rds_path", "source_rds_fingerprint",
     "section_manifest", "execution_policy", "input_normalized", "norm_mode", "mz_align_ppm",
     "annotation_enable", "db_annotation_enabled", "use_embedded_annotation", "annotation_path",
@@ -40,26 +40,9 @@ def apply_group_rows(manifest, rows):
     """実行直前の表を採用し、Store更新の遅れで名称・群を失わない。"""
     if manifest is None or rows is None:
         return manifest
-    result = deepcopy(manifest)
-    lookup = {str(r.get("section_id")): r for r in rows if r.get("section_id")}
-    for file_entry in result.get("files", []):
-        targets = list(file_entry.get("sections", []))
-        targets.extend(file_entry.get("spatial_sections", []))
-        seen = set()
-        for section in targets:
-            sid = str(section.get("section_id") or "")
-            if not sid or id(section) in seen:
-                continue
-            seen.add(id(section))
-            row = lookup.get(sid)
-            if row is None:
-                continue
-            for key in ("section_display_name", "subject_id", "group"):
-                if key in row:
-                    section[key] = str(row.get(key) or "").strip()
-            if "section_settings" in result:
-                result["section_settings"][sid] = deepcopy(section)
-    return result
+    from app.services.section_metadata import apply_metadata_updates
+    # ★ ver74.0: 実行直前の表も同じoverlay更新規則を使い固定registryを壊さない。
+    return apply_metadata_updates(manifest, rows, confirmed=False, registration_revision=True)
 
 
 def method_outcome(output_dir):
@@ -109,32 +92,81 @@ def method_outcome(output_dir):
 
 def _numeric_manifest(manifest):
     return [{"file_id": f.get("file_id"), "path": f.get("path"),
-             "selection_mode": f.get("selection_mode"), "rois": sorted(f.get("rois") or []),
+             "selection_mode": f.get("selection_mode"), "rois": [] if f.get("registered_sections") else sorted(f.get("rois") or []),
              "roi_role": f.get("roi_role"),
              "coordinate_hash": (f.get("spatial_layout") or {}).get("coordinate_hash"),
              # 同じ原本パスでも変換revisionまたは座標切片構成が異なれば別の数値入力。
-             "conversion_key": f.get("conversion_key"),
+             "conversion_key": f.get("spectral_key") or f.get("conversion_key"),
              "sections": [{
                  "section_id": s.get("section_id"),
-                 "roi": s.get("roi"),
+                 "roi": None if f.get("registered_sections") else s.get("roi"),
                  "integration_unit_id": s.get("integration_unit_id"),
                  "component_ids": sorted(s.get("component_ids") or []),
              } for s in f.get("sections", [])]} for f in (manifest or {}).get("files", [])]
 
 
-def analysis_signature(params):
-    """群名・個体名だけの変更では数値チェックポイントを無効にしない。"""
+def reduction_signature(params):
+    """★ ver74.0: reductionの数値条件だけを署名しmetadata revisionと分離する。"""
     keys = ("input_normalized", "norm_mode", "mz_align_ppm", "calibration_enable",
             "calibration_coefficients", "calibration_by_sample", "umap_n_neighbors", "umap_min_dist",
             "umap_metric", "umap_dims_n", "umap_seed", "cluster_dims_n", "cluster_k_param",
             "cluster_metric", "cluster_algorithm", "cluster_resolution", "cluster_resolution_single",
             "cluster_resolution_harmony", "cluster_resolution_rpca", "p_thresh", "logfc_thresh",
-            "execution_policy", "filter_mode", "target_clusters", "cluster_source", "source_rds_fingerprint")
+            "execution_policy", "filter_mode", "target_clusters", "cluster_source", "source_rds_fingerprint",
+            "batch_var", "batch_correction_enable", "annotation_role", "allow_condition_correction",
+            "v13_batch_var", "v13_batch_correction_enable", "v13_annotation_role", "v13_allow_condition_correction",
+            "annotation_filter", "roi_filter", "use_roi_as_sample")
     payload = {k: params.get(k) for k in keys}
     payload["selection"] = _numeric_manifest(params.get("section_manifest"))
-    payload["input_fingerprints"] = params.get("input_fingerprints") or []
+    # ★ ver74.0: 群を補正変数とする旧手動設定ではmetadataも数値条件。AUTO_POLICYだけと混同しない。
+    if any(params.get(key) in {"group", "subject_id", "section_display_name"}
+           for key in ("batch_var", "v13_batch_var", "annotation_role", "v13_annotation_role")):
+        payload["correction_metadata"] = [{key: row.get(key) for key in
+            ("section_id", "section_display_name", "subject_id", "group")}
+            for file_entry in (params.get("section_manifest") or {}).get("files", [])
+            for row in file_entry.get("sections", [])]
+    entries = {str(Path(f.get("path", "")).resolve()): f
+               for f in (params.get("section_manifest") or {}).get("files", [])}
+    numeric_inputs = []
+    for item in params.get("input_fingerprints") or []:
+        entry = entries.get(str(Path(item.get("path", "")).resolve()), {})
+        if entry.get("spectral_key") and entry.get("source_fingerprint"):
+            numeric_inputs.append({"file_id": entry.get("file_id"), "spectral_key": entry["spectral_key"],
+                "xml_sha256": entry["source_fingerprint"]["xml"]["sha256"],
+                "ibd_sha256": entry["source_fingerprint"]["ibd"]["sha256"]})
+        else:
+            numeric_inputs.append(item)
+    payload["input_fingerprints"] = numeric_inputs
+    # コード変更を数値cacheへ混入させない。metadataのみのPython修正は含めない。
+    scripts = Path(__file__).resolve().parents[2] / "Script"
+    paths = [scripts / "helpers" / "analysis_contract.R", scripts / "helpers" / "feature_naming_policy.R"]
+    if params.get("template_path"):
+        paths.append(Path(params["template_path"]))
+    payload["numerical_code"] = {str(path.name): hashlib.sha256(path.read_bytes()).hexdigest()
+                                 for path in paths if path.is_file()}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False,
                                     separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def metadata_signature(params):
+    """群別統計・表示の無効化key。原登録/overlay/実行時有効値を全て記録する。"""
+    payload = {"manifest": params.get("section_manifest"),
+               "annotation_enable": params.get("annotation_enable"),
+               "annotation_path": params.get("annotation_path"),
+               "p_thresh": params.get("p_thresh"), "logfc_thresh": params.get("logfc_thresh")}
+    payload["annotation_settings"] = {key: params.get(key) for key in
+        ("annotation_csv_path", "reanalysis_annotation_path", "ion_mode", "tolerance_mz",
+         "adduct_patterns", "use_embedded_annotation", "db_annotation_enabled")}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False,
+        separators=(",", ":")).encode()).hexdigest()
+
+
+def analysis_signature(params):
+    """完全来歴key。数値reduction再利用判定にはreduction_signatureを用いる。"""
+    payload = {"reduction": reduction_signature(params), "metadata": metadata_signature(params),
+               "input_fingerprints": params.get("input_fingerprints") or []}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False,
+        separators=(",", ":")).encode()).hexdigest()
 
 
 def _fingerprint(path):
@@ -145,7 +177,7 @@ def _fingerprint(path):
     return {"path": str(p), "size": st.st_size, "mtime_ns": st.st_mtime_ns}
 
 
-def prepare_execution_params(params, output_dir):
+def prepare_execution_params(params, output_dir, *, preflight=False):
     """注入する条件を確定し、R起動前に保存する（paramsを更新）。"""
     # ★ ver67.0: 続き実行で現在画面の条件を混ぜず、元実行の条件を引き継ぐ。
     source = params.get("resume_reanalysis_dir") if params.get("resume_reanalysis") else None
@@ -201,7 +233,7 @@ def prepare_execution_params(params, output_dir):
                 raise ValueError(f"保存後に入力が変更されています: {Path(item['path']).name}。新規解析を実行してください。")
         if fingerprints:
             params["input_fingerprints"] = deepcopy(fingerprints)
-        if saved.get("analysis_signature"):
+        if saved.get("analysis_signature") and not saved.get("reduction_signature"):
             params["analysis_signature"] = saved["analysis_signature"]
     if params.get("execution_policy") == AUTO_POLICY:
         params.update(batch_var="integration_unit_id", batch_correction_enable=True, annotation_role="section_id",
@@ -216,6 +248,10 @@ def prepare_execution_params(params, output_dir):
                     or params.get("annotation_path") or "")
         if not database or not Path(database).is_file():
             raise ValueError("分子情報の追加がONですが、照合するDBファイルが見つかりません。")
+    if preflight:
+        # ★ ver74.0: 保存runの復元後にも検証し、直接Parquet再開の入口漏れを防ぐ。
+        from app.services.input_preparation import preflight_registered_inputs
+        preflight_registered_inputs(params)
     manifest = params.get("section_manifest")
     if manifest is not None:
         from app.services.section_metadata import validate_section_manifest
@@ -249,6 +285,8 @@ def prepare_execution_params(params, output_dir):
             params.pop("source_rds_fingerprint", None)
     # ★ ver67.0: 通常実行で辞書が再利用されても古い署名を持ち越さない。
     # 保存条件を引き継いだ再開では、その実行の署名を維持する。
-    if not source or not params.get("analysis_signature"):
+    params["reduction_signature"] = reduction_signature(params)
+    params["metadata_signature"] = metadata_signature(params)
+    if not source or not params.get("analysis_signature") or saved.get("reduction_signature"):
         params["analysis_signature"] = analysis_signature(params)
     return params

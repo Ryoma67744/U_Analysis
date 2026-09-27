@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -106,8 +107,19 @@ def save_hne_image(rds_path, sample, data_uri):
         return None
     try:
         d.mkdir(parents=True, exist_ok=True)
-        fname = f"{_safe(sample)}.png"
-        (d / fname).write_bytes(base64.b64decode(str(data_uri).split(",", 1)[1]))
+        blob = base64.b64decode(str(data_uri).split(",", 1)[1], validate=True)
+        # ★ ver74.0: 安全名だけでは「Slice 1」と「Slice_1」が衝突し別個体を上書きする。
+        # 元IDと画像内容のhashで版を分ける。旧JSONのfilenameと旧画像はそのまま読める。
+        digest = hashlib.sha256(str(sample).encode("utf-8") + b"\0" + blob).hexdigest()
+        fname = f"{_safe(sample)[:64]}--{digest}.png"
+        fd, tmp_path = tempfile.mkstemp(dir=str(d), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(blob)
+            os.replace(tmp_path, str(d / fname))
+        except Exception:
+            Path(tmp_path).unlink(missing_ok=True)
+            raise
         return fname
     except Exception as e:  # noqa: BLE001
         logger.warning("H&E 画像の保存に失敗: %s", e)
@@ -194,6 +206,48 @@ def metaboanalyst_csv_path(rds_path, filename):
     if not rds_path or not filename:
         return None
     return Path(rds_path).parent / "metaboanalyst_exports" / filename
+
+
+def record_hne_export_receipt(rds_path, saved_path, methods, intensity_repr, unit) -> bool:
+    """保存済みZIPの実在する表だけを手法別の完了記録へ反映する。"""
+    import re
+    import zipfile
+    from app.utils.label_persistence import get_interactive_settings_path
+
+    path = get_interactive_settings_path(rds_path)
+    if not path or not saved_path:
+        return False
+    try:
+        archive = Path(saved_path)
+        payload = archive.read_bytes()
+        with zipfile.ZipFile(archive) as bundle:
+            names = set(bundle.namelist())
+        matrix = "intensity_matrix_compound.csv" if unit == "compound" else "intensity_matrix_mz.csv"
+        completed = {}
+        for method in methods:
+            folder = re.sub(r'[\\/:*?"<>|]+', "_", str(method)) or "method"
+            if f"{folder}/{matrix}" not in names:
+                continue
+            # ★ ver74.0: QEA設定ONでも生成が失敗/全クラス除外される場合がある。
+            # 設定ではなく保存済みZIP中の実際のQEA入力CSVの存在を証拠にする。
+            qea_files = sorted(name for name in names
+                               if name.startswith(f"{folder}/exploratory_QEA_") and name.endswith(".csv"))
+            completed[str(method)] = {
+                "status": "complete", "saved_at": datetime.now().isoformat(),
+                "archive": str(archive), "archive_sha256": hashlib.sha256(payload).hexdigest(),
+                "intensity_repr": intensity_repr, "unit": unit, "qea_files": qea_files,
+            }
+        if not completed:
+            return False
+        with get_or_create_lock(path):
+            settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            receipts = settings.setdefault("hne_export_receipts", {})
+            receipts.update(completed)
+            _atomic_write_json(path, settings)
+        return True
+    except Exception as e:
+        logger.warning("H&E 出力完了receiptの保存に失敗: %s", e)
+        return False
 
 
 def _export_cache_key_path(rds_path, filename):

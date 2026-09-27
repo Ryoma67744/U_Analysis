@@ -5,10 +5,14 @@
 # =============================================================================
 
 from __future__ import annotations
+import math
 
 __all__ = ["check_range", "validate_param", "PARAM_BOUNDS",
            "BOUNDS_INTENTIONALLY_ABSENT", "param_default", "coerce_number",
-           "coerce_count"]
+           "coerce_count", "REQUIRED_NUMERIC_INPUTS"]
+
+# ★ ver74.0: 変換条件の空欄を既定と取り違えない。表示専用の任意範囲とは区別する。
+REQUIRED_NUMERIC_INPUTS = frozenset({"imzml_alignment_ppm"})
 
 # param_id -> (lo, hi, default, label)。lo/hi が None は無制限。
 PARAM_BOUNDS = {
@@ -69,6 +73,9 @@ PARAM_BOUNDS = {
     # --- m/z アライメント。★ 0 = 無効（analysis_runner:541 が falsy で注入を飛ばし、
     #     R 側も `if (MZ_ALIGN_PPM > 0 …)`、methods_text も 0 のとき別の文を出す）---
     "mz_align_ppm": (0, 500, 0, "m/z アライメント (ppm)"),
+    # ★ ver74.0: 手動変換の既定5 ppmを維持し、backendと同じ有限・非負を検証。
+    # 通常解析UIの上限500を根拠なく変換APIへ追加しない。空欄は実行せず入力を求める。
+    "imzml_alignment_ppm": (0, None, 5.0, "変換時m/zアライメント (ppm)"),
     # --- キャリブレーション。設定タブと対話タブは同じ次数クランプを通るので
     #     境界も揃える（従来は対話側だけ上限が無かった）---
     "calibration_search_window": (0.01, 2.0, 0.5, "検索ウィンドウ (Da)"),
@@ -119,6 +126,9 @@ def check_range(value, lo=None, hi=None, *, allow_blank=True, name="値"):
         v = float(value)
     except (TypeError, ValueError):
         return (False, f"{name}は数値で入力してください")
+    # ★ ver74.0: NaNは大小比較をすべて通過するため、範囲検査の前に拒否する。
+    if not math.isfinite(v):
+        return (False, f"{name}は有限の数値で入力してください")
     if lo is not None and v < lo:
         return (False, f"{name}は {_fmt(lo)} 以上にしてください")
     if hi is not None and v > hi:
@@ -190,4 +200,4 @@ def validate_param(param_id, value):
     if not spec:
         return (True, "")
     lo, hi, _default, label = spec
-    return check_range(value, lo, hi, allow_blank=True, name=label)
+    return check_range(value, lo, hi, allow_blank=param_id not in REQUIRED_NUMERIC_INPUTS, name=label)

@@ -12,17 +12,29 @@ from app.services import analysis_pipeline as ap, input_preparation as ip
 from app.services import execution_policy as ep, process_control as pc
 from app.services.section_metadata import build_section_manifest
 from app.config import TIMS_V8_TEMPLATE_PATH
-from .test_imzml_autoimport_core import source,fake_convert,fake_validate,SPEC
+from .test_imzml_autoimport_core import (
+    source, fake_convert, fake_validate, BASE_SPEC, entry,
+)
 
 
 @pytest.fixture
 def setup(tmp_path,monkeypatch):
+    # ★ ver74.0: 制御専用の非Parquet stand-inなのでreader境界も明示代替する。
+    # strict footer/実変換はtest_registration_lifecycle_v74がmockなしで担当。
+    monkeypatch.setattr("app.services.data_manager.read_parquet_section_registry", lambda _: [])
     p=source(tmp_path/'raw');root=tmp_path/'result';root.mkdir()
     import app.config as config
     monkeypatch.setattr(config,'IMZML_CACHE_DIR',tmp_path/'cache')
-    monkeypatch.setattr(ip,'conversion_spec',lambda:SPEC.copy())
+    monkeypatch.setattr(
+        ip, 'conversion_spec',
+        lambda **kwargs: {
+            **deepcopy(BASE_SPEC),
+            'processed_alignment_ppm': float(kwargs.get('processed_alignment_ppm', 0.0)),
+            'registration_hash': str(kwargs.get('registration_hash', '')),
+        },
+    )
     params={'data_folder':str(p.parent),'input_paths':[str(p)],'template_path':str(TIMS_V8_TEMPLATE_PATH),
-        'execution_policy':ep.AUTO_POLICY,'section_manifest':build_section_manifest([{'path':str(p),'available_rois':[]}]),
+        'execution_policy':ep.AUTO_POLICY,'section_manifest':{'schema_version': 3, 'files': [entry(p)]},
         'annotation_enable':False,'input_normalized':True,'norm_mode':'log1p','sample_names':['sample']}
     return p,root,params
 
@@ -55,7 +67,7 @@ def test_full_control_flow_prepares_before_r_and_persists(setup):
 
 def test_any_input_failure_prevents_r(setup):
     p,root,params=setup;bad=source(p.parent,'bad');bad.with_suffix('.ibd').unlink()
-    params['section_manifest']=build_section_manifest([{'path':str(x),'available_rois':[]} for x in (p,bad)])
+    params['section_manifest']={'schema_version': 3, 'files': [entry(p), entry(bad)]}
     def unexpected(*a):pytest.fail('R must not start')
     assert ap.run_pipeline(payload(root,params),converter=fake_convert,validator=fake_validate,runner=unexpected)==2
     assert ap.pipeline_state(root)['stage']=='error'

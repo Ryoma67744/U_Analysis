@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 from typing import Optional
+from pathlib import Path
 
 from app.services import caveats
 from app.utils.integration_methods import method_display_name
@@ -868,12 +869,14 @@ def _sec_cluster(c, lang):
 
     # クラスタ名を変更している場合は、図中のラベルと番号の対応を明示する
     inter = c.get("interactive") or {}
-    name_maps = {k: v for k, v in inter.items()
-                 if k == "cluster_name_map" or k.startswith("cluster_name_map::")}
-    merged = {}
-    for v in name_maps.values():
-        if isinstance(v, dict):
-            merged.update(v)
+    # ★ ver74.0: 同じcluster番号でも手法間で意味は異なる。全手法のupdateで
+    # 後勝ちにすると別手法の名称をMethodsへ混入するため、viewerと同じキーを使う。
+    from app.utils.label_persistence import cluster_name_map_key
+    key = cluster_name_map_key(c.get("integration_method"))
+    merged = inter.get(key)
+    if merged is None:
+        merged = inter.get("cluster_name_map")
+    merged = merged if isinstance(merged, dict) else {}
     if merged:
         pairs = "、".join(f"cluster{k}={v}" for k, v in merged.items()) if ja \
             else ", ".join(f"cluster{k} = {v}" for k, v in merged.items())
@@ -980,11 +983,18 @@ def _sec_de(c, lang):
 
 def _sec_onthefly(c, lang):
     """投げ縄選択に対する DE。実行していなければ段落ごと出さない。"""
-    de = (c.get("interactive") or {}).get("onthefly_de")
-    if not de:
+    # ★ ver74.0: 設定変更だけで保存されるonthefly_deを実行済みとは扱わない。
+    rds_path = c.get("rds_path")
+    if not rds_path:
+        return None
+    rds_identity = str(Path(rds_path).resolve())
+    de = (c.get("interactive") or {}).get(f"onthefly_de_receipt::{rds_identity}")
+    if not isinstance(de, dict) or de.get("status") != "complete":
+        return None
+    if de.get("rds_path") != rds_identity:
         return None
     ja = lang == "ja"
-    fixed = c.get("onthefly_de_fixed_params") or {}
+    fixed = de.get("fixed_params") or {}
     test = fixed.get("test", "wilcox")
     padj = fixed.get("p_adjust_method", "BH")
     min_pct = fixed.get("min_pct")
@@ -1029,8 +1039,11 @@ _INTENSITY_REPR_TEXT = {
 
 def _sec_roi(c, lang):
     """ROI 別集計と MetaboAnalyst 出力。出力していなければ段落を出さない。"""
-    opt = (c.get("interactive") or {}).get("hne_export_options")
-    if not opt:
+    # ★ ver74.0: 設定変更は処理の実施証拠ではない。保存成功したZIPの手法別
+    # receiptだけを採用し、現在の設定や別手法の出力から過去の処理を推測しない。
+    receipts = (c.get("interactive") or {}).get("hne_export_receipts") or {}
+    opt = receipts.get(str(c.get("integration_method") or ""))
+    if not isinstance(opt, dict) or opt.get("status") != "complete":
         return None
     ja = lang == "ja"
     repr_key = str(opt.get("intensity_repr") or "")
@@ -1039,23 +1052,22 @@ def _sec_roi(c, lang):
     unit_txt = ("化合物単位" if unit == "compound" else "m/z 単位") if ja else \
                ("per compound" if unit == "compound" else "per m/z")
     paras = [_para(
-        ("H&E 染色像を MSI 座標へ重ね合わせて関心領域を定義し、領域×クラスタごとに"
+        ("保存された関心領域を用いて、領域×クラスタごとに"
          f"平均強度を算出した。書き出した強度は{repr_txt}であり、{unit_txt}で集計した。")
         if ja else
-        ("Regions of interest were defined by overlaying the H&E image onto the MSI "
-         "coordinates, and mean intensities were computed for each region-by-cluster "
+        ("Using the saved regions of interest, mean intensities were computed for each region-by-cluster "
          f"combination. The exported intensities were {repr_txt}, aggregated {unit_txt}.")
     )]
-    if opt.get("include_qea"):
+    if opt.get("qea_files"):
         paras.append(_para(
-            ("得られた濃度表は MetaboAnalyst の enrichment 解析 (QEA) に投入した。"
+            ("MetaboAnalyst の quantitative enrichment analysis (QEA) 用入力表を作成した。"
              "各行は切片×領域×クラスタの擬似バルクであり、生物学的反復ではないため"
-             "結果は探索的である。")
+             "この表を用いた解析は探索的な位置付けとなる。")
             if ja else
-            ("The resulting concentration tables were submitted to MetaboAnalyst for "
-             "quantitative enrichment analysis (QEA). Each row is a pseudo-bulk of one "
+            ("Input concentration tables were prepared for quantitative enrichment analysis "
+             "(QEA) in MetaboAnalyst. Each row is a pseudo-bulk of one "
              "slice-by-region-by-cluster combination rather than a biological replicate, "
-             "so these results are exploratory.")
+             "so analyses using these tables are exploratory.")
         ))
     return {"heading": _h("roi", lang), "paragraphs": paras}
 

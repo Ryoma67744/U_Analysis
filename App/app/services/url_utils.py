@@ -30,3 +30,23 @@ def external_base_url(fallback_port: int) -> str:
     except Exception:
         ip = "127.0.0.1"
     return f"http://{ip}:{fallback_port}"
+
+
+def is_same_request_host_url(value: str | None) -> bool:
+    """リクエストのHostと同じURLか（共有タブの文脈選択用）。
+
+    ★ ver74.0: 公開リンクの生成設定SHARE_BASE_URLを認可対象hostへ流用しない。
+    Refererは偽装可能なので、この判定だけでアクセスを許可してはならず、
+    呼出し元で共有token/権限/結果scopeを別途検証する。
+    X-Forwarded-Hostもここでは採用せず、Caddyが保持する実Hostへ照合する。
+    """
+    if not has_request_context() or not isinstance(value, str):
+        return False
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(value)
+        return (parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+                and parsed.username is None and parsed.password is None
+                and parsed.netloc.casefold() == request.host.casefold())
+    except ValueError:
+        return False

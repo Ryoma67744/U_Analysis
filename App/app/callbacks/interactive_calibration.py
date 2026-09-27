@@ -1030,7 +1030,8 @@ def auto_detect_int_cal_peaks(n, table_data, search_window, cache_dir,
         best_idx = max(known, key=lambda i: avg_spectrum[feature_names[i]])
         obs = float(mz_array[best_idx])
         ppm = (obs - ref_f) / ref_f * 1e6
-        row["obs_mz"] = round(obs, 5)
+        # ★ ver74.0: この値は保存後の回帰入力でもあるため、表示用5桁丸めで精度を失わせない。
+        row["obs_mz"] = obs
         row["ppm_drift"] = f"{ppm:+.1f}"
         matched_count += 1
         updated_data.append(row)

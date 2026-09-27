@@ -249,6 +249,54 @@ pick_measurement_assay <- function(obj, assay_arg = NULL) {
   if (identical(.RDS_IO_FALLBACK_COMPRESS, "none")) FALSE else .RDS_IO_FALLBACK_COMPRESS
 }
 
+# ★ ver74.0: 素Seuratに$objを先に読むとメタデータ列を参照して停止するため、
+# 型を先に判定し、対応するラッパーだけを明示的に展開する。
+ua_unwrap_seurat <- function(x) {
+  if (inherits(x, "Seurat")) return(x)
+  if (is.list(x) && !is.data.frame(x) && "obj" %in% names(x) &&
+      inherits(x[["obj"]], "Seurat")) return(x[["obj"]])
+  stop("Seurat または list(obj = Seurat) が必要です", call. = FALSE)
+}
+
+# ★ ver74.0: renameのFALSEは例外ではない。失敗した最終出力を保存済みと
+# 報告しないため戻り値を必須化し、上書きcopyへの退避は行わない。
+.rds_io_publish <- function(tmp_path, path) {
+  if (dir.exists(path)) stop("[rds_io] 出力先がディレクトリです: ", path)
+  if (!isTRUE(file.rename(tmp_path, path)))
+    stop("[rds_io] 保存ファイルを公開できません（旧ファイルは維持）: ", path)
+  invisible(path)
+}
+
+# writer成功だけでは不完全ファイルを検出できないため、公開前に同じ形式で
+# 読み直す。Seuratに含まれる外部ポインタ等は完全同一比較に適さないので、
+# デシリアライズ成功に加えて最上位の型・shapeを照合する。
+.rds_io_verify_written <- function(obj, tmp_path, reader) {
+  size <- file.info(tmp_path)$size
+  if (length(size) != 1L || !is.finite(size) || size <= 0)
+    stop("[rds_io] 一時保存ファイルが空です: ", tmp_path)
+  restored <- reader(tmp_path)
+  if (!identical(class(obj), class(restored)) ||
+      !identical(typeof(obj), typeof(restored)) ||
+      !identical(length(obj), length(restored)) ||
+      !identical(dim(obj), dim(restored)))
+    stop("[rds_io] 保存後の型またはshapeが一致しません: ", tmp_path)
+  invisible(TRUE)
+}
+
+# ★ ver74.0: copyがFALSEでもTRUEを返していたため、backup無しで上書きが
+# 始まっていた。同一dirの一時backupを実バイト検証してから公開する。
+.rds_io_backup_file <- function(path, backup_path = paste0(path, ".bak")) {
+  tmp <- tempfile(pattern = paste0(".", basename(backup_path), "-"),
+                  tmpdir = dirname(backup_path))
+  on.exit(unlink(tmp), add = TRUE)
+  if (!isTRUE(file.copy(path, tmp, overwrite = FALSE, copy.mode = TRUE)))
+    stop("[rds_io] backupのコピーに失敗しました: ", path)
+  hashes <- unname(tools::md5sum(c(path, tmp)))
+  if (anyNA(hashes) || !identical(hashes[[1]], hashes[[2]]))
+    stop("[rds_io] backupの内容が一致しません: ", path)
+  .rds_io_publish(tmp, backup_path)
+}
+
 # ---- 圧縮保存 ---------------------------------------------------------------
 #  path の拡張子は .rds のまま使う (qs バイナリでも名称は .rds)。
 #  qs が使える環境では qs::qsave、使えない/失敗時は gzip 圧縮 saveRDS に
@@ -269,8 +317,11 @@ save_rds_compact <- function(obj, path,
                             keep_counts = keep_counts)
     cat(sprintf("[rds_io] DietSeurat 完了: %s\n", basename(path))); flush(stdout())
   }
-  # 書き込みはまず一時ファイルに行い、成功後に rename するアトミック更新
-  tmp_path <- paste0(path, ".tmp")
+  # ★ ver74.0: 固定.tmpは並行保存で衝突する。最終ファイルと同じdirの
+  # 一意名を使い、どの失敗経路でも残骸を片付ける。
+  tmp_path <- tempfile(pattern = paste0(".", basename(path), "-"),
+                       tmpdir = dirname(path), fileext = ".tmp")
+  on.exit(unlink(tmp_path), add = TRUE)
 
   # ★ ver57.1: qs2 → 旧 qs → saveRDS の順に試す。
   #   第一候補を qs2 にした理由は .rds_io_has_qs2 のコメントを参照。
@@ -278,9 +329,11 @@ save_rds_compact <- function(obj, path,
   #   いきなり gzip まで落ちるのを避けるため。
   .writers <- list(
     list(name = "qs2", ok = .rds_io_has_qs2,
-         fn = function(o, f, n) qs2::qs_save(o, f, nthreads = n)),
+         fn = function(o, f, n) qs2::qs_save(o, f, nthreads = n),
+         read = function(f) qs2::qs_read(f)),
     list(name = "qs", ok = .rds_io_has_qs,
-         fn = function(o, f, n) qs::qsave(o, f, preset = "balanced", nthreads = n))
+         fn = function(o, f, n) qs::qsave(o, f, preset = "balanced", nthreads = n),
+         read = function(f) qs::qread(f))
   )
   for (.w in .writers) {
     if (!.w$ok()) next
@@ -292,11 +345,7 @@ save_rds_compact <- function(obj, path,
       flush(stdout())
       .t0 <- Sys.time()
       .w$fn(obj, tmp_path, nthreads)
-      file.rename(tmp_path, path)
-      cat(sprintf("[rds_io] 保存完了: %s (%s, %.2f GB, %.1f 秒)\n",
-                  basename(path), .w$name, file.size(path) / 1024^3,
-                  as.numeric(difftime(Sys.time(), .t0, units = "secs"))))
-      flush(stdout())
+      .rds_io_verify_written(obj, tmp_path, .w$read)
       TRUE
     }, error = function(e) {
       message("[rds_io] ", .w$name, " での保存に失敗、次の方式へ: ",
@@ -304,7 +353,15 @@ save_rds_compact <- function(obj, path,
       if (file.exists(tmp_path)) try(file.remove(tmp_path), silent = TRUE)
       FALSE
     })
-    if (isTRUE(.done)) return(invisible(path))
+    if (isTRUE(.done)) {
+      # publish失敗は圧縮方式の問題ではないため、fallbackで握り潰さない。
+      .rds_io_publish(tmp_path, path)
+      cat(sprintf("[rds_io] 保存完了: %s (%s, %.2f GB, %.1f 秒)\n",
+                  basename(path), .w$name, file.size(path) / 1024^3,
+                  as.numeric(difftime(Sys.time(), .t0, units = "secs"))))
+      flush(stdout())
+      return(invisible(path))
+    }
   }
 
   # フォールバック: saveRDS (既定 gzip)。qs 分岐と同様に開始/完了を必ず残す。
@@ -315,7 +372,8 @@ save_rds_compact <- function(obj, path,
   flush(stdout())
   .t0 <- Sys.time()
   saveRDS(obj, tmp_path, compress = .rds_io_compress_arg())
-  file.rename(tmp_path, path)
+  .rds_io_verify_written(obj, tmp_path, readRDS)
+  .rds_io_publish(tmp_path, path)
   cat(sprintf("[rds_io] 保存完了: %s (saveRDS/%s, %.2f GB, %.1f 秒)\n",
               basename(path), .RDS_IO_FALLBACK_COMPRESS,
               file.size(path) / 1024^3,

@@ -20,6 +20,8 @@ def main(argv=None):
     parser.add_argument("source")
     parser.add_argument("output", nargs="?")
     parser.add_argument("--pixel-ids", help="Comma-separated internal pixel IDs")
+    parser.add_argument("--alignment-ppm", type=float, default=0.0)
+    parser.add_argument("--registration-spec", type=Path)
     parser.add_argument("--status", type=Path)
     args = parser.parse_args(argv)
     cancelled = False
@@ -43,9 +45,15 @@ def main(argv=None):
         elif args.action == "import":
             if not args.output:
                 parser.error("import requires an output .parquet path")
-            # ★ ver70.0: 手動登録も自動登録と同じ入力境界で検証する。
-            result = checked_import(args.source, args.output, progress=on_progress, cancel=lambda: cancelled,
-                                    memory_budget_mb=int(os.environ.get("IMZML_BLOCK_MB", "64")))
+            if not args.registration_spec or not args.registration_spec.is_file():
+                parser.error("import requires --registration-spec for all sections")
+            registration = json.loads(args.registration_spec.read_text(encoding="utf-8"))
+            result = checked_import(
+                args.source, args.output, registration=registration,
+                alignment_ppm=args.alignment_ppm, progress=on_progress,
+                cancel=lambda: cancelled,
+                memory_budget_mb=int(os.environ.get("IMZML_BLOCK_MB", "64")),
+            )
         else:
             if not args.output:
                 parser.error("export requires an output .zip path")

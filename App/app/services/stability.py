@@ -161,9 +161,12 @@ def trustworthiness(X_high, X_low, n_neighbors: int = 5,
     """低次元埋め込みが元空間の局所近傍をどれだけ保つか（[0,1]、1=完全）。
 
     sklearn.manifold.trustworthiness と同等の定義。大規模時は部分標本化。
+    部分標本数 m に対して 1 <= n_neighbors < m / 2 を満たさなければ nan。
     """
     X_high = np.asarray(X_high, dtype=float)
     X_low = np.asarray(X_low, dtype=float)
+    if X_high.ndim != 2 or X_low.ndim != 2 or len(X_high) != len(X_low):
+        raise ValueError("埋め込みは同じ行数の2次元配列で指定してください")
     n = X_high.shape[0]
     idx = _subsample_idx(n, max_n, seed)
     if idx is not None:
@@ -171,16 +174,19 @@ def trustworthiness(X_high, X_low, n_neighbors: int = 5,
         X_low = X_low[idx]
     m = X_high.shape[0]
     k = int(n_neighbors)
-    if m - 1 <= k or k < 1:
+    # ★ ver74.0: k < m-1 だけでは小標本で正規化分母が0/負になり、
+    # ゼロ除算または範囲外のスコアになる。定義の有効範囲を標本化後に検査する。
+    if k != n_neighbors or k < 1 or k >= m / 2:
         return float("nan")
 
     d_high = _pairwise_sq_dists(X_high)
     d_low = _pairwise_sq_dists(X_low)
 
-    # 元空間での順位（自分自身を除く）
-    rank_high = np.argsort(np.argsort(d_high, axis=1), axis=1)
-    # 低次元での k 近傍（自分自身を除いた先頭 k）
-    nn_low = np.argsort(d_low, axis=1)[:, 1:k + 1]
+    # ★ ver74.0: 同座標点があると「先頭が自分」とは限らないため対角を明示除外する。
+    np.fill_diagonal(d_high, np.inf)
+    np.fill_diagonal(d_low, np.inf)
+    rank_high = np.argsort(np.argsort(d_high, axis=1, kind="stable"), axis=1) + 1
+    nn_low = np.argsort(d_low, axis=1, kind="stable")[:, :k]
 
     t = 0.0
     for i in range(m):

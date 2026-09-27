@@ -1,37 +1,23 @@
 <div class="help-alert tip" id="imzml-autoimport">
-  <div class="alert-title">ver72.0：推定MS1とm/z軸契約を解析前に表示します  <p class="small">processed-centroidの可変長peak listは、m/zアライメント(ppm)でmaster featureへ対応付け、未記録featureを0とする共通行列へ変換します。0はexported spectrumへの未記録であり、絶対的不在ではありません。MS/MS・追加次元は集約しません。</p>
-</div>
-  <p>「解析設定」で TIMS を選び、同じ名前の <code>.imzML</code> と <code>.ibd</code> が入った
-  フォルダを指定してください。対象の imzML をチェックして通常の解析開始ボタンを押すと、
-  入力検査 → 内部 Parquet 作成または検証済みデータの再利用 → R 解析を順に実行します。
-  別画面で手動変換して選び直す必要はありません。アップロード完了だけでは解析は始まりません。</p>
-  <p>同じフォルダの同じ名前の Parquet と imzML は、どちらか一方だけ選択します。
-  ibd が不足している候補は理由付きで無効表示されます。すべての選択入力の準備に成功した場合だけ
-  R 解析へ進みます。変換中は入力準備の段階を表示し、UMAP の残り時間には含めません。</p>
-  <p><strong>MS level判定：</strong>明示的なMS1タグがなくても、MSn、precursor、product、
-  activation、fragmentation情報がなく、m/z・intensity配列だけを持つfull-scan MSIとして整合する場合は、
-  <em>推定MS1</em>として警告付きで受け入れます。判定根拠はmanifestへ保存し、元imzMLには追記しません。</p>
-  <p><strong>個別m/z軸：</strong>processed-centroid imzMLでpixelごとのpeak listが異なる場合、
-  現在はParquet変換・R・UMAPを開始しません。Mass alignment後のconsensus feature行列という考え方は
-  妥当ですが、SCiLS等のTop-N／閾値付き出力では未出力と真の0を区別できないため、
-  自動union、0補完、広いbinning、mass alignmentは行いません。共通feature listに対する
-  全pixel強度行列、または共通m/z軸Parquetを使用してください。</p>
-  <p>imzMLに切片名が無い場合でも、x–y測定座標が非連結なら座標成分ごとに
-  <code>Section 01</code>、<code>Section 02</code>…を作ります。通常画面には切片名と画素数だけを表示し、
-  「配置・切片情報を編集」で大型のフローティングパネルを開きます。パネルは移動・
-  サイズ変更・最小化でき、上段で座標配置、下段で切片名・個体ID・群を直接編集します。
-  表示は測定座標であり、イオン強度画像ではありません。成分の結合・1切片化・除外と
-  メタデータ編集は同じ「適用」で一括確定します。</p>
-  <p>切片間の背景まで連続測定されているデータは、座標上1領域になるため自動分割しません。
-  小さい孤立成分は自動削除せず注意表示します。座標由来の物理切片は
-  <code>ua_coordinate_component</code>、SCiLS ROI等は従来の <code>annotation</code> として別管理します。</p>
-  <p>原本は変更しません。登録値が RMS 等で正規化済みかどうかは形式から判定せず、
-  解析の正規化設定は自動変更しません。解析結果が参照する変換済みデータは
-  <code>IMZML_CACHE_DIR</code>（既定 <code>Data/Other/imzml_assets</code>）に保持されます。
-  再解析や出力に必要なので、結果と一緒にバックアップし、手動で削除しないでください。</p>
-  <p class="small">以下の「imzML 入出力」は保存先を明示する手動登録・出力の別機能です。
-  その手順にある「登録後に Parquet を選ぶ」は手動経路の説明です。
-  手動処理の再クリックで監視が止まる問題は修正し、通常解析との同時実行も制限しました。
-  対応範囲は明示または条件付き推定MS1、共通m/z軸、単一z面、float32/float64強度です。
-  個別軸・追加次元の集約は行いません。実際の SCiLS・R・ブラウザを通した確認は配布時の検証報告を参照してください。</p>
+  <div class="alert-title">ver74.0：imzMLの全切片を登録して標準Parquetへ変換します</div>
+  <p>imzMLを選択すると、x–y座標から全切片候補を検出します。「全切片の登録情報・解析選択を編集」
+  からfloatを開き、<strong>解析に使用しない切片も含む全切片</strong>について、切片名、
+  個体／独立試料ID、群を入力し、「全切片を確認済みにする」→「適用」を押してください。1切片でも不完全なら変換・解析を開始しません。
+  該当する概念がない場合は「該当なし」と明示します。個体IDが不明な切片を同じ個体と推定しません。</p>
+  <p>Parquet変換ではimzML内の全切片・全pixelを保存します。今回の解析に使用する切片のチェックは
+  解析条件だけに使われ、Parquetから未選択切片を削除しません。後日、同じParquetから別の切片の
+  組合せを選んで解析できます。</p>
+  <p>新規Parquetは従来のSCiLS CSV変換と同じ論理形式
+  <code>id, x, y, m/z列, annotation</code>です。m/z列は小数6桁、強度はfloat32、
+  <code>annotation</code>には切片名を保存します。全切片registryもParquet footerへ保存するため、
+  通常解析はParquet単体で行えます。componentや元spectrum index、変換QCは監査sidecarに残します。</p>
+  <p>processed-centroidの可変長peak listは、全pixelからmaster featureを作成し、未記録featureを0として
+  共通行列へ展開します。0はexported spectrumに対応peakが記録されていないという意味で、絶対的不在を
+  意味しません。選択切片を抽出して全0featureを除いた後に、正規化・PCA・UMAPを実行します。</p>
+  <p>明示MS1タグがなくても、MSn・precursor・product・fragmentation情報がなくfull-scan MSIとして
+  整合する場合は推定MS1として処理します。MS/MS、複数z面、ion mobility等は自動集約しません。</p>
+  <p>手動のimzML→Parquet変換と通常解析時の自動変換は同じconverter／validatorを使用します。
+  完成済みassetは再利用し、解析対象切片の変更だけでParquetを再変換しません。切片metadataだけを
+  修正した場合は既存spectral coreを再利用して新しい登録revisionを作ります。原本imzML／ibdは変更しません。</p>
+  <p>手動変換のppm既定は5、通常解析の既定は0です。0は完全一致m/zのみを対応付けます。手動変換の空欄では実行しません。<a href="#imzml-io">詳しい操作手順</a>を確認してください。</p>
 </div>

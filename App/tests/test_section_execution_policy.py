@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.services.execution_policy import (
-    AUTO_POLICY, analysis_signature, apply_group_rows, method_outcome,
+    AUTO_POLICY, analysis_signature, reduction_signature, apply_group_rows, method_outcome,
     prepare_execution_params, selected_manifest_paths,
 )
 from app.services.section_metadata import build_section_manifest, manifest_group_rows, summarize_manifest, validate_section_manifest
@@ -83,15 +83,17 @@ def test_paths_are_canonical_but_same_basenames_are_distinct(tmp_path):
 def test_group_only_edit_preserves_numeric_signature_and_refreshes_registry(tmp_path):
     p = _params(tmp_path)
     prepare_execution_params(p, tmp_path / 'out')
-    old = p['analysis_signature']
+    old = p['reduction_signature']
+    full_before = p['analysis_signature']
     rows = manifest_group_rows(p['section_manifest'])
     rows[0].update(group='Ctrl', subject_id='C1')
     p['section_manifest'] = apply_group_rows(p['section_manifest'], rows)
     sid = rows[0]['section_id']
     assert p['section_manifest']['section_settings'][sid]['group'] == 'Ctrl'
-    assert analysis_signature(p) == old
+    assert reduction_signature(p) == old
+    assert analysis_signature(p) != full_before
     prepare_execution_params(p, tmp_path / 'out')
-    assert p['analysis_signature'] == old
+    assert p['reduction_signature'] == old
     p['umap_n_neighbors'] = 23
     prepare_execution_params(p, tmp_path / 'changed')
     assert p['analysis_signature'] != old
@@ -109,7 +111,8 @@ def test_resume_inherits_saved_values_and_latest_group_sidecar(tmp_path):
     assert current['norm_mode'] == 'log1p' and current['umap_n_neighbors'] == 15
     assert current['annotation_enable'] is False
     assert current['section_manifest']['files'][0]['sections'][0]['group'] == 'renamed'
-    assert current['analysis_signature'] == saved['analysis_signature']
+    assert current['reduction_signature'] == saved['reduction_signature']
+    assert current['analysis_signature'] != saved['analysis_signature']
 
 
 def test_resume_does_not_mix_unsaved_current_ui_values(tmp_path):

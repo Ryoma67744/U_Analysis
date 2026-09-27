@@ -1,13 +1,17 @@
 """座標component、切片名、解析署名の契約。"""
 from copy import deepcopy
 
-from app.services.execution_policy import analysis_signature
-from app.services.imzml_spatial_layout import build_spatial_layout, strip_runtime_layout, merge_spatial_sections
+from app.services.execution_policy import reduction_signature as analysis_signature
+from app.services.imzml_spatial_layout import (
+    build_spatial_layout, strip_runtime_layout, merge_spatial_sections,
+    default_spatial_sections,
+)
 from app.services.section_metadata import (
     build_section_manifest,
     manifest_group_rows,
     summarize_manifest,
     validate_section_manifest,
+    stable_file_id,
 )
 
 
@@ -19,10 +23,18 @@ def layout():
 
 
 def catalog(spatial_sections=None):
-    row = {"path": "/tmp/three.imzML", "available_rois": [], "spatial_layout": layout()}
-    if spatial_sections is not None:
-        row["spatial_sections"] = spatial_sections
-    return [row]
+    path = "/tmp/three.imzML"
+    current_layout = layout()
+    if spatial_sections is None:
+        spatial_sections = default_spatial_sections(stable_file_id(path), current_layout)
+        for index, section in enumerate(spatial_sections, 1):
+            section.update(
+                subject_id=f"M{index}", group="ctrl", metadata_confirmed=True
+            )
+    return [{
+        "path": path, "available_rois": [], "spatial_layout": current_layout,
+        "spatial_sections": spatial_sections,
+    }]
 
 
 def test_three_components_become_three_analysis_sections():
@@ -56,23 +68,6 @@ def test_name_and_group_changes_do_not_change_numeric_signature():
     assert analysis_signature({"section_manifest": changed}) == before
 
 
-def test_explicit_float_metadata_override_wins_previous_manifest():
-    first = build_section_manifest(catalog())
-    edited = deepcopy(first["files"][0]["spatial_sections"])
-    edited[0].update(
-        section_display_name="Control 1",
-        subject_id="M1",
-        group="ctrl",
-    )
-    second = build_section_manifest(catalog(edited), previous=first)
-    spatial = second["files"][0]["spatial_sections"][0]
-    selected = second["files"][0]["sections"][0]
-    for row in (spatial, selected):
-        assert row["section_display_name"] == "Control 1"
-        assert row["subject_id"] == "M1"
-        assert row["group"] == "ctrl"
-
-
 def test_component_merge_changes_numeric_signature():
     manifest = build_section_manifest(catalog())
     before = analysis_signature({"section_manifest": manifest})
@@ -104,6 +99,16 @@ def test_execution_table_edits_update_selected_and_full_spatial_rows():
     full = next(s for s in edited["files"][0]["spatial_sections"] if s["section_id"] == sid)
     assert selected["section_display_name"] == full["section_display_name"] == "Control A"
     assert selected["subject_id"] == full["subject_id"] == "M1"
+    assert selected["metadata_confirmed"] is False
+    assert full["metadata_confirmed"] is False
+    assert any("登録確認" in message for message in validate_section_manifest(edited))
+    for file_entry in edited["files"]:
+        for section in file_entry.get("sections", []):
+            section["metadata_confirmed"] = True
+        for section in file_entry.get("spatial_sections", []):
+            section["metadata_confirmed"] = True
+        for section in file_entry.get("registered_sections", []):
+            section["metadata_confirmed"] = True
     assert not validate_section_manifest(edited)
 
 

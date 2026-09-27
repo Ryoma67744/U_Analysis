@@ -47,6 +47,11 @@ if (file.exists(.rds_io_path)) {
   obj <- readRDS(rds_path)
 }
 
+# ★ ver74.0: TIMSのlist(obj=Seurat)保存形式にも単一feature抽出を対応させる。
+if (!exists("ua_unwrap_seurat", mode = "function"))
+  stop("rds_io.R の ua_unwrap_seurat が必要です")
+obj <- ua_unwrap_seurat(obj)
+
 # 発現は測定アッセイ(Spatial)から。RPCA(v4 IntegrateData)の integrated は補正値のため使わない。
 if (exists("pick_measurement_assay", mode = "function")) {
   DefaultAssay(obj) <- pick_measurement_assay(obj)
@@ -71,7 +76,11 @@ if (!(feature_name %in% rownames(expr_data))) {
   stop("Feature not found: ", feature_name)
 }
 
-values <- as.numeric(expr_data[feature_name, ])
+# 強度行列と表示側metadataをcell IDで同じ順に固定する。
+cell_ids <- colnames(obj)
+if (anyDuplicated(colnames(expr_data)) || !setequal(cell_ids, colnames(expr_data)))
+  stop("feature強度とSeuratのcell ID集合が一致しません")
+values <- as.numeric(expr_data[feature_name, cell_ids])
 
 dir.create(dirname(output_path), recursive = TRUE, showWarnings = FALSE)
 write.csv(data.frame(expression = values), output_path,

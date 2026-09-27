@@ -60,12 +60,13 @@ def _section_controls(ls, scope="initial"):
         create_imzml_spatial_float(scope),
         html.Div(id="section_summary" + suffix, className="alert alert-light py-2 mt-2"),
         html.Details(id="section_group_details" + suffix, children=[
-            html.Summary("全ファイルの切片名・群情報を一括設定（任意）", style={"cursor": "pointer", "fontWeight": "600"}),
+            html.Summary("全ファイルの切片名・群情報を一括設定（補助）", style={"cursor": "pointer", "fontWeight": "600"}),
             # ★ ver67.1: 群登録で補正方法も変わるという誤解を防ぎ、実データと分けて入力例を示す。
             html.Div([
-                html.P("imzMLは各ファイルの「配置・切片情報を編集」から、座標配置と切片名・個体ID・群を同じfloat内で設定できます。",
+                html.P("imzMLは各ファイルの「全切片の登録情報・解析選択を編集」から、座標配置と切片名・個体ID・群を同じfloat内で設定します。",
                        className="mb-1"),
-                html.P("この欄は複数ファイルを横断して一括確認・編集するための補助表です。未入力でも解析できます。",
+                html.P("この欄は複数ファイルを横断して一括確認する補助表です。通常入力では任意ですが、"
+                       "imzMLから全切片登録したParquetでは、解析対象外を含む全切片で必須です。",
                        className="mb-1"),
                 html.P([html.Strong("解析対象と他の設定が同じなら、群名や個体IDの入力・変更だけで数値解析の結果は変わりません。"),
                         " Harmony・RPCAの補正単位は切片のままです。この登録だけでctrl対KOの群間検定は行いません。"],
@@ -88,7 +89,7 @@ def _section_controls(ls, scope="initial"):
                     ], bordered=True, size="sm", className="mb-0"),
                 ], className="mt-1"),
             ], className="small bg-light border rounded p-2 mb-2"),
-            dbc.FormText("「切片名」「個体／独立試料ID」「群」のセルを直接編集できます。表の左端のチェックは群名の一括設定用です。解析対象は上の切片／ROI欄で選択します。"),
+            dbc.FormText("「切片名」「個体／独立試料ID」「群」のセルを直接編集できます。表の左端のチェックは群名の一括設定用です。解析対象は上の切片／ROI欄で選択します。imzML登録データでは、未選択切片も含め全切片の必須情報と登録確認が完了するまで解析を開始できません。"),
             dash_table.DataTable(id="section_group_table" + suffix,
                 columns=[{"name": "切片", "id": "section", "editable": False},
                          {"name": "切片名", "id": "section_display_name", "editable": True},

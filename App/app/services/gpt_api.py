@@ -1085,7 +1085,8 @@ def build_openapi_spec(base_url: str = "") -> dict:
                                   desc=("カンマ区切り手法名。省略で全手法。"
                                         "この結果に無い手法を含めると 409"
                                         "（別手法で代用はしない）。")),
-                               _p("exclude_unused", "boolean", default=True,
+                # ★ ver74.0: 第2位置引数は型でなく location。boolean を in に出すと仕様が無効になる。
+                _p("exclude_unused", where="query", typ="boolean", default=True,
                                   desc=("UMAP 解析に使っていない切片(annotation)の行を"
                                         "出力から除く。既定 true（画面と同じ）。"
                                         "false で生データの全行を出す。"))],

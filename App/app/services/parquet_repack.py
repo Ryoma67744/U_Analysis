@@ -373,6 +373,14 @@ def sweep_stale_temps(folder: Path, *, recursive: bool = True) -> list:
     return removed
 
 
+def _is_managed_asset(path: Path) -> bool:
+    # ★ ver74.0: 値が同じ再圧縮でも receipt の SHA が変わるため、管理資産は不変とする。
+    from app.services.input_preparation import CACHE_MARKER, RECEIPT
+    path = Path(path).resolve()
+    return any((parent / CACHE_MARKER).exists() or (parent / RECEIPT).exists()
+               for parent in path.parents)
+
+
 def repack_file(
     path: Path,
     *,
@@ -392,6 +400,9 @@ def repack_file(
     """
     t0 = time.time()
     res = RepackResult(path=path, status="error")
+    if _is_managed_asset(path):
+        res.reason = "管理された imzML 変換資産は上書きできません。新しい登録 revision を作成してください。"
+        return res
     try:
         res.size_before = path.stat().st_size
     except OSError as e:
@@ -425,6 +436,10 @@ def repack_file(
         # 置換前に元ファイルを掴んだままになる。必ず False。
         md = pf.metadata
         schema = pf.schema_arrow          # ★ メタデータ 3 キーはここに載っている
+        if any(k.startswith(b"ua_") or k.startswith(b"imzml_")
+               for k in (schema.metadata or {})):
+            res.reason = "登録 metadata を持つ変換資産は再パックできません。"
+            return res
         res.n_rows = md.num_rows
         res.row_groups_before = md.num_row_groups
         res.footer_before = md.serialized_size or 0
@@ -594,6 +609,8 @@ def find_targets(folder: Path, patterns: list, *, recursive: bool = True) -> lis
         if p.suffix.lower() not in (".parquet", ".pq"):
             continue
         if p.name.endswith(_SIDECAR_SUFFIX):
+            continue
+        if _is_managed_asset(p):
             continue
         if not _match_any(p.name, patterns):
             continue

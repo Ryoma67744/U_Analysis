@@ -53,7 +53,7 @@ class DesiHeader:
 
     @property
     def has_compounds(self) -> bool:
-        return bool(self.compounds)
+        return any(self.compounds)
 
 
 def _cells(line: str) -> list[str]:
@@ -61,13 +61,9 @@ def _cells(line: str) -> list[str]:
 
 
 def _tail_cells(line: str) -> list[str]:
-    """4 列目以降の非空セル。
-
-    ★ 空セルを詰める方式は使えない。実データの化合物名行は 1 列目に測定条件由来の
-      余計な値（例 ``5``）が入っており、それを拾うと特徴量数と 1 個ズレる。
-    """
-    cs = _cells(line)
-    return [c for c in cs[3:] if c]
+    """4列目以降のセル。空欄も元の位置に残す。"""
+    # ★ ver74.0: 空欄を除くとRの強度列とUIの分子名がずれる。
+    return _cells(line)[3:]
 
 
 def is_data_line(line: str) -> bool:
@@ -145,7 +141,7 @@ def read_desi_header(path) -> Optional[DesiHeader]:
         compounds, numbers, q1, q3 = (
             hrows[n_header - 4], hrows[n_header - 3], hrows[n_header - 2], hrows[n_header - 1],
         )
-    elif n_header == 4 and not hrows[3]:
+    elif n_header == 4 and not any(hrows[3]):
         numbers, compounds = hrows[1], hrows[2]
     elif n_header == 4:
         numbers, q1, q3 = hrows[1], hrows[2], hrows[3]
@@ -153,27 +149,29 @@ def read_desi_header(path) -> Optional[DesiHeader]:
         logger.warning("DESI ヘッダの形式を判定できません (%d 行): %s", n_header, p.name)
         return None
 
-    transitions: list[str] = []
-    if q1 and len(q1) == len(q3):
-        transitions = [f"{a}-{b}" for a, b in zip(q1, q3)]
-    elif q1:
-        transitions = list(q1)
-
-    if compounds:
-        cname = [strip_param_suffix(c) for c in compounds]
-        if transitions and len(transitions) == len(cname):
-            names = [f"{c} ({t})" for c, t in zip(cname, transitions)]
-        else:
-            names = cname
-    else:
-        names = transitions
+    # ★ ver74.0: 特徴量数は各ヘッダの最後の値の位置から決め、空欄名は
+    # 同じ列のMRMへフォールバックする。全ヘッダ共通の末尾paddingだけを落とす。
+    n_features = max((i + 1 for row in (compounds, numbers, q1, q3)
+                      for i, cell in enumerate(row) if cell), default=0)
+    if n_features == 0:
+        return None
+    def pad(row):
+        return (row + [""] * n_features)[:n_features]
+    compounds, numbers, q1, q3 = map(pad, (compounds, numbers, q1, q3))
+    names = []
+    for i in range(n_features):
+        compound = strip_param_suffix(compounds[i])
+        transition = (f"{q1[i]}-{q3[i]}" if q1[i] and q3[i] else
+                      q1[i] or (f"Q3={q3[i]}" if q3[i] else ""))
+        names.append(f"{compound} ({transition})" if compound and transition else
+                     compound or transition or f"feature-{numbers[i] or i + 1}")
 
     return DesiHeader(
         n_header=n_header,
-        compounds=compounds,
-        numbers=numbers,
-        q1=q1,
-        q3=q3,
+        compounds=compounds if any(compounds) else [],
+        numbers=numbers if any(numbers) else [],
+        q1=q1 if any(q1) else [],
+        q3=q3 if any(q3) else [],
         feature_names=names,
         legacy_feature_names=_legacy_names(lines),
     )
@@ -189,7 +187,10 @@ def legacy_alias_map(path) -> dict[str, str]:
     hdr = read_desi_header(path)
     if hdr is None:
         return {}
-    n = min(len(hdr.legacy_feature_names), len(hdr.feature_names))
+    # ★ ver74.0: 古い空欄詰めで個数が変わった場合は順番で別分子へ結び付けない。
+    if len(hdr.legacy_feature_names) != len(hdr.feature_names):
+        return {}
+    n = len(hdr.feature_names)
     return {
         old: new
         for old, new in zip(hdr.legacy_feature_names[:n], hdr.feature_names[:n])
