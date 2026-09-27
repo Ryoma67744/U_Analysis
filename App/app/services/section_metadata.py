@@ -555,16 +555,26 @@ def summarize_manifest(manifest):
     groups = {}
     for row in rows:
         if row["group"]:
-            info = groups.setdefault(row["group"], {"sections": 0, "subjects": set(), "missing": 0})
+            info = groups.setdefault(row["group"], {"sections": 0, "subjects": set(), "missing": 0, "not_applicable": 0})
             info["sections"] += 1
             if row["subject_id"] and row["subject_id"] != "該当なし":
                 info["subjects"].add(row["subject_id"])
+            elif row["subject_id"] == "該当なし":
+                info["not_applicable"] += 1
             else:
                 info["missing"] += 1
     detail = []
     for name, info in groups.items():
-        value = f"{name}：{info['sections']}切片・独立試料{len(info['subjects'])}例"
+        # ★ ver74.1: ID未入力は生物学的な0例ではない。確定した数と未入力を区別する。
+        value = f"{name}：{info['sections']}切片・"
         if info["missing"]:
-            value += f"（ID未設定{info['missing']}切片）"
+            known = f"ID入力済み{len(info['subjects'])}例、" if info["subjects"] else ""
+            value += f"独立試料数 未確定（{known}ID未入力{info['missing']}切片）"
+        elif not info["subjects"] and info["not_applicable"]:
+            value += "独立試料数 対象外"
+        else:
+            value += f"独立試料{len(info['subjects'])}例"
+        if info["not_applicable"]:
+            value += f"（ID「該当なし」{info['not_applicable']}切片）"
         detail.append(value)
     return line, " ／ ".join(detail), errors

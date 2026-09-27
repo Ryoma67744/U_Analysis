@@ -4,7 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 
-from dash import ALL, Input, Output, State, callback, ctx, no_update
+from dash import ALL, Input, Output, State, callback, ctx, html, no_update
 import plotly.graph_objects as go
 
 from app.services.imzml_spatial_layout import (
@@ -40,6 +40,75 @@ def _table_rows(sections):
         "pixel_count": int(row.get("pixel_count", 0)),
         "selected": "使用" if row.get("selected", True) else "使用しない",
     } for row in sections or []]
+
+
+def _registration_guidance(table_rows, draft, layout):
+    """★ ver74.1: 入力中の値を検査し、対象外の切片も同じ明瞭さで不足を示す。"""
+    labels = {"section_display_name": "切片名", "subject_id": "個体／独立試料ID", "group": "群"}
+    originals = {str(row.get("section_id")): row for row in draft or []}
+    sections, styles, cells, statuses, tips = [], [], [], [], []
+    missing_count = unconfirmed_count = selected_count = 0
+    for index, edited in enumerate(table_rows or []):
+        original = originals.get(str(edited.get("section_id")), {})
+        row = deepcopy(original)
+        row["section_id"] = edited.get("section_id", "")
+        changed = False
+        missing = []
+        tooltip = {}
+        for column, label in labels.items():
+            value = str(edited.get(column) or "").strip()
+            changed = changed or value != str(original.get(column) or "").strip()
+            row[column] = value
+            if not value:
+                missing.append(label)
+                cells.append({"row": index, "column": list(labels).index(column), "column_id": column})
+                styles.append({"if": {"row_index": index, "column_id": column},
+                               "backgroundColor": "#fff0f0", "border": "2px solid #c92a2a", "color": "#842029"})
+                tooltip[column] = {"value": label + "が未入力です。解析対象外の切片も入力してください。", "type": "text"}
+        confirmed = is_metadata_confirmed(edited.get("metadata_confirmed")) and not changed
+        row["metadata_confirmed"] = confirmed
+        sections.append(row)
+        selected_count += edited.get("selected") != "使用しない"
+        missing_count += bool(missing)
+        unconfirmed_count += not confirmed
+        if not confirmed:
+            styles.append({"if": {"row_index": index, "column_id": "metadata_confirmed"},
+                           "backgroundColor": "#fff3cd", "color": "#664d03",
+                           "textDecoration": "line-through" if changed and is_metadata_confirmed(edited.get("metadata_confirmed")) else "none"})
+            tooltip["metadata_confirmed"] = {"value": "編集後は②「全切片を確認済みにする」を押してください。", "type": "text"}
+        tips.append(tooltip)
+        text = "未入力：" + "・".join(missing) if missing else ("入力済み・②で確認" if not confirmed else "確認済み")
+        statuses.append(html.Li([
+            html.Strong(str(row.get("section_display_name") or f"切片 {index + 1}")),
+            html.Span("（解析対象外）" if edited.get("selected") == "使用しない" else "（解析対象）", className="ms-1"),
+            html.Span(" — " + text, className="ms-1"),
+        ], className="registration-missing" if missing else "registration-unconfirmed" if not confirmed else "registration-complete"))
+    structural = []
+    try:
+        issues = validate_registered_sections(sections, components=_component_counts(layout)) if sections else []
+        structural = [f"{issue.display_name}: {issue.reason}" for issue in issues if issue.reason]
+    except (ValueError, TypeError, KeyError) as exc:
+        structural = [f"登録情報の形式を確認してください：{exc}"]
+    total = len(sections)
+    if not total:
+        headline = "切片情報の読み込みを待っています"
+    elif missing_count:
+        headline = f"① 入力が必要：{missing_count}切片・{len(cells)}項目"
+    elif structural:
+        headline = "登録情報の整合性を確認してください"
+    elif unconfirmed_count:
+        headline = f"① 入力完了 → ② 全{total}切片の内容を確認してください"
+    else:
+        headline = "② 確認完了 → ③ 適用できます"
+    children = [html.Div(headline, className="fw-semibold"),
+                html.Small(f"登録：全{total}切片 ／ 今回の解析：{selected_count}切片 ／ 未確認：{unconfirmed_count}切片"),
+                html.Ul(statuses, className="imzml-registration-status-list")]
+    if structural:
+        children.append(html.Div([html.Strong("登録情報の問題"), html.Ul([html.Li(message) for message in structural])],
+                                 className="registration-missing"))
+    next_text = (f"次に入力：{table_rows[cells[0]['row']].get('section_display_name') or '切片 ' + str(cells[0]['row'] + 1)} の{labels[cells[0]['column_id']]}"
+                 if cells else "未入力項目はありません")
+    return styles, children, cells, not bool(cells), next_text, tips
 
 
 def _apply_table_metadata(file_id, layout, sections, table_rows):
@@ -166,7 +235,7 @@ def _register(scope):
     def open_panel(clicks, ids, catalog, manifest, overrides=None):
         trigger = ctx.triggered_id
         triggered_value = (ctx.triggered[0].get("value") if getattr(ctx, "triggered", None) else None)
-        if (not isinstance(trigger, dict) or trigger.get("type") != "imzml_spatial_open"
+        if (not isinstance(trigger, dict) or trigger.get("type") not in {"imzml_spatial_open", "imzml_registration_fix"}
                 or not triggered_value):
             return (no_update,) * 10
         path = trigger["index"]
@@ -202,6 +271,58 @@ def _register(scope):
                 _figure(layout, sections), _table_rows(sections), [],
                 f"{panel_title} — {Path(path).name}", message,
                 _editor_revision(file_entry, catalog_entry))
+
+    # ★ ver74.1: 外側の不足一覧から該当ファイルへ直接移動する。既存編集callbackの契約は維持。
+    @callback(
+        Output(panel, "style", allow_duplicate=True),
+        Output(panel, "className", allow_duplicate=True),
+        Output("imzml_spatial_active_path" + suffix, "data", allow_duplicate=True),
+        Output("imzml_spatial_draft" + suffix, "data", allow_duplicate=True),
+        Output("imzml_spatial_graph" + suffix, "figure", allow_duplicate=True),
+        Output("imzml_spatial_table" + suffix, "data", allow_duplicate=True),
+        Output("imzml_spatial_table" + suffix, "selected_rows", allow_duplicate=True),
+        Output("imzml_spatial_title" + suffix, "children", allow_duplicate=True),
+        Output("imzml_spatial_message" + suffix, "children", allow_duplicate=True),
+        Output("imzml_spatial_base" + suffix, "data", allow_duplicate=True),
+        Input({"type": "imzml_registration_fix", "scope": scope, "index": ALL}, "n_clicks"),
+        State({"type": "imzml_registration_fix", "scope": scope, "index": ALL}, "id"),
+        State("section_catalog_store" + suffix, "data"),
+        State("section_manifest_store" + suffix, "data"),
+        State("imzml_spatial_overrides" + suffix, "data"), prevent_initial_call=True,
+    )
+    def open_registration_issue(clicks, ids, catalog, manifest, overrides=None):
+        return open_panel(clicks, ids, catalog, manifest, overrides)
+
+    @callback(
+        Output("imzml_spatial_table" + suffix, "style_data_conditional"),
+        Output("imzml_spatial_guidance" + suffix, "children"),
+        Output("imzml_spatial_missing_cells" + suffix, "data"),
+        Output("imzml_spatial_next_missing" + suffix, "disabled"),
+        Output("imzml_spatial_next_missing" + suffix, "children"),
+        Output("imzml_spatial_table" + suffix, "tooltip_data"),
+        Input("imzml_spatial_table" + suffix, "data"),
+        Input("imzml_spatial_draft" + suffix, "data"),
+        Input("section_catalog_store" + suffix, "data"),
+        Input("imzml_spatial_active_path" + suffix, "data"),
+    )
+    def show_registration_guidance(table_rows, draft, catalog, path):
+        entry = _entry(catalog, path) if path else {}
+        return _registration_guidance(table_rows, draft, (entry or {}).get("spatial_layout") or {})
+
+    @callback(
+        Output("imzml_spatial_table" + suffix, "active_cell"),
+        Output("imzml_spatial_table" + suffix, "selected_cells"),
+        Input("imzml_spatial_next_missing" + suffix, "n_clicks"),
+        State("imzml_spatial_missing_cells" + suffix, "data"),
+        State("imzml_spatial_table" + suffix, "active_cell"), prevent_initial_call=True,
+    )
+    def focus_next_missing(clicks, cells, active):
+        if not clicks or not cells:
+            return no_update, no_update
+        # ★ ver74.1: ボタンに表示した先頭の不足セルと移動先を必ず一致させる。
+        # 入力が完了するとlive表示で次の不足セルへ進む。
+        target = cells[0]
+        return target, [target]
 
     @callback(
         Output("imzml_spatial_table" + suffix, "selected_rows", allow_duplicate=True),
@@ -318,7 +439,8 @@ def _register(scope):
                            or not str(row.get("group") or "").strip()]
                 if missing:
                     raise SpatialLayoutError(
-                        "切片名・個体／独立試料ID・群を全切片で入力してから確認してください。"
+                        f"まだ {len(missing)} 切片に未入力があります。①の赤枠セルを入力してください。"
+                        "「次に入力」ボタンで不足セルへ移動できます。"
                     )
                 for row in sections:
                     row["metadata_confirmed"] = True

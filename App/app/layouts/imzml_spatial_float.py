@@ -17,6 +17,8 @@ def create_imzml_spatial_float(scope="initial"):
         dcc.Store(id="imzml_spatial_draft" + suffix, data=None),
         # ★ ver74.0: 編集元とdraftを分離し、背景変更との競合を適用前に検出する。
         dcc.Store(id="imzml_spatial_base" + suffix, data=None),
+        # ★ ver74.1: 次の未入力セルへの移動先を表示用状態として分離する。
+        dcc.Store(id="imzml_spatial_missing_cells" + suffix, data=[]),
         html.Div(
             id=panel_id,
             className="imzml-spatial-float",
@@ -52,23 +54,22 @@ def create_imzml_spatial_float(scope="initial"):
                         className="small text-muted",
                     ),
                     html.Div(id="imzml_spatial_message" + suffix, className="small"),
-                    html.Div(className="imzml-spatial-map-section", children=[
-                        dcc.Graph(
-                            id="imzml_spatial_graph" + suffix,
-                            className="imzml-spatial-graph",
-                            figure={"data": [], "layout": {}},
-                            config={"displayModeBar": False, "scrollZoom": True,
-                                    "responsive": True},
-                        ),
-                    ]),
                     html.Div(className="imzml-spatial-editor-section", children=[
                         html.Div(className="imzml-spatial-editor-heading", children=[
-                            html.Strong("全切片の登録情報"),
+                            html.Strong("① 全切片の必須項目を入力"),
                             html.Small(
-                                "空欄の代わりに必要なら「該当なし」と明示してください。",
+                                "個体／独立試料IDの例：Mouse01。同じ個体の連続切片には同じIDを入力します。"
+                                "不明なIDを推測して付けず、試料情報を確認してください。"
+                                "項目自体が当てはまらない場合は「該当なし」と明示します。",
                                 className="text-muted",
                             ),
                         ]),
+                        html.Div(id="imzml_spatial_guidance" + suffix,
+                                 className="imzml-registration-guidance", role="status",
+                                 **{"aria-live": "polite"}),
+                        dbc.Button("次に入力する項目へ", id="imzml_spatial_next_missing" + suffix,
+                                   size="sm", color="danger", outline=True, n_clicks=0,
+                                   className="mb-2", disabled=True),
                         dash_table.DataTable(
                             id="imzml_spatial_table" + suffix,
                             columns=[
@@ -95,6 +96,8 @@ def create_imzml_spatial_float(scope="initial"):
                                 "overflowY": "auto", "border": "1px solid #dee2e6",
                             },
                             style_cell={
+                                # ★ ver74.1: DataTable既定monospaceで日本語が欠けないよう本文系書体を使う。
+                                "fontFamily": "sans-serif",
                                 "fontSize": "12px", "padding": "6px", "textAlign": "left",
                                 "whiteSpace": "nowrap", "overflow": "hidden",
                                 "textOverflow": "ellipsis", "minWidth": "70px",
@@ -112,11 +115,11 @@ def create_imzml_spatial_float(scope="initial"):
                                  "width": "120px", "maxWidth": "130px"},
                             ],
                             style_data_conditional=[
-                                {"if": {"filter_query": '{metadata_confirmed} = "未確認"'},
+                                {"if": {"filter_query": '{metadata_confirmed} = "未確認"',
+                                        "column_id": "metadata_confirmed"},
                                  "backgroundColor": "#fff3cd"},
-                                {"if": {"filter_query": '{selected} = "使用しない"'},
-                                 "opacity": 0.68},
                             ],
+                            tooltip_duration=None,
                             css=[{"selector": ".show-hide", "rule": "display: none"}],
                         ),
                         html.Div(className="imzml-spatial-bulk-group", children=[
@@ -129,11 +132,25 @@ def create_imzml_spatial_float(scope="initial"):
                                 "選択行に群を設定", id="imzml_spatial_bulk_apply" + suffix,
                                 size="sm", color="secondary", outline=True, n_clicks=0,
                             ),
+                        ]),
+                        html.Div(className="imzml-registration-confirm-step", children=[
+                            html.Strong("② 入力内容を確認", className="me-2"),
+                            html.Small("全切片の必須項目を入力してから押してください。", className="me-2"),
                             dbc.Button(
                                 "全切片を確認済みにする", id="imzml_spatial_confirm_all" + suffix,
                                 size="sm", color="secondary", outline=True, n_clicks=0,
                             ),
                         ]),
+                    ]),
+                    # ★ ver74.1: 不足入力を開いてすぐ見える位置に置き、座標図はその下に表示する。
+                    html.Div(className="imzml-spatial-map-section", children=[
+                        dcc.Graph(
+                            id="imzml_spatial_graph" + suffix,
+                            className="imzml-spatial-graph",
+                            figure={"data": [], "layout": {}},
+                            config={"displayModeBar": False, "scrollZoom": True,
+                                    "responsive": True},
+                        ),
                     ]),
                     html.Div(className="d-flex flex-wrap gap-1", children=[
                         dbc.Button("今回の解析に使用／使用しない", id="imzml_spatial_toggle" + suffix,
@@ -146,12 +163,13 @@ def create_imzml_spatial_float(scope="initial"):
                         dbc.Button("自動検出へ戻す", id="imzml_spatial_reset" + suffix,
                                    size="sm", color="secondary", outline=True, n_clicks=0),
                     ]),
-                    html.Div(className="d-flex justify-content-end gap-2", children=[
-                        dbc.Button("閉じる", id="imzml_spatial_cancel" + suffix,
-                                   size="sm", color="secondary", n_clicks=0),
-                        dbc.Button("適用", id="imzml_spatial_apply" + suffix,
-                                   size="sm", color="primary", n_clicks=0),
-                    ]),
+                ]),
+                # ★ ver74.1: 図や全切片表をスクロールしても最終操作を見失わない固定footer。
+                html.Div(className="imzml-spatial-apply-bar d-flex justify-content-end gap-2", children=[
+                    dbc.Button("閉じる", id="imzml_spatial_cancel" + suffix,
+                               size="sm", color="secondary", n_clicks=0),
+                    dbc.Button("③ 適用", id="imzml_spatial_apply" + suffix,
+                               size="sm", color="primary", n_clicks=0),
                 ]),
                 html.Div(className="imzml-spatial-resize-handle", title="ドラッグしてサイズ変更"),
             ],

@@ -31,7 +31,7 @@ def editor(monkeypatch, tmp_path):
                          for name in ("open_panel", "act_on_panel")}
                  for index, scope in enumerate(("initial", "reanalysis", "conversion"))}
     return SimpleNamespace(module=module, catalog=catalog, manifest=manifest, path=path,
-                           functions=functions, layout=layout)
+                           functions=functions, layout=layout, captured=captured)
 
 def _suffix(scope):
     return "" if scope == "initial" else "_" + scope
