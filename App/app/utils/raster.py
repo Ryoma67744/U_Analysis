@@ -92,6 +92,14 @@ def _grid_axes(px, py):
         return None
     if nx * ny > _MAX_CELLS or nx * ny > _MAX_CELLS_FACTOR * px.size:
         return None
+    # ★ ver74.0: 最小間隔とセル衝突の検査だけでは30度回転等の非格子点も
+    # 最近傍セルへ動かしてしまう。再構成座標との残差を検査し、散布へ戻す。
+    # 許容値は格子間隔の1e-6＋float64丸め誤差だけ（画素位置の丸めは許可しない）。
+    for values, origin, step in ((px, x0, sx), (py, y0, sy)):
+        reconstructed = origin + np.rint((values - origin) / step) * step
+        tolerance = abs(step) * 1e-6 + np.finfo(float).eps * max(1., float(np.max(np.abs(values)))) * 16
+        if np.any(np.abs(values - reconstructed) > tolerance):
+            return None
     return x0, y0, sx, sy, nx, ny
 
 

@@ -12,9 +12,10 @@ import time
 import pytest
 from app.services import input_preparation as ip
 from app.services.section_metadata import build_section_manifest, stable_file_id, validate_section_manifest
-from app.services.execution_policy import analysis_signature
+from app.services.execution_policy import reduction_signature as analysis_signature
+from app.services.imzml_registration import build_registration_spec
 
-SPEC = {"schema": 1, "contract": "TEST-DOUBLE-NOT-PARQUET", "block_size": 4, "memory_budget_mb": 16}
+BASE_SPEC = {"schema": 4, "contract": "TEST-DOUBLE-NOT-PARQUET", "block_size": 4, "memory_budget_mb": 16, "processed_alignment_ppm": 0.0}
 
 
 def source(tmp_path, stem="sample"):
@@ -26,7 +27,21 @@ def source(tmp_path, stem="sample"):
 
 
 def entry(p):
-    return build_section_manifest([{"path": str(p), "available_rois": []}])["files"][0]
+    value = build_section_manifest([{"path": str(p), "available_rois": []}])["files"][0]
+    rows = value.get("sections") or []
+    assert len(rows) == 1
+    rows[0].update(
+        subject_id="TestSubject", group="TestGroup", metadata_confirmed=True,
+    )
+    value["registered_sections"] = deepcopy(rows)
+    value["selected_section_ids"] = [rows[0]["section_id"]]
+    return value
+
+
+def spec_for(value):
+    result = deepcopy(BASE_SPEC)
+    result["registration_hash"] = build_registration_spec(value)["registration_hash"]
+    return result
 
 
 def fake_convert(xml, output, **kw):
@@ -43,7 +58,8 @@ def fake_validate(output, **kw):
 
 
 def prep(p, cache, **kwargs):
-    return ip.prepare_imzml(entry(p), cache_root=cache, spec=SPEC,
+    value = entry(p)
+    return ip.prepare_imzml(value, cache_root=cache, spec=spec_for(value),
         converter=kwargs.pop("converter", fake_convert), validator=fake_validate, **kwargs)
 
 
@@ -158,7 +174,7 @@ def test_corrupt_cache_is_restored_only_if_identical(tmp_path):
     old = prep(p, tmp_path / "cache")
     Path(old["runtime_path"]).write_bytes(b"CORRUPT")
     restored = ip.prepare_imzml(old, cache_root=tmp_path / "cache", pinned=True,
-        spec=SPEC, converter=fake_convert, validator=fake_validate)
+        spec=spec_for(old), converter=fake_convert, validator=fake_validate)
     assert restored["validation"] == old["validation"]
     assert list((tmp_path / "cache").rglob(".corrupt-*"))
 
@@ -170,7 +186,7 @@ def test_changed_original_cannot_replace_lost_pinned_revision(tmp_path):
     p.with_suffix(".ibd").write_bytes(b"changed")
     with pytest.raises(ip.InputPreparationError, match="保存時"):
         ip.prepare_imzml(old, cache_root=tmp_path / "cache", pinned=True,
-            spec=SPEC, converter=fake_convert, validator=fake_validate)
+            spec=spec_for(old), converter=fake_convert, validator=fake_validate)
 
 
 def test_different_repair_bytes_not_published(tmp_path):
@@ -180,7 +196,7 @@ def test_different_repair_bytes_not_published(tmp_path):
         fake_convert(xml, out, **kw);out.write_bytes(out.read_bytes()+b"drift")
     with pytest.raises(ip.InputPreparationError, match="hash"):
         ip.prepare_imzml(old, cache_root=tmp_path / "cache", pinned=True,
-            spec=SPEC, converter=drift, validator=fake_validate)
+            spec=spec_for(old), converter=drift, validator=fake_validate)
     assert not Path(old["runtime_path"]).exists()
 
 
@@ -212,15 +228,26 @@ def test_group_edit_preserves_descriptor_and_signature(tmp_path):
     first = analysis_signature({"section_manifest": rebuilt})
     rebuilt["files"][0]["sections"][0].update(group="changed", subject_id="animal1")
     assert first == analysis_signature({"section_manifest": rebuilt})
-    rebuilt["files"][0]["conversion_key"] = "newrevision"
+    # 登録metadataだけのrevisionは数値署名を変えず、spectral core変更だけが変える。
+    rebuilt["files"][0]["conversion_key"] = "metadata-only-revision"
+    assert first == analysis_signature({"section_manifest": rebuilt})
+    rebuilt["files"][0]["spectral_key"] = "new-spectral-revision"
     assert first != analysis_signature({"section_manifest": rebuilt})
 
 
-def test_selected_none_not_prepared_and_zero_selection_rejected(tmp_path):
+def test_selected_none_not_prepared_and_zero_selection_rejected(tmp_path, monkeypatch):
+    # ★ ver74.0: このconverterは意図的に非Parquet。footerは実I/O suiteが検証する。
+    monkeypatch.setattr("app.services.data_manager.read_parquet_section_registry", lambda _: [])
     a, b = source(tmp_path / "a"), source(tmp_path / "b")
     m = build_section_manifest([{"path": str(p), "available_rois": []} for p in (a, b)], {str(b): []})
+    for file_entry in m["files"]:
+        for row in file_entry.get("sections", []):
+            row.update(subject_id="TestSubject", group="TestGroup", metadata_confirmed=True)
+        if file_entry.get("sections"):
+            file_entry["registered_sections"] = deepcopy(file_entry["sections"])
+            file_entry["selected_section_ids"] = [row["section_id"] for row in file_entry["sections"]]
     b.unlink()
-    result = ip.prepare_inputs({"section_manifest": m}, cache_root=tmp_path / "cache", spec=SPEC,
+    result = ip.prepare_inputs({"section_manifest": m}, cache_root=tmp_path / "cache", spec=spec_for(m["files"][0]),
                                converter=fake_convert, validator=fake_validate)
     assert len(result["input_paths"]) == 1
     for f in m["files"]:

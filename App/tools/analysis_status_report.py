@@ -33,6 +33,7 @@
 #   3 = 停止している（プロセス消失・未完了）
 #   4 = 停滞の疑い（プロセスは居るが更新が止まっている）
 #   5 = 実行中の解析が 1 件も見つからない
+#   6 = 利用者が停止した解析
 #   1 = レポート自体の失敗
 # =============================================================================
 
@@ -62,6 +63,7 @@ EXIT_ERROR = 2
 EXIT_DEAD = 3
 EXIT_STALLED = 4
 EXIT_NONE = 5
+EXIT_STOPPED = 6  # ★ ver74.0: 利用者停止を正常実行/完了の緑表示と区別する。
 
 # 終了状態として台帳・ステータスファイルに書かれる値（analysis_finalizer と同じ）
 TERMINAL_STATUSES = ("finished", "error", "stopped")
@@ -341,7 +343,7 @@ _EXIT_BY_VERDICT = {
     "dead": EXIT_DEAD,
     "stalled": EXIT_STALLED,
     "error": EXIT_ERROR,   # ★ ver58.2: 終了済みでも「正常」ではない
-    "stopped": EXIT_OK,
+    "stopped": EXIT_STOPPED,
     "finished": EXIT_OK,
     "running": EXIT_OK,
 }

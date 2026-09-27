@@ -445,10 +445,13 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
     deferred = defer_analysis(params, "reanalysis" if "original_data_folder" in params else "initial")
     if deferred is not None:
         return deferred
+    from app.services.input_preparation import preflight_registered_inputs
+    preflight_registered_inputs(params)
     from app.services.execution_policy import prepare_execution_params
     from app.services.naming_policy import db_annotation_enabled
-    if params.get("execution_policy") or params.get("section_manifest") is not None:
-        prepare_execution_params(params, output_dir)
+    if (params.get("execution_policy") or params.get("section_manifest") is not None
+            or params.get("resume_from_rds") or params.get("resume_reanalysis")):
+        prepare_execution_params(params, output_dir, preflight=True)
     params["annotation_enable"] = db_annotation_enabled(params)
     template_path = params["template_path"]
     if not Path(template_path).exists():
@@ -535,7 +538,9 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
                          or [str(Path(params["data_folder"]) / f"{name}.txt") for name in params.get("sample_names", [])])
     copy_selected_feature_annotations(annotation_inputs, output_dir)
     for var, value in (("SECTION_MANIFEST_PATH", params.get("section_manifest_path", "")),
-                       ("ANALYSIS_SIGNATURE", params.get("analysis_signature", ""))):
+                       ("ANALYSIS_SIGNATURE", params.get("analysis_signature", "")),
+                       ("REDUCTION_SIGNATURE", params.get("reduction_signature", "")),
+                       ("METADATA_SIGNATURE", params.get("metadata_signature", ""))):
         if any(re.match(rf"^\s*{var}\s*<-", line) for line in lines):
             lines = _replace_assign(lines, var, _r_str(value))
     if any(re.match(r"^\s*DB_ANNOTATION_ENABLED\s*<-", line) for line in lines):
@@ -722,10 +727,13 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
     deferred = defer_analysis(params, "reanalysis" if "original_data_folder" in params else "initial")
     if deferred is not None:
         return deferred
+    from app.services.input_preparation import preflight_registered_inputs
+    preflight_registered_inputs(params)
     from app.services.execution_policy import prepare_execution_params
     from app.services.naming_policy import db_annotation_enabled
-    if params.get("execution_policy") or params.get("section_manifest") is not None:
-        prepare_execution_params(params, output_dir)
+    if (params.get("execution_policy") or params.get("section_manifest") is not None
+            or params.get("resume_from_rds") or params.get("resume_reanalysis")):
+        prepare_execution_params(params, output_dir, preflight=True)
     params["annotation_enable"] = db_annotation_enabled(params)
     template_path = params["template_path"]
     if not Path(template_path).exists():
@@ -827,7 +835,9 @@ def generate_cluster_filter_config(params: dict, output_dir: str) -> str:
         lines = _replace_assign(lines, "V8_DB_ANNOTATION_ENABLED", "TRUE" if ann_enabled else "FALSE")
     prefix = "V13_" if is_tims else "V8_"
     for var, value in ((prefix + "SECTION_MANIFEST_PATH", params.get("section_manifest_path", "")),
-                       (prefix + "ANALYSIS_SIGNATURE", params.get("analysis_signature", ""))):
+                       (prefix + "ANALYSIS_SIGNATURE", params.get("analysis_signature", "")),
+                       (prefix + "REDUCTION_SIGNATURE", params.get("reduction_signature", "")),
+                       (prefix + "METADATA_SIGNATURE", params.get("metadata_signature", ""))):
         if any(re.match(rf"^\s*{var}\s*<-", line) for line in lines):
             lines = _replace_assign(lines, var, _r_str(value))
     from app.services.naming_policy import copy_selected_feature_annotations

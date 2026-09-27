@@ -283,7 +283,8 @@ def test_read_tims_transform_csv(tmp_path, with_annotation):
     assert df["x"].tolist() == [10.0, 11.0]
     assert df["y"].tolist() == [5.0, 5.0]
     assert len(df) == 2
-    assert "m/z 611.14390" in df.columns
+    # ★ ver74.0: 新規TIMS読込はRとPythonで6桁IDを共有する。
+    assert "m/z 611.143900" in df.columns
     if with_annotation:
         assert df["annotation"].tolist() == ["Brain_WT", "Brain_WT"]
     else:

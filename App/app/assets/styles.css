@@ -373,6 +373,20 @@
 /* 共有モード (ver4.0): インタラクティブ解析のみ表示。タブヘッダーを隠す */
 .shared-mode-tabs .nav-tabs { display: none !important; }
 
+/* ★ ver74.0: 共有リンクでは閲覧だけを案内し、サーバが拒否する操作を隠す。 */
+.shared-readonly-notice { display: none; }
+.shared-mode-tabs .shared-readonly-notice { display: block; }
+.shared-mode-tabs #interactive_source_panel > :not(summary):not(#load_progress_container):not(#interactive_data_info),
+.shared-mode-tabs .shared-editor-controls,
+.shared-mode-tabs .accordion-export,
+.shared-mode-tabs #cluster_rename_panel,
+.shared-mode-tabs #cluster_rename_status,
+.shared-mode-tabs #umap_name_controls_container,
+.shared-mode-tabs #spatial_controls_container,
+.shared-mode-tabs button.btn:not(#toggle_integration_method):not(#expand_umap_btn):not(#expand_spatial_btn):not(#expand_feature_btn):not(#expand_deg_btn):not(#apply_feature_mz_filter) {
+    display: none !important;
+}
+
 /* アコーディオンセクション色分け */
 .accordion-export > .accordion-header > .accordion-button,
 .accordion-export > .accordion-header > .accordion-button:not(.collapsed) { background-color: #e8f5e9; }
@@ -432,7 +446,7 @@
 .methods-fill { color: #d32f2f; font-weight: 600; }
 .methods-recovered { color: #1565c0; }
 
-/* ★ ver71.1: imzML座標配置と切片情報を、大型のモデルレスfloat内で一体編集する。 */
+/* ★ ver74.0: imzML全切片登録と解析選択を大型のモデルレスfloatで一体管理する。 */
 .imzml-spatial-compact-list {
     max-height: 142px;
     overflow-y: auto;
@@ -443,10 +457,10 @@
     position: fixed;
     top: 72px;
     right: 16px;
-    width: 920px;
-    height: 760px;
-    min-width: 680px;
-    min-height: 520px;
+    width: 980px;
+    height: 800px;
+    min-width: 720px;
+    min-height: 560px;
     max-width: calc(100vw - 16px);
     max-height: calc(100vh - 72px);
     z-index: 1040;
@@ -496,7 +510,7 @@
 
 .imzml-spatial-map-section {
     flex: 1 1 330px;
-    min-height: 260px;
+    min-height: 240px;
     border: 1px solid #e9ecef;
     border-radius: 6px;
     overflow: hidden;
@@ -505,7 +519,7 @@
 .imzml-spatial-graph {
     width: 100%;
     height: 100%;
-    min-height: 260px;
+    min-height: 240px;
 }
 
 .imzml-spatial-editor-section {
@@ -527,7 +541,7 @@
 
 .imzml-spatial-bulk-group {
     display: grid;
-    grid-template-columns: minmax(240px, 1fr) auto;
+    grid-template-columns: minmax(240px, 1fr) auto auto;
     gap: 8px;
     margin-top: 8px;
     align-items: center;
@@ -545,7 +559,7 @@
 }
 
 .imzml-spatial-float.minimized {
-    width: 360px !important;
+    width: 380px !important;
     height: 42px !important;
     min-width: 320px;
     min-height: 42px;
@@ -556,7 +570,7 @@
     display: none;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 980px) {
     .imzml-spatial-float {
         left: 8px !important;
         right: 8px !important;
@@ -568,15 +582,10 @@
         max-width: none;
         max-height: calc(100vh - 72px);
     }
-
-    .imzml-spatial-bulk-group {
-        grid-template-columns: 1fr;
-    }
+    .imzml-spatial-bulk-group { grid-template-columns: 1fr; }
 }
 
 @media (max-height: 700px) {
     .imzml-spatial-map-section,
-    .imzml-spatial-graph {
-        min-height: 220px;
-    }
+    .imzml-spatial-graph { min-height: 200px; }
 }

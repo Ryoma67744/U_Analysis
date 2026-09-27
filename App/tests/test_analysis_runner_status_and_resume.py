@@ -36,6 +36,13 @@ class TestStatusIsResetOnLaunchFailure:
             raise FileNotFoundError("Rscript が見つかりません")
 
         # 事前チェック（同時実行ガード等）は通し、Popen だけ失敗させる
+        # ★ ver74.0: ホストの空き容量や他試験のleaseで狙う分岐を飛ばさない。
+        from types import SimpleNamespace
+        import psutil
+        from app.services import process_control
+        monkeypatch.setattr(process_control, "active_lease", lambda: None)
+        monkeypatch.setattr(psutil, "virtual_memory", lambda: SimpleNamespace(available=32 * 1024**3))
+        monkeypatch.setattr(psutil, "disk_usage", lambda path: SimpleNamespace(free=64 * 1024**3))
         monkeypatch.setattr(ar, "_find_running_job_for_guard", lambda: None)
         monkeypatch.setattr(ar.subprocess, "Popen", _boom)
         result = ar._start_analysis_process_locked(str(script), str(out_dir))

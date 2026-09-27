@@ -770,7 +770,13 @@ def auto_scan_rds_files(folder_path, shared):
     if not folder_path or not Path(folder_path).is_dir():
         return no_update, no_update, no_update
 
-    rds_map = _detect_integration_methods(folder_path, include_derived=True)
+    # ★ ver74.0: client shared Storeを改変しても、共有台帳の手法/結果範囲を広げない。
+    from app.services.shared_callback_policy import shared_readonly_request, _share_rds_map
+    if shared_readonly_request():
+        from flask import g
+        rds_map = _share_rds_map(g.ua_shared_record)
+    else:
+        rds_map = _detect_integration_methods(folder_path, include_derived=True)
     if not rds_map:
         return no_update, no_update, no_update
 
@@ -1484,7 +1490,10 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
         # data_folder が未設定のサブプロジェクトを自己修復（出力時の推定フォールバックを不要に）
         try:
             from app.callbacks.interactive_data_export import ensure_sub_project_data_folder
-            ensure_sub_project_data_folder(project_id, sub_project_id, result_folder, r_instrument)
+            # ★ ver74.0: 共有閲覧のロードで元プロジェクト設定を自己修復しない。
+            from app.services.shared_callback_policy import shared_readonly_request
+            if not shared_readonly_request():
+                ensure_sub_project_data_folder(project_id, sub_project_id, result_folder, r_instrument)
         except Exception:
             pass
 

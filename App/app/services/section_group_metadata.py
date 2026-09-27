@@ -74,7 +74,7 @@ def group_summary(df):
         item = stats.setdefault(row["group"] or UNASSIGNED_GROUP, {"sections": 0, "subjects": set(), "missing_subjects": 0})
         item["sections"] += 1
         subject = row.get("subject_id", "").strip()
-        if subject:
+        if subject and subject != "該当なし":
             item["subjects"].add(subject)
         else:
             item["missing_subjects"] += 1
@@ -97,29 +97,20 @@ def save_group_edits(rds_path, rows):
     with FileLock(str(target) + ".lock", timeout=30):
         manifest = deepcopy(load_result_manifest(rds_path))
         selected_sections = {str(s["section_id"]): s for f in manifest.get("files", []) for s in f.get("sections", [])}
-        all_sections = {}
-        for f in manifest.get("files", []):
-            for section in f.get("spatial_sections", f.get("sections", [])):
-                all_sections.setdefault(str(section["section_id"]), []).append(section)
-            for section in f.get("sections", []):
-                all_sections.setdefault(str(section["section_id"]), []).append(section)
-        sections = selected_sections
-        if not sections:
+        if not selected_sections:
             raise ValueError("切片IDを持つ解析結果で群情報を編集できます。")
-        seen = set()
-        for row in rows or []:
-            sid = str(row.get("section_id", ""))
-            if sid not in sections or sid in seen:
-                raise ValueError("切片の対応が変わりました。解析結果を読み込み直してください。")
-            seen.add(sid)
-            for key in ("section_display_name", "subject_id", "group"):
-                if key not in row:
-                    continue
-                value = str(row.get(key) or "").strip()
-                for target_section in all_sections.get(sid, [sections[sid]]):
-                    target_section[key] = value
-                if "section_settings" in manifest and sid in manifest["section_settings"]:
-                    manifest["section_settings"][sid][key] = value
+        ids = [str(row.get("section_id", "")) for row in rows or []]
+        if len(ids) != len(set(ids)) or set(ids) - set(selected_sections):
+            raise ValueError("切片の対応が変わりました。解析結果を読み込み直してください。")
+        # ★ ver74.0: 結果の編集はoverlay。元登録を変更せず再解析でも同じ有効値を使う。
+        from app.services.section_metadata import apply_metadata_updates
+        before = deepcopy(manifest)
+        manifest = apply_metadata_updates(manifest, rows, confirmed=True)
+        manifest.setdefault("metadata_history", []).append({
+            "previous_overlay": {f["file_id"]: deepcopy(f.get("metadata_overlay") or {})
+                                 for f in before.get("files", [])},
+            "edits": deepcopy(rows),
+        })
         from app.services.section_metadata import validate_section_manifest
         errors = validate_section_manifest(manifest)
         if errors:

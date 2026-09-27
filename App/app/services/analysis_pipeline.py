@@ -136,6 +136,8 @@ def run_pipeline(payload, *, converter=None, validator=None, runner=None):
         record.update(runtime_parameters=persisted, section_manifest=params["section_manifest"],
                       input_paths=params["input_paths"], input_fingerprints=params.get("input_fingerprints"),
                       analysis_signature=params.get("analysis_signature"),
+                      reduction_signature=params.get("reduction_signature"),
+                      metadata_signature=params.get("metadata_signature"),
                       input_normalization="unknown; user analysis settings retained")
         write_json(root / "analysis_params.json", record)
         write_json(root / "section_manifest.json", params["section_manifest"])

@@ -1,3 +1,34 @@
+# ★ ver74.0: 5桁表示名をIDにすると6桁Parquetの別質量が合流するため、
+# 新規読込のfeature IDは6桁へ統一する。旧RDSのIDは読み替えない。
+ua_tims_feature_ids <- function(mz, allow_duplicates = FALSE) {
+  mz <- suppressWarnings(as.numeric(mz))
+  if (!length(mz) || any(!is.finite(mz)) || any(mz <= 0))
+    stop("feature m/z は有限の正数である必要があります")
+  ids <- sprintf("m/z %.6f", mz)
+  if (!isTRUE(allow_duplicates) && anyDuplicated(ids))
+    stop("m/zが小数6桁のfeature IDで衝突します。暗黙の統合は行いません")
+  ids
+}
+
+# 校正の対象は再解析用一時名ではなく、保持した元キーで決定する。
+ua_calibration_source_key <- function(metadata, coefficients, fallback_keys = character()) {
+  saved <- if ("calibration_source_key" %in% names(metadata))
+    unique(as.character(metadata$calibration_source_key)) else character()
+  saved <- saved[!is.na(saved) & nzchar(saved)]
+  if (length(saved) > 1L) stop("単一入力に複数の校正元キーがあります")
+  if (length(saved)) {
+    if (!saved %in% names(coefficients))
+      stop("保存された校正元キーの係数がありません: ", saved)
+    return(saved)
+  }
+  keys <- unique(as.character(fallback_keys))
+  keys <- keys[!is.na(keys) & nzchar(keys) & keys %in% names(coefficients)]
+  if (length(keys) > 1L && !all(vapply(keys[-1L], function(key)
+      identical(as.numeric(coefficients[[key]]), as.numeric(coefficients[[keys[1L]]])), logical(1))))
+    stop("入力に複数の異なる校正係数が対応しています")
+  if (length(keys)) keys[1L] else ""
+}
+
 # ★ ver67.0: 名前は特徴量 ID と分離し、選択入力の SCiLS 名を優先する。
 # 一部の名称競合で全分子が無名になる処理と、DB による既存名の上書きを防ぐ。
 .naming_mz <- function(feature) {

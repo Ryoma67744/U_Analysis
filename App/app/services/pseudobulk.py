@@ -164,11 +164,21 @@ def sample_level_test(pb: "pd.DataFrame",
     """サンプル単位に集約した pseudobulk から 2 群比較（Welch t + BH）。
 
     Args:
-        pb: aggregate_pseudobulk の出力（sample_col を含む）。
+        pb: aggregate_pseudobulk の出力（sample_col を含み、1サンプル1行）。
+            ROI/cluster別の表は比較する層を選択してから渡す。
         condition_map: {sample: condition}（2 群）。
     Returns:
         dict(result=DataFrame, descriptive_only=bool, n_a, n_b, levels, note)
     """
+    # ★ ver74.0: 複数ROI/cluster行を独立反復として数えると擬似反復になる。
+    # 層間の平均・重みは研究上の選択なので、暗黙に再集約せず明示的な入力修正を求める。
+    samples = pb[sample_col]
+    if samples.isna().any() or samples.astype(str).str.strip().eq("").any():
+        raise ValueError("独立サンプルIDが欠けています。1サンプル1行で指定してください。")
+    if samples.duplicated().any():
+        raise ValueError("サンプルIDが重複しています。ROI/clusterを選択し、1サンプル1行で指定してください。")
+    if not samples.isin(condition_map).all():
+        raise ValueError("群が未指定のサンプルがあります。condition_mapを確認してください。")
     meta_cols = {"n_pixels", sample_col, "Cluster", "ROI", "__group__"}
     feats = list(feature_cols) if feature_cols is not None else [
         c for c in pb.columns if c not in meta_cols]

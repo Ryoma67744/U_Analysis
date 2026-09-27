@@ -1,6 +1,6 @@
 """Tests for app.utils.validation (Inc.1: range validation)."""
 
-from app.utils.validation import check_range, validate_param, PARAM_BOUNDS
+from app.utils.validation import check_range, validate_param, PARAM_BOUNDS, REQUIRED_NUMERIC_INPUTS
 
 
 class TestCheckRange:
@@ -78,6 +78,12 @@ class TestValidateParam:
                 f"画面に存在しない id '{dead}' の定義が復活している。"
                 "validate_param は未知 id を常に ok にするので無言で効かない")
 
-    def test_blank_is_ok_for_all_bounds(self):
+    def test_optional_blank_and_required_numeric_inputs_are_distinct(self):
         for pid in PARAM_BOUNDS:
-            assert validate_param(pid, None)[0] is True
+            assert validate_param(pid, None)[0] is (pid not in REQUIRED_NUMERIC_INPUTS)
+
+    def test_imzml_ppm_is_required_finite_nonnegative_and_preserves_zero(self):
+        for value in (None, "", -1, "abc", float("nan"), float("inf"), -float("inf")):
+            assert validate_param("imzml_alignment_ppm", value)[0] is False
+        for value in (0, 5, 1000):
+            assert validate_param("imzml_alignment_ppm", value)[0] is True

@@ -20,7 +20,7 @@ from urllib.parse import quote, urlparse
 
 from flask import (
     Flask, abort, jsonify, redirect, render_template,
-    request, session, url_for,
+    request, session, url_for, current_app,
 )
 
 from app.services import auth_service
@@ -47,7 +47,6 @@ _BYPASS_EXACT = {
     "/logout",
     "/_dash-layout",
     "/_dash-dependencies",
-    "/_dash-update-component",
     "/_reload-hash",
 }
 
@@ -129,17 +128,81 @@ def _safe_next(next_url: Optional[str]) -> str:
     return next_url
 
 
+def _validated_share_scope(kind, token):
+    if kind == "persistent":
+        from app.services.persistent_share_manager import get_persistent_share
+        share = get_persistent_share(token)
+    elif kind == "expiring":
+        from app.services.share_manager import get_share
+        share = get_share(token)
+    else:
+        return None
+    if not share or (share.get("require_password", kind == "expiring") and not _session_valid_for_tier("B")):
+        return None
+    return share
+
+
+def _scope_from_path(path):
+    if not isinstance(path, str):
+        return None
+    match = _SHARE_PATH_RE.match(path or "")
+    if match:
+        return "expiring", match.group(1)
+    match = _VIEW_PATH_RE.match(path or "")
+    return ("persistent", match.group(1)) if match else None
+
+
+def _authorize_dash_callback():
+    # ★ ver74.0: callback POSTもログインゲート対象。UI非表示やStoreは権限根拠ではない。
+    if _session_valid_for_tier("A"):
+        return None
+    body = request.get_json(silent=True)
+    if (not isinstance(body, dict) or not isinstance(body.get("output"), str)
+            or not isinstance(body.get("inputs", []), list) or not isinstance(body.get("state", []), list)):
+        return jsonify({"error": "callback認証が必要です"}), 403
+    dash_app = current_app.extensions.get("ua_dash_app")
+    entry = (getattr(dash_app, "callback_map", {}) or {}).get(body.get("output"))
+    if not entry or not entry.get("callback"):
+        return jsonify({"error": "許可されていないcallbackです"}), 403
+    scope = None
+    from app.services.url_utils import is_same_request_host_url
+    if is_same_request_host_url(request.referrer):
+        scope = _scope_from_path(urlparse(request.referrer).path)
+    if scope is None:
+        saved = session.get("share_scope") or {}
+        scope = (saved.get("kind"), saved.get("token")) if saved else None
+    # 最初のルーティングは署名Storeではなく、URLのtokenを台帳に照合する。
+    from app.services.shared_callback_policy import callback_identity, authorize_shared_callback
+    if callback_identity(entry.get("callback"))[1] == "route_share_url":
+        for value in body.get("inputs", []):
+            if isinstance(value, dict) and value.get("id") == "url_bar":
+                scope = _scope_from_path(value.get("value"))
+    share = _validated_share_scope(*scope) if scope and all(scope) else None
+    if not share or not authorize_shared_callback(body, entry, share, *scope):
+        return jsonify({"error": "共有は対象結果の閲覧専用です。操作には解析者ログインが必要です。"}), 403
+    session["share_scope"] = {"kind": scope[0], "token": scope[1]}
+    return None
+
+
 def _require_login():
     """before_request hook: Tier 判定して未認証なら /login にリダイレクト。"""
     path = request.path
 
+    if path == "/_dash-update-component":
+        return _authorize_dash_callback()
     if _is_bypass(path):
         return None
 
     # 共有/閲覧リンク (/share/, /view/): レコードの require_password で判定 (ver4.2)
     pw_required = _share_password_required(path)
     if pw_required is not None:
-        if pw_required is False:
+        scope = _scope_from_path(path)
+        share = _validated_share_scope(*scope) if scope else None
+        if share:
+            session["share_scope"] = {"kind": scope[0], "token": scope[1]}
+        else:
+            session.pop("share_scope", None)
+        if pw_required is False and share:
             return None  # パス不要 → 認証なしで通す
         if _session_valid_for_tier("B"):
             return None
@@ -273,13 +336,15 @@ def _change_password_view():
     return jsonify({"ok": True, "updated": updated})
 
 
-def register(server: Flask) -> None:
+def register(server: Flask, *, dash_app=None) -> None:
     """Flask server に認証 hook と routes を登録する。
 
     呼び出し順序の前提:
     - 既存の `_healthz_bypass`, `_ensure_session_id` の **後** に呼ぶ
       (before_request はチェーン順に評価される)
     """
+    if dash_app is not None:
+        server.extensions["ua_dash_app"] = dash_app
     server.before_request(_require_login)
     server.add_url_rule(
         "/login", endpoint="auth.login",

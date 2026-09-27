@@ -59,6 +59,7 @@ local({
   }
   source(helper_path, local = FALSE)
   source(file.path(dirname(helper_path), "analysis_contract.R"), local = FALSE)
+  source(file.path(dirname(helper_path), "feature_naming_policy.R"), local = FALSE)
 })
 
 # ------------------------------------------------------------
@@ -244,6 +245,9 @@ V13_ANNOTATION_FILTER <- NULL
 # ★ ver67.0: 初回と再解析で選択・由来・保存条件を共通にする。
 V13_SECTION_MANIFEST_PATH <- ""
 V13_ANALYSIS_SIGNATURE <- ""
+# ★ ver74.0: 再解析copyにも数値条件/metadataの署名を引き継ぐ。
+V13_REDUCTION_SIGNATURE <- ""
+V13_METADATA_SIGNATURE <- ""
 
 # (N) slice_id / condition を 1回目RDSから保存しておきたい場合（通常は不要）
 #     ver13 は入力Parquetの annotation から slice_id/condition を再現できるため、
@@ -752,6 +756,8 @@ make_v13_copy_with_settings <- function(v13_path, out_path,
   code <- replace_assign_line(code, "PROJECT_LABEL", r_str(project_label))
   code <- replace_assign_line(code, "SECTION_MANIFEST_PATH", r_str(""))
   code <- replace_assign_line(code, "ANALYSIS_SIGNATURE", r_str(V13_ANALYSIS_SIGNATURE))
+  code <- replace_assign_line(code, "REDUCTION_SIGNATURE", r_str(V13_REDUCTION_SIGNATURE))
+  code <- replace_assign_line(code, "METADATA_SIGNATURE", r_str(V13_METADATA_SIGNATURE))
 
   # ION_MODE ("Positive" or "Negative")
   if (exists("V13_ION_MODE") && nzchar(V13_ION_MODE)) {
@@ -1235,7 +1241,13 @@ for (fp in ORIGINAL_INPUT_PATHS) {
   # 元画素IDを保持した対応表を一時入力に添える。
   .side_rows <- if (is.null(.matched_source_rows)) rows_sn else rows_sn[.matched_source_rows, , drop = FALSE]
   side <- .side_rows[, intersect(c("ua_coordinate_component", "source_file_id", "source_pixel_id", "section_id", "section_display_name", "subject_id",
-                                "group", "integration_unit_id"), names(.side_rows)), drop = FALSE]
+                                "group", "integration_unit_id", "calibration_source_key"), names(.side_rows)), drop = FALSE]
+  # ★ ver74.0: 再入力の接尾辞では校正の元キーを復元できないためsidecarへ固定する。
+  if (isTRUE(V13_CALIBRATION_ENABLE) && length(V13_CALIBRATION_BY_SAMPLE)) {
+    .cal_key <- ua_calibration_source_key(.side_rows, V13_CALIBRATION_BY_SAMPLE,
+      c(.side_rows$source_file_id, rds_samples, input_sn))
+    if (nzchar(.cal_key)) side$calibration_source_key <- .cal_key
+  }
   side$spot_index <- if (is.null(.matched_source_rows)) .side_rows$ID_for_export else keep_ids
   side <- side[!duplicated(side$spot_index), , drop = FALSE]
   write.csv(side, file.path(dirname(out_fp), paste0(tools::file_path_sans_ext(basename(out_fp)), ".metadata.csv")),

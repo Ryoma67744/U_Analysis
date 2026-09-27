@@ -108,11 +108,13 @@ def test_an_error_run_does_not_report_success():
 
 
 def test_a_normal_run_still_reports_success():
-    """止めすぎない: 実行中・完了・停止操作は従来どおり 0。"""
+    """★ ver74.0: 実行中/完了だけ成功。利用者停止は専用コードで表示する。"""
     from tools import analysis_status_report as r
 
-    for v in ("running", "finished", "stopped"):
+    for v in ("running", "finished"):
         assert r._EXIT_BY_VERDICT[v] == r.EXIT_OK, v
+    assert r._EXIT_BY_VERDICT["stopped"] == r.EXIT_STOPPED != r.EXIT_OK
+    assert f"    {r.EXIT_STOPPED} {{" in PS1.read_text(encoding="utf-8")
 
 
 def test_the_powershell_has_a_branch_for_the_error_code():

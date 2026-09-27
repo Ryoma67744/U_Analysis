@@ -29,7 +29,7 @@
 #   Rscript slim_existing_rds.R /path/to/Data --include="Step2*.rds"
 #
 # Safety:
-#   - 書き込みは <file>.rds.tmp に行い、成功後に file.rename でアトミック置換
+#   - 書き込みは同一フォルダの一意な一時ファイルに行い、読取検証後にfile.renameで置換
 #   - 読み込み失敗時は一切書き換えない
 #   - 既に qs 形式のファイルはスキップ (マジックバイト判定)
 # =============================================================================
@@ -150,7 +150,7 @@ main <- function() {
 
   if (length(targets) == 0) {
     cat("[slim] 該当ファイルなし。\n")
-    return(invisible(NULL))
+    return(invisible(0L))
   }
   cat(sprintf("[slim] %d files matched.\n\n", length(targets)))
 
@@ -222,8 +222,12 @@ main <- function() {
     # バックアップ
     if (opts$backup) {
       bak <- paste0(fp, ".bak")
-      ok_bak <- tryCatch({ file.copy(fp, bak, overwrite = TRUE); TRUE },
-                        error = function(e) FALSE)
+      # ★ ver74.0: コピー戻り値と内容一致が確認できるまで上書きしない。
+      ok_bak <- tryCatch({ .rds_io_backup_file(fp, bak); TRUE },
+                        error = function(e) {
+                          message("[slim] backup失敗: ", conditionMessage(e))
+                          FALSE
+                        })
       if (!ok_bak) {
         cat(sprintf("%s -> ERROR (backup 失敗)\n", tag))
         n_error <- n_error + 1L
@@ -233,7 +237,7 @@ main <- function() {
       }
     }
 
-    # 上書き保存 (save_rds_compact 内部で <path>.tmp -> rename)
+    # 上書き保存 (save_rds_compact 内部で一意な一時ファイル -> rename)
     ok <- tryCatch({
       save_rds_compact(obj, fp, diet = TRUE,
                        keep_scale = opts$keep_scale,
@@ -282,6 +286,8 @@ main <- function() {
     for (e in errors) cat("  - ", e, "\n", sep = "")
   }
   cat("[slim] ============================================\n")
+  # ★ ver74.0: 一部失敗をCLIの正常終了として扱わない。
+  invisible(if (n_error > 0L) 2L else 0L)
 }
 
-main()
+quit(status = main())

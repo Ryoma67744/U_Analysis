@@ -12,6 +12,26 @@
 
 ---
 
+## 2026-09-28_ver74.0
+
+### imzML全切片登録Parquetと解析選択を分離
+
+- 添付候補の監査指摘を修正。固定登録、選択ID、編集draft、解析後overlayを分離し、一部切片選択・確認/適用・再open・直接Parquet・群変更後の再解析を共通契約へ揃えた。
+- TIMSの新規feature IDをR・CSV読込・校正・exportまで6桁へ統一し、5桁丸めによる異なる質量の統合を防いだ。既存RDSのIDは自動変更しない。MS1 imzML再出力とsource losslessnessの記録も修正。
+- 数値reduction、metadata、完全来歴の署名を分離した。明示したcheckpointからの再開ではmetadata更新時にも一致する数値処理を再利用し、下流統計は更新する。
+- **共有リンクは閲覧専用になった。** callback POSTにサーバ認証を適用し、共有tokenの対象結果と許可した閲覧操作だけを認める。保存・変換・再解析・管理操作は解析者ログインが必要。
+- RDS保存失敗、DESI空欄ヘッダ/短行、小ROI安定性診断、分子名後付け、DEG手法混同、H&E画像名衝突、Methods実行記録、OpenAPI、監視・export診断を修正した。
+- 管理変換cacheの再パックを拒否し、SCiLSの非有限値/6桁名衝突/保存精度overflowを公開前に拒否する。有限の負強度は補正済み入力との互換性のため保持する。
+- backup/restoreは実containerのmountを解決し、復元前の事前展開と旧内容の保全を行う。復元後は同じcontainerを再開し、設定変更による再作成を避ける。Python 3が必要。
+- 実I/O・R/Seurat・認証・状態遷移の回帰試験と依存必須の契約CIを追加した。検証結果と未実施範囲は `App/docs/VER74_REPAIR_REPORT.md` に記録する。
+
+- imzML内の全切片・全pixelを、従来SCiLS CSV変換と同じ `id, x, y, m/z..., annotation` 形式の標準TIMS Parquetへ登録する。`annotation`には全切片名を固定し、解析対象外切片も削除しない。
+- 切片名・個体／独立試料ID・群・登録確認を全切片で必須化した。今回解析しない切片に不足があっても、UI・変換・解析開始前の各ゲートで停止し、Rは開始しない。
+- 全切片からmaster featureを作り、processed-centroidの未記録featureは0とする。m/z列名は小数6桁、強度はCSV互換float32、Zstandard＋annotation辞書圧縮へ統一した。
+- Parquet schema metadataへ全切片registryを保存し、通常解析はParquet単体で切片一覧・個体ID・群を復元できる。原本component・source index・QCは監査sidecarへ保持する。
+- Parquet登録と今回の解析切片選択を分離し、選択変更では再変換しない。切片抽出後に全0featureを除外してから正規化・PCA・UMAPを実行する。
+- 手動imzML登録とUMAP内自動変換を同じ変換・検証サービスへ接続し、変換後Parquetの二重全量validationを解消した。旧ver71–73 component列付きParquetはlegacy経路で読める。
+
 ## 2026-09-26_ver73.0
 
 ### processed-centroid imzMLの疎な共通feature行列化
@@ -21,7 +41,6 @@
 - 同一pixelの複数peakが同じmaster featureへ対応した場合は強度を合計し、collision数、検出pixel数、mass spread、強度合計、0割合を変換QCへ保存する。
 - 出力は既存TIMS readerがfeature blockごとに`dgCMatrix`へ変換できるzero-filled wide Parquetとし、common-axis入力のlossless経路は変更しない。processed由来のimzML再出力はaligned common-axis derivativeであり、原本へのlossless round-tripではないことをreceiptへ記録する。
 - alignment ppm、変換コード、0値定義をcache keyへ含め、設定変更時は別revisionを作成する。可変長peak数の画面表示は「N種類」ではなく「pixelごとのピーク数がN通り」と明示する。
-
 
 ## 2026-09-26_ver72.0
 

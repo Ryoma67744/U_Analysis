@@ -3,8 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 import re
+import tempfile
+from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 from app.utils.deg_utils import extract_mz_numeric, is_meaningful_annotation
@@ -13,6 +16,7 @@ logger = logging.getLogger("msi.naming_policy")
 MANIFEST = "feature_annotation_manifest.json"
 SOURCES_CSV = "feature_annotation_sources.csv"
 POLICY_VERSION = 1
+OVERLAY_MANIFEST = "feature_annotation_overlays.json"
 
 
 def db_annotation_enabled(settings: dict | None) -> bool:
@@ -89,6 +93,111 @@ def copy_selected_feature_annotations(input_files, output_dir) -> Path:
     return manifest
 
 
+def _atomic_annotation_bytes(path, payload) -> None:
+    """途中失敗した履歴/現行版を完成ファイル名で残さない。"""
+    fd, temporary = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(payload)
+        os.replace(temporary, path)
+    except Exception:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+
+def write_annotation_sidecar(path, table) -> Path:
+    """更新前のサイドカーを内容hash付きで保存してから、現行版を原子的に置き換える。"""
+    from app.utils.file_locks import get_or_create_lock
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = table.to_parquet(index=False)
+    with get_or_create_lock(path):
+        if path.exists():
+            previous = path.read_bytes()
+            if previous == payload:
+                return path
+            # ★ ver74.0: 後付け前の命名を消すと来歴が失われるため、元のバイト列を退避する。
+            history = path.parent / "feature_annotation_history"
+            history.mkdir(exist_ok=True)
+            archive = history / (path.stem + "_" + hashlib.sha256(previous).hexdigest() + ".parquet")
+            if not archive.exists() or archive.read_bytes() != previous:
+                _atomic_annotation_bytes(archive, previous)
+        _atomic_annotation_bytes(path, payload)
+    return path
+
+
+def _snapshot_hash(base, data) -> str:
+    """入力集合だけでなく解析時サイドカーの内容にもoverlayを結び付ける。"""
+    digest = hashlib.sha256((base / MANIFEST).read_bytes())
+    for row in data["inputs"]:
+        if row.get("sidecar"):
+            digest.update((base / row["sidecar"]).read_bytes())
+    return digest.hexdigest()
+
+
+def _selected_sidecars(base, data) -> list[Path]:
+    overlay_path = base / OVERLAY_MANIFEST
+    overlay = {}
+    if overlay_path.is_file():
+        saved = json.loads(overlay_path.read_text(encoding="utf-8"))
+        if saved.get("snapshot_sha256") == _snapshot_hash(base, data):
+            overlay = saved.get("inputs") or {}
+    paths = []
+    for row in data["inputs"]:
+        effective = overlay.get(str(Path(row["input_file"]).resolve())) or row
+        if effective.get("sidecar"):
+            paths.append((base / effective["sidecar"]).resolve())
+    return paths
+
+
+def update_feature_annotation_overlay(input_file, output_dir, table, *, provenance=None) -> list[Path]:
+    """選択入力だけの有効名称を更新。解析時manifest/CSV/サイドカーは不変に保つ。"""
+    from app.utils.file_locks import atomic_write_json, get_or_create_lock
+    base = Path(output_dir)
+    source = str(Path(input_file).resolve())
+    manifest = base / MANIFEST
+    overlay_path = base / OVERLAY_MANIFEST
+    # ★ ver74.0: 結果直下へ同名ファイルを置くだけではviewerが解析時コピーを読み続ける。
+    # basename一致は別入力を誤更新するため、manifestの入力絶対pathだけを更新対象とする。
+    with get_or_create_lock(overlay_path):
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        selected = {str(Path(row["input_file"]).resolve()) for row in data["inputs"]}
+        if source not in selected:
+            return []
+        snapshot = _snapshot_hash(base, data)
+        saved = json.loads(overlay_path.read_text(encoding="utf-8")) if overlay_path.exists() else {}
+        if saved.get("snapshot_sha256") != snapshot:
+            saved = {"version": 1, "snapshot_sha256": snapshot, "inputs": {}, "history": []}
+        updated = _normalize_annotation_table(table).copy()
+        updated["source_file"] = source
+        payload = updated.to_parquet(index=False)
+        digest = hashlib.sha256(payload).hexdigest()
+        version_dir = base / "feature_annotation_overlays"
+        version_dir.mkdir(exist_ok=True)
+        destination = version_dir / f"{digest}_feature_annotations.parquet"
+        if not destination.exists() or destination.read_bytes() != payload:
+            write_annotation_sidecar(destination, updated)
+        record = {"input_file": source, "sidecar": str(destination.relative_to(base)),
+                  "sha256": digest, "updated_at": datetime.now(timezone.utc).isoformat(),
+                  "provenance": provenance or {}}
+        saved["inputs"][source] = record
+        saved["history"].append(record)
+        # R解析時のsources.csvは証拠として保持。有効版CSVは同じoverlayから別名で生成。
+        frames = []
+        for row in data["inputs"]:
+            effective = saved["inputs"].get(str(Path(row["input_file"]).resolve())) or row
+            if effective.get("sidecar"):
+                frames.append(pd.read_parquet(base / effective["sidecar"]))
+        csv_bytes = pd.concat(frames, ignore_index=True).to_csv(index=False).encode("utf-8")
+        csv_path = version_dir / (hashlib.sha256(csv_bytes).hexdigest() + "_sources.csv")
+        if not csv_path.exists() or csv_path.read_bytes() != csv_bytes:
+            _atomic_annotation_bytes(csv_path, csv_bytes)
+        saved["effective_sources_csv"] = str(csv_path.relative_to(base))
+        # 全成果物を書き終えた後に1つの参照だけをpublishする。
+        atomic_write_json(saved, overlay_path)
+    return [destination]
+
+
 def find_annotation_sidecars(rds_path) -> list[Path]:
     """manifest がある解析はその選択集合だけを使い、旧結果は近傍探索で読む。"""
     bases = list(Path(rds_path).resolve().parents)[:3]
@@ -97,7 +206,7 @@ def find_annotation_sidecars(rds_path) -> list[Path]:
         if manifest.is_file():
             try:
                 data = json.loads(manifest.read_text(encoding="utf-8"))
-                return [(base / row["sidecar"]).resolve() for row in data["inputs"] if row.get("sidecar")]
+                return _selected_sidecars(base, data)
             except (OSError, ValueError, KeyError, TypeError):
                 logger.warning("選択入力の名称 manifest を読めません: %s", manifest)
                 return []

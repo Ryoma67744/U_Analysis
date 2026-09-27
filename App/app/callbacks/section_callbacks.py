@@ -2,11 +2,10 @@
 from pathlib import Path
 from dash import ALL, MATCH, Input, Output, State, callback, ctx, html, no_update
 import dash_bootstrap_components as dbc
-from app.services.data_manager import find_tims_file_path, read_parquet_annotations, read_desi_roi_list
+from app.services.data_manager import (find_tims_file_path, read_parquet_annotations,
+    read_parquet_section_registry, read_desi_roi_list)
 from app.services.section_metadata import assign_group, build_section_manifest, manifest_group_rows, summarize_manifest
 from app.services.session_manager import save_last_settings
-
-
 
 
 def _spectral_preflight_notice(preflight):
@@ -38,10 +37,10 @@ def _spectral_preflight_notice(preflight):
             html.Div([html.Strong(f"△ {ms_label}"),
                       html.Span(f" ／ {preflight.get('representation', 'unknown')}-"
                                 f"{preflight.get('spectrum_type', 'unknown')}")]),
-            html.Div(f"✓ 可変長の疎なピークリストとして行列化: {peak_text}"),
+            html.Div(f"✓ 可変長の疎なピークリストとして全切片を行列化: {peak_text}"),
             html.Div(
-                "解析開始時に画面のm/zアライメント(ppm)でmaster featureを作成し、"
-                "各pixelに記録されていないfeatureを0としてPCA・UMAPへ渡します。"
+                "変換時に全pixelからmaster featureを作成し、記録のないfeatureを0として"
+                "標準Parquetへ保存します。今回の解析切片選択はParquet内容を変更しません。"
             ),
             html.Details([
                 html.Summary("0値とfeature対応の定義", style={"cursor": "pointer"}),
@@ -52,9 +51,8 @@ def _spectral_preflight_notice(preflight):
                     className="mb-1 mt-1",
                 ),
                 html.P(
-                    "ppm=0では完全一致m/zのunion、ppm>0では既存TIMS解析と同じ決定論的な"
-                    "ppm groupingを用います。同一pixelの複数peakが同じfeatureへ入る場合は"
-                    "強度を合計し、変換QCへ記録します。",
+                    "ppm=0では完全一致m/zのunion、ppm>0では決定論的なppm groupingを用います。"
+                    "同一pixelの複数peakが同じfeatureへ入る場合は強度を合計し、QCへ記録します。",
                     className="mb-0",
                 ),
             ]),
@@ -64,14 +62,13 @@ def _spectral_preflight_notice(preflight):
         return dbc.Alert(
             f"△ {ms_label}: MSn・precursor・product・fragmentation情報がなく、"
             "full-scan MSIとして整合するためMS1として処理します。 "
-            "m/z配列長は共通候補で、全m/z値の一致は解析開始時に検証します。",
+            "m/z配列長は共通候補で、全m/z値の一致は変換開始時に検証します。",
             color="info", className="py-2 px-2 my-2 small",
         )
     return html.Small(
-        "✓ 明示MS1 ／ 共通m/z軸候補（全m/z値は解析開始時に検証）",
+        "✓ 明示MS1 ／ 共通m/z軸候補（全m/z値は変換開始時に検証）",
         className="d-block text-success my-1",
     )
-
 
 
 def _selection_blocks(catalog, manifest, scope):
@@ -91,9 +88,15 @@ def _selection_blocks(catalog, manifest, scope):
                 result.append(html.Div(children, className="border rounded p-2 mb-2"))
                 continue
             spatial_sections = f.get("spatial_sections", [])
+            # ★ ver74.0: 全切片の登録は保持し、元RDSにない画素の再選択は許さない。
+            if scope == "reanalysis" and "source_selected_section_ids" in f:
+                source_ids = set(f["source_selected_section_ids"])
+                spatial_sections = [s for s in spatial_sections if s["section_id"] in source_ids]
             selected = [s["section_id"] for s in spatial_sections if s.get("selected", True)]
             children.append(html.Div(
-                f"座標から {len(spatial_sections)} 切片候補を検出",
+                (f"元解析RDSで採用した {len(spatial_sections)} 切片から再解析対象を選択"
+                 if scope == "reanalysis" and "source_selected_section_ids" in f
+                 else f"座標から {len(spatial_sections)} 切片候補を検出"),
                 className="small text-success mt-1"))
             warnings = (f.get("spatial_layout") or {}).get("warnings") or []
             if warnings:
@@ -107,7 +110,7 @@ def _selection_blocks(catalog, manifest, scope):
                           "value": s["section_id"]} for s in spatial_sections],
                 value=selected, inline=False, className="mt-1 imzml-spatial-compact-list"))
             children.append(html.Div(className="d-flex flex-wrap gap-1 align-items-center", children=[
-                dbc.Button("配置・切片情報を編集",
+                dbc.Button("全切片の登録情報・解析選択を編集",
                            id={"type": "imzml_spatial_open", "scope": scope, "index": path},
                            n_clicks=0, size="sm", color="info", outline=True),
                 dbc.Button("全選択", id={"type": "section_select_all", "scope": scope, "index": path},
@@ -161,13 +164,23 @@ def make_catalog(paths, is_tims, previous, overrides=None):
                 item["spatial_layout"] = layout
                 override = overrides.get(p) or {}
                 if override.get("coordinate_hash") == layout.get("coordinate_hash"):
-                    item["spatial_sections"] = override.get("spatial_sections")
+                    item["spatial_sections"] = (override.get("registered_sections")
+                                                or override.get("spatial_sections"))
+                    item["registered_sections"] = item["spatial_sections"]
+                    item["selected_section_ids"] = override.get("selected_section_ids")
             except (OSError, SpatialLayoutError) as exc:  # 入力エラーはmanifestへ残し、黙って1切片にしない。
                 item["spatial_error"] = str(exc)
             catalog.append(item)
         else:
             rois = read_parquet_annotations(p) if is_tims else read_desi_roi_list(p)
-            catalog.append({"path": p, "available_rois": rois})
+            item = {"path": p, "available_rois": rois}
+            if is_tims:
+                registry = read_parquet_section_registry(p)
+                if registry:
+                    item["section_registry"] = registry
+                    item["registered_sections"] = registry
+                    item["roi_role"] = "section"
+            catalog.append(item)
     return catalog, build_section_manifest(catalog, previous=previous)
 
 
@@ -217,8 +230,9 @@ def source_reanalysis_catalog(manifest):
         rois = f.get("rois", []) if f.get("selection_mode") == "selected" else f.get("available_rois", [])
         item = {"path": f["path"], "file_id": f["file_id"],
                 "available_rois": list(rois), "roi_role": f.get("roi_role")}
-        for key in ("spatial_layout", "spatial_sections", "spatial_error",
-                    "input_format", "spectral_preflight"):
+        # ★ ver74.0: 元解析で採用しなかった切片を再解析の入力数へ数えない。
+        item["source_selected_section_ids"] = [s["section_id"] for s in f.get("sections", [])]
+        for key in ("spatial_layout", "spatial_sections", "registered_sections", "selected_section_ids", "spatial_error", "input_format", "spectral_preflight"):
             if key in f:
                 item[key] = f[key]
         result.append(item)
@@ -245,7 +259,10 @@ def update_reanalysis_section_selector(samples, folder, desi_method, tims_method
             override = (overrides or {}).get(item["path"]) or {}
             layout = item.get("spatial_layout") or {}
             if override.get("coordinate_hash") == layout.get("coordinate_hash"):
-                item["spatial_sections"] = override.get("spatial_sections")
+                item["spatial_sections"] = (override.get("registered_sections")
+                                            or override.get("spatial_sections"))
+                item["registered_sections"] = item["spatial_sections"]
+                item["selected_section_ids"] = override.get("selected_section_ids")
         same_source = (previous or {}).get("source_rds_path") == saved.get("source_rds_path")
         manifest = build_section_manifest(catalog, previous=previous if same_source else saved)
         return catalog, _selection_blocks(catalog, manifest, "reanalysis")
@@ -258,6 +275,26 @@ def update_reanalysis_section_selector(samples, folder, desi_method, tims_method
             paths.append(str(p))
     catalog, manifest = make_catalog(paths, is_tims, previous, overrides)
     return catalog, _selection_blocks(catalog, manifest, "reanalysis")
+
+
+def _register_group_details(scope):
+    suffix = "" if scope == "initial" else "_reanalysis"
+
+    @callback(
+        Output("section_group_details" + suffix, "open"),
+        Input({"type": "section_group_open", "scope": scope, "index": ALL}, "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def open_group_details(clicks):
+        trigger = ctx.triggered_id
+        value = (ctx.triggered[0].get("value") if getattr(ctx, "triggered", None) else None)
+        if not isinstance(trigger, dict) or trigger.get("type") != "section_group_open" or not value:
+            return no_update
+        return True
+
+
+_register_group_details("initial")
+_register_group_details("reanalysis")
 
 
 @callback(

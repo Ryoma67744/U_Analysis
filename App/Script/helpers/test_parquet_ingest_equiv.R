@@ -64,7 +64,8 @@ read_parquet_legacy <- function(file_path, sample_prefix = NULL) {
   } else {
     mz_num <- if (is_bare_numeric) as.numeric(mz_cols) else
       suppressWarnings(as.numeric(sub("^mz_", "", mz_cols)))
-    metabolite_names <- make.unique(sprintf("m/z %.5f", mz_num))
+    # ★ ver74.0: 比較基準も新規入力の6桁ID契約へ揃える。強度の旧密読込は維持する。
+    metabolite_names <- ua_tims_feature_ids(mz_num)
   }
 
   base_prefix <- gsub("[^A-Za-z0-9_-]", "_", sample_prefix %||% "Sample")
@@ -110,34 +111,22 @@ read_parquet_legacy <- function(file_path, sample_prefix = NULL) {
 #   定義部分だけを切り出して評価する。
 # ------------------------------------------------------------
 load_new_reader <- function(base_script) {
-  src <- readLines(base_script, warn = FALSE)
-  s <- grep("^read_desi_data <- function\\(", src)
-  if (length(s) != 1) stop("read_desi_data の定義が特定できません: ", base_script)
-  # 関数ブロックの終端を波括弧の収支で探す
-  depth <- 0L; e <- NA_integer_
-  for (i in s:length(src)) {
-    ln <- src[i]
-    depth <- depth + lengths(regmatches(ln, gregexpr("{", ln, fixed = TRUE))) -
-                     lengths(regmatches(ln, gregexpr("}", ln, fixed = TRUE)))
-    if (i > s && depth <= 0L) { e <- i; break }
-  }
-  if (is.na(e)) stop("read_desi_data の終端が特定できません")
+  # ★ ver74.0: 文字列の括弧数えはコメント/文字中の括弧で壊れるためRのASTで取り出す。
+  exprs <- parse(base_script)
   env <- new.env(parent = globalenv())
-  # 依存する小ヘルパも取り込む
-  h <- grep("^\\.parse_feature_annotations <- function\\(", src)
-  if (length(h) == 1) {
-    hd <- 0L; he <- NA_integer_
-    for (i in h:length(src)) {
-      ln <- src[i]
-      hd <- hd + lengths(regmatches(ln, gregexpr("{", ln, fixed = TRUE))) -
-                 lengths(regmatches(ln, gregexpr("}", ln, fixed = TRUE)))
-      if (i > h && hd <= 0L) { he <- i; break }
+  source(file.path(dirname(base_script), "..", "helpers", "feature_naming_policy.R"), local = env)
+  wanted <- c("read_desi_data", ".parse_feature_annotations", ".rss_gb", ".mem_note_base")
+  found <- character()
+  for (expr in exprs) {
+    if (is.call(expr) && identical(expr[[1]], as.name("<-")) && is.symbol(expr[[2]]) &&
+        as.character(expr[[2]]) %in% wanted) {
+      eval(expr, envir = env)
+      found <- c(found, as.character(expr[[2]]))
     }
-    if (!is.na(he)) eval(parse(text = paste(src[h:he], collapse = "\n")), envir = env)
   }
+  if (!setequal(found, wanted)) stop("reader依存を取得できません: ", paste(setdiff(wanted, found), collapse = ", "))
   assign("%||%", `%||%`, envir = env)
   assign("ANNOTATION_FILTER", ANNOTATION_FILTER, envir = env)
-  eval(parse(text = paste(src[s:e], collapse = "\n")), envir = env)
   get("read_desi_data", envir = env)
 }
 
@@ -178,6 +167,7 @@ target <- if (length(args) >= 1) args[1] else
   make_synthetic(file.path(tempdir(), "equiv_test.parquet"))
 cat("Target parquet:", target, "\n")
 
+source(file.path(this_dir, "feature_naming_policy.R"))
 new_reader <- load_new_reader(base_script)
 
 cat("--- 旧実装で読み込み（基準） ---\n")

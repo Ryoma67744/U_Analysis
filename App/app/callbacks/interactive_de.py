@@ -163,7 +163,15 @@ def run_onthefly_de(n_clicks, selected_ids, mode, target_clusters, overlap,
     # 解析条件として残す（Methods の「実行時の選択条件」がこれを読む）
     try:
         from app.utils.label_persistence import save_interactive_settings
-        save_interactive_settings("onthefly_de", {
+        from app.services.provenance import ONTHEFLY_DE_FIXED_PARAMS
+        # ★ ver74.0: on-the-flyの選択設定は値変更だけでも保存されるため、
+        # 実行成功の証拠を別キーに分離し、後の設定変更でMethodsを書き換えない。
+        # 同じRDS_Files内の別手法へ完了記録が混入しないようRDSのIDで分ける。
+        rds_identity = str(Path(rds_path).resolve())
+        save_interactive_settings(f"onthefly_de_receipt::{rds_identity}", {
+            "status": "complete",
+            "rds_path": rds_identity,
+            "fixed_params": dict(ONTHEFLY_DE_FIXED_PARAMS),
             "mode": mode,
             "target_clusters": target_clusters,
             "overlap_policy": overlap,
@@ -261,4 +269,3 @@ def export_onthefly_de(n_clicks, virtual_data, top_n, sort_by, filter_query,
         "de_overlap_policy": overlap or "exclude",
     })
     return dcc.send_data_frame(df.to_csv, "onthefly_DE.csv", index=False)
-

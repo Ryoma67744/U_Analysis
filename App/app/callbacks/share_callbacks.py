@@ -98,13 +98,13 @@ def _shared_data_get(key: str):
 )
 def route_share_url(pathname):
     """ver4.0: /share/<token> または /view/<token> でインタラクティブ解析
-    (全機能) を共有モードで開く。
+    を閲覧専用の共有モードで開く。
 
     - /share/<token>: 期間付き共有 (Tier B 認証)
     - /view/<token>: 無期限共有 (認証不要)
     旧 read-only shared_view ではなく page_analysis の interactive タブを
-    共有モードで表示し、操作 + 保存を可能にする (① 操作可・保存あり)。
-    共有先での操作は元プロジェクトに保存される。
+    共有モードで表示する。★ ver74.0: 保存・解析はTier Aだけに許可し、
+    共有先の表示操作で元プロジェクトを変更しない。
 
     main_tabs.active_tab は url_bar.pathname を Input に取る
     _sync_tab_from_url (tab_url_routing.py) と衝突するため、ここでは
@@ -174,6 +174,7 @@ def route_share_url(pathname):
 
     shared_session = {
         "active": True,
+        "read_only": True,
         "token": token,
         "kind": kind,
         "project_id": project_id,

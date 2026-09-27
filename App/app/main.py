@@ -281,7 +281,7 @@ from app.services import auth_service  # noqa: E402
 from app.services.auth_middleware import register as register_auth  # noqa: E402
 
 auth_service.init_from_env()
-register_auth(server)
+register_auth(server, dash_app=app)
 
 # ver41.0: ChatGPT 連携用の読み取り専用 API (/api/gpt/*)。
 # auth_middleware は /api/gpt/ を bypass するため、ここで独自の X-API-Key で保護する。

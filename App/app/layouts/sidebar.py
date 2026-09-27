@@ -145,7 +145,7 @@ def create_sidebar():
                     size="sm", color="primary", outline=True,
                 ),
                 dbc.Button(
-                    ["🧬 imzML 入出力"], id="open_imzml_io_modal",
+                    ["🧬 imzML 登録"], id="open_imzml_io_modal",
                     size="sm", color="primary", outline=True,
                 ),
                 dbc.Button(

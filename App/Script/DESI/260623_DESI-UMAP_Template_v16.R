@@ -148,6 +148,7 @@ local({
   source(helper_path, local = FALSE)
   source(file.path(dirname(helper_path), "analysis_contract.R"), local = FALSE)
   source(file.path(dirname(helper_path), "feature_naming_policy.R"), local = FALSE)
+  source(file.path(dirname(helper_path), "desi_input.R"), local = FALSE)
 })
 
 # ---- 設定: プロット設定 & 解析パラメータ & 途中再開設定 ----
@@ -381,6 +382,9 @@ ROI_FILTER <- NULL
 SECTION_MANIFEST_PATH <- ""
 DB_ANNOTATION_ENABLED <- FALSE
 ANALYSIS_SIGNATURE <- ""
+# ★ ver74.0: 群名だけの編集でreductionを無効化せず、metadata更新を区別する。
+REDUCTION_SIGNATURE <- ""
+METADATA_SIGNATURE <- ""
 
 # ============================================================
 # ==== USER EDITABLE SETTINGS END =============================
@@ -1805,178 +1809,10 @@ export_cluster_highlights <- function(obj, prefix, outdir, sample_names = NULL,
 
 
 # ---- DESIデータの読み込み関数 ----
+# ★ ver74.0: ヘッダ空欄を詰める旧readerは名称と強度を誤対応させた。
+# 再解析も同じreaderを使い、末尾0省略をソース文字列patchへ依存させない。
 read_desi_data <- function(file_path, sample_prefix = NULL) {
-  cat("Reading DESI data from:", file_path, "\n")
-  # ---- ヘッダ行数を自動判定 ----
-  # ★ ver55.2: 従来は readLines(n = 4) / fread(skip = 4) の 4 行決め打ちだった。
-  #   実データのヘッダは 5 行 (空 / 化合物名 / 代謝物番号 / Q1 / Q3) で、次の 3 つが
-  #   同時に起きていた:
-  #     (a) pre=代謝物番号 / post=Q1 と取り違え、特徴量名が "1-90.0477" のように
-  #         **番号と Q1 を連結した無意味な文字列**になっていた (本来は Q1-Q3)。
-  #     (b) 化合物名が metabolite_numbers に入り、以降で参照されず捨てられていた。
-  #     (c) skip=4 のため Q3 行がデータ 1 行目として読まれ、列 1..3 が空なので
-  #         spot_index/x/y が NA の "Spot_NA" という幽霊ピクセルが混入していた。
-  #   データ開始行の判定は DESI_RDS_ClusterFilter_ver3.R の is_data_line と同じ基準
-  #   (列1 が整数の PixelID、列2/3 が数値) にそろえる。
-  probe <- readLines(file_path, n = 12, warn = FALSE)
-  if (length(probe) < 5) stop("データファイルの行数が不足しています: ", file_path)
-  .is_data_line <- function(ln) {
-    sp <- strsplit(ln, "\t", fixed = TRUE)[[1]]
-    if (length(sp) < 3) return(FALSE)
-    a <- trimws(sp[1]); b <- trimws(sp[2]); cc <- trimws(sp[3])
-    if (!nzchar(a)) return(FALSE)
-    if (grepl("\\.", a)) return(FALSE)  # PixelID は整数の想定
-    aid <- suppressWarnings(as.integer(a))
-    bx <- suppressWarnings(as.numeric(b))
-    cy <- suppressWarnings(as.numeric(cc))
-    is.finite(aid) && is.finite(bx) && is.finite(cy)
-  }
-  hit <- which(vapply(probe, .is_data_line, logical(1)))
-  if (!length(hit) || hit[1] < 2) {
-    stop("データ開始行を特定できません (先頭のヘッダ形式が想定と異なります): ", file_path)
-  }
-  n_header <- hit[1] - 1L
-  header_lines <- probe[seq_len(n_header)]
-
-  # ---- 各ヘッダ行は「4 列目以降」を位置で切り出す ----
-  # ★ 空セルを詰める方式だと、実データの 2 行目 1 列目に入っている余計な値 ('5') が
-  #   化合物名に混ざり、特徴量数と 1 個ズレる。列位置で切れば混ざらない。
-  .row_cells <- function(ln) {
-    sp <- trimws(strsplit(ln, "\t", fixed = TRUE)[[1]])
-    if (length(sp) <= 3L) return(character(0))
-    sp <- sp[-seq_len(3L)]
-    sp[nzchar(sp)]
-  }
-  hrows <- lapply(header_lines, .row_cells)
-
-  compounds <- character(0); metabolite_numbers <- character(0)
-  pre_masses <- character(0); post_masses <- character(0)
-  if (n_header >= 5L) {
-    # 空 / 化合物名 / 代謝物番号 / Q1 / Q3 (末尾から数えるので先頭の空行数に依らない)
-    compounds          <- hrows[[n_header - 3L]]
-    metabolite_numbers <- hrows[[n_header - 2L]]
-    pre_masses         <- hrows[[n_header - 1L]]
-    post_masses        <- hrows[[n_header]]
-  } else if (n_header == 4L && length(hrows[[4L]]) == 0L) {
-    # desi_converter が新形式から組み替えた形 (空 / 代謝物番号 / 化合物名 / 空)
-    metabolite_numbers <- hrows[[2L]]
-    compounds          <- hrows[[3L]]
-  } else if (n_header == 4L) {
-    # 化合物名を持たない 4 行ヘッダ (空 / 代謝物番号 / Q1 / Q3)
-    metabolite_numbers <- hrows[[2L]]
-    pre_masses         <- hrows[[3L]]
-    post_masses        <- hrows[[4L]]
-  } else {
-    stop("DESI ヘッダの形式を判定できません (ヘッダ ", n_header, " 行): ", file_path)
-  }
-
-  # ---- 特徴量名の構築 ----
-  # 化合物名と MRM トランジションの**両方**を持たせる (片方しか無ければあるものを使う)。
-  # 化合物名末尾の `_<数字>_<数字>` (CE/DP 等のパラメータ) は落とす。
-  #   例: POS_AA_Ala_24_6 + 90.0477/44.0900 → "POS_AA_Ala (90.0477-44.0900)"
-  transitions <- character(0)
-  if (length(pre_masses) && length(pre_masses) == length(post_masses)) {
-    transitions <- paste(pre_masses, post_masses, sep = "-")
-  } else if (length(pre_masses)) {
-    transitions <- pre_masses
-  }
-  if (length(compounds)) {
-    cname <- sub("_[0-9]+_[0-9]+$", "", compounds)
-    metabolite_names <- if (length(transitions) == length(cname)) {
-      paste0(cname, " (", transitions, ")")
-    } else {
-      cname
-    }
-  } else {
-    metabolite_names <- transitions
-  }
-  if (!length(metabolite_names)) stop("特徴量名を構築できません: ", file_path)
-  metabolite_names <- make.unique(metabolite_names)
-  cat("  ヘッダ", n_header, "行 / 特徴量", length(metabolite_names), "件",
-      if (length(compounds)) "(化合物名あり)" else "(化合物名なし)", "\n")
-
-  # [P5] データ部分はfreadで一括高速読込
-  data_df <- data.table::fread(file_path, sep = "\t", skip = n_header,
-                                header = FALSE, fill = TRUE,
-                                data.table = FALSE)
-  if (nrow(data_df) == 0) stop("データ行が存在しません: ", file_path)
-
-  # 空列を除去（freadがタブ区切りで余分な列を読む場合）
-  data_df <- data_df[, colSums(!is.na(data_df) & data_df != "") > 0, drop = FALSE]
-
-  data_df[, 1] <- as.numeric(data_df[, 1])
-  data_df[, 2] <- as.numeric(data_df[, 2])
-  data_df[, 3] <- as.numeric(data_df[, 3])
-
-  metabolite_cols <- 4:(3 + length(metabolite_names))
-  for(col in metabolite_cols) {
-    if(col <= ncol(data_df)) data_df[, col] <- as.numeric(data_df[, col])
-  }
-  
-  spot_names <- paste0("Spot_", data_df[, 1])
-  if (!is.null(sample_prefix)) {
-    safe_prefix <- gsub("[^A-Za-z0-9_\\-]", "_", sample_prefix)
-    spot_names <- paste(safe_prefix, spot_names, sep = "_")
-  }
-  
-  coordinates <- data.frame(
-    spot_index = data_df[, 1],
-    x = data_df[, 2],
-    y = data_df[, 3],
-    spot_id = spot_names,
-    row.names = spot_names
-  )
-
-  # [ROI 検出] 末尾の line/pixel などの数値連番列を ROI と誤認しないよう、列の中身で判定する。
-  # データ列を右から走査し、「非空値の過半が非数値の文字列ラベルで、ユニーク数が小さく
-  # (<= ROI_MAX_UNIQUE) かつ行数未満」の列を ROI 列として採用する
-  # (Python read_desi_roi_list と同基準)。該当列が無ければ ROI 無し。
-  ROI_MAX_UNIQUE <- 200L
-  n_total_rows <- nrow(data_df)
-  roi_col_idx <- NA_integer_
-  if (ncol(data_df) > 3L) {
-    for (ci in seq.int(ncol(data_df), 4L)) {
-      col_chr <- trimws(as.character(data_df[[ci]]))
-      col_chr <- col_chr[!is.na(col_chr) & nzchar(col_chr)]
-      if (length(col_chr) == 0L) next
-      n_nonnum <- sum(is.na(suppressWarnings(as.numeric(col_chr))))
-      n_uniq <- length(unique(col_chr))
-      if (n_nonnum > length(col_chr) * 0.5 &&
-          n_uniq <= ROI_MAX_UNIQUE && n_uniq < n_total_rows) {
-        roi_col_idx <- ci
-        break
-      }
-    }
-  }
-  has_roi <- !is.na(roi_col_idx)
-  if (has_roi) {
-    # ROI 列 (文字列) は data_df では character のまま保持されている (metabolite 列のみ
-    # numeric 化しているため)。そのまま使う (空列除去後の列番号で再読込しないので安全)。
-    roi_vec <- as.character(data_df[[roi_col_idx]])
-    if (length(roi_vec) == nrow(coordinates)) {
-      coordinates$ROI <- roi_vec
-    } else {
-      has_roi <- FALSE
-      message(">> WARNING: ROI 列の行数 (", length(roi_vec),
-              ") が座標行数 (", nrow(coordinates), ") と不一致。ROI 列無視。")
-    }
-  }
-
-  count_data <- data_df[, metabolite_cols, drop = FALSE]
-  count_data[is.na(count_data)] <- 0
-
-  count_matrix <- t(as.matrix(count_data))
-  colnames(count_matrix) <- spot_names
-  rownames(count_matrix) <- metabolite_names[1:nrow(count_matrix)]
-  rownames(count_matrix) <- make.unique(rownames(count_matrix))
-  count_matrix <- as(count_matrix, "dgCMatrix")
-
-  return(list(
-    count_matrix = count_matrix,
-    coordinates = coordinates,
-    metabolite_names = metabolite_names[1:nrow(count_matrix)],
-    has_roi = has_roi
-  ))
+  ua_read_desi_data(file_path, sample_prefix)
 }
 
 # ---- 空間平滑化 (Spatial Smoothing) ---- [P2: 距離行列事前計算で高速化]
@@ -2247,8 +2083,9 @@ if (RESUME_FROM_RDS && file.exists(rds_path1_in)) {
   message(">> RESUME: Loading existing RDS (1/2): ", rds_path1_in)
   seu_list <- load_rds_compact(rds_path1_in)
   if (!ua_checkpoint_matches(seu_list, ANALYSIS_SIGNATURE)) stop("再開条件が前処理結果と一致しません")
-  # 修正①: Resume時に既存RDSを出力先にもコピー
-  file.copy(rds_path1_in, rds_path1_out, overwrite = TRUE)
+  # ★ ver74.0: 群/独立試料の編集を再利用したreductionへ反映し、旧metadataをコピーしない。
+  seu_list <- ua_refresh_checkpoint_metadata(seu_list, .section_manifest, ANALYSIS_SIGNATURE)
+  save_rds_compact(seu_list, rds_path1_out)
 } else {
   # 生データからの読み込み
   seu_list <- list()
@@ -2390,8 +2227,9 @@ if(SPATIAL_SMOOTH){
     message(">> RESUME: Loading existing RDS (2/2): ", rds_path2_in)
     seu_list <- load_rds_compact(rds_path2_in)
     if (!ua_checkpoint_matches(seu_list, ANALYSIS_SIGNATURE)) stop("再開条件が平滑化結果と一致しません")
-    # 修正①: Resume時に既存RDSを出力先にもコピー
-    file.copy(rds_path2_in, rds_path2_out, overwrite = TRUE)
+    # ★ ver74.0: 平滑化済みcheckpointも同じ由来IDでmetadataを更新する。
+    seu_list <- ua_refresh_checkpoint_metadata(seu_list, .section_manifest, ANALYSIS_SIGNATURE)
+    save_rds_compact(seu_list, rds_path2_out)
   } else {
     smooth_radius <- 0.1
     sigma <- 0.05
@@ -2520,6 +2358,8 @@ for(ii in seq_along(seu_list)){
   if (!(isTRUE(RESUME_FROM_RDS) || .stage_downstream) || !file.exists(path)) return(NULL)
   obj <- load_rds_compact(path)
   if (!ua_checkpoint_matches(obj, ANALYSIS_SIGNATURE)) stop("入力または解析条件が保存結果と一致しません: ", path)
+  # ★ ver74.0: reduction再利用とmetadataの再利用を分ける。下流統計は常に再計算する。
+  obj <- ua_refresh_checkpoint_metadata(obj, .section_manifest, ANALYSIS_SIGNATURE)
   # 保存済みの補正済みクラスタを独立PCAと誤認しない。
   if (identical(method, "PCA") && !isTRUE(obj@misc$independent_pca) &&
       !identical(filename, "DESI_Seurat_SingleSample.rds")) return(NULL)

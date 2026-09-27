@@ -18,8 +18,12 @@ from app.utils.display_helpers import fs_exclude_placeholders
 def create_interactive_tab():
     _ls = load_last_settings()
     return html.Div(style={"marginTop": "15px"}, children=[
+        # ★ ver74.0: サーバの共有閲覧権限と表示を揃え、保存できるように見せない。
+        dbc.Alert("閲覧専用（保存・変換・再解析には解析者ログインが必要です）。"
+                  "表示条件の変更は保存されません。",
+                  id="shared_readonly_notice", className="shared-readonly-notice", color="info"),
         # データソース選択
-        html.Details(open=True, className="card", children=[
+        html.Details(id="interactive_source_panel", open=True, className="card", children=[
             html.Summary(
                 html.H4("🔬 インタラクティブ解析", className="card-title",
                          style={"display": "inline", "cursor": "pointer"}),
@@ -891,7 +895,7 @@ def create_interactive_tab():
                                 dbc.Label("表示する群（UMAP・空間表示）"),
                                 dcc.Dropdown(id="int_section_group_filter", options=[], value=None,
                                              multi=True, placeholder="表示する群を選択"),
-                                html.Details(className="mt-3", children=[
+                                html.Details(className="mt-3 shared-editor-controls", children=[
                                     html.Summary("切片名・群・個体情報を編集"),
                                     html.P("切片名は表示用です。個体／独立試料IDは C1・C2・K1 など、群は ctrl・KO など。同じ個体の連続切片には同じIDを指定し、編集後に保存します。",
                                            className="small mt-2 mb-2"),

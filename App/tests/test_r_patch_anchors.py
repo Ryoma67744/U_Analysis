@@ -64,10 +64,10 @@ PATCHERS = {
 # 各再解析スクリプトから抽出できる anchor の実数（下限）。
 # 抽出ロジックが壊れると 0 個に近づくので、その検出に使う。
 EXPECTED_ANCHOR_COUNT = {
-    # ver57.5: Otsu スキップの文字列手術を削除して 4 → 2。
+    # ★ ver74.0: 短行対応を共通readerへ移し、文字列手術を2 → 1へ減らした。
     #   （定数 SKIP_BACKGROUND_FILTER の差し替えに置き換えた。差し替えは
     #     `replace_assign_line` = 0 件で停止する形なので anchor を持たない）
-    "DESI 再解析": 2,
+    "DESI 再解析": 1,
     # ver67.0: 共通関数へ移しrun_pipelineの置換も削除して3 → 2。
     "TIMS 再解析": 2,
 }
@@ -86,12 +86,7 @@ KNOWN_DEAD_ANCHORS = {
     #   文字列手術そのものをやめ、v16 の定数 `SKIP_BACKGROUND_FILTER` を
     #   `replace_assign_line`（0 件で停止＝fail-closed）で差し替える形にした。
     #   実際に飛ばせているかは `test_reanalysis_skips_background_removal.py` が見る。
-    ("DESI 再解析", r"data_list\s*<-\s*vector\(\"list\",\s*length\(data_lines\)\)"):
-        "短行パディングの開始 anchor。`data_list` は v16 に 1 つも存在しない",
-    ("DESI 再解析", r"data_df\s*<-\s*as\.data\.frame\(data_matrix,\s*stringsAsFactors\s*=\s*FALSE\)"):
-        "短行パディングの終了 anchor。`data_matrix` も v16 に存在しない。"
-        "★ このパッチは Waters txt が『末尾の 0 を省略』して行が短くなる問題を"
-        "直すために書かれたもので、**丸ごと空振りしているので問題は今も直っていない**",
+    # ★ ver74.0: 短行対策を共通readerに移したため死んだ2 anchorを撤去。
 }
 
 

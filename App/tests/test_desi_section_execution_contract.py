@@ -128,11 +128,14 @@ md <- data.frame(sample=rep("single_file",18L), integration_unit_id=rep(paste0("
                  group=rep(c("Ctrl","case"),each=9L), source_pixel_id=as.character(1:18),
                  row.names=paste0("cell",1:18))
 base <- mk(md)
-saves <- character(); clusters <- 0L; statuses <- list(); seen_units <- list()
+saves <- character(); clusters <- 0L; statuses <- list(); seen_units <- list(); refreshes <- 0L
 save_rds_compact <- function(obj,path) { saves <<- c(saves,basename(path)); saveRDS(obj,path) }
 load_rds_compact <- readRDS
 ua_stamp_checkpoint <- function(obj,signature) {obj@misc$analysis_signature <- signature;obj}
 ua_checkpoint_matches <- function(obj,signature) identical(obj@misc$analysis_signature,signature)
+# ★ ver74.0: 再開時にmetadata refreshが全手法へ届いたことを実行分岐で数える。
+ua_refresh_checkpoint_metadata <- function(obj,manifest,signature) { refreshes <<- refreshes+1L; obj }
+.section_manifest <- NULL
 ua_record_method <- function(outdir,method,status,reason="",stage="",rds_path="") {
  statuses[[method]] <<- list(status=status,stage=stage,reason=reason)
 }
@@ -212,7 +215,7 @@ stopifnot(clusters==0L,all(vapply(statuses,function(x)x$stage=="reduction",logic
 PIPELINE_STAGE <- "downstream_from_reduction"; .stage_downstream <- TRUE; .has_single <- TRUE
 RESUME_FROM_RDS <- TRUE; seu_list <- list()
 eval(dispatch)
-stopifnot(clusters==3L,all(vapply(statuses,function(x)x$status=="complete" && x$stage=="downstream",logical(1))))
+stopifnot(refreshes==3L,clusters==3L,all(vapply(statuses,function(x)x$status=="complete" && x$stage=="downstream",logical(1))))
 ''')
 
 

@@ -29,7 +29,7 @@
 parse_args <- function(a) {
   out <- list(rds_a = NA_character_, rds_b = NA_character_, tol = 1e-6,
               cluster_col = "seurat_clusters", out = NA_character_,
-              print_defaults = FALSE)
+              print_defaults = FALSE, allow_missing_umap = FALSE)
   i <- 1L
   while (i <= length(a)) {
     k <- a[i]
@@ -41,6 +41,7 @@ parse_args <- function(a) {
       "--cluster-col"           = { out$cluster_col <- val; i <- i + 2L },
       "--out"                   = { out$out <- val; i <- i + 2L },
       "--print-seurat-defaults" = { out$print_defaults <- TRUE; i <- i + 1L },
+      "--allow-missing-umap" = { out$allow_missing_umap <- TRUE; i <- i + 1L },
       { i <- i + 1L }
     )
   }
@@ -94,16 +95,33 @@ get_emb <- function(obj, red) {
   tryCatch(Seurat::Embeddings(obj, reduction = red), error = function(e) NULL)
 }
 
-# 2 つの行列を「共通の行名」で揃えて最大絶対差を返す
+# ★ ver74.0: 共通部分だけの一致ではpixel/feature欠落を見逃すため全集合を先に検証する。
+compare_id_sets <- function(a, b) {
+  valid <- function(x) !is.null(x) && length(x) > 0L && !anyNA(x) &&
+    all(nzchar(as.character(x))) && !anyDuplicated(x)
+  list(equal = isTRUE(valid(a) && valid(b) && setequal(a, b)),
+    n_a = length(a), n_b = length(b), missing_from_b = setdiff(a, b), added_in_b = setdiff(b, a))
+}
 compare_embeddings <- function(ea, eb) {
-  if (is.null(ea) || is.null(eb)) return(list(status = "skip", reason = "片方に存在せず"))
-  common <- intersect(rownames(ea), rownames(eb))
-  if (length(common) == 0) return(list(status = "skip", reason = "共通スポットなし"))
-  nd <- min(ncol(ea), ncol(eb))
-  da <- ea[common, seq_len(nd), drop = FALSE]
-  db <- eb[common, seq_len(nd), drop = FALSE]
-  max_abs <- max(abs(da - db))
-  list(status = "ok", n_common = length(common), n_dims = nd, max_abs_diff = max_abs)
+  if (is.null(ea) || is.null(eb)) return(list(status = "missing", reason = "片方または両方に存在せず"))
+  ids <- compare_id_sets(rownames(ea), rownames(eb))
+  if (!ids$equal) return(list(status = "fail", reason = "cell ID集合不一致", ids = ids))
+  if (ncol(ea) != ncol(eb) || ncol(ea) < 1L)
+    return(list(status = "fail", reason = "reduction次元数不一致または空"))
+  eb <- eb[rownames(ea), , drop = FALSE]
+  if (any(!is.finite(ea)) || any(!is.finite(eb)))
+    return(list(status = "fail", reason = "非有限のreduction値"))
+  list(status = "ok", n_common = nrow(ea), n_dims = ncol(ea), max_abs_diff = max(abs(ea - eb)))
+}
+compare_source_identity <- function(a, b) {
+  fields <- c("source_file_id", "source_pixel_id", "section_id")
+  present_a <- intersect(fields, names(a)); present_b <- intersect(fields, names(b))
+  if (!setequal(present_a, present_b)) return(FALSE)
+  if (!length(present_a)) return(TRUE)  # 両方旧RDSの場合はcell ID集合で比較する。
+  if (!compare_id_sets(rownames(a), rownames(b))$equal) return(FALSE)
+  b <- b[rownames(a), , drop = FALSE]
+  all(vapply(present_a, function(field)
+    identical(as.character(a[[field]]), as.character(b[[field]])), logical(1)))
 }
 
 print_seurat_defaults <- function() {
@@ -144,10 +162,13 @@ main <- function() {
   # (1) クラスタ一致
   ca <- get_clusters(oa, args$cluster_col)
   cb <- get_clusters(ob, args$cluster_col)
+  cell_sets <- compare_id_sets(names(ca), names(cb))
+  feature_sets <- compare_id_sets(rownames(oa), rownames(ob))
+  source_equal <- compare_source_identity(oa@meta.data, ob@meta.data)
   common_cells <- intersect(names(ca), names(cb))
   n_common <- length(common_cells)
   n_mismatch <- if (n_common > 0) sum(ca[common_cells] != cb[common_cells]) else NA_integer_
-  cluster_exact <- isTRUE(n_common > 0 && n_mismatch == 0)
+  cluster_exact <- isTRUE(cell_sets$equal && n_common > 0 && n_mismatch == 0)
   ari <- NA_real_
   if (!cluster_exact && n_common > 0 && requireNamespace("aricode", quietly = TRUE)) {
     ari <- tryCatch(aricode::ARI(ca[common_cells], cb[common_cells]), error = function(e) NA_real_)
@@ -157,7 +178,8 @@ main <- function() {
   ua <- get_emb(oa, find_umap_name(oa))
   ub <- get_emb(ob, find_umap_name(ob))
   umap_cmp <- compare_embeddings(ua, ub)
-  umap_pass <- identical(umap_cmp$status, "ok") && umap_cmp$max_abs_diff <= args$tol
+  umap_pass <- isTRUE(identical(umap_cmp$status, "ok") && umap_cmp$max_abs_diff <= args$tol)
+  umap_optional <- isTRUE(args$allow_missing_umap) && is.null(ua) && is.null(ub)
 
   # (3) 参考: PCA / Harmony / RPCA
   red_cmp <- list()
@@ -171,6 +193,8 @@ main <- function() {
   cat(sprintf("A (旧版): %s\n", args$rds_a))
   cat(sprintf("B (新版): %s\n", args$rds_b))
   cat(sprintf("共通スポット数: %d\n", n_common))
+  cat(sprintf("cell集合=%s / feature集合=%s / 由来ID=%s\n",
+    cell_sets$equal, feature_sets$equal, source_equal))
   cat("\n[1] クラスタの分かれ方\n")
   cat(sprintf("    不一致スポット数: %s / %d\n",
               ifelse(is.na(n_mismatch), "NA", as.character(n_mismatch)), n_common))
@@ -193,7 +217,11 @@ main <- function() {
         cat(sprintf("    %-8s SKIP（%s）\n", nm, c3$reason %||% ""))
     }
   }
-  overall <- cluster_exact && (umap_pass || identical(umap_cmp$status, "skip"))
+  # 任意UMAP欠損は両方欠損かつ明示指定のときだけ許す。
+  reduction_pass <- all(vapply(red_cmp, function(x)
+    isTRUE(identical(x$status, "ok") && x$max_abs_diff <= args$tol), logical(1)))
+  overall <- cluster_exact && feature_sets$equal && source_equal && reduction_pass &&
+    (umap_pass || umap_optional)
   cat("\n================================================\n")
   cat(sprintf("総合判定: %s\n", ifelse(overall, "PASS（挙動不変とみなせる）",
                                          "FAIL（差分あり・要確認）")))
@@ -203,7 +231,9 @@ main <- function() {
     res <- list(rds_a = args$rds_a, rds_b = args$rds_b, n_common = n_common,
                 cluster = list(n_mismatch = n_mismatch, exact = cluster_exact, ari = ari),
                 umap = umap_cmp, umap_pass = umap_pass,
-                reductions = red_cmp, tol = args$tol, overall_pass = overall)
+                reductions = red_cmp, cell_sets = cell_sets, feature_sets = feature_sets,
+                source_identity_equal = source_equal, allow_missing_umap = args$allow_missing_umap,
+                tol = args$tol, overall_pass = overall)
     if (requireNamespace("jsonlite", quietly = TRUE)) {
       writeLines(jsonlite::toJSON(res, auto_unbox = TRUE, pretty = TRUE, null = "null", na = "null"),
                  args$out)

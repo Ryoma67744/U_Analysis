@@ -53,7 +53,10 @@ def test_reanalysis_source_ids_and_group_are_preserved(tmp_path):
 md <- data.frame(annotation='ROI1',spot_index=c(2L,4L),sample='new_KEEP_Cl_1',
  source_file_id='old_file',source_pixel_id=c('2','4'),section_id='old_section',
  subject_id='mouse1',group='Ctrl',integration_unit_id='old_section')
-stopifnot(identical(ua_section_metadata(md,'/temporary/new_KEEP_Cl_1.parquet'),md))
+# ★ ver74.0: 既存の由来/群は不変。旧RDSに無い表示補助列の追加は許容する。
+updated <- ua_section_metadata(md,'/temporary/new_KEEP_Cl_1.parquet')
+stopifnot(identical(updated[,names(md),drop=FALSE],md),
+          identical(updated$section_display_name,rep('/temporary/new_KEEP_Cl_1.parquet',nrow(md))))
 """)
 
 def test_group_edit_does_not_change_intensities_pca_or_clusters(tmp_path):
@@ -222,6 +225,13 @@ entry <- list(path='/x/a.parquet',file_id='file_a',selection_mode='selected',roi
   list(component_ids=list('a'),section_id='s1',section_display_name='Section 01',integration_unit_id='s1'),
   list(component_ids=list('b'),section_id='s2',section_display_name='Section 02',integration_unit_id='s2'),
   list(component_ids=list('c'),section_id='s3',section_display_name='Section 03',integration_unit_id='s3')))
+# ★ ver74.0: legacy component入力にも全切片の必須登録を与える。
+for (field in c('spatial_sections','sections')) {
+  entry[[field]] <- lapply(entry[[field]],function(section) {
+    section$subject_id <- paste0('subject_',section$section_id)
+    section$group <- 'Ctrl';section$metadata_confirmed <- TRUE;section
+  })
+}
 x <- ua_section_metadata(md,'/x/a.parquet',list(files=list(entry)))
 stopifnot(identical(as.character(x$section_id),c('s1','s1','s2','s3')),
           length(unique(x$integration_unit_id))==3L,
@@ -229,6 +239,9 @@ stopifnot(identical(as.character(x$section_id),c('s1','s1','s2','s3')),
 entry$sections <- entry$sections[1:2]
 y <- ua_section_metadata(md,'/x/a.parquet',list(files=list(entry)))
 stopifnot(nrow(y)==3L,!('c'%in%y$ua_coordinate_component))
+# 選択しない第3切片であっても必須登録の欠落は拒否する。
+incomplete <- entry;incomplete$spatial_sections[[3]]$subject_id <- ''
+stopifnot(inherits(try(ua_section_metadata(md,'/x/a.parquet',list(files=list(incomplete))),silent=TRUE),'try-error'))
 md$ua_coordinate_component[4] <- 'unknown'
 stopifnot(inherits(try(ua_section_metadata(md,'/x/a.parquet',list(files=list(entry))),silent=TRUE),'try-error'))
 """)

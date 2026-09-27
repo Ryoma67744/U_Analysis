@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 from pathlib import Path
 from typing import Optional
 
@@ -182,16 +183,25 @@ def attach_molecular_info(
         result["status"] = "preview"
         return result
 
-    dirs = _target_dirs(sub, also_result_dirs)
+    from app.services.data_manager import build_tims_input_paths
+    from app.services.naming_policy import (MANIFEST, write_annotation_sidecar,
+                                            update_feature_annotation_overlay)
+    dirs = list(dict.fromkeys(d.resolve() for d in _target_dirs(sub, also_result_dirs)))
+    input_file = Path(build_tims_input_paths(str(data_folder))[0]).resolve()
+    provenance = {"peaklist_path": str(Path(csv_path).resolve()),
+                  "peaklist_sha256": hashlib.sha256(Path(csv_path).read_bytes()).hexdigest(),
+                  "tolerance_da": float(tol_da)}
     written: list[str] = []
     for d in dirs:
-        sidecar = Path(d) / f"{base}_feature_annotations.parquet"
-        try:
-            feat_df.to_parquet(str(sidecar), index=False)
+        # ★ ver74.0: 解析時のコピーは上書きせず選択入力に対応するoverlayへ記録する。
+        # 結果更新の失敗も握り潰してokにすると旧名称表示を成功扱いしてしまう。
+        if d != Path(data_folder).resolve() and (d / MANIFEST).is_file():
+            paths = update_feature_annotation_overlay(input_file, d, feat_df, provenance=provenance)
+            written.extend(str(path) for path in paths)
+        else:
+            sidecar = write_annotation_sidecar(d / f"{base}_feature_annotations.parquet", feat_df)
             written.append(str(sidecar))
             logger.info("サイドカー出力: %s", sidecar)
-        except Exception as e:
-            logger.warning("サイドカー出力に失敗 (%s): %s", sidecar, e)
     if not written:
         raise RuntimeError("サイドカーの書き出しに失敗しました。")
 

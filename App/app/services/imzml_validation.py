@@ -1,19 +1,15 @@
-"""★ ver73.0: explicit/inferred MS1とprocessed-centroid疎行列を検証する。
-
-CV 定義: imzML/imzML imagingMS.obo（IMS:1000080 / 1000090-92 / 1000102-04）。
-完全な XSD/CV validator ではない。未知の次元を自動集約しない境界検査。
-"""
+"""explicit/inferred MS1と標準TIMS Parquet変換を検証する。"""
 from __future__ import annotations
 
 from collections import Counter
 from copy import deepcopy
-from functools import lru_cache
 from hashlib import new as new_hash
 import json
+import math
 import os
+from pathlib import Path
 import shutil
 import tempfile
-from pathlib import Path
 import uuid
 import xml.etree.ElementTree as ET
 
@@ -36,47 +32,20 @@ def _tag(elem):
     return elem.tag.rsplit("}", 1)[-1]
 
 
-def individual_axis_message(meta: dict) -> str:
-    """個別m/z軸を無断で共通行列化しない理由を、画面とログで共通化する。"""
-    axis = (meta or {}).get("mz_axis_contract") or {}
-    minimum = axis.get("feature_count_min")
-    maximum = axis.get("feature_count_max")
-    unique = axis.get("feature_count_unique")
-    if isinstance(minimum, int) and isinstance(maximum, int):
-        peak_range = f"{minimum:,}–{maximum:,} peaks/pixel"
-        if isinstance(unique, int):
-            peak_range += f"（{unique}種類）"
-    else:
-        peak_range = "peak数は未確定"
-    representation = str((meta or {}).get("representation") or "unknown")
-    mode = str((meta or {}).get("spectrum_type") or "unknown")
-    form = f"{representation}-{mode}"
-    return (
-        f"画素ごとにm/zピークリストが異なる {form} imzMLです（{peak_range}）。"
-        "現在のU_Analysisは、全pixelを同じm/z featureで表せる共通行列だけを直接解析します。"
-        "SCiLS等のTop-N／閾値付きpeak listでは、未出力と真の0を区別できないため、"
-        "自動union・0補完・広いbinning・mass alignmentは行いません。"
-        "共通feature listに対する全pixel強度行列、または共通m/z軸を持つParquetを使用してください。"
-    )
-
-
-def _scan_contract(path, *, cancel=None, verify_checksum=False,
-                   reject_individual_axis=False):
-    """XML/外部配列を走査し、MS level解釈とm/z軸契約を分けて判定する。"""
+def _scan_contract(path, *, cancel=None, verify_checksum=False):
     xml, ibd = pair_paths(path)
     size = ibd.stat().st_size
     with ibd.open("rb") as fh:
         binary_uuid = fh.read(16)
     if len(binary_uuid) != 16:
-        raise InputPreparationError("ibd の UUID ヘッダーが欠落しています。")
+        raise InputPreparationError("ibdのUUIDヘッダーが欠落しています。")
 
     refs, file_cv, modes, polarities, coordinates = {}, {}, set(), set(), set()
     checksum, declared_uuid = {}, None
     count, byte_width, declared_count = 0, None, None
     array_widths = {}
     feature_counts = []
-    explicit_ms1_spectra = 0
-    inferred_ms1_spectra = 0
+    explicit_ms1_spectra = inferred_ms1_spectra = 0
 
     def cv(node):
         result = {}
@@ -84,7 +53,6 @@ def _scan_contract(path, *, cancel=None, verify_checksum=False,
         def descendants(elem):
             yield elem
             for child in elem:
-                # spectrum全体の属性に別々の外部offsetを混ぜない。
                 if _tag(child) == "binaryDataArray" and _tag(node) != "binaryDataArray":
                     continue
                 yield from descendants(child)
@@ -93,7 +61,7 @@ def _scan_contract(path, *, cancel=None, verify_checksum=False,
             if _tag(elem) == "referenceableParamGroupRef":
                 name = elem.get("ref")
                 if name not in refs:
-                    raise InputPreparationError(f"未定義の parameter group: {name}")
+                    raise InputPreparationError(f"未定義のparameter group: {name}")
                 result.update(refs[name])
             elif _tag(elem) == "cvParam":
                 key = elem.get("accession")
@@ -146,7 +114,7 @@ def _scan_contract(path, *, cancel=None, verify_checksum=False,
                 structure_tags = {_tag(node) for node in elem.iter()}
                 if "MS:1000580" in effective or structure_tags.intersection(_MSN_STRUCTURE_TAGS):
                     raise InputPreparationError(
-                        "MS/MS・前駆体・生成物・fragmentation情報を持つ入力は通常MS1解析の対象外です。"
+                        "MS/MS・前駆体・生成物・fragmentation情報を持つ入力は対象外です。"
                     )
                 names = [str(name or "").lower() for _value, name in effective.values()]
                 if any(token in name for name in names for token in _MSN_NAME_TOKENS):
@@ -156,7 +124,7 @@ def _scan_contract(path, *, cancel=None, verify_checksum=False,
                                                   ("MS:1000128", "profile"))
                         if key in effective}
                 if len(mode) != 1:
-                    raise InputPreparationError("profile / centroid を一意に確認できません。")
+                    raise InputPreparationError("profile / centroidを一意に確認できません。")
                 modes.update(mode)
                 polarity = {value for key, value in (("MS:1000130", "positive"),
                                                       ("MS:1000129", "negative"))
@@ -226,7 +194,6 @@ def _scan_contract(path, *, cancel=None, verify_checksum=False,
                         if byte_width is not None and byte_width != width:
                             raise InputPreparationError("強度精度が混在しています。")
                         byte_width = width
-
                 if array_types != {"MS:1000514", "MS:1000515"}:
                     raise InputPreparationError("m/z配列と強度配列の対応が不正です。")
                 if lengths_by_type["MS:1000514"] != lengths_by_type["MS:1000515"]:
@@ -236,8 +203,6 @@ def _scan_contract(path, *, cancel=None, verify_checksum=False,
                 if explicit_ms1:
                     explicit_ms1_spectra += 1
                 else:
-                    # SCiLS等はMS levelタグを省略することがある。MSnの証拠がなく、
-                    # full-scan mass spectrumの構造が揃う場合だけ推定MS1とする。
                     if "MS:1000294" not in effective:
                         raise InputPreparationError(
                             "明示的なMS1タグがなく、full-scan mass spectrumとも確認できません。"
@@ -256,62 +221,6 @@ def _scan_contract(path, *, cancel=None, verify_checksum=False,
     except (ValueError, AttributeError) as exc:
         raise InputPreparationError("UUID / スペクトル件数が不正です。") from exc
 
-    representation = ("processed" if "IMS:1000031" in file_cv else
-                      "continuous" if "IMS:1000030" in file_cv else "unknown")
-    feature_counts_unique = sorted(set(feature_counts))
-    processed_sparse_candidate = len(feature_counts_unique) > 1
-    axis_contract = {
-        "status": ("processed_sparse_candidate" if processed_sparse_candidate
-                   else "common_length_unverified_values"),
-        "reason": ("feature_count_varies_sparse_representation" if processed_sparse_candidate
-                   else "mz_values_not_checked"),
-        "pixel_count": count,
-        "feature_count_min": min(feature_counts),
-        "feature_count_max": max(feature_counts),
-        "feature_count_unique": len(feature_counts_unique),
-        "common_feature_count": feature_counts_unique[0] if not processed_sparse_candidate else None,
-        "source_peak_count": int(sum(feature_counts)),
-        "value_equality_verified": False,
-        "requires_master_feature_matrix": processed_sparse_candidate,
-        "direct_matrix_conversion": True if processed_sparse_candidate else None,
-        "zero_semantics": ("not_recorded_in_exported_centroid_spectrum"
-                           if processed_sparse_candidate else None),
-        "top_n_truncation": "unknown",
-    }
-    if explicit_ms1_spectra == count:
-        ms_status = "explicit_ms1"
-        confidence = "explicit"
-        basis = ["ms_level_1_or_ms1_spectrum"]
-    else:
-        ms_status = "inferred_ms1"
-        confidence = "high" if next(iter(polarities)) != "unknown" else "moderate"
-        basis = [
-            "mass_spectrum", f"{next(iter(modes))}_spectrum",
-            "mz_and_intensity_arrays_only", "single_scan_per_pixel",
-            "consistent_polarity", "no_msn_terms", "no_precursor_or_product",
-            "no_activation_or_fragmentation",
-        ]
-    meta = {
-        "pixels": count,
-        "features": feature_counts_unique[0] if not processed_sparse_candidate else None,
-        "source_peak_count": int(sum(feature_counts)),
-        "intensity_bytes": byte_width,
-        "spectrum_type": next(iter(modes)),
-        "polarity": next(iter(polarities)),
-        "representation": representation,
-        "ms_level_interpretation": {
-            "status": ms_status,
-            "confidence": confidence,
-            "explicit_ms_level": 1 if explicit_ms1_spectra == count else None,
-            "explicit_spectra": explicit_ms1_spectra,
-            "inferred_spectra": inferred_ms1_spectra,
-            "basis": basis,
-        },
-        "mz_axis_contract": axis_contract,
-        "uuid_verified": True,
-        "checksums_verified": [],
-    }
-
     if verify_checksum and checksum:
         digests = {algo: new_hash(algo) for algo in checksum}
         with ibd.open("rb") as fh:
@@ -324,35 +233,55 @@ def _scan_contract(path, *, cancel=None, verify_checksum=False,
                     digest.update(chunk)
         if any(digests[algo].hexdigest() != value for algo, value in checksum.items()):
             raise InputPreparationError("ibdの既知checksumが一致しません。")
-        meta["checksums_verified"] = sorted(checksum)
 
-    meta["spatial_layout"] = strip_runtime_layout(
-        build_spatial_layout(sorted(coordinates, key=lambda coord: (coord[1], coord[0], coord[2])),
+    representation = ("processed" if "IMS:1000031" in file_cv else
+                      "continuous" if "IMS:1000030" in file_cv else "unknown")
+    unique_counts = sorted(set(feature_counts))
+    sparse = len(unique_counts) > 1
+    spatial_layout = strip_runtime_layout(
+        build_spatial_layout(sorted(coordinates, key=lambda value: (value[1], value[0], value[2])),
                              include_preview=False),
         strip_preview=True,
     )
-    return meta
-
-
-@lru_cache(maxsize=64)
-def _cached_spectral_preflight(path, xml_size, xml_mtime_ns, ibd_size, ibd_mtime_ns):
-    del xml_size, xml_mtime_ns, ibd_size, ibd_mtime_ns
-    return _scan_contract(path, verify_checksum=False, reject_individual_axis=False)
+    ms_status = "explicit_ms1" if explicit_ms1_spectra == count else "inferred_ms1"
+    return {
+        "pixels": count,
+        # ★ ver74.0: nestedだけへ移すと既存API利用側の総peak診断が失われる。
+        "source_peak_count": int(sum(feature_counts)),
+        "features": unique_counts[0] if len(unique_counts) == 1 else None,
+        "intensity_bytes": byte_width,
+        "spectrum_type": next(iter(modes)),
+        "polarity": next(iter(polarities)),
+        "representation": representation,
+        "uuid_verified": True,
+        "checksums_verified": sorted(checksum) if verify_checksum else [],
+        "spatial_layout": spatial_layout,
+        "ms_level_interpretation": {
+            "status": ms_status,
+            "confidence": "explicit" if ms_status == "explicit_ms1" else "high",
+            "explicit_spectra": explicit_ms1_spectra,
+            "inferred_spectra": inferred_ms1_spectra,
+        },
+        "mz_axis_contract": {
+            "status": "processed_sparse_candidate" if sparse else "common_length_unverified_values",
+            "reason": "feature_count_varies_sparse_representation" if sparse else "mz_values_not_checked",
+            "pixel_count": count,
+            "feature_count_min": min(feature_counts),
+            "feature_count_max": max(feature_counts),
+            "feature_count_unique": len(unique_counts),
+            "common_feature_count": unique_counts[0] if not sparse else None,
+            "source_peak_count": int(sum(feature_counts)),
+            "value_equality_verified": False,
+            "requires_master_feature_matrix": sparse,
+            "direct_matrix_conversion": True if sparse else None,
+            "zero_semantics": "not_recorded_in_exported_centroid_spectrum" if sparse else None,
+            "top_n_truncation": "unknown",
+        },
+    }
 
 
 def inspect_spectral_preflight(path, *, cancel=None):
-    """選択画面用の軽量判定。checksumとm/z値一致は解析開始時に確認する。"""
-    xml, ibd = pair_paths(path)
-    if cancel is not None:
-        meta = _scan_contract(xml, cancel=cancel, verify_checksum=False,
-                              reject_individual_axis=False)
-    else:
-        xml_stat = xml.stat()
-        ibd_stat = ibd.stat()
-        meta = deepcopy(_cached_spectral_preflight(
-            str(xml), xml_stat.st_size, xml_stat.st_mtime_ns,
-            ibd_stat.st_size, ibd_stat.st_mtime_ns,
-        ))
+    meta = _scan_contract(path, cancel=cancel, verify_checksum=False)
     return {
         "schema_version": 1,
         "status": "ok",
@@ -365,33 +294,45 @@ def inspect_spectral_preflight(path, *, cancel=None):
     }
 
 
-
 def inspect_binary_contract(path, *, cancel=None):
-    """変換前の完全検査。可変長centroidは疎なfeature行列候補として受け入れる。"""
-    return _scan_contract(path, cancel=cancel, verify_checksum=True,
-                          reject_individual_axis=False)
+    return _scan_contract(path, cancel=cancel, verify_checksum=True)
 
 
 def _bounded_block(features, width, requested, budget_mb):
     if int(requested) < 1 or int(budget_mb) < 1:
         raise InputPreparationError("変換ブロック・メモリ予算は正数で指定してください。")
-    # 行列本体、Arrow 列コピー、一時バッファの3本分を上限として見積もる。
     budget = int(budget_mb) * 1024 * 1024
-    per_pixel = features * width * 3
+    per_pixel = int(features) * int(width) * 3
     if per_pixel > budget:
-        raise InputPreparationError("1画素の変換メモリが IMZML_BLOCK_MB を超えます。設定を確認してください。")
-    return min(int(requested), max(1, budget // per_pixel))
+        raise InputPreparationError("1画素の変換メモリがIMZML_BLOCK_MBを超えます。")
+    return min(int(requested), max(1, budget // max(1, per_pixel)))
 
 
-
-def checked_import(path, output, *, block_size=128, memory_budget_mb=64,
-                   alignment_ppm=0.0, progress=None, cancel=None):
-    """MS1 imzMLを共通軸またはprocessed-centroid疎行列として安全に登録する。"""
-    import math
+def checked_import(
+    path,
+    output,
+    *,
+    registration,
+    block_size=128,
+    memory_budget_mb=64,
+    alignment_ppm=0.0,
+    progress=None,
+    cancel=None,
+):
+    """全切片登録済みimzMLを、標準Parquetへ変換・1回だけ全量検証する。"""
     import psutil
     from filelock import FileLock
     from app.services.imzml_io import import_imzml, ImzMLContractError
     from app.services.imzml_processed import import_processed_imzml, ZERO_SEMANTICS
+    from app.services.tims_parquet_contract import (
+        TimsParquetContractError, validate_registration_spec,
+    )
+
+    # ★ ver74.0: CLIも変換後のvalidatorに任せず、原本走査前に未確認登録を拒否する。
+    try:
+        validate_registration_spec(registration)
+    except TimsParquetContractError as exc:
+        raise InputPreparationError(str(exc)) from exc
 
     try:
         alignment_ppm = float(alignment_ppm)
@@ -399,15 +340,18 @@ def checked_import(path, output, *, block_size=128, memory_budget_mb=64,
         raise InputPreparationError("m/zアライメント(ppm)は数値で指定してください。") from exc
     if not math.isfinite(alignment_ppm) or alignment_ppm < 0:
         raise InputPreparationError("m/zアライメント(ppm)は0以上の有限値で指定してください。")
-
     meta = inspect_binary_contract(path, cancel=cancel)
+    try:
+        validate_registration_spec(registration, spatial_layout=meta["spatial_layout"])
+    except TimsParquetContractError as exc:
+        raise InputPreparationError(str(exc)) from exc
     axis_status = (meta.get("mz_axis_contract") or {}).get("status")
     processed_candidate = axis_status == "processed_sparse_candidate"
     if processed_candidate and not (
         meta.get("representation") == "processed" and meta.get("spectrum_type") == "centroid"
     ):
         raise InputPreparationError(
-            "可変長m/z配列はprocessed-centroid MS1として確認できる場合だけ疎行列化します。"
+            "可変長m/z配列はprocessed-centroid MS1として確認できる場合だけ行列化します。"
         )
 
     common_block = None
@@ -416,22 +360,9 @@ def checked_import(path, output, *, block_size=128, memory_budget_mb=64,
             meta["features"], meta["intensity_bytes"], block_size, memory_budget_mb
         )
         available = psutil.virtual_memory().available
-        for limit_path, usage_path in (
-            ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"),
-            ("/sys/fs/cgroup/memory/memory.limit_in_bytes",
-             "/sys/fs/cgroup/memory/memory.usage_in_bytes"),
-        ):
-            try:
-                limit, usage = int(Path(limit_path).read_text()), int(Path(usage_path).read_text())
-                available = min(available, max(0, limit - usage))
-            except (OSError, ValueError):
-                pass
-        required = (meta["features"] * meta["intensity_bytes"] * common_block * 3
-                    + meta["pixels"] * 1024)
+        required = int(meta["features"]) * int(meta["intensity_bytes"]) * common_block * 3
         if required > available * 0.5:
-            raise InputPreparationError(
-                "変換ブロックと画素対応表を確保するメモリが不足しています。"
-            )
+            raise InputPreparationError("変換ブロックを確保するメモリが不足しています。")
 
     def checked_progress(done, total):
         check_cancel(cancel)
@@ -445,79 +376,58 @@ def checked_import(path, output, *, block_size=128, memory_budget_mb=64,
         pending = output.with_suffix(".imzml.pending")
         if output.exists() or sidecar.exists() or pending.exists():
             raise FileExistsError("Sample already exists or is pending; choose a new revision name")
-        check_cancel(cancel)
         stage = Path(tempfile.mkdtemp(prefix=".checked-imzml-", dir=output.parent))
         staged = stage / output.name
-        published = False
-        owns_pending = False
+        published = owns_pending = False
         try:
             processed = processed_candidate
             if processed:
                 result = import_processed_imzml(
-                    path, staged, alignment_ppm=alignment_ppm,
+                    path, staged, registration=registration, alignment_ppm=alignment_ppm,
                     block_size=block_size, memory_budget_mb=memory_budget_mb,
                     progress=checked_progress, cancel=cancel,
                 )
             else:
                 try:
                     result = import_imzml(
-                        path, staged, block_size=common_block,
-                        progress=checked_progress,
+                        path, staged, registration=registration,
+                        block_size=common_block, progress=checked_progress,
                     )
                 except ImzMLContractError as exc:
-                    # 同じ長さでもpixel間でm/z値が異なるprocessed-centroidは、
-                    # 共通feature辞書へ展開する。continuous/profileは異常として停止。
                     if ("individual m/z axis" not in str(exc)
                             or meta.get("representation") != "processed"
                             or meta.get("spectrum_type") != "centroid"):
-                        raise InputPreparationError(
-                            f"imzML変換契約に適合しません: {exc}"
-                        ) from exc
+                        raise InputPreparationError(f"imzML変換契約に適合しません: {exc}") from exc
                     result = import_processed_imzml(
-                        path, staged, alignment_ppm=alignment_ppm,
+                        path, staged, registration=registration, alignment_ppm=alignment_ppm,
                         block_size=block_size, memory_budget_mb=memory_budget_mb,
                         progress=checked_progress, cancel=cancel,
                     )
                     processed = True
 
-            check_cancel(cancel)
             staged_sidecar = staged.with_suffix(".imzml.json")
             manifest = json.loads(staged_sidecar.read_text(encoding="utf-8"))
             if processed:
                 qc = manifest.get("conversion_qc") or {}
                 meta["features"] = int(manifest["feature_count"])
-                meta["source_peak_count"] = int(qc.get("source_peak_count", 0))
                 meta["mz_axis_contract"].update({
                     "status": "processed_sparse_matrix",
-                    "reason": "master_feature_dictionary_and_zero_fill",
                     "alignment_ppm": alignment_ppm,
-                    "alignment_method": manifest.get("alignment_method"),
                     "master_feature_count": int(manifest["feature_count"]),
                     "source_peak_count": int(qc.get("source_peak_count", 0)),
-                    "value_equality_verified": False,
-                    "requires_master_feature_matrix": True,
-                    "direct_matrix_conversion": True,
                     "zero_semantics": ZERO_SEMANTICS,
-                    "zero_is_absolute_absence": False,
-                    "collision_intensity_rule": manifest.get("collision_intensity_rule"),
                 })
             else:
                 meta["mz_axis_contract"].update({
-                    "status": "common_axis",
-                    "reason": "all_mz_values_equal",
-                    "alignment_ppm": None,
-                    "value_equality_verified": True,
+                    "status": "common_axis", "value_equality_verified": True,
                     "requires_master_feature_matrix": False,
-                    "direct_matrix_conversion": True,
                 })
             from app.services.input_preparation import write_json
             manifest["binary_validation"] = meta
             write_json(staged_sidecar, manifest)
-
-            validate_converted_table(
+            validation_summary = validate_converted_table(
                 staged, cancel=cancel, memory_budget_mb=memory_budget_mb
             )
-            check_cancel(cancel)
             if output.exists() or sidecar.exists():
                 raise FileExistsError("Output appeared during conversion; no overwrite is allowed")
             pending.touch(exist_ok=False)
@@ -525,8 +435,11 @@ def checked_import(path, output, *, block_size=128, memory_budget_mb=64,
             os.replace(staged, output)
             published = True
             os.replace(staged_sidecar, sidecar)
-            check_cancel(cancel)
-            return {**result, "parquet": str(output), "manifest": str(sidecar)}
+            return {
+                **result,
+                "parquet": str(output), "manifest": str(sidecar),
+                "validation_summary": validation_summary,
+            }
         except BaseException:
             if published:
                 output.unlink(missing_ok=True)
@@ -538,124 +451,124 @@ def checked_import(path, output, *, block_size=128, memory_budget_mb=64,
             shutil.rmtree(stage, ignore_errors=True)
 
 
+def _components_from_layout(layout):
+    return {str(row["component_id"]): int(row.get("pixel_count", 0))
+            for row in (layout or {}).get("components", []) if row.get("component_id")}
 
 
 def validate_converted_table(output, *, cancel=None, memory_budget_mb=None):
-    """保存後のwide Parquetと原本対応を全画素・全featureで検証する。"""
+    """新標準(v4)とlegacy(v2/v3)の全画素・全feature・全切片登録を検証する。"""
     import numpy as np
     import pyarrow as pa
     import pyarrow.parquet as pq
     from app.services.imzml_io import _axis_names
+    from app.services.tims_parquet_contract import (
+        canonical_registry_hash, feature_names, read_registered_sections,
+    )
+    from app.services.section_completeness import validate_registered_sections, format_section_issues
 
     output = Path(output)
     manifest = json.loads(output.with_suffix(".imzml.json").read_text(encoding="utf-8"))
     schema_version = manifest.get("schema_version")
-    if schema_version not in {2, 3}:
+    if schema_version not in {2, 3, 4}:
         raise InputPreparationError("変換manifestのschema版が不正です。")
     axis = np.asarray(manifest["mz_axis"], dtype=manifest["mz_dtype"])
     if (not len(axis) or not np.isfinite(axis).all() or np.any(axis <= 0)
             or np.any(np.diff(axis) <= 0)):
-        raise InputPreparationError("保存した精密m/z軸が不正です。")
-    names = list(manifest.get("column_names") or _axis_names(axis))
-    if len(names) != len(axis) or len(set(names)) != len(names):
-        raise InputPreparationError("保存したfeature列名がm/z軸と一意に対応しません。")
-    if len(axis) != int(manifest["feature_count"]):
-        raise InputPreparationError("保存したfeature数が一致しません。")
+        raise InputPreparationError("保存したm/z軸が正の有限値・昇順になっていません。")
+    names = list(manifest.get("column_names") or
+                 (feature_names(axis) if schema_version == 4 else _axis_names(axis)))
+    if len(axis) != int(manifest["feature_count"]) or len(names) != len(axis)             or len(set(names)) != len(names):
+        raise InputPreparationError("保存したfeature数または列名対応が一致しません。")
 
     mapping = manifest["source_coordinates"]
     n = int(manifest["pixel_count"])
-    if len(mapping) != n or sorted(m["source_index"] for m in mapping) != list(range(n)):
+    if len(mapping) != n or sorted(int(row["source_index"]) for row in mapping) != list(range(n)):
         raise InputPreparationError("元スペクトルのindex対応が不正です。")
-    coords = [tuple(m["coordinate"]) for m in mapping]
+    coords = [tuple(row["coordinate"]) for row in mapping]
     if len(set(coords)) != n or len({coord[2] for coord in coords}) != 1:
         raise InputPreparationError("保存座標の重複または複数z面を検出しました。")
-    components = [str(m.get("component_id") or "") for m in mapping]
-    if any(not value for value in components):
-        raise InputPreparationError("元画素と座標componentの対応が欠落しています。")
     rebuilt_layout = strip_runtime_layout(
         build_spatial_layout(coords, include_preview=False), strip_preview=True
     )
-    saved_layout = manifest.get("spatial_layout")
-    if (not isinstance(saved_layout, dict)
-            or saved_layout.get("coordinate_hash") != rebuilt_layout.get("coordinate_hash")):
+    saved_layout = manifest.get("spatial_layout") or {}
+    if saved_layout.get("coordinate_hash") != rebuilt_layout.get("coordinate_hash"):
         raise InputPreparationError("保存した座標layoutと元画素座標が一致しません。")
-    expected_components = {
-        component["component_id"]: int(component["pixel_count"])
-        for component in rebuilt_layout.get("components", [])
-    }
-    saved_components = {
-        str(component.get("component_id")): int(component.get("pixel_count", -1))
-        for component in saved_layout.get("components", [])
-    }
-    if saved_components != expected_components:
-        raise InputPreparationError("保存した座標component要約が元画素座標と一致しません。")
-    if dict(Counter(components)) != expected_components:
-        raise InputPreparationError("座標componentの画素数が一致しません。")
 
     dtype = np.dtype(manifest["intensity_dtype"])
     if dtype not in (np.dtype("float32"), np.dtype("float64")):
-        raise InputPreparationError("保存した強度精度が不正です。")
+        raise InputPreparationError("保存した強度dtypeが不正です。")
+    is_standard = schema_version == 4
+    if is_standard and dtype != np.dtype("float32"):
+        raise InputPreparationError("標準TIMS Parquetの強度dtypeはfloat32である必要があります。")
     expected_type = pa.float32() if dtype == np.dtype("float32") else pa.float64()
-    header = manifest.get("binary_validation", {})
-    if header:
-        if header.get("pixels") != n:
-            raise InputPreparationError("原本ヘッダーと保存後の画素数が一致しません。")
-        header_features = header.get("features")
-        if header_features is not None and int(header_features) != len(axis):
-            raise InputPreparationError("原本ヘッダーと保存後のfeature数が一致しません。")
-
-    is_processed = schema_version == 3
-    if is_processed:
-        if manifest.get("input_representation") != "processed_centroid_sparse":
-            raise InputPreparationError("processed-centroid manifestの入力表現が不正です。")
-        if manifest.get("zero_semantics") != \
-                "not_recorded_in_exported_centroid_spectrum":
-            raise InputPreparationError("processed-centroidの0値定義がありません。")
-        if manifest.get("zero_is_absolute_absence") is not False:
-            raise InputPreparationError("0を絶対的不在として記録してはいけません。")
-        feature_qc = manifest.get("feature_qc") or {}
-        for key in ("source_value_count_by_feature", "observed_peak_count",
-                    "detected_pixel_count", "min_observed_mz", "max_observed_mz",
-                    "mass_spread_ppm"):
-            if len(feature_qc.get(key) or []) != len(axis):
-                raise InputPreparationError(f"feature QCが欠落しています: {key}")
-
     seen = 0
     matrix_sum = 0.0
     output_nonzero_count = 0
+    annotations: list[str] = []
+
     with pq.ParquetFile(output) as parquet:
-        expected_names = [
-            "id", "x", "y", "ua_coordinate_component", *names, "annotation"
-        ]
+        expected_names = (["id", "x", "y", *names, "annotation"] if is_standard else
+                          ["id", "x", "y", "ua_coordinate_component", *names, "annotation"])
         if parquet.metadata.num_rows != n or parquet.schema_arrow.names != expected_names:
             raise InputPreparationError("Parquetの列順または行数が一致しません。")
-        schema_metadata = parquet.schema_arrow.metadata or {}
-        try:
-            parquet_layout = json.loads(
-                schema_metadata[b"ua_spatial_layout"].decode("utf-8")
-            )
-        except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise InputPreparationError("Parquetの座標layoutメタデータがありません。") from exc
-        if parquet_layout != saved_layout:
-            raise InputPreparationError("Parquetと変換manifestの座標layoutが一致しません。")
-        if is_processed:
-            if schema_metadata.get(b"ua_processed_centroid") != b"1":
-                raise InputPreparationError("processed-centroid Parquetの識別情報がありません。")
-            try:
-                stored_axis = np.asarray(
-                    json.loads(schema_metadata[b"mz_sorted"].decode("utf-8")),
-                    dtype=np.float64,
-                )
-            except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise InputPreparationError("Parquetのmaster m/z軸を読めません。") from exc
-            if not np.array_equal(stored_axis, np.asarray(axis, dtype=np.float64)):
-                raise InputPreparationError("Parquetとmanifestのmaster m/z軸が一致しません。")
-        typed = ("id", "x", "y", "ua_coordinate_component", "annotation")
-        expected_types = [pa.int64(), pa.float64(), pa.float64(), pa.string(), pa.string()]
-        if [parquet.schema_arrow.field(name).type for name in typed] != expected_types:
-            raise InputPreparationError("画素ID/座標/component/annotationの保存型が不正です。")
+        base_types = [
+            parquet.schema_arrow.field("id").type,
+            parquet.schema_arrow.field("x").type,
+            parquet.schema_arrow.field("y").type,
+            parquet.schema_arrow.field("annotation").type,
+        ]
+        if base_types != [pa.int64(), pa.float64(), pa.float64(), pa.string()]:
+            raise InputPreparationError("id・座標・annotationの保存型が標準契約と一致しません。")
         if any(parquet.schema_arrow.field(name).type != expected_type for name in names):
-            raise InputPreparationError("強度dtypeが保存前の型と一致しません。")
+            raise InputPreparationError("強度dtypeが保存仕様と一致しません。")
+
+        registry = None
+        if is_standard:
+            # ★ ver74.0: sidecarとの一致だけではfooter内の座標所属破損を見逃すため共通契約で検査する。
+            try:
+                registry = read_registered_sections(output)
+            except Exception as exc:
+                raise InputPreparationError(str(exc)) from exc
+            manifest_registry = manifest.get("section_registry") or []
+            if registry != manifest_registry:
+                raise InputPreparationError("Parquetとsidecarの全切片登録情報が一致しません。")
+            metadata = parquet.schema_arrow.metadata or {}
+            if metadata.get(b"ua_dataset_schema") != b"tims-standard-parquet-v1"                     or metadata.get(b"ua_source_type") != b"imzml"                     or metadata.get(b"ua_annotation_role") != b"section"                     or metadata.get(b"ua_registration_complete") != b"1":
+                raise InputPreparationError("Parquetの標準TIMS登録メタデータが不正です。")
+            try:
+                axis_text = metadata[b"mz_sorted"].decode("utf-8").strip()
+                axis_values = (json.loads(axis_text) if axis_text.startswith("[") else
+                               [value for value in axis_text.split(",") if value.strip()])
+                stored_axis = np.asarray(axis_values, dtype=np.float64)
+            except (KeyError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                raise InputPreparationError("Parquetの精密m/z軸を復元できません。") from exc
+            if not np.array_equal(stored_axis, np.asarray(axis, dtype=np.float64)):
+                raise InputPreparationError("Parquetとsidecarの精密m/z軸が一致しません。")
+            expected_registry_hash = canonical_registry_hash(registry).encode()
+            if metadata.get(b"ua_section_registry_hash") != expected_registry_hash:
+                raise InputPreparationError("Parquetの全切片registry hashが一致しません。")
+            registration_hash = str(manifest.get("registration_hash") or "").encode()
+            if not registration_hash or metadata.get(b"ua_registration_hash") != registration_hash:
+                raise InputPreparationError("Parquetとsidecarのregistration hashが一致しません。")
+            components = _components_from_layout(saved_layout)
+            issues = validate_registered_sections(registry, components=components)
+            if issues:
+                raise InputPreparationError(format_section_issues(issues, filename=str(output)))
+            component_owner = {}
+            for section in registry:
+                for component_id in section.get("component_ids", []):
+                    component_owner[str(component_id)] = section
+            for row in mapping:
+                component_id = str(row.get("component_id") or "")
+                owner = component_owner.get(component_id)
+                if owner is None:
+                    raise InputPreparationError("元pixel対応に未登録の座標componentがあります。")
+                if (str(row.get("section_id") or "") != str(owner.get("section_id") or "")
+                        or str(row.get("section_display_name") or "") !=
+                        str(owner.get("section_display_name") or "")):
+                    raise InputPreparationError("元pixel対応と全切片registryの所属が一致しません。")
+
         batch_size = _bounded_block(
             len(names), dtype.itemsize, 128,
             memory_budget_mb if memory_budget_mb is not None
@@ -663,52 +576,52 @@ def validate_converted_table(output, *, cancel=None, memory_budget_mb=None):
         )
         for batch in parquet.iter_batches(batch_size=batch_size):
             check_cancel(cancel)
+            ids = batch.column(batch.schema.get_field_index("id")).to_pylist()
+            xs = batch.column(batch.schema.get_field_index("x")).to_pylist()
+            ys = batch.column(batch.schema.get_field_index("y")).to_pylist()
+            ann = batch.column(batch.schema.get_field_index("annotation")).to_pylist()
+            annotations.extend(str(value or "") for value in ann)
             for name in names:
                 values = batch.column(batch.schema.get_field_index(name)).to_numpy()
                 if not np.isfinite(values).all() or np.any(values < 0):
                     raise InputPreparationError("保存後の強度に不正な値を検出しました。")
                 matrix_sum += float(np.sum(values, dtype=np.float64))
                 output_nonzero_count += int(np.count_nonzero(values))
-            ids = batch.column(batch.schema.get_field_index("id")).to_pylist()
-            xs = batch.column(batch.schema.get_field_index("x")).to_pylist()
-            ys = batch.column(batch.schema.get_field_index("y")).to_pylist()
-            stored_components = batch.column(
-                batch.schema.get_field_index("ua_coordinate_component")
-            ).to_pylist()
             for offset, sample_id in enumerate(ids):
                 absolute = seen + offset
-                if (sample_id != absolute + 1
-                        or (xs[offset], ys[offset]) != coords[absolute][:2]
-                        or stored_components[offset] != components[absolute]):
-                    raise InputPreparationError(
-                        "id・座標・component・元スペクトル対応が一致しません。"
-                    )
+                if sample_id != absolute + 1 or (xs[offset], ys[offset]) != coords[absolute][:2]:
+                    raise InputPreparationError("id・座標・元スペクトル対応が一致しません。")
             seen += len(ids)
-    if seen != n:
-        raise InputPreparationError("保存後の画素数が一致しません。")
+
+    if seen != n or any(not value for value in annotations):
+        raise InputPreparationError("保存後の画素数またはannotationが不正です。")
+    annotation_counts = dict(Counter(annotations))
+    if is_standard:
+        expected_counts = {row["section_display_name"]: int(row["pixel_count"])
+                           for row in manifest["section_registry"]}
+        if annotation_counts != expected_counts:
+            raise InputPreparationError("annotation別pixel数が全切片登録情報と一致しません。")
+        mapping_annotations = [str(row.get("section_display_name") or "") for row in mapping]
+        if mapping_annotations != annotations:
+            raise InputPreparationError("元pixel対応とParquet annotationの順序が一致しません。")
 
     zero_fraction = 1.0 - output_nonzero_count / max(1, n * len(axis))
-    if is_processed:
-        qc = manifest.get("conversion_qc") or {}
-        expected_sum = float(qc.get("output_intensity_sum", float("nan")))
-        tolerance = max(1e-6, abs(expected_sum) * 2e-7)
-        if not np.isfinite(expected_sum) or abs(matrix_sum - expected_sum) > tolerance:
+    qc = manifest.get("conversion_qc") or {}
+    expected_sum = qc.get("output_intensity_sum")
+    if expected_sum is not None:
+        tolerance = max(1e-5, abs(float(expected_sum)) * 2e-7)
+        if abs(matrix_sum - float(expected_sum)) > tolerance:
             raise InputPreparationError("保存後の強度合計が変換QCと一致しません。")
-        if int(qc.get("output_nonzero_count", -1)) != output_nonzero_count:
-            raise InputPreparationError("保存後の非ゼロ要素数が変換QCと一致しません。")
-        if abs(float(qc.get("zero_fraction", -1.0)) - zero_fraction) > 1e-12:
-            raise InputPreparationError("保存後の0割合が変換QCと一致しません。")
-
     return {
         "pixels": n,
         "features": len(axis),
         "intensity_dtype": str(dtype),
-        "spatial_components": len(expected_components),
+        "spatial_components": len(_components_from_layout(rebuilt_layout)),
         "coordinate_hash": rebuilt_layout["coordinate_hash"],
         "all_pixels_checked": True,
-        "representation": manifest.get("input_representation", "common_axis"),
-        "alignment_ppm": manifest.get("alignment_ppm"),
-        "source_peak_count": (manifest.get("conversion_qc") or {}).get("source_peak_count"),
+        "all_sections_registered": bool(is_standard),
+        "annotation_pixel_counts": annotation_counts,
         "output_nonzero_count": output_nonzero_count,
         "zero_fraction": zero_fraction,
+        "representation": manifest.get("input_representation", "common_axis"),
     }

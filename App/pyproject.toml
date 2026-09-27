@@ -24,6 +24,7 @@ dependencies = [
     "numpy>=1.26",
     "openpyxl>=3.1",
     "pyarrow>=14.0",
+    "pyimzml==1.5.5",  # ★ ver74.0: requirements と同じ検証済み入出力依存を含める。
     "polars-lts-cpu>=0.20",  # 古い CPU でのクラッシュ回避（import polars 互換）
     "psutil>=5.9",
     "python-pptx>=0.6.21",
@@ -45,6 +46,7 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "pytest-cov",
+    "openapi-spec-validator>=0.9,<0.10",
 ]
 # E2E (Playwright) テスト用。インストール後に `playwright install chromium` が必要
 # （本番 Docker/CI には Chromium 同梱を想定）。

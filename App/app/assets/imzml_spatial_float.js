@@ -1,15 +1,14 @@
 (function () {
   "use strict";
   const selector = ".imzml-spatial-float";
-  // v2で初期サイズを拡大したため、旧520px幅の保存値を意図的に引き継がない。
-  const storagePrefix = "ua-imzml-spatial-window:v2:";
+  const storagePrefix = "ua-imzml-spatial-window:v3:";
 
   function limits() {
     const maxWidth = Math.max(320, window.innerWidth - 16);
     const maxHeight = Math.max(280, window.innerHeight - 72);
     return {
-      minWidth: Math.min(680, maxWidth),
-      minHeight: Math.min(520, maxHeight),
+      minWidth: Math.min(720, maxWidth),
+      minHeight: Math.min(560, maxHeight),
       maxWidth: maxWidth,
       maxHeight: maxHeight
     };

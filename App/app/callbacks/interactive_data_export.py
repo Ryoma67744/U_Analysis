@@ -1274,12 +1274,12 @@ def _make_unique(names: list[str]) -> list[str]:
     return out
 
 
-def _read_tims_transform_csv(p: Path) -> pd.DataFrame | None:
+def _read_tims_transform_csv(p: Path, *, nrows=None) -> pd.DataFrame | None:
     """SCiLS Transform CSV (legacy) を R の読み方に合わせて読む。
 
     R 側 `read_desi_data` の Case 2（TIMS スクリプト）と同じ規約:
       - 先頭 4 行がヘッダ。区切りは 1 行目に `,` があればカンマ、無ければタブ
-      - 特徴量名は 3 行目の 4 列目以降にある m/z を `m/z %.5f` にしたもの
+      - 特徴量名は 3 行目の 4 列目以降にある m/z を `m/z %.6f` にしたもの
       - x/y は**列名ではなく位置**。末尾に annotation 列があるかで 1 つずれる
           annotation 有: … 強度 …, x, y, annotation
           annotation 無: … 強度 …, x, y
@@ -1291,6 +1291,8 @@ def _read_tims_transform_csv(p: Path) -> pd.DataFrame | None:
       ずれた無意味なものになる）。判定できなければ None を返し、呼び出し側が
       従来どおりの読み方に戻す。
     """
+    import numpy as np
+    from app.services.tims_parquet_contract import TimsParquetContractError
     try:
         with open(p, "r", encoding="utf-8", errors="replace") as fh:
             hdr = [fh.readline() for _ in range(4)]
@@ -1312,9 +1314,13 @@ def _read_tims_transform_csv(p: Path) -> pd.DataFrame | None:
             mz_vals.append(float(v))
         if not mz_vals:
             return None
-        names = _make_unique([f"m/z {v:.5f}" for v in mz_vals])
+        # ★ ver74.0: 5桁の別名化はRの新規6桁IDと食い違い、隣接質量を識別できなかった。
+        names = [f"m/z {v:.6f}" for v in mz_vals]
+        if (any(not np.isfinite(v) or v <= 0 for v in mz_vals)
+                or len(names) != len(set(names))):
+            raise TimsParquetContractError("m/zは正の有限値かつ小数6桁のfeature IDで一意である必要があります")
 
-        df = pd.read_csv(p, sep=sep, skiprows=4, header=None)
+        df = pd.read_csv(p, sep=sep, skiprows=4, header=None, nrows=nrows)
         ncol = df.shape[1]
         if ncol < 6:
             return None
@@ -1344,6 +1350,9 @@ def _read_tims_transform_csv(p: Path) -> pd.DataFrame | None:
         if has_ann:
             out["annotation"] = df.iloc[:, -1].astype(str).to_numpy()
         return out
+    except TimsParquetContractError:
+        # 形式を認識した後の衝突を、別形式のCSVとして読み直して通してはいけない。
+        raise
     except Exception as e:  # noqa: BLE001 — 判定できなければ従来の読み方へ戻す
         logger.warning("[DataExport] Transform CSV として読めませんでした (%s): %s",
                        p.name, e)
@@ -1426,6 +1435,12 @@ def _apply_feature_annotation_columns(df: pd.DataFrame, data_folder: str, *, inp
             [path for path in sidecars if path.is_file()], list(df.columns)) if not use_active else {}
         active_features = list(dict.fromkeys(list(active) + list(active_map)))
         active_mz = np.array([extract_mz_numeric(feature) for feature in active_features])
+        # ★ ver74.0: 旧RDSの5桁make.unique IDは書換えず、元列順の別名でだけ参照する。
+        # 近傍探索だけでは同じ5桁へ丸まる2列が同じ旧featureへ誤対応していた。
+        spectral_columns = [col for col in df.columns if np.isfinite(extract_mz_numeric(col))]
+        legacy_aliases = dict(zip(spectral_columns, _make_unique([
+            f"m/z {extract_mz_numeric(col):.5f}" for col in spectral_columns
+        ])))
         rename = {}
         for col in df.columns:
             mz = extract_mz_numeric(col)
@@ -1434,17 +1449,23 @@ def _apply_feature_annotation_columns(df: pd.DataFrame, data_folder: str, *, inp
             record = records.get(col) or {}
             compound = record.get("compound")
             if use_active and len(active_features):
-                distances = np.abs(active_mz - mz)
-                j = int(np.argmin(distances))
-                if distances[j] > 0.005:
-                    continue
-                feature = active_features[j]
+                feature = next((key for key in (col, f"m/z {mz:.6f}", legacy_aliases.get(col))
+                                if key in active or key in active_map), None)
+                if feature is None:
+                    distances = np.abs(active_mz - mz)
+                    nearest = np.flatnonzero(np.isfinite(distances) &
+                                             np.isclose(distances, np.min(distances), rtol=0, atol=1e-12))
+                    if len(nearest) != 1 or distances[nearest[0]] > 0.005:
+                        continue
+                    feature = active_features[int(nearest[0])]
                 record = active.get(feature) or {}
                 compound = record.get("compound") or active_map.get(feature)
             if record.get("status") == "conflict" or not compound:
                 continue
             raw = record.get("raw") or compound
-            new = make_column_name(raw, float(mz))
+            # ★ ver74.0: 表示名を4桁へ丸めると6桁の別質量が科学出力で同名になる。
+            decimals = max(4, len(f"{float(mz):.6f}".rstrip("0").split(".")[-1]))
+            new = make_column_name(raw, float(mz), mz_decimals=decimals)
             if new and new != col and new not in rename.values() and new not in df.columns:
                 rename[col] = new
         return df.rename(columns=rename) if rename else df
@@ -1493,6 +1514,7 @@ def _tims_header_columns(file_path: str) -> list:
 
     m/z 一覧はスポットの行を 1 行も要らないので、ここで実データを読まない。
     parquet はフッタだけ、CSV/TSV は `nrows=0` でヘッダだけ読む。
+    legacy Transform CSVだけは末尾annotationの有無を先頭1画素で確認する。
     """
     cols = _tims_available_columns(file_path)
     if cols is not None:
@@ -1500,11 +1522,15 @@ def _tims_header_columns(file_path: str) -> list:
     p = Path(file_path)
     sep = "\t" if p.suffix.lower() == ".tsv" else ","
     try:
-        return list(pd.read_csv(file_path, sep=sep, nrows=0).columns)
+        columns = list(pd.read_csv(file_path, sep=sep, nrows=0).columns)
+        if "x" in columns and "y" in columns:
+            return columns
     except Exception as e:  # noqa: BLE001 — legacy CSV は読み直しが要る
         logger.debug("[DataExport] ヘッダ取得に失敗: %s (%s)", p.name, e)
-        alt = _read_tims_transform_csv(p)
-        return list(alt.columns) if alt is not None else []
+        columns = []
+    # ★ ver74.0: 4行ヘッダを単一行として読めた場合も、m/z一覧を空のUnnamed列にしない。
+    alt = _read_tims_transform_csv(p, nrows=1)
+    return list(alt.columns) if alt is not None else columns
 
 
 def _build_mz_list_table(input_paths: list, data_folder: str) -> pd.DataFrame:

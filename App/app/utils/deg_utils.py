@@ -585,6 +585,19 @@ def load_deg_results(
             cache["deg_cache_data"] = data
         return data
 
+    # ★ ver74.0: 過去のdeg_indexにも別手法の対応が残るため、globだけでなく
+    # indexの高速経路でも同じ手法検査を行う（CSV/RDS共通）。
+    _ALL_METHOD_DIRS = {"harmony", "rpca", "pca", "pca_uncorrected"}
+    _other_method_dirs = _ALL_METHOD_DIRS - {method_dir.lower()}
+
+    def _is_other_method(path) -> bool:
+        """path が **別の統合手法** のフォルダの中にあるか。"""
+        try:
+            parts = [p.lower() for p in Path(path).resolve().relative_to(result_base.resolve()).parts[:-1]]
+        except ValueError:
+            parts = [p.lower() for p in Path(path).parts[:-1]]
+        return any(p in _other_method_dirs for p in parts)
+
     # NEW: deg_index.json があれば優先使用（glob 22 パターンを 1 ファイル読込に削減）
     meta_path = result_base / "deg_index.json"
     if meta_path.exists():
@@ -593,8 +606,11 @@ def load_deg_results(
             if meta.get("version") == 1:
                 entry = meta.get("deg_results", {}).get(method_dir)
                 if entry and entry.get("path"):
-                    abs_path = result_base / entry["path"]
-                    if abs_path.exists():
+                    abs_path = (result_base / entry["path"]).resolve()
+                    # 相対pathの .. やsymlinkで結果外へ出るindexも採用しない。
+                    if (abs_path.is_relative_to(result_base.resolve())
+                            and not _is_other_method(abs_path)
+                            and abs_path.is_file()):
                         if entry.get("type") == "csv":
                             try:
                                 df = pd.read_csv(abs_path, encoding="utf-8")
@@ -614,19 +630,6 @@ def load_deg_results(
                                 logger.warning(f"deg_index.json RDS 読込失敗、glob fallback: {e}")
         except Exception as e:
             logger.warning(f"deg_index.json パース失敗、glob fallback: {e}")
-
-    # 既知の統合手法フォルダ名。要求された手法**以外**のフォルダにあるファイルは
-    # 採用してはいけない (ver51.8)。
-    _ALL_METHOD_DIRS = {"harmony", "rpca", "pca", "pca_uncorrected"}
-    _other_method_dirs = _ALL_METHOD_DIRS - {method_dir.lower()}
-
-    def _is_other_method(path) -> bool:
-        """path が **別の統合手法** のフォルダの中にあるか。"""
-        try:
-            parts = [p.lower() for p in Path(path).relative_to(result_base).parts[:-1]]
-        except ValueError:
-            parts = [p.lower() for p in Path(path).parts[:-1]]
-        return any(p in _other_method_dirs for p in parts)
 
     # --- 1. CSV ファイル検索 ---
     # ★ ver51.8: 以前はここに `Harmony/*` `RPCA/*` `PCA/*` が **無条件で** 並んでいた。

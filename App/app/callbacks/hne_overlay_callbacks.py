@@ -806,7 +806,8 @@ def _export_cache_key(rds_path, state, intensity_repr="data", unit="mz",
                     f"methods={methods_key}", "fmt=zip", "lblfmt=cluster",
                     # 強度ソースを測定アッセイ(Spatial)へ是正した版。旧 integrated 由来の
                     # キャッシュ ZIP(負値含む)を返さないための版ソルト。
-                    "assaysrc=measured_v1", "roi=mixed_msi_v1", f"qea={int(bool(with_qea))}"])
+                    # ★ ver74.0: 旧countsキャッシュにはlinear代替値が混在し得るので再利用しない。
+                    "assaysrc=measured_v2_counts_strict", "roi=mixed_msi_v1", f"qea={int(bool(with_qea))}"])
     return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -915,10 +916,14 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
         if hp.load_export_cache_key(rds_path, zip_fname) == key:
             cached = hp.metaboanalyst_csv_path(rds_path, zip_fname)
             if cached and Path(cached).exists():
+                # ★ ver74.0: 旧キャッシュも実在するCSVを確認してからMethods用の完了記録を作る。
+                hp.record_hne_export_receipt(rds_path, cached, selected, repr_mode, unit)
                 return ok(_send_zip(Path(cached).read_bytes()),
                           f"ZIP を出力しました（キャッシュ／強度: {repr_label}"
                           f"／単位: {unit_label}／手法: {' / '.join(selected)}）。"
                           f"  保存先: {cached}")
+
+        unavailable_counts = []
 
         def _method_outputs(result, m_rds, m_fa):
             """1手法の (matrix_df, fmap, prep, assay_used) を作る。ROI は loaded rds の
@@ -958,6 +963,12 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
                 assay_used = str(out_raw.attrs.get("assay_used") or "")
             except Exception as e_r:
                 logger.warning("R 集計に失敗、parquet 経路へ: %s", e_r)
+                # ★ ver74.0: キャッシュのlog正規化値から生countsは復元できない。
+                # linearへの代替をcountsとして出力・記録せず、この手法を明示skipする。
+                if repr_mode == "counts":
+                    logger.warning("%s: 生countsを取得できないため出力をスキップ", m_rds)
+                    unavailable_counts.append(str(m_rds))
+                    return None
                 cdir = result.get("cache_dir")
                 expr_path = (Path(cdir) / "expression_matrix.parquet"
                              if cdir else None)
@@ -981,7 +992,7 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
 
         # --- 手法ごとに ZIP へ（サブフォルダ = 手法名）---
         buf = io.BytesIO()
-        exported, skipped, preps, assays = [], [], [], []
+        exported, skipped, preps, assays, qea_created = [], [], [], [], []
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             if omitted_note:
                 zf.writestr("roi_warnings.txt", omitted_note.strip() + "\n")
@@ -1018,9 +1029,13 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
                 if want_qea:
                     try:
                         from app.services import metaboanalyst_qea as mq
-                        for fn, content in mq.build_qea_bundle(
-                                matrix_df, fmap).items():
+                        qea_bundle = mq.build_qea_bundle(matrix_df, fmap)
+                        for fn, content in qea_bundle.items():
                             zf.writestr(f"{safe}/{fn}", content)
+                        # ★ ver74.0: オプションONでも入力CSVが全skipされることがある。
+                        if any(fn.startswith("exploratory_QEA_") and fn.endswith(".csv")
+                               for fn in qea_bundle):
+                            qea_created.append(m)
                     except Exception as e_q:
                         logger.warning("%s: QEA 生成に失敗: %s", m, e_q)
                 exported.append(m)
@@ -1045,7 +1060,9 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
                            "hne_unregistered_polygons": omitted,
                            "intensity_repr": repr_label,
                            "unit": unit_label,
-                           "include_qea": bool(want_qea),
+                           "include_qea": bool(qea_created),
+                           "qea_requested": bool(want_qea),
+                           "qea_generated_methods": qea_created,
                            "preprocessing_method": preps[0] if preps else None,
                            "assay_used": list(dict.fromkeys(assays)) or None})
                 zf.writestr("analysis_conditions.json",
@@ -1055,15 +1072,23 @@ def hne_export_stage_b(trigger, rds_path, cache_dir_str, intensity_repr,
             except Exception as e_c:
                 logger.warning("H&E エクスポートの条件記録に失敗: %s", e_c)
         if not exported:
+            if unavailable_counts:
+                return fail("生countsを取得できませんでした。R集計の失敗を確認してください"
+                            "（正規化済みキャッシュから生countsは復元できません）。")
             return fail("出力できる手法がありませんでした"
                         "（ROI と RDS、H&E 領域の場合は対応点3点以上を確認してください）。")
         zip_bytes = buf.getvalue()
 
         saved = hp.save_metaboanalyst_bytes(rds_path, zip_fname, zip_bytes)
-        hp.save_export_cache_key(rds_path, zip_fname, key)
+        # ★ ver74.0: オプション変更を出力実施と誤記しないため、保存成功後にだけ記録する。
+        if saved:
+            hp.record_hne_export_receipt(rds_path, saved, exported, repr_mode, unit)
+            hp.save_export_cache_key(rds_path, zip_fname, key)
         assay_note = (f"／強度アッセイ: {'/'.join(dict.fromkeys(assays))}（測定値）"
                       if assays else "")
-        qea_note = "／QEA用CSV同梱(探索的)" if want_qea else ""
+        qea_note = "／QEA用CSV同梱(探索的)" if qea_created else ""
+        if want_qea and not qea_created:
+            qea_note = "／QEA入力CSVは未生成（クラス数等を確認）"
         msg = (f"{len(exported)} 手法を ZIP 出力（{' / '.join(map(method_display_name, exported))}"
                f"／強度: {repr_label}／単位: {unit_label}"
                + (f"／preprocessing: {preps[0]}" if preps else "")

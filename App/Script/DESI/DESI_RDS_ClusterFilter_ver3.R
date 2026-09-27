@@ -153,6 +153,9 @@ V8_ROI_FILTER <- NULL
 V8_DB_ANNOTATION_ENABLED <- FALSE
 V8_MRM_FILE_PATH <- ""
 V8_ANALYSIS_SIGNATURE <- ""
+# ★ ver74.0: 再解析コピーでも数値条件とmetadataの署名を落とさない。
+V8_REDUCTION_SIGNATURE <- ""
+V8_METADATA_SIGNATURE <- ""
 V8_SECTION_MANIFEST_PATH <- ""
 V8_UMAP_SEED <- NA
 V8_CLUSTER_DIMS_N <- NA
@@ -358,41 +361,10 @@ make_v8_copy_with_settings <- function(v8_path, out_path,
   #   **停止する**ので、将来 v16 を書き換えても空振りに気づける。
   # ----------------------------------------------------------
 
-  # ----------------------------------------------------------
-  # [PATCH] Waters txt のデータ行が「末尾の0を省略」して短くなるケースに対応
-  #   - v8 の read_desi_data() は data_lines の列数(max_cols)に依存しており、
-  #     フィルタ後に「後半のMRMが全て0」の行だけ残ると ncol(data_df) が不足して
-  #     data_df[, metabolite_cols] で "未定義の列" エラーになります。
-  #   - 期待列数(= 3 + length(metabolite_names)) まで 0 でパディングして安定化します。
-  # ----------------------------------------------------------
-  patch_v8_pad_truncated_rows <- function(code_vec) {
-    start_idx <- grep("data_list\\s*<-\\s*vector\\(\\\"list\\\",\\s*length\\(data_lines\\)\\)", code_vec)
-    if (length(start_idx) == 0) return(code_vec)  # 見つからなければそのまま
-    s <- start_idx[1]
-
-    end_idx <- grep("data_df\\s*<-\\s*as\\.data\\.frame\\(data_matrix,\\s*stringsAsFactors\\s*=\\s*FALSE\\)", code_vec)
-    end_idx <- end_idx[end_idx >= s]
-    if (length(end_idx) == 0) return(code_vec)
-    e <- end_idx[1]
-
-    indent <- sub("^(\\s*).*$", "\\1", code_vec[s])
-    repl <- c(
-      paste0(indent, "## [PATCHED] Robust parser: pad truncated rows to expected width (Waters txt may omit trailing zeros)"),
-      paste0(indent, "expected_cols <- 3 + length(metabolite_names)"),
-      paste0(indent, "data_matrix <- matrix(\"0\", nrow = length(data_lines), ncol = expected_cols)"),
-      paste0(indent, "for(i in seq_along(data_lines)) {"),
-      paste0(indent, "  split_line <- strsplit(data_lines[i], \"\\t\", fixed = TRUE)[[1]]"),
-      paste0(indent, "  split_line <- trimws(split_line)"),
-      paste0(indent, "  if (length(split_line) < expected_cols) {"),
-      paste0(indent, "    split_line <- c(split_line, rep(\"0\", expected_cols - length(split_line)))"),
-      paste0(indent, "  }"),
-      paste0(indent, "  data_matrix[i, 1:expected_cols] <- split_line[1:expected_cols]"),
-      paste0(indent, "}"),
-      paste0(indent, "data_df <- as.data.frame(data_matrix, stringsAsFactors = FALSE)")
-    )
-
-    c(code_vec[1:(s-1)], repl, code_vec[(e+1):length(code_vec)])
-  }
+  # ★ ver74.0: 旧data_listを探すpadding patchは現行fread版に適用されず、
+  # 抽出後の短い行が壊れていた。共通readerを持つ現行テンプレートを要求する。
+  .stopif(any(grepl("ua_read_desi_data", code, fixed = TRUE)),
+          "DESI再解析には列位置と末尾省略に対応した現行readerが必要です")
 
 replace_assign_line <- function(code_vec, var, new_rhs) {
     pat <- paste0("^\\s*", var, "\\s*<-\\s*.*$")
@@ -473,6 +445,8 @@ replace_assign_line <- function(code_vec, var, new_rhs) {
   code <- replace_assign_line(code, "DB_ANNOTATION_ENABLED", if (isTRUE(V8_DB_ANNOTATION_ENABLED)) "TRUE" else "FALSE")
   code <- replace_assign_line(code, "MRM_FILE_PATH", r_str(V8_MRM_FILE_PATH))
   code <- replace_assign_line(code, "ANALYSIS_SIGNATURE", r_str(V8_ANALYSIS_SIGNATURE))
+  code <- replace_assign_line(code, "REDUCTION_SIGNATURE", r_str(V8_REDUCTION_SIGNATURE))
+  code <- replace_assign_line(code, "METADATA_SIGNATURE", r_str(V8_METADATA_SIGNATURE))
   for (.key in c("UMAP_SEED", "CLUSTER_DIMS_N", "CLUSTER_K_PARAM", "CLUSTER_ALGORITHM",
                  "CLUSTER_RESOLUTION_SINGLE", "CLUSTER_RESOLUTION_HARMONY", "CLUSTER_RESOLUTION_RPCA")) {
     .value <- get(paste0("V8_", .key))
@@ -495,7 +469,6 @@ replace_assign_line <- function(code_vec, var, new_rhs) {
   )
   code <- c(code[1:(s-1)], sn_lines, code[(end_idx+1):length(code)])
 
-  code <- patch_v8_pad_truncated_rows(code)
   writeLines(code, con = out_path, useBytes = TRUE)
   invisible(out_path)
 }

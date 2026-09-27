@@ -496,11 +496,14 @@ def read_parquet_annotations(file_path: str) -> list[str]:
         if "annotation" not in pf.schema.names:
             return []
         md = pf.schema_arrow.metadata or {}
-        if md.get(b"annotation_source") == b"none":
+        if md.get(b"annotation_source") == b"none" and md.get(b"ua_annotation_role") != b"section":
             return []
         df = pd.read_parquet(file_path, columns=["annotation"])
         unique = df["annotation"].dropna().unique().tolist()
         labels = sorted(set(str(a).strip() for a in unique if str(a).strip()))
+        # 新標準Parquetでは、1切片でもannotation自体が切片識別子。
+        if md.get(b"ua_annotation_role") == b"section":
+            return labels
         # 旧ファイル（annotation_source を持たない）向けの後方互換判定。
         if b"annotation_source" not in md and len(labels) <= 1:
             return []
@@ -508,6 +511,14 @@ def read_parquet_annotations(file_path: str) -> list[str]:
     except Exception:
         return []
 
+
+
+def read_parquet_section_registry(file_path: str) -> list[dict]:
+    """★ ver74.0: 標準markerの破損をlegacyへ降格させず、全入口で拒否する。"""
+    if Path(file_path).suffix.lower() not in _PARQUET_EXTS:
+        return []
+    from app.services.tims_parquet_contract import read_registered_sections
+    return read_registered_sections(file_path)
 
 def _looks_numeric(s: str) -> bool:
     try:

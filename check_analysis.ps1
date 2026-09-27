@@ -232,6 +232,10 @@ switch ($exitCode) {
         Write-Host '  CPU 使用率が出ていれば、それが 0% かどうかで判断してください。' -ForegroundColor Yellow
         Write-Host ('  0% でないなら計算中です。-StallMinutes {0} のように閾値を伸ばせます。' -f ($StallMinutes * 2)) -ForegroundColor Yellow
     }
+    6 {
+        # ★ ver74.0: 利用者停止を正常完了とは区別する。
+        Write-Host '結論: 利用者の停止操作で解析が終了しています。' -ForegroundColor Yellow
+    }
     5 {
         Write-Host '結論: 実行中の解析は見つかりませんでした。' -ForegroundColor Gray
         Write-Host '  一度も解析していないか、探索場所が違います（-Mode を切り替えて再確認）。' -ForegroundColor Gray

@@ -288,6 +288,7 @@ def default_spatial_sections(file_id: str, layout: dict) -> list[dict]:
             "selected": True,
             "subject_id": "",
             "group": "",
+            "metadata_confirmed": False,
         })
     return result
 
@@ -300,6 +301,7 @@ def stable_spatial_section_id(file_id: str, component_ids) -> str:
 
 def normalize_spatial_sections(file_id: str, layout: dict, sections=None) -> list[dict]:
     """componentを重複・欠落させず、結合構成と名称を正規化する。"""
+    from app.services.section_completeness import is_metadata_confirmed
     components = {str(c["component_id"]): c for c in layout.get("components", [])}
     if not components:
         raise SpatialLayoutError("座標componentがありません。")
@@ -327,6 +329,8 @@ def normalize_spatial_sections(file_id: str, layout: dict, sections=None) -> lis
             "selected": bool(row.get("selected", True)),
             "subject_id": str(row.get("subject_id") or "").strip(),
             "group": str(row.get("group") or "").strip(),
+            # ★ ver74.0: bool('false')はTrueなので、API/保存JSONの未確認を誤承認していた。
+            "metadata_confirmed": is_metadata_confirmed(row.get("metadata_confirmed", False)),
             "integration_unit_id": sid,
             "_order": default_order,
         })
@@ -342,6 +346,7 @@ def normalize_spatial_sections(file_id: str, layout: dict, sections=None) -> lis
             "selected": True,
             "subject_id": "",
             "group": "",
+            "metadata_confirmed": False,
             "integration_unit_id": sid,
             "_order": int(component.get("order", 10**9)),
         })
@@ -368,6 +373,8 @@ def reset_spatial_sections(file_id: str, layout: dict, sections) -> list[dict]:
         row["selected"] = bool(old.get("selected", True))
         row["subject_id"] = str(old.get("subject_id") or "")
         row["group"] = str(old.get("group") or "")
+        # 自動分割へ戻した時点で切片構成が変わり得るため、必ず再確認する。
+        row["metadata_confirmed"] = False
         if len(old.get("component_ids", [])) == 1:
             row["section_display_name"] = str(old.get("section_display_name") or row["section_display_name"])
     return normalize_spatial_sections(file_id, layout, result)
@@ -388,6 +395,8 @@ def merge_spatial_sections(file_id: str, layout: dict, sections, row_indices) ->
         "selected": any(row.get("selected", True) for row in selected_rows),
         "subject_id": first.get("subject_id", "") if len({row.get("subject_id", "") for row in selected_rows}) == 1 else "",
         "group": first.get("group", "") if len({row.get("group", "") for row in selected_rows}) == 1 else "",
+        # component構成が変わるため、登録情報は必ず再確認する。
+        "metadata_confirmed": False,
     }
     remaining = [row for i, row in enumerate(rows) if i not in indices]
     remaining.append(merged)

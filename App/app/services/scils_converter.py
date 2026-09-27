@@ -1443,8 +1443,12 @@ def convert_scils_to_parquet(
         #   (`compute_spot_mapping` も int_headers[1:] を spot 列として扱う)。
         mz_col_name = pf.schema_arrow.names[0]
         mz_num = pf.read(columns=[mz_col_name]).column(0).to_numpy(zero_copy_only=False).astype(np.float64)
-        if np.isnan(mz_num).any():
-            raise ValueError("Intensity の m/z 列に欠損値があります")
+        # ★ ver74.0: Inf/負質量/丸め衝突は後段で別 feature を誤対応させるため公開前に拒否。
+        if not len(mz_num) or not np.isfinite(mz_num).all() or (mz_num <= 0).any():
+            raise ValueError("Intensity の m/z 列は正の有限値が必要です（欠損値不可）")
+        mz_names = [f"{v:.6f}" for v in mz_num]
+        if len(set(mz_names)) != len(mz_names):
+            raise ValueError("m/z の小数6桁列名が重複します。質量を無断で統合できません。")
         order_mz = np.argsort(mz_num, kind="mergesort")
         mz_sorted = mz_num[order_mz]
         n_mz = len(mz_sorted)
@@ -1555,7 +1559,7 @@ def convert_scils_to_parquet(
         # 全バッチ＝ファイルへ確実に永続化される）。mz_sorted はフル桁の m/z 一覧で、
         # 列名が丸められていても m/z を確実に復元できる正となる。
         schema_md = {
-            b"mz_sorted": ",".join(f"{v:.10g}" for v in mz_sorted).encode("utf-8"),
+            b"mz_sorted": ",".join(f"{v:.17g}" for v in mz_sorted).encode("utf-8"),
             b"annotation_files": ";".join(p.name for p in annotation_files).encode("utf-8"),
             # ★ ver55.0: 領域アノテーションの由来。'csv' = 実ファイルから解決、
             #   'none' = 一枚も無く全 spot が 'Unannotated'。読み手 (data_manager /
@@ -1626,6 +1630,10 @@ def convert_scils_to_parquet(
                         ])
                         if vals.shape[0] != n_mz:
                             raise RuntimeError(f"行数不一致: 期待 {n_mz}, 実際 {vals.shape[0]}")
+                        # ★ ver74.0: 入力の欠損/Infとfloat32 overflowを完成品に残さない。
+                        # 有限の負強度は既存の補正済み入力との互換性のため保持する。
+                        if not np.isfinite(vals).all():
+                            raise ValueError("Intensity に非有限値または保存精度の overflow があります")
                         # ★ ver60.0: ここは `vals[order_mz, :]` と書いて m/z 並べ替えを
                         #   **ブロックごとに** やり直していた。並べ替えは全ブロックで同一
                         #   なのに、spot_block 単位で全サイズの fancy-index コピーが
@@ -1634,8 +1642,10 @@ def convert_scils_to_parquet(
                         #   並べ替えは書き出し側の行選択 1 回に移した（下の
                         #   `buf[order_mz_rows[j]]`）。行の置換とキャストは可換なので
                         #   値は完全に一致する。代入キャストが casting='unsafe'
-                        #   （= astype の既定）でオーバーフローが inf になる点も従来どおり。
+                        #   （= astype の既定）なのでver74.0では代入後にもoverflowを検査する。
                         buf[:, start - rg_start:end - rg_start] = vals
+                        if not np.isfinite(buf[:, start - rg_start:end - rg_start]).all():
+                            raise ValueError("Intensity が保存精度の範囲を超えています")
                         del vals, table_block
                         _report(15 + int(78 * end / n_spots),
                                 f"読込中… {end:,}/{n_spots:,} spot")

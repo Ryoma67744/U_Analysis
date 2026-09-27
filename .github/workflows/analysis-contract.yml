@@ -1,0 +1,54 @@
+# ★ ver74.0: imzML/Arrow/R依存がないため全skipでも成功する状態を防ぐ。
+name: analysis-contract
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: analysis-contract-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  python-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -c .github/ci/requirements-constraints.txt -r App/requirements.txt pytest openapi-spec-validator==0.9.0
+      - name: 必須依存と実I/O契約
+        working-directory: App
+        env:
+          PYTHONPATH: .
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          set -euo pipefail
+          python -c 'import pyarrow, pyimzml, openapi_spec_validator'
+          python -m pytest tests/test_imzml_io.py tests/test_imzml_processed_sparse.py tests/test_imzml_contract_repairs_v74.py tests/test_imzml_standard_parquet_v74.py tests/test_imzml_registration_v74.py tests/test_registration_lifecycle_v74.py tests/test_imzml_editor_callback_transitions_v74.py tests/test_section_completeness_v74.py tests/test_audit_io_guards.py tests/test_volume_backup.py tests/test_callback_authorization_v74.py tests/test_public_url_is_consistent.py tests/test_render_payload.py tests/test_tims_export_precision_v74.py tests/test_diag_umap_cluster_export_v74.py tests/test_services_audit_regressions.py tests/test_numeric_input_bounds.py tests/test_packaging.py tests/test_version_consistency.py -q --junitxml=contract.xml
+          python -c 'import xml.etree.ElementTree as E; r=E.parse("contract.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "required contract tests must not skip"'
+  r-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: .github/ci/r-contract.yml
+          cache-environment: true
+      - name: Python試験依存
+        shell: micromamba-shell {0}
+        run: python -m pip install -c .github/ci/requirements-constraints.txt -r App/requirements.txt pytest
+      - name: R構文・保存・DESI・Seurat・Arrow契約
+        shell: micromamba-shell {0}
+        working-directory: App
+        env:
+          PYTHONPATH: .
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          set -euo pipefail
+          Rscript -e 'stopifnot(all(vapply(c("Seurat","arrow","jsonlite","digest","data.table"), requireNamespace, logical(1), quietly=TRUE))); invisible(lapply(list.files("Script", pattern="[.]R$", recursive=TRUE, full.names=TRUE), parse))'
+          python -m pytest tests/test_r_safety_v74.py tests/test_tims_r_v74_contract.py tests/test_job_registry.py tests/test_imzml_autoimport_pipeline.py -q --junitxml=r-contract.xml
+          python -c 'import xml.etree.ElementTree as E; r=E.parse("r-contract.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "R/Seurat contracts must not skip"'
