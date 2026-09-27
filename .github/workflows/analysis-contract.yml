@@ -27,8 +27,29 @@ jobs:
         run: |
           set -euo pipefail
           python -c 'import pyarrow, pyimzml, openapi_spec_validator'
-          python -m pytest tests/test_imzml_io.py tests/test_imzml_processed_sparse.py tests/test_imzml_contract_repairs_v74.py tests/test_imzml_standard_parquet_v74.py tests/test_imzml_registration_v74.py tests/test_registration_lifecycle_v74.py tests/test_imzml_editor_callback_transitions_v74.py tests/test_section_completeness_v74.py tests/test_audit_io_guards.py tests/test_volume_backup.py tests/test_callback_authorization_v74.py tests/test_public_url_is_consistent.py tests/test_render_payload.py tests/test_tims_export_precision_v74.py tests/test_diag_umap_cluster_export_v74.py tests/test_services_audit_regressions.py tests/test_numeric_input_bounds.py tests/test_packaging.py tests/test_version_consistency.py -q --junitxml=contract.xml
+          python -m pytest tests/test_imzml_io.py tests/test_imzml_processed_sparse.py tests/test_imzml_contract_repairs_v74.py tests/test_imzml_standard_parquet_v74.py tests/test_imzml_registration_v74.py tests/test_registration_lifecycle_v74.py tests/test_imzml_editor_callback_transitions_v74.py tests/test_section_completeness_v74.py tests/test_section_registration_guidance_v741.py tests/test_imzml_registration_guidance_v741.py tests/test_section_metadata_workflow.py tests/test_audit_io_guards.py tests/test_volume_backup.py tests/test_callback_authorization_v74.py tests/test_public_url_is_consistent.py tests/test_render_payload.py tests/test_tims_export_precision_v74.py tests/test_diag_umap_cluster_export_v74.py tests/test_services_audit_regressions.py tests/test_numeric_input_bounds.py tests/test_packaging.py tests/test_version_consistency.py -q --junitxml=contract.xml
           python -c 'import xml.etree.ElementTree as E; r=E.parse("contract.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "required contract tests must not skip"'
+  # ★ ver74.1: セルの色・入力focus・確認/適用は実ブラウザでも必須検証する。
+  registration-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -c .github/ci/requirements-constraints.txt -r App/requirements.txt pytest playwright==1.63.0
+      - run: python -m playwright install --with-deps chromium
+      - name: 全切片の不足入力・確認・適用
+        working-directory: App
+        env:
+          PYTHONPATH: .
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+          E2E_STRICT: '1'
+        run: |
+          set -euo pipefail
+          python -m pytest tests/e2e/test_section_registration_guidance.py -q --junitxml=registration-browser.xml
+          python -c 'import xml.etree.ElementTree as E; r=E.parse("registration-browser.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "registration browser test must not skip"'
   r-contract:
     runs-on: ubuntu-latest
     timeout-minutes: 35

@@ -500,7 +500,7 @@
 }
 
 .imzml-spatial-float-body {
-    height: calc(100% - 42px);
+    height: calc(100% - 92px);
     overflow: auto;
     padding: 10px 12px 16px;
     display: flex;
@@ -539,6 +539,16 @@
     margin-bottom: 6px;
 }
 
+/* ★ ver74.1: 入力不足と未確認を色・文字の両方で示し、解析対象外も薄くしない。 */
+.imzml-registration-guidance { padding: 8px 10px; background: #f8f9fa; border-radius: 5px; }
+.imzml-registration-status-list { margin: 5px 0 0; padding-left: 20px; font-size: 12px; }
+.imzml-registration-status-list li { margin: 3px 0; }
+.registration-missing { color: #842029; font-weight: 600; }
+.registration-unconfirmed { color: #664d03; background: #fff3cd; }
+.registration-complete { color: #146c43; }
+.imzml-registration-confirm-step { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 0; }
+.imzml-spatial-apply-bar { height: 50px; padding: 8px 28px 8px 12px; border-top: 1px solid #dee2e6; background: #fff; }
+
 .imzml-spatial-bulk-group {
     display: grid;
     grid-template-columns: minmax(240px, 1fr) auto auto;
@@ -566,6 +576,7 @@
 }
 
 .imzml-spatial-float.minimized .imzml-spatial-float-body,
+.imzml-spatial-float.minimized .imzml-spatial-apply-bar,
 .imzml-spatial-float.minimized .imzml-spatial-resize-handle {
     display: none;
 }

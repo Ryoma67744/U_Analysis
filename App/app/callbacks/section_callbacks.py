@@ -4,7 +4,9 @@ from dash import ALL, MATCH, Input, Output, State, callback, ctx, html, no_updat
 import dash_bootstrap_components as dbc
 from app.services.data_manager import (find_tims_file_path, read_parquet_annotations,
     read_parquet_section_registry, read_desi_roi_list)
-from app.services.section_metadata import assign_group, build_section_manifest, manifest_group_rows, summarize_manifest
+from app.services.section_metadata import (assign_group, build_section_manifest,
+    manifest_group_rows, summarize_manifest)
+from app.services.section_completeness import format_section_issues, validate_registered_sections
 from app.services.session_manager import save_last_settings
 
 
@@ -71,6 +73,68 @@ def _spectral_preflight_notice(preflight):
     )
 
 
+def _registration_issues(file_entry):
+    """★ ver74.1: 選択切片数ではなく、変換時と同じ全切片の不足を画面へ示す。"""
+    # 補助表は解析選択済みだけを表示するため、全登録を編集できるimzML画面だけに案内する。
+    if file_entry.get("spatial_error") or file_entry.get("roi_role") != "spatial":
+        return []
+    rows = file_entry.get("spatial_sections") or []
+    if not rows:
+        return []
+    components = ({str(c["component_id"]): int(c.get("pixel_count", 0))
+                   for c in (file_entry.get("spatial_layout") or {}).get("components", [])})
+    return validate_registered_sections(rows, components=components)
+
+
+def _registration_issue_cards(manifest, scope):
+    """長い警告文を切片別の不足一覧と、該当ファイルを開く操作へ変える。"""
+    cards, represented = [], set()
+    for entry in (manifest or {}).get("files", []):
+        issues = _registration_issues(entry)
+        if not issues:
+            continue
+        path = entry.get("path", "")
+        selected_ids = {str(row.get("section_id")) for row in entry.get("sections", [])}
+        rows = entry.get("spatial_sections")
+        affected = {issue.section_id for issue in issues if issue.section_id}
+        detail_rows = []
+        for issue in issues:
+            badges = [dbc.Badge(
+                "登録確認：未完了（確認ボタンで操作）" if field == "登録確認" else field + "：未入力",
+                color="warning" if field == "登録確認" else "danger",
+                text_color="dark" if field == "登録確認" else "white",
+                className="me-1 mb-1",
+            ) for field in issue.missing_fields]
+            if issue.reason:
+                badges.append(html.Div(issue.reason, className="text-danger"))
+            detail_rows.append(html.Tr([
+                html.Th(issue.display_name or issue.section_id or "登録全体", scope="row"),
+                html.Td(("使用" if issue.section_id in selected_ids else "解析対象外")
+                        if issue.section_id else "登録全体"),
+                html.Td(badges),
+            ]))
+        title = f"{len(affected)}切片の登録が未完了です" if affected else "登録内容の確認が必要です"
+        cards.append(html.Div([
+            html.Div(title, className="fw-bold text-danger"),
+            html.Div(Path(path).name, className="fw-semibold text-break", title=path),
+            html.Small(f"登録対象：全{len(rows or [])}切片 ／ 今回の解析対象：{len(selected_ids)}切片。"
+                       "解析対象外の切片も入力が必要です。", className="d-block mb-2"),
+            html.Div(dbc.Table([
+                html.Thead(html.Tr([html.Th("切片"), html.Th("今回の解析"), html.Th("不足している項目")])),
+                html.Tbody(detail_rows),
+            ], size="sm", bordered=True, className="mb-2"), style={"overflowX": "auto"}),
+            dbc.Button("不足項目を入力する",
+                       id={"type": "imzml_registration_fix", "scope": scope, "index": path},
+                       color="danger", size="sm", n_clicks=0),
+            html.Div("① 赤いセルを入力 → ②「全切片を確認済みにする」→ ③「適用」",
+                     className="small mt-2"),
+        ], className="border border-danger rounded bg-white p-2 mt-2",
+            **{"role": "status", "aria-live": "polite"}))
+        # 同じ検査結果だけを置換する。未知ID・選択矛盾など別のエラーは残す。
+        represented.add(format_section_issues(issues, filename=path))
+    return cards, represented
+
+
 def _selection_blocks(catalog, manifest, scope):
     saved = {f["path"]: f for f in manifest.get("files", [])}
     result = []
@@ -109,10 +173,12 @@ def _selection_blocks(catalog, manifest, scope):
                 options=[{"label": f" {s['section_display_name']}  {int(s.get('pixel_count', 0)):,} pixels",
                           "value": s["section_id"]} for s in spatial_sections],
                 value=selected, inline=False, className="mt-1 imzml-spatial-compact-list"))
+            registration_issues = _registration_issues(f)
             children.append(html.Div(className="d-flex flex-wrap gap-1 align-items-center", children=[
-                dbc.Button("全切片の登録情報・解析選択を編集",
+                dbc.Button("未入力・未確認の項目を修正" if registration_issues else "全切片の登録情報・解析選択を編集",
                            id={"type": "imzml_spatial_open", "scope": scope, "index": path},
-                           n_clicks=0, size="sm", color="info", outline=True),
+                           n_clicks=0, size="sm", color="danger" if registration_issues else "info",
+                           outline=not bool(registration_issues)),
                 dbc.Button("全選択", id={"type": "section_select_all", "scope": scope, "index": path},
                            n_clicks=0, size="sm", color="link"),
                 dbc.Button("全解除", id={"type": "section_select_none", "scope": scope, "index": path},
@@ -311,7 +377,7 @@ def select_section_rois(n_all, n_none, options):
 
 
 def update_section_state(catalog, selected_values, role_values, rows, selected_ids, role_ids,
-                         previous, bulk_rows=None, bulk_group=None, apply_bulk=False):
+                         previous, bulk_rows=None, bulk_group=None, apply_bulk=False, scope="initial"):
     selected = {i["index"]: value for i, value in zip(selected_ids or [], selected_values or [])}
     roles = {i["index"]: value for i, value in zip(role_ids or [], role_values or [])}
     manifest = build_section_manifest(catalog, selected, roles, rows, previous)
@@ -324,7 +390,10 @@ def update_section_state(catalog, selected_values, role_values, rows, selected_i
     children = [html.Div(summary)]
     if groups:
         children.append(html.Small(groups, className="d-block"))
-    children.extend(html.Small(e, className="d-block text-warning") for e in errors)
+    cards, represented = _registration_issue_cards(manifest, scope)
+    children.extend(cards)
+    children.extend(html.Small(e, className="d-block text-warning",
+                               style={"whiteSpace": "pre-wrap"}) for e in errors if e not in represented)
     return data, manifest, children, status
 
 
@@ -349,7 +418,7 @@ def _register_state(scope):
         result = update_section_state(catalog, values, roles,
             [] if ctx.triggered_id == "section_catalog_store" + suffix else rows,
             ids, role_ids, previous, selected_rows, group,
-            ctx.triggered_id == "section_apply_group" + suffix)
+            ctx.triggered_id == "section_apply_group" + suffix, scope=scope)
         save_last_settings({"section_manifest" + suffix: result[1], "execution_policy": "section_auto_v1"})
         return result
 
