@@ -157,11 +157,20 @@ def input_source_id(input_path, rds_path):
     return str(matches[0]["file_id"]) if len(matches) == 1 else None
 
 
-def selected_input_paths(rds_path, suffixes):
+def selected_input_paths(rds_path, suffixes, *, source_file_ids=None):
     """新形式では追加フォルダを含む選択済み入力を出力する。旧結果はNoneを返す。"""
     manifest = load_result_manifest(rds_path)
     if not manifest.get("files"):
         return None
+    if source_file_ids is not None:
+        # ★ ver75.1: 出力しないKO1の欠損でCtrl+KO2の出力まで止めない。
+        # 選択した元ファイルだけを固定assetの検証へ渡す。元manifestは更新しない。
+        wanted = set(source_file_ids)
+        known = {str(item.get("file_id")) for item in manifest["files"]}
+        if not wanted or wanted - known:
+            raise ValueError("選択した元ファイルが解析結果に登録されていません。")
+        manifest = deepcopy(manifest)
+        manifest["files"] = [item for item in manifest["files"] if str(item.get("file_id")) in wanted]
     from app.services.input_preparation import runtime_paths
     # ★ ver70.0: 出力は旧結果の固定済み全画素runtimeを使う。更新された原本で代用しない。
     paths = [p for p in runtime_paths(manifest, validate=True) if Path(p).suffix.lower() in suffixes]
@@ -171,14 +180,15 @@ def selected_input_paths(rds_path, suffixes):
     return paths
 
 
-def attach_input_metadata(df, input_path, rds_path, plot_data):
+def attach_input_metadata(df, input_path, rds_path, plot_data, *, frozen=False):
     """同名ROIを混同しないよう、元ファイルID・元画素IDで照合する。"""
     if plot_data is None or not {"source_file_id", "source_pixel_id"}.issubset(plot_data.columns) or "id" not in df.columns:
         return df
     fid = input_source_id(input_path, rds_path)
     if fid is None:
         return df
-    pdat = overlay_result_metadata(plot_data, rds_path)
+    # ★ ver75.1: 選択出力は開始時の群情報を使い、処理中の群編集を混ぜない。
+    pdat = plot_data if frozen else overlay_result_metadata(plot_data, rds_path)
     selected = pdat.loc[pdat["source_file_id"].astype(str) == fid]
     cols = [c for c in METADATA_COLUMNS if c in selected.columns]
     keys = selected["source_pixel_id"].map(normalize_pixel_id)

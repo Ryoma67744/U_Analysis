@@ -9,6 +9,7 @@ TIMS: Parquet/CSV → 選択形式（Excel / CSV / Parquet）
 
 import contextlib
 import contextvars
+from copy import deepcopy
 import logging
 import os
 import re
@@ -50,6 +51,118 @@ from app.services.export_transform import (
 
 logger = logging.getLogger(__name__)
 logger.info("[DataExport] モジュール読み込み完了 (v2)")
+
+
+def _selection_source_rds(path, rds_map):
+    """★ ver75.1: 派生PCAは元Harmonyから算出した1つのcacheパスだけを許可する。"""
+    from app.services.provenance import results_dir_for_rds
+    if path and results_dir_for_rds(path) is not None:
+        return path
+    harmony = (rds_map or {}).get("Harmony")
+    if not harmony or results_dir_for_rds(harmony) is None:
+        return None
+    import hashlib
+    from app.config import SEURAT_CACHE_DIR
+    from app.callbacks.interactive_callbacks import _DERIVE_PCA_VERSION
+    digest = hashlib.md5(f"{harmony}|{_DERIVE_PCA_VERSION}".encode()).hexdigest()[:16]
+    expected = Path(SEURAT_CACHE_DIR).resolve() / "derived_pca" / f"{digest}_pca_uncorrected.rds"
+    return harmony if path and Path(path).resolve() == expected else None
+
+
+def _export_scope(loaded_rds, rds_map, selected_methods, result_folder):
+    """★ ver75.1: 画面の結果と読込済みRDSが一致した場合だけ対象を選べる。"""
+    from app.services.provenance import results_dir_for_rds
+    if not loaded_rds or not selected_methods:
+        raise ValueError("解析結果を読み込み、出力手法を1つ以上選択してください。")
+    root = results_dir_for_rds(_selection_source_rds(loaded_rds, rds_map))
+    if root is None or not Path(loaded_rds).is_file():
+        raise ValueError("解析結果の読み込みが完了していません。")
+    root = root.resolve()
+    folder = Path(result_folder).resolve() if result_folder else None
+    if folder is not None and folder.name == "RDS_Files":
+        folder = folder.parent
+    if folder != root:
+        raise ValueError("結果フォルダを切り替え中です。データの読み込み完了を待ってください。")
+    for method in selected_methods:
+        path = (rds_map or {}).get(method)
+        method_root = results_dir_for_rds(_selection_source_rds(path, rds_map))
+        if method_root is None or method_root.resolve() != root:
+            raise ValueError(f"出力手法 {method} が現在の解析結果と一致しません。")
+    return str(root)
+
+
+def _selection_snapshot(loaded_rds, rds_map, current_method, selected_methods,
+                        result_folder):
+    """★ ver75.1: 全選択手法の画素を固定し、表示中の手法だけへの偏りを防ぐ。"""
+    from app.callbacks.interactive_callbacks import _set_active_key
+    from app.services.section_group_metadata import overlay_result_metadata, load_result_manifest
+    scope = _export_scope(loaded_rds, rds_map, selected_methods, result_folder)
+    _set_active_key(loaded_rds)
+    frames, maps = OrderedDict(), {}
+    metadata_rds = _selection_source_rds(loaded_rds, rds_map)
+    manifest = load_result_manifest(metadata_rds)
+    ordered = ([current_method] if current_method in selected_methods else [])
+    ordered += [method for method in selected_methods if method not in ordered]
+    for method in ordered:
+        path = rds_map[method]
+        if not Path(path).is_file() and method == "PCA":
+            harmony = rds_map.get("Harmony")
+            if harmony and Path(harmony).is_file():
+                _bridge.derive_uncorrected_pca(harmony, path)
+        if not Path(path).is_file():
+            raise ValueError(f"選択した手法 {method} の解析結果がありません。")
+        if method == current_method and Path(path).resolve() == Path(loaded_rds).resolve():
+            frame = _interactive_data.get("plot_data")
+        else:
+            frame = _bridge.extract_data(path).get("plot_data")
+        if frame is None or frame.empty:
+            raise ValueError(f"選択した手法 {method} の解析済み画素を読み込めません。")
+        frames[method] = overlay_result_metadata(frame, path, manifest=manifest).copy(deep=True)
+        maps[method] = deepcopy(load_cluster_name_map(path, method))
+    return {"scope": scope, "frames": frames, "cluster_maps": maps, "metadata_rds": metadata_rds}
+
+
+def load_export_catalog(loaded_rds, rds_map, current_method, selected_methods,
+                        result_folder):
+    """出力画面へ強度行列を渡さず、解析済み切片の一覧だけ返す。"""
+    from app.services.export_selection import build_catalog
+    snapshot = _selection_snapshot(loaded_rds, rds_map, current_method,
+                                   selected_methods, result_folder)
+    return build_catalog(snapshot["frames"], snapshot["scope"])
+
+
+def _selection_metadata(frames):
+    """表示用数値は先頭手法を保ち、他手法にだけある元画素も補完する。"""
+    merged = pd.concat(list(frames.values()), ignore_index=True)
+    keys = ["source_file_id", "source_pixel_id"]
+    if (set(keys).issubset(merged.columns)
+            and merged["source_file_id"].fillna("").astype(str).ne("").all()):
+        from app.services.section_group_metadata import normalize_pixel_id
+        merged["source_pixel_id"] = merged["source_pixel_id"].map(normalize_pixel_id)
+    else:
+        keys = ["Sample", "SpatialX", "SpatialY"]
+        # ★ ver75.1: lookup/旧画素選択と同じPython roundで重複を判定する。
+        # 生座標の僅かな表記差を残すと、他手法のUMAP値が後から上書きされる。
+        identity = merged[keys].copy()
+        for column in ("SpatialX", "SpatialY"):
+            identity[column] = identity[column].map(lambda value: round(float(value), 4))
+        return merged.loc[~identity.duplicated()].reset_index(drop=True)
+    return merged.drop_duplicates(keys).reset_index(drop=True)
+
+
+def _selection_message(selection, report):
+    if selection is None:
+        return ""
+    details = selection.summary()
+    rows = sum(int(item.get("rows", 0)) for item in report) if report else details.get("pixels", 0)
+    message = (f" 対象: {', '.join(details.get('groups', [])) or '選択した切片'}"
+               f" / 対象画素 {rows:,}。元結果: {details.get('scope', '')}")
+    partial = [f"{method_display_name(method)} {count:,}/{details['pixels']:,}画素"
+               for method, count in details.get("method_counts", {}).items()
+               if count < details["pixels"]]
+    if partial:
+        message += "。手法別対応: " + " / ".join(partial) + "（未対応クラスタは空欄）"
+    return message
 
 
 # 進捗ジョブレジストリ（Dash 非依存の services モジュールへ分離＝単体テスト可）。
@@ -953,7 +1066,7 @@ def _export_desi(
     progress_cb=None, base: int = 0, span: int = 0, conditions: dict | None = None,
     roi_failed: list | None = None, report: list | None = None,
     exclude_unused: bool = False, out_dir=None, prefix: str = "",
-    metadata_rds=None, metadata_plot=None,
+    metadata_rds=None, metadata_plot=None, selection=None,
 ) -> tuple[Path, str]:
     """DESI .txt → Excel バイト列（サンプル別シート + 手法別クラスター列）。
 
@@ -969,7 +1082,24 @@ def _export_desi(
     Returns (out_path, filename)。★ ver62.1: バイト列ではなくパスを返す。
     """
     add_region = region_lookup is not None
-    file_stems = list_msi_files(data_folder)
+    selected_txt = None
+    if selection is not None and selection.kind == "source":
+        from app.services.section_group_metadata import selected_input_paths
+        paths = selected_input_paths(metadata_rds, {".txt"}, source_file_ids={
+            unit["source_file_id"] for unit in selection.summary()["units"]})
+        if paths is None:
+            raise ValueError("元画素IDに対応する入力一覧がありません。")
+        selected_txt = {}
+        for path in paths:
+            if not selection.includes_path(path, metadata_rds):
+                continue
+            stem = Path(path).stem
+            key, suffix = stem, 2
+            while key in selected_txt:
+                key = f"{stem}__{suffix}"
+                suffix += 1
+            selected_txt[key] = str(path)
+    file_stems = list(selected_txt) if selected_txt is not None else list_msi_files(data_folder)
     if not file_stems:
         # ★ ver62.2: 一行の「見つかりません」では原因を追えなかった。
         #   呼び出し側 (`_do_export`) は判断根拠付きで先に検査するので、
@@ -978,6 +1108,8 @@ def _export_desi(
 
     is_multi = len(method_lookups) > 1
     method_names = list(method_lookups.keys())
+    source_lookup_ids = {key[0] for lookup in method_lookups.values()
+                         for key in (getattr(lookup, "by_source", None) or {})}
 
     # 全手法から Sample 名を収集
     all_sample_names: set[str] = set()
@@ -993,7 +1125,14 @@ def _export_desi(
     #   シート 0 枚のブックを保存できず、別の分かりにくい例外になる）。
     # ★ ver62.2: `.TXT` でも同じ stem を指すので、大文字小文字を問わず解決する
     #   （組み立て直すと Linux で見つからず「.txt が未生成」と誤報していた）。
-    txt_by_stem = {s: find_msi_txt(data_folder, s) for s in file_stems}
+    txt_by_stem = (selected_txt if selected_txt is not None
+                   else {s: find_msi_txt(data_folder, s) for s in file_stems})
+    # ★ ver75.1: 選択外ファイルを読み飛ばす。混在ファイルは画素単位で絞る。
+    if selection is not None:
+        file_stems = [s for s in file_stems if txt_by_stem[s] is not None
+                      and selection.includes_path(txt_by_stem[s], metadata_rds)]
+        if not file_stems:
+            raise ValueError("選択した解析済みデータの入力ファイルがありません。")
     skipped_stems = [s for s in file_stems if txt_by_stem[s] is None]
     if len(skipped_stems) == len(file_stems):
         raise ValueError(
@@ -1015,7 +1154,8 @@ def _export_desi(
     #   置けるようにするため。ループ内はこの dict を引くだけにして二度呼びを避ける
     #   （`_match_sample_name` は曖昧なとき warning を出すので、二度呼ぶと二重に出る）。
     _writable = [s_ for s_ in file_stems if s_ not in set(skipped_stems)]
-    matched_by_stem = {s_: _match_sample_name(s_, sample_names) for s_ in _writable}
+    matched_by_stem = {s_: _match_sample_name(Path(txt_by_stem[s_]).stem, sample_names)
+                       for s_ in _writable}
 
     # 「UMAP 解析に使っていない」と判断してよいサンプル。
     #   TIMS 側 `unanalyzed_groups` と同じ思想:
@@ -1027,7 +1167,7 @@ def _export_desi(
     #   Skipped シートで報告する。黙って消すとバグの証拠が消える。
     excluded_stems: list[str] = []
     blocked_samples: list[str] = []
-    if exclude_unused and sample_names:
+    if selection is None and exclude_unused and sample_names:
         excluded_stems, blocked_samples = _unanalyzed_stems(
             matched_by_stem, sample_names)
         if blocked_samples:
@@ -1047,7 +1187,7 @@ def _export_desi(
     #   もう 1 部複製していたので、ブック実体の約 2 倍が常駐していた
     #   （CHANGELOG は _export_tims / _export_desi の両方を直したと書いている）。
     #   TIMS 側と同じく `_atomic_output` の一時パスへ openpyxl に直接書かせる。
-    filename = "UMAP_cluster_DESI.xlsx"
+    filename = "UMAP_cluster_DESI_selected.xlsx" if selection is not None else "UMAP_cluster_DESI.xlsx"
     out_path = _resolve_out_path(out_dir, prefix, filename)
     # "Conditions" と "Skipped" は後から必ず追加し得るので、先に予約して奪われないようにする。
     # ★ ver59.0: 従来 "skipped" は予約されておらず、`Skipped.txt` という生ファイルが
@@ -1056,6 +1196,7 @@ def _export_desi(
     used_sheet_names = {"conditions": 1, "skipped": 1}
     with _atomic_output(out_path) as tmp, \
             pd.ExcelWriter(tmp, engine="openpyxl") as writer:
+        written_pixels = 0
         for i_f, stem in enumerate(file_stems):
             if progress_cb:
                 progress_cb(int(base + span * i_f / n_files),
@@ -1086,6 +1227,9 @@ def _export_desi(
             rows = [line.rstrip("\r\n").split("\t") for line in raw_lines]
             max_cols = max(len(r) for r in rows)
             matched_sample = matched_by_stem.get(stem)
+            from app.services.section_group_metadata import input_source_id, normalize_pixel_id
+            source_fid = input_source_id(txt_path, metadata_rds)
+            source_available = source_fid in source_lookup_ids
             # ★ ver52.5: 一致しないと下の座標引きが丸ごと飛ばされ、
             #   **そのシートの全行でクラスタ列と領域名列が空**になる。
             #   従来はどこにも報告されず、出力された Excel は一見完全なので、
@@ -1096,7 +1240,7 @@ def _export_desi(
             #     「一致しなかった」と言っても情報量が無いうえ、
             #     既存の番人 (test_no_skipped_sheet_when_nothing_was_skipped) が
             #     空の lookup で「Skipped シートを出さないこと」を検査している。
-            if matched_sample is None and sample_names:
+            if matched_sample is None and sample_names and not source_available:
                 unmatched_stems.append(stem)
                 logger.warning(
                     "[DataExport] %s は解析のサンプル名と一致しません "
@@ -1138,10 +1282,17 @@ def _export_desi(
 
             # データ行 — 各行に全手法のクラスター値を横並びで追加
             data_rows = rows[n_header:] if len(rows) > n_header else []
+            if selection is not None:
+                # ★ ver75.1: TXTヘッダを保ち、数値・クラスタ・metadataを同じ行で出す。
+                candidates = pd.DataFrame([
+                    {"id": row[0] if row else "", "x": row[1] if len(row) > 1 else None,
+                     "y": row[2] if len(row) > 2 else None} for row in data_rows])
+                kept = selection.filter_frame(candidates, txt_path, metadata_rds)
+                data_rows = [data_rows[i] for i in kept.index]
+                if not data_rows:
+                    continue
             n_matched = 0
 
-            from app.services.section_group_metadata import input_source_id, normalize_pixel_id
-            source_fid = input_source_id(txt_path, metadata_rds)
             for row in data_rows:
                 padded = row + [""] * (max_cols - len(row))
 
@@ -1186,16 +1337,17 @@ def _export_desi(
                 report.append({
                     "stem": stem,
                     "rows": len(data_rows),
-                    "keyed": len(data_rows) if matched_sample else 0,
+                    "keyed": len(data_rows) if matched_sample or source_available else 0,
                     "matched": n_matched,
-                    "resolver": "stem" if matched_sample else "no-sample",
-                    "unresolved_samples": [] if matched_sample else [stem],
+                    "resolver": "source-id" if source_available else ("stem" if matched_sample else "no-sample"),
+                    "unresolved_samples": [] if matched_sample or source_available else [stem],
                 })
 
             if metadata_plot is not None:
                 from app.services.section_group_metadata import attach_input_metadata, METADATA_COLUMNS
                 ids = pd.DataFrame({"id": [r[0] if r else "" for r in data_rows]})
-                attached = attach_input_metadata(ids, txt_path, metadata_rds, metadata_plot)
+                attached = attach_input_metadata(ids, txt_path, metadata_rds, metadata_plot,
+                                                 frozen=selection is not None)
                 added = [c for c in METADATA_COLUMNS if c in attached.columns]
                 if added:
                     for i_h in range(n_header):
@@ -1209,6 +1361,14 @@ def _export_desi(
             df_out.to_excel(
                 writer, sheet_name=sheet_name, header=False, index=False
             )
+            written_pixels += len(data_rows)
+
+        if selection is not None:
+            selection.validate_complete()
+            if written_pixels != selection.summary()["pixels"]:
+                raise ValueError("選択画素数と入力データの対応件数が一致しません。出力を中止しました。")
+        if selection is not None and conditions is not None:
+            conditions.setdefault("extra", {})["export_selection_written_pixels"] = written_pixels
 
         # 解析条件シート（論文の Methods 用）
         if conditions is not None:
@@ -1629,7 +1789,7 @@ def _export_tims(
     progress_cb=None, base: int = 0, span: int = 0, conditions: dict | None = None,
     report: list | None = None, exclude_unused: bool = False,
     options=None, extra_lookups: dict | None = None,
-    out_dir=None, prefix: str = "", metadata_rds=None, metadata_plot=None,
+    out_dir=None, prefix: str = "", metadata_rds=None, metadata_plot=None, selection=None,
 ) -> tuple[Path, str]:
     """TIMS 入力ファイルに手法別クラスター列を追加してエクスポート。
 
@@ -1645,9 +1805,13 @@ def _export_tims(
     Returns (out_path, filename)。★ ver62.1: バイト列ではなくパスを返す。
     """
     from app.services.section_group_metadata import selected_input_paths
-    input_paths = selected_input_paths(metadata_rds, {".parquet", ".csv"})
+    path_options = ({"source_file_ids": {unit["source_file_id"] for unit in selection.summary()["units"]}}
+                    if selection is not None and selection.kind == "source" else {})
+    input_paths = selected_input_paths(metadata_rds, {".parquet", ".csv"}, **path_options)
     if input_paths is None:
         input_paths = build_tims_input_paths(data_folder)
+    if selection is not None:
+        input_paths = [p for p in input_paths if selection.includes_path(p, metadata_rds)]
     if not input_paths:
         # ★ ver62.2: DESI 側と同じ説明文にそろえる（どちらの経路でも理由が出る）。
         raise ValueError(_no_input_message(data_folder, "TIMS"))
@@ -1665,6 +1829,22 @@ def _export_tims(
             "出力する項目が 1 つもありません。"
             "「出力内容の設定」で列か m/z 一覧を選んでください。")
 
+    if want_mz and selection is not None and selection.kind == "legacy":
+        # ★ ver75.1: 旧結果ではstemだけで群が分からない。座標・annotationを照合し、
+        # 選択した画素を含むファイルの特徴量カタログだけを作る（非ゼロ検出ではない）。
+        selected_paths = []
+        for path in input_paths:
+            available = _tims_available_columns(path)
+            columns = ([col for col in available if col in {"id", "x", "y", "annotation", "Sample"}]
+                       if available else None)
+            candidates = _read_tims_file(path, columns=columns)
+            if not selection.filter_frame(candidates, path, metadata_rds).empty:
+                selected_paths.append(path)
+        input_paths = selected_paths
+        if not input_paths:
+            raise ValueError("選択した画素に対応するm/z一覧を作成できません。")
+    if selection is not None and conditions is not None:
+        conditions.setdefault("extra", {})["mz_list_scope"] = "選択対象の元ファイルの特徴量一覧（非ゼロ検出一覧ではない）"
     mz_df = (_build_mz_list_table(input_paths, data_folder) if want_mz else None)
 
     if not want_spot:
@@ -1710,7 +1890,13 @@ def _export_tims(
         df = _apply_feature_annotation_columns(df, data_folder, input_paths=input_paths)
         # ★ ver67.0: 群と由来はファイルID+画素IDで対応づける。
         from app.services.section_group_metadata import attach_input_metadata
-        df = attach_input_metadata(df, fp, metadata_rds, metadata_plot)
+        df = attach_input_metadata(df, fp, metadata_rds, metadata_plot,
+                                   frozen=selection is not None)
+        if selection is not None:
+            # ★ ver75.1: 集計・列削除前に絞り、選ばなかった群の強度を平均へ混ぜない。
+            df = selection.filter_frame(df, fp, metadata_rds).copy()
+            if df.empty:
+                continue
         stem = Path(fp).stem
         # 右端に手法別クラスタ列・領域名列をベクトル付与（iterrows 撤廃＝軽い）。
         # ★ ver58.3: 突合の内訳を stats で受け取り、呼び出し側から利用者へ報告する。
@@ -1756,7 +1942,7 @@ def _export_tims(
     #   解析済みの切片を「使っていない」と誤判定して消してしまう。
     #   落とすのは行フィルタで行う。ファイルを丸ごと飛ばすと全ファイル除外時に
     #   下の `dfs_out[0]` が IndexError になり、意味不明な例外として出る。
-    if exclude_unused and all_sample_list and not all(st.get("resolver") == "source-id" for st in stats_out):
+    if selection is None and exclude_unused and all_sample_list and not all(st.get("resolver") == "source-id" for st in stats_out):
         plan, blocked = _plan_exclusions(stats_out, all_sample_list)
         if blocked:
             logger.warning("[DataExport] 解析サンプル %s が生データに見つからないため"
@@ -1791,6 +1977,15 @@ def _export_tims(
             st["rows"] = len(dfs_out[i_d])
             logger.info("[DataExport] %s: 解析対象外の切片を除外: %s",
                         st.get("stem"), st["excluded"])
+
+    if not dfs_out:
+        raise ValueError("選択した解析済み画素を入力データに対応づけられません。")
+    if selection is not None:
+        selection.validate_complete()
+        if sum(map(len, dfs_out)) != selection.summary()["pixels"]:
+            raise ValueError("選択画素数と入力データの対応件数が一致しません。出力を中止しました。")
+    if selection is not None and conditions is not None:
+        conditions.setdefault("extra", {})["export_selection_written_pixels"] = sum(map(len, dfs_out))
 
     # ★ ver61.0: 集計 / 列選択。既定 (options=None) は素通しで従来と完全に同じ。
     if _eo.is_group_mode(options):
@@ -1828,6 +2023,8 @@ def _export_tims(
     #   「1 行 = 1 グループ」に変わるのに同じ名前だと、取り違えたまま解析に回される。
     stem_name = ("UMAP_cluster_TIMS_grouped" if _eo.is_group_mode(options)
                  else "UMAP_cluster_TIMS")
+    if selection is not None:
+        stem_name += "_selected"
 
     # ★ ver62.1: 走り出す前に xlsx の規模を検査する。従来は列数しか見ておらず、
     #   4,566 m/z はガードを通り抜けて「終わらないまま走り続ける」状態になっていた。
@@ -1882,7 +2079,7 @@ def _do_export(
     rds_map, current_method, result_folder, project_id, sub_project_id,
     loaded_rds, cluster_name_map=None, selected_methods=None,
     exclude_unused=False, options=None, out_dir=None, prefix="",
-    progress_cb=None,
+    progress_cb=None, selection=None, snapshot=None,
 ):
     """データ出力の本体。開いている(読み込み済みの)プロジェクトにスコープを固定して、
     元データに UMAP cluster 列を付与したファイルを生成する。
@@ -1947,7 +2144,19 @@ def _do_export(
             return None, None, "❌ " + bad
 
         from app.services.section_group_metadata import overlay_result_metadata
-        plot_data = overlay_result_metadata(_interactive_data.get("plot_data"), loaded_rds)
+        resolved = None
+        metadata_rds = loaded_rds
+        if selection is not None and selection.get("mode") != "all":
+            from app.services.export_selection import resolve_selection
+            if snapshot is None:
+                snapshot = _selection_snapshot(loaded_rds, rds_map, current_method,
+                                               selected_methods, result_folder)
+            resolved = resolve_selection(snapshot["frames"], selection, snapshot["scope"])
+            plot_data = _selection_metadata(snapshot["frames"])
+            metadata_rds = snapshot.get("metadata_rds", loaded_rds)
+            exclude_unused = True
+        else:
+            plot_data = overlay_result_metadata(_interactive_data.get("plot_data"), loaded_rds)
         if plot_data is None or plot_data.empty:
             return None, None, "データが読み込まれていません。先にデータを読み込んでください。"
 
@@ -1955,9 +2164,15 @@ def _do_export(
         if "SpatialX" not in plot_data.columns or "SpatialY" not in plot_data.columns:
             return None, None, "空間座標データ (SpatialX/SpatialY) がありません。"
         # 選択手法のクラスタールックアップを構築（未選択なら全手法）: 進捗 10→50%
-        method_lookups = _build_all_method_lookups(
-            rds_map, current_method, cluster_name_map, selected_methods,
-            progress_cb=progress_cb, base=10, span=40)
+        if resolved is not None:
+            method_lookups = OrderedDict((method, _build_cluster_lookup(
+                frame, cluster_name_map if method == current_method
+                else snapshot["cluster_maps"].get(method)))
+                for method, frame in snapshot["frames"].items())
+        else:
+            method_lookups = _build_all_method_lookups(
+                rds_map, current_method, cluster_name_map, selected_methods,
+                progress_cb=progress_cb, base=10, span=40)
         if not method_lookups:
             return None, None, "クラスターデータを構築できませんでした。"
 
@@ -1991,8 +2206,13 @@ def _do_export(
                        "export_categories": sorted(
                            _eo.normalize(options)["categories"]),
                        "export_group_keys": _eo.normalize(options)["group_keys"]})
-            write_export_record(results_dir_for_rds(loaded_rds, result_folder),
-                                "data_export", conditions)
+            if resolved is not None:
+                conditions["extra"]["export_selection"] = resolved.summary()
+                if _eo.wants(options, "umap"):
+                    conditions["extra"]["umap_coordinates_method"] = next(iter(snapshot["frames"]))
+            else:
+                write_export_record(results_dir_for_rds(loaded_rds, result_folder),
+                                    "data_export", conditions)
         except Exception as e:  # noqa: BLE001
             logger.warning("[DataExport] 条件記録に失敗: %s", e)
 
@@ -2004,24 +2224,35 @@ def _do_export(
                 progress_cb=progress_cb, base=58, span=40, conditions=conditions,
                 roi_failed=roi_failed, report=report,
                 exclude_unused=exclude_unused, out_dir=out_dir, prefix=prefix,
-                metadata_rds=loaded_rds, metadata_plot=plot_data)
+                metadata_rds=metadata_rds, metadata_plot=plot_data, selection=resolved)
         else:
             fmt = export_format or "xlsx"
             # ★ ver61.0: plot_data 由来の追加列（UMAP 座標・品質指標）。
             #   選ばれていなければ空 dict で、従来と同じ列構成のまま。
-            extra_lookups = _build_extra_lookups(plot_data, options)
+            # ★ ver75.1: 和集合の不足行へ別手法の埋め込みを混ぜない。
+            # UMAP列は表示中（未選択なら最初の選択手法）の座標だけとし不足はNaN。
+            coordinate_data = next(iter(snapshot["frames"].values())) if resolved is not None else plot_data
+            extra_lookups = _build_extra_lookups(coordinate_data, options)
             file_path, filename = _export_tims(
                 data_folder, method_lookups, fmt, region_lookup,
                 progress_cb=progress_cb, base=58, span=40, conditions=conditions,
                 report=report, exclude_unused=exclude_unused,
                 options=options, extra_lookups=extra_lookups,
-                out_dir=out_dir, prefix=prefix, metadata_rds=loaded_rds, metadata_plot=plot_data)
+                out_dir=out_dir, prefix=prefix, metadata_rds=metadata_rds, metadata_plot=plot_data,
+                selection=resolved)
+        if resolved is not None and conditions is not None:
+            write_export_record(results_dir_for_rds(loaded_rds, result_folder),
+                                "data_export", conditions)
         _p(99, "仕上げ中…")
 
         # ステータスメッセージ
         n_methods = len(method_lookups)
         methods_str = " / ".join(map(method_display_name, method_lookups))
         msg = f"✅ {filename} を生成しました"
+        msg += _selection_message(resolved, report)
+        if resolved is not None and not is_desi and _eo.wants(options, "umap"):
+            msg += ("。UMAP座標: " + method_display_name(next(iter(snapshot["frames"])))
+                    + "（その手法にない画素は空欄）")
         if n_methods > 1:
             msg += f" ({methods_str})"
         # ★ ver58.3: 突合が成立しなかったら「成功」で終わらせない。
@@ -2264,7 +2495,7 @@ def update_data_export_method_options(rds_map):
     return options, [option["value"] for option in options]
 
 
-def _run_export_job(job_id, args):
+def _run_export_job(job_id, args, selection=None, snapshot=None):
     """作業スレッド本体: _do_export を実行し、出力を一時ファイルへ保存して進捗を反映する。
 
     base64 でブラウザに載せる（＝タブ落ちの原因）代わりに、
@@ -2278,9 +2509,10 @@ def _run_export_job(job_id, args):
         from app.config import DATA_EXPORT_TMP_DIR
         DATA_EXPORT_TMP_DIR.mkdir(parents=True, exist_ok=True)
         _sweep_old_files(DATA_EXPORT_TMP_DIR, max_age_sec=3600)  # 古い一時ファイルを掃除
+        extra_args = {"selection": selection, "snapshot": snapshot} if selection is not None else {}
         file_path, filename, msg = _do_export(
             *args, out_dir=DATA_EXPORT_TMP_DIR, prefix=f"{job_id}__",
-            progress_cb=lambda p, l="": _update_job(job_id, p, l))
+            progress_cb=lambda p, l="": _update_job(job_id, p, l), **extra_args)
         if not file_path or not filename:
             _fail_job(job_id, msg or "出力に失敗しました")
             return
@@ -2311,13 +2543,14 @@ def _run_export_job(job_id, args):
      State("cluster_name_map_store", "data"),
      State("data_export_method_selector", "value"),
      State("data_export_exclude_unused", "value"),
-     State("data_export_options", "data")],
+     State("data_export_options", "data"),
+     State("data_export_selection", "data")],
     prevent_initial_call=True,
 )
 def data_export_start(n_clicks, data_folder, ms_instrument, export_format,
                       rds_map, current_method, result_folder,
                       project_id, sub_project_id, loaded_rds, cluster_name_map,
-                      selected_methods, exclude_unused, export_options):
+                      selected_methods, exclude_unused, export_options, export_selection=None):
     """出力開始: 作業スレッドを起動し、進捗UI(0%)表示・ボタン無効・Interval 有効化。"""
     if not n_clicks:
         raise PreventUpdate
@@ -2333,18 +2566,36 @@ def data_export_start(n_clicks, data_folder, ms_instrument, export_format,
         _fail_job(job_id, "❌ 出力手法が 1 つも選ばれていません。"
                           "「出力手法 (UMAP)」で 1 つ以上チェックしてください。")
         return (_PROG_SHOW, _START_LABEL, 0, False, True, {"job": job_id}, False)
+    snapshot = None
+    try:
+        if export_selection is not None and (
+                not isinstance(export_selection, dict)
+                or export_selection.get("mode") not in ("all", "selected")):
+            raise ValueError("出力対象の指定が不正です。")
+        if export_selection and export_selection.get("mode") == "selected":
+            if not export_selection.get("ids"):
+                raise ValueError("出力対象を1つ以上選択してください。")
+            # ★ ver75.1: スレッド開始前に全手法と群情報を固定する。
+            # 表示結果の切替が、実行中ジョブの行選択を書き換えないようにする。
+            snapshot = _selection_snapshot(loaded_rds, rds_map, current_method,
+                                           selected_methods, result_folder)
+            from app.services.export_selection import resolve_selection
+            resolve_selection(snapshot["frames"], export_selection, snapshot["scope"])
+    except Exception as exc:
+        _fail_job(job_id, f"❌ {exc}")
+        return (_PROG_SHOW, _START_LABEL, 0, False, True, {"job": job_id}, False)
     # 並びは `_do_export` の位置引数と 1:1（`_run_export_job` が *args で展開する）。
     # ここを崩すと progress_cb に別の値が入って静かに壊れるので、足す位置に注意。
     # ★ ver61.0: 「出力内容の設定」は **dict 1 個を末尾に** 足す。項目ごとに引数を
     #   足していくと、この 1:1 の並びが増えるたびに崩れやすくなる。
-    args = (data_folder, ms_instrument, export_format, rds_map, current_method,
+    args = deepcopy((data_folder, ms_instrument, export_format, rds_map, current_method,
             result_folder, project_id, sub_project_id, loaded_rds, cluster_name_map,
-            selected_methods, bool(exclude_unused), export_options)
+            selected_methods, bool(exclude_unused), export_options))
     # 親コンテキスト(ContextVar の active key 等)を引き継いでスレッド実行。
     ctx = contextvars.copy_context()
-    threading.Thread(
-        target=ctx.run, args=(_run_export_job, job_id, args), daemon=True
-    ).start()
+    worker_args = ((_run_export_job, job_id, args, deepcopy(export_selection), snapshot)
+                   if snapshot is not None else (_run_export_job, job_id, args))
+    threading.Thread(target=ctx.run, args=worker_args, daemon=True).start()
     return (_PROG_SHOW, _START_LABEL, 0, False, True, {"job": job_id}, False)
 
 

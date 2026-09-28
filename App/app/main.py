@@ -398,6 +398,8 @@ from app.callbacks import env_settings_callbacks  # noqa: E402, F401
 from app.callbacks import lite_view_callbacks  # noqa: E402, F401
 from app.callbacks import rds_maintenance_callbacks  # noqa: E402, F401
 from app.callbacks import export_options_callbacks  # noqa: E402, F401
+# ★ ver75.1: 数値出力の対象選択を表示フィルターと独立して登録する。
+from app.callbacks import export_selection_callbacks  # noqa: E402, F401
 from app.callbacks import parquet_maintenance_callbacks  # noqa: E402, F401
 from app.callbacks import edit_lock_callbacks  # noqa: E402, F401
 from app.callbacks import auth_callbacks  # noqa: E402, F401
