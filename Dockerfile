@@ -53,6 +53,7 @@ RUN pip3 install --no-cache-dir --break-system-packages -r /app/App/requirements
 COPY . /app
 
 # 永続化ディレクトリを作成し権限を付与
+# ★ ver75.2: imzML専用volumeの初回作成でも非rootアプリが変換資産を保存できるようにする。
 RUN mkdir -p \
     /app/Data/DESI/Data /app/Data/TIMS/Data \
     /app/Data/Other/Common \
@@ -62,6 +63,7 @@ RUN mkdir -p \
     /app/Data/Other/presets \
     /app/Data/Other/shares \
     /app/Data/Other/cache \
+    /app/Data/Other/imzml_assets \
     /app/Data/Other/logs \
     /app/Data/Other/output \
     && chown -R msiapp:msiapp /app

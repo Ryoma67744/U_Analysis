@@ -3,6 +3,10 @@
 本手順書では、MSI Analysis Application をクラウドサーバーにデプロイし、
 チームメンバーがインターネット経由でアクセスできるようにする手順を説明します。
 
+ver75.1以前からimzMLを使用している環境は、コンテナの再作成前に
+[imzML変換資産の退避・永続化・復元](IMZML_ASSET_RECOVERY.md)を確認してください。
+既存のコンテナ内資産を退避せず、新しい空のvolumeをマウントすると、残っている資産も参照できなくなります。
+
 ---
 
 ## 目次
@@ -652,23 +656,16 @@ backups/
 ```
 
 restore.sh は次の手順を自動化:
-1. バックアップファイルの破損チェック (`tar tzf`)
-2. 既存 volume があれば確認プロンプト
-3. `docker compose down`
-4. 既存 volume 削除 → 空 volume 作成
-5. tar 展開
-6. `docker compose up -d`
+1. archive全体と実コンテナのmount・Compose起動情報を検査する。
+2. 置換を確認し、別の一時volumeへ事前展開する。
+3. 対象コンテナを停止し、既存内容を復旧用volumeへ保全する。
+4. 対象mountへ復元する。失敗時は保全した内容へ戻す。
+5. 同じコンテナを再開する。復旧用の旧内容は残す。
 
-手動で実行する場合 (非推奨):
-```bash
-# 例: msi-projects を復元
-docker compose down
-docker volume rm msi-projects
-docker volume create msi-projects
-docker run --rm -v msi-projects:/data -v $(pwd)/backups:/backup \
-    alpine tar xzf /backup/msi-projects-20260507-030000.tar.gz -C /data
-docker compose up -d
-```
+対象volumeやコンテナを削除して作り直す手順ではありません。
+ver75.2では `msi-imzml-assets` もバックアップ・復元対象です。
+切片選択後のimzML出力エラーについては
+[変換資産の復元手順](IMZML_ASSET_RECOVERY.md)を参照してください。
 
 ### 9.3 リソース監視
 

@@ -132,3 +132,73 @@ class TestWheelContents:
         names = zipfile.ZipFile(wheel).namelist()
         assert any(n.startswith(needle) for n in names), \
             f"{needle} が wheel に無い（インストール後に画面が壊れる）"
+
+
+def _compose_children(text, *keys):
+    """Composeの単純なblock mappingを辿る。コメント/別サービスを混同しない。
+
+    ★ ver75.2: PyYAMLは配布依存でないため、使用中のblock形式だけを厳密に読む。
+    未対応のinline形式は空のblockになり、必須mountの検査が失敗する。
+    """
+    lines = [(len(line) - len(line.lstrip()), line.strip())
+             for line in text.splitlines()
+             if line.strip() and not line.lstrip().startswith("#")]
+    for key in keys:
+        if not lines:
+            return []
+        level = min(indent for indent, _ in lines)
+        found = next((i for i, (indent, value) in enumerate(lines)
+                      if indent == level and value == key + ":"), None)
+        if found is None:
+            return []
+        end = next((i for i in range(found + 1, len(lines))
+                    if lines[i][0] <= level), len(lines))
+        lines = lines[found + 1:end]
+    if not lines:
+        return []
+    level = min(indent for indent, _ in lines)
+    return [value for indent, value in lines if indent == level]
+
+
+class TestImzmlAssetPersistence:
+    def test_compose_persists_fixed_imzml_assets(self):
+        """★ ver75.2: 解析結果だけ残り、変換資産が再デプロイで消える設定を拒否。"""
+        text = (APP_DIR.parent / "docker-compose.yml").read_text(encoding="utf-8")
+        assert "- IMZML_CACHE_DIR=/app/Data/Other/imzml_assets" in _compose_children(
+            text, "services", "msi-app", "environment")
+        assert "- ${IMZML_ASSETS_HOST:-msi-imzml-assets}:/app/Data/Other/imzml_assets" in _compose_children(
+            text, "services", "msi-app", "volumes")
+        assert "msi-imzml-assets:" in _compose_children(text, "volumes")
+
+    def test_image_creates_asset_directory_before_owner_switch(self):
+        text = (APP_DIR.parent / "Dockerfile").read_text(encoding="utf-8")
+        instructions = text.replace("\\\n", " ").splitlines()
+        setup = next(line for line in instructions if line.startswith("RUN mkdir -p"))
+        assert "/app/Data/Other/imzml_assets" in setup
+        assert "chown -R msiapp:msiapp /app" in setup
+        assert text.index("RUN mkdir -p") < text.index("USER msiapp")
+
+    @pytest.mark.parametrize("name", [".dockerignore", ".gitignore"])
+    def test_generated_assets_are_excluded_from_build_and_git(self, name):
+        # ★ ver75.2: volumeの元になるimageやGitへ研究データを混入させない。
+        lines = (APP_DIR.parent / name).read_text(encoding="utf-8").splitlines()
+        active = {line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#")}
+        assert "Data/Other/imzml_assets/" in active
+
+    def test_compose_reader_does_not_accept_another_service_or_comment(self):
+        text = """services:
+  msi-app:
+    environment:
+      - APP_PORT=3838
+    # volumes:
+    #   - msi-imzml-assets:/app/Data/Other/imzml_assets
+  unrelated:
+    volumes:
+      - msi-imzml-assets:/app/Data/Other/imzml_assets
+volumes:
+  msi-imzml-assets:
+"""
+        assert _compose_children(text, "services", "msi-app", "volumes") == []
+        assert _compose_children(text, "services", "unrelated", "volumes") == [
+            "- msi-imzml-assets:/app/Data/Other/imzml_assets"]
+        assert _compose_children(text, "volumes") == ["msi-imzml-assets:"]

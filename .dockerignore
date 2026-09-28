@@ -26,6 +26,8 @@ Data/TIMS/Data/
 Analysis_*/
 Data/Other/output/
 Data/Other/cache/
+# ★ ver75.2: 解析に固定したimzML資産はvolumeで管理し、imageへ混入させない。
+Data/Other/imzml_assets/
 Data/Other/logs/
 
 # レガシー・アーカイブ（リポジトリルート直下の旧 Other/ — Data/Other/ とは別物）
