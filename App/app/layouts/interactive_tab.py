@@ -14,6 +14,60 @@ from app.utils.validation import param_default
 from app.utils.display_helpers import fs_exclude_placeholders
 
 
+def create_export_selection_panel():
+    """★ ver75.1: 表示群と独立した出力対象を明示し、非表示の群を誤って含めない。"""
+    return html.Div(className="border rounded p-2 mt-2", children=[
+        html.Div("出力対象", className="small fw-bold mb-1"),
+        dbc.RadioItems(id="data_export_selection_mode", value="all", inline=True,
+            options=[{"label": "全体（従来の出力範囲）", "value": "all"},
+                     {"label": "選択した解析済みデータ", "value": "selected"}],
+            className="small"),
+        html.Div(id="data_export_selection_editor", style={"display": "none"}, children=[
+            html.P("群・個体からまとめて選び、切片ごとに調整できます。"
+                   "表示中の群とは連動しません。保存済みの強度・UMAP座標・クラスタを保ち、"
+                   "出力する解析済み画素だけを絞ります。", className="small text-muted mt-2 mb-2"),
+            html.Fieldset(id="data_export_selection_controls", disabled=True, children=[
+                dbc.Row(className="g-2", children=[
+                    dbc.Col(md=6, children=[
+                        dbc.Label("群から一括選択", className="small mb-1"),
+                        dcc.Dropdown(id="data_export_group_pick", multi=True, options=[], value=[],
+                                     placeholder="例: Ctrl、KO2", disabled=True),
+                        dbc.ButtonGroup(className="mt-1", children=[
+                            dbc.Button("選んだ群を追加", id="data_export_group_add", size="sm", color="secondary", outline=True),
+                            dbc.Button("選んだ群を除外", id="data_export_group_remove", size="sm", color="secondary", outline=True),
+                        ]),
+                    ]),
+                    dbc.Col(md=6, children=[
+                        dbc.Label("個体／独立試料から一括選択", className="small mb-1"),
+                        dcc.Dropdown(id="data_export_subject_pick", multi=True, options=[], value=[],
+                                     placeholder="個体／独立試料IDを選択", disabled=True),
+                        dbc.ButtonGroup(className="mt-1", children=[
+                            dbc.Button("選んだ個体を追加", id="data_export_subject_add", size="sm", color="secondary", outline=True),
+                            dbc.Button("選んだ個体を除外", id="data_export_subject_remove", size="sm", color="secondary", outline=True),
+                        ]),
+                    ]),
+                ]),
+                html.Div(className="d-flex gap-2 align-items-center mt-2 mb-1", children=[
+                    html.Span("切片を個別に選択", className="small fw-bold"),
+                    dbc.Button("全選択", id="data_export_select_all", size="sm", color="secondary", outline=True),
+                    dbc.Button("全解除", id="data_export_select_none", size="sm", color="secondary", outline=True),
+                ]),
+                dcc.Checklist(id="data_export_units", options=[], value=[],
+                              labelStyle={"display": "block", "padding": "3px 0"},
+                              inputStyle={"marginRight": "7px"},
+                              style={"maxHeight": "260px", "overflowY": "auto"}, className="small"),
+            ]),
+        ]),
+        html.Div(id="data_export_selection_summary", className="small mt-1",
+                 children="全体を出力します（下の未解析切片の除外設定を適用）。"),
+        html.Div(id="data_export_selection_error", className="small text-danger mt-1", role="alert"),
+        html.Div(id="data_export_selection_note", className="small text-muted mt-1"),
+        dcc.Store(id="data_export_catalog", data=None),
+        dcc.Store(id="data_export_selection", data={"mode": "all", "scope": None,
+                  "signature": None, "ids": [], "initialized": False}),
+    ])
+
+
 
 def create_interactive_tab():
     _ls = load_last_settings()
@@ -727,6 +781,8 @@ def create_interactive_tab():
                                     className="small d-inline-block",
                                 ),
                             ]),
+                            # ★ ver75.1: DESIでも対象選択は必要なため、列設定のwrapperと分離する。
+                            create_export_selection_panel(),
                             # ★ ver59.0: 解析に使っていない切片(annotation)を出力から外す。
                             #   OFF だと「クラスタ未割当」と「そもそも解析していない」が
                             #   出力を見ただけでは区別できない（仕様を知らないと読めない）。
