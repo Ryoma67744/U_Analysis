@@ -16,6 +16,8 @@ Data/Other/shares/*
 !Data/Other/shares/.gitkeep
 Data/Other/cache/*
 !Data/Other/cache/.gitkeep
+# ★ ver75.2: 不変のimzML変換資産は測定データであり、gitへ登録しない。
+Data/Other/imzml_assets/
 Data/Other/logs/*
 !Data/Other/logs/.gitkeep
 Data/Other/output/*

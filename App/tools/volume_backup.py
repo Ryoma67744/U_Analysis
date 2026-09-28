@@ -14,6 +14,9 @@ import uuid
 
 TARGETS = {f'msi-{name}': f'/app/Data/Other/{name}' for name in
            ('projects', 'sessions', 'presets', 'shares', 'common', 'output', 'logs')}
+# ★ ver75.2: imzML変換資産は数値出力に必須。結果だけのbackupでは復旧できない。
+# volume名とdirectory名が異なるため明示対応し、未mountなら既存の事前検証で失敗させる。
+TARGETS['msi-imzml-assets'] = '/app/Data/Other/imzml_assets'
 
 
 def docker(*args):

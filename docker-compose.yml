@@ -48,6 +48,9 @@ services:
       - DESI_DATA_DIR=/app/Data/DESI/Data
       - TIMS_DATA_DIR=/app/Data/TIMS/Data
       - OUTPUT_DATA_DIR=/app/Data/Other/output
+      # ★ ver75.2: 結果が参照する変換済み入力を専用永続volumeと同じ場所へ保存する。
+      # 旧構成ではコンテナ差し替えで消失し、結果表示後の数値出力が失敗した。
+      - IMZML_CACHE_DIR=/app/Data/Other/imzml_assets
       # ver4.4: Seurat 抽出キャッシュを永続ボリュームに置き、再デプロイで消えない
       # ようにする (共有を開いたときのコールド R 抽出を防ぐ)。専用ディレクトリ必須
       # (LRU 退避が配下サブディレクトリを削除するため diskcache と同居させない)。
@@ -96,6 +99,8 @@ services:
       - msi-cache:/app/Data/Other/cache
       # ver4.4: Seurat 抽出キャッシュ専用 (diskcache とは別ボリューム)
       - msi-seurat-cache:/app/Data/Other/seurat_cache
+      # ★ ver75.2: imzML変換資産は結果再現に必要。LRU削除されるcacheと共用しない。
+      - ${IMZML_ASSETS_HOST:-msi-imzml-assets}:/app/Data/Other/imzml_assets
       # 認証設定 (auth.json: bcrypt ハッシュ + password_version)
       - msi-common:/app/Data/Other/common
       # ver56.2: アプリログ。ここが書き込み層にあると `up -d --build` のたびに
@@ -132,6 +137,7 @@ volumes:
   msi-shares:
   msi-cache:
   msi-seurat-cache:
+  msi-imzml-assets:
   msi-common:
   msi-logs:
   msi-desi-data:

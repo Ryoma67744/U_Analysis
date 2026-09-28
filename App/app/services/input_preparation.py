@@ -259,6 +259,22 @@ def validate_asset(entry, *, cancel=None):
                 raise InputPreparationError("変換ファイルの所属 revision が一致しません。")
             if _file_validation(path, cancel) != expected[kind]:
                 raise InputPreparationError(f"変換資産の破損を検出しました: {path}")
+    except FileNotFoundError as exc:
+        # ★ ver75.2: receiptだけの低レベル例外では切片選択の不備に見えた。
+        # 変換資産の不足を区別し、検証を省略せず復元が必要なファイルを示す。
+        assets = [("変換完了記録", receipt_path),
+                  ("変換済みParquet", entry.get("runtime_path")),
+                  ("変換対応情報", entry.get("conversion_manifest_path"))]
+        missing = [label for label, path in assets if path and not Path(path).is_file()]
+        sample = Path(entry.get("path") or entry["runtime_path"]).name
+        raise InputPreparationError(
+            f"{sample}: 解析時のimzML変換データが見つかりません"
+            f"（不足: {'、'.join(missing) or '読込対象ファイル'}）。"
+            "切片の選択内容の問題ではありません。"
+            "管理者が変換データの保存先・永続化設定を確認し、"
+            "解析時と同一の変換データを復元してから再出力してください。"
+            f" 保存先: {root}"
+        ) from exc
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
         raise InputPreparationError(f"完成済み変換資産を検証できません: {root}: {exc}") from exc
     return deepcopy(receipt)
