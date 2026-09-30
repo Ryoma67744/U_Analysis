@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import fnmatch
 import logging
 import os
 import re
@@ -431,18 +432,28 @@ def read_deg_rds(rds_path: Path) -> list[dict] | None:
     fd, tmp_csv_str = tempfile.mkstemp(suffix=".csv")
     os.close(fd)  # subprocess 側で書き直すため fd は即 close
     tmp_csv = Path(tmp_csv_str)
+    fd, tmp_script_str = tempfile.mkstemp(suffix=".R")
+    os.close(fd)
+    tmp_script = Path(tmp_script_str)
     try:
+        from app.config import RSCRIPT_PATH
         rds_escaped = _r_escape_path(rds_path)
         tmp_csv_escaped = _r_escape_path(tmp_csv)
         r_cmd = (
             f'deg <- readRDS("{rds_escaped}");\n'
+            # ★ ver77.0: v2 は署名と data を持つ wrapper を保存する。
+            'if (is.list(deg) && is.data.frame(deg$data)) deg <- deg$data;\n'
+            'if (!is.data.frame(deg)) stop("DEG table is missing");\n'
             f'write.csv(deg, "{tmp_csv_escaped}", row.names=TRUE)'
         )
+        # ★ ver77.0: Windows の Rscript -e は改行を含むコードを誤分割するため、
+        # 一時スクリプトを渡して v2 wrapper を含む表を確実に変換する。
+        tmp_script.write_text(r_cmd, encoding="utf-8")
         result = subprocess.run(
-            ["Rscript", "-e", r_cmd],
+            [str(RSCRIPT_PATH), "--vanilla", str(tmp_script)],
             capture_output=True, timeout=30,
         )
-        if not tmp_csv.exists():
+        if result.returncode != 0 or not tmp_csv.exists():
             return None
         df = pd.read_csv(tmp_csv)
         return standardize_deg_df(df)
@@ -451,6 +462,7 @@ def read_deg_rds(rds_path: Path) -> list[dict] | None:
         return None
     finally:
         tmp_csv.unlink(missing_ok=True)
+        tmp_script.unlink(missing_ok=True)
 
 
 def _write_deg_index(
@@ -516,11 +528,104 @@ def _write_deg_index(
         logger.debug(f"deg_index.json 書き込みスキップ: {e}")
 
 
+def _load_strict_deg_results(result_base, integration_method, descriptor):
+    """選択した実結果と結び付く DEG だけを、旧インデックスを使わず読む。"""
+    from app.services.result_catalog import result_root, file_sha256
+    from app.services.result_contract import canonical_method, descriptor_deg_method
+
+    descriptor = descriptor if isinstance(descriptor, dict) else {}
+    method = descriptor_deg_method(descriptor)
+    source = descriptor.get("source") or {}
+    if (not method or canonical_method(integration_method) != method or not source.get("path") or
+            descriptor.get("classification", {}).get("state") not in {"recorded", "inferred"}):
+        return None
+    root = result_root(source["path"]).resolve()
+    if root != Path(result_base).resolve():
+        return None
+    source_path = Path(source["path"]).resolve()
+    stages = descriptor.get("run_state", {}).get("stages") or {}
+    expected_sha = None
+    if stages:
+        # ★ ver77.0: v2 では、同じクラスタ割当の DEG 完了記録と成果物 SHA を要求する。
+        # 保存済み cluster の内容が違う場合、手法名だけ同じ旧 DEG は採用しない。
+        cluster = stages.get("cluster") or {}
+        deg = stages.get("deg") or {}
+        assignment = (cluster.get("numerical") or {}).get("assignment_hash")
+        deg_assignment = ((deg.get("numerical") or {}).get("assignment_hash") or
+                          (deg.get("effective") or {}).get("assignment_hash"))
+        if (cluster.get("status") != "complete" or deg.get("status") != "complete" or
+                not source.get("sha256") or cluster.get("artifact_sha256") != source["sha256"] or
+                not assignment or assignment != deg_assignment or
+                not cluster.get("rds_path") or not deg.get("rds_path") or not deg.get("artifact_sha256")):
+            return None
+        cluster_path = Path(cluster["rds_path"])
+        cluster_path = (root / cluster_path).resolve() if not cluster_path.is_absolute() else cluster_path.resolve()
+        path = Path(deg["rds_path"])
+        path = (root / path).resolve() if not path.is_absolute() else path.resolve()
+        if cluster_path != source_path or path == source_path or not path.is_relative_to(root):
+            return None
+        expected_sha = deg["artifact_sha256"]
+    else:
+        # ★ ver77.0: 旧結果は同じ run の手法専用ディレクトリ/ファイルだけを候補にする。
+        # 無名の直下表、別 run の子孫、書き換わり得る旧 deg_index は根拠にしない。
+        aliases = {method.casefold()}
+        if method == "PCA":
+            aliases.add("pca_uncorrected")
+        directories = [(root, False), (root / "RDS_Files", False)]
+        if root.is_dir():
+            for child in root.iterdir():
+                if child.is_dir() and child.name.casefold() in aliases:
+                    directories.extend([(child, True), (child / "RDS_Files", True)])
+        names = ("markers_annotated*.csv", "markers_mz_only*.csv", "*deg*markers*.csv", "*top*markers*.csv", "deg*.rds")
+        candidates = {}
+        for directory, method_owned in directories:
+            if not directory.is_dir() or not directory.resolve().is_relative_to(root):
+                continue
+            for candidate in directory.iterdir():
+                if not candidate.is_file() or not candidate.resolve().is_relative_to(root):
+                    continue
+                name = candidate.name.casefold()
+                rank = next((i for i, pattern in enumerate(names) if fnmatch.fnmatchcase(name, pattern)), None)
+                if rank is None:
+                    continue
+                tagged = {canonical_method(tag) for tag in re.findall(
+                    r"(?:^|[^a-z0-9])(pca_uncorrected|harmony|rpca|pca)(?=$|[^a-z0-9])", name)}
+                if (tagged and tagged != {method}) or (not method_owned and tagged != {method}):
+                    continue
+                candidates[candidate.resolve()] = rank
+        if not candidates:
+            return None
+        best = min(candidates.values())
+        choices = [path for path, rank in candidates.items() if rank == best]
+        if len(choices) != 1:
+            logger.warning("同じ手法の DEG 候補が複数あるため採用しません: %s", choices)
+            return None
+        path = choices[0]
+    try:
+        before = file_sha256(path)
+        if expected_sha and before != expected_sha:
+            return None
+        if path.suffix.casefold() == ".csv":
+            data = standardize_deg_df(pd.read_csv(path, encoding="utf-8"))
+        elif path.suffix.casefold() == ".rds":
+            data = read_deg_rds(path)
+        else:
+            return None
+        if before != file_sha256(path):
+            return None
+        return _apply_annotation_overlay(root, path.parent.name if path.parent.name.casefold() in {"pca_uncorrected"} else method, data) if data else None
+    except (OSError, ValueError, pd.errors.ParserError) as exc:
+        logger.warning("選択結果の DEG を検証できません: %s", exc)
+        return None
+
+
 def load_deg_results(
     result_base: Path,
     integration_method: str | None = None,
     *,
     cache: dict | None = None,
+    strict_method: bool = False,
+    result_descriptor: dict | None = None,
 ) -> list[dict] | None:
     """解析結果フォルダ内の DEG CSV / RDS を読み込む（キャッシュ付き）。
 
@@ -534,7 +639,13 @@ def load_deg_results(
         キャッシュ用 dict。呼び出し元が管理する辞書を渡す。
         ``deg_cache_key`` / ``deg_cache_data`` キーを使用する。
         None の場合はキャッシュを使用しない。
+    strict_method : bool
+        True は result_descriptor の選択結果に対応するファイルだけを検証して読み込む。
+        旧インデックス・共有キャッシュ・無名ファイルへの探索は使用しない。
     """
+    # ★ ver77.0: 選択結果を固定する画面/PPT は古い探索・共有キャッシュを迂回する。
+    if strict_method:
+        return _load_strict_deg_results(result_base, integration_method, result_descriptor)
     # キャッシュチェック
     cache_key = (str(result_base), integration_method)
     if cache is not None:

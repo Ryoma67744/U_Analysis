@@ -181,6 +181,36 @@ def test_link_c_deg_none_is_non_fatal(monkeypatch, sample_df):
     assert ic._get_state(rds_path)["_deg_data"] is None  # DEG なしでも続行
 
 
+def test_link_c_deg_uses_verified_method_and_keeps_requested_alias_for_authorization(monkeypatch, sample_df):
+    rds_path = "/proj/Step2_HarmonyPCA_Result.rds"
+    state = _seed_state(rds_path, sample_df)
+    state["result_descriptor"] = {"classification": {"method": "PCA", "state": "inferred"},
+                                  "clusters": {"kind": "computed"}, "capabilities": {"deg": True}}
+    calls = []
+    monkeypatch.setattr(ic, "_load_deg_results", lambda base, method, **kwargs: calls.append(method))
+    out = ic.load_stage_c_deg(_trigger(rds_path, method="Harmony"), False, None, .5, 2,
+                              "linear", "Positive", "", .01, None, "")
+    assert calls == ["PCA"]
+    assert out[-1]["method"] == "Harmony"
+
+
+@pytest.mark.parametrize("method,kind,capable", [(None, "computed", True),
+                                              ("PCA", "inherited", True),
+                                              ("PCA", "unknown", False),
+                                              ("PCA", "computed", False)])
+def test_link_c_does_not_search_deg_when_cluster_origin_is_not_verified(monkeypatch, sample_df, method, kind, capable):
+    rds_path = "/proj/PCA.rds"
+    state = _seed_state(rds_path, sample_df)
+    state["result_descriptor"] = {"classification": {"method": method, "state": "inferred"},
+                                  "clusters": {"kind": kind}, "capabilities": {"deg": capable}}
+    monkeypatch.setattr(ic, "_load_deg_results", lambda *args: pytest.fail("別手法のDEGを探索した"))
+    out = ic.load_stage_c_deg(_trigger(rds_path), False, None, .5, 2,
+                              "linear", "Positive", "", .01, None, "")
+    assert out[-1]["rds_path"] == rds_path
+    assert state["_deg_data"] is None
+    assert "DEG" in state["_deg_warning"]
+
+
 def test_link_c_calibration_failure_is_non_fatal(monkeypatch, sample_df, deg_records):
     rds_path = "/proj/A.rds"
     _seed_state(rds_path, sample_df)

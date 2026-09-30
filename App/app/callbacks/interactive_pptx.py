@@ -9,6 +9,7 @@
 import json
 import logging
 import re
+from copy import deepcopy
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -21,6 +22,9 @@ from dash.exceptions import PreventUpdate
 
 from app.utils.integration_methods import method_display_name, method_options
 from app.services.seurat_bridge import SeuratBridge
+from app.services.result_snapshot import (build_export_request, load_method_snapshots,
+    verify_request, descriptor_caption, embedding_title)
+from app.services.result_contract import descriptor_deg_method
 from app.services.caveats import banner_text as _caveat_banner
 from app.utils.color_utils import (
     cluster_sort_key as _cluster_sort_key,
@@ -33,6 +37,7 @@ from app.utils.display_helpers import (
 from app.utils.deg_utils import (
     is_meaningful_annotation as _is_meaningful_annotation,
     get_top_n_features_for_cluster as _get_top_n_features_for_cluster,
+    load_deg_results as _load_deg_results,
 )
 from app.utils.label_persistence import (
     compute_annotation_offsets as _compute_annotation_offsets,
@@ -55,7 +60,6 @@ from app.utils import raster as _raster
 from app.callbacks.interactive_callbacks import (
     _interactive_data,
     _bridge,
-    _load_deg_results,
     _load_label_positions,
 )
 from app.callbacks.interactive_umap import (
@@ -852,6 +856,8 @@ def _add_conditions_slide(prs, conditions, rows_per_slide=16):
 
     if not conditions:
         return
+    from app.services.result_snapshot import public_metadata
+    conditions = public_metadata(conditions)
     try:
         from app.services.methods_text import render_conditions_rows
         rows = render_conditions_rows(conditions, lang="ja")
@@ -959,6 +965,32 @@ def _add_marker_table_slide(prs, title, headers, rows, rows_per_slide=18):
                 c.text_frame.paragraphs[0].font.size = Pt(9)
 
 
+def _add_result_caption(slide, descriptor, *, merged=False):
+    """★ ver77.0: 画像だけを見ても独立解析・ラベル投影・PC代替を取り違えない。"""
+    if not descriptor:
+        return
+    from pptx.util import Inches, Pt
+    caption = descriptor_caption(descriptor)
+    if merged:
+        caption += " | 表示クラスタ: マージ統合（元解析の由来を継承）"
+    if descriptor.get("embedding", {}).get("kind") == "pca2d":
+        for shape in slide.shapes:
+            if shape.has_text_frame and shape.top <= Inches(0.6):
+                for paragraph in shape.text_frame.paragraphs:
+                    for run in paragraph.runs:
+                        run.text = run.text.replace("UMAP", "PCA (PC1 / PC2)")
+    box = slide.shapes.add_textbox(Inches(0.3), Inches(0.59), Inches(12.4), Inches(0.25))
+    paragraph = box.text_frame.paragraphs[0]
+    paragraph.text = caption
+    paragraph.font.size = Pt(10)
+    # 機械可読の詳細はnotesへ併記し、既存の条件JSONを消さない。
+    notes = slide.notes_slide.notes_text_frame
+    from app.services.result_snapshot import public_metadata
+    notes.text += "\nResult provenance: " + json.dumps(
+        {"result_descriptor": public_metadata(descriptor), "merged_view": bool(merged)},
+        ensure_ascii=False, default=str)
+
+
 def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                  sub_name="", volcano_fig=None, heatmap_fig=None,
                  deg_data=None, top_n=5, df=None, cache_dir=None,
@@ -967,7 +999,7 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                  existing_prs=None, progress_offset=0, progress_total=None,
                  saved_positions=None, cluster_name_map=None,
                  include_deg=True, deadline=None, conditions=None,
-                 display_settings=None, label_merged=False):
+                 display_settings=None, label_merged=False, result_descriptor=None):
     """グローバル概要 + クラスターごとの詳細スライドを含む PPTX を生成し bytes を返す。
 
     グローバルセクション:
@@ -1001,6 +1033,7 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
     from pptx.enum.shapes import MSO_SHAPE
     from pptx.dml.color import RGBColor
 
+    result_descriptor = result_descriptor or (meta or {}).get("result_descriptor") or {}
     # 進捗計算用
     _clusters_for_progress = []
     if df is not None:
@@ -1040,6 +1073,8 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
     # =====================================================================
     # グローバルセクション
     # =====================================================================
+
+    _result_slide_start = len(prs.slides)
 
     # --- スライド 1: タイトル ---
     slide = prs.slides.add_slide(prs.slide_layouts[6])  # Blank
@@ -1095,7 +1130,7 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
 
     # --- 解析条件スライド ---
     # 複数手法パスでは呼び出し元が先頭に 1 回だけ入れるため、ここでは単一手法時のみ。
-    if conditions is not None and existing_prs is None:
+    if conditions is not None:
         _add_conditions_slide(prs, conditions)
 
     # --- スライド 2: UMAP + Spatial 統合 (サンプル別) ---
@@ -1679,6 +1714,9 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
             _np.font.size = Pt(16)
             _np.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
 
+    # ★ ver77.0: 由来とPC1/PC2代替表示を、全ての手法別スライドへ明記する。
+    for slide in list(prs.slides)[_result_slide_start:]:
+        _add_result_caption(slide, result_descriptor, merged=label_merged)
     # existing_prs が渡された場合は呼び出し元がまとめて保存するため
     # ここでは保存しない (現在のステップ数を返す)
     if existing_prs is not None:
@@ -1861,8 +1899,6 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                        "report_top_n": top_n,
                        "report_methods": export_method_selection,
                        "report_include_deg": bool(include_deg)})
-            write_export_record(results_dir_for_rds(rds_path, result_folder),
-                                "pptx_report", conditions)
         except Exception as _e:
             logger.warning("PPTX の条件記録に失敗: %s", _e)
 
@@ -1879,14 +1915,6 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
         _export_timeout = float(_os.environ.get("PPTX_EXPORT_TIMEOUT_SEC", "2700"))
         _deadline = (_time.monotonic() + _export_timeout) if _export_timeout > 0 else None
 
-        # expression_matrix.parquet を必要時に on-demand 生成（feature plot / heatmap が利用）
-        set_progress((1, 100, "発現データ準備中（初回は数十秒かかります）..."))
-        try:
-            if rds_path:
-                _bridge.ensure_expression_matrix(rds_path)
-        except Exception as e:
-            logger.warning(f"発現データ準備失敗、feature レンダリングは fallback or スキップ: {e}")
-
         # ------------------------------------------------------------------
         # 出力対象手法リストの決定（export_method_selector に基づく）
         # ------------------------------------------------------------------
@@ -1901,7 +1929,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
         methods_to_export = []
         if has_methods:
             valid = [m for m in selected if m in rds_map]
-            if not valid:
+            if not valid or len(valid) != len(selected):
                 return no_update, "選択した手法が見つかりません。"
             # current_method を先頭に（比較スライドの基準）
             if current_method and current_method in valid:
@@ -1910,53 +1938,29 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
             else:
                 methods_to_export = valid
 
-        # ------------------------------------------------------------------
-        # 単一手法の場合（従来の動作と完全互換）
-        # ------------------------------------------------------------------
+        # ★ ver77.0: 旧単一手法経路も選択RDSを検証し、画面のcache_dirや図を再利用しない。
         if not methods_to_export:
-            cache_dir_path = Path(cache_dir_str) if cache_dir_str else None
-            df = None
-            meta = {}
-            if cache_dir_path:
-                plot_parquet = cache_dir_path / "plot_data.parquet"
-                plot_csv = cache_dir_path / "plot_data.csv"
-                if plot_parquet.exists():
-                    df = pd.read_parquet(plot_parquet)
-                elif plot_csv.exists():
-                    df = pd.read_csv(plot_csv)
+            methods_to_export = [current_method or "Unknown"]
+            rds_map = {methods_to_export[0]: rds_path}
+        if current_method in (rds_map or {}) and rds_path and Path(rds_map[current_method]).resolve() != Path(rds_path).resolve():
+            raise ValueError("表示手法を切り替え中です。読み込み完了後に出力してください。")
+        # ★ ver77.0: 不足する手法を出力処理で生成・代用しない。設定だけ先に固定する。
+        frozen_names = {method: deepcopy((cluster_name_map or {}) if method == current_method
+                        else _load_cluster_name_map(rds_map[method], method)) for method in methods_to_export}
+        frozen_positions = {method: deepcopy(saved_positions if method == current_method
+                            else _load_label_positions_util(rds_map[method], method)) for method in methods_to_export}
+        request = build_export_request(rds_map, methods_to_export,
+                                       current_method=current_method, scope=result_folder or "")
+        snapshots = load_method_snapshots(request, _bridge)
+        for snapshot in snapshots.values():
+            capabilities = snapshot.descriptor.get("capabilities", {})
+            if snapshot.descriptor and not (capabilities.get("umap") or capabilities.get("pc")):
+                raise ValueError("PPTXに必要なUMAPまたはPCA座標がありません。埋込計算を完了してください。")
+        from app.services.section_group_metadata import load_result_manifest
+        frozen_manifest = deepcopy(load_result_manifest(request.sources[0].path))
 
-                meta_file = cache_dir_path / "extraction_meta.json"
-                if meta_file.exists():
-                    with open(meta_file, "r", encoding="utf-8") as f:
-                        meta = json.load(f)
-
-            # ★ ver51.9 / B-7: 画面が「マージ統合」表示ならそれを反映する。
-            df = filter_groups(overlay_result_metadata(df, rds_path), section_groups)
-            df, custom_colors, _merged = _apply_merge_view(
-                df, display_settings, custom_colors)
-
-            pptx_bytes = _build_pptx(
-                umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
-                sub_name=sub_name, volcano_fig=volcano_fig,
-                heatmap_fig=heatmap_fig,
-                deg_data=deg_data, top_n=top_n, df=df,
-                cache_dir=str(cache_dir_path) if cache_dir_path else None,
-                custom_colors=custom_colors, rotation_store=rotation_store,
-                name_map=name_map, set_progress=set_progress,
-                mrm_path=mrm_path_str,
-                saved_positions=saved_positions,
-                cluster_name_map=cluster_name_map,
-                include_deg=include_deg,
-                deadline=_deadline,
-                conditions=conditions,
-                display_settings=display_settings,
-                label_merged=_merged,
-            )
-
-            return (
-                dcc.send_bytes(pptx_bytes, filename=filename),
-                f"✓ PPTXファイルを出力しました: {filename}",
-            )
+        def _display_method(method):
+            return descriptor_caption(snapshots[method].descriptor) or method_display_name(method)
 
         # ------------------------------------------------------------------
         # 複数手法 or セレクタで指定された手法 → 1つの PPTX に結合
@@ -1964,10 +1968,6 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
         prs = Presentation()
         prs.slide_width = Inches(13.333)
         prs.slide_height = Inches(7.5)
-
-        # 解析条件は手法ごとではなく資料の先頭に 1 回だけ置く
-        if conditions is not None:
-            _add_conditions_slide(prs, conditions)
 
         is_multi = len(methods_to_export) > 1
 
@@ -1984,60 +1984,45 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
         skipped_methods = []  # 出力できなかった手法（最終ステータスで可視化）
 
         for method_name in methods_to_export:
-            method_rds = rds_map.get(method_name)
-            # 派生PCA（未補正）は専用RDSがディスク未生成のことがある。UI 読込
-            # (load_stage_b_extract) と同じく Harmony から遅延生成してから出力する。
-            if (method_name == "PCA" and method_rds
-                    and not Path(method_rds).exists()):
-                harmony_rds = rds_map.get("Harmony")
-                if harmony_rds and Path(harmony_rds).exists():
-                    try:
-                        set_progress((
-                            min(int(progress_offset / total_steps * 100), 99),
-                            100,
-                            "PCA(未補正)を生成中（初回は数分かかります）...",
-                        ))
-                        _bridge.derive_uncorrected_pca(harmony_rds, method_rds)
-                    except Exception as e:
-                        logger.warning(f"PCA(未補正)の派生生成に失敗: {e}")
-            if not method_rds or not Path(method_rds).exists():
-                logger.info(f"{method_name}: RDS ファイルが見つかりません → スキップ")
-                skipped_methods.append(method_name)
-                continue
-
-            set_progress((
-                min(int(progress_offset / total_steps * 100), 99), 100,
-                f"{method_display_name(method_name)} のデータを読み込み中..."
-            ))
-
-            try:
-                result = _bridge.extract_data(method_rds)
-            except Exception as e:
-                logger.error(f"{method_name}: データ抽出エラー: {e}")
-                skipped_methods.append(method_name)
-                continue
-
-            method_df = filter_groups(overlay_result_metadata(result["plot_data"], method_rds), section_groups)
+            snapshot = snapshots[method_name]
+            method_rds = snapshot.source.path
+            result = {"plot_data": snapshot.frame(), "meta": deepcopy(snapshot.meta),
+                      "cache_dir": snapshot.cache_dir}
+            method_df = filter_groups(overlay_result_metadata(result["plot_data"], method_rds,
+                                      manifest=frozen_manifest), section_groups)
+            if method_df is None or method_df.empty:
+                raise ValueError(f"{_display_method(method_name)}: 出力対象の画素がありません。")
             method_meta = dict(result["meta"])
-            if method_df is not None:
-                method_meta["n_cells"] = len(method_df)
-                method_meta["n_clusters"] = method_df["Cluster"].nunique()
+            method_meta["result_descriptor"] = deepcopy(snapshot.descriptor)
+            method_meta["n_cells"] = len(method_df)
+            method_meta["n_clusters"] = method_df["Cluster"].nunique()
             method_cache_dir = result.get("cache_dir")
+            if not snapshot.descriptor or snapshot.descriptor.get("capabilities", {}).get("feature", False):
+                try:
+                    _bridge.ensure_expression_matrix(method_rds)
+                except Exception as exc:
+                    logger.warning("発現データ準備失敗 (%s): %s", method_name, exc)
+            from app.services.provenance import collect_conditions, results_dir_for_rds
+            # ★ ver77.0: UIの旧手法キー・結果フォルダは別結果を指し得るため、
+            # 条件とDEGは固定したRDSの実フォルダ・検証済み手法だけから読む。
+            result_base = results_dir_for_rds(method_rds)
+            method_conditions = collect_conditions(
+                rds_path=method_rds, result_folder=result_base,
+                integration_method=method_name, result_descriptor=snapshot.descriptor,
+                extra={"exported_file": filename, "report_top_n": top_n,
+                       "report_include_deg": bool(include_deg),
+                       "method_result": snapshot.manifest()})
+            # 表示設定はクリック時に固定したものを全手法へ適用する。
+            if conditions and "interactive" in conditions:
+                method_conditions["interactive"] = deepcopy(conditions["interactive"])
 
             # DEG 結果読み込み
             method_deg_data = None
-            if result_folder:
-                result_base = Path(result_folder)
+            deg_method = descriptor_deg_method(snapshot.descriptor)
+            if result_base is not None and deg_method:
                 method_deg_data = _load_deg_results(
-                    result_base, method_name)
-            else:
-                rds_dir = Path(method_rds).parent
-                result_base = (rds_dir.parent
-                               if rds_dir.name == "RDS_Files"
-                               else rds_dir)
-                method_deg_data = _load_deg_results(
-                    result_base, method_name)
-
+                    result_base, deg_method, strict_method=True,
+                    result_descriptor=snapshot.descriptor)
             # ★ ver51.9 / B-7: 画面が「マージ統合」表示ならそれを反映する。
             #   色も統合後の体系 (親クラスタ濃淡 / 独立色) に切り替わる。
             method_df, method_colors, _merged = _apply_merge_view(
@@ -2045,6 +2030,8 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
 
             extracted_data[method_name] = {
                 "df": method_df,
+                "descriptor": snapshot.descriptor,
+                "conditions": method_conditions,
                 "custom_colors": method_colors,
                 "merged": _merged,
                 "meta": method_meta,
@@ -2059,10 +2046,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 #   「腫瘍」になる。手法比較のための資料でラベルが汚染される。
                 #   ラベル位置は既に手法別に読み直している(下記 _method_positions)。
                 #   表示中の手法だけ Store の値を使う (未保存の改名を落とさないため)。
-                "cluster_name_map": (
-                    (cluster_name_map or {})
-                    if method_name == current_method
-                    else _load_cluster_name_map(method_rds, method_name)),
+                "cluster_name_map": frozen_names[method_name],
             }
             progress_offset += 1
 
@@ -2096,11 +2080,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 has_spatial_cmp = "SpatialX" in m_df.columns
 
                 # 手法別ラベル位置を取得（現在のメソッドはメモリ蓄積をマージ）
-                if method_name == current_method:
-                    _method_positions = saved_positions
-                else:
-                    _method_positions = _load_label_positions_util(
-                        ed["rds_path"], method_name)
+                _method_positions = frozen_positions[method_name]
                 # ver51.9: 改名も色もマージ表示も手法別（Phase 1 で解決済み）
                 _method_names_cmp = ed["cluster_name_map"]
                 _method_colors_cmp = ed["custom_colors"]
@@ -2146,7 +2126,8 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                     slide = prs.slides.add_slide(prs.slide_layouts[6])
                     _pptx_add_title_bar(
                         slide,
-                        f"UMAP & Spatial Mapping \u2014 {method_display_name(method_name)}{_gs_sfx}")
+                        f"{embedding_title(ed['descriptor'])} & Spatial Mapping \u2014 {_display_method(method_name)}{_gs_sfx}")
+                    _add_result_caption(slide, ed["descriptor"], merged=ed["merged"])
 
                     # 上段: サンプル別 UMAP
                     tile_w_cmp = avail_w_cmp / max(_gs_n, 1)
@@ -2263,27 +2244,23 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
             method_start_idx = len(prs.slides)
 
             # 手法別ラベル位置を取得
-            if method_name == current_method:
-                method_saved_positions = saved_positions
-            else:
-                method_saved_positions = _load_label_positions_util(
-                    method_rds, method_name)
+            method_saved_positions = frozen_positions[method_name]
 
             set_progress((
                 min(int(progress_offset / total_steps * 100), 99),
                 100,
-                f"{method_display_name(method_name)} のスライドを生成中..."
+                f"{_display_method(method_name)} のスライドを生成中..."
             ))
 
             # --- セパレータスライド ---
             sep_slide = prs.slides.add_slide(prs.slide_layouts[6])
-            _pptx_add_title_bar(sep_slide, f"═══ {method_display_name(method_name)} ═══")
+            _pptx_add_title_bar(sep_slide, f"═══ {_display_method(method_name)} ═══")
             txBox = sep_slide.shapes.add_textbox(
                 Inches(1), Inches(2.5), Inches(11), Inches(2))
             tf = txBox.text_frame
             tf.word_wrap = True
             p = tf.paragraphs[0]
-            p.text = f"Integration Method: {method_display_name(method_name)}"
+            p.text = f"Integration Method: {_display_method(method_name)}"
             p.font.size = Pt(28)
             p.font.bold = True
             p.alignment = PP_ALIGN.CENTER
@@ -2306,6 +2283,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 p3.font.size = Pt(14)
                 p3.font.color.rgb = RGBColor(0x85, 0x64, 0x04)
                 p3.alignment = PP_ALIGN.CENTER
+            _add_result_caption(sep_slide, ed["descriptor"], merged=method_merged)
             progress_offset += 1
 
             # --- UMAP 図を生成 ---
@@ -2348,8 +2326,8 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
 
             # --- _build_pptx でフルセットを追加 ---
             method_sub_name = (
-                f"{sub_name} [{method_display_name(method_name)}]"
-                if sub_name else method_display_name(method_name)
+                f"{sub_name} [{_display_method(method_name)}]"
+                if sub_name else _display_method(method_name)
             )
             returned = _build_pptx(
                 method_umap_fig, None, method_meta,
@@ -2374,13 +2352,14 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 deadline=_deadline,
                 display_settings=display_settings,
                 label_merged=method_merged,
+                conditions=ed["conditions"], result_descriptor=ed["descriptor"],
             )
             if isinstance(returned, int):
                 progress_offset = returned
 
             method_end_idx = len(prs.slides) - 1
             section_map.append(
-                (method_display_name(method_name), method_start_idx, method_end_idx))
+                (_display_method(method_name), method_start_idx, method_end_idx))
             exported_methods.append(method_name)
 
         if not exported_methods:
@@ -2399,8 +2378,16 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
         output = BytesIO()
         prs.save(output)
         output.seek(0)
+        # ★ ver77.0: 作成中のRDS置換を検知し、不完全な資料をダウンロードへ渡さない。
+        verify_request(request)
+        from app.services.provenance import results_dir_for_rds, write_export_record
+        report_conditions = deepcopy(next(iter(extracted_data.values()))["conditions"])
+        report_conditions.setdefault("extra", {})["method_conditions"] = {
+            method: ed["conditions"] for method, ed in extracted_data.items()}
+        write_export_record(results_dir_for_rds(request.sources[0].path, result_folder),
+                            "pptx_report", report_conditions)
 
-        methods_str = " + ".join(map(method_display_name, exported_methods))
+        methods_str = " + ".join(map(_display_method, exported_methods))
         status_msg = f"✓ PPTXファイルを出力しました ({methods_str}): {filename}"
         if skipped_methods:
             status_msg += (

@@ -219,3 +219,100 @@ class TestRdsRecursiveStageIsScoped:
 
         assert load_deg_results(tmp_path, "RPCA") is None, \
             "RDS の再帰探索で別手法を掴んでいる"
+
+
+def _strict_descriptor(base, method="PCA", stages=None):
+    return {"source": {"path": str(base / "RDS_Files" / "selected.rds"), "sha256": "selected-sha"},
+            "classification": {"method": method, "state": "inferred"},
+            "clusters": {"kind": "computed"}, "capabilities": {"deg": True},
+            "run_state": {"stages": stages or {}}}
+
+
+def _strict_load(base, descriptor=None, **kwargs):
+    return load_deg_results(base, "PCA", strict_method=True,
+                            result_descriptor=descriptor or _strict_descriptor(base), **kwargs)
+
+
+def test_strict_legacy_rejects_unnamed_root_index_and_shared_cache(tmp_path):
+    _write(tmp_path, "markers_annotated.csv", "UNBOUND")
+    (tmp_path / "deg_index.json").write_text(json.dumps({"version": 1, "deg_results": {
+        "PCA": {"type": "csv", "path": "markers_annotated.csv"}}}), encoding="utf-8")
+    cache = {"deg_cache_key": (str(tmp_path), "PCA"), "deg_cache_data": [{"gene": "STALE"}]}
+    assert _strict_load(tmp_path, cache=cache) is None
+    assert cache["deg_cache_data"] == [{"gene": "STALE"}]
+
+
+def test_strict_legacy_only_reads_actual_method_in_source_run(tmp_path):
+    source = tmp_path / "source"
+    other = tmp_path / "other"
+    _write(source, "PCA/markers_annotated.csv", "ACTUAL_PCA")
+    _write(source, "Harmony/markers_annotated.csv", "WRONG_METHOD")
+    _write(other, "PCA/markers_annotated.csv", "WRONG_RUN")
+    descriptor = _strict_descriptor(source)
+    assert _strict_load(source, descriptor)[0]["gene"] == "ACTUAL_PCA_FEATURE"
+    assert _strict_load(other, descriptor) is None
+    assert load_deg_results(source, "Harmony", strict_method=True, result_descriptor=descriptor) is None
+
+
+def test_strict_legacy_does_not_search_child_runs_or_accept_conflicting_filename(tmp_path):
+    _write(tmp_path, "old_run/PCA/markers_annotated.csv", "OLD_RUN")
+    _write(tmp_path, "PCA/deg_harmony_markers.csv", "MISPLACED")
+    _write(tmp_path, "deg_rpca_markers.csv", "NOT_PCA")
+    assert _strict_load(tmp_path) is None
+    _write(tmp_path, "deg_pca_uncorrected_markers.csv", "PCA")
+    assert _strict_load(tmp_path)[0]["gene"] == "PCA_FEATURE"
+
+
+def test_strict_legacy_does_not_choose_between_ambiguous_tables(tmp_path):
+    _write(tmp_path, "PCA/markers_annotated_a.csv", "A")
+    _write(tmp_path, "PCA/markers_annotated_b.csv", "B")
+    assert _strict_load(tmp_path) is None
+
+
+def _strict_v2(base):
+    from app.services.result_catalog import file_sha256
+    table = _write(base, "markers_annotated.csv", "BOUND")
+    stages = {"cluster": {"status": "complete", "rds_path": "RDS_Files/selected.rds",
+                           "artifact_sha256": "selected-sha", "numerical": {"assignment_hash": "assignment"}},
+              "deg": {"status": "complete", "rds_path": table.name,
+                       "artifact_sha256": file_sha256(table), "effective": {"assignment_hash": "assignment"}}}
+    return _strict_descriptor(base, stages=stages)
+
+
+def test_strict_v2_accepts_unnamed_table_only_with_source_assignment_and_content_binding(tmp_path):
+    descriptor = _strict_v2(tmp_path)
+    assert _strict_load(tmp_path, descriptor)[0]["gene"] == "BOUND_FEATURE"
+    assert not (tmp_path / "deg_index.json").exists()
+
+
+@pytest.mark.parametrize("change", ["source_sha", "deg_sha", "assignment", "failed", "outside", "other_rds"])
+def test_strict_v2_invalid_binding_never_falls_back_to_legacy_files(tmp_path, change):
+    descriptor = _strict_v2(tmp_path)
+    _write(tmp_path, "PCA/markers_annotated.csv", "LEGACY")
+    stages = descriptor["run_state"]["stages"]
+    if change == "source_sha":
+        stages["cluster"]["artifact_sha256"] = "another-source"
+    elif change == "deg_sha":
+        stages["deg"]["artifact_sha256"] = "another-table"
+    elif change == "assignment":
+        stages["deg"]["effective"]["assignment_hash"] = "other-clusters"
+    elif change == "failed":
+        stages["deg"]["status"] = "failed"
+    elif change == "outside":
+        stages["deg"]["rds_path"] = "../outside.csv"
+    else:
+        stages["cluster"]["rds_path"] = "RDS_Files/other.rds"
+    assert _strict_load(tmp_path, descriptor) is None
+
+
+def test_strict_detects_table_replacement_during_read(tmp_path, monkeypatch):
+    import app.utils.deg_utils as module
+    path = _write(tmp_path, "PCA/markers_annotated.csv", "BEFORE")
+    original = module.standardize_deg_df
+
+    def replace_after_read(frame):
+        path.write_text("replaced", encoding="utf-8")
+        return original(frame)
+
+    monkeypatch.setattr(module, "standardize_deg_df", replace_after_read)
+    assert _strict_load(tmp_path) is None

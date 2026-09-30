@@ -1102,6 +1102,7 @@ def _create_preflight_section():
             dbc.FormText(
                 "これらの設定は、新しく開始する通常解析と①に使用します。"
                 "④と中断再開は元の実行に保存された条件を使用します。"
+                "「現在の条件で下流解析」は保存済みreductionを使い、上のUMAP条件を採用します。"
                 "自動推奨は dims・n.neighbors のみ。③反映は手法間の最大値を採用"
                 "（全手法が安定する共通値）。min.dist と metric は自動推奨せず既定"
                 "（0.3 / cosine）を使用します（手動変更可）。"
@@ -1117,11 +1118,40 @@ def _create_preflight_section():
                     dbc.Button("③ 推奨値を新しい解析へ反映", id="btn_preflight_apply",
                                size="sm", color="secondary", outline=True),
                     dbc.Button("④ 保存条件で続きを実行", id="btn_run_downstream",
-                               size="sm", color="primary"),
+                                size="sm", color="primary"),
+                    dbc.Button("保存済みPCA等から現在の条件で下流解析", id="btn_run_downstream_new",
+                               size="sm", color="success", outline=True),
                     dbc.Button("📂 前回の診断を表示（再計算なし）", id="btn_preflight_load",
                                size="sm", color="secondary", outline=True),
                 ],
             ),
+            html.Div(id="downstream_source_summary", className="small text-muted mt-2"),
+            html.Details([
+                html.Summary("新しい下流解析のクラスタ条件（空欄は保存条件を使用）"),
+                dbc.Row([
+                    dbc.Col([dbc.Label("クラスタ次元数"), dbc.Input(
+                        id="downstream_cluster_dims", type="number", min=2, step=1,
+                        placeholder="保存条件")], width=4),
+                    dbc.Col([dbc.Label("近傍数 k"), dbc.Input(
+                        id="downstream_cluster_k", type="number", min=1, step=1,
+                        placeholder="保存条件")], width=4),
+                    dbc.Col([dbc.Label("resolution"), dbc.Input(
+                        id="downstream_cluster_resolution", type="number", min=0.001,
+                        placeholder="保存条件")], width=4),
+                ], className="mt-2"),
+                dbc.Row([
+                    dbc.Col([dbc.Label("クラスタ距離"), dcc.Dropdown(
+                        id="downstream_cluster_metric", placeholder="保存条件", clearable=True,
+                        options=[{"label": v, "value": v} for v in ("euclidean", "cosine", "manhattan")])], width=4),
+                    dbc.Col([dbc.Label("クラスタ法"), dcc.Dropdown(
+                        id="downstream_cluster_algorithm", placeholder="保存条件", clearable=True,
+                        options=[{"label": "Louvain", "value": 1}, {"label": "Leiden", "value": 4}])], width=4),
+                    dbc.Col([dbc.Label("クラスタ seed"), dbc.Input(
+                        id="downstream_cluster_seed", type="number", min=0, max=2147483647, step=1,
+                        placeholder="保存条件")], width=4),
+                ], className="mt-2"),
+                dbc.FormText("UMAPの条件とクラスタ条件は独立です。保存PC数を超える指定は開始前に確認します。"),
+            ], className="mt-2"),
             # ★ ver67.0: ③→④では変更値を使わないため、推奨値の適用と保存条件の継続を分ける。
             dbc.FormText([
                 html.B("診断: "),
@@ -1129,9 +1159,9 @@ def _create_preflight_section():
                 html.B("保存条件のまま完成させる: "),
                 "④で保存済みreductionを再利用し、保存されたUMAP・クラスタ条件で下流処理を実行します。 ",
                 html.B("推奨値を使って新しく解析する: "),
-                "③で入力欄を更新し、通常の「解析実行」または①から新しく実行してください。 ",
-                "④の出力先には _continued を付けます。既存結果がある場合は従来どおり上書きを確認します。"
-                "解析中は①・④とも実行できません。",
+                "③で入力欄を更新し、「現在の条件で下流解析」を実行してください。 ",
+                "④の出力先には _continued、新条件では _reanalyzed とUMAP条件を付けます。"
+                "同名フォルダがある場合は連番を付けて保存します。",
             ]),
             html.Details([
                 html.Summary(

@@ -63,20 +63,56 @@ source(file.path(dirname(normalizePath(sub("^--file=", "",
 
 obj <- .step("RDS 展開", load_rds_compact(rds_path))
 
+# ★ ver77.0: ファイル名と reduction 名だけでは補正空間を判定できないため、
+# wrapper / assay / 実行コマンドを、Seurat を取り出す前から保存する。
+wrapper_reduction <- if (is.list(obj) && !inherits(obj, "Seurat")) obj$reduction else NULL
+
 # TIMS ver13 互換: list(obj=seu, ...) 形式の場合、Seuratオブジェクトを取り出す
 if (is.list(obj) && !inherits(obj, "Seurat") && "obj" %in% names(obj)) {
   cat("Detected list-wrapped Seurat object. Extracting $obj...\n")
   obj <- obj$obj
 }
 
+# ★ ver77.0: 旧結果の別保存 UMAP は CellID を完全照合してから使用する。
+sidecar_arg <- grep("^--embedding-sidecar=", args, value = TRUE)
+sidecar_path <- if (length(sidecar_arg)) sub("^--embedding-sidecar=", "", sidecar_arg[1]) else NULL
+embedding_location <- "primary"
+embedding_kind <- "none"
 # --- UMAP coordinates ---
 has_umap <- "umap" %in% names(obj@reductions)
 if (has_umap) {
   umap_coords <- Embeddings(obj, "umap")
-} else {
-  # UMAP がなければ PCA の最初の2次元で代替
+  embedding_kind <- "umap"
+} else if (!is.null(sidecar_path) && file.exists(sidecar_path)) {
+  side <- load_rds_compact(sidecar_path)
+  if (is.list(side) && !is.data.frame(side) && !is.null(side$umap)) side <- side$umap
+  side <- as.matrix(side)
+  ids <- colnames(obj)
+  if (!is.numeric(side) || ncol(side) < 2 || is.null(rownames(side)) ||
+      anyDuplicated(rownames(side)) || !setequal(rownames(side), ids) ||
+      any(!is.finite(side[, 1:2, drop = FALSE]))) {
+    stop("別保存 UMAP の CellID / 座標が主 RDS と一致しません")
+  }
+  umap_coords <- side[ids, 1:2, drop = FALSE]
+  has_umap <- TRUE
+  embedding_kind <- "umap"
+  embedding_location <- "sidecar"
+  rm(side)
+} else if ("pca" %in% names(obj@reductions) && ncol(Embeddings(obj, "pca")) >= 2) {
+  # ★ ver77.0: PC1–PC2 は UMAP と区別して descriptor に渡す。
   umap_coords <- Embeddings(obj, "pca")[, 1:2]
-  colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+  embedding_kind <- "pca2d"
+} else {
+  umap_coords <- matrix(NA_real_, ncol(obj), 2, dimnames = list(colnames(obj), NULL))
+}
+colnames(umap_coords)[1:2] <- c("UMAP_1", "UMAP_2")
+if (embedding_kind != "none") {
+  ids <- colnames(obj)
+  if (is.null(rownames(umap_coords)) || anyDuplicated(rownames(umap_coords)) ||
+      !setequal(rownames(umap_coords), ids) || any(!is.finite(umap_coords[, 1:2, drop = FALSE]))) {
+    stop("埋め込み座標の CellID / 数値が不正です")
+  }
+  umap_coords <- umap_coords[ids, 1:2, drop = FALSE]
 }
 
 # --- Cluster IDs ---
@@ -284,6 +320,66 @@ if (has_merged && has_merged_umap) {
 
 # --- Metadata JSON ---
 samples <- unique(sample_col)
+# ★ ver77.0: 巨大な features/行列を JSON に複製せず、手法と各段階の根拠だけ抽出する。
+command_facts <- lapply(names(obj@commands), function(nm) {
+  command <- obj@commands[[nm]]
+  params <- command@params
+  keep <- c("reduction", "dims", "assay", "graph.name", "k.param", "algorithm",
+            "resolution", "n.neighbors", "min.dist", "metric", "annoy.metric", "seed.use", "random.seed", "reduction.name")
+  list(name = nm, time = as.numeric(command@time.stamp),
+       assay = command@assay.used, parameters = params[intersect(names(params), keep)])
+})
+command_facts <- command_facts[order(vapply(command_facts, function(x) x$time, numeric(1)))]
+last_command <- function(pattern) {
+  hits <- Filter(function(x) grepl(pattern, x$name, ignore.case = TRUE), command_facts)
+  if (length(hits)) hits[[length(hits)]] else list(parameters = list())
+}
+neighbor_command <- last_command("FindNeighbors")
+cluster_command <- last_command("FindClusters")
+# ★ ver77.0: 別 graph を作った履歴が後にあっても、最後のクラスタ計算の graph を追う。
+cluster_graph <- cluster_command$parameters$graph.name
+if (!is.null(cluster_graph)) {
+  matching_neighbors <- Filter(function(x) {
+    graph <- x$parameters$graph.name
+    if (is.null(graph) && length(x$assay)) graph <- paste0(x$assay, "_snn")
+    grepl("FindNeighbors", x$name) && any(cluster_graph %in% graph) &&
+      x$time <= cluster_command$time
+  }, command_facts)
+  neighbor_command <- if (length(matching_neighbors)) matching_neighbors[[length(matching_neighbors)]] else list(parameters = list())
+}
+umap_command <- last_command("RunUMAP")
+reduction_facts <- lapply(obj@reductions, function(red) {
+  emb <- red@cell.embeddings
+  list(assay = red@assay.used, n_cells = nrow(emb), n_dims = ncol(emb))
+})
+embedding_space <- if (embedding_kind == "pca2d") "pca" else umap_command$parameters$reduction
+# ★ ver77.0: 同じ CellID だけでは sidecar がどの空間由来か証明できない。
+# v2 manifest の内容 hash / numerical facts との照合は Python 側で行う。
+if (embedding_location == "sidecar") embedding_space <- NULL
+cluster_space <- neighbor_command$parameters$reduction
+if (is.null(cluster_space)) cluster_space <- obj@misc$cluster_reduction
+has_clusters <- "seurat_clusters" %in% names(meta)
+facts <- list(
+  wrapper_reduction = wrapper_reduction,
+  wrapper_method = obj@misc$analysis_method,
+  result_provenance = obj@misc$result_provenance,
+  misc = obj@misc[intersect(names(obj@misc), c("pca_origin", "cluster_reduction", "analysis_method", "independent_pca"))],
+  reductions = reduction_facts, commands = command_facts,
+  embedding = list(kind = embedding_kind, space = embedding_space, location = embedding_location,
+                   origin_state = if (embedding_location == "sidecar") "unknown" else "inferred",
+                   parameters = if (embedding_kind == "pca2d") list(dims = c(1L, 2L)) else umap_command$parameters),
+  clusters = list(space = cluster_space, graph = cluster_command$parameters$graph.name,
+                  parameters = modifyList(neighbor_command$parameters, cluster_command$parameters)),
+  has_rpca_integration = any(vapply(command_facts, function(x)
+    grepl("FindIntegrationAnchors", x$name) && identical(x$parameters$reduction, "rpca"), logical(1))),
+  has_clusters = has_clusters, has_spatial = "SpatialX" %in% colnames(plot_data),
+  has_expression = length(features) > 0,
+  cell_ids_valid = !anyDuplicated(cell_ids) && !anyNA(cell_ids),
+  cell_ids_r_hash = if (exists("ua_digest", mode = "function")) ua_digest(cell_ids) else NULL,
+  cluster_commands_verified = !is.null(neighbor_command$name) && !is.null(cluster_command$name),
+  idents_match_seurat_clusters = if ("seurat_clusters" %in% names(meta))
+    identical(as.character(meta$seurat_clusters), clusters) else NULL
+)
 meta_info <- list(
   n_cells    = nrow(plot_data),
   n_clusters = length(unique(clusters)),
@@ -294,7 +390,8 @@ meta_info <- list(
   has_merged_clusters = (has_merged && has_merged_umap),
   section_metadata_columns = intersect(section_columns, colnames(plot_data)),
   pca_origin = obj@misc$pca_origin,
-  cluster_reduction = obj@misc$cluster_reduction
+  cluster_reduction = obj@misc$cluster_reduction,
+  result_facts = facts
 )
 jsonlite::write_json(meta_info, file.path(output_dir, "extraction_meta.json"),
                      auto_unbox = TRUE, pretty = TRUE)

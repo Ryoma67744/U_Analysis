@@ -215,15 +215,13 @@ class TestFinalize:
         monkeypatch.setattr(analysis_finalizer, "_write_receipt", lambda *a, **k: None)
         import app.services.project_manager as pm
         monkeypatch.setattr(pm, "save_sub_project_result_dir",
-                            lambda p, s, d: seen.setdefault("result_dir", (p, s, d)))
-        monkeypatch.setattr(pm, "update_sub_project",
-                            lambda p, s, patch: seen.setdefault("patch", patch))
+                            lambda p, s, d, **kw: seen.update(result_dir=(p, s, d), **kw))
 
         res = analysis_finalizer.finalize(out, status="finished")
 
         assert res["errors"] == []
         assert seen["result_dir"] == ("P", "S", str(out))
-        assert seen["patch"] == {"data_folder": str(raw)}
+        assert seen["data_folder"] == str(raw)
 
     def test_registration_failure_is_reported_not_raised(self, tmp_path, monkeypatch):
         out = tmp_path / "result"
@@ -1083,12 +1081,12 @@ class TestReflectAnalysisBusy:
         assert "あなた" in res[-1]
         assert "田中" not in res[-1]
 
-    def test_all_four_start_buttons_are_covered(self, tmp_path, monkeypatch):
+    def test_all_start_buttons_are_covered(self, tmp_path, monkeypatch):
         """解析を起動するボタンを取りこぼしていないこと。"""
         from app.callbacks import analysis_callbacks as ac
         assert set(ac._START_BUTTON_IDS) == {
             "run_analysis", "btn_make_reduction",
-            "btn_run_downstream", "confirm_overwrite_results",
+            "btn_run_downstream", "btn_run_downstream_new", "confirm_overwrite_results",
         }
 
 

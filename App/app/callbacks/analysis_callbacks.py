@@ -207,8 +207,8 @@ def _resolved_output_dir(output_dir):
 
 
 def _resolve_full_output_dir(output_dir, output_subfolder, *, downstream,
-                             umap_nn=None, umap_md=None, umap_dims=None,
-                             umap_metric=None):
+                              umap_nn=None, umap_md=None, umap_dims=None,
+                              umap_metric=None, execution_mode="resume_same"):
     """実際に書き込む出力先を決める。出力先が未設定なら None。
 
     確認画面と実行本体は同じ決定関数を使う。
@@ -225,8 +225,15 @@ def _resolve_full_output_dir(output_dir, output_subfolder, *, downstream,
             if stripped == stem:
                 break
             stem = stripped
-        return str(Path(base) / f"{stem or 'umap'}_continued")
-    return str(Path(base) / (output_subfolder or ""))
+        suffix = ("_reanalyzed" + _umap_hp_suffix(umap_nn, umap_md, umap_dims, umap_metric)
+                  if execution_mode == "downstream_new" else "_continued")
+        target = Path(base) / f"{stem or 'umap'}{suffix}"
+        candidate, number = target, 2
+        while candidate.exists():
+            candidate = target.with_name(f"{target.name}_{number}")
+            number += 1
+        return candidate.as_posix()
+    return (Path(base) / (output_subfolder or "")).as_posix()
 
 
 def _output_has_existing_results(full_output_dir: str) -> bool:
@@ -291,12 +298,13 @@ def _output_has_existing_results(full_output_dir: str) -> bool:
      State("umap_min_dist_input", "value"),
      State("umap_dims_input", "value"),
      State("umap_metric_input", "value")],
+    Input("btn_run_downstream_new", "n_clicks"),
     prevent_initial_call=True,
 )
 def open_overwrite_modal(run_clicks, reduction_clicks, downstream_clicks,
                          output_dir, output_subfolder,
                          umap_nn=None, umap_md=None, umap_dims=None,
-                         umap_metric=None):
+                         umap_metric=None, downstream_new_clicks=None):
     """実行前に、出力先に既存結果があれば上書き確認モーダルを開く。
 
     既存結果が無ければモーダルは開かない（従来どおり即実行）。pending mode に
@@ -305,11 +313,12 @@ def open_overwrite_modal(run_clicks, reduction_clicks, downstream_clicks,
     """
     trig = ctx.triggered_id
     mode = {"btn_make_reduction": "reduction",
-            "btn_run_downstream": "downstream"}.get(trig, "run")
+            "btn_run_downstream": "downstream",
+            "btn_run_downstream_new": "downstream_new"}.get(trig, "run")
     target = _resolve_full_output_dir(
-        output_dir, output_subfolder, downstream=(mode == "downstream"),
+        output_dir, output_subfolder, downstream=mode in ("downstream", "downstream_new"),
         umap_nn=umap_nn, umap_md=umap_md, umap_dims=umap_dims,
-        umap_metric=umap_metric)
+        umap_metric=umap_metric, execution_mode=mode)
     if not target:
         return False, no_update, mode
     if not _output_has_existing_results(target):
@@ -450,6 +459,13 @@ def _effective_data_folder(analysis_type, data_folder, reanalysis_data_folder) -
      State("reanalysis_use_annotation_check", "value"),
      State("section_group_table", "data"),
      State("section_group_table_reanalysis", "data")],
+    Input("btn_run_downstream_new", "n_clicks"),
+    State("downstream_cluster_dims", "value"),
+    State("downstream_cluster_k", "value"),
+    State("downstream_cluster_resolution", "value"),
+    State("downstream_cluster_metric", "value"),
+    State("downstream_cluster_algorithm", "value"),
+    State("downstream_cluster_seed", "value"),
     prevent_initial_call=True,
 )
 def run_analysis(
@@ -496,6 +512,10 @@ def run_analysis(
     section_manifest=None, section_manifest_reanalysis=None,
     reanalysis_use_annotation_check=None,
     section_group_rows=None, section_group_rows_reanalysis=None,
+    downstream_new_clicks=None, downstream_cluster_dims=None,
+    downstream_cluster_k=None, downstream_cluster_resolution=None,
+    downstream_cluster_metric=None, downstream_cluster_algorithm=None,
+    downstream_cluster_seed=None,
 ):
     # トリガー判定: 通常の「解析実行」(run_analysis) か、
     # PreFlight 用の「reduction のみ作成」(btn_make_reduction) か。
@@ -507,9 +527,10 @@ def run_analysis(
     section_manifest_reanalysis = apply_group_rows(
         section_manifest_reanalysis, section_group_rows_reanalysis)
     reduction_only_mode = (trig == "btn_make_reduction")
-    downstream_mode = (trig == "btn_run_downstream")
+    downstream_mode = trig in ("btn_run_downstream", "btn_run_downstream_new")
+    downstream_new_mode = trig == "btn_run_downstream_new"
     if (not n_clicks and not reduction_clicks and not downstream_clicks
-            and not confirm_overwrite_clicks):
+            and not confirm_overwrite_clicks and not downstream_new_clicks):
         return (no_update,) * 10
 
     # ── 上書き警告ゲート ──
@@ -521,7 +542,9 @@ def run_analysis(
         #   無条件に False へ潰していた。④ も確認対象にした以上、ここを直さないと
         #   **確認を経ると ④ ではなく通常解析が走ってしまう**。
         reduction_only_mode = (overwrite_pending_mode == "reduction")
-        downstream_mode = (overwrite_pending_mode == "downstream")
+        downstream_mode = (overwrite_pending_mode == "downstream"
+                           or overwrite_pending_mode == "downstream_new")
+        downstream_new_mode = overwrite_pending_mode == "downstream_new"
         if not confirm_overwrite_clicks:
             return (no_update,) * 10
     # ── 入力チェックのゲート (ver56.7 / C03-4) ──
@@ -543,6 +566,9 @@ def run_analysis(
             extra_data_folders=extra_data_folders,
             section_manifest=section_manifest,
             section_manifest_reanalysis=section_manifest_reanalysis)
+        if downstream_mode:
+            _blocking, _ = _collect_downstream_errors(
+                output_dir, selected_project, current_sub_project_id)
         if _blocking:
             return (
                 app_state, True,
@@ -553,11 +579,12 @@ def run_analysis(
                 no_update, no_update,
             )
 
-    if trig in ("run_analysis", "btn_make_reduction", "btn_run_downstream"):
+    if trig in ("run_analysis", "btn_make_reduction", "btn_run_downstream", "btn_run_downstream_new"):
         _target = _resolve_full_output_dir(
             output_dir, output_subfolder, downstream=downstream_mode,
             umap_nn=umap_n_neighbors_input, umap_md=umap_min_dist_input,
-            umap_dims=umap_dims_input, umap_metric=umap_metric_input)
+            umap_dims=umap_dims_input, umap_metric=umap_metric_input,
+            execution_mode="downstream_new" if downstream_new_mode else "resume_same")
         if _target and _output_has_existing_results(_target):
             # 実行は止める（モーダル表示は open_overwrite_modal が担当）
             return (no_update,) * 10
@@ -679,7 +706,8 @@ def run_analysis(
     full_output_dir = _resolve_full_output_dir(
         output_dir, output_subfolder, downstream=downstream_mode,
         umap_nn=umap_n_neighbors_input, umap_md=umap_min_dist_input,
-        umap_dims=umap_dims_input, umap_metric=umap_metric_input)
+        umap_dims=umap_dims_input, umap_metric=umap_metric_input,
+        execution_mode="downstream_new" if downstream_new_mode else "resume_same")
     if not full_output_dir:
         return (
             app_state, True,
@@ -688,7 +716,20 @@ def run_analysis(
             "出力先を指定してください", True,
             no_update, no_update,
         )
-    Path(full_output_dir).mkdir(parents=True, exist_ok=True)
+    if downstream_mode:
+        # Reserve a fresh directory; two browser requests must not share a run.
+        while True:
+            try:
+                Path(full_output_dir).mkdir(parents=True, exist_ok=False)
+                break
+            except FileExistsError:
+                full_output_dir = _resolve_full_output_dir(
+                    output_dir, output_subfolder, downstream=True,
+                    umap_nn=umap_n_neighbors_input, umap_md=umap_min_dist_input,
+                    umap_dims=umap_dims_input, umap_metric=umap_metric_input,
+                    execution_mode="downstream_new" if downstream_new_mode else "resume_same")
+    else:
+        Path(full_output_dir).mkdir(parents=True, exist_ok=True)
 
     try:
         if analysis_type in ("desi_v8", "tims_v8"):
@@ -699,7 +740,9 @@ def run_analysis(
                 template = tims_v8_script or str(TIMS_V8_TEMPLATE_PATH)
 
             # サンプル名: UIのチェックリスト（selected_samples）から取得
-            if selected_samples:
+            if downstream_mode:
+                sample_names = []  # Saved run supplies the selected inputs.
+            elif selected_samples:
                 sample_names = list(selected_samples)
             elif analysis_type == "tims_v8":
                 from app.services.data_manager import list_tims_files_multi
@@ -765,17 +808,26 @@ def run_analysis(
             if downstream_mode:
                 params["pipeline_stage"] = "downstream_from_reduction"
                 params["resume_from_rds"] = True
+                params["execution_mode"] = "downstream_new" if downstream_new_mode else "resume_same"
+                if downstream_new_mode:
+                    overrides = {
+                        "cluster_dims_n": downstream_cluster_dims,
+                        "cluster_k_param": downstream_cluster_k,
+                        "cluster_resolution": downstream_cluster_resolution,
+                        "cluster_metric": downstream_cluster_metric,
+                        "cluster_algorithm": downstream_cluster_algorithm,
+                        "cluster_seed": downstream_cluster_seed,
+                    }
+                    params.update({k: v for k, v in overrides.items() if v is not None and v != ""})
                 from app.services.project_manager import get_sub_project
-                from app.callbacks.interactive_callbacks import (
-                    _detect_integration_methods,
-                )
+                from app.services.result_catalog import resume_result_paths
                 _pid = (selected_project or {}).get("id", "")
                 _sub = (get_sub_project(_pid, current_sub_project_id)
                         if (_pid and current_sub_project_id) else None)
-                _src = ((_sub.get("last_result_dir") or _sub.get("output_dir", ""))
-                        if _sub else "")
-                _rds_map = _detect_integration_methods(_src) if _src else {}
-                if not _rds_map:
+                from app.services.project_result_refs import resolve_result_dir
+                _src = resolve_result_dir(_sub, "reduction")
+                _resume_paths = resume_result_paths(_src) if _src else []
+                if not _resume_paths:
                     return (
                         no_update, no_update, no_update, no_update, no_update,
                         no_update,
@@ -783,7 +835,7 @@ def run_analysis(
                         "先に①「reduction のみ作成」を実行してください。",
                         True, no_update, no_update,
                     )
-                params["resume_rds_paths"] = [str(p) for p in _rds_map.values()]
+                params["resume_rds_paths"] = _resume_paths
 
             if resume_rds and rds_folder and not downstream_mode:
                 rds_files = sorted(Path(rds_folder).glob("*.rds"))
@@ -1134,7 +1186,7 @@ def run_analysis(
             # ★ ver62.4: 「実際に読んだフォルダ」を記録する（`_effective_data_folder`）。
             #   従来はメイン欄そのままで、再解析では使っていない欄の値
             #   （= 既定値に戻り得る）が台帳→サブプロジェクトへ流れていた。
-            "data_folder": _effective_data_folder(
+            "data_folder": params.get("original_data_folder") or params.get("data_folder") or _effective_data_folder(
                 analysis_type, data_folder, reanalysis_data_folder),
             # [ver51.2] 停止を本人だけに許すための所有者。
             "analyst": _owner_name(),
@@ -1774,6 +1826,7 @@ _START_BUTTON_IDS = (
     "run_analysis",              # ▶ 解析実行
     "btn_make_reduction",        # ① reduction のみ作成
     "btn_run_downstream",        # ④ 続きを実行
+    "btn_run_downstream_new",    # 保存 reduction から新条件で解析
     "confirm_overwrite_results",  # 上書き確認モーダルの「実行する」
 )
 
@@ -1913,6 +1966,7 @@ def detect_rds_files(folder, desi_method, tims_method, current_source=None):
     from app.callbacks.interactive_callbacks import _detect_integration_methods
     from app.utils.integration_methods import default_viewer_method, resolve_method_key
     from app.services.execution_policy import result_root
+    from app.services.result_catalog import method_record
     import json
 
     if not folder or not str(folder).strip():
@@ -1921,9 +1975,32 @@ def detect_rds_files(folder, desi_method, tims_method, current_source=None):
     status_file = result_root(folder) / "analysis_methods.json"
     if status_file.is_file():
         try:
-            states = json.loads(status_file.read_text(encoding="utf-8")).get("methods", {})
-            paths = {k: v for k, v in paths.items()
-                     if states.get("pca" if k.startswith("PCA") else k.lower(), {}).get("stage") == "downstream"}
+            manifest = json.loads(status_file.read_text(encoding="utf-8"))
+            verified_paths = {}
+            for key, path in paths.items():
+                record = method_record(path, "PCA" if key.startswith("PCA") else key)
+                if manifest.get("schema_version", 1) == 2:
+                    # ★ ver77.0: v2 は downstream という一括段階を使わない。
+                    # 作図失敗でも保存済み UMAP/クラスタを候補に残す。巨大 RDS の
+                    # 内容検証は実行時に行い、ここでは段階記録と実在パスだけを見る。
+                    stages = record.get("stages") or {}
+                    cluster = stages.get("cluster") or {}
+                    umap = stages.get("umap") or {}
+                    if any(stage.get("status") not in {"complete", "completed"}
+                           for stage in (cluster, umap)):
+                        continue
+                    cluster_path = Path(cluster.get("rds_path") or ".")
+                    umap_path = Path(umap.get("rds_path") or ".")
+                    base = result_root(folder).resolve()
+                    cluster_path = (base / cluster_path).resolve() if not cluster_path.is_absolute() else cluster_path.resolve()
+                    umap_path = (base / umap_path).resolve() if not umap_path.is_absolute() else umap_path.resolve()
+                    if (cluster_path != Path(path).resolve() or not umap_path.is_relative_to(base)
+                            or not umap_path.is_file()):
+                        continue
+                elif record.get("status") != "complete" or record.get("stage") != "downstream":
+                    continue
+                verified_paths[key] = path
+            paths = verified_paths
         except (OSError, ValueError, AttributeError):
             paths = {}
     if not paths:
@@ -2656,6 +2733,24 @@ def validate_output_dir_input(folder):
 #   実行本体が「別のコールバックが書いた Store」を読む形にしなかったのは、
 #   同じクリックで両方が走るため **前回の検査結果を読んでしまう**ため。
 #   両者がこの関数を自分で呼ぶ。
+def _collect_downstream_errors(output_dir, selected_project, sub_id):
+    """Saved-reduction runs validate their source, not unrelated live input fields."""
+    from app.services.project_manager import get_sub_project
+    from app.services.project_result_refs import resolve_result_dir
+    from app.services.result_catalog import resume_result_paths
+
+    pid = (selected_project or {}).get("id")
+    sub = get_sub_project(pid, sub_id) if pid and sub_id else None
+    source = resolve_result_dir(sub, "reduction")
+    errors = []
+    if not source or not resume_result_paths(source):
+        errors.append("選択中サブプロジェクトに再利用できる reduction RDS がありません。")
+    check = validate_output_dir(output_dir)
+    if not check["ok"] and "親フォルダが見つかりません" not in check["msg"]:
+        errors.append(f"出力先: {check['msg']}")
+    return errors, []
+
+
 def _collect_preflight_errors(desi_method, tims_method,
                               data_folder, reanalysis_data_folder, output_dir,
                               p_thresh, logfc_thresh, tolerance_mz,
@@ -2830,6 +2925,9 @@ def _preflight_alert(blocking, advisory):
      State("extra_data_folders_store", "data"),
      State("section_manifest_store", "data"),
      State("section_manifest_store_reanalysis", "data")],
+    Input("btn_run_downstream_new", "n_clicks"),
+    State("selected_project", "data"),
+    State("current_sub_project_id", "data"),
     prevent_initial_call=True,
 )
 def preflight_validation(
@@ -2842,6 +2940,7 @@ def preflight_validation(
     roi_filter=None, use_roi_as_sample=False,
     extra_data_folders=None,
     section_manifest=None, section_manifest_reanalysis=None,
+    downstream_new_clicks=None, selected_project=None, current_sub_project_id=None,
 ):
     """起動ボタン押下時にプリフライトチェックを実行する。
 
@@ -2859,6 +2958,13 @@ def preflight_validation(
         extra_data_folders=extra_data_folders,
         section_manifest=section_manifest,
         section_manifest_reanalysis=section_manifest_reanalysis)
+    try:
+        downstream = ctx.triggered_id in ("btn_run_downstream", "btn_run_downstream_new")
+    except Exception:
+        downstream = False
+    if downstream:
+        blocking, advisory = _collect_downstream_errors(
+            output_dir, selected_project, current_sub_project_id)
     alert = _preflight_alert(blocking, advisory)
     if alert is None:
         return "", {"display": "none"}

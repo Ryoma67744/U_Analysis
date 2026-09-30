@@ -551,176 +551,36 @@ _DERIVE_PCA_VERSION = "v58.0"
 
 
 def _detect_integration_methods(folder_path: str, include_derived: bool = False) -> dict:
-    """結果フォルダ内のRDSファイルを検出し、統合手法→パスのマッピングを返す。
-
-    Args:
-        folder_path: 結果フォルダ。
-        include_derived: True のとき、専用の未補正PCA RDS が無く Harmony がある場合に
-            「PCA」(未補正) を Harmony RDS から遅延生成する想定で選択肢に加える。
-            実体は選択時に生成（load_stage_b_extract）。インタラクティブ解析でのみ True。
-
-    Returns:
-        {"Harmony": "path/to/seu_harmony.rds", "RPCA": "path/to/seu_rpca.rds", ...}
-    """
-    rds_map = {}
-    base = Path(folder_path)
-    if not base.is_dir():
-        return rds_map
-
-    # RDS_Files/ フォルダ内を検索
-    rds_dir = base / "RDS_Files"
-    search_dirs = [rds_dir, base] if rds_dir.is_dir() else [base]
-
-    # ★ ver66.4: pixel_table_rpca.rds は画素情報表であり Seurat 主結果ではない。
-    # 全探索段で先に除外し、rpca 内の pca による偽 PCA 登録を防ぐ。
-
-    # 第1段階: TIMS ver13 の Step2/Step3 ファイルを優先マッチ
-    for search_dir in search_dirs:
-        for rds_file in search_dir.glob("*.rds"):
-            name_lower = rds_file.name.lower()
-            if not rds_file.is_file() or is_auxiliary_rds(rds_file):
+    """候補を軽量発見。確定分類は bridge の RDS 抽出後に行う。"""
+    from app.services.result_catalog import discover_results, method_record
+    results = {}
+    for candidate in discover_results(folder_path):
+        path, key = candidate["rds_path"], candidate["method_key"]
+        record = method_record(path, "PCA" if key.startswith("PCA") else key)
+        stages = record.get("stages") or {}
+        # ★ ver77.0: v2 の cluster 未完了は viewer の完了結果に昇格させない。
+        # reduction_ready は再開候補として result_catalog から別に取得する。
+        if stages:
+            cluster = stages.get("cluster", stages.get("clustering", {}))
+            if cluster.get("status") not in {"complete", "completed"}:
                 continue
-            if "step2" in name_lower and "harmony" in name_lower:
-                rds_map["Harmony"] = str(rds_file)
-            elif "step3" in name_lower and "rpca" in name_lower:
-                rds_map["RPCA"] = str(rds_file)
-            elif "step2" in name_lower and "uncorrected" in name_lower:
-                # ver4: 無補正PCA併走出力 (Step2_PCA_uncorrected.rds)
-                rds_map["PCA (uncorrected)"] = str(rds_file)
-            elif "single" in name_lower and "PCA" not in rds_map:
-                rds_map["PCA"] = str(rds_file)
+        # ★ ver77.0: v1 の failed は描画だけの失敗も含む。候補として残して RDS を検証する。
+        if key in results:
+            key = key + " [" + Path(path).stem + "]"
+        results[key] = path
+    # ★ ver77.0: クラスタ継承投影を plain PCA として自動追加してはいけない。
+    # include_derived は呼び出し互換だけ維持し、生成は明示した互換操作に限定する。
+    return results
 
-    # 第2段階: 第1段階で見つからなかったキーのみ、従来マッチ（data.frame除外）
-    for search_dir in search_dirs:
-        for rds_file in search_dir.glob("*.rds"):
-            name_lower = rds_file.name.lower()
-            if not rds_file.is_file() or is_auxiliary_rds(rds_file):
-                continue
-            # ★ ver66.2: 既に別の手法として登録済みのファイルは二度と拾わない。
-            #
-            #   各分岐は「その**手法名**がまだ埋まっていないか」(`"PCA" not in rds_map`)
-            #   しか見ておらず、**同じファイルが二つの手法に登録されること**を
-            #   防いでいなかった。TIMS の実ファイル名は
-            #   `Step2_Harmony**PCA**_Result.rds` / `Step3_R**PCA**_Result.rds` で
-            #   どちらも "pca" を含むため、第1段階で Harmony / RPCA として登録済みでも、
-            #   ここで elif 連鎖の最後まで落ちて **同じファイルが "PCA" にも入っていた**。
-            #   その結果、利用者が「PCA」を選ぶと中身は Harmony（走査順によっては RPCA）で、
-            #   無補正と比べたつもりが比較になっていなかった。画面は正常に見えるので
-            #   気づけない（ver58.0 の DESI 対応で混入）。
-            #
-            #   さらに、併走出力を持たない古い結果向けの救済（Harmony から未補正 PCA を
-            #   派生生成する下の include_derived 分岐）は `"PCA" not in rds_map` が条件なので、
-            #   偽の "PCA" に枠を埋められて発動しなくなっていた。
-            if str(rds_file) in rds_map.values():
-                continue
-            if "harmony" in name_lower and "Harmony" not in rds_map:
-                rds_map["Harmony"] = str(rds_file)
-            elif "rpca" in name_lower and "RPCA" not in rds_map:
-                rds_map["RPCA"] = str(rds_file)
-            # ★ ver58.0 (A-2): DESI の無補正 PCA コンパニオン
-            #   (DESI_SeuratCombined_PCA_uncorrected.rds)。
-            elif ("uncorrected" in name_lower
-                  and "PCA (uncorrected)" not in rds_map):
-                rds_map["PCA (uncorrected)"] = str(rds_file)
-            # ★ ver58.0 (A-1): DESI で「補正しない」を選んだときの主結果
-            #   (DESI_SeuratCombined_PCA.rds)。コンパニオンと取り違えないよう
-            #   uncorrected を含むものは上の分岐で先に拾っている。
-            elif ("pca" in name_lower
-                  and not any(tag in name_lower for tag in ("harmony", "rpca", "uncorrected"))
-                  and "PCA" not in rds_map):
-                rds_map["PCA"] = str(rds_file)
 
-    # rglob でサブフォルダも検索（上記で見つからない場合のフォールバック）
-    if not rds_map:
-        # 第1段階: Step2/Step3 優先
-        for rds_file in base.rglob("*.rds"):
-            name_lower = rds_file.name.lower()
-            if not rds_file.is_file() or is_auxiliary_rds(rds_file):
-                continue
-            if "step2" in name_lower and "harmony" in name_lower:
-                rds_map["Harmony"] = str(rds_file)
-            elif "step3" in name_lower and "rpca" in name_lower:
-                rds_map["RPCA"] = str(rds_file)
-            elif "step2" in name_lower and "uncorrected" in name_lower:
-                # ver4: 無補正PCA併走出力 (Step2_PCA_uncorrected.rds)
-                rds_map["PCA (uncorrected)"] = str(rds_file)
-            elif "single" in name_lower and "PCA" not in rds_map:
-                rds_map["PCA"] = str(rds_file)
-
-        # 第2段階: 従来マッチ（data.frame除外）
-        if "Harmony" not in rds_map or "RPCA" not in rds_map:
-            for rds_file in base.rglob("*.rds"):
-                name_lower = rds_file.name.lower()
-                if not rds_file.is_file() or is_auxiliary_rds(rds_file):
-                    continue
-                # ★ ver66.2: 上の第2段階と同じガード（理由もそちらのコメント参照）。
-                #   片方だけ直すと、サブフォルダ探索に落ちた結果でだけ再発する。
-                if str(rds_file) in rds_map.values():
-                    continue
-                if "harmony" in name_lower and "Harmony" not in rds_map:
-                    rds_map["Harmony"] = str(rds_file)
-                elif "rpca" in name_lower and "RPCA" not in rds_map:
-                    rds_map["RPCA"] = str(rds_file)
-                # ★ ver58.0 (A-2): DESI の無補正 PCA コンパニオン
-                #   (DESI_SeuratCombined_PCA_uncorrected.rds)。
-                elif ("uncorrected" in name_lower
-                      and "PCA (uncorrected)" not in rds_map):
-                    rds_map["PCA (uncorrected)"] = str(rds_file)
-                # ★ ver58.0 (A-1): DESI で「補正しない」を選んだときの主結果
-                #   (DESI_SeuratCombined_PCA.rds)。コンパニオンと取り違えないよう
-                #   uncorrected を含むものは上の分岐で先に拾っている。
-                elif ("pca" in name_lower
-                      and not any(tag in name_lower for tag in ("harmony", "rpca", "uncorrected"))
-                      and "PCA" not in rds_map):
-                    rds_map["PCA"] = str(rds_file)
-
-    # --- マージ済みRDS優先検出（無効化中）---
-    # パフォーマンス問題のため無効化。有効化するとマージRDS（~200MB）が
-    # Step2の代わりに読み込まれ、Cluster_merged / umap_merged が利用可能になる。
-    # 有効化時はB〜H（トグルUI・コールバック・R抽出）が自動的に発動する。
-    # for search_dir in search_dirs:
-    #     for rds_file in search_dir.glob("*_merged_seurat.rds"):
-    #         merged_path = str(rds_file)
-    #         if "Harmony" in rds_map:
-    #             rds_map["Harmony"] = merged_path
-    #         elif "RPCA" in rds_map:
-    #             rds_map["RPCA"] = merged_path
-    #         break  # 最初の1つのみ使用
-
-    # ★ ver67.0: 失敗/未実行の RDS が前回から残っていても完了結果として表示しない。
-    # ★ ver67.0: RDS_Files自体を指定しても親の手法状態を確認する。
-    status_root = base.parent if base.name.casefold() == "rds_files" else base
-    status_path = status_root / "analysis_methods.json"
-    has_method_status = status_path.is_file()
-    if has_method_status:
-        try:
-            method_states = json.loads(status_path.read_text(encoding="utf-8")).get("methods", {})
-            allowed = {"complete", "completed", "reduction_ready"}
-            rds_map = {method: path for method, path in rds_map.items()
-                       if method_states.get("pca" if method.startswith("PCA") else method.lower(), {}).get("status") in allowed}
-        except (OSError, ValueError, TypeError):
-            logger.warning("手法別の完了状態を読めません: %s", status_path)
-            rds_map = {}
-
-    # --- 派生PCA（未補正）: 既存結果でも未補正PCAのUMAPを比較表示できるよう、
-    #     専用の未補正RDSが無く Harmony がある場合のみ「PCA」を選択肢に追加する。
-    #     実体（派生RDS）は PCA 選択時に Harmony RDS から遅延生成する（load_stage_b_extract）。
-    #     パスは Harmony パスから決定的に算出（SEURAT_CACHE_DIR 配下＝常に書込可能）。
-    if (include_derived and not has_method_status and "Harmony" in rds_map
-            and "PCA" not in rds_map and "PCA (uncorrected)" not in rds_map):
-        import hashlib
-        from app.config import SEURAT_CACHE_DIR
-        # ★ ver58.0 (A-2): 鍵に補助スクリプトの版を含める。
-        #   従来は元ファイルのパスだけを鍵にしていたため、補助スクリプトを
-        #   直しても **以前の派生結果がそのまま返り続けていた**
-        #   （出力が既にあれば再生成しない冪等設計のため）。
-        h = hashlib.md5(
-            f'{rds_map["Harmony"]}|{_DERIVE_PCA_VERSION}'.encode()
-        ).hexdigest()[:16]
-        derived = Path(SEURAT_CACHE_DIR) / "derived_pca" / f"{h}_pca_uncorrected.rds"
-        rds_map["PCA"] = str(derived)
-
-    return rds_map
+def _viewer_method_options(rds_map):
+    from app.services.result_catalog import cached_descriptor
+    from app.services.result_contract import descriptor_label
+    options = method_options(rds_map)
+    for option in options:
+        descriptor = cached_descriptor(rds_map[option["value"]])
+        option["label"] = descriptor_label(descriptor) if descriptor else "未確認（" + option["label"] + "候補）"
+    return options
 
 
 # ---------------------------------------------------------------------------
@@ -743,7 +603,7 @@ def scan_rds_files(n_clicks, folder_path):
     if not rds_map:
         return [], None, None
 
-    options = method_options(rds_map)
+    options = _viewer_method_options(rds_map)
     default = default_viewer_method(rds_map)
 
     return options, default, rds_map
@@ -768,7 +628,7 @@ def auto_scan_rds_files(folder_path, shared):
     受け手に見せる手法をその 1 つに限定する。"all" / 未指定なら全手法を表示。
     """
     if not folder_path or not Path(folder_path).is_dir():
-        return no_update, no_update, no_update
+        return [], None, {}
 
     # ★ ver74.0: client shared Storeを改変しても、共有台帳の手法/結果範囲を広げない。
     from app.services.shared_callback_policy import shared_readonly_request, _share_rds_map
@@ -778,7 +638,7 @@ def auto_scan_rds_files(folder_path, shared):
     else:
         rds_map = _detect_integration_methods(folder_path, include_derived=True)
     if not rds_map:
-        return no_update, no_update, no_update
+        return [], None, {}
 
     # 共有モードで特定手法が指定されていれば、その手法のみに限定する
     if shared and shared.get("active"):
@@ -791,7 +651,7 @@ def auto_scan_rds_files(folder_path, shared):
                 return [], None, {}
             rds_map = {method: rds_map[method]}
 
-    options = method_options(rds_map)
+    options = _viewer_method_options(rds_map)
     default = default_viewer_method(rds_map)
 
     return options, default, rds_map
@@ -882,6 +742,80 @@ def _load_error_alert(message, detail=None):
 # これを検知してプロセスを kill する。
 _LOAD_CANCELS = {}
 _LOAD_CANCELS_LOCK = threading.Lock()
+_LOAD_SCOPES = OrderedDict()
+_LOAD_SCOPE_FOLDERS = {}
+_DIRECT_CALL_SCOPE = object()
+
+# ★ ver77.0: layout はサーバで一度だけ生成されるため、UUID はブラウザの window ごとに発行する。
+clientside_callback(
+    """function(pathname, current) {
+        if (!window.__uaResultLoadScope) {
+            window.__uaResultLoadScope = (window.crypto && window.crypto.randomUUID)
+                ? window.crypto.randomUUID() : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+        }
+        return current === window.__uaResultLoadScope ? window.dash_clientside.no_update : window.__uaResultLoadScope;
+    }""",
+    Output("interactive_load_scope", "data"), Input("url_bar", "pathname"),
+    State("interactive_load_scope", "data"),
+)
+
+
+def _replace_load_scope(scope, token, folder=None):
+    if not isinstance(scope, str) or not scope or len(scope) > 200:
+        return
+    with _LOAD_CANCELS_LOCK:
+        if token is None and folder is not None and _LOAD_SCOPE_FOLDERS.get(scope) == folder:
+            return False
+        old = _LOAD_SCOPES.get(scope)
+        if old in _LOAD_CANCELS:
+            _LOAD_CANCELS[old].set()
+        _LOAD_SCOPES[scope] = token
+        _LOAD_SCOPE_FOLDERS[scope] = folder
+        _LOAD_SCOPES.move_to_end(scope)
+        while len(_LOAD_SCOPES) > 512:
+            expired, _ = _LOAD_SCOPES.popitem(last=False)
+            _LOAD_SCOPE_FOLDERS.pop(expired, None)
+        return True
+
+
+def _load_is_superseded(trigger):
+    scope = trigger.get("scope")
+    if not scope:
+        return False
+    if not isinstance(scope, str) or len(scope) > 200:
+        return True
+    with _LOAD_CANCELS_LOCK:
+        return _LOAD_SCOPES.get(scope) != trigger.get("token")
+
+
+@callback(
+    [Output("interactive_viz_container", "style", allow_duplicate=True),
+     Output("seurat_rds_path_store", "data", allow_duplicate=True),
+     Output("seurat_cache_dir_store", "data", allow_duplicate=True),
+     Output("deg_data_store", "data", allow_duplicate=True)],
+    Input("interactive_result_folder", "value"),
+    State("interactive_load_scope", "data"), prevent_initial_call=True,
+)
+def invalidate_result_folder(folder, scope):
+    # ★ ver77.0: 無効なフォルダでも前の表示/出力先を残さず、遅延応答も失効させる。
+    if not scope or _replace_load_scope(scope, None, folder) is False:
+        raise PreventUpdate
+    return {"display": "none"}, None, None, None
+
+
+@callback(Output("interactive_integration_method", "options", allow_duplicate=True),
+          Input("seurat_rds_path_store", "data"), State("interactive_rds_map", "data"),
+          prevent_initial_call=True)
+def label_verified_result(rds_path, rds_map):
+    if not rds_path or not rds_map:
+        raise PreventUpdate
+    from app.services.result_catalog import cached_descriptor
+    from app.services.result_contract import descriptor_label
+    options = []
+    for method, path in rds_map.items():
+        descriptor = cached_descriptor(path)
+        options.append({"value": method, "label": descriptor_label(descriptor) if descriptor else method_display_name(method) + "（未確認）"})
+    return options
 
 
 def _get_or_create_cancel_event(token):
@@ -960,29 +894,36 @@ def cancel_data_load(n_clicks, token):
      Output("interactive_data_info", "children", allow_duplicate=True),
      Output("load_stage_trigger", "data"),
      Output("load_token_store", "data")],
-    Input("load_interactive_data", "n_clicks"),
-    [State("interactive_integration_method", "value"),
-     State("interactive_rds_map", "data"),
-     State("interactive_result_folder", "value")],
+    inputs={"n_clicks": Input("load_interactive_data", "n_clicks"),
+            "scope": Input("interactive_load_scope", "data"),
+            "integration_method": State("interactive_integration_method", "value"),
+            "rds_map": State("interactive_rds_map", "data"),
+            "result_folder": State("interactive_result_folder", "value")},
     prevent_initial_call=True,
 )
-def load_stage_a_show_progress(n_clicks, integration_method, rds_map, result_folder):
+def load_stage_a_show_progress(n_clicks, integration_method, rds_map, result_folder, scope=_DIRECT_CALL_SCOPE):
     """ボタン/自動トリガで即座にプログレスUIを描画し、抽出リンクを起動する。"""
+    if scope is _DIRECT_CALL_SCOPE:
+        scope = uuid.uuid4().hex  # 旧 Python 呼出しとの互換。Dash は必ず実 Store 値を渡す。
+    if not isinstance(scope, str) or not scope or len(scope) > 200 or not n_clicks:
+        raise PreventUpdate
     if not integration_method or not rds_map:
         return (_PROGRESS_HIDE, no_update, no_update, no_update, _PROGRESS_HIDE,
                 _load_error_alert("統合手法を選択してください（結果フォルダをスキャンしてください）"),
                 no_update, no_update)
     rds_path = rds_map.get(integration_method)
+    if result_folder and rds_path:
+        base = Path(result_folder).resolve()
+        if not base.is_dir() or Path(rds_path).resolve().parent not in {base, base / "RDS_Files"}:
+            return (_PROGRESS_HIDE, no_update, no_update, no_update, _PROGRESS_HIDE,
+                    _load_error_alert("選択した結果は現在のフォルダにありません。再スキャンしてください。"),
+                    no_update, no_update)
     if rds_path and is_auxiliary_rds(rds_path):
         return (_PROGRESS_HIDE, no_update, no_update, no_update, _PROGRESS_HIDE,
                 _load_error_alert("補助データは解析結果として読み込めません。結果フォルダを再スキャンしてください。"),
                 no_update, no_update)
-    # 派生PCA（未補正）: ファイル未生成でも Harmony から遅延生成する。
+    # ★ ver77.0: 欠けた独立 PCA をクラスタ継承投影で自動補完してはいけない。
     derive_from = None
-    if rds_path and not Path(rds_path).exists():
-        if (integration_method == "PCA" and rds_map.get("Harmony")
-                and Path(rds_map["Harmony"]).exists()):
-            derive_from = rds_map["Harmony"]
     if not rds_path or (not Path(rds_path).exists() and not derive_from):
         return (_PROGRESS_HIDE, no_update, no_update, no_update, _PROGRESS_HIDE,
                 _load_error_alert(
@@ -990,6 +931,7 @@ def load_stage_a_show_progress(n_clicks, integration_method, rds_map, result_fol
                     f"（パス: {rds_path or '未設定'}）"),
                 no_update, no_update)
     token = uuid.uuid4().hex
+    _replace_load_scope(scope, token, result_folder)
     return (
         _PROGRESS_SHOW,
         ("未補正PCAを生成中…（初回のみ少し時間がかかります）" if derive_from
@@ -999,7 +941,7 @@ def load_stage_a_show_progress(n_clicks, integration_method, rds_map, result_fol
         no_update,       # data_info は最終リンク(D)が確定
         {"rds_path": rds_path, "method": integration_method,
          "result_folder": result_folder, "n": n_clicks, "token": token,
-         "derive_from": derive_from},
+         "derive_from": derive_from, "scope": scope},
         token,
     )
 
@@ -1017,6 +959,8 @@ def load_stage_a_show_progress(n_clicks, integration_method, rds_map, result_fol
 def load_stage_b_extract(trigger):
     """重い Seurat 抽出を実行し結果を state に格納する。失敗時は原因を表示。"""
     if not trigger:
+        raise PreventUpdate
+    if _load_is_superseded(trigger):
         raise PreventUpdate
     rds_path = trigger["rds_path"]
     integration_method = trigger["method"]
@@ -1039,6 +983,20 @@ def load_stage_b_extract(trigger):
                     _load_error_alert(
                         f"抽出結果が空です（プロットデータを取得できませんでした）: {rds_path}"),
                     no_update)
+        if _load_is_superseded(trigger):
+            raise PreventUpdate
+        if _is_load_cancelled(token):
+            raise ExtractionCancelled("より新しい読み込みに切り替わりました")
+        descriptor = result.get("result_descriptor") or result.get("meta", {}).get("result_descriptor")
+        if descriptor:
+            from app.services.result_contract import descriptor_method
+            integration_method = descriptor_method(descriptor) or integration_method
+            capabilities = descriptor.get("capabilities", {})
+            if descriptor.get("classification", {}).get("state") == "conflict":
+                raise ValueError("解析結果の由来が矛盾しています。診断または再解析で確認してください")
+            if descriptor.get("clusters", {}).get("kind") == "none" or (
+                    result.get("meta", {}).get("has_spatial") and not capabilities.get("spatial")):
+                raise ValueError("クラスタ計算が完了していません。保存済み reduction から下流解析を再開してください")
         # ★ ver67.0: 群ラベルの変更だけを別保存から重ね、強度・座標・クラスタは再計算しない。
         from app.services.section_group_metadata import overlay_result_metadata
         from app.services.naming_policy import load_naming_settings
@@ -1052,20 +1010,26 @@ def load_stage_b_extract(trigger):
             "feature_annotations": result.get("feature_annotations") or {},
             "meta": result["meta"], "rds_path": rds_path,
             "cache_dir": result.get("cache_dir"), "method": integration_method,
+            "result_descriptor": descriptor, "load_token": token,
         }, rds_path)
         state = _get_state(rds_path)
         state["naming_settings"] = load_naming_settings(derive_from or rds_path)
         state["legacy_derived_pca"] = bool(derive_from)
         state.pop("_deg_data", None)
+        state.pop("_deg_warning", None)
         state.pop("_calib_warning", None)
         _set_active_key(rds_path)
         chain_continues = True   # 連鎖が段 C へ進む → 合図はまだ残す
     except FileNotFoundError:
+        if _load_is_superseded(trigger):
+            raise PreventUpdate
         return (no_update, no_update, _PROGRESS_HIDE,
                 _load_error_alert(
                     "Rscript（R）が見つかりません。Rのインストールとパス設定を確認してください。"),
                 no_update)
     except RuntimeError as e:
+        if _load_is_superseded(trigger):
+            raise PreventUpdate
         msg = str(e)
         if "timed out" in msg:
             return (no_update, no_update, _PROGRESS_HIDE,
@@ -1076,10 +1040,14 @@ def load_stage_b_extract(trigger):
                 _load_error_alert("RDS抽出に失敗しました（Rエラー）:", detail=msg),
                 no_update)
     except ExtractionCancelled:
+        if _load_is_superseded(trigger):
+            raise PreventUpdate
         return (no_update, no_update, _PROGRESS_HIDE,
                 dbc.Alert("読み込みをキャンセルしました。", color="warning", className="mb-0"),
                 no_update)
     except Exception as e:
+        if _load_is_superseded(trigger):
+            raise PreventUpdate
         return (no_update, no_update, _PROGRESS_HIDE,
                 _load_error_alert(f"抽出データの読み込みに失敗しました: {e}"),
                 no_update)
@@ -1087,6 +1055,8 @@ def load_stage_b_extract(trigger):
         if not chain_continues:
             _clear_cancel_event(token)
 
+    if _load_is_superseded(trigger):
+        raise PreventUpdate
     if _is_load_cancelled(token):
         _clear_cancel_event(token)
         return (no_update, no_update, _PROGRESS_HIDE,
@@ -1095,10 +1065,10 @@ def load_stage_b_extract(trigger):
                 no_update)
     return (
         "マーカー(DEG)を読み込み中…", 55, no_update, no_update,
-        {"rds_path": rds_path, "method": integration_method,
+        {"rds_path": rds_path, "method": trigger["method"],
          "result_folder": trigger["result_folder"], "n": trigger["n"],
          # 段 C・D がキャンセルを確認できるよう合図の識別子を引き継ぐ
-         "token": token, "dataset_revision": feature_dataset.revision},
+         "token": token, "scope": trigger.get("scope"), "dataset_revision": feature_dataset.revision},
     )
 
 
@@ -1128,6 +1098,8 @@ def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
     """DEG マーカーを読み込み、必要なら m/z キャリブレーションを適用する。"""
     if not trigger:
         raise PreventUpdate
+    if _load_is_superseded(trigger):
+        raise PreventUpdate
     from app.callbacks.interactive_calibration import (
         _calibrate_mz, _calibrate_mz_from_pairs, _reannotate_with_calibration,
     )
@@ -1138,6 +1110,8 @@ def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
     # ver56.6: 前の段の途中でキャンセルされていたら、ここで打ち切る。
     #   以前は合図が届いていなかったため、この段が走り切って
     #   「読み込みをキャンセルしました。」の表示を上書きしていた。
+    if _load_is_superseded(trigger):
+        raise PreventUpdate
     if _is_load_cancelled(token):
         _clear_cancel_event(token)
         return (no_update, no_update, _PROGRESS_HIDE,
@@ -1147,6 +1121,8 @@ def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
     _set_active_key(rds_path)
     try:
         state = _get_state(rds_path)
+        if token and state.get("load_token") not in (None, token):
+            raise PreventUpdate
         if state.get("plot_data") is None:
             return (no_update, no_update, _PROGRESS_HIDE,
                     _load_error_alert("状態が失われました。もう一度読み込んでください。"),
@@ -1157,7 +1133,24 @@ def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
         else:
             rds_dir = Path(rds_path).parent
             result_base = rds_dir.parent if rds_dir.name == "RDS_Files" else rds_dir
-        deg_data = _load_deg_results(result_base, integration_method)
+        # ★ ver77.0: trigger の候補名は共有権限検査用に保持する。DEG は RDS の
+        # 実手法だけで探し、継承/未確認クラスタに別手法の表を重ねない。
+        descriptor = state.get("result_descriptor") or state.get("meta", {}).get("result_descriptor")
+        deg_method = integration_method
+        if descriptor:
+            from app.services.result_contract import descriptor_deg_method
+            deg_method = descriptor_deg_method(descriptor)
+        if descriptor and not deg_method:
+            deg_data = None
+            state["_deg_warning"] = "（注: クラスタ由来と対応する手法を確認できないため、DEG は読み込んでいません）"
+        else:
+            if descriptor:
+                from app.services.result_catalog import result_root
+                result_base = result_root(descriptor.get("source", {}).get("path") or rds_path)
+                deg_data = _load_deg_results(result_base, deg_method, result_descriptor=descriptor)
+            else:
+                deg_data = _load_deg_results(result_base, deg_method)
+            state.pop("_deg_warning", None)
 
         # --- m/z キャリブレーション（有効時のみ）---
         # 外部アノテーション（SCiLS peak Name 由来＝上流で ppm 補正済み）がある場合は
@@ -1227,12 +1220,18 @@ def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
             except Exception:
                 state["_calib_warning"] = "（注: m/zキャリブレーションに失敗したため未適用）"
 
+        if _load_is_superseded(trigger):
+            raise PreventUpdate
         state["_deg_data"] = deg_data
         _set_active_key(rds_path)
     except Exception as e:
+        if _load_is_superseded(trigger):
+            raise PreventUpdate
         return (no_update, no_update, _PROGRESS_HIDE,
                 _load_error_alert(f"読み込みエラー: {e}"),
                 no_update)
+    if _load_is_superseded(trigger):
+        raise PreventUpdate
     if _is_load_cancelled(token):
         _clear_cancel_event(token)
         return (no_update, no_update, _PROGRESS_HIDE,
@@ -1243,7 +1242,7 @@ def load_stage_c_deg(trigger, cal_enable, cal_table_data, cal_search_window,
         "設定を復元中…", 85, no_update, no_update,
         {"rds_path": rds_path, "method": integration_method,
          "result_folder": result_folder, "n": trigger["n"],
-         "token": token, "dataset_revision": trigger.get("dataset_revision")},
+         "token": token, "scope": trigger.get("scope"), "dataset_revision": trigger.get("dataset_revision")},
     )
 
 
@@ -1328,11 +1327,15 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
     if not trigger:
         raise PreventUpdate
     rds_path = trigger.get("rds_path") or rds_map.get(integration_method)
+    if _load_is_superseded(trigger):
+        raise PreventUpdate
+    if not rds_map or rds_path not in rds_map.values():
+        raise PreventUpdate
     token = trigger.get("token")
     # ver56.6: 最終段。ここまで来る間にキャンセルされていたら打ち切り、
     #   キャンセル表示を後から上書きしない。連鎖はここで終わるので、
     #   合図の後片付け (_clear_cancel_event) もこの段で行う。
-    _cancelled = _is_load_cancelled(token)
+    _cancelled = _is_load_cancelled(token) or _load_is_superseded(trigger)
     _clear_cancel_event(token)
     if _cancelled:
         return (
@@ -1348,6 +1351,8 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
         # 各リンクは別リクエスト = ContextVar がリセットされるため、ここで再確立
         _set_active_key(rds_path)
         state = _get_state(rds_path)
+        if token and state.get("load_token") not in (None, token):
+            raise PreventUpdate
         if state.get("plot_data") is None:
             return (
                 _load_error_alert("状態が失われました。もう一度読み込んでください。"),
@@ -1361,8 +1366,10 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
         deg_data = state.get("_deg_data")
         calib_warning = state.get("_calib_warning", "")
         meta = state["meta"]
+        from app.services.result_contract import descriptor_label
+        actual_label = descriptor_label(meta["result_descriptor"]) if meta.get("result_descriptor") else method_display_name(integration_method)
         info_text = (
-            f"読み込み完了 [{method_display_name(integration_method)}]: "
+            f"読み込み完了 [{actual_label}]: "
             f"{meta.get('n_cells', '?')} cells, "
             f"{meta.get('n_clusters', '?')} clusters, "
             f"samples: {', '.join(meta.get('samples', []))}"
@@ -1372,6 +1379,8 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
         #   後から足した注記が黙って消える。注記は 1 つのリストに集めて、
         #   全部出そろってから最後に連結する。
         info_notes = [calib_warning] if calib_warning else []
+        if state.get("_deg_warning"):
+            info_notes.append(state["_deg_warning"])
 
         # クラスタ選択肢
         clusters = sorted(_interactive_data["plot_data"]["Cluster"].unique(), key=_cluster_sort_key)
@@ -1541,12 +1550,13 @@ def load_stage_d_finish(trigger, integration_method, rds_map, result_folder,
 
 
 def _load_deg_results(
-    result_base: Path, integration_method: str | None = None
+    result_base: Path, integration_method: str | None = None, *, result_descriptor: dict | None = None
 ) -> list[dict] | None:
     """解析結果フォルダ内の DEG CSV / RDS を読み込む（キャッシュ付き）。
     Delegates to deg_utils.load_deg_results with _interactive_data as cache."""
     return _load_deg_results_util(
         result_base, integration_method, cache=_interactive_data,
+        strict_method=result_descriptor is not None, result_descriptor=result_descriptor,
     )
 
 

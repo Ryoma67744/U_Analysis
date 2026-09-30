@@ -59,9 +59,21 @@ if (!("pca" %in% names(obj@reductions))) {
 #   したがってここは**併走出力を持たない過去の結果を開くための後方互換**として残す。
 #   画面には「クラスタは補正後の定義」と分かる注記が出る。
 n_pc     <- ncol(Embeddings(obj, "pca"))
+# ★ ver77.0: integrated assay の pca は未補正 PCA ではない。
+if (identical(obj@reductions$pca@assay.used, "integrated")) {
+  stop("integrated assay の PCA から未補正投影は作成できません")
+}
 dims_use <- 1:min(30, n_pc)
 obj <- RunUMAP(obj, reduction = "pca", dims = dims_use,
                reduction.name = "umap", seed.use = 42, verbose = FALSE)
+
+# ★ ver77.0: Idents を引き継ぐ旧互換ビューを、独立 PCA として再利用させない。
+parent_result_id <- obj@misc$result_provenance$result_id
+parent_cluster_space <- obj@misc$result_provenance$cluster_space
+obj@misc$pca_origin <- "legacy_derived"
+obj@misc$result_provenance <- list(schema_version = 2L, method = "PCA",
+  source_result_id = parent_result_id, embedding_space = "pca",
+  cluster_space = parent_cluster_space, cluster_kind = "inherited", stage = "umap")
 
 dir.create(dirname(out_path), recursive = TRUE, showWarnings = FALSE)
 save_rds_compact(list(obj = obj, reduction = "pca"), out_path)

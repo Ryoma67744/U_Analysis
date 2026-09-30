@@ -607,6 +607,13 @@ def _hydrate_parquet_registries(manifest):
 
 def preflight_registered_inputs(params):
     """★ ver74.0: 直接ParquetもR設定生成前に同じfooter/選択検証を通す。"""
+    from app.services.stage_signatures import validated_import_record
+    imported = validated_import_record(params)
+    if imported:
+        if not params.get("resume_from_rds") or params.get("pipeline_stage") != "downstream_from_reduction":
+            raise InputPreparationError("検証済み旧結果は保存reductionからの下流解析として実行してください。")
+        params["validated_legacy_import"] = imported["entry"]
+        return params
     manifest = params.get("section_manifest")
     paths = params.get("original_input_paths") or params.get("input_paths") or []
     if not manifest:
@@ -632,6 +639,18 @@ def preflight_registered_inputs(params):
 def prepare_inputs(params, *, cache_root=None, project_id="", progress=None, cancel=None, **kwargs):
     """すべての選択入力が完成してから、新しい manifest / runtime paths を返す。"""
     params = deepcopy(params)
+    from app.services.stage_signatures import validated_import_record
+    imported = validated_import_record(params)
+    if imported:
+        if not params.get("resume_from_rds") or params.get("pipeline_stage") != "downstream_from_reduction":
+            raise InputPreparationError("検証済み旧結果は保存reductionからの下流解析として実行してください。")
+        check_cancel(cancel)
+        params["validated_legacy_import"] = imported["entry"]
+        params["legacy_source_manifest"] = params.get("section_manifest")
+        params["section_manifest"] = None
+        params["input_paths"] = []
+        params["_imzml_pipeline_prepared"] = True
+        return params
     from app.services.section_metadata import build_section_manifest, validate_section_manifest
     manifest = params.get("section_manifest")
     if not manifest:

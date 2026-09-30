@@ -466,7 +466,9 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
 
     # data_folder が存在しない場合 (別マシン由来の古いパス) は自動補正を試行
     # ★ ver70.0: 原本フォルダが移動しても、検証済み旧runtimeをRへ渡す。
-    if params.get("_imzml_pipeline_prepared") and params.get("input_paths") and not Path(params["data_folder"]).is_dir():
+    if params.get("validated_legacy_import"):
+        resolved_data_folder = str(Path(params["validated_legacy_import"]["manifest_path"]).parent)
+    elif params.get("_imzml_pipeline_prepared") and params.get("input_paths") and not Path(params["data_folder"]).is_dir():
         resolved_data_folder = str(Path(params["input_paths"][0]).parent)
     else:
         resolved_data_folder = _resolve_or_raise(params["data_folder"])
@@ -474,7 +476,7 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
     # DESI: Excel/CSV で登録されたサンプルを正規 .txt に変換してから R に渡す。
     # （R は data_folder/<sample>.txt を決め打ちで読むため。TIMS は input_paths を
     #   持つので除外。読取専用フォルダ時は staging に集約したパスへ差し替わる。）
-    if not params.get("input_paths"):
+    if not params.get("input_paths") and not params.get("validated_legacy_import"):
         try:
             from app.services import desi_converter
             resolved_data_folder = desi_converter.prepare_desi_data_folder(
@@ -503,6 +505,8 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
         "umap_dims_n": "UMAP_DIMS_N", "umap_n_neighbors": "UMAP_N_NEIGHBORS",
         "cluster_dims_n": "CLUSTER_DIMS_N", "cluster_k_param": "CLUSTER_K_PARAM",
         "cluster_algorithm": "CLUSTER_ALGORITHM",
+        "pca_npcs": "PCA_NPCS", "pca_seed": "PCA_SEED",
+        "correction_seed": "CORRECTION_SEED", "cluster_seed": "CLUSTER_SEED",
     }
     _hp_num = {
         "umap_min_dist": "UMAP_MIN_DIST",
@@ -529,6 +533,18 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
         seed_var = "GLOBAL_RANDOM_SEED" if any(re.match(r"^\s*GLOBAL_RANDOM_SEED\s*<-", line) for line in lines) else "UMAP_SEED"
         lines = _replace_assign(lines, seed_var, f"{int(params['umap_seed'])}L")
 
+    from app.utils.file_locks import atomic_write_json
+    contract_path = Path(output_dir) / "stage_contract.json"
+    atomic_write_json({key: params.get(key) for key in (
+        "signature_schema_version", "stage_signatures", "run_id", "parent_run_id",
+        "execution_mode", "legacy_signatures", "validated_legacy_import")}, contract_path)
+    for var, value in (("STAGE_SIGNATURES_PATH", str(contract_path)),
+                       ("EXECUTION_MODE", params.get("execution_mode", "resume_same")),
+                       ("LEGACY_IMPORT_MANIFEST_PATH", (params.get("validated_legacy_import") or {}).get("manifest_path", "")),
+                       ("LEGACY_IMPORT_MANIFEST_SHA256", (params.get("validated_legacy_import") or {}).get("manifest_sha256", ""))):
+        if any(re.match(rf"^\s*{var}\s*<-", line) for line in lines):
+            lines = _replace_assign(lines, var, _r_str(value or ""))
+
     # ★ ver67.0: フォルダ全件では未選択ファイルの名前が混ざるため実入力だけを保存。
     from app.services.naming_policy import copy_selected_feature_annotations
     from app.services.execution_policy import selected_manifest_paths
@@ -536,7 +552,8 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
     annotation_inputs = ((runtime_paths(params.get("section_manifest")) if params.get("_imzml_pipeline_prepared")
                           else selected_manifest_paths(params.get("section_manifest"))) or params.get("input_paths")
                          or [str(Path(params["data_folder"]) / f"{name}.txt") for name in params.get("sample_names", [])])
-    copy_selected_feature_annotations(annotation_inputs, output_dir)
+    if not params.get("validated_legacy_import"):
+        copy_selected_feature_annotations(annotation_inputs, output_dir)
     for var, value in (("SECTION_MANIFEST_PATH", params.get("section_manifest_path", "")),
                        ("ANALYSIS_SIGNATURE", params.get("analysis_signature", "")),
                        ("REDUCTION_SIGNATURE", params.get("reduction_signature", "")),
@@ -599,10 +616,10 @@ def generate_v8_config(params: dict, output_dir: str) -> str:
     )
 
     # --- TIMS固有パラメータ ---
-    if params.get("input_paths"):
+    if params.get("input_paths") or params.get("validated_legacy_import"):
         # INPUT_PATHS ブロック置換 (TIMS ver13)
         lines = _replace_sample_names_block(
-            lines, "INPUT_PATHS", params["input_paths"]
+            lines, "INPUT_PATHS", params.get("input_paths") or []
         )
     if params.get("output_dir_var") == "OUTPUT_DIR":
         lines = _replace_assign(lines, "OUTPUT_DIR", _r_str(output_dir))

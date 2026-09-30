@@ -71,7 +71,7 @@ def _run_r(tmp_path: Path, code: str) -> None:
     script = tmp_path / "verify.R"
     script.write_text(code, encoding="utf-8")
     result = subprocess.run(
-        [_rscript(), "--vanilla", str(script)], text=True, capture_output=True,
+        [_rscript(), "--vanilla", str(script)], text=True, encoding="utf-8", errors="replace", capture_output=True,
         cwd=tmp_path, timeout=120,
         env={**os.environ, "DESI_TEMPLATE": str(DESI), "DESI_RERUN": str(RERUN),
              "UA_HELPERS": str(HELPERS)},
@@ -119,7 +119,8 @@ stopifnot(identical(sub_samples[[1]]$mask, c(FALSE,TRUE,FALSE)))
 
 
 _DISPATCH_SETUP = r'''
-setClass("MockSeurat", slots=c(meta.data="data.frame", misc="list", reductions="list"))
+setClass("Seurat")
+setClass("MockSeurat", contains="Seurat", slots=c(meta.data="data.frame", misc="list", reductions="list"))
 setMethod("$", "MockSeurat", function(x,name) x@meta.data[[name]])
 setReplaceMethod("$", "MockSeurat", function(x,name,value) { x@meta.data[[name]] <- value; x })
 setMethod("dim", "MockSeurat", function(x) c(5L,nrow(x@meta.data)))
@@ -132,11 +133,17 @@ saves <- character(); clusters <- 0L; statuses <- list(); seen_units <- list(); 
 save_rds_compact <- function(obj,path) { saves <<- c(saves,basename(path)); saveRDS(obj,path) }
 load_rds_compact <- readRDS
 ua_stamp_checkpoint <- function(obj,signature) {obj@misc$analysis_signature <- signature;obj}
-ua_checkpoint_matches <- function(obj,signature) identical(obj@misc$analysis_signature,signature)
+ua_checkpoint_matches <- function(obj,signature,...) identical(obj@misc$analysis_signature,signature)
 # ★ ver74.0: 再開時にmetadata refreshが全手法へ届いたことを実行分岐で数える。
-ua_refresh_checkpoint_metadata <- function(obj,manifest,signature) { refreshes <<- refreshes+1L; obj }
+ua_refresh_checkpoint_metadata <- function(obj,manifest,signature,...) { refreshes <<- refreshes+1L; obj }
+ua_import_method_path <- function(method,fallback) fallback
+ua_can_reuse_clustering <- function(...) FALSE
+ua_stage_facts <- function(obj,...) obj
+ua_digest <- function(x) paste(as.character(x),collapse="|")
+ua_validate_dims <- function(...) TRUE
+ua_save_umap_stage <- function(...) NULL
 .section_manifest <- NULL
-ua_record_method <- function(outdir,method,status,reason="",stage="",rds_path="") {
+ua_record_method <- function(outdir,method,status,reason="",stage="",rds_path="",...) {
  statuses[[method]] <<- list(status=status,stage=stage,reason=reason)
 }
 ua_prepare_reduction <- function(obj,reduction) {
@@ -168,6 +175,10 @@ IntegrateData <- function(anchorset,dims) mk(do.call(rbind,lapply(anchorset,func
  obj@misc$cluster_reduction <- reduction
  obj@reductions$umap <- matrix(clusters,ncol(obj),2);obj
 }
+ua_cluster_reduction <- function(obj,reduction,umap_dims,cluster_dims,n_neighbors,min_dist,umap_metric,seed,k_param,cluster_metric,resolution,algorithm,...) {
+ .desi_cluster(obj,reduction,resolution)
+}
+ua_import_records <- function() list()
 .desi_export_result <- function(obj,method,rds_path) {
  saved <- readRDS(rds_path)
  stopifnot(identical(saved@meta.data$seurat_clusters,obj@meta.data$seurat_clusters))
@@ -179,12 +190,15 @@ for (expr in exprs) {
      as.character(expr[[2]]) %in% c(".desi_finish_method",".desi_load_method")) eval(expr)
 }
 src <- readLines(Sys.getenv("DESI_TEMPLATE"),warn=FALSE)
-a <- grep("^pca_filename <-",src); b <- grep("^# ---- Cleanup:",src)
+a <- grep("^# Method dispatch:",src); b <- grep("^# ---- Cleanup:",src)
 dispatch <- parse(text=src[a:(b-1L)])
 od <- getwd(); rds_od <- file.path(od,"RDS_Files"); dir.create(rds_od)
 RESUME_DIR_PATH <- rds_od; RESUME_FROM_RDS <- FALSE; ANALYSIS_SIGNATURE <- "same-input-and-settings"
 CLUSTER_RESOLUTION_SINGLE <- 0.5; CLUSTER_RESOLUTION_HARMONY <- 0.5; CLUSTER_RESOLUTION_RPCA <- 0.8
 BATCH_CORRECTION_ENABLE <- TRUE; .has_single <- FALSE
+PCA_SEED <- CORRECTION_SEED <- CLUSTER_SEED <- UMAP_SEED <- 42L
+UMAP_DIMS_N <- CLUSTER_DIMS_N <- 3L; UMAP_N_NEIGHBORS <- CLUSTER_K_PARAM <- 5L
+UMAP_MIN_DIST <- 0.3; UMAP_METRIC <- "cosine"; CLUSTER_METRIC <- "euclidean"; CLUSTER_ALGORITHM <- 1L
 seu_list <- list(base); .stage_downstream <- FALSE
 '''
 
@@ -195,7 +209,7 @@ def test_pca_saved_first_and_method_failure_does_not_destroy_other_results(tmp_p
 PIPELINE_STAGE <- "full"
 eval(dispatch)
 stopifnot(saves[[1]]=="DESI_Seurat_SingleSample.rds")
-stopifnot(statuses$PCA$status=="complete",statuses$PCA$stage=="downstream")
+stopifnot(statuses$PCA$status=="complete",statuses$PCA$stage=="export")
 stopifnot(identical(sort(seen_units$Harmony),sort(seen_units$RPCA)))
 for (method in c("Harmony","RPCA")) {
  if (identical(method,fail_method)) stopifnot(statuses[[method]]$status=="failed",statuses[[method]]$stage=="reduction")
@@ -215,7 +229,7 @@ stopifnot(clusters==0L,all(vapply(statuses,function(x)x$stage=="reduction",logic
 PIPELINE_STAGE <- "downstream_from_reduction"; .stage_downstream <- TRUE; .has_single <- TRUE
 RESUME_FROM_RDS <- TRUE; seu_list <- list()
 eval(dispatch)
-stopifnot(refreshes==3L,clusters==3L,all(vapply(statuses,function(x)x$status=="complete" && x$stage=="downstream",logical(1))))
+stopifnot(refreshes==3L,clusters==3L,all(vapply(statuses,function(x)x$status=="complete" && x$stage=="export",logical(1))))
 ''')
 
 
@@ -248,8 +262,15 @@ stopifnot(statuses$Harmony$status=="failed",statuses$Harmony$stage=="reduction")
 ''')
 
 
-def test_rerun_merge_uses_only_completed_method_and_prefers_source_method(tmp_path):
-    _run_r(tmp_path, r'''
+def _require_manifest_packages():
+    check = subprocess.run([_rscript(), "--vanilla", "-e",
+                            'quit(status=if(all(vapply(c("jsonlite","digest"),requireNamespace,logical(1),quietly=TRUE))) 0 else 1)'],
+                           capture_output=True)
+    if check.returncode:
+        pytest.skip("jsonlite/digest required for manifest contract")
+
+
+_RERUN_SELECTION_SETUP = r'''
 source(file.path(Sys.getenv("UA_HELPERS"),"analysis_contract.R"))
 src <- readLines(Sys.getenv("DESI_RERUN"),warn=FALSE)
 a <- grep("^  \\.find_rerun_rds <- function",src)
@@ -259,15 +280,78 @@ rd <- file.path(getwd(),"RDS_Files");dir.create(rd)
 pca <- file.path(rd,"DESI_SeuratCombined_PCA_uncorrected.rds")
 harmony <- file.path(rd,"DESI_SeuratCombined_harmony.rds")
 rpca <- file.path(rd,"DESI_SeuratCombined_RPCA.rds")
-file.create(pca,harmony,rpca)
-ua_record_method(getwd(),"PCA","complete",stage="downstream",rds_path=pca)
-ua_record_method(getwd(),"Harmony","failed",stage="downstream",rds_path=harmony)
-ua_record_method(getwd(),"RPCA","complete",stage="downstream",rds_path=rpca)
+for (path in c(pca,harmony,rpca)) saveRDS(list(method=basename(path)),path)
+publish_cluster <- function(method,path) {
+  ua_record_method(getwd(),method,"complete",stage="reduction",rds_path=path)
+  sidecar <- file.path(rd,paste0("UMAP_",tolower(method),"_umap_embedding.rds"))
+  saveRDS(matrix(seq_len(8),4),sidecar)
+  ua_record_method(getwd(),method,"complete",stage="umap",rds_path=sidecar)
+  ua_record_method(getwd(),method,"complete",stage="cluster",rds_path=path)
+  sidecar
+}
+'''
+
+
+def test_rerun_merge_uses_only_completed_method_and_prefers_source_method(tmp_path):
+    _require_manifest_packages()
+    _run_r(tmp_path, _RERUN_SELECTION_SETUP + r'''
+publish_cluster("PCA",pca);publish_cluster("RPCA",rpca)
+ua_record_method(getwd(),"PCA","failed",stage="export",rds_path=pca)
+ua_record_method(getwd(),"Harmony","failed",stage="reduction",rds_path=harmony)
+ua_record_method(getwd(),"RPCA","complete",stage="export",rds_path=rpca)
+# A later plot failure does not discard already verified UMAP/cluster results.
 stopifnot(identical(.find_rerun_rds(getwd(),"pca"),pca))
 stopifnot(identical(.find_rerun_rds(getwd(),"harmony"),rpca))
-ua_record_method(getwd(),"PCA","complete",stage="reduction",rds_path=pca)
-ua_record_method(getwd(),"RPCA","failed",stage="reduction",rds_path=rpca)
+ua_record_method(getwd(),"PCA","running",stage="cluster",rds_path=pca)
+ua_record_method(getwd(),"RPCA","failed",stage="umap",rds_path=rpca)
 stopifnot(is.null(.find_rerun_rds(getwd(),"pca")))
+''')
+
+
+def test_rerun_merge_accepts_v1_complete_downstream_absolute_and_relative_paths(tmp_path):
+    _require_manifest_packages()
+    _run_r(tmp_path, _RERUN_SELECTION_SETUP + r'''
+state<-list(schema_version=1L,methods=list(
+ pca=list(status='complete',stage='downstream',rds_path=pca),
+ harmony=list(status='failed',stage='downstream',rds_path=harmony),
+ rpca=list(status='complete',stage='downstream',rds_path='RDS_Files/DESI_SeuratCombined_RPCA.rds')))
+write_state<-function() jsonlite::write_json(state,'analysis_methods.json',auto_unbox=TRUE)
+write_state()
+stopifnot(identical(.find_rerun_rds(getwd(),'pca'),pca),
+ identical(.find_rerun_rds(getwd(),'harmony'),rpca))
+state$methods$pca$stage<-'reduction';state$methods$rpca$status<-'failed';write_state()
+stopifnot(is.null(.find_rerun_rds(getwd(),'pca')))
+''')
+
+
+@pytest.mark.parametrize("broken", ["primary", "umap", "missing_hash", "outside_run"])
+def test_rerun_merge_v2_rejects_unbound_or_changed_artifacts(tmp_path, broken):
+    _require_manifest_packages()
+    _run_r(tmp_path, _RERUN_SELECTION_SETUP + 'broken <- ' + json.dumps(broken) + r'''
+sidecar<-publish_cluster('PCA',pca)
+state<-jsonlite::fromJSON('analysis_methods.json',simplifyVector=FALSE)
+if (broken=='primary') saveRDS(list(replaced=TRUE),pca)
+if (broken=='umap') saveRDS(matrix(0,4,2),sidecar)
+if (broken=='missing_hash') state$methods$pca$stages$cluster$artifact_sha256<-NULL
+if (broken=='outside_run') {
+ outside<-tempfile(fileext='.rds');saveRDS(list(unrelated=TRUE),outside)
+ state$methods$pca$stages$cluster$rds_path<-outside
+ state$methods$pca$stages$cluster$artifact_sha256<-ua_file_digest(outside)
+}
+jsonlite::write_json(state,'analysis_methods.json',auto_unbox=TRUE)
+stopifnot(is.null(.find_rerun_rds(getwd(),'pca')))
+''')
+
+
+def test_rerun_merge_does_not_search_another_child_run_or_bypass_invalid_manifest(tmp_path):
+    _run_r(tmp_path, _RERUN_SELECTION_SETUP + r'''
+other<-file.path(getwd(),'other_run','RDS_Files');dir.create(other,recursive=TRUE)
+saveRDS(list(old=TRUE),file.path(other,'DESI_SeuratCombined_harmony.rds'))
+# An explicitly invalid manifest may not fall through to filename guessing.
+writeLines('{broken','analysis_methods.json')
+stopifnot(is.null(.find_rerun_rds(getwd(),'pca')))
+unlink('analysis_methods.json');unlink(c(pca,harmony,rpca))
+stopifnot(is.null(.find_rerun_rds(getwd(),'pca')))
 ''')
 
 

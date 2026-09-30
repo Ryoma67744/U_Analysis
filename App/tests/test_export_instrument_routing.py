@@ -476,6 +476,10 @@ def test_desi_export_says_the_settings_were_not_applied(tmp_path, monkeypatch):
     result.mkdir(parents=True)
     raw = _desi_txt_folder(proj, "raw")
     rds = str(result / "seu.rds")
+    (result / "seu.rds").write_bytes(b"fixture")
+    monkeypatch.setattr(de._bridge, "extract_data", lambda *_a, **_k: {
+        "plot_data": pd.DataFrame({"SpatialX": [1., 2.], "SpatialY": [1., 2.],
+                                  "Sample": ["s1", "s1"], "Cluster": ["1", "2"]}), "meta": {}})
     monkeypatch.setattr("app.services.project_manager.get_sub_project",
                         lambda pid, sid: {"data_folder": str(raw)})
     try:
@@ -503,6 +507,10 @@ def test_tims_export_does_not_add_the_desi_note(tmp_path, monkeypatch):
     result.mkdir(parents=True)
     raw = _parquet_folder(proj, "raw")
     rds = str(result / "seu.rds")
+    (result / "seu.rds").write_bytes(b"fixture")
+    monkeypatch.setattr(de._bridge, "extract_data", lambda *_a, **_k: {
+        "plot_data": pd.DataFrame({"SpatialX": [1., 2.], "SpatialY": [1., 2.],
+                                  "Sample": ["s1", "s1"], "Cluster": ["1", "2"]}), "meta": {}})
     monkeypatch.setattr("app.services.project_manager.get_sub_project",
                         lambda pid, sid: {"data_folder": str(raw)})
     try:
@@ -538,6 +546,10 @@ def test_export_of_parquet_under_desi_path_produces_a_tims_file(
     result.mkdir(parents=True)
     raw = _parquet_folder(proj, "raw")
     rds = str(result / "seu.rds")
+    (result / "seu.rds").write_bytes(b"fixture")
+    monkeypatch.setattr(de._bridge, "extract_data", lambda *_a, **_k: {
+        "plot_data": pd.DataFrame({"SpatialX": [1., 2.], "SpatialY": [1., 2.],
+                                  "Sample": ["s1", "s1"], "Cluster": ["1", "2"]}), "meta": {}})
 
     monkeypatch.setattr("app.services.project_manager.get_sub_project",
                         lambda pid, sid: {"data_folder": str(raw)})

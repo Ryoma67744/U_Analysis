@@ -15,6 +15,7 @@ _READ_CALLBACKS = {
     "tab_url_routing": {"_sync_tab_from_url", "_sync_url_from_tab"},
     "interactive_project": {"toggle_project_dropdown_visibility"},
     "interactive_callbacks": {"auto_scan_rds_files", "auto_load_on_rds_ready",
+        "invalidate_result_folder", "label_verified_result",
         "toggle_integration_method", "_toggle_cancel_button", "load_stage_a_show_progress",
         "load_stage_b_extract", "load_stage_c_deg", "load_stage_d_finish"},
     "interactive_cluster": {"update_cluster_stats", "update_cluster_info", "update_cluster_dashboard",
@@ -130,18 +131,18 @@ def authorize_shared_callback(body, entry, share, kind, token):
                 or not isinstance(trigger.get("result_folder"), str)
                 or Path(trigger["result_folder"]).resolve() != root):
             return False
-    from app.services.seurat_bridge import SeuratBridge
-    bridge = SeuratBridge()
-    cache_dirs = {(bridge._cache_base / bridge._get_cache_key(path)).resolve() for path in allowed_rds}
+    cache_dirs = None
     # callbackが指定するRDSとcacheの対応を固定し、別手法の抽出値を混ぜない。
     requested_rds = [field.get("value") for field in posted
                      if "rds_path" in str(field.get("id", "")).lower()
                      and isinstance(field.get("value"), str) and field.get("value")]
+    cache_sources = allowed_rds
     if len(set(requested_rds)) == 1 and requested_rds[0] in allowed_rds:
-        cache_dirs = {(bridge._cache_base / bridge._get_cache_key(requested_rds[0])).resolve()}
-    allowed_paths = {root, *(Path(path) for path in allowed_rds), *cache_dirs}
+        cache_sources = {requested_rds[0]}
+    allowed_paths = {root, *(Path(path) for path in allowed_rds)}
     # 原データの自由な参照は共有に不要。viewerは解析結果と抽出cacheだけを読む。
-    def validate(value, key=""):
+    def validate(value, key="", verify_cache=True):
+        nonlocal cache_dirs
         lower = key.lower()
         # 型検査より前の汎用dict/list再帰では、空コンテナがRDS指定を迂回できた。
         if "rds_map" in lower:
@@ -157,6 +158,21 @@ def authorize_shared_callback(body, entry, share, kind, token):
         if "project" in lower and ("id" in lower or "select" in lower):
             return value in (None, "") or (isinstance(value, str) and value == str(share.get("project_id", "")))
         if "cache_dir" in lower:
+            # ★ ver77.0: 型/スコープ違反の拒否より先に、巨大 RDS をハッシュしてはならない。
+            # cache 指定があるときだけ確定キーを計算する。欠損ファイルも認可失敗に倒す。
+            if value in (None, ""):
+                return True
+            if not isinstance(value, str):
+                return False
+            if not verify_cache:
+                return True
+            if cache_dirs is None:
+                from app.services.seurat_bridge import SeuratBridge
+                bridge = SeuratBridge()
+                try:
+                    cache_dirs = {(bridge._cache_base / bridge._get_cache_key(path)).resolve() for path in cache_sources}
+                except OSError:
+                    return False
             return value in (None, "") or (isinstance(value, str) and Path(value).expanduser().resolve() in cache_dirs)
         if "folder" in lower:
             return value in (None, "") or (isinstance(value, str) and Path(value).expanduser().resolve() == root)
@@ -165,10 +181,16 @@ def authorize_shared_callback(body, entry, share, kind, token):
         if lower in {"method", "interactive_integration_method"}:
             return value in (None, "") or (isinstance(value, str) and value in methods)
         if isinstance(value, dict):
-            return all(validate(child, str(child_key)) for child_key, child in value.items())
+            return all(validate(child, str(child_key), verify_cache) for child_key, child in value.items())
         if isinstance(value, list):
-            return all(validate(child, key) for child in value)
+            return all(validate(child, key, verify_cache) for child in value)
         return True
+    replaced_fields = {"shared_session", "annotation_path", "default_annotation_csv", "calibration_enable",
+                       "session_id_store", "current_page", "interactive_entry_mode"}
+    for field in posted:
+        ident = str(field["id"])
+        if ident not in replaced_fields and not validate(field.get("value"), ident, verify_cache=False):
+            return False
     for field in posted:
         ident = str(field["id"])
         if ident == "shared_session":

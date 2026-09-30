@@ -82,11 +82,11 @@ def test_adduct_conflict_is_not_merged_and_legacy_feature_id_kept(tmp_path):
     assert records["Legacy_200.000 | DB"]["compound"] == "Legacy"
 
 
-def test_stale_failed_rds_is_not_listed_as_a_completed_method(tmp_path):
+def test_legacy_failed_rds_remains_an_unverified_candidate(tmp_path):
     from app.callbacks.interactive_callbacks import _detect_integration_methods
     for filename in ("Step2_PCA_uncorrected.rds", "Step2_HarmonyPCA_Result.rds", "Step3_RPCA_Result.rds"):
         (tmp_path / filename).touch()
     (tmp_path / "analysis_methods.json").write_text(json.dumps({"methods": {
         "pca": {"status": "complete", "stage": "downstream"}, "harmony": {"status": "failed"}, "rpca": {"status": "skipped"}}}))
     result = _detect_integration_methods(str(tmp_path), include_derived=True)
-    assert len(result) == 1 and next(iter(result)).startswith("PCA")
+    assert set(result) == {"PCA (uncorrected)", "Harmony", "RPCA"}

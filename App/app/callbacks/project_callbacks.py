@@ -803,7 +803,8 @@ def sub_action_interactive(clicks, project):
         return (no_update,) * _n_out
 
     # last_result_dir を優先、なければ output_dir にフォールバック
-    result_dir = sub.get("last_result_dir") or sub.get("output_dir", "")
+    from app.services.project_result_refs import resolve_result_dir
+    result_dir = resolve_result_dir(sub, "analysis")
     # MSIデータフォルダもサブプロジェクトから自動セット
     data_folder = sub.get("data_folder", "")
     # ★ ver52.3: `x or no_update` をやめ、常に明示的な値を入れる。
@@ -1458,7 +1459,8 @@ def generate_share_link(n_clicks, sub_id, project, share_kind, expiry_days,
     if not sub:
         return (no_update,) * 6
 
-    result_dir = sub.get("last_result_dir") or sub.get("output_dir", "")
+    from app.services.project_result_refs import resolve_result_dir
+    result_dir = resolve_result_dir(sub, "analysis")
 
     # RDSパスを結果フォルダから自動検索
     rds_map = {}

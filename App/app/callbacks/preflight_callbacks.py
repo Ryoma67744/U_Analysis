@@ -54,7 +54,8 @@ def _resolve_result_dir(selected_project, current_sub_project_id) -> str:
     sub = get_sub_project(project_id, current_sub_project_id)
     if not sub:
         return ""
-    return sub.get("last_result_dir") or sub.get("output_dir", "")
+    from app.services.project_result_refs import resolve_result_dir
+    return resolve_result_dir(sub, "reduction")
 
 
 def _fmt_num(x, nd: int = 3):
@@ -63,6 +64,44 @@ def _fmt_num(x, nd: int = 3):
         return round(float(x), nd)
     except (TypeError, ValueError):
         return None
+
+
+def _preflight_rds_methods(result_dir):
+    from app.services.result_catalog import discover_results
+    return {row["display_name"]: row["rds_path"] for row in discover_results(result_dir)}
+
+
+@callback(Output("downstream_source_summary", "children"),
+          Input("selected_project", "data"), Input("current_sub_project_id", "data"),
+          Input("preflight_store", "data"), Input("app_state", "data"))
+def show_downstream_source(selected_project, sub_id, _diagnostics, _app_state=None):
+    """Only inspect metadata here; the worker verifies RDS contents before use."""
+    from app.services.result_catalog import discover_results, read_method_records
+    folder = _resolve_result_dir(selected_project, sub_id)
+    if not folder:
+        return "再利用する結果: 選択中サブプロジェクトに保存済み結果がありません。"
+    rows = []
+    records = read_method_records(folder)
+    for row in discover_results(folder):
+        descriptor = row.get("result_descriptor") or {}
+        dimensions = ", ".join(f"{key}: {value.get('n_dims', '?')} PC"
+                               for key, value in descriptor.get("reductions", {}).items())
+        stages = descriptor.get("run_state", {}).get("stages") or {}
+        if not stages:
+            key = row.get("method_key", "").lower()
+            key = "pca" if key.startswith("pca") else key
+            stages = (records.get("methods", {}).get(key) or {}).get("stages") or {}
+        if not dimensions:
+            saved = stages.get("reduction", {})
+            effective = saved.get("effective") or (saved.get("numerical") or {}).get("effective") or {}
+            if effective.get("n_dims"):
+                dimensions = f"保存記録: {effective['n_dims']} PC"
+        stage_text = ", ".join(f"{key}={value.get('status', '?')}" for key, value in stages.items())
+        rows.append(html.Li(f"{row['display_name']} — {dimensions or 'PC数は内容検証時に確認'}"
+                            + (f" / {stage_text}" if stage_text else "")))
+    return html.Div([html.Div(f"再利用する実行: {records.get('run_id') or '旧形式・実行ID未記録'}"),
+                     html.Div(folder), html.Ul(rows),
+                     html.Small("保存次元を超える指定はエラーになります。旧形式の新条件解析は検証済み取込が必要です。")])
 
 
 def _render_diagnostics_table(data: dict, rds_methods: dict):
@@ -246,7 +285,7 @@ def _render_diagnostics_table(data: dict, rds_methods: dict):
         "③反映は各手法の推奨の最大値を採用（全手法が安定・連結する最小の共通値、"
         "許容範囲内にクランプ）。min.dist・metric は自動推奨の対象外で既定値"
         "（0.3 / cosine）を使用します。"
-        "反映した値は新しい通常解析・①で使用します。④は元の保存条件を使用します。"
+        "反映した値は新しい通常解析・①・「現在の条件で下流解析」で使用します。④は元の保存条件を使用します。"
         + (f"　反映値の元: {recommended['source']}" if recommended else "")
     )
     return html.Div([header, table, footer]), recommended
@@ -274,8 +313,7 @@ def _load_saved_diagnostics(result_dir: str):
             None,
         )
     # 循環 import 回避のため遅延 import（既存パターン踏襲）
-    from app.callbacks.interactive_callbacks import _detect_integration_methods
-    rds_methods = {k: str(v) for k, v in _detect_integration_methods(result_dir).items()}
+    rds_methods = _preflight_rds_methods(result_dir)
     node, recommended = _render_diagnostics_table(data, rds_methods)
     banner = dbc.Alert(
         "📂 保存済みの診断結果を表示中（再計算するには「② PreFlight 診断を実行」）。",
@@ -337,8 +375,7 @@ def run_preflight(n_clicks, selected_project, current_sub_project_id):
         )
 
     # reduction RDS 検出（既存ロジックを流用。callback 間結合を避け遅延 import）
-    from app.callbacks.interactive_callbacks import _detect_integration_methods
-    rds_map = _detect_integration_methods(result_dir)
+    rds_map = _preflight_rds_methods(result_dir)
     if not rds_map:
         return (
             dbc.Alert(

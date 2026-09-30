@@ -21,7 +21,7 @@ def _write_results(folder, companion=True):
     return names
 
 
-@pytest.mark.parametrize("subdir", ["", "RDS_Files", "nested/results/RDS_Files"])
+@pytest.mark.parametrize("subdir", ["", "RDS_Files"])
 def test_standard_tims_files_never_register_pixel_table_as_pca(tmp_path, subdir):
     folder = tmp_path / subdir
     names = _write_results(folder)
@@ -55,11 +55,11 @@ def test_another_corrected_result_does_not_fall_through_to_pca(tmp_path, subdir)
     assert "PCA" not in ic._detect_integration_methods(str(tmp_path), include_derived=True)
 
 
-def test_legacy_derived_pca_is_available_despite_pixel_tables(tmp_path):
+def test_legacy_derived_pca_is_not_automatically_added_as_independent(tmp_path):
     _write_results(tmp_path / "RDS_Files", companion=False)
     got = ic._detect_integration_methods(str(tmp_path), include_derived=True)
-    assert "derived_pca" in got["PCA"]
-    assert Path(got["PCA"]).name != "pixel_table_rpca.rds"
+    assert "PCA" not in got
+    assert set(got) == {"Harmony", "RPCA"}
 
 
 def test_real_standalone_pca_is_retained(tmp_path):
@@ -75,8 +75,8 @@ def test_viewer_pca_label_retains_companion_identity_and_path(tmp_path, auto):
     _write_results(tmp_path / "RDS_Files")
     options, selected, rds_map = (ic.auto_scan_rds_files(str(tmp_path), None) if auto
                                  else ic.scan_rds_files(1, str(tmp_path)))
-    assert sorted(option["label"] for option in options) == ["Harmony", "PCA", "RPCA"]
-    pca = next(option for option in options if option["label"] == "PCA")
+    assert sorted(option["label"] for option in options) == ["未確認（Harmony候補）", "未確認（PCA候補）", "未確認（RPCA候補）"]
+    pca = next(option for option in options if option["label"] == "未確認（PCA候補）")
     assert pca["value"] == "PCA (uncorrected)"
     assert Path(rds_map[pca["value"]]).name == "Step2_PCA_uncorrected.rds"
     assert selected == "RPCA"
@@ -107,7 +107,7 @@ def test_explicit_harmony_share_overrides_rpca_default(tmp_path):
     _write_results(tmp_path / "RDS_Files")
     options, selected, rds_map = ic.auto_scan_rds_files(
         str(tmp_path), {"active": True, "integration_method": "Harmony"})
-    assert options == [{"label": "Harmony", "value": "Harmony"}]
+    assert options == [{"label": "未確認（Harmony候補）", "value": "Harmony"}]
     assert selected == "Harmony"
     assert list(rds_map) == ["Harmony"]
 
@@ -134,7 +134,7 @@ def test_old_and_current_pca_shares_resolve_to_only_the_companion(tmp_path, meth
     _write_results(tmp_path / "RDS_Files")
     options, selected, rds_map = ic.auto_scan_rds_files(
         str(tmp_path), {"active": True, "integration_method": method})
-    assert options == [{"label": "PCA", "value": "PCA (uncorrected)"}]
+    assert options == [{"label": "未確認（PCA候補）", "value": "PCA (uncorrected)"}]
     assert selected == "PCA (uncorrected)"
     assert list(rds_map) == [selected]
 

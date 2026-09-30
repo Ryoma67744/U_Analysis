@@ -240,7 +240,7 @@ class TestPptxResolvesLabelPositionsExplicitly:
 
         seen = {}
 
-        def _spy(accumulated=None, rds_path=None, method=None):
+        def _spy(accumulated=None, rds_path=None, method=None, **kwargs):
             seen["rds_path"] = rds_path
             seen["method"] = method
             return {}

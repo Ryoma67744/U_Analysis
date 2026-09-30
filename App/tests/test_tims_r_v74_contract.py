@@ -24,7 +24,7 @@ def run_r(tmp_path, body, packages=()):
         if check.returncode:
             pytest.skip("必要なR package: " + ",".join(packages))
     prelude = "\n".join(f"source({json.dumps(str(HELPERS / name))})" for name in
-                         ("analysis_contract.R", "feature_naming_policy.R", "rds_io.R"))
+                          ("analysis_contract.R", "feature_naming_policy.R", "rds_io.R", "parquet_column_roles.R"))
     prelude += "\n" + r'''
 load_functions <- function(path, wanted) {
   found <- character()
@@ -182,6 +182,20 @@ stopifnot(!compare_id_sets(c('a','a'),c('a','b'))$equal)
 """, packages=("Seurat",))
 
 
+def test_equivalence_reader_sources_helpers_from_template_location(tmp_path):
+    # ★ ver77.0: Arrow未導入でも、別cwdからreader自身の依存解決を実Rで検証する。
+    run_r(tmp_path, f"""
+load_functions({json.dumps(str(HELPERS / 'test_parquet_ingest_equiv.R'))},'load_new_reader')
+`%||%` <- function(a,b) if(!is.null(a)) a else b
+ANNOTATION_FILTER <- NULL
+reader <- load_new_reader({json.dumps(str(TIMS))})
+reader_env <- environment(reader)
+stopifnot(exists('ua_tims_feature_ids',envir=reader_env,inherits=FALSE),
+          exists('ua_parquet_feature_columns',envir=reader_env,inherits=FALSE),
+          is.null(reader_env$ua_parquet_feature_columns(list(metadata=NULL))))
+""")
+
+
 def test_parquet_ingest_equivalence_cli_runs(tmp_path):
     if not R:
         pytest.skip("Rscriptが必要です")
@@ -295,7 +309,7 @@ arrow::write_parquet(d,'input.parquet')
         assert result.returncode == 0, log[-15000:]
         state = json.loads((Path(json.loads(settings["OUTPUT_DIR"])) / "analysis_methods.json").read_text())
         assert state["methods"]["pca"]["status"] == "complete", state
-        assert state["methods"]["pca"]["stage"] == "downstream", state
+        assert state["methods"]["pca"]["stage"] == "export", state
         return log
 
     execute("initial", settings)

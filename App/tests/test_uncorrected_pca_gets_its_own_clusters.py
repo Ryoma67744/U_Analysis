@@ -93,7 +93,7 @@ def test_the_companion_call_asks_for_a_recluster():
     assert '.pca_recluster <- TRUE' in _TIMS
     assert 'seu_pca <- .ua_finish_tims(seu_pca, "pca", "pca_uncorrected", rds_pca_out, .pca_recluster)' in _TIMS
     body = _fn_body(_TIMS, '.ua_finish_tims <- function')
-    assert 'obj <- ua_cluster_reduction(obj, method' in body
+    assert 'obj <- ua_cluster_reduction(obj, reduction' in body
     assert body.index('save_rds_compact(list(obj = obj') < body.index('run_downstream_analysis(obj, prefix')
 
 
@@ -128,7 +128,7 @@ def test_desi_companion_reclusters_on_the_uncorrected_space():
     """★ ver67.0: 必須PCAが共通処理へpcaを明示して渡す。"""
     assert '.desi_finish_method(seu_pca, "PCA", "pca"' in _DESI
     body = _fn_body(_DESI, ".desi_finish_method <- function")
-    assert '.desi_cluster(obj, reduction, resolution)' in body
+    assert 'ua_cluster_reduction(obj,reduction' in body
     helper = (ROOT / "Script/helpers/analysis_contract.R").read_text(encoding="utf-8")
     assert 'obj <- ua_prepare_reduction(obj, reduction)' in helper
     assert 'Seurat::FindNeighbors(obj, reduction = reduction' in helper
@@ -187,39 +187,36 @@ def test_the_tims_result_does_not_grow_a_fake_pca(tmp_path):
     assert Path(got["PCA (uncorrected)"]).name == "Step2_PCA_uncorrected.rds"
 
 
-def test_the_derived_pca_comes_back_for_older_tims_results(tmp_path):
-    """★ 併走出力を持たない古い TIMS 結果で、派生の未補正 PCA が使えること。
-
-    偽の「PCA」が枠を埋めていたせいで、Harmony から未補正 PCA を派生生成する
-    救済経路 (`include_derived`) は `"PCA" not in rds_map` の条件を満たせず、
-    **一度も発動していなかった**。ここが本来の姿。
-    """
+def test_old_tims_results_do_not_add_inherited_projection_as_independent_pca(tmp_path):
+    """★ ver77.0: 継承クラスタ投影を、独立 PCA と誤認させる自動追加を停止する。"""
     from app.callbacks.interactive_callbacks import _detect_integration_methods
-
     d = tmp_path / "RDS_Files"
     d.mkdir()
     for name in ("Step2_HarmonyPCA_Result.rds", "Step3_RPCA_Result.rds"):
         (d / name).write_bytes(b"x")
-
     got = _detect_integration_methods(str(tmp_path), include_derived=True)
-    assert got.get("PCA"), f"派生の未補正 PCA が選択肢に出ていない: {got}"
-    assert "derived_pca" in got["PCA"], (
-        f"「PCA」が派生キャッシュではなく既存ファイルを指している: {got['PCA']}")
-    assert got["PCA"] != got.get("Harmony")
+    assert set(got) == {"Harmony", "RPCA"}
 
 
-def test_the_derived_cache_is_invalidated_when_the_helper_changes(tmp_path):
-    """★ 補助スクリプトを直しても古い派生結果が返り続けないこと。
-
-    派生結果は「元ファイルのパス」だけを鍵にして取り置きされるため、
-    スクリプトを直しても以前の結果がそのまま返っていた。
-    """
-    src = (ROOT / "app" / "callbacks" / "interactive_callbacks.py").read_text(encoding="utf-8")
-    i = src.index("derived_pca")
-    head = src[max(0, i - 800):i]
-    assert "_DERIVE_PCA_VERSION" in head or "_DERIVE_PCA_VERSION" in src[i:i + 400], (
-        "派生結果の鍵に補助スクリプトの版が入っていない。"
-        "直しても古い結果が返り続ける")
+def test_projection_cache_depends_on_source_and_helper_content(tmp_path, monkeypatch):
+    """更新日時が同じでも、内容差し替えで同じ投影を返さない。"""
+    from app.services import seurat_bridge as module
+    bridge = module.SeuratBridge()
+    source = tmp_path / "input.rds"
+    source.write_bytes(b"AAAA")
+    helper_dir = tmp_path / "helpers"
+    helper_dir.mkdir()
+    helper = helper_dir / "derive_uncorrected_pca.R"
+    helper.write_text("first", encoding="utf-8")
+    monkeypatch.setattr(module, "R_HELPERS_DIR", helper_dir)
+    monkeypatch.setattr(bridge, "_invoke_derive_pca", lambda cmd, target, *args: target.write_bytes(b"result"))
+    first = bridge.derive_uncorrected_pca(str(source), str(tmp_path / "derived.rds"))
+    source.write_bytes(b"BBBB")
+    second = bridge.derive_uncorrected_pca(str(source), str(tmp_path / "derived.rds"))
+    helper.write_text("second", encoding="utf-8")
+    third = bridge.derive_uncorrected_pca(str(source), str(tmp_path / "derived.rds"))
+    assert len({first, second, third}) == 3
+    assert Path(first).read_bytes() == b"result"
 
 
 # ---------------------------------------------------------------------------

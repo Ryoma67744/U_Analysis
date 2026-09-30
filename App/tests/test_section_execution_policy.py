@@ -120,7 +120,7 @@ def test_resume_does_not_mix_unsaved_current_ui_values(tmp_path):
     p = dict(resume_from_rds=True, resume_rds_paths=[str(rds)], umap_seed=777,
              cluster_resolution=4.5, calibration_coefficients={'slope': 999})
     prepare_execution_params(p, tmp_path / 'resumed')
-    assert 'umap_seed' not in p and 'cluster_resolution' not in p and 'calibration_coefficients' not in p
+    assert p['umap_seed'] == 42 and 'cluster_resolution' not in p and 'calibration_coefficients' not in p
 
 
 @pytest.mark.parametrize('operation', ['change', 'remove'])

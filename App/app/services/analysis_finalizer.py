@@ -98,10 +98,7 @@ def _link_to_project(output_dir, job: dict, result: dict) -> None:
         return
     try:
         from app.services.data_manager import has_msi_data
-        from app.services.project_manager import (
-            save_sub_project_result_dir, update_sub_project,
-        )
-        save_sub_project_result_dir(proj_id, sub_id, str(output_dir))
+        from app.services.project_manager import save_sub_project_result_dir
         # 解析に使った生データフォルダも保存しておく（出力時の自動推定を不要にする）。
         # 旧実装ではここが未定義変数を参照して NameError になっており、
         # 成功のたびに「結果ディレクトリの保存に失敗」と表示されていた。
@@ -113,9 +110,10 @@ def _link_to_project(output_dir, job: dict, result: dict) -> None:
         #   押したときに初めて「入力ファイルが見つかりません」として現れる。
         #   実際にこれで TIMS プロジェクトの登録が `Data/DESI/Data` になった。
         #   間違った値で上書きするくらいなら、古くても正しい値を残す方がよい。
-        if data_folder and has_msi_data(data_folder):
-            update_sub_project(proj_id, sub_id, {"data_folder": data_folder})
-        elif data_folder:
+        verified_data_folder = data_folder if data_folder and has_msi_data(data_folder) else ""
+        save_sub_project_result_dir(proj_id, sub_id, str(output_dir),
+                                    data_folder=verified_data_folder)
+        if data_folder and not verified_data_folder:
             logger.warning(
                 "解析に使った生データフォルダに入力が見つからないため、"
                 "サブプロジェクトの登録は更新しません: %s", data_folder)

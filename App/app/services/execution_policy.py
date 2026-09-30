@@ -5,7 +5,12 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import uuid
 from app.utils.file_locks import atomic_write_json
+from app.services.stage_signatures import (
+    DOWNSTREAM_KEYS, UPSTREAM_KEYS, build_stage_signatures, file_sha256, resolve_stage_defaults,
+    validated_import_record,
+)
 
 AUTO_POLICY = "section_auto_v1"
 _INHERITED = (
@@ -20,7 +25,8 @@ _INHERITED = (
     "annotation_filter", "roi_filter", "use_roi_as_sample", "umap_n_neighbors", "umap_min_dist",
     "umap_metric", "umap_dims_n", "umap_seed", "cluster_dims_n", "cluster_k_param", "cluster_metric",
     "cluster_algorithm", "cluster_resolution", "cluster_resolution_single", "cluster_resolution_harmony",
-    "cluster_resolution_rpca", "p_thresh", "logfc_thresh",
+    "cluster_resolution_rpca", "p_thresh", "logfc_thresh", "pca_npcs", "pca_seed",
+    "correction_seed", "cluster_seed", "validated_legacy_import", "legacy_import_consistency",
 )
 
 
@@ -67,12 +73,49 @@ def method_outcome(output_dir):
         return invalid
     names = {"pca": "PCA", "harmony": "Harmony", "rpca": "RPCA"}
     available, incomplete, stages = [], [], []
+    completed_reductions, completed_analyses = [], []
+    artifact_digests = {}
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        manifest = {}
     for name, row in methods.items():
         label = names.get(str(name).lower(), str(name))
         if not isinstance(row, dict):
             incomplete.append(label)
             continue
         status = row.get("status")
+        if manifest.get("schema_version") == 2 and isinstance(row.get("stages"), dict):
+            stage_rows = row["stages"]
+            def complete(name):
+                item = stage_rows.get(name) or {}
+                artifact = item.get("rds_path") or row.get("rds_path")
+                if item.get("status") != "complete" or not artifact:
+                    return False
+                artifact_path = Path(artifact)
+                if not artifact_path.is_absolute():
+                    artifact_path = Path(output_dir) / artifact_path
+                if not artifact_path.is_file():
+                    return False
+                expected = item.get("artifact_sha256")
+                if not expected:
+                    return False  # v2 completion is bound to the published bytes
+                identity = str(artifact_path.resolve())
+                if identity not in artifact_digests:
+                    artifact_digests[identity] = file_sha256(artifact_path)
+                return artifact_digests[identity] == expected
+            reduced = complete("reduction")
+            analyzed = complete("umap") and complete("cluster")
+            if reduced:
+                completed_reductions.append(label)
+            if analyzed:
+                completed_analyses.append(label)
+            if reduced or analyzed:
+                available.append(label)
+                stages.append("downstream" if analyzed else "reduction")
+            if any(s.get("status") in {"failed", "running"} for s in stage_rows.values() if isinstance(s, dict)):
+                incomplete.append(label)
+            continue
         if status == "complete":
             rds = Path(row["rds_path"]) if row.get("rds_path") else None
             if rds is not None and not rds.is_absolute():
@@ -86,8 +129,12 @@ def method_outcome(output_dir):
             incomplete.append(label)
     if not available and not incomplete:
         incomplete.append("利用可能な解析結果がありません")
-    return {"available": available, "incomplete": incomplete,
-            "reduction_only": bool(available) and all(stage == "reduction" for stage in stages)}
+    result = {"available": available, "incomplete": incomplete,
+              "reduction_only": bool(available) and all(stage == "reduction" for stage in stages)}
+    if manifest.get("schema_version") == 2:
+        result.update(completed_reductions=completed_reductions, completed_analyses=completed_analyses,
+                      run_id=manifest.get("run_id"))
+    return result
 
 
 def _numeric_manifest(manifest):
@@ -107,6 +154,8 @@ def _numeric_manifest(manifest):
 
 def reduction_signature(params):
     """★ ver74.0: reductionの数値条件だけを署名しmetadata revisionと分離する。"""
+    if params.get("signature_schema_version") == 2:
+        return build_stage_signatures(params, _numeric_manifest(params.get("section_manifest")))["upstream"]
     keys = ("input_normalized", "norm_mode", "mz_align_ppm", "calibration_enable",
             "calibration_coefficients", "calibration_by_sample", "umap_n_neighbors", "umap_min_dist",
             "umap_metric", "umap_dims_n", "umap_seed", "cluster_dims_n", "cluster_k_param",
@@ -174,12 +223,19 @@ def _fingerprint(path):
     if not p.is_file():
         return None
     st = p.stat()
-    return {"path": str(p), "size": st.st_size, "mtime_ns": st.st_mtime_ns}
+    return {"path": str(p), "size": st.st_size, "mtime_ns": st.st_mtime_ns,
+            "sha256": file_sha256(p)}
 
 
 def prepare_execution_params(params, output_dir, *, preflight=False):
     """注入する条件を確定し、R起動前に保存する（paramsを更新）。"""
     # ★ ver67.0: 続き実行で現在画面の条件を混ぜず、元実行の条件を引き継ぐ。
+    mode = params.get("execution_mode") or "resume_same"
+    if mode not in {"resume_same", "downstream_new"}:
+        raise ValueError("不明な再開モードです。")
+    params["execution_mode"] = mode
+    selected_template = params.get("template_path")
+    edits = {key: deepcopy(params[key]) for key in DOWNSTREAM_KEYS if params.get(key) is not None}
     source = params.get("resume_reanalysis_dir") if params.get("resume_reanalysis") else None
     if not source and params.get("resume_from_rds"):
         paths = params.get("resume_rds_paths") or []
@@ -193,6 +249,11 @@ def prepare_execution_params(params, output_dir, *, preflight=False):
             raise ValueError("保存済みの解析条件が見つかりません。条件を確認して新規解析を実行してください。")
         record = json.loads(record_path.read_text(encoding="utf-8"))
         saved = deepcopy(record.get("runtime_parameters") or record)
+        if mode == "downstream_new" and saved.get("signature_schema_version") != 2 and not saved.get("validated_legacy_import"):
+            raise ValueError("旧結果は検証済みのインポート後に、新条件の下流解析を実行してください。")
+        # Resolve the old shared seed before applying a new UMAP-only seed.
+        if saved.get("signature_schema_version") == 2 or mode == "downstream_new":
+            resolve_stage_defaults(saved)
         for canonical, old in (("annotation_csv_path", "annotation_csv"), ("adduct_patterns", "adduct_filter")):
             if canonical not in saved and old in saved:
                 saved[canonical] = saved[old]
@@ -209,15 +270,47 @@ def prepare_execution_params(params, output_dir, *, preflight=False):
             else:
                 # ★ ver67.0: 保存時に未指定だった値へ、現在画面の指定を混入させない。
                 params.pop(key, None)
+        for key in UPSTREAM_KEYS:
+            if key in saved:
+                params[key] = deepcopy(saved[key])
+            elif key not in _INHERITED:
+                params.pop(key, None)
+        if mode == "downstream_new":
+            params.update(edits)
+            params["source_template_path"] = saved.get("template_path")
+            if selected_template:
+                params["template_path"] = selected_template
+            elif saved.get("validated_legacy_import"):
+                # Imports use the current supported runtime even if the original
+                # computer's script path no longer exists.
+                from app.config import DESI_V8_TEMPLATE_PATH, TIMS_V8_TEMPLATE_PATH
+                instrument = str(saved.get("instrument", "")) + str(saved.get("template_path", ""))
+                params["template_path"] = str(DESI_V8_TEMPLATE_PATH if "desi" in instrument.lower()
+                                              else TIMS_V8_TEMPLATE_PATH)
+            if "cluster_resolution" in edits and "desi" in str(params.get("template_path", "")).lower():
+                for key in ("cluster_resolution_single", "cluster_resolution_harmony", "cluster_resolution_rpca"):
+                    params[key] = edits.get(key, edits["cluster_resolution"])
+            params["pipeline_stage"] = "downstream_from_reduction"
+        if saved.get("signature_schema_version") == 2:
+            params["signature_schema_version"] = 2
+        else:
+            params.pop("signature_schema_version", None)
+            params["legacy_signatures"] = {key: saved[key] for key in
+                ("analysis_signature", "reduction_signature") if saved.get(key)} or deepcopy(saved.get("legacy_signatures", {}))
         params["source_result_dir"] = str(root)
         params["source_run"] = {k: record.get(k) for k in
                                 ("timestamp", "pipeline_stage", "analysis_signature", "execution_policy")}
         if params.get("original_input_paths") and not params.get("input_paths"):
             params["input_paths"] = deepcopy(params["original_input_paths"])
-        if "execution_policy" not in saved:
+        if "execution_policy" not in saved and saved.get("signature_schema_version") != 2:
             params["execution_policy"] = "legacy_saved"
         fingerprints = record.get("input_fingerprints") or saved.get("input_fingerprints") or []
-        for item in fingerprints + ([saved["source_rds_fingerprint"]] if saved.get("source_rds_fingerprint") else []):
+        imported = saved.get("validated_legacy_import")
+        if imported:
+            validated = validated_import_record(params)
+            params["validated_legacy_import"] = validated["entry"]
+        to_check = [] if imported else fingerprints + ([saved["source_rds_fingerprint"]] if saved.get("source_rds_fingerprint") else [])
+        for item in to_check:
             # ★ ver70.0: 旧imzML結果の入力はimmutable cache。原本の移動/更新を誤検出しない。
             pinned = [f for f in (params.get("section_manifest") or {}).get("files", [])
                       if f.get("conversion_key") and Path(f.get("path", "")).resolve() == Path(item["path"]).resolve()]
@@ -231,8 +324,18 @@ def prepare_execution_params(params, output_dir, *, preflight=False):
                 raise ValueError(f"保存済み入力が見つかりません: {Path(item['path']).name}。元の入力を復元してください。")
             if current["size"] != item["size"] or current["mtime_ns"] != item["mtime_ns"]:
                 raise ValueError(f"保存後に入力が変更されています: {Path(item['path']).name}。新規解析を実行してください。")
+            if item.get("sha256") and current["sha256"] != item["sha256"]:
+                raise ValueError(f"保存後に入力内容が変更されています: {Path(item['path']).name}。")
         if fingerprints:
             params["input_fingerprints"] = deepcopy(fingerprints)
+        if imported:
+            params["legacy_source_manifest"] = params.get("section_manifest")
+            params["legacy_input_paths"] = params.get("input_paths")
+            params["section_manifest"] = None
+            params["section_manifest_path"] = ""
+            params["input_paths"] = []
+            params["data_folder"] = str(Path(params["validated_legacy_import"]["manifest_path"]).parent)
+            params["sample_names"] = []
         if saved.get("analysis_signature") and not saved.get("reduction_signature"):
             params["analysis_signature"] = saved["analysis_signature"]
     if params.get("execution_policy") == AUTO_POLICY:
@@ -248,12 +351,16 @@ def prepare_execution_params(params, output_dir, *, preflight=False):
                     or params.get("annotation_path") or "")
         if not database or not Path(database).is_file():
             raise ValueError("分子情報の追加がONですが、照合するDBファイルが見つかりません。")
+    if not source or params.get("signature_schema_version") == 2 or params.get("validated_legacy_import"):
+        resolve_stage_defaults(params)
+    from app.utils.validation import validate_downstream_parameters
+    validate_downstream_parameters(params)
     if preflight:
         # ★ ver74.0: 保存runの復元後にも検証し、直接Parquet再開の入口漏れを防ぐ。
         from app.services.input_preparation import preflight_registered_inputs
         preflight_registered_inputs(params)
     manifest = params.get("section_manifest")
-    if manifest is not None:
+    if manifest is not None and not params.get("validated_legacy_import"):
         from app.services.section_metadata import validate_section_manifest
         errors = validate_section_manifest(manifest)
         if errors:
@@ -285,8 +392,16 @@ def prepare_execution_params(params, output_dir, *, preflight=False):
             params.pop("source_rds_fingerprint", None)
     # ★ ver67.0: 通常実行で辞書が再利用されても古い署名を持ち越さない。
     # 保存条件を引き継いだ再開では、その実行の署名を維持する。
+    if not source or params.get("signature_schema_version") == 2 or params.get("validated_legacy_import"):
+        params["signature_schema_version"] = 2
+        params["stage_signatures"] = build_stage_signatures(params, _numeric_manifest(params.get("section_manifest")))
     params["reduction_signature"] = reduction_signature(params)
     params["metadata_signature"] = metadata_signature(params)
     if not source or not params.get("analysis_signature") or saved.get("reduction_signature"):
         params["analysis_signature"] = analysis_signature(params)
+    if params.get("run_output_dir") != str(output_dir):
+        params["run_id"] = str(uuid.uuid4())
+        params["run_output_dir"] = str(output_dir)
+    if source:
+        params["parent_run_id"] = saved.get("run_id") or record.get("run_id")
     return params

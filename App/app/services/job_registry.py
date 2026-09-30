@@ -43,7 +43,7 @@ def job_file_path(output_dir) -> Path:
 def write_job(output_dir, *, pid: int, analysis_type: str = "",
               project_id: str = "", sub_project_id: str = "",
               data_folder: str = "", script_path: str = "",
-              analyst: str = "",
+               analyst: str = "",
               started_at: Optional[str] = None) -> Optional[Path]:
     """解析の起動時にジョブ台帳を書く。失敗しても解析は止めない。
 
@@ -61,7 +61,7 @@ def write_job(output_dir, *, pid: int, analysis_type: str = "",
         "data_folder": data_folder or "",
         "script_path": script_path or "",
         "analyst": analyst or "",
-        "started_at": started_at or datetime.now().isoformat(),
+        "started_at": started_at or datetime.now().astimezone().isoformat(),
         "finalized": False,
         # ★ ver58.2: どこで走っているか（PID の名前空間を見分けるため）
         "host": host_id(),

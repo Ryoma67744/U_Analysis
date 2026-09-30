@@ -269,8 +269,9 @@ def _read_mz_sorted_metadata(pf) -> Optional[list]:
             return None
         if any(a >= b for a, b in zip(values, values[1:])):
             return None
-        metadata_columns = {"id", "x", "y", "ua_coordinate_component", "annotation"}
-        columns = [c for c in pf.schema_arrow.names if c not in metadata_columns]
+        from app.services.parquet_column_roles import read_column_roles, feature_columns
+        roles = read_column_roles(pf.schema_arrow)
+        columns = feature_columns(pf.schema_arrow.names, roles)
         if len(values) != len(columns):
             return None
         for value, name in zip(values, columns):
@@ -336,6 +337,10 @@ def _read_tims_raw(folder: Path, sample_name: str = None) -> Optional[pd.DataFra
 
         pf = pq.ParquetFile(fp)
         all_names = pf.schema.names
+        # ★ ver77.0: 解析出力の埋め込み列は m/z=1,2 の特徴量ではない。
+        from app.services.parquet_column_roles import read_column_roles, feature_columns
+        roles = read_column_roles(pf.schema_arrow)
+        all_names = feature_columns(all_names, roles)
         non_meta = {"id", "x", "y", "ua_coordinate_component", "annotation"}
         # 旧形式: mz_ 接頭辞 / 裸の数値列名
         mz_cols = [n for n in all_names if n.startswith("mz_")]

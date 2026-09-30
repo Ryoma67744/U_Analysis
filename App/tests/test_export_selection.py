@@ -123,7 +123,7 @@ def test_same_pixel_id_in_different_files_is_distinct(frames, monkeypatch):
     extra = frames["Harmony"].iloc[[0]].assign(source_file_id="file-B", section_id="section-B", group="other")
     frames["Harmony"] = pd.concat([frames["Harmony"], extra])
     selected = es.resolve_selection(frames, _selection(frames), "result-A")
-    monkeypatch.setattr(es, "input_source_id", lambda path, _: "file-B" if path == "B" else "file-A")
+    monkeypatch.setattr(es, "input_source_id", lambda path, _, manifest=None: "file-B" if path == "B" else "file-A")
     assert selected.includes_path("A", "result")
     assert not selected.includes_path("B", "result")
     assert selected.filter_frame(pd.DataFrame({"id": [1], "100": [99.]}), "B", "result").empty

@@ -353,7 +353,7 @@ def _analysis_block(receipt: dict, params: dict) -> dict:
 
 
 def collect_conditions(rds_path=None, result_folder=None, integration_method=None,
-                       extra=None, app_version=None) -> dict:
+                       extra=None, app_version=None, result_descriptor=None) -> dict:
     """現時点の解析条件を 1 つの dict にまとめる。
 
     Args:
@@ -367,6 +367,10 @@ def collect_conditions(rds_path=None, result_folder=None, integration_method=Non
     Returns:
         conditions dict。取得できなかった必須項目は `_missing` に列挙される。
     """
+    requested_method = integration_method
+    if result_descriptor is not None:
+        from app.services.result_contract import descriptor_method
+        integration_method = descriptor_method(result_descriptor)
     result_dir = results_dir_for_rds(rds_path, result_folder)
     receipt = _read_json(Path(result_dir) / "receipt.json") if result_dir else {}
     params = _read_json(Path(result_dir) / "analysis_params.json") if result_dir else {}
@@ -417,6 +421,11 @@ def collect_conditions(rds_path=None, result_folder=None, integration_method=Non
         "batch_de_fixed_params": dict(BATCH_DE_FIXED_PARAMS),
         "extra": dict(extra or {}),
     }
+    if result_descriptor is not None:
+        # ★ ver77.0: 最新の実行条件と、今回読んだ RDS の実際の由来を分離する。
+        from copy import deepcopy
+        conditions["observed_result"] = deepcopy(result_descriptor)
+        conditions["requested_method"] = requested_method
 
     # ★ ver67.0: 編集した群は閲覧時の記録に追加し、解析時の条件は保持する。
     if result_dir and (Path(result_dir) / "section_manifest.json").exists():
@@ -433,6 +442,23 @@ def collect_conditions(rds_path=None, result_folder=None, integration_method=Non
         _rs.recover_conditions(conditions, runtime_script, integration_method)
     except Exception as e:  # noqa: BLE001 - 復元失敗で収集全体を壊さない
         logger.warning("実行スクリプトからの復元に失敗: %s", e)
+
+    if result_descriptor is not None:
+        # ★ ver77.0: 別 run の最新 runtime を今回の数値条件として断定しない。
+        # 従来の記録は残し、UMAP/クラスタの実測できる条件だけを RDS 由来に置き換える。
+        from copy import deepcopy
+        conditions["recorded_run_analysis"] = deepcopy(conditions["analysis"])
+        embedding = result_descriptor.get("embedding", {})
+        clusters = result_descriptor.get("clusters", {})
+        for key, observed, mapping in (
+            ("umap", embedding, {"n_neighbors": "n.neighbors", "min_dist": "min.dist", "metric": "metric", "dims": "dims", "seed": "seed.use"}),
+            ("clustering", clusters, {"algorithm": "algorithm", "resolution": "resolution", "k_param": "k.param", "dims": "dims", "metric": "annoy.metric", "seed": "random.seed"}),
+        ):
+            parameters = observed.get("parameters") or {}
+            conditions["analysis"][key] = {target: parameters.get(original, parameters.get(target)) for target, original in mapping.items()}
+            conditions["analysis"][key]["space"] = observed.get("space")
+            conditions["analysis"][key]["kind"] = observed.get("kind")
+        conditions["analysis"].setdefault("preprocessing", {})["batch_correction"] = integration_method
 
     # derived_pca（キャッシュ上の埋め込み）は結果フォルダを持たない。黙って
     # 「条件不明」にならないよう、警告として明示する。
