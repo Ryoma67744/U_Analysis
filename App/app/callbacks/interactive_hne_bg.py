@@ -29,6 +29,7 @@ from app.utils.color_utils import cluster_display_name as _cluster_display_name
 from app.utils.display_helpers import transform_uirevision as _transform_uirevision
 from app.utils.selection_utils import natural_cluster_key
 from app.utils import raster as _raster
+from app.utils.cluster_label_placement import compute_label_anchors
 
 logger = logging.getLogger("msi.interactive.hne_bg")
 
@@ -162,7 +163,7 @@ def _auto_hne_marker_size(msi_x, msi_y, px_x, px_y, render_height=310):
 def build_hne_overlay_fig(df_sample, rds_path, sample, *, title=None, opacity=70,
                           marker_size=5, color_map=None, cluster_name_map=None,
                           show_labels=False, exclude_clusters=None,
-                          legend_hidden=None, mono=False):
+                          legend_hidden=None, mono=False, label_scope=None):
     """登録済み H&E を背景に、当該サンプルの MSI スポットを射影して重ねた figure を返す。
 
     Spatial Mapping 本体の per-sample タイルから呼ぶ。登録未完了（画像が無い / ランドマーク
@@ -228,6 +229,12 @@ def build_hne_overlay_fig(df_sample, rds_path, sample, *, title=None, opacity=70
     cl_series = sub["Cluster"].astype(str).to_numpy()
     cats_present = sorted(set(cl_series), key=natural_cluster_key)
     cell_ids = sub["CellID"].to_numpy() if "CellID" in sub.columns else None
+    # ★ ver76.0: 射影後の平均は分裂領域の外へ落ちる。元格子の代表点を同じ射影配列へ対応づける。
+    anchors = (compute_label_anchors(
+        sub["SpatialX"], sub["SpatialY"], cl_series, kind="spatial",
+        grid_reference=(df_sample["SpatialX"].to_numpy(), df_sample["SpatialY"].to_numpy()))
+        if show_labels else {})
+    label_rules = []
     for cl in cats_present:
         if cl in hidden:
             continue  # 灰色化＝色トレースを描かない → H&E が透ける
@@ -248,10 +255,13 @@ def build_hne_overlay_fig(df_sample, rds_path, sample, *, title=None, opacity=70
             kw["text"] = cell_ids[mask]
             kw["hovertemplate"] = "Cluster: %{meta.nm}<br>%{text}<extra></extra>"
         fig.add_trace(go.Scattergl(**kw))
-        if show_labels:
-            fig.add_annotation(x=float(px_x[mask].mean()), y=float(px_y[mask].mean()),
+        if cl in anchors:
+            anchor = anchors[cl]
+            fig.add_annotation(name=f"cluster:{cl}",
+                               x=float(px_x[anchor.index]), y=float(px_y[anchor.index]),
                                text=name, showarrow=False,
                                font=dict(size=10, color="black"))
+            label_rules.append({"index": len(fig.layout.annotations) - 1, "cluster": cl})
 
     # 共有凡例連動用ダミー（存在＝色付き / 欠番＝空白スロットで縦位置を保持）
     all_clusters = sorted({str(c) for c in color_map.keys()} | set(cats_present),
@@ -273,12 +283,16 @@ def build_hne_overlay_fig(df_sample, rds_path, sample, *, title=None, opacity=70
                 name=" ", showlegend=True, legendrank=rank,
                 legendgroup=f"_blank_{cl}"))
 
+    scope = dict(label_scope or {})
+    # ★ ver76.0: H&E画素座標を通常のMSI手動位置として保存しない。
+    scope.update(kind="hne", sample=str(sample), labels=label_rules)
+    scope.setdefault("section", "spatial")
     fig.update_layout(
         margin=dict(l=10, r=10, t=max(24, 10), b=10), plot_bgcolor="white",
         showlegend=True, legend=dict(itemsizing="constant", font=dict(size=10)),
         # ver46.1: H&E タイルであることと基準マーカーサイズを clientside に伝える。
         # kind="hne" なので H&E 用スライダーだけが対象になる（通常タイルとは分離）。
-        meta=dict(kind="hne", auto_msz=float(ms), label_size=10.0),
+        meta=dict(kind="hne", auto_msz=float(ms), label_size=10.0, label_scope=scope),
         # ver46.1: 透明度・マーカーサイズ・モノクロ切替ではズーム/パンを保持し、
         # 座標系が変わる要素 (サンプル / 表示倍率) が変わったときだけリセットする。
         uirevision=_transform_uirevision(sample, None, extra=f"hne:{img_scale:.4f}"),

@@ -80,7 +80,7 @@ window.dash_clientside = window.dash_clientside || {};
     }
 
     function signal(rd, triggeredId) {
-        return {
+        var result = {
             relayout: rd,
             triggered_id: triggeredId,
             // 同じラベルを同じ座標へ戻した場合でも Store の変化として
@@ -89,6 +89,33 @@ window.dash_clientside = window.dash_clientside || {};
             seq: (window.dash_clientside.__relayout_seq =
                 (window.dash_clientside.__relayout_seq || 0) + 1),
         };
+        // ★ ver76.0: 添字だけでは群の絞込・改名・マージ後に別クラスタへ保存する。
+        // 実際に操作した図の来歴と実IDを渡し、再配置以前の図からの書込を拒否する。
+        if (typeof document !== "undefined" && typeof document.getElementById === "function") {
+            var id = typeof triggeredId === "string" ? triggeredId : JSON.stringify(triggeredId,
+                Object.keys(triggeredId || {}).sort());
+            var host = document.getElementById(id);
+            var gd = host && (host.classList.contains("js-plotly-plot") ? host :
+                host.querySelector(".js-plotly-plot"));
+            var scope = gd && gd.layout && (gd.layout.meta || {}).label_scope;
+            if (!scope || scope.kind === "hne") return window.dash_clientside.no_update;
+            result.label_scope = scope;
+            result.positions = {};
+            (scope.labels || []).forEach(function (label) {
+                var ann = (gd.layout.annotations || [])[label.index];
+                if (!ann) return;
+                var xKey = "annotations[" + label.index + "].x";
+                var yKey = "annotations[" + label.index + "].y";
+                if (!Object.prototype.hasOwnProperty.call(rd, xKey) &&
+                        !Object.prototype.hasOwnProperty.call(rd, yKey)) return;
+                var x = Object.prototype.hasOwnProperty.call(rd, xKey) ? rd[xKey] : ann.x;
+                var y = Object.prototype.hasOwnProperty.call(rd, yKey) ? rd[yKey] : ann.y;
+                if (Number.isFinite(x) && Number.isFinite(y)) {
+                    result.positions[String(label.cluster)] = {x: x, y: y};
+                }
+            });
+        }
+        return result;
     }
 
     // 発火元 (callback_context.triggered) の値だけを見る。他の Input に残った

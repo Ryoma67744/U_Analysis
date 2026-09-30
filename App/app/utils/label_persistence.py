@@ -7,6 +7,7 @@ offset computation.
 """
 
 import json
+import copy
 import logging
 import os
 import re
@@ -25,6 +26,83 @@ logger = logging.getLogger(__name__)
 _POSITIONS_CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
 _POSITIONS_CACHE_MAX = int(os.environ.get("LABEL_POSITIONS_CACHE_MAX", 16))
 _POSITIONS_CACHE_LOCK = threading.Lock()
+
+# ★ ver76.0: 元クラスタとマージ表示の座標を共有すると、再配置が別図の手動位置も消す。
+LABEL_SECTIONS = (
+    "umap_integrated", "umap_integrated_merged",
+    "umap_per_sample", "umap_per_sample_merged", "spatial", "spatial_merged",
+)
+
+
+def is_flat_label_section(section):
+    return section in ("umap_integrated", "umap_integrated_merged")
+
+
+def label_revision(positions):
+    return int((positions or {}).get("_label_revision", 0))
+
+
+def merge_position_sections(base, overlay):
+    """既知の表示別座標だけをマージし、来歴メタデータを座標として扱わない。"""
+    for section in LABEL_SECTIONS:
+        updates = (overlay or {}).get(section)
+        if not isinstance(updates, dict):
+            continue
+        saved = base.setdefault(section, {})
+        if is_flat_label_section(section):
+            merge_label_positions(saved, updates)
+        else:
+            for sample, positions in updates.items():
+                if isinstance(positions, dict):
+                    merge_label_positions(saved.setdefault(sample, {}), positions)
+    return base
+
+
+def clear_label_position_targets(positions, targets):
+    """対象leafを丸ごと除去する。片方の軸や他の図の手動位置は混ぜない。"""
+    result = copy.deepcopy(positions or {})
+    for target in targets:
+        section = target.get("section")
+        if section not in LABEL_SECTIONS or target.get("kind") == "hne":
+            continue
+        saved = result.get(section, {})
+        if not is_flat_label_section(section):
+            saved = saved.get(str(target.get("sample", "")), {})
+        for cluster in target.get("clusters", []):
+            saved.pop(str(cluster), None)
+    return result
+
+
+def _load_for_update(path, rds_path, method):
+    # ★ ver76.0: 旧共通JSONを丸ごと継承してから差分更新する。対象以外を消さない。
+    source = path
+    if not source.exists() and method:
+        legacy = get_label_positions_path(rds_path)
+        if legacy and legacy.exists():
+            source = legacy
+    if not source.exists():
+        return {}
+    data = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("ラベル位置ファイルの形式が不正です")
+    return data
+
+
+def reset_label_positions(targets, rds_path, method=None, *, expected_revision=None):
+    """ロック内で対象だけ削除し、自動配置へ戻す。空の手法別JSONも保持する。"""
+    path = get_label_positions_path(rds_path, method)
+    if not path:
+        raise ValueError("データが読み込まれていません")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with get_or_create_lock(path):
+        existing = _load_for_update(path, rds_path, method)
+        revision = label_revision(existing)
+        if expected_revision is not None and expected_revision != revision:
+            raise ValueError("表示が更新されています。図を更新してから操作してください")
+        result = clear_label_position_targets(existing, targets)
+        result["_label_revision"] = revision + 1
+        _atomic_write_json(path, result)
+    return result
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:
@@ -227,7 +305,8 @@ def save_label_positions(
     rds_path: str | None,
     method: str | None = None,
     merge: bool = True,
-) -> None:
+    *, expected_revision: int | None = None, strict: bool = False,
+) -> bool:
     """label_positions.json を filelock + 原子的に書き込む。
 
     Args:
@@ -246,7 +325,7 @@ def save_label_positions(
             "[label_persistence] save skipped (no path): rds_path=%s method=%s",
             rds_path, method,
         )
-        return
+        return False
     logger.info(
         "[label_persistence] saving: path=%s sections=%s merge=%s",
         path.name, list((positions or {}).keys()), merge,
@@ -256,32 +335,21 @@ def save_label_positions(
         lock = get_or_create_lock(path)
         with lock:
             if merge:
-                existing = {}
-                if path.exists():
-                    try:
-                        existing = json.loads(path.read_text(encoding="utf-8"))
-                    except Exception:
-                        existing = {}
-                for section, section_data in (positions or {}).items():
-                    saved_section = existing.get(section, {})
-                    if section == "umap_integrated":
-                        merge_label_positions(saved_section, section_data)
-                    else:
-                        # spatial_<sample> 等：sample → cluster の二段構造
-                        if isinstance(section_data, dict):
-                            for sample_name, pos_dict in section_data.items():
-                                sample_saved = saved_section.get(sample_name, {})
-                                if isinstance(pos_dict, dict):
-                                    merge_label_positions(sample_saved, pos_dict)
-                                saved_section[sample_name] = sample_saved
-                        else:
-                            saved_section = section_data
-                    existing[section] = saved_section
+                existing = _load_for_update(path, rds_path, method)
+                # ★ ver76.0: 再配置以前のドラッグ/DOMスナップショットによる復活を防ぐ。
+                if (expected_revision is not None
+                        and label_revision(existing) != expected_revision):
+                    return False
+                merge_position_sections(existing, positions)
                 _atomic_write_json(path, existing)
             else:
                 _atomic_write_json(path, positions or {})
+        return True
     except Exception as e:
+        if strict:
+            raise
         logger.warning("ラベル位置の保存に失敗: %s", e)
+        return False
 
 
 # ---------------------------------------------------------------------------

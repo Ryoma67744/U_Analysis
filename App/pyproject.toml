@@ -22,6 +22,7 @@ dependencies = [
     "plotly>=5.18,<6.0",
     "pandas>=2.1,<3.0",
     "numpy>=1.26",
+    "scipy>=1.11,<2.0",  # ★ ver76.0: クラスタ番号の連結領域・内部距離・近傍探索
     "openpyxl>=3.1",
     "pyarrow>=14.0",
     "pyimzml==1.5.5",  # ★ ver74.0: requirements と同じ検証済み入出力依存を含める。

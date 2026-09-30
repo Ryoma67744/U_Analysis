@@ -33,6 +33,8 @@ from app.utils.label_persistence import (
     extract_annotation_positions_by_name as _extract_annotation_positions_by_name,
     merge_label_positions as _merge_label_positions,
     save_label_positions as _save_label_positions,
+    load_label_positions, reset_label_positions,
+    merge_position_sections, label_revision, LABEL_SECTIONS, is_flat_label_section,
 )
 
 # 共有状態・ヘルパーを interactive_callbacks / interactive_umap から参照
@@ -342,6 +344,9 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                     ),
                 ]),
             ]),
+            dbc.Button("番号を自動配置に戻す",
+                       id={"type": "reset_cluster_labels", "view": "fs_umap"},
+                       size="sm", color="secondary", outline=True),
             html.Div(id="fs_umap_graph_container", children=[init_graph]),
         ])
         body.children.extend(
@@ -519,6 +524,9 @@ def toggle_fullscreen(umap_n, feat_n, spatial_n, deg_n,
                 flush=True, always_open=True,
                 style={"marginBottom": "8px"},
             ),
+            dbc.Button("番号を自動配置に戻す",
+                       id={"type": "reset_cluster_labels", "view": "fs_spatial"},
+                       size="sm", color="secondary", outline=True),
             html.Div(id="fs_spatial_graph_container", children=[init_container]),
         ])
         body.children.extend(
@@ -620,14 +628,17 @@ def on_fullscreen_close(is_open, current_val, label_positions, snapshot):
      State("accumulated_label_positions", "data"),
      State("cluster_name_map_store", "data"),
      State("seurat_rds_path_store", "data"),
-     Input("int_section_group_filter", "value")],
+     Input("int_section_group_filter", "value"),
+     Input("label_positions_revision", "data"),
+     State("load_token_store", "data")],
     prevent_initial_call=True,
 )
 def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
                    height_val, width_val, marker_size, exclude_clusters, label_size,
                    legend_hidden, custom_color_map, rows,
                    accumulated_positions,
-                   cluster_name_map=None, rds_path=None, section_groups=None):
+                   cluster_name_map=None, rds_path=None, section_groups=None,
+                   _label_revision=0, load_token=None):
     from app.callbacks.interactive_callbacks import _set_active_key
     _set_active_key(rds_path)
     # 遅延 import（循環参照回避）
@@ -642,6 +653,11 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
     df = _with_section_groups(_interactive_data.get("plot_data"), rds_path, section_groups)
     if df is None:
         return ""
+    all_pos = _get_merged_label_positions(accumulated_positions,
+        rds_path=rds_path, method=_interactive_data.get("method"), load_token=load_token)
+    label_scope = dict(rds_path=rds_path, method=_interactive_data.get("method"),
+        load_token=load_token, revision=label_revision(all_pos),
+        section="umap_integrated", sample=None, kind="umap")
     custom_colors = custom_color_map if custom_color_map else None
     if color_by == "group" and "group" in df.columns:
         all_df = _with_section_groups(_interactive_data.get("plot_data"), rds_path, None)
@@ -651,13 +667,16 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
             for sample in sorted(df["Sample"].unique()):
                 fig = _build_umap_integrated_fig(df.loc[df["Sample"] == sample], "group", None,
                     show_legend, show_labels, marker_size=marker_size or 2, label_size=label_size or 11,
-                    exclude_clusters=exclude_clusters, custom_colors=custom_colors, cluster_name_map=cluster_name_map)
+                    exclude_clusters=exclude_clusters, custom_colors=custom_colors, cluster_name_map=cluster_name_map,
+                    saved_positions=all_pos.get("umap_per_sample", {}).get(str(sample)),
+                    label_scope={**label_scope, "section": "umap_per_sample", "sample": str(sample)})
                 graphs.append(html.Div([html.H6(str(sample)), dcc.Graph(figure=fig,
+                    id={"type": "fs_umap_per_sample_graph", "index": str(sample)},
+                    config={"scrollZoom": True, "edits": {"annotationPosition": True}},
                     style={"height": f"{max(height_val // 2, 25)}vh"})]))
             return html.Div(graphs, style={"width": f"{width_val}vw", "margin": "0 auto"})
     color_map = _get_cluster_color_map(df["Cluster"], custom_colors)
     fs_config = {"scrollZoom": True, "edits": {"annotationPosition": True}, "toImageButtonOptions": {"format": "png", "scale": 3}}
-    all_pos = _get_merged_label_positions(accumulated_positions)
 
     # タイトル（RDSファイル名から生成）
     rds_path = _interactive_data.get("rds_path", "")
@@ -671,7 +690,8 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
                                           label_size=label_size or 14,
                                           saved_positions=all_pos.get("umap_integrated"),
                                           custom_colors=custom_colors,
-                                          cluster_name_map=cluster_name_map)
+                                          cluster_name_map=cluster_name_map,
+                                          label_scope=label_scope)
         fs_cfg = dict(fs_config)
         fs_cfg["toImageButtonOptions"] = dict(fs_cfg["toImageButtonOptions"],
                                                filename=f"UMAP_{umap_title}")
@@ -692,7 +712,9 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
                                                 name_map=name_map,
                                                 rows=rows or 0,
                                                 cluster_name_map=cluster_name_map,
-                                                legend_hidden=legend_hidden)
+                                                legend_hidden=legend_hidden,
+                                                label_scope={**label_scope, "section": "umap_per_sample"},
+                                                graph_id_type="fs_umap_per_sample_graph")
         return _facet_block(
             graphs, color_map, cluster_name_map=cluster_name_map,
             show_legend=bool(show_legend), legend_id="fs_umap_shared_legend",
@@ -722,14 +744,16 @@ def update_fs_umap(display_mode, color_by, highlight, show_labels, show_legend,
      State("accumulated_label_positions", "data"),
      State("cluster_name_map_store", "data"),
      State("seurat_rds_path_store", "data"),
-     Input("int_section_group_filter", "value")],
+     Input("int_section_group_filter", "value"),
+     Input("label_positions_revision", "data"),
+     State("load_token_store", "data")],
     prevent_initial_call=True,
 )
 def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                       exclude_clusters, height_val, width_val,
                       label_size, legend_hidden, custom_colors, rows,
                       hne_opacity, accumulated_positions, cluster_name_map=None,
-                      rds_path=None, section_groups=None):
+                      rds_path=None, section_groups=None, _label_revision=0, load_token=None):
     from app.callbacks.interactive_callbacks import _set_active_key
     _set_active_key(rds_path)
     # 遅延 import（循環参照回避）
@@ -747,7 +771,8 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
     # (:368 の elif) は embed_legend=False のときしか通らない。
     # get_cluster_colorscale は全行を走査する (実測 15.9ms / 20 万行) ので、
     # 毎回作っては捨てていた。実際に使うのは PPTX 経路 (embed_legend=False)。
-    all_pos = _get_merged_label_positions(accumulated_positions)
+    all_pos = _get_merged_label_positions(accumulated_positions,
+        rds_path=rds_path, method=_interactive_data.get("method"), load_token=load_token)
     spatial_pos = all_pos.get("spatial", {})
     if not rotation_store:
         rotation_store = {}
@@ -777,6 +802,9 @@ def update_fs_spatial(sample, rotation_store, show_labels, highlight,
                                          exclude_clusters=exclude_clusters,
                                          label_size=label_size or 10,
                                          saved_positions=spatial_pos.get(s),
+                                         label_scope=dict(rds_path=rds_path,
+                                             method=_interactive_data.get("method"), load_token=load_token,
+                                             revision=label_revision(all_pos), section="spatial", sample=str(s), kind="msi"),
                                          render_height=render_h,
                                          cluster_name_map=cluster_name_map,
                                          legend_hidden=legend_hidden,
@@ -947,6 +975,100 @@ def _excl_set(val):
     return set(str(c) for c in val)
 
 
+def _valid_label_scope(scope, rds_path, method, load_token):
+    """★ ver76.0: 旧図・別座標系のイベントを現在の保存先へ流さない。"""
+    return (isinstance(scope, dict)
+            and scope.get("rds_path") == rds_path
+            and scope.get("method") == method
+            and scope.get("load_token") == load_token
+            and scope.get("section") in LABEL_SECTIONS
+            and scope.get("kind") in ("umap", "msi")
+            and isinstance(scope.get("revision"), int))
+
+
+def _scope_patch(scope, positions):
+    """実際のannotationに付いたクラスタIDだけを、完全なx/yの組として保存する。"""
+    allowed = {str(label["cluster"]) for label in scope.get("labels", [])}
+    clean = {}
+    for cluster, position in (positions or {}).items():
+        if str(cluster) not in allowed or not isinstance(position, dict):
+            continue
+        x, y = position.get("x"), position.get("y")
+        if (isinstance(x, (int, float)) and isinstance(y, (int, float))
+                and math.isfinite(x) and math.isfinite(y)):
+            clean[str(cluster)] = {"x": x, "y": y}
+    if not clean:
+        return {}
+    section = scope["section"]
+    return {section: clean if is_flat_label_section(section)
+            else {str(scope.get("sample", "")): clean}}
+
+
+def _save_scoped_signal(signal, rds_path, load_token):
+    from app.callbacks.interactive_callbacks import _set_active_key
+    _set_active_key(rds_path)
+    method = _interactive_data.get("method")
+    scope = (signal or {}).get("label_scope")
+    if not _valid_label_scope(scope, rds_path, method, load_token):
+        raise PreventUpdate
+    patch = _scope_patch(scope, signal.get("positions"))
+    if not patch:
+        raise PreventUpdate
+    # ★ ver76.0: 全蓄積Storeを再保存すると、別操作で解除した座標が復活する。
+    if not _save_label_positions(patch, rds_path, method, merge=True,
+                                 expected_revision=scope["revision"]):
+        raise PreventUpdate
+    result = load_label_positions(rds_path, method)
+    result["_label_context"] = dict(rds_path=rds_path, method=method, load_token=load_token)
+    return result
+
+
+clientside_callback(
+    ClientsideFunction(namespace="label_positions", function_name="request_reset"),
+    Output("label_positions_reset_request", "data"),
+    Input({"type": "reset_cluster_labels", "view": ALL}, "n_clicks"),
+    [State("seurat_rds_path_store", "data"), State("load_token_store", "data")],
+    prevent_initial_call=True,
+)
+
+
+@callback(
+    [Output("accumulated_label_positions", "data", allow_duplicate=True),
+     Output("label_positions_revision", "data"),
+     Output("label_positions_message", "children"),
+     Output("label_positions_message", "is_open")],
+    Input("label_positions_reset_request", "data"),
+    [State("seurat_rds_path_store", "data"), State("load_token_store", "data"),
+     State("label_positions_revision", "data")],
+    prevent_initial_call=True,
+)
+def reset_visible_label_positions(request, rds_path, load_token, refresh=0):
+    """表示中の固定位置だけ解除する。自動位置そのものは固定保存しない。"""
+    if (not isinstance(request, dict) or request.get("rds_path") != rds_path
+            or request.get("load_token") != load_token):
+        raise PreventUpdate
+    from app.callbacks.interactive_callbacks import _set_active_key
+    _set_active_key(rds_path)
+    method = _interactive_data.get("method")
+    targets = request.get("targets") or []
+    if not targets:
+        return no_update, no_update, "番号を表示してから操作してください。組織像の番号は常に自動配置です。", True
+    if not all(_valid_label_scope(t, rds_path, method, load_token) for t in targets):
+        raise PreventUpdate
+    revision = targets[0]["revision"]
+    if any(t["revision"] != revision for t in targets):
+        return no_update, (refresh or 0) + 1, "図を更新しました。もう一度操作してください。", True
+    try:
+        result = reset_label_positions(targets, rds_path, method, expected_revision=revision)
+    except ValueError as exc:
+        return no_update, (refresh or 0) + 1, str(exc), True
+    except Exception:
+        logger.exception("番号の自動配置への復帰に失敗しました")
+        return no_update, no_update, "保存できませんでした。番号の配置は変更していません。", True
+    result["_label_context"] = dict(rds_path=rds_path, method=method, load_token=load_token)
+    return result, (refresh or 0) + 1, "表示中の番号を自動配置に戻しました。", True
+
+
 # ver46.1: relayoutData → clientside フィルタ → Store → サーバ、の順に通す。
 # パン/ズームはブラウザ内で捨てられ、アノテーション移動だけがサーバへ届く。
 clientside_callback(
@@ -962,7 +1084,8 @@ clientside_callback(
     ClientsideFunction(namespace="fullscreen_router", function_name="filter_annotations"),
     Output("fs_annotation_relayout_signal", "data"),
     [Input("fs_umap_integrated_graph", "relayoutData"),
-     Input({"type": "fs_spatial_graph", "index": ALL}, "relayoutData")],
+     Input({"type": "fs_spatial_graph", "index": ALL}, "relayoutData"),
+     Input({"type": "fs_umap_per_sample_graph", "index": ALL}, "relayoutData")],
     [State("seurat_rds_path_store", "data"),
      State("load_token_store", "data")],
     prevent_initial_call=True,
@@ -976,39 +1099,19 @@ clientside_callback(
     [State("accumulated_label_positions", "data"),
      State("umap_exclude_cluster", "value"),
      State("spatial_exclude_cluster", "value"),
-     State("seurat_rds_path_store", "data")],
+     State("seurat_rds_path_store", "data"), State("load_token_store", "data")],
     prevent_initial_call=True,
 )
 def accumulate_annotation_positions_normal(signal, existing,
                                             umap_exclude, spatial_exclude,
-                                            rds_path):
+                                            rds_path, load_token=None):
     """通常モード: アノテーション位置変更をリアルタイムで蓄積。
 
     rds_path State を取り、_set_active_key 経由で _interactive_data
     の正しいエントリにアクセスできるようにする (multi-thread 下での
     ContextVar 未設定対策)。
     """
-    rd, triggered_id = _signal_parts(signal)
-    if not triggered_id:
-        raise PreventUpdate
-
-    # ContextVar をこの callback コンテキストに紐付け
-    from app.callbacks.interactive_callbacks import _set_active_key
-    _set_active_key(rds_path)
-    method = _interactive_data.get("method")
-
-    def _get_excl(tid):
-        if isinstance(tid, dict):
-            gtype = tid.get("type")
-            if gtype == "spatial_graph":
-                return _excl_set(spatial_exclude)
-            else:
-                return _excl_set(umap_exclude)
-        return _excl_set(umap_exclude)
-
-    result = _accumulate_core(triggered_id, existing, _get_excl, rd)
-    _auto_save_label_positions(result, rds_path=rds_path, method=method)
-    return result
+    return _save_scoped_signal(signal, rds_path, load_token)
 
 
 # 1b: フルスクリーン蓄積（UMAP / Spatial 共通。発火元 id で除外リストを切替）
@@ -1032,22 +1135,7 @@ def accumulate_annotation_positions_fs(signal, existing,
     if (not isinstance(scope, dict) or scope.get("rds_path") != rds_path
             or scope.get("load_token") != load_token):
         raise PreventUpdate
-    rd, triggered_id = _signal_parts(signal)
-    if not triggered_id:
-        raise PreventUpdate
-    from app.callbacks.interactive_callbacks import _set_active_key
-    _set_active_key(rds_path)
-    method = _interactive_data.get("method")
-
-    def _get_excl(tid):
-        # dict id = fs_spatial_graph（パターンマッチ）、文字列 id = FS UMAP 統合
-        if isinstance(tid, dict):
-            return _excl_set(fs_spatial_exclude)
-        return _excl_set(fs_umap_exclude)
-
-    result = _accumulate_core(triggered_id, existing, _get_excl, rd)
-    _auto_save_label_positions(result, rds_path=rds_path, method=method)
-    return result
+    return _save_scoped_signal(signal, rds_path, load_token)
 
 
 # --- 保存コールバック: ヘルパー関数（PPT出力等で使用） ---
@@ -1065,62 +1153,30 @@ def _do_save_label_positions(accumulated, snapshot):
         if not path:
             return no_update, "ラベル位置の保存に失敗しました（データ未読込）", True
 
-        # patch を組み立てる（既存ファイル状態に依存せずに新規分のみまとめる）
+        rds_path = _interactive_data.get("rds_path")
+        method = _interactive_data.get("method")
+        current = load_label_positions(rds_path, method)
+        revision = label_revision(current)
+        # ★ ver76.0: 来歴の無い全DOM注釈を再保存すると自動復帰済みの座標が復活する。
+        # 表示名をキーにせず、来歴付きの実クラスタIDと完全な座標だけ扱う。
         patch: dict = {}
         acc = accumulated or {}
-        for section in ("umap_integrated", "umap_per_sample", "spatial"):
-            acc_section = acc.get(section)
-            if acc_section:
-                patch[section] = dict(acc_section)
-
-        # --- DOM スナップショットからの追加分 ---
-        if snapshot and snapshot.get("timestamp"):
-            def _anns_to_dict(anns_list):
-                d = {}
-                for a in (anns_list or []):
-                    txt = (a.get("text") or "").strip()
-                    if txt and a.get("x") is not None and a.get("y") is not None:
-                        d[txt] = {"x": a["x"], "y": a["y"]}
-                return d
-
-            # UMAP 統合（FS 優先）
-            umap_anns = snapshot.get("fs_umap_integrated") or []
-            if not umap_anns:
-                umap_anns = snapshot.get("umap_integrated") or []
-            umap_dict = _anns_to_dict(umap_anns)
-            if umap_dict:
-                base = patch.get("umap_integrated", {})
-                _merge_label_positions(base, umap_dict)
-                patch["umap_integrated"] = base
-
-            # サンプル別 UMAP
-            for sample_name, anns in (snapshot.get("umap_per_sample") or {}).items():
-                sd = _anns_to_dict(anns)
-                if sd:
-                    sect = patch.get("umap_per_sample", {})
-                    ss = sect.get(sample_name, {})
-                    _merge_label_positions(ss, sd)
-                    sect[sample_name] = ss
-                    patch["umap_per_sample"] = sect
-
-            # Spatial（FS 優先）
-            for src_key in ("spatial", "fs_spatial"):
-                for sample_name, anns in (snapshot.get(src_key) or {}).items():
-                    sd = _anns_to_dict(anns)
-                    if sd:
-                        sect = patch.get("spatial", {})
-                        ss = sect.get(sample_name, {})
-                        _merge_label_positions(ss, sd)
-                        sect[sample_name] = ss
-                        patch["spatial"] = sect
+        context = acc.get("_label_context", {})
+        if (label_revision(acc) == revision and context.get("rds_path") == rds_path
+                and context.get("method") == method):
+            merge_position_sections(patch, acc)
+        for graph in (snapshot or {}).get("graphs", []):
+            scope = graph.get("label_scope") or {}
+            if (_valid_label_scope(scope, rds_path, method, context.get("load_token"))
+                    and scope["revision"] == revision):
+                merge_position_sections(patch, _scope_patch(scope, graph.get("positions")))
+        if not patch:
+            return no_update, "古い表示の位置は保存しませんでした。図を更新してください。", True
 
         # filelock + 原子的書き込みでマージ保存
-        _save_label_positions(
-            patch,
-            _interactive_data.get("rds_path"),
-            _interactive_data.get("method"),
-            merge=True,
-        )
+        if not _save_label_positions(patch, rds_path, method, merge=True,
+                                     expected_revision=revision, strict=True):
+            return no_update, "図が更新されています。もう一度保存してください。", True
 
         logger.info(f"ラベル位置を保存しました: {path}")
         return datetime.now().isoformat(), "ラベル位置を保存しました", True

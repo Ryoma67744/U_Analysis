@@ -173,7 +173,7 @@ def test_wrong_kind_or_dataset_never_reaches_the_builder(open_request, monkeypat
 def test_label_move_from_previous_fullscreen_never_writes_new_dataset(scope, monkeypatch):
     def unexpected(*args, **kwargs):
         pytest.fail("旧図のラベル位置を新しい解析へ書き込んでいる")
-    monkeypatch.setattr(fs, "_auto_save_label_positions", unexpected)
+    monkeypatch.setattr(fs, "_save_label_positions", unexpected)
     signal = {"relayout": {"annotations[0].x": 123},
               "triggered_id": "fs_umap_integrated_graph", "fullscreen_scope": scope}
     with pytest.raises(PreventUpdate):
@@ -184,10 +184,19 @@ def test_valid_fullscreen_label_move_keeps_the_original_save_path(monkeypatch):
     captured = []
     monkeypatch.setattr(fs, "_interactive_data", {
         "method": "Harmony", "plot_data": pd.DataFrame({"Cluster": ["0", "1"]})})
-    monkeypatch.setattr(fs, "_auto_save_label_positions", lambda data, **kwargs: captured.append((data, kwargs)))
+    def save(data, rds_path, method, **kwargs):
+        captured.append((data, rds_path, method, kwargs))
+        return True
+    monkeypatch.setattr(fs, "_save_label_positions", save)
+    monkeypatch.setattr(fs, "load_label_positions", lambda *args: {"umap_integrated": {"0": {"x": 123, "y": 456}}})
     signal = {"relayout": {"annotations[0].x": 123, "annotations[0].y": 456},
               "triggered_id": "fs_umap_integrated_graph",
-              "fullscreen_scope": {"rds_path": "/test.rds", "load_token": "load-1"}}
+              "fullscreen_scope": {"rds_path": "/test.rds", "load_token": "load-1"},
+              "label_scope": {"rds_path": "/test.rds", "load_token": "load-1",
+                              "method": "Harmony", "revision": 0, "section": "umap_integrated",
+                              "kind": "umap", "labels": [{"index": 0, "cluster": "0"}]},
+              "positions": {"0": {"x": 123, "y": 456}}}
     result = fs.accumulate_annotation_positions_fs(signal, {}, None, None, "/test.rds", "load-1")
     assert result["umap_integrated"]["0"] == {"x": 123, "y": 456}
-    assert captured == [(result, {"rds_path": "/test.rds", "method": "Harmony"})]
+    assert captured == [({"umap_integrated": {"0": {"x": 123, "y": 456}}},
+                         "/test.rds", "Harmony", {"merge": True, "expected_revision": 0})]

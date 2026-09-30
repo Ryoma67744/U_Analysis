@@ -97,7 +97,7 @@ def _get_export_figures(kind, session_id, rds_path, *,
         else:
             apply_display_overrides(fig, label_size=label_size,
                                     spot_opacity=spot_opacity,
-                                    kinds=("msi", "hne"))
+                                    kinds=("msi", "hne"), label_positions=label_positions)
         out.append((name, fig))
     return out
 
@@ -392,16 +392,18 @@ def cb_batch_save_umap(n_clicks, umap_fig, display_mode, session_id, rds_path,
     [State("session_id_store", "data"),
      State("seurat_rds_path_store", "data"),
      State("spatial_label_size", "value"),
-     State("hne_overlay_opacity", "value")],
+     State("hne_overlay_opacity", "value"),
+     State("accumulated_label_positions", "data")],
     prevent_initial_call=True,
 )
 def cb_batch_save_spatial(n_clicks, session_id, rds_path,
-                          label_size, hne_opacity):
+                          label_size, hne_opacity, accumulated_positions=None):
     if not n_clicks:
         raise PreventUpdate
     spatial_figs = _get_export_figures(
         "spatial", session_id, rds_path, label_size=label_size,
-        spot_opacity=(None if hne_opacity is None else hne_opacity / 100.0))
+        spot_opacity=(None if hne_opacity is None else hne_opacity / 100.0),
+        label_positions=accumulated_positions)
 
     if not spatial_figs:
         return _nothing_to_save()
@@ -613,16 +615,18 @@ def _save_figure_as_thumbnail(figures_list, width, height, scale,
      State("session_id_store", "data"),
      State("seurat_rds_path_store", "data"),
      State("spatial_label_size", "value"),
-     State("hne_overlay_opacity", "value")],
+     State("hne_overlay_opacity", "value"),
+     State("accumulated_label_positions", "data")],
     prevent_initial_call=True,
 )
 def cb_set_thumbnail_spatial(n_clicks, project_id, refresh, session_id, rds_path,
-                             label_size, hne_opacity):
+                             label_size, hne_opacity, accumulated_positions=None):
     if not n_clicks:
         raise PreventUpdate
     spatial_figs = _get_export_figures(
         "spatial", session_id, rds_path, label_size=label_size,
-        spot_opacity=(None if hne_opacity is None else hne_opacity / 100.0))
+        spot_opacity=(None if hne_opacity is None else hne_opacity / 100.0),
+        label_positions=accumulated_positions)
     # ver3.15: サムネ用に小さい解像度で kaleido を呼ぶ (5-10× 高速化)
     ok, msg = _save_figure_as_thumbnail(
         spatial_figs or [],

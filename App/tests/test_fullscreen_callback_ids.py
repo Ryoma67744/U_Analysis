@@ -261,7 +261,8 @@ def test_開く前のレイアウトにも除外ドロップダウンが両方�
     from app.layouts.interactive_tab import create_interactive_tab
     from app.utils.display_helpers import FS_EXCLUDE_IDS
 
-    ids = {getattr(n, "id", None) for n in _walk(create_interactive_tab())}
+    ids = {getattr(n, "id", None) for n in _walk(create_interactive_tab())
+           if isinstance(getattr(n, "id", None), str)}
     missing = [i for i in FS_EXCLUDE_IDS if i not in ids]
     assert not missing, (
         f"フルスクリーンを開く前のレイアウトに {missing} が無い。"
