@@ -31,6 +31,7 @@ from app.utils.display_helpers import (
 from app.utils.label_persistence import (
     merge_label_positions as _merge_label_positions,
 )
+from app.utils.cluster_label_placement import compute_label_anchors
 
 logger = logging.getLogger("msi.interactive.umap")
 
@@ -101,13 +102,28 @@ def _add_umap_label(fig, cluster_id, **kwargs):
     fig.update_layout(meta=meta)
 
 
+def _tag_umap_label_scope(fig, label_scope=None, sample=None):
+    """★ ver76.0: 表示名や注釈の順番から保存対象を推測すると改名・欠番で混ざる。"""
+    meta = dict(fig.layout.meta or {})
+    style = dict(meta.get("umap_style") or {})
+    scope = dict(label_scope or {})
+    scope.update(kind="umap", labels=list(style.get("labels") or []))
+    if sample is not None:
+        scope["sample"] = sample
+    else:
+        scope.setdefault("sample", None)
+    scope.setdefault("section", "umap_per_sample" if sample is not None else "umap_integrated")
+    meta["label_scope"] = scope
+    fig.update_layout(meta=meta)
+
+
 def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                                 show_legend, show_labels, title=None,
                                 marker_size=2, exclude_clusters=None,
                                 label_size=14, saved_positions=None,
                                 custom_colors=None, bg_opacity=0.1,
                                 title_font_size=None, cluster_name_map=None,
-                                uirevision=None):
+                                uirevision=None, label_scope=None):
     """統合UMAPのgo.Figureを生成（メイン/フルスクリーン共用）
 
     uirevision: 同値なら Plotly がズーム/パンを保持する (ver46.1)。埋め込み座標が
@@ -133,6 +149,12 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
                                xref="paper", yref="paper", x=0.5, y=0.5)
             return fig
 
+    # ★ ver76.0: 全点平均では島の間に落ちる。除外で別の島へ飛ばないよう
+    # 領域の尺度・所有関係は除外前かつ丸め前の点群で決める。
+    anchors = (compute_label_anchors(_df_before_exclude["UMAP_1"],
+                                    _df_before_exclude["UMAP_2"], _df_before_exclude["Cluster"])
+               if show_labels else {})
+    present_labels = set(df["Cluster"].astype(str))
     df = _rounded_umap(df)   # ver51.4: 表示用に座標の桁を落とす
     color_map = _get_cluster_color_map(_clusters_for_colors, custom_colors)
 
@@ -202,18 +224,12 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
             ), role="point", delta=0)
 
     if show_labels:
-        centroids = df.groupby("Cluster").agg(
-            cx=("UMAP_1", "mean"), cy=("UMAP_2", "mean"),
-        ).reset_index()
-        centroids = centroids.sort_values(
-            "Cluster", key=lambda col: col.map(_cluster_sort_key)
-        )
-        for _, row in centroids.iterrows():
-            cl_str = str(row["Cluster"])
+        for cl_str in sorted(present_labels.intersection(anchors), key=_cluster_sort_key):
+            anchor = anchors[cl_str]
             pos = (saved_positions or {}).get(cl_str, {})
             _add_umap_label(fig, cl_str,
-                x=pos.get("x", row["cx"]),
-                y=pos.get("y", row["cy"]),
+                x=pos.get("x", anchor.x),
+                y=pos.get("y", anchor.y),
                 text=_cluster_display_name(cl_str, cluster_name_map),
                 showarrow=False,
                 font=dict(size=label_size, color="black", family="Arial Black"),
@@ -249,6 +265,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
         marker=dict(color="#d6336c", size=7, symbol="circle"),
         showlegend=False, hoverinfo="skip", uid="umap_poly_draft",
     ), role="draft", delta=None)
+    _tag_umap_label_scope(fig, label_scope)
     return fig
 
 
@@ -266,13 +283,16 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                                    show_legend=True, name_map=None,
                                    rows=0, cluster_name_map=None,
                                    collect_figures=None, legend_hidden=None,
-                                   uirevision=None):
+                                   uirevision=None, label_scope=None,
+                                   graph_id_type="umap_per_sample_graph"):
     """サンプル別UMAPのhtml.Divリストを生成（メイン/フルスクリーン共用）
 
     collect_figures: リストを渡すと (display_name, fig_dict) を追加する（一括保存用）
     legend_hidden: 共有凡例で「灰色化」したクラスタ。色付き trace を描かず灰色背景を残す
         (exclude と異なりセルは消さない, ver29.1)。
     """
+    # ★ ver76.0: 除外前の母集団で領域を固定し、表示対象の番号だけ追加する。
+    raw_df = df
     # 除外クラスタのフィルタリング（完全除去。灰色背景も消える）
     if exclude_clusters:
         exclude_set = set(str(c) for c in exclude_clusters)
@@ -364,18 +384,16 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
 
         if show_labels:
             sample_pos = (saved_positions or {}).get(s, {})
-            centroids = df_s.groupby("Cluster").agg(
-                cx=("UMAP_1", "mean"), cy=("UMAP_2", "mean"),
-            ).reset_index()
-            centroids = centroids.sort_values(
-                "Cluster", key=lambda col: col.map(_cluster_sort_key)
-            )
-            for _, row in centroids.iterrows():
-                cl_str = str(row["Cluster"])
+            raw_sample = raw_df.loc[raw_df["Sample"] == s]
+            anchors = compute_label_anchors(
+                raw_sample["UMAP_1"], raw_sample["UMAP_2"], raw_sample["Cluster"])
+            present_labels = set(df_s["Cluster"].astype(str))
+            for cl_str in sorted(present_labels.intersection(anchors), key=_cluster_sort_key):
+                anchor = anchors[cl_str]
                 pos = sample_pos.get(cl_str, {})
                 _add_umap_label(fig, cl_str,
-                    x=pos.get("x", row["cx"]),
-                    y=pos.get("y", row["cy"]),
+                    x=pos.get("x", anchor.x),
+                    y=pos.get("y", anchor.y),
                     text=_cluster_display_name(cl_str, cluster_name_map),
                     showarrow=False,
                     font=dict(size=label_size, color="black", family="Arial Black"),
@@ -402,6 +420,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
         _style["sample"] = str(s)
         _meta["umap_style"] = _style
         fig.update_layout(meta=_meta)
+        _tag_umap_label_scope(fig, label_scope, sample=str(s))
 
         # 出力(一括保存/サムネ)は各図に凡例を残す → 先にスナップショット。
         if collect_figures is not None:
@@ -427,7 +446,8 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                 className="facet-tile",
                 style={"flex": f"1 1 {flex_basis}", "minWidth": min_w},
                 children=[
-                    dcc.Graph(id={"type": "umap_per_sample_graph", "index": s},
+                    # ★ ver76.0: 全画面と通常画面の同名IDはドラッグ対象を取り違える。
+                    dcc.Graph(id={"type": graph_id_type, "index": s},
                               figure=fig, style={"height": graph_height}, config=cfg),
                 ],
             )
@@ -511,7 +531,7 @@ def _build_umap_facet_graphs(df, facets, color_map, marker_size=2,
 
 
 def _get_merged_label_positions(accumulated_positions=None,
-                                rds_path=None, method=None):
+                                rds_path=None, method=None, load_token=None):
     """JSON ファイル + 蓄積 Store からマージしたラベル位置を返す。
 
     蓄積データは JSON より新しいため、蓄積データで JSON をオーバーライドする。
@@ -529,20 +549,21 @@ def _get_merged_label_positions(accumulated_positions=None,
         all_pos = _load_label_positions_util(rds_path, method) or {}
     else:
         all_pos = _load_label_positions()
+    from app.utils.label_persistence import label_revision, merge_position_sections
     acc = accumulated_positions or {}
-    for section in ("umap_integrated", "umap_per_sample", "spatial"):
-        acc_section = acc.get(section)
-        if not acc_section:
-            continue
-        saved_section = all_pos.get(section, {})
-        if section == "umap_integrated":
-            _merge_label_positions(saved_section, acc_section)
-        else:
-            for sample_name, pos_dict in acc_section.items():
-                sample_saved = saved_section.get(sample_name, {})
-                _merge_label_positions(sample_saved, pos_dict)
-                saved_section[sample_name] = sample_saved
-        all_pos[section] = saved_section
+    # ★ ver76.0: 再配置前・別データのStoreを重ねると解除した位置が復活する。
+    acc_context = acc.get("_label_context")
+    matching_context = not acc_context or (
+        acc_context.get("rds_path") == rds_path and acc_context.get("method") == method
+        and (load_token is None or acc_context.get("load_token") == load_token))
+    # ★ ver76.0: 読込トークンが既知なら旧形式Storeも未保存の来歴を証明できない。
+    # ディスクの手動位置は保ち、同じRDSを読み直した直後の遅延Storeだけを捨てる。
+    if load_token is not None and not acc_context:
+        matching_context = False
+    revision = label_revision(all_pos)
+    if matching_context and acc.get("_label_revision", 0) == revision:
+        merge_position_sections(all_pos, acc)
+    all_pos["_label_revision"] = revision
     return all_pos
 
 
@@ -574,14 +595,16 @@ def _get_merged_label_positions(accumulated_positions=None,
      #   None を渡しており、全利用者が同じ鍵 (`__nosession__`) を共有していた。
      State("session_id_store", "data"),
      Input("int_section_group_filter", "value"),
-     Input("int_section_group_updated", "data")],
+     Input("int_section_group_updated", "data"),
+     Input("label_positions_revision", "data"),
+     State("load_token_store", "data")],
 )
 def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
                      display_mode, marker_size, exclude_clusters, label_size,
                      rds_path, _fs_trigger, custom_colors, cluster_name_map,
                      merge_toggle, merge_color_mode, active_items,
                      accumulated_positions, session_id=None, section_groups=None,
-                     _section_updated=None):
+                     _section_updated=None, _label_revision=0, load_token=None):
     from app.callbacks.interactive_callbacks import (
         _interactive_data, _set_active_key, accordion_toggle_is_noop,
         accordion_record_closed)
@@ -633,7 +656,11 @@ def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
     # ContextVar 切替直後で未初期化の場合にも JSON を正しく読込む。
     method = _interactive_data.get("method")
     all_pos = _get_merged_label_positions(accumulated_positions,
-                                          rds_path=rds_path, method=method)
+                                          rds_path=rds_path, method=method, load_token=load_token)
+    section = ("umap_integrated_merged" if merge_toggle == "merged"
+               and "Cluster_merged" in df.columns else "umap_integrated")
+    label_scope = dict(rds_path=rds_path, method=method, load_token=load_token,
+                       revision=all_pos.get("_label_revision", 0), section=section)
     # ver46.1: 座標(埋め込み)が変わる要素のみを uirevision に含める。除外クラスタは
     # 点集合が変わり autorange も変わるためリセット対象に含める。
     uirev = _geom_uirevision("umap", merge_toggle,
@@ -643,10 +670,11 @@ def update_umap_plot(color_by, highlight_clusters, show_legend, show_labels,
                                        marker_size=marker_size or 2,
                                        exclude_clusters=exclude_clusters,
                                        label_size=label_size or 14,
-                                       saved_positions=all_pos.get("umap_integrated"),
+                                       saved_positions=all_pos.get(section),
                                        custom_colors=effective_custom_colors,
                                        uirevision=uirev,
-                                       cluster_name_map=cluster_name_map)
+                                       cluster_name_map=cluster_name_map,
+                                       label_scope=label_scope)
 
 
 # ---------------------------------------------------------------------------
@@ -712,7 +740,9 @@ def toggle_merge_controls(_rds_path, _fs_trigger):
      Input("interactive_view_id", "data"),
      Input("int_section_group_filter", "value"),
      Input("int_section_group_updated", "data"),
-     Input("umap_color_by", "value")],
+     Input("umap_color_by", "value"),
+     Input("label_positions_revision", "data"),
+     State("load_token_store", "data")],
 )
 def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
                             marker_size, exclude_clusters, label_size, rds_path,
@@ -720,7 +750,8 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
                             rows, cluster_name_map, active_items,
                             facet_by, legend_hidden, accumulated_positions,
                             selection_groups, session_id=None, view_id=None,
-                            section_groups=None, _section_updated=None, color_by="Cluster"):
+                            section_groups=None, _section_updated=None, color_by="Cluster",
+                            _label_revision=0, load_token=None):
     """表示モード「サンプル別」(=分割表示) の場合、facet_by 基準で分割表示する。"""
     from app.callbacks.interactive_callbacks import (
         _interactive_data, _set_active_key, accordion_toggle_is_noop,
@@ -752,6 +783,13 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
         return _finish("", [])
     if df.empty:
         return _finish(html.Div("表示する群が選択されていません。", className="text-muted p-3"), [])
+    method = _interactive_data.get("method")
+    all_pos = _get_merged_label_positions(accumulated_positions, rds_path=rds_path,
+                                         method=method, load_token=load_token)
+    # ★ ver76.0: サンプル別の点・クラスタは既存どおり元データを使い、その図の位置を読む。
+    section = "umap_per_sample"
+    label_scope = dict(rds_path=rds_path, method=method, load_token=load_token,
+                       revision=all_pos.get("_label_revision", 0), section=section)
     if color_by == "group" and "group" in df.columns:
         group_colors = _get_cluster_color_map(all_df["group"])
         figures, children = [], []
@@ -759,7 +797,9 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
             fig = _build_umap_integrated_fig(df.loc[df["Sample"] == sample], "group", None,
                 show_legend, show_labels, marker_size=marker_size or 2,
                 exclude_clusters=exclude_clusters, label_size=label_size or 11,
-                cluster_name_map=cluster_name_map, custom_colors=group_colors)
+                cluster_name_map=cluster_name_map, custom_colors=group_colors,
+                saved_positions=all_pos.get(section, {}).get(str(sample)),
+                label_scope=dict(label_scope, sample=str(sample)))
             label = _display_name(sample, name_map)
             figures.append((label, fig.to_dict()))
             children.append(html.Div([html.H6(label), dcc.Graph(
@@ -807,23 +847,20 @@ def update_umap_per_sample(display_mode, highlight_clusters, show_labels,
             show_legend=bool(show_legend), legend_id="umap_shared_legend",
             hidden=legend_hidden, outer_style={"marginTop": "10px"}), fig_dicts)
 
-    method = _interactive_data.get("method")
-    all_pos = _get_merged_label_positions(accumulated_positions,
-                                          rds_path=rds_path, method=method)
     fig_dicts = []
     graphs = _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
                                             show_labels, graph_height="300px",
                                             marker_size=marker_size or 2,
                                             exclude_clusters=exclude_clusters,
                                             label_size=label_size or 11,
-                                            saved_positions=all_pos.get("umap_per_sample"),
+                                            saved_positions=all_pos.get(section),
                                             show_legend=bool(show_legend),
                                             name_map=name_map,
                                             rows=rows or 0,
                                             cluster_name_map=cluster_name_map,
                                             collect_figures=fig_dicts,
                                             legend_hidden=legend_hidden,
-                                            uirevision=uirev)
+                                            uirevision=uirev, label_scope=label_scope)
     return _finish(_facet_block(
         graphs, color_map, cluster_name_map=cluster_name_map,
         show_legend=bool(show_legend), legend_id="umap_shared_legend",

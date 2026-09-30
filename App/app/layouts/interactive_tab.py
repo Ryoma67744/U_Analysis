@@ -1033,6 +1033,11 @@ def create_interactive_tab():
                                     dbc.Checkbox(id="umap_show_legend", label="凡例", value=True),
                                 ]),
                             ]),
+                            # ★ ver76.0: 保存位置を解除し、表示中の番号だけ自動配置へ戻す。
+                            dbc.Button("番号を自動配置に戻す",
+                                       id={"type": "reset_cluster_labels", "view": "umap"},
+                                       size="sm", color="secondary", outline=True, className="mt-1",
+                                       title="表示中の番号の手動位置を解除します"),
                             dbc.Row(className="mt-1", children=[
                                 dbc.Col(width=2, children=[
                                     dbc.Label("マーカーサイズ", className="small mb-0"),
@@ -1310,6 +1315,10 @@ def create_interactive_tab():
                                 # 敷き詰めて描くようになったため、拡大率によらず常に隙間なく
                                 # 並び、画面 px でサイズを指定する必要が無くなった。
                             ]),
+                            dbc.Button("番号を自動配置に戻す",
+                                       id={"type": "reset_cluster_labels", "view": "spatial"},
+                                       size="sm", color="secondary", outline=True, className="mt-1",
+                                       title="表示中の番号の手動位置を解除します（組織像は常に自動）"),
                             dbc.Row(className="mt-1 align-items-center", children=[
                                 dbc.Col(width=2, children=[
                                     dbc.Label("ラベルサイズ", className="small mb-0"),
@@ -2039,6 +2048,11 @@ def create_interactive_tab():
         dcc.Store(id="sample_name_map_store", data={}),
         # アノテーション位置の蓄積（relayoutData イベントからリアルタイム蓄積）
         dcc.Store(id="accumulated_label_positions", data={}),
+        dcc.Store(id="label_positions_revision", data=0),
+        dcc.Store(id="label_positions_reset_request", data=None),
+        dbc.Toast(id="label_positions_message", is_open=False, dismissable=True,
+                  header="番号の配置", duration=6000,
+                  style={"position": "fixed", "bottom": "20px", "right": "20px", "zIndex": 2000}),
         # ver46.1: relayoutData のクライアント側フィルタ結果を受け渡す Store。
         # assets/relayout_filter.js がアノテーション移動だけを通すため、
         # パン/ズームではサーバへの POST が一切発生しない。

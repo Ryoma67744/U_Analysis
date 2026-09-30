@@ -934,15 +934,16 @@ def test_spatial_and_umap_callbacks_return_expected_output_counts(
 
     spatial = _call_callback(
         dash_app, "spatial_plots_container",
-        # Inputs(18): sample, highlight, selected, rotation, show_labels,
+        # Inputs(21): sample, highlight, selected, rotation, show_labels,
         #   exclude, rds_path, name_map, fs_trigger, colors, rows,
         #   cluster_names, merge_toggle, merge_mode, accordion, legend_hidden,
-        #   hne_show, hne_mono
+        #   hne_show, hne_mono, section_groups, section_updated, label_revision
         # ★ ver66.0: サイズ系 State 2 つ (marker_size / hne_marker_size) を撤去。
-        # States(4): label_positions, session_id, label_size, hne_opacity
+        # ★ ver76.0: 自動配置リセット世代と読込トークンを実dispatchでも照合する。
+        # States(5): label_positions, session_id, label_size, hne_opacity, load_token
         args=["S1", None, [], {}, False, None, rds_path, {}, 0, {}, 0,
               {}, "separate", "shade", ["acc_spatial"], [], False, False,
-              None, 0, {}, "sess-spatial", 10, 100],
+              None, 0, 0, {}, "sess-spatial", 10, 100, "loaded"],
         triggered_prop="interactive_sample.value")
     assert set(spatial) == {"spatial_plots_container", "last_spatial_figure_store"}
 
@@ -963,7 +964,8 @@ def test_spatial_and_umap_callbacks_return_expected_output_counts(
         # 関数呼出はDashのinputs_state_indicesが既存順へ並べ直す。
         args=["per_sample", None, False, None, rds_path, True, {}, 0,
               {}, 0, {}, ["acc_umap"], "Sample", [], "view-umap",
-              None, 0, "Cluster", 2, 11, {}, {"groups": []}, "sess-umap"],
+              None, 0, "Cluster", 0,
+              2, 11, {}, {"groups": []}, "sess-umap", "loaded"],
         triggered_prop="umap_display_mode.value")
     assert set(umap) == {"umap_per_sample_container"}
     umap_figs = _graph_figures(umap["umap_per_sample_container"]["children"],

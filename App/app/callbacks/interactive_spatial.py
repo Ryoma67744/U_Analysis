@@ -30,6 +30,7 @@ from app.utils.display_helpers import (
 )
 from app.callbacks.interactive_hne_bg import build_hne_overlay_fig as _build_hne_overlay_fig
 from app.utils import raster as _raster
+from app.utils.cluster_label_placement import compute_label_anchors
 
 logger = logging.getLogger("msi.interactive.spatial")
 
@@ -275,7 +276,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                                title_font_size=None, render_height=None,
                                cluster_name_map=None, scale_factor=1.0,
                                legend_hidden=None, spot_opacity=1.0,
-                               uirevision=None):
+                               uirevision=None, label_scope=None):
     """単一サンプルのSpatial Mapping figureを生成。
 
     legend_hidden: 共有凡例で灰色化したクラスタ。色付き trace を描かず灰色背景は残す
@@ -285,6 +286,8 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
     uirevision: 同値なら Plotly がズーム/パンを保持する (ver46.1)。座標そのものが
         変わる要素 (サンプル・回転・反転) だけを含めた文字列を渡すこと。
     """
+    # ★ ver76.0: 除外後だけで格子を推定すると間引き幅を画素間隔と誤認する。
+    grid_reference = (df_sample["SpatialX"].to_numpy(), df_sample["SpatialY"].to_numpy())
     # 除外クラスタのフィルタリング（完全除去。灰色背景も消える）
     if exclude_clusters:
         exclude_set = set(str(c) for c in exclude_clusters)
@@ -547,21 +550,28 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
                     ))
 
     # クラスタ番号ラベル
+    label_rules = []
     if show_labels:
-        for cl in sorted(df_sample["Cluster"].unique(), key=_cluster_sort_key):
-            mask = (df_sample["Cluster"] == cl).values
-            if mask.any():
-                cx_default = plot_x[mask].mean()
-                cy_default = plot_y[mask].mean()
-                cl_str = str(cl)
-                pos = (saved_positions or {}).get(cl_str, {})
-                fig.add_annotation(
-                    x=pos.get("x", cx_default),
-                    y=pos.get("y", cy_default),
-                    text=_cluster_display_name(cl_str, cluster_name_map),
-                    showarrow=False,
-                    font=dict(size=label_size, color="black"),
-                )
+        # ★ ver76.0: 最大領域の観測点を選び、全点と同じ回転中心・丸めを通した座標を参照。
+        # H&Eと同じ元座標で同距離候補を選び、反転による候補順の変化も防ぐ。
+        anchors = compute_label_anchors(raw_x, df_sample["SpatialY"].to_numpy(), cluster_str_values,
+                                        kind="spatial", grid_reference=grid_reference)
+        for cl_str in sorted(anchors, key=_cluster_sort_key):
+            anchor = anchors[cl_str]
+            pos = (saved_positions or {}).get(cl_str, {})
+            fig.add_annotation(
+                name=f"cluster:{cl_str}",
+                x=pos.get("x", float(plot_x[anchor.index])),
+                y=pos.get("y", float(plot_y[anchor.index])),
+                text=_cluster_display_name(cl_str, cluster_name_map),
+                showarrow=False,
+                font=dict(size=label_size, color="black"),
+            )
+            label_rules.append({"index": len(fig.layout.annotations) - 1, "cluster": cl_str})
+
+    scope = dict(label_scope or {})
+    scope.update(kind="msi", labels=label_rules)
+    scope.setdefault("section", "spatial")
 
     layout_opts = dict(
         xaxis=dict(showgrid=False, showline=False, zeroline=False,
@@ -582,7 +592,7 @@ def _create_single_spatial_fig(df_sample, color_map, highlight_clusters,
         #   散布へフォールバックしたことをブラウザの開発者ツールから確認できる。
         meta=dict(kind="msi", auto_msz=float(auto_msz),
                   label_size=float(label_size or 10),
-                  raster=gi is not None),
+                  raster=gi is not None, label_scope=scope),
     )
     if title:
         layout_opts["title"] = dict(text=title, font=dict(size=title_font_size or 14), x=0.5)
@@ -1189,7 +1199,9 @@ def create_umap_name_controls(rds_path, name_map):
      State("spatial_label_size", "value"),
      State("hne_overlay_opacity", "value"),
      Input("int_section_group_filter", "value"),
-     Input("int_section_group_updated", "data")],
+     Input("int_section_group_updated", "data"),
+     Input("label_positions_revision", "data"),
+     State("load_token_store", "data")],
 )
 def update_spatial_plots(sample, highlight_clusters, selected_ids,
                          rotation_store, show_labels,
@@ -1199,7 +1211,8 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
                          active_items, legend_hidden, hne_show,
                          hne_mono, accumulated_positions,
                          session_id=None, label_size=10, hne_opacity=100,
-                         section_groups=None, _section_updated=None):
+                         section_groups=None, _section_updated=None,
+                         _label_revision=0, load_token=None):
     from app.callbacks.interactive_callbacks import (
         _set_active_key, accordion_toggle_is_noop, accordion_record_closed,
         set_export_figures)
@@ -1255,8 +1268,12 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
     # rds_path / method を引数で明示し _interactive_data 未初期化 race を回避
     method = _interactive_data.get("method")
     all_pos = _get_merged_label_positions(accumulated_positions,
-                                          rds_path=rds_path, method=method)
-    spatial_pos = all_pos.get("spatial", {})
+                                          rds_path=rds_path, method=method, load_token=load_token)
+    section = ("spatial_merged" if merge_toggle == "merged"
+               and "Cluster_merged" in df.columns else "spatial")
+    spatial_pos = all_pos.get(section, {})
+    label_scope = dict(rds_path=rds_path, method=method, load_token=load_token,
+                       revision=all_pos.get("_label_revision", 0), section=section)
 
     # 表示対象サンプル
     if sample:
@@ -1295,7 +1312,8 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
                     opacity=hne_opacity,
                     color_map=color_map, cluster_name_map=cluster_name_map,
                     show_labels=show_labels, exclude_clusters=exclude_clusters,
-                    legend_hidden=legend_hidden, mono=hne_mono)
+                    legend_hidden=legend_hidden, mono=hne_mono,
+                    label_scope=dict(label_scope, sample=str(s)))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[H&E overlay] %s: 生成失敗 -> 通常表示にフォールバック: %s", s, e)
                 fig = None
@@ -1312,7 +1330,8 @@ def update_spatial_plots(sample, highlight_clusters, selected_ids,
                                          cluster_name_map=cluster_name_map,
                                          legend_hidden=legend_hidden,
                                          spot_opacity=_spot_op,
-                                         uirevision=tile_uirev)
+                                         uirevision=tile_uirev,
+                                         label_scope=dict(label_scope, sample=str(s)))
         # 出力(一括保存/HTML)は各図に凡例を残す → 先に凡例ありでスナップショット。
         # ver46.1: to_dict() は 1 タイルにつき 1 回だけ。従来は先頭タイルで 2 回
         # 呼んでおり、同じ点データを 2 度ディープコピーしていた。

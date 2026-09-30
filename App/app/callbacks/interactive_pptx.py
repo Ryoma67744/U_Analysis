@@ -323,6 +323,13 @@ def _apply_merge_view(df, display_settings, custom_colors):
     return merged_df, effective, True
 
 
+def _pptx_label_positions(positions, section, *, merged=False, sample=None):
+    """★ ver76.0: サンプル図に統合図や元クラスタの固定位置を流用しない。"""
+    key = section + ("_merged" if merged else "")
+    result = (positions or {}).get(key) or {}
+    return (result.get(str(sample)) or {}) if sample is not None else result
+
+
 def _build_volcano_fig_for_cluster(deg_data, cluster, fc_thresh=0.5, p_thresh=1.3,
                                    marker_size=8, label_top_n=5):
     """指定クラスタの Volcano Plot figure を生成（PPTX 用）。
@@ -960,7 +967,7 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                  existing_prs=None, progress_offset=0, progress_total=None,
                  saved_positions=None, cluster_name_map=None,
                  include_deg=True, deadline=None, conditions=None,
-                 display_settings=None):
+                 display_settings=None, label_merged=False):
     """グローバル概要 + クラスターごとの詳細スライドを含む PPTX を生成し bytes を返す。
 
     グローバルセクション:
@@ -1144,7 +1151,8 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                 tile_w_umap = avail_w / _grp_n
                 for idx, s in enumerate(_grp_samples):
                     df_s = df[df["Sample"] == s]
-                    _umap_pos = (saved_positions or {}).get("umap_integrated", {})
+                    _umap_pos = _pptx_label_positions(
+                        saved_positions, "umap_per_sample", merged=label_merged, sample=s)
                     umap_s = _build_umap_integrated_fig(
                         df_s, color_by="Cluster", highlight_clusters=None,
                         show_legend=False, show_labels=True,
@@ -1179,7 +1187,8 @@ def _build_pptx(umap_fig, spatial_fig, meta, cluster_stats_data, rds_path,
                         transform = {"angle": int(transform),
                                      "flip_h": False, "flip_v": False}
 
-                    _sp_pos = (saved_positions or {}).get("spatial", {}).get(s, {})
+                    _sp_pos = _pptx_label_positions(
+                        saved_positions, "spatial", merged=label_merged, sample=s)
                     sp_fig = _create_single_spatial_fig(
                         df_s, color_map_global,
                         highlight_clusters=None,
@@ -1745,7 +1754,8 @@ def update_export_method_options(rds_map):
      State("cluster_name_map_store", "data"),
      State("accumulated_label_positions", "data"),
      State("int_section_group_filter", "value"),
-     State("umap_color_by", "value")],
+     State("umap_color_by", "value"),
+     State("load_token_store", "data")],
     background=True,
     running=[
         (Output("btn_export_report", "disabled"), True, False),
@@ -1765,7 +1775,8 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                      rotation_store, name_map, top_n, cache_dir_str,
                      mrm_path_str, rds_map, result_folder, current_method,
                      export_method_selection, include_deg, cluster_name_map,
-                     accumulated_positions, section_groups=None, group_color_by="Cluster"):
+                     accumulated_positions, section_groups=None, group_color_by="Cluster",
+                     load_token=None):
     """PPTX レポートをバックグラウンド生成してダウンロード。
 
     export_method_selection: 選択された手法名のリスト（Checklist）。空なら中止。
@@ -1834,7 +1845,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
         #   1 つの資料の中でラベルの付き方が不揃いになる）。
         #   正しい形は同ファイル :2020/:2178 と interactive_spatial.py:1161 にある。
         saved_positions = _get_merged_label_positions(
-            accumulated_positions, rds_path=rds_path, method=current_method)
+            accumulated_positions, rds_path=rds_path, method=current_method, load_token=load_token)
 
         # 解析条件は **クリック時点** で確定させる。PPTX 生成は数分かかることが
         # あり、その間にユーザーが設定を変えると、出力と条件がずれてしまう。
@@ -1939,6 +1950,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 deadline=_deadline,
                 conditions=conditions,
                 display_settings=display_settings,
+                label_merged=_merged,
             )
 
             return (
@@ -2138,9 +2150,10 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
 
                     # 上段: サンプル別 UMAP
                     tile_w_cmp = avail_w_cmp / max(_gs_n, 1)
-                    _umap_pos_cmp = (_method_positions or {}).get("umap_integrated", {})
                     for idx_s, s in enumerate(_gs):
                         df_s = m_df[m_df["Sample"] == s]
+                        _umap_pos_cmp = _pptx_label_positions(
+                            _method_positions, "umap_per_sample", merged=ed["merged"], sample=s)
                         umap_s = _build_umap_integrated_fig(
                             df_s, color_by="Cluster",
                             highlight_clusters=None,
@@ -2180,7 +2193,8 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                                 transform = {
                                     "angle": int(transform),
                                     "flip_h": False, "flip_v": False}
-                            _sp_pos_cmp = (_method_positions or {}).get("spatial", {}).get(s, {})
+                            _sp_pos_cmp = _pptx_label_positions(
+                                _method_positions, "spatial", merged=ed["merged"], sample=s)
                             sp_fig_cmp = _create_single_spatial_fig(
                                 df_s, color_map_cmp,
                                 highlight_clusters=None,
@@ -2295,7 +2309,8 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
             progress_offset += 1
 
             # --- UMAP 図を生成 ---
-            _umap_pos_m = (method_saved_positions or {}).get("umap_integrated", {})
+            _umap_pos_m = _pptx_label_positions(
+                method_saved_positions, "umap_integrated", merged=method_merged)
             method_umap_fig = _build_umap_integrated_fig(
                 method_df, color_by=group_color_by or "Cluster",
                 highlight_clusters=None,
@@ -2358,6 +2373,7 @@ def cb_export_report(set_progress, n_clicks, umap_fig, spatial_fig, rds_path,
                 include_deg=include_deg,
                 deadline=_deadline,
                 display_settings=display_settings,
+                label_merged=method_merged,
             )
             if isinstance(returned, int):
                 progress_offset = returned

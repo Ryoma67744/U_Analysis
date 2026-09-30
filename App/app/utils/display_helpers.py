@@ -197,7 +197,36 @@ def transform_uirevision(sample, transform, extra=None) -> str:
 # meta を持たないトレース (凡例ダミー・H&E 画像など) は一切触らない。
 # ---------------------------------------------------------------------------
 
-def apply_display_overrides(fig_dict, *, label_size=None,
+def _apply_label_position_overrides(layout, meta, label_positions, *, legacy_umap=False):
+    """★ ver76.0: 遅延したStore・別図の手動位置を保存画像へ再注入しない。"""
+    if not label_positions or meta.get("kind") == "hne":
+        return
+    scope = meta.get("label_scope") or {}
+    if not scope and not legacy_umap:
+        return
+    if "revision" in scope and scope["revision"] != label_positions.get("_label_revision", 0):
+        return
+    context = label_positions.get("_label_context")
+    if context and any(context.get(key) != scope.get(key)
+                       for key in ("rds_path", "method", "load_token")):
+        return
+    style = (meta.get("umap_style") or {}) if legacy_umap else {}
+    sample = scope.get("sample", style.get("sample"))
+    section = scope.get("section") or ("umap_integrated" if sample is None else "umap_per_sample")
+    positions = label_positions.get(section) or {}
+    if sample is not None:
+        positions = positions.get(str(sample)) or {}
+    annotations = layout.get("annotations") or []
+    for rule in scope.get("labels", style.get("labels")) or []:
+        index = rule.get("index")
+        position = positions.get(rule.get("cluster")) or {}
+        if isinstance(index, int) and 0 <= index < len(annotations):
+            for axis in ("x", "y"):
+                if axis in position:
+                    annotations[index][axis] = position[axis]
+
+
+def apply_display_overrides(fig_dict, *, label_size=None, label_positions=None,
                             spot_opacity=None, kinds=("msi", "hne")):
     """figure dict にラベルサイズ / スポット不透明度を適用する。
 
@@ -240,6 +269,8 @@ def apply_display_overrides(fig_dict, *, label_size=None,
             # クラスタ番号ラベルのみ対象（矢印つき注記などは作っていない）
             ann.setdefault("font", {})["size"] = float(label_size)
 
+    _apply_label_position_overrides(layout, meta, label_positions)
+
     return fig_dict
 
 
@@ -276,21 +307,7 @@ def apply_umap_display_overrides(fig_dict, *, marker_size=None, label_size=None,
         for annotation in layout.get("annotations") or []:
             if annotation.get("name") == "umap_cluster_label":
                 annotation.setdefault("font", {})["size"] = float(label_size)
-    if label_positions:
-        style = meta.get("umap_style") or {}
-        sample = style.get("sample")
-        if sample is None:
-            positions = label_positions.get("umap_integrated") or {}
-        else:
-            positions = (label_positions.get("umap_per_sample") or {}).get(sample) or {}
-        annotations = layout.get("annotations") or []
-        for rule in style.get("labels") or []:
-            index = rule.get("index")
-            position = positions.get(rule.get("cluster")) or {}
-            if isinstance(index, int) and 0 <= index < len(annotations):
-                for axis in ("x", "y"):
-                    if axis in position:
-                        annotations[index][axis] = position[axis]
+    _apply_label_position_overrides(layout, meta, label_positions, legacy_umap=True)
     return fig_dict
 
 

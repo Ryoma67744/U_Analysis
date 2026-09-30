@@ -81,13 +81,19 @@
         return unchanged;
     }
 
-    function filterAnnotations(umapRelayout, spatialRelayout, rdsPath, loadToken) {
+    function filterAnnotations(umapRelayout, spatialRelayout, perSampleRelayout, rdsPath, loadToken) {
+        // ★ ver76.0: 旧呼出しとの互換を保ちつつ、サンプル別FSにも固有IDを使う。
+        if (arguments.length === 4) {
+            loadToken = rdsPath;
+            rdsPath = perSampleRelayout;
+            perSampleRelayout = undefined;
+        }
         var dc = window.dash_clientside;
         if (!displayed || displayed.rds_path !== (rdsPath == null ? null : rdsPath) ||
                 displayed.load_token !== (loadToken == null ? null : loadToken)) {
             return dc.no_update;
         }
-        var result = dc.relayout.filter_annotations(umapRelayout, spatialRelayout);
+        var result = dc.relayout.filter_annotations(umapRelayout, spatialRelayout, perSampleRelayout);
         if (result === dc.no_update) return result;
         return Object.assign({}, result, {fullscreen_scope: displayed});
     }
