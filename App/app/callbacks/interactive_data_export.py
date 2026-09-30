@@ -92,34 +92,79 @@ def _export_scope(loaded_rds, rds_map, selected_methods, result_folder):
 
 
 def _selection_snapshot(loaded_rds, rds_map, current_method, selected_methods,
-                        result_folder):
+                        result_folder, *, export_request=None, frozen_manifest=None, expected_states=None,
+                        frozen_cluster_maps=None, annotation_context=None):
     """★ ver75.1: 全選択手法の画素を固定し、表示中の手法だけへの偏りを防ぐ。"""
-    from app.callbacks.interactive_callbacks import _set_active_key
     from app.services.section_group_metadata import overlay_result_metadata, load_result_manifest
+    from app.services.result_snapshot import build_export_request, load_method_snapshots
     scope = _export_scope(loaded_rds, rds_map, selected_methods, result_folder)
-    _set_active_key(loaded_rds)
+    if current_method in (rds_map or {}) and Path(rds_map[current_method]).resolve() != Path(loaded_rds).resolve():
+        raise ValueError("表示手法を切り替え中です。読み込み完了後に出力してください。")
     frames, maps = OrderedDict(), {}
     metadata_rds = _selection_source_rds(loaded_rds, rds_map)
-    manifest = load_result_manifest(metadata_rds)
+    manifest = load_result_manifest(metadata_rds) if frozen_manifest is None else deepcopy(frozen_manifest)
     ordered = ([current_method] if current_method in selected_methods else [])
     ordered += [method for method in selected_methods if method not in ordered]
     for method in ordered:
         path = rds_map[method]
-        if not Path(path).is_file() and method == "PCA":
-            harmony = rds_map.get("Harmony")
-            if harmony and Path(harmony).is_file():
-                _bridge.derive_uncorrected_pca(harmony, path)
         if not Path(path).is_file():
             raise ValueError(f"選択した手法 {method} の解析結果がありません。")
-        if method == current_method and Path(path).resolve() == Path(loaded_rds).resolve():
-            frame = _interactive_data.get("plot_data")
-        else:
-            frame = _bridge.extract_data(path).get("plot_data")
-        if frame is None or frame.empty:
-            raise ValueError(f"選択した手法 {method} の解析済み画素を読み込めません。")
+    frozen_cluster_maps = deepcopy(frozen_cluster_maps) if frozen_cluster_maps is not None else {
+        method: deepcopy(load_cluster_name_map(rds_map[method], method)) for method in ordered}
+    # ★ ver77.0: 全点/選択点ともクラスタと座標を同じ検証済み結果から固定する。
+    request = export_request or build_export_request(rds_map, ordered, current_method=current_method,
+                                                     scope=scope, expected_states=expected_states)
+    if {source.method: source.path for source in request.sources} != {
+            method: str(Path(rds_map[method]).resolve()) for method in ordered}:
+        raise ValueError("出力要求と結果ファイルの対応が変わりました。")
+    results = load_method_snapshots(request, _bridge)
+    for method, result in results.items():
+        path, frame = result.source.path, result.frame()
         frames[method] = overlay_result_metadata(frame, path, manifest=manifest).copy(deep=True)
-        maps[method] = deepcopy(load_cluster_name_map(path, method))
-    return {"scope": scope, "frames": frames, "cluster_maps": maps, "metadata_rds": metadata_rds}
+        maps[method] = deepcopy(frozen_cluster_maps.get(method) or {})
+    return {"scope": scope, "frames": frames, "cluster_maps": maps, "metadata_rds": metadata_rds,
+            "request": request, "results": results,
+            "descriptors": {m: deepcopy(r.descriptor) for m, r in results.items()},
+            "manifest": deepcopy(manifest), "annotation_context": deepcopy(annotation_context or {})}
+
+
+def _snapshot_export_names(snapshot):
+    from app.services.result_snapshot import export_method_name
+    names = {method: export_method_name(method, snapshot.get("descriptors", {}).get(method))
+             for method in snapshot["frames"]}
+    if len(set(names.values())) != len(names):
+        raise ValueError("同じ実手法の結果が重複しています。出力対象を選択し直してください。")
+    return names
+
+
+def _snapshot_lookups(snapshot, current_method=None, cluster_name_map=None):
+    names = _snapshot_export_names(snapshot)
+    return OrderedDict((names[m], _build_cluster_lookup(
+        frame, cluster_name_map if m == current_method and cluster_name_map is not None
+        else snapshot["cluster_maps"].get(m))) for m, frame in snapshot["frames"].items())
+
+
+def _snapshot_extra_lookups(snapshot, options):
+    """★ ver77.0: 複数手法の座標は列名も分け、他手法の不足画素を埋めない。"""
+    names = _snapshot_export_names(snapshot)
+    extra, columns = {}, {}
+    multi = len(names) > 1
+    for method, frame in snapshot["frames"].items():
+        descriptor = snapshot.get("descriptors", {}).get(method) or {}
+        identity = {"result_id": descriptor.get("result_id"),
+                    "source_sha256": descriptor.get("source", {}).get("sha256")}
+        columns[names[method] if multi else "UMAP cluster"] = {
+            **identity, "role": "cluster", "method": names[method], "source_column": "Cluster"}
+        pca2d = descriptor.get("embedding", {}).get("kind") == "pca2d"
+        for source_column, lookup in _build_extra_lookups(frame, options).items():
+            column = source_column.replace("UMAP_", "PC_") if pca2d else source_column
+            if multi:
+                column = f"{names[method]}__{column}"
+            extra[column] = lookup
+            columns[column] = {**identity, "role": "embedding" if source_column.startswith("UMAP_") else "quality",
+                               "method": names[method], "source_column": source_column,
+                               "embedding_kind": descriptor.get("embedding", {}).get("kind", "umap")}
+    return extra, columns
 
 
 def load_export_catalog(loaded_rds, rds_map, current_method, selected_methods,
@@ -369,6 +414,13 @@ def _build_cluster_lookup(plot_data: pd.DataFrame, cluster_name_map: dict | None
         return {}
     from app.services.section_group_metadata import SourceClusterLookup, normalize_pixel_id
     lookup = SourceClusterLookup()
+    # ★ ver77.0: 旧座標の重複をdictへ潰すと、結合監査でも消失した行を検出できない。
+    # 全行に元画素IDがある場合だけ、そのIDを正として同一座標の別画素を許す。
+    source_columns = {"source_file_id", "source_pixel_id"}
+    complete_source_ids = source_columns.issubset(plot_data.columns) and all(
+        pd.notna(fid) and pd.notna(pid) and bool(str(fid)) and bool(normalize_pixel_id(pid))
+        for fid, pid in plot_data[["source_file_id", "source_pixel_id"]].itertuples(index=False, name=None)
+    )
     for _, row in plot_data.iterrows():
         sx = row.get("SpatialX")
         sy = row.get("SpatialY")
@@ -383,6 +435,8 @@ def _build_cluster_lookup(plot_data: pd.DataFrame, cluster_name_map: dict | None
             lookup.by_source[source_key] = value
         if pd.notna(sx) and pd.notna(sy):
             key = (sample, round(float(sx), 4), round(float(sy), 4))
+            if key in lookup and not complete_source_ids:
+                raise ValueError("旧解析結果のSampleと座標に複数の画素が対応しています。")
             lookup[key] = cluster_display_name(cluster, cluster_name_map)
     return lookup
 
@@ -837,70 +891,26 @@ def _build_all_method_lookups(
     progress_cb=None,
     base: int = 0,
     span: int = 0,
+    snapshot=None,
 ) -> OrderedDict:
     """選択手法のクラスタールックアップを構築。
 
-    selected_methods: 出力対象の手法名リスト（None/空 → rds_map の全手法）。
-    現在の手法は ``_interactive_data["plot_data"]`` を再利用し、それ以外は
-    ``_bridge.extract_data()`` で動的ロードする。派生 PCA は Harmony から遅延生成。
+    selected_methods: 出力対象の手法名リスト（None → rds_map の全手法）。
+    すべての列を選択RDSの検証済みスナップショットから取得する。
     Returns:
         OrderedDict {method_name: cluster_lookup_dict}
     """
-    method_lookups: OrderedDict[str, dict] = OrderedDict()
-    full_map = rds_map if isinstance(rds_map, dict) else {}
-
-    # 選択手法でフィルタ（None/空 → 全手法）
-    sel = set(str(m) for m in (selected_methods or []))
-    rmap = {m: p for m, p in full_map.items() if (not sel or m in sel)}
-
-    if not rmap:
-        # rds_map 無し → 現在の plot_data のみ
-        plot_data = _interactive_data.get("plot_data")
-        if plot_data is not None:
-            method_name = _interactive_data.get("method") or "Unknown"
-            method_lookups[method_name] = _build_cluster_lookup(plot_data, cluster_name_map)
-        return method_lookups
-
-    # 現在の手法を先頭に配置
-    ordered_methods = []
-    if current_method and current_method in rmap:
-        ordered_methods.append(current_method)
-    for m in rmap:
-        if m not in ordered_methods:
-            ordered_methods.append(m)
-
-    n_methods = max(1, len(ordered_methods))
-    for i_m, method_name in enumerate(ordered_methods):
-        if progress_cb:
-            progress_cb(int(base + span * i_m / n_methods),
-                        f"手法クラスタを準備中… ({method_display_name(method_name)})")
-        if method_name == current_method and _interactive_data.get("plot_data") is not None:
-            # 現在の手法は再読込不要
-            method_lookups[method_name] = _build_cluster_lookup(
-                _interactive_data.get("plot_data"), cluster_name_map)
-            continue
-        rds_path = rmap[method_name]
-        # 派生 PCA（未補正）はディスク未生成のことがある → Harmony から遅延生成
-        if method_name == "PCA" and rds_path and not Path(rds_path).exists():
-            harmony_rds = full_map.get("Harmony")
-            if harmony_rds and Path(harmony_rds).exists():
-                try:
-                    _bridge.derive_uncorrected_pca(harmony_rds, rds_path)
-                except Exception as e:
-                    logger.warning("[DataExport] PCA 派生生成失敗: %s", e)
-        if not rds_path or not Path(rds_path).exists():
-            logger.warning("[DataExport] %s: RDS が見つかりません → スキップ", method_name)
-            continue
-        try:
-            result = _bridge.extract_data(rds_path)
-            # 手法ごとにクラスタ名変更マップは独立。他手法はその手法の保存分を読む。
-            other_map = load_cluster_name_map(rds_path, method_name)
-            method_lookups[method_name] = _build_cluster_lookup(
-                result["plot_data"], other_map)
-        except Exception as e:
-            logger.warning("[DataExport] %s: データ抽出エラー: %s", method_name, e)
-
-    return method_lookups
+    # ★ ver77.0: 手法名だけで表示中データを再利用すると別 RDS の列が混ざる。
+    if snapshot is None:
+        from app.services.result_snapshot import build_export_request, load_method_snapshots
+        request = build_export_request(rds_map, selected_methods, current_method=current_method)
+        results = load_method_snapshots(request, _bridge)
+        snapshot = {"frames": OrderedDict((m, r.frame()) for m, r in results.items()),
+                    "cluster_maps": {m: load_cluster_name_map(r.source.path, m) for m, r in results.items()},
+                    "descriptors": {m: r.descriptor for m, r in results.items()}}
+    if progress_cb:
+        progress_cb(base + span, "手法クラスタを準備しました")
+    return _snapshot_lookups(snapshot, current_method, cluster_name_map)
 
 
 # ---------------------------------------------------------------------------
@@ -915,6 +925,8 @@ def _conditions_sheet_df(conditions: dict):
     csv / parquet は同梱できないため、サーバ側 provenance/ の記録で担保する。
     """
     from app.services.methods_text import render_conditions_rows
+    from app.services.result_snapshot import public_metadata
+    conditions = public_metadata(conditions)
     rows = render_conditions_rows(conditions, lang="ja")
     missing = conditions.get("_missing") or []
     if missing:
@@ -991,7 +1003,7 @@ XLSX_MAX_CELLS = int(os.environ.get("EXPORT_XLSX_MAX_CELLS", 5_000_000))
 
 
 @contextlib.contextmanager
-def _atomic_output(final_path: Path):
+def _atomic_output(final_path: Path, validate=None):
     """書き込み中のファイルが見えないよう、別名で書いてから原子的に差し替える。
 
     ★ ver62.1: パスへ直接書くようにした副作用で、**書き込み途中のファイルが
@@ -1018,6 +1030,8 @@ def _atomic_output(final_path: Path):
         f".{final_path.stem}.partial{final_path.suffix}")
     try:
         yield tmp
+        if validate is not None:
+            validate()
         os.replace(tmp, final_path)
     except BaseException:
         try:
@@ -1066,7 +1080,7 @@ def _export_desi(
     progress_cb=None, base: int = 0, span: int = 0, conditions: dict | None = None,
     roi_failed: list | None = None, report: list | None = None,
     exclude_unused: bool = False, out_dir=None, prefix: str = "",
-    metadata_rds=None, metadata_plot=None, selection=None,
+    metadata_rds=None, metadata_plot=None, selection=None, export_request=None, frozen_manifest=None,
 ) -> tuple[Path, str]:
     """DESI .txt → Excel バイト列（サンプル別シート + 手法別クラスター列）。
 
@@ -1082,16 +1096,20 @@ def _export_desi(
     Returns (out_path, filename)。★ ver62.1: バイト列ではなくパスを返す。
     """
     add_region = region_lookup is not None
+    from app.services.result_snapshot import ExportJoinAudit, verify_request
+    audit = ExportJoinAudit(method_lookups, selection, metadata_plot) if export_request is not None else None
     selected_txt = None
-    if selection is not None and selection.kind == "source":
+    if (selection is not None and selection.kind == "source") or frozen_manifest:
         from app.services.section_group_metadata import selected_input_paths
         paths = selected_input_paths(metadata_rds, {".txt"}, source_file_ids={
-            unit["source_file_id"] for unit in selection.summary()["units"]})
+            unit["source_file_id"] for unit in selection.summary()["units"]}
+            if selection is not None and selection.kind == "source" else None,
+            manifest=frozen_manifest)
         if paths is None:
             raise ValueError("元画素IDに対応する入力一覧がありません。")
         selected_txt = {}
         for path in paths:
-            if not selection.includes_path(path, metadata_rds):
+            if selection is not None and not selection.includes_path(path, metadata_rds):
                 continue
             stem = Path(path).stem
             key, suffix = stem, 2
@@ -1194,7 +1212,11 @@ def _export_desi(
     #   あると `_unique_sheet_name` が "Skipped" を返して報告シートと**無言で混ざる**
     #   （openpyxl は同名シートへの to_excel を例外にせず上書きする）。
     used_sheet_names = {"conditions": 1, "skipped": 1}
-    with _atomic_output(out_path) as tmp, \
+    from app.services.result_snapshot import pin_input_files, verify_input_files
+    input_records = pin_input_files([txt_by_stem[s] for s in file_stems
+                                    if txt_by_stem[s] and s not in excluded_stems], frozen_manifest) if export_request else ()
+    # ★ ver77.0: ExcelWriterがcloseした後、公開直前に元ファイルを再検証する。
+    with _atomic_output(out_path, validate=lambda: (verify_request(export_request), verify_input_files(input_records))) as tmp, \
             pd.ExcelWriter(tmp, engine="openpyxl") as writer:
         written_pixels = 0
         for i_f, stem in enumerate(file_stems):
@@ -1228,7 +1250,7 @@ def _export_desi(
             max_cols = max(len(r) for r in rows)
             matched_sample = matched_by_stem.get(stem)
             from app.services.section_group_metadata import input_source_id, normalize_pixel_id
-            source_fid = input_source_id(txt_path, metadata_rds)
+            source_fid = input_source_id(txt_path, metadata_rds, frozen_manifest)
             source_available = source_fid in source_lookup_ids
             # ★ ver52.5: 一致しないと下の座標引きが丸ごと飛ばされ、
             #   **そのシートの全行でクラスタ列と領域名列が空**になる。
@@ -1298,7 +1320,7 @@ def _export_desi(
 
                 # 座標を一度だけ取得
                 x_val, y_val = None, None
-                if matched_sample and len(row) >= 3:
+                if (matched_sample or source_fid) and len(row) >= 3:
                     try:
                         x_val = round(float(row[1]), 4)
                         y_val = round(float(row[2]), 4)
@@ -1306,6 +1328,10 @@ def _export_desi(
                         pass
 
                 # 各手法のクラスター値を列として追加
+                if audit is not None:
+                    legacy_key = (matched_sample, x_val, y_val) if x_val is not None and y_val is not None else None
+                    source_key = (source_fid, normalize_pixel_id(row[0])) if source_fid and row else None
+                    audit.consume([legacy_key], [source_key], [(x_val, y_val)])
                 _hit_row = False
                 for method_name in method_names:
                     cluster_val = ""
@@ -1347,7 +1373,8 @@ def _export_desi(
                 from app.services.section_group_metadata import attach_input_metadata, METADATA_COLUMNS
                 ids = pd.DataFrame({"id": [r[0] if r else "" for r in data_rows]})
                 attached = attach_input_metadata(ids, txt_path, metadata_rds, metadata_plot,
-                                                 frozen=selection is not None)
+                                                 frozen=selection is not None or export_request is not None,
+                                                 manifest=frozen_manifest)
                 added = [c for c in METADATA_COLUMNS if c in attached.columns]
                 if added:
                     for i_h in range(n_header):
@@ -1363,6 +1390,8 @@ def _export_desi(
             )
             written_pixels += len(data_rows)
 
+        if audit is not None:
+            audit.validate()
         if selection is not None:
             selection.validate_complete()
             if written_pixels != selection.summary()["pixels"]:
@@ -1569,7 +1598,7 @@ def _read_tims_file(file_path: str, columns: "list | None" = None) -> pd.DataFra
     return alt if alt is not None else df
 
 
-def _apply_feature_annotation_columns(df: pd.DataFrame, data_folder: str, *, input_paths=None) -> pd.DataFrame:
+def _apply_feature_annotation_columns(df: pd.DataFrame, data_folder: str, *, input_paths=None, annotation_context=None) -> pd.DataFrame:
     """解析と同じ名称対応で表示列名だけを付与し、異なる feature 列を統合しない。"""
     try:
         import numpy as np
@@ -1577,15 +1606,16 @@ def _apply_feature_annotation_columns(df: pd.DataFrame, data_folder: str, *, inp
         from app.services.peak_annotation import make_column_name
         from app.utils.deg_utils import extract_mz_numeric
         from app.callbacks.interactive_callbacks import _interactive_data
+        active_state = _interactive_data if annotation_context is None else annotation_context
         # ★ ver67.0: 先頭サイドカーを任意採用すると閲覧・CSV間で名前が食い違った。
-        active = _interactive_data.get("feature_annotations") or {}
-        active_map = _interactive_data.get("annotation_map") or {}
-        settings = _interactive_data.get("naming_settings") or {}
+        active = active_state.get("feature_annotations") or {}
+        active_map = active_state.get("annotation_map") or {}
+        settings = active_state.get("naming_settings") or {}
         source_folders = {str(Path(path).resolve().parent) for path in
                           settings.get("input_paths", []) + settings.get("original_input_paths", [])}
         if settings.get("data_folder"):
             source_folders.add(str(Path(settings["data_folder"]).resolve()))
-        use_active = bool(_interactive_data.get("rds_path") and (active or active_map)
+        use_active = bool(active_state.get("rds_path") and (active or active_map)
                           and str(Path(data_folder).resolve()) in source_folders)
         # 入力フォルダの親/兄弟へ広げると、別プロジェクトの名前が混入する。
         sidecars = ([Path(path).with_name(Path(path).stem + "_feature_annotations.parquet")
@@ -1636,7 +1666,7 @@ def _apply_feature_annotation_columns(df: pd.DataFrame, data_folder: str, *, inp
 
 def _write_mz_list_only(mz_df: pd.DataFrame, fmt: str,
                         conditions: dict | None,
-                        out_dir=None, prefix: str = "") -> tuple[Path, str]:
+                        out_dir=None, prefix: str = "", export_request=None, input_records=()) -> tuple[Path, str]:
     """m/z 一覧だけを出力する（★ ver62.0）。
 
     スポット単位の項目が 1 つも選ばれていないときの経路。表が 1 つしかないので
@@ -1666,6 +1696,9 @@ def _write_mz_list_only(mz_df: pd.DataFrame, fmt: str,
             mz_df.to_parquet(tmp, index=False)
         else:
             mz_df.to_csv(tmp, index=False)
+        from app.services.result_snapshot import verify_request, verify_input_files
+        verify_request(export_request)
+        verify_input_files(input_records)
     return out_path, filename
 
 
@@ -1693,7 +1726,7 @@ def _tims_header_columns(file_path: str) -> list:
     return list(alt.columns) if alt is not None else columns
 
 
-def _build_mz_list_table(input_paths: list, data_folder: str) -> pd.DataFrame:
+def _build_mz_list_table(input_paths: list, data_folder: str, annotation_context=None) -> pd.DataFrame:
     """m/z 一覧表を作る（★ ver62.0）。スポットの行は 1 行も読まない。
 
     列名は `_apply_feature_annotation_columns` を通した**後**のものを渡す。
@@ -1706,13 +1739,19 @@ def _build_mz_list_table(input_paths: list, data_folder: str) -> pd.DataFrame:
     names: list = []
     seen: set = set()
     for fp in input_paths:
-        for c in _tims_header_columns(fp):
+        header = _tims_header_columns(fp)
+        from app.services.parquet_column_roles import feature_columns, read_column_roles
+        roles = None
+        if Path(fp).suffix.lower() in _PARQUET_EXTS:
+            import pyarrow.parquet as pq
+            roles = read_column_roles(pq.ParquetFile(fp).schema_arrow)
+        for c in feature_columns(header, roles):
             if c not in seen:
                 seen.add(c)
                 names.append(c)
 
     renamed = _apply_feature_annotation_columns(
-        pd.DataFrame(columns=names), data_folder, input_paths=input_paths)
+        pd.DataFrame(columns=names), data_folder, input_paths=input_paths, annotation_context=annotation_context)
     # ★ ver67.0: 一覧表にも同じ選択入力を使い、任意の先頭サイドカーを再び結合しない。
     from app.services.naming_policy import resolve_feature_annotations
     sidecars = [Path(path).with_name(Path(path).stem + "_feature_annotations.parquet") for path in input_paths]
@@ -1790,6 +1829,7 @@ def _export_tims(
     report: list | None = None, exclude_unused: bool = False,
     options=None, extra_lookups: dict | None = None,
     out_dir=None, prefix: str = "", metadata_rds=None, metadata_plot=None, selection=None,
+    column_specs=None, export_request=None, frozen_manifest=None, annotation_context=None,
 ) -> tuple[Path, str]:
     """TIMS 入力ファイルに手法別クラスター列を追加してエクスポート。
 
@@ -1807,7 +1847,7 @@ def _export_tims(
     from app.services.section_group_metadata import selected_input_paths
     path_options = ({"source_file_ids": {unit["source_file_id"] for unit in selection.summary()["units"]}}
                     if selection is not None and selection.kind == "source" else {})
-    input_paths = selected_input_paths(metadata_rds, {".parquet", ".csv"}, **path_options)
+    input_paths = selected_input_paths(metadata_rds, {".parquet", ".csv"}, manifest=frozen_manifest, **path_options)
     if input_paths is None:
         input_paths = build_tims_input_paths(data_folder)
     if selection is not None:
@@ -1845,10 +1885,12 @@ def _export_tims(
             raise ValueError("選択した画素に対応するm/z一覧を作成できません。")
     if selection is not None and conditions is not None:
         conditions.setdefault("extra", {})["mz_list_scope"] = "選択対象の元ファイルの特徴量一覧（非ゼロ検出一覧ではない）"
-    mz_df = (_build_mz_list_table(input_paths, data_folder) if want_mz else None)
+    from app.services.result_snapshot import pin_input_files, verify_input_files
+    input_records = pin_input_files(input_paths, frozen_manifest) if export_request else ()
+    mz_df = (_build_mz_list_table(input_paths, data_folder, annotation_context) if want_mz else None)
 
     if not want_spot:
-        return _write_mz_list_only(mz_df, fmt, conditions, out_dir, prefix)
+        return _write_mz_list_only(mz_df, fmt, conditions, out_dir, prefix, export_request, input_records)
 
     # csv / parquet は 1 ファイルに 1 表しか入らない。黙って片方を落とすと、
     # 利用者は選んだはずの表が無い理由を追えない。xlsx を案内して止める
@@ -1870,6 +1912,8 @@ def _export_tims(
     add_region_col = "領域名"
     dfs_out: list = []
     stats_out: list = []
+    from app.services.result_snapshot import ExportJoinAudit
+    audit = ExportJoinAudit(method_lookups, selection, metadata_plot) if export_request is not None else None
     for i_f, fp in enumerate(input_paths):
         if progress_cb:
             # ★ ver62.1: 読み込みには span の 0.8 までしか使わない。従来は読み終えた
@@ -1887,11 +1931,20 @@ def _export_tims(
         if metadata_rds and read_cols is not None and "id" in (avail or []) and "id" not in read_cols:
             read_cols = ["id", *read_cols]
         df = _read_tims_file(fp, columns=read_cols)
-        df = _apply_feature_annotation_columns(df, data_folder, input_paths=input_paths)
+        if Path(fp).suffix.lower() in _PARQUET_EXTS:
+            import pyarrow.parquet as pq
+            from app.services.parquet_column_roles import read_column_roles, column_role
+            input_roles = read_column_roles(pq.ParquetFile(fp).schema_arrow)
+            # ★ ver77.0: 再入力された古い解析列を新結果の列へ持ち越さない。
+            keep_input = [c for c in df.columns if column_role(c, overrides=input_roles)
+                          in {"identity", "spatial", "annotation", "intensity"}]
+            df = df[keep_input]
+        df = _apply_feature_annotation_columns(df, data_folder, input_paths=input_paths, annotation_context=annotation_context)
         # ★ ver67.0: 群と由来はファイルID+画素IDで対応づける。
         from app.services.section_group_metadata import attach_input_metadata
         df = attach_input_metadata(df, fp, metadata_rds, metadata_plot,
-                                   frozen=selection is not None)
+                                   frozen=selection is not None or export_request is not None,
+                                   manifest=frozen_manifest)
         if selection is not None:
             # ★ ver75.1: 集計・列削除前に絞り、選ばなかった群の強度を平均へ混ぜない。
             df = selection.filter_frame(df, fp, metadata_rds).copy()
@@ -1901,15 +1954,22 @@ def _export_tims(
         # 右端に手法別クラスタ列・領域名列をベクトル付与（iterrows 撤廃＝軽い）。
         # ★ ver58.3: 突合の内訳を stats で受け取り、呼び出し側から利用者へ報告する。
         stats: dict = {}
+        join_keys = [] if audit is not None else None
         df = _append_cluster_region_columns(
             df, method_lookups, region_lookup, all_sample_list, is_multi, stem,
-            _match_sample_name, stats=stats, extra_lookups=extra_lookups)
+            _match_sample_name, stats=stats, extra_lookups=extra_lookups, join_keys=join_keys)
         from app.services.section_group_metadata import append_source_clusters, append_source_values, source_match_mask
-        df = append_source_clusters(df, fp, metadata_rds, method_lookups)
-        df = append_source_values(df, fp, metadata_rds, extra_lookups, default=float("nan"))
+        df = append_source_clusters(df, fp, metadata_rds, method_lookups, manifest=frozen_manifest)
+        df = append_source_values(df, fp, metadata_rds, extra_lookups, default=float("nan"), manifest=frozen_manifest)
         if region_lookup is not None:
-            df = append_source_values(df, fp, metadata_rds, {"領域名": region_lookup})
-        source_mask = source_match_mask(df, fp, metadata_rds, method_lookups)
+            df = append_source_values(df, fp, metadata_rds, {"領域名": region_lookup}, manifest=frozen_manifest)
+        if audit is not None:
+            from app.services.section_group_metadata import input_source_id, normalize_pixel_id
+            fid = input_source_id(fp, metadata_rds, frozen_manifest)
+            source_keys = [(fid, normalize_pixel_id(pid)) for pid in df["id"]] if fid and "id" in df else None
+            spatial = [(round(float(x), 4), round(float(y), 4)) for x, y in zip(df["x"], df["y"])] if {"x", "y"}.issubset(df.columns) else None
+            audit.consume(join_keys, source_keys, spatial)
+        source_mask = source_match_mask(df, fp, metadata_rds, method_lookups, manifest=frozen_manifest)
         if source_mask is not None:
             # 表示キーが元のbasenameと異なっても、照合と除外は由来IDで完結する。
             stats.update(resolver="source-id", rows=len(df), keyed=int(source_mask.sum()),
@@ -1921,7 +1981,7 @@ def _export_tims(
                 df = df.loc[source_mask].reset_index(drop=True)
                 stats["rows"] = len(df)
             if "annotation" in df.columns:
-                source_hits = source_match_mask(df, fp, metadata_rds, method_lookups)
+                source_hits = source_match_mask(df, fp, metadata_rds, method_lookups, manifest=frozen_manifest)
                 stats["by_group"] = {
                     str(group): (int(source_hits.loc[index].sum()), len(index))
                     for group, index in df.groupby("annotation", dropna=False).groups.items()
@@ -1978,6 +2038,8 @@ def _export_tims(
             logger.info("[DataExport] %s: 解析対象外の切片を除外: %s",
                         st.get("stem"), st["excluded"])
 
+    if audit is not None:
+        audit.validate()
     if not dfs_out:
         raise ValueError("選択した解析済み画素を入力データに対応づけられません。")
     if selection is not None:
@@ -2002,7 +2064,7 @@ def _export_tims(
             pd.concat(dfs_out, ignore_index=True) if len(dfs_out) > 1 else dfs_out[0]
         )
         keep = _eo.select_output_columns(
-            list(df_all.columns), options, _tims_cluster_columns(method_lookups))
+            list(df_all.columns), options, _tims_cluster_columns(method_lookups), column_specs)
         if keep != list(df_all.columns):
             if not keep:
                 raise ValueError(
@@ -2063,9 +2125,38 @@ def _export_tims(
                         logger.warning("Conditions シートの追加に失敗",
                                        exc_info=True)
         elif ext == "parquet":
-            df_all.to_parquet(tmp, index=False)
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+            from app.services.parquet_column_roles import export_metadata, read_column_roles
+            df_all = df_all.copy(deep=False)
+            specs = dict(column_specs or {})
+            coverage = {}
+            for method in method_lookups:
+                column = method if len(method_lookups) > 1 else "UMAP cluster"
+                specs[column] = {**specs.get(column, {}),
+                    "role": "cluster", "method": method, "source_column": "Cluster"}
+                if column in df_all:
+                    missing = df_all[column].isna() | df_all[column].eq("")
+                    coverage[method] = {"matched": int((~missing).sum()), "null": int(missing.sum())}
+                    df_all[column] = df_all[column].where(~missing, None)
+            manifest = {"schema_version": 1, "methods": list(method_lookups),
+                        "conditions": conditions or {}, "rows": len(df_all),
+                        "input_files": input_records,
+                        "method_coverage": coverage, "null_policy": "outside_result_cell_set"}
+            schema = pa.Schema.from_pandas(df_all, preserve_index=False)
+            metadata = dict(schema.metadata or {})
+            metadata.update(export_metadata(list(df_all.columns), cluster_columns=_tims_cluster_columns(method_lookups),
+                                            overrides=specs, manifest=manifest))
+            df_all.to_parquet(tmp, index=False, schema=schema.with_metadata(metadata))
+            with pq.ParquetFile(tmp) as written:
+                read_column_roles(written.schema_arrow)
+                if written.metadata.num_rows != len(df_all):
+                    raise ValueError("Parquet の保存行数が一致しません。")
         else:
             df_all.to_csv(tmp, index=False)
+        from app.services.result_snapshot import verify_request
+        verify_request(export_request)
+        verify_input_files(input_records)
 
     return out_path, filename
 
@@ -2094,14 +2185,6 @@ def _do_export(
                 progress_cb(int(pct), label)
             except Exception:  # noqa: BLE001
                 pass
-
-    from app.callbacks.interactive_callbacks import _set_active_key
-    # 開いているプロジェクト(= 実際に読み込んだ RDS)にアクティブキーを固定する。
-    # 別プロジェクトの plot_data / クラスタを読まないよう loaded_rds を最優先・無条件に設定。
-    if loaded_rds:
-        _set_active_key(loaded_rds)
-    elif rds_map and current_method and current_method in rds_map:
-        _set_active_key(rds_map[current_method])
 
     logger.info(
         "[DataExport] _do_export: loaded_rds=%s data_folder=%s", loaded_rds, data_folder
@@ -2145,18 +2228,25 @@ def _do_export(
 
         from app.services.section_group_metadata import overlay_result_metadata
         resolved = None
-        metadata_rds = loaded_rds
+        # ★ ver77.0: 全点でも出力対象の RDS を固定。表示中手法は座標の取得元にしない。
+        if snapshot is None:
+            effective_map = rds_map or {current_method or "Unknown": loaded_rds}
+            snapshot = _selection_snapshot(loaded_rds, effective_map, current_method,
+                                           selected_methods if selected_methods is not None else list(effective_map), result_folder)
+        from app.services.export_selection import build_catalog
+        build_catalog(snapshot["frames"], snapshot["scope"])
+        plot_data = _selection_metadata(snapshot["frames"])
+        metadata_rds = snapshot.get("metadata_rds", loaded_rds)
         if selection is not None and selection.get("mode") != "all":
             from app.services.export_selection import resolve_selection
             if snapshot is None:
                 snapshot = _selection_snapshot(loaded_rds, rds_map, current_method,
                                                selected_methods, result_folder)
             resolved = resolve_selection(snapshot["frames"], selection, snapshot["scope"])
+            resolved.manifest = deepcopy(snapshot.get("manifest"))
             plot_data = _selection_metadata(snapshot["frames"])
             metadata_rds = snapshot.get("metadata_rds", loaded_rds)
             exclude_unused = True
-        else:
-            plot_data = overlay_result_metadata(_interactive_data.get("plot_data"), loaded_rds)
         if plot_data is None or plot_data.empty:
             return None, None, "データが読み込まれていません。先にデータを読み込んでください。"
 
@@ -2164,15 +2254,9 @@ def _do_export(
         if "SpatialX" not in plot_data.columns or "SpatialY" not in plot_data.columns:
             return None, None, "空間座標データ (SpatialX/SpatialY) がありません。"
         # 選択手法のクラスタールックアップを構築（未選択なら全手法）: 進捗 10→50%
-        if resolved is not None:
-            method_lookups = OrderedDict((method, _build_cluster_lookup(
-                frame, cluster_name_map if method == current_method
-                else snapshot["cluster_maps"].get(method)))
-                for method, frame in snapshot["frames"].items())
-        else:
-            method_lookups = _build_all_method_lookups(
-                rds_map, current_method, cluster_name_map, selected_methods,
-                progress_cb=progress_cb, base=10, span=40)
+        method_lookups = _build_all_method_lookups(
+            rds_map, current_method, cluster_name_map, selected_methods,
+            progress_cb=progress_cb, base=10, span=40, snapshot=snapshot)
         if not method_lookups:
             return None, None, "クラスターデータを構築できませんでした。"
 
@@ -2191,9 +2275,13 @@ def _do_export(
             from app.services.provenance import (collect_conditions,
                                                  results_dir_for_rds,
                                                  write_export_record)
+            primary_method = next(iter(snapshot["frames"]))
+            primary_result = snapshot.get("results", {}).get(primary_method)
             conditions = collect_conditions(
-                rds_path=loaded_rds, result_folder=result_folder,
-                integration_method=current_method,
+                rds_path=primary_result.source.path if primary_result else loaded_rds,
+                result_folder=result_folder,
+                integration_method=primary_method,
+                result_descriptor=snapshot.get("descriptors", {}).get(primary_method),
                 extra={"export_format": export_format,
                        "exported_methods": list(method_lookups.keys()),
                        "ms_instrument": ms_instrument,
@@ -2206,13 +2294,18 @@ def _do_export(
                        "export_categories": sorted(
                            _eo.normalize(options)["categories"]),
                        "export_group_keys": _eo.normalize(options)["group_keys"]})
+            conditions.setdefault("extra", {})["method_results"] = [
+                r.manifest() for r in snapshot.get("results", {}).values()]
+            conditions["extra"]["method_conditions"] = {
+                method: collect_conditions(rds_path=result.source.path,
+                    result_folder=result_folder, integration_method=method,
+                    result_descriptor=result.descriptor)
+                for method, result in snapshot.get("results", {}).items()}
+            conditions["extra"]["embedding_columns"] = "per_method" if len(method_lookups) > 1 else "single_method"
             if resolved is not None:
                 conditions["extra"]["export_selection"] = resolved.summary()
-                if _eo.wants(options, "umap"):
-                    conditions["extra"]["umap_coordinates_method"] = next(iter(snapshot["frames"]))
-            else:
-                write_export_record(results_dir_for_rds(loaded_rds, result_folder),
-                                    "data_export", conditions)
+            if _eo.wants(options, "umap") and len(method_lookups) == 1:
+                conditions["extra"]["umap_coordinates_method"] = next(iter(method_lookups))
         except Exception as e:  # noqa: BLE001
             logger.warning("[DataExport] 条件記録に失敗: %s", e)
 
@@ -2224,23 +2317,25 @@ def _do_export(
                 progress_cb=progress_cb, base=58, span=40, conditions=conditions,
                 roi_failed=roi_failed, report=report,
                 exclude_unused=exclude_unused, out_dir=out_dir, prefix=prefix,
-                metadata_rds=metadata_rds, metadata_plot=plot_data, selection=resolved)
+                metadata_rds=metadata_rds, metadata_plot=plot_data, selection=resolved,
+                export_request=snapshot.get("request"), frozen_manifest=snapshot.get("manifest"))
         else:
             fmt = export_format or "xlsx"
             # ★ ver61.0: plot_data 由来の追加列（UMAP 座標・品質指標）。
             #   選ばれていなければ空 dict で、従来と同じ列構成のまま。
             # ★ ver75.1: 和集合の不足行へ別手法の埋め込みを混ぜない。
             # UMAP列は表示中（未選択なら最初の選択手法）の座標だけとし不足はNaN。
-            coordinate_data = next(iter(snapshot["frames"].values())) if resolved is not None else plot_data
-            extra_lookups = _build_extra_lookups(coordinate_data, options)
+            extra_lookups, column_specs = _snapshot_extra_lookups(snapshot, options)
             file_path, filename = _export_tims(
                 data_folder, method_lookups, fmt, region_lookup,
                 progress_cb=progress_cb, base=58, span=40, conditions=conditions,
                 report=report, exclude_unused=exclude_unused,
                 options=options, extra_lookups=extra_lookups,
                 out_dir=out_dir, prefix=prefix, metadata_rds=metadata_rds, metadata_plot=plot_data,
-                selection=resolved)
-        if resolved is not None and conditions is not None:
+                selection=resolved, column_specs=column_specs, frozen_manifest=snapshot.get("manifest"),
+                annotation_context=snapshot.get("annotation_context", {}),
+                export_request=snapshot.get("request"))
+        if conditions is not None:
             write_export_record(results_dir_for_rds(loaded_rds, result_folder),
                                 "data_export", conditions)
         _p(99, "仕上げ中…")
@@ -2251,8 +2346,7 @@ def _do_export(
         msg = f"✅ {filename} を生成しました"
         msg += _selection_message(resolved, report)
         if resolved is not None and not is_desi and _eo.wants(options, "umap"):
-            msg += ("。UMAP座標: " + method_display_name(next(iter(snapshot["frames"])))
-                    + "（その手法にない画素は空欄）")
+            msg += "。埋込座標は手法ごとの列へ出力（各手法にない画素は空欄）"
         if n_methods > 1:
             msg += f" ({methods_str})"
         # ★ ver58.3: 突合が成立しなかったら「成功」で終わらせない。
@@ -2306,7 +2400,7 @@ def build_interactive_export_for_project(
     data_folder, ms_instrument, export_format,
     rds_map, result_folder, project_id, sub_project_id,
     selected_methods=None, exclude_unused=False, out_dir=None, prefix="",
-    progress_cb=None,
+    progress_cb=None, export_request=None, frozen_manifest=None, expected_states=None, frozen_cluster_maps=None,
 ):
     """ライブ session に依存せず UMAP_cluster エクスポートを生成する（API / バッチ用）。
 
@@ -2380,77 +2474,17 @@ def build_interactive_export_for_project(
         else:
             sel = list(rmap.keys())
 
-        # 全手法のクラスタルックアップをディスクから構築（current_method=None → session 非参照）
-        method_lookups = _build_all_method_lookups(
-            rmap, None, None, sel, progress_cb=progress_cb, base=10, span=40)
-        if not method_lookups:
-            return None, None, "クラスターデータを構築できませんでした。"
-
-        # ROI(領域名) ルックアップ（primary RDS の plot_data + H&E オーバーレイ保存状態）
-        _p(52, "ROI(領域名)を割当中…")
-        region_lookup = {}
-        roi_failed: list = []
-        pdat = None
-        primary_rds = _pick_primary_rds(rmap)
-        if primary_rds:
-            try:
-                pdat = _bridge.extract_data(primary_rds).get("plot_data")
-                region_lookup, roi_failed = _build_region_lookup(pdat, primary_rds)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[APIExport] ROI 割当をスキップ: %s", e)
-
-        is_desi = (ms_instrument or "").upper() == "DESI"
-        # API 経由でも条件記録は同じ扱いにする（GUI と API で記録に差を作らない）
-        conditions = None
-        try:
-            from app.services.provenance import (collect_conditions,
-                                                 results_dir_for_rds,
-                                                 write_export_record)
-            conditions = collect_conditions(
-                rds_path=primary_rds, result_folder=result_folder,
-                extra={"export_format": export_format,
-                       "exported_methods": list(method_lookups.keys()),
-                       "ms_instrument": ms_instrument,
-                       "driver": "api",
-                       "exclude_unused_annotations": bool(exclude_unused)})
-            write_export_record(results_dir_for_rds(primary_rds, result_folder),
-                                "data_export_api", conditions)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("[APIExport] 条件記録に失敗: %s", e)
-        report: list = []
-        if is_desi:
-            file_path, filename = _export_desi(
-                data_folder, method_lookups, region_lookup,
-                progress_cb=progress_cb, base=58, span=40, conditions=conditions,
-                roi_failed=roi_failed, report=report,
-                exclude_unused=exclude_unused, out_dir=out_dir, prefix=prefix,
-                metadata_rds=primary_rds, metadata_plot=pdat)
-        else:
-            fmt = export_format or "parquet"
-            file_path, filename = _export_tims(
-                data_folder, method_lookups, fmt, region_lookup,
-                progress_cb=progress_cb, base=58, span=40, conditions=conditions,
-                report=report, exclude_unused=exclude_unused,
-                out_dir=out_dir, prefix=prefix, metadata_rds=primary_rds, metadata_plot=pdat)
-        _p(99, "仕上げ中…")
-
-        msg = f"✅ {filename} を生成しました"
-        if len(method_lookups) > 1:
-            msg += " (" + " / ".join(map(method_display_name, method_lookups)) + ")"
-        # ★ ver58.3: GUI 経路と同じく、突合が成立しなかったことを必ず伝える。
-        blocked = [b for s_ in report for b in (s_.get("blocked_samples") or [])]
-        note = _summarize_exclusions(report, blocked)
-        if note:
-            msg += "  " + note
-        warn = _summarize_coverage(report)
-        if warn:
-            msg += "  " + warn
-        # ★ ver62.8: 画面経路と同じ一文。API から使った側も、どのフォルダを
-        #   読んだのかが分からないと成果物の由来を追えない。
-        folder_msg = _folder_note_message(data_folder, folder_note)
-        if folder_msg:
-            msg += "  " + folder_msg
-        return file_path, filename, msg
+        # ★ ver77.0: API も同じ固定結果・同じ writer を使用し、別の primary RDS を混ぜない。
+        selected_map = {method: rmap[method] for method in sel}
+        primary_rds = next(iter(selected_map.values()))
+        snapshot = _selection_snapshot(primary_rds, selected_map, None, sel, result_folder,
+            export_request=export_request, frozen_manifest=frozen_manifest, expected_states=expected_states,
+            frozen_cluster_maps=frozen_cluster_maps)
+        return _do_export(
+            data_folder, ms_instrument, export_format or "parquet", selected_map, None,
+            result_folder, project_id, sub_project_id, primary_rds,
+            selected_methods=sel, exclude_unused=exclude_unused,
+            out_dir=out_dir, prefix=prefix, progress_cb=progress_cb, snapshot=snapshot)
 
     except Exception as e:  # noqa: BLE001
         logger.exception("[APIExport] エクスポート生成エラー")
@@ -2509,7 +2543,14 @@ def _run_export_job(job_id, args, selection=None, snapshot=None):
         from app.config import DATA_EXPORT_TMP_DIR
         DATA_EXPORT_TMP_DIR.mkdir(parents=True, exist_ok=True)
         _sweep_old_files(DATA_EXPORT_TMP_DIR, max_age_sec=3600)  # 古い一時ファイルを掃除
-        extra_args = {"selection": selection, "snapshot": snapshot} if selection is not None else {}
+        if snapshot is not None and snapshot.get("pending"):
+            # ★ ver77.0: 巨大RDSの検証はworker側。受付時の選択・群設定は固定済み。
+            snapshot = _selection_snapshot(args[8], args[3], args[4], args[10], args[5],
+                                           frozen_manifest=snapshot.get("manifest"),
+                                           expected_states=snapshot.get("source_states"),
+                                           frozen_cluster_maps=snapshot.get("cluster_maps"),
+                                           annotation_context=snapshot.get("annotation_context"))
+        extra_args = {"selection": selection, "snapshot": snapshot} if snapshot is not None else {}
         file_path, filename, msg = _do_export(
             *args, out_dir=DATA_EXPORT_TMP_DIR, prefix=f"{job_id}__",
             progress_cb=lambda p, l="": _update_job(job_id, p, l), **extra_args)
@@ -2575,12 +2616,22 @@ def data_export_start(n_clicks, data_folder, ms_instrument, export_format,
         if export_selection and export_selection.get("mode") == "selected":
             if not export_selection.get("ids"):
                 raise ValueError("出力対象を1つ以上選択してください。")
-            # ★ ver75.1: スレッド開始前に全手法と群情報を固定する。
-            # 表示結果の切替が、実行中ジョブの行選択を書き換えないようにする。
-            snapshot = _selection_snapshot(loaded_rds, rds_map, current_method,
-                                           selected_methods, result_folder)
-            from app.services.export_selection import resolve_selection
-            resolve_selection(snapshot["frames"], export_selection, snapshot["scope"])
+        # ★ ver77.0: 受付は小さい設定だけ固定し、hash計算/R抽出で画面を塞がない。
+        _export_scope(loaded_rds, rds_map, selected_methods, result_folder)
+        if current_method in (rds_map or {}) and Path(rds_map[current_method]).resolve() != Path(loaded_rds).resolve():
+            raise ValueError("表示手法を切り替え中です。読み込み完了後に出力してください。")
+        from app.services.section_group_metadata import load_result_manifest
+        from app.services.result_snapshot import capture_source_states
+        snapshot = {"pending": True, "manifest": deepcopy(load_result_manifest(
+            _selection_source_rds(loaded_rds, rds_map))),
+            "source_states": capture_source_states(rds_map, selected_methods),
+            "cluster_maps": {method: deepcopy(load_cluster_name_map(rds_map[method], method))
+                             for method in selected_methods},
+            "annotation_context": {key: deepcopy(_interactive_data.get(key)) for key in
+                ("rds_path", "feature_annotations", "annotation_map", "naming_settings")}}
+        active_path = snapshot["annotation_context"].get("rds_path")
+        if not active_path or Path(active_path).resolve() != Path(loaded_rds).resolve():
+            snapshot["annotation_context"] = {}
     except Exception as exc:
         _fail_job(job_id, f"❌ {exc}")
         return (_PROG_SHOW, _START_LABEL, 0, False, True, {"job": job_id}, False)

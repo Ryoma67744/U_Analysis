@@ -27,7 +27,7 @@ jobs:
         run: |
           set -euo pipefail
           python -c 'import pyarrow, pyimzml, openapi_spec_validator'
-          python -m pytest tests/test_imzml_io.py tests/test_imzml_processed_sparse.py tests/test_imzml_contract_repairs_v74.py tests/test_imzml_standard_parquet_v74.py tests/test_imzml_registration_v74.py tests/test_registration_lifecycle_v74.py tests/test_imzml_editor_callback_transitions_v74.py tests/test_section_completeness_v74.py tests/test_section_registration_guidance_v741.py tests/test_imzml_registration_guidance_v741.py tests/test_section_metadata_workflow.py tests/test_audit_io_guards.py tests/test_volume_backup.py tests/test_callback_authorization_v74.py tests/test_public_url_is_consistent.py tests/test_render_payload.py tests/test_tims_export_precision_v74.py tests/test_diag_umap_cluster_export_v74.py tests/test_services_audit_regressions.py tests/test_numeric_input_bounds.py tests/test_packaging.py tests/test_version_consistency.py tests/test_export_selection.py tests/test_export_selection_callbacks.py tests/test_export_selection_io.py tests/test_export_selection_jobs.py tests/test_imzml_asset_diagnostics_v752.py tests/test_restore_imzml_assets.py -q --junitxml=contract.xml
+          python -m pytest tests/test_imzml_io.py tests/test_imzml_processed_sparse.py tests/test_imzml_contract_repairs_v74.py tests/test_imzml_standard_parquet_v74.py tests/test_imzml_registration_v74.py tests/test_registration_lifecycle_v74.py tests/test_imzml_editor_callback_transitions_v74.py tests/test_section_completeness_v74.py tests/test_section_registration_guidance_v741.py tests/test_imzml_registration_guidance_v741.py tests/test_section_metadata_workflow.py tests/test_audit_io_guards.py tests/test_volume_backup.py tests/test_callback_authorization_v74.py tests/test_public_url_is_consistent.py tests/test_render_payload.py tests/test_tims_export_precision_v74.py tests/test_diag_umap_cluster_export_v74.py tests/test_services_audit_regressions.py tests/test_numeric_input_bounds.py tests/test_packaging.py tests/test_version_consistency.py tests/test_export_selection.py tests/test_export_selection_callbacks.py tests/test_export_selection_io.py tests/test_export_selection_jobs.py tests/test_imzml_asset_diagnostics_v752.py tests/test_restore_imzml_assets.py tests/test_result_descriptor.py tests/test_deg_method_scope.py tests/test_result_snapshot_export.py tests/test_stage_signatures_v2.py tests/test_section_execution_policy.py tests/test_legacy_result_import.py tests/test_project_result_refs.py tests/test_downstream_new_ui.py tests/test_downstream_overwrite_is_confirmed.py tests/test_callback_targets_exist_in_layout.py -q --junitxml=contract.xml
           python -c 'import xml.etree.ElementTree as E; r=E.parse("contract.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "required contract tests must not skip"'
   # ★ ver75.1: 登録に加え、出力対象の選択からダウンロードまで実ブラウザで必須検証する。
   registration-browser:
@@ -48,7 +48,7 @@ jobs:
           E2E_STRICT: '1'
         run: |
           set -euo pipefail
-          python -m pytest tests/e2e/test_section_registration_guidance.py tests/e2e/test_export_selection.py -q --junitxml=registration-browser.xml
+          python -m pytest tests/e2e/test_section_registration_guidance.py tests/e2e/test_export_selection.py tests/e2e/test_result_scope.py -q --junitxml=registration-browser.xml
           python -c 'import xml.etree.ElementTree as E; r=E.parse("registration-browser.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "registration browser test must not skip"'
   r-contract:
     runs-on: ubuntu-latest
@@ -71,5 +71,5 @@ jobs:
         run: |
           set -euo pipefail
           Rscript -e 'stopifnot(all(vapply(c("Seurat","arrow","jsonlite","digest","data.table"), requireNamespace, logical(1), quietly=TRUE))); invisible(lapply(list.files("Script", pattern="[.]R$", recursive=TRUE, full.names=TRUE), parse))'
-          python -m pytest tests/test_r_safety_v74.py tests/test_tims_r_v74_contract.py tests/test_job_registry.py tests/test_imzml_autoimport_pipeline.py -q --junitxml=r-contract.xml
+          python -m pytest tests/test_r_safety_v74.py tests/test_tims_r_v74_contract.py tests/test_job_registry.py tests/test_imzml_autoimport_pipeline.py tests/test_stage_contract_r_v2.py tests/test_desi_section_execution_contract.py tests/test_result_facts_r.py tests/test_parquet_column_roles_r.py -q --junitxml=r-contract.xml
           python -c 'import xml.etree.ElementTree as E; r=E.parse("r-contract.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "R/Seurat contracts must not skip"'

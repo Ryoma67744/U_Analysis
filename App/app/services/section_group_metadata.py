@@ -147,19 +147,20 @@ def normalize_pixel_id(value):
         return text
 
 
-def input_source_id(input_path, rds_path):
+def input_source_id(input_path, rds_path, manifest=None):
     if not rds_path:
         return None
     # ★ ver70.0: cacheパスからも原本file_idを取り出す。cacheのstemを識別子にしない。
-    matches = [f for f in load_result_manifest(rds_path).get("files", [])
+    manifest = load_result_manifest(rds_path) if manifest is None else manifest
+    matches = [f for f in manifest.get("files", [])
                if any(Path(p).resolve() == Path(input_path).resolve()
                       for p in (f.get("path"), f.get("runtime_path")) if p)]
     return str(matches[0]["file_id"]) if len(matches) == 1 else None
 
 
-def selected_input_paths(rds_path, suffixes, *, source_file_ids=None):
+def selected_input_paths(rds_path, suffixes, *, source_file_ids=None, manifest=None):
     """新形式では追加フォルダを含む選択済み入力を出力する。旧結果はNoneを返す。"""
-    manifest = load_result_manifest(rds_path)
+    manifest = load_result_manifest(rds_path) if manifest is None else manifest
     if not manifest.get("files"):
         return None
     if source_file_ids is not None:
@@ -180,11 +181,11 @@ def selected_input_paths(rds_path, suffixes, *, source_file_ids=None):
     return paths
 
 
-def attach_input_metadata(df, input_path, rds_path, plot_data, *, frozen=False):
+def attach_input_metadata(df, input_path, rds_path, plot_data, *, frozen=False, manifest=None):
     """同名ROIを混同しないよう、元ファイルID・元画素IDで照合する。"""
     if plot_data is None or not {"source_file_id", "source_pixel_id"}.issubset(plot_data.columns) or "id" not in df.columns:
         return df
-    fid = input_source_id(input_path, rds_path)
+    fid = input_source_id(input_path, rds_path, manifest)
     if fid is None:
         return df
     # ★ ver75.1: 選択出力は開始時の群情報を使い、処理中の群編集を混ぜない。
@@ -209,9 +210,9 @@ class SourceClusterLookup(dict):
         self.by_source = {}
 
 
-def append_source_clusters(df, input_path, rds_path, method_lookups):
+def append_source_clusters(df, input_path, rds_path, method_lookups, *, manifest=None):
     """★ ver67.0: 同名切片のクラスタを座標だけで混ぜない。"""
-    fid = input_source_id(input_path, rds_path)
+    fid = input_source_id(input_path, rds_path, manifest)
     if fid is None or "id" not in df.columns:
         return df
     keys = [(fid, normalize_pixel_id(x)) for x in df["id"]]
@@ -223,9 +224,9 @@ def append_source_clusters(df, input_path, rds_path, method_lookups):
     return out
 
 
-def append_source_values(df, input_path, rds_path, lookups, *, default=""):
+def append_source_values(df, input_path, rds_path, lookups, *, default="", manifest=None):
     """★ ver67.0: 追加座標・品質値・H&E領域も元ファイル/画素IDで対応する。"""
-    fid = input_source_id(input_path, rds_path)
+    fid = input_source_id(input_path, rds_path, manifest)
     if fid is None or "id" not in df.columns:
         return df
     keys = [(fid, normalize_pixel_id(x)) for x in df["id"]]
@@ -237,9 +238,9 @@ def append_source_values(df, input_path, rds_path, lookups, *, default=""):
     return out
 
 
-def source_match_mask(df, input_path, rds_path, method_lookups):
+def source_match_mask(df, input_path, rds_path, method_lookups, *, manifest=None):
     """新形式の対象画素。Noneは旧結果、全Falseは対象画素なしを区別する。"""
-    fid = input_source_id(input_path, rds_path)
+    fid = input_source_id(input_path, rds_path, manifest)
     sources = [getattr(lookup, "by_source", None) for lookup in method_lookups.values()]
     sources = [source for source in sources if source]
     if fid is None or "id" not in df.columns or not sources:

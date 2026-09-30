@@ -10,16 +10,22 @@ ROOT=Path(__file__).resolve().parents[1]
 HELPER=ROOT/'Script/helpers/analysis_contract.R'
 RSCRIPT=os.environ.get('RSCRIPT') or shutil.which('Rscript')
 
-def run_r(tmp_path, code, seurat=False):
+def run_r(tmp_path, code, seurat=False, packages=()):
     if not RSCRIPT:
         pytest.skip('Rscript is not available')
     if seurat:
         check=subprocess.run([RSCRIPT,'-e',"quit(status=if(requireNamespace('Seurat',quietly=TRUE)) 0 else 1)"],capture_output=True)
         if check.returncode:
             pytest.skip('Seurat is not installed')
+    if packages:
+        check = subprocess.run([RSCRIPT, '-e', 'quit(status=if(all(vapply(c(' +
+                               ','.join(json.dumps(p) for p in packages) +
+                               '),requireNamespace,logical(1),quietly=TRUE))) 0 else 1)'], capture_output=True)
+        if check.returncode:
+            pytest.skip('/'.join(packages) + ' required')
     script=tmp_path/'check.R'
     script.write_text(f'source({json.dumps(str(HELPER))})\n'+code,encoding='utf-8')
-    result=subprocess.run([RSCRIPT,str(script)],capture_output=True,text=True,timeout=150)
+    result=subprocess.run([RSCRIPT,str(script)],capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=150)
     assert result.returncode==0,result.stdout+result.stderr
 
 def test_file_specific_selection_and_none_are_not_all(tmp_path):
@@ -56,7 +62,7 @@ md <- data.frame(annotation='ROI1',spot_index=c(2L,4L),sample='new_KEEP_Cl_1',
 # ★ ver74.0: 既存の由来/群は不変。旧RDSに無い表示補助列の追加は許容する。
 updated <- ua_section_metadata(md,'/temporary/new_KEEP_Cl_1.parquet')
 stopifnot(identical(updated[,names(md),drop=FALSE],md),
-          identical(updated$section_display_name,rep('/temporary/new_KEEP_Cl_1.parquet',nrow(md))))
+          identical(updated$section_display_name,rep(ua_path('/temporary/new_KEEP_Cl_1.parquet'),nrow(md))))
 """)
 
 def test_group_edit_does_not_change_intensities_pca_or_clusters(tmp_path):
@@ -136,15 +142,21 @@ for (expr in exprs) {{
       is.symbol(expr[[2]]) && as.character(expr[[2]]) == '.ua_finish_tims') eval(expr)
 }}
 PIPELINE_STAGE <- 'reduction_only'; od <- tempfile(); dir.create(od)
+source({json.dumps(str(ROOT / 'Script/helpers/rds_io.R'))})
+suppressPackageStartupMessages(library(Seurat))
+base <- CreateSeuratObject(matrix(1:32,4,dimnames=list(letters[1:4],paste0('c',1:8))),assay='Spatial')
+base$integration_unit_id <- 'one'
+base[['pca']] <- CreateDimReducObject(matrix(1:16,8,dimnames=list(colnames(base),c('PC_1','PC_2'))),key='PC_',assay='Spatial')
 for (method in c('pca','harmony','rpca')) {{
-  path <- file.path(od,paste0(method,'.rds')); saveRDS(list(reduction=method),path)
-  obj <- list(reduction=method)
-  stopifnot(identical(.ua_finish_tims(obj,method,method,path),obj))
+  path <- file.path(od,paste0(method,'.rds')); obj <- base
+  if (method!='pca') obj[[method]] <- obj[['pca']]
+  result <- .ua_finish_tims(obj,method,method,path)
+  stopifnot(identical(Embeddings(result,method),Embeddings(obj,method)))
 }}
 state <- jsonlite::fromJSON(file.path(od,'analysis_methods.json'),simplifyVector=FALSE)
 stopifnot(setequal(names(state$methods),c('pca','harmony','rpca')))
-for (entry in state$methods) stopifnot(entry$status=='complete',entry$stage=='reduction',file.exists(entry$rds_path))
-""")
+for (entry in state$methods) stopifnot(entry$status=='complete',entry$stage=='reduction',file.exists(file.path(od,entry$rds_path)))
+""", seurat=True, packages=('digest','jsonlite'))
 
 
 def test_cluster_export_selects_exact_file_and_preserves_metadata(tmp_path):
@@ -189,7 +201,7 @@ roi <- rep(c('ROI1','ROI2','ROI3'),2);sources <- rep(c('file_a','file_b'),each=3
 resolved <- ua_disambiguate_samples(roi,sources)
 stopifnot(length(unique(resolved))==6L,
  all(vapply(split(sources,resolved),function(x)length(unique(x))==1L,logical(1))))
-""")
+""", packages=('digest',))
 
 
 def test_merge_subclusters_retain_parent_cluster_labels(tmp_path):

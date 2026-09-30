@@ -143,7 +143,7 @@ def parquet_columns(available: list, options) -> "list | None":
     return [c for c in available if c in set(keep)]
 
 
-def intensity_columns(df_columns, cluster_columns=()) -> list:
+def intensity_columns(df_columns, cluster_columns=(), column_roles=None) -> list:
     """DataFrame の列から強度(m/z)列を抜き出す。
 
     cluster_columns を**必ず呼び出し側から渡す**。クラスタ列の名前は単一手法なら
@@ -152,10 +152,10 @@ def intensity_columns(df_columns, cluster_columns=()) -> list:
     強度列と誤認し、**クラスタ番号を平均しようとして壊れる**（テストで検出済み）。
     呼び出し側は `method_lookups.keys()` を持っているので推測する必要がない。
     """
-    added = (set(META_COLUMNS) | set(UMAP_COLUMNS) | set(QUALITY_COLUMNS)
-             | {REGION_COLUMN, SINGLE_METHOD_CLUSTER_COLUMN}
-             | set(cluster_columns))
-    return [c for c in df_columns if c not in added]
+    # ★ ver77.0: 手法別 UMAP を未知の強度列として平均してはいけない。
+    from app.services.parquet_column_roles import column_role
+    return [c for c in df_columns
+            if column_role(c, cluster_columns, column_roles) == "intensity"]
 
 
 def wants(options, category: str) -> bool:
@@ -202,7 +202,7 @@ def resolve_group_columns(options, cluster_columns: list) -> list:
 
 
 def select_output_columns(df_columns: list, options,
-                          cluster_columns: list) -> list:
+                          cluster_columns: list, column_roles=None) -> list:
     """最終的に出力へ残す列を、元の並び順を保って返す。
 
     並びは従来の `id, x, y, <m/z>, annotation` を崩さず、新カテゴリ
@@ -214,15 +214,17 @@ def select_output_columns(df_columns: list, options,
     cluster_set = set(cluster_columns)
     keep: list = []
     for col in df_columns:
+        from app.services.parquet_column_roles import column_role
+        role = column_role(col, cluster_columns, column_roles)
         if col == "id":
             ok = "id" in cats
         elif col in ("x", "y"):
             ok = "coords" in cats
         elif col == "annotation" or col in METADATA_COLUMNS:
             ok = "section" in cats
-        elif col in UMAP_COLUMNS:
+        elif role == "embedding":
             ok = "umap" in cats
-        elif col in QUALITY_COLUMNS:
+        elif role == "quality":
             ok = "quality" in cats
         elif col == REGION_COLUMN:
             ok = "roi" in cats

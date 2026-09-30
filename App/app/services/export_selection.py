@@ -134,6 +134,7 @@ class ResolvedSelection:
     pixels: dict
     selected_ids: frozenset
     kind: str
+    manifest: dict | None = None
     _selected_keys: frozenset = field(init=False, repr=False)
     _legacy_paths: dict = field(default_factory=dict, init=False, repr=False)
     _matched_keys: set = field(default_factory=set, init=False, repr=False)
@@ -150,7 +151,7 @@ class ResolvedSelection:
         if self.kind == "legacy":
             # ★ ver75.1: 旧入力はファイル名だけで切片が判定できないので、読んで検査する。
             return True
-        fid = input_source_id(input_path, rds_path)
+        fid = input_source_id(input_path, rds_path, self.manifest)
         if fid is None:
             raise ValueError("入力ファイルを解析結果の元ファイルIDへ対応付けできません。")
         return any(key[1] == fid for key in self._keys())
@@ -162,7 +163,7 @@ class ResolvedSelection:
             return df.copy()
         chosen = self._keys()
         if self.kind == "source":
-            fid = input_source_id(input_path, rds_path)
+            fid = input_source_id(input_path, rds_path, self.manifest)
             if fid is None or "id" not in df.columns:
                 raise ValueError("元ファイルID・画素IDで出力対象を照合できません。")
             ids = df["id"].map(normalize_pixel_id)

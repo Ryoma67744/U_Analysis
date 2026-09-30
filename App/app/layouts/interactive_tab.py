@@ -2016,6 +2016,7 @@ def create_interactive_tab():
 
         # PR-F: UI ロック用 Store + Interval (複数ユーザー同時編集対応)
         dcc.Store(id="session_id_store", data=None),
+        dcc.Store(id="interactive_load_scope", data=None, storage_type="memory"),
         # ★ ver66.3: 同じブラウザの別タブで表示・保存用キャッシュを混ぜない。
         # cookie の session_id と異なり、ブラウザ窓ごとに生成する memory Store。
         dcc.Store(id="interactive_view_id", data=None),

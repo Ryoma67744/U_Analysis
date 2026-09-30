@@ -24,6 +24,9 @@ def context(tmp_path, monkeypatch):
         "UMAP_1": [.1, .2, .3], "UMAP_2": [.4, .5, .6], "Cluster": ["0", "1", "2"],
     })
     monkeypatch.setattr(de, "_interactive_data", {"plot_data": frame})
+    scientific_frame = frame.copy(deep=True)
+    monkeypatch.setattr(de._bridge, "extract_data", lambda *_args, **_kwargs: {
+        "plot_data": scientific_frame, "meta": {}, "cache_dir": None})
     rmap = {"PCA": str(rds)}
     catalog = build_catalog({"PCA": frame}, str(root.resolve()))
     selection = {"mode": "selected", "scope": catalog["scope"], "signature": catalog["signature"],
@@ -49,12 +52,16 @@ def test_snapshot_copies_current_frame(context):
 
 
 @pytest.mark.parametrize("invalid", ["empty", "stale", "unknown"])
-def test_bad_selection_fails_before_thread(context, monkeypatch, invalid):
+def test_bad_selection_never_publishes_output(context, monkeypatch, invalid):
     root, rds, rmap, _, selection = context
     if invalid == "empty": selection["ids"] = []
     elif invalid == "stale": selection["signature"] = "stale"
     else: selection["ids"] = ["unknown"]
-    monkeypatch.setattr(de.threading, "Thread", lambda **_: pytest.fail("不正選択でスレッドを開始した"))
+    class InlineThread:
+        def __init__(self, target, args, daemon): self.target, self.args = target, args
+        def start(self): self.target(*self.args)
+    monkeypatch.setattr(de.threading, "Thread", InlineThread if invalid != "empty"
+                        else lambda **_: pytest.fail("空選択でスレッドを開始した"))
     result = de.data_export_start(1, str(root), "TIMS", "csv", rmap, "PCA", str(root),
                                   "p", "s", str(rds), {}, ["PCA"], False, None, selection)
     job = ep.get_job(result[5]["job"])
@@ -81,6 +88,8 @@ def test_job_selection_and_frames_survive_later_ui_edits(context, monkeypatch, t
     original_selection = deepcopy(selection)
     result = de.data_export_start(1, str(root), "TIMS", "csv", rmap, "PCA", str(root),
                                   "p", "s", str(rds), {}, ["PCA"], False, None, selection)
+    # ★ ver77.0: 受付時に巨大RDSをhash/extractせず、workerに固定済み設定を渡す。
+    assert pending[0].args[-1]["pending"] is True
     selection["ids"].clear(); frame.loc[:, "group"] = "Changed"; rmap.clear()
     pending[0].target(*pending[0].args)
     assert seen["selection"] == original_selection
@@ -128,7 +137,7 @@ def test_derived_pca_scope_is_limited_to_its_parent_harmony(context, monkeypatch
 
 
 @pytest.mark.parametrize("coordinate_method", ["PCA", "Harmony"])
-def test_selected_export_keeps_one_method_coordinates_and_union_clusters(
+def test_selected_export_keeps_per_method_coordinates_and_union_clusters(
         context, monkeypatch, tmp_path, coordinate_method):
     """★ ver75.1: 手法間の不足画素を別UMAPで補わず、クラスタは和集合で出す。"""
     import json
@@ -177,8 +186,11 @@ def test_selected_export_keeps_one_method_coordinates_and_union_clusters(
     assert out["id"].tolist() == [1, 3]
     assert out["group"].tolist() == ["Ctrl", "KO2"]
     assert out["100.000000"].tolist() == [11., 33.]
-    assert out.loc[0, ["UMAP_1", "UMAP_2", "TotalCount", "nFeature"]].tolist() == [.1, .4, 100., 10.]
-    assert out.loc[1, ["UMAP_1", "UMAP_2", "TotalCount", "nFeature"]].isna().all()
+    first_columns = [f"{coordinate_method}__{c}" for c in ["UMAP_1", "UMAP_2", "TotalCount", "nFeature"]]
+    second_columns = [f"{other_method}__{c}" for c in ["UMAP_1", "UMAP_2", "TotalCount", "nFeature"]]
+    assert out.loc[0, first_columns].tolist() == [.1, .4, 100., 10.]
+    assert out.loc[1, first_columns].isna().all()
+    assert out.loc[1, second_columns].tolist() == [88., -88., 800., 80.]
     assert out.loc[0, coordinate_method] == 0
     assert pd.isna(out.loc[1, coordinate_method])
     assert out[other_method].tolist() == [9, 8]
@@ -186,7 +198,7 @@ def test_selected_export_keeps_one_method_coordinates_and_union_clusters(
     records = list((root / "provenance").glob("export_*_data_export.json"))
     assert len(records) == 1
     provenance = json.loads(records[0].read_text(encoding="utf-8"))["extra"]
-    assert provenance["umap_coordinates_method"] == coordinate_method
+    assert provenance["embedding_columns"] == "per_method"
     assert provenance["export_selection"]["pixels"] == 2
     assert provenance["export_selection"]["method_counts"] == {coordinate_method: 1, other_method: 2}
     for method in frames:

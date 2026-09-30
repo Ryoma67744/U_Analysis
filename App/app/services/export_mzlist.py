@@ -57,17 +57,18 @@ NUMERIC_COLUMNS = ("ppm",)
 SHEET_NAME = "m_z"
 
 
-def mz_columns(df_columns) -> list:
+def mz_columns(df_columns, column_roles=None) -> list:
     """parquet の列から m/z 列（＝強度列）を抜き出す。
 
     `id/x/y/annotation` 以外が m/z 列。`export_options.intensity_columns` と違い、
     こちらはアプリが後から足す列が付く**前**の parquet を見るので、
     クラスタ列名を渡す必要がない。
     """
-    return [c for c in df_columns if c not in META_COLUMNS]
+    from app.services.parquet_column_roles import feature_columns
+    return feature_columns(df_columns, column_roles)
 
 
-def build_mz_list(df_columns, sidecar_path=None) -> pd.DataFrame:
+def build_mz_list(df_columns, sidecar_path=None, column_roles=None) -> pd.DataFrame:
     """m/z 一覧表を作る。1 行 = 1 m/z。
 
     df_columns: 変換済み parquet の列名（`_apply_feature_annotation_columns` で
@@ -79,7 +80,7 @@ def build_mz_list(df_columns, sidecar_path=None) -> pd.DataFrame:
     """
     from app.utils.deg_utils import extract_mz_numeric
 
-    cols = mz_columns(df_columns)
+    cols = mz_columns(df_columns, column_roles)
     rows = []
     for col in cols:
         mz = extract_mz_numeric(col)

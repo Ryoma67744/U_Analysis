@@ -1076,6 +1076,11 @@ def build_openapi_spec(base_url: str = "") -> dict:
                 "operationId": "startInteractiveExport",
                 "summary": ("インタラクティブ Export（UMAP_cluster）をその場で生成開始"
                             "（非同期。job_id を返す。重い処理）"),
+                "description": ("受付時の結果パスを固定し、workerで内容を検証して出力する。"
+                                "生成中の結果置換や解析済み画素の結合漏れはエラーになる。"
+                                "Parquet は ua_column_roles と ua_export_manifest を保持し、"
+                                "手法別クラスタの由来と対象外画素の null を記録する。"
+                                "解析列を強度特徴量として再入力しない。"),
                 "parameters": [_pid_p,
                                _sid_p,
                                _p("format", enum=_EXPORT_FORMATS,
@@ -1540,6 +1545,10 @@ def _run_interactive_export(job_id: str, resolved: dict, methods, fmt: str,
             exclude_unused=exclude_unused,
             out_dir=GPT_EXPORT_TMP_DIR, prefix=f"{job_id}__",
             progress_cb=lambda p, l="": ep.update_job(job_id, p, l),
+            export_request=resolved.get("_export_request"),
+            frozen_manifest=resolved.get("_export_manifest"),
+            expected_states=resolved.get("_export_source_states"),
+            frozen_cluster_maps=resolved.get("_export_cluster_maps"),
         )
         if not file_path or not filename:
             ep.fail_job(job_id, msg or "出力に失敗しました")
@@ -1969,12 +1978,26 @@ def register_gpt_api(server) -> None:
                           "時間をおいて再試行してください。"),
                 "retry_after_sec": 60,
             }, 429)
-        from app.services import export_progress as ep
-        job_id = ep.new_job()
-        threading.Thread(
-            target=_run_interactive_export,
-            args=(job_id, r, methods, fmt, exclude_unused), daemon=True,
-        ).start()
+        # ★ ver77.0: APIも受付時の選択パスと群設定を固定。巨大RDS検証はworkerで行う。
+        try:
+            from copy import deepcopy
+            from app.services.section_group_metadata import load_result_manifest
+            from app.services.result_snapshot import capture_source_states
+            from app.utils.label_persistence import load_cluster_name_map
+            r = deepcopy(r)
+            r["_export_manifest"] = deepcopy(load_result_manifest(r["rds_map"][methods[0]]))
+            r["_export_source_states"] = capture_source_states(r["rds_map"], methods)
+            r["_export_cluster_maps"] = {method: deepcopy(load_cluster_name_map(r["rds_map"][method], method))
+                                         for method in methods}
+            from app.services import export_progress as ep
+            job_id = ep.new_job()
+            threading.Thread(
+                target=_run_interactive_export,
+                args=(job_id, r, methods, fmt, exclude_unused), daemon=True,
+            ).start()
+        except Exception as exc:
+            _GPT_EXPORT_SEM.release()
+            return _fail(str(exc), 409)
         return _ok({
             "job_id": job_id,
             "status_url": f"/api/gpt/exports/jobs/{job_id}",

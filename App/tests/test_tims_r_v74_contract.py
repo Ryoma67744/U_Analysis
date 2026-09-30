@@ -24,7 +24,7 @@ def run_r(tmp_path, body, packages=()):
         if check.returncode:
             pytest.skip("必要なR package: " + ",".join(packages))
     prelude = "\n".join(f"source({json.dumps(str(HELPERS / name))})" for name in
-                         ("analysis_contract.R", "feature_naming_policy.R", "rds_io.R"))
+                          ("analysis_contract.R", "feature_naming_policy.R", "rds_io.R", "parquet_column_roles.R"))
     prelude += "\n" + r'''
 load_functions <- function(path, wanted) {
   found <- character()
@@ -295,7 +295,7 @@ arrow::write_parquet(d,'input.parquet')
         assert result.returncode == 0, log[-15000:]
         state = json.loads((Path(json.loads(settings["OUTPUT_DIR"])) / "analysis_methods.json").read_text())
         assert state["methods"]["pca"]["status"] == "complete", state
-        assert state["methods"]["pca"]["stage"] == "downstream", state
+        assert state["methods"]["pca"]["stage"] == "export", state
         return log
 
     execute("initial", settings)

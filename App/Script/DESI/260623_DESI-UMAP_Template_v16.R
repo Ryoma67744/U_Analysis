@@ -83,6 +83,10 @@ UMAP_N_NEIGHBORS <- 30L          # Seurat RunUMAP 既定
 UMAP_MIN_DIST    <- 0.3          # Seurat RunUMAP 既定
 UMAP_METRIC      <- "cosine"     # Seurat RunUMAP 既定
 UMAP_SEED        <- 42L          # 従来 seed.use = 42
+PCA_SEED <- 42L
+CORRECTION_SEED <- 42L
+CLUSTER_SEED <- 42L
+PCA_NPCS <- 30L
 
 CLUSTER_DIMS_N   <- 30L          # FindNeighbors(クラスタ用) に渡す PC 数の上限
 CLUSTER_K_PARAM  <- 20L          # Seurat FindNeighbors 既定
@@ -385,6 +389,10 @@ ANALYSIS_SIGNATURE <- ""
 # ★ ver74.0: 群名だけの編集でreductionを無効化せず、metadata更新を区別する。
 REDUCTION_SIGNATURE <- ""
 METADATA_SIGNATURE <- ""
+STAGE_SIGNATURES_PATH <- ""
+EXECUTION_MODE <- "resume_same"
+LEGACY_IMPORT_MANIFEST_PATH <- ""
+LEGACY_IMPORT_MANIFEST_SHA256 <- ""
 
 # ============================================================
 # ==== USER EDITABLE SETTINGS END =============================
@@ -2275,10 +2283,13 @@ for(ii in seq_along(seu_list)){
 .desi_run_pca <- function(obj, features = NULL) {
   if (is.null(features)) features <- VariableFeatures(obj)
   if (length(features) < 2) features <- rownames(obj)
-  npcs <- min(30L, length(features) - 1L, ncol(obj) - 1L)
+  npcs <- min(PCA_NPCS, length(features) - 1L, ncol(obj) - 1L)
   if (npcs < 2L) stop("PCAに必要な画素または特徴量が不足しています")
   obj <- ScaleData(obj, features = features)
-  RunPCA(obj, features = features, npcs = npcs, seed.use = UMAP_SEED)
+  obj <- RunPCA(obj, features = features, npcs = npcs, seed.use = PCA_SEED)
+  obj@misc$pca_parameters <- list(requested_pcs=PCA_NPCS,max_pcs=npcs,
+    seed=PCA_SEED,n_var_features=length(features))
+  obj
 }
 .desi_export_result <- function(obj, method, rds_path) {
   tag <- tolower(method)
@@ -2297,7 +2308,7 @@ for(ii in seq_along(seu_list)){
   p <- DimPlot(obj, reduction = "umap", group.by = "seurat_clusters", cols = .cols) +
     ggtitle(paste0("UMAP (", method, ")")) + Seurat::NoAxes()
   safe_ggsave(file.path(method_dir, paste0("umap_cluster_colored_", tag, ".png")), p, 7, 6)
-  deg_markers <- FindAllMarkers(obj, only.pos = FALSE, min.pct = 0, logfc.threshold = 0, return.thresh = 1, test.use = "wilcox")
+  deg_markers <- ua_find_markers(obj,od,method)
   if (is.null(deg_markers) || !nrow(deg_markers)) {
     write.csv(data.frame(gene = character(), cluster = character(), p_val = numeric(),
                          p_val_adj = numeric(), avg_log2FC = numeric()),
@@ -2335,37 +2346,70 @@ for(ii in seq_along(seu_list)){
   invisible(obj)
 }
 .desi_finish_method <- function(obj, method, reduction, resolution, rds_path) {
-  obj <- ua_stamp_checkpoint(obj, ANALYSIS_SIGNATURE)
+  reuse <- ua_can_reuse_clustering(obj,method,reduction)
+  if (!reuse) obj <- ua_prepare_reduction(obj,reduction)
+  if (is.null(obj@misc$validated_legacy_import)) obj <- ua_stamp_checkpoint(obj, ANALYSIS_SIGNATURE)
   obj@misc$analysis_method <- method
   obj@misc$independent_pca <- identical(method, "PCA")
   obj@misc$method_stage <- "reduction"
+  obj <- ua_stage_facts(obj,method,"reduction",reduction,list(
+    n_dims=ncol(Embeddings(obj,reduction)),pca_parameters=obj@misc$pca_parameters,
+    integration_units=sort(unique(as.character(obj@meta.data[["integration_unit_id"]])))))
   save_rds_compact(obj, rds_path)
-  ua_record_method(od, method, "complete", stage = "reduction", rds_path = rds_path)
+  ua_record_method(od, method, "complete", stage = "reduction", rds_path = rds_path,obj=obj)
   if (identical(PIPELINE_STAGE, "reduction_only")) return(obj)
-  ua_record_method(od, method, "running", stage = "downstream", rds_path = rds_path)
-  # 保存済みHarmonyのクラスタをPCAへ流用せず、指定reductionから必ず作る。
-  obj <- .desi_cluster(obj, reduction, resolution)
-  obj@misc$method_stage <- "clustered"
-  save_rds_compact(obj, rds_path)
-  .desi_export_result(obj, method, rds_path)
-  obj@misc$method_stage <- "downstream"
-  save_rds_compact(obj, rds_path)
-  ua_record_method(od, method, "complete", stage = "downstream", rds_path = rds_path)
-  obj
+  active_stage <- "umap"
+  ua_record_method(od,method,"running",stage=active_stage,rds_path=rds_path)
+  tryCatch({
+    ua_validate_dims(obj,reduction,UMAP_DIMS_N,CLUSTER_DIMS_N)
+    if (!reuse) obj <- ua_cluster_reduction(obj,reduction,UMAP_DIMS_N,CLUSTER_DIMS_N,
+      UMAP_N_NEIGHBORS,UMAP_MIN_DIST,UMAP_METRIC,UMAP_SEED,
+      CLUSTER_K_PARAM,CLUSTER_METRIC,resolution,CLUSTER_ALGORITHM,
+      method=method,cluster_seed=CLUSTER_SEED,on_umap=function(s) {
+        ua_save_umap_stage(s,od,method,reduction,rds_path)
+        active_stage <<- "cluster"
+        ua_record_method(od,method,"running",stage="cluster",rds_path=rds_path)
+      }) else ua_save_umap_stage(obj,od,method,reduction,rds_path)
+    obj@misc$method_stage <- "clustered"
+    save_rds_compact(obj,rds_path)
+    ua_record_method(od,method,"complete",stage="cluster",rds_path=rds_path,obj=obj)
+    active_stage <- "export"
+    ua_record_method(od,method,"running",stage=active_stage,rds_path=rds_path)
+    .desi_export_result(obj, method, rds_path)
+    obj@misc$method_stage <- "downstream"
+    save_rds_compact(obj, rds_path)
+    ua_record_method(od,method,"complete",stage="export",rds_path=rds_path,obj=obj)
+    obj
+  },error=function(e) {
+    ua_record_method(od,method,"failed",conditionMessage(e),active_stage,rds_path)
+    stop(e)
+  })
 }
 .desi_load_method <- function(filename, method) {
-  path <- file.path(RESUME_DIR_PATH, filename)
+  path <- ua_import_method_path(method,file.path(RESUME_DIR_PATH, filename))
   if (!(isTRUE(RESUME_FROM_RDS) || .stage_downstream) || !file.exists(path)) return(NULL)
   obj <- load_rds_compact(path)
-  if (!ua_checkpoint_matches(obj, ANALYSIS_SIGNATURE)) stop("入力または解析条件が保存結果と一致しません: ", path)
+  if (!ua_checkpoint_matches(obj, ANALYSIS_SIGNATURE,source_path=path)) stop("入力または解析条件が保存結果と一致しません: ", path)
   # ★ ver74.0: reduction再利用とmetadataの再利用を分ける。下流統計は常に再計算する。
-  obj <- ua_refresh_checkpoint_metadata(obj, .section_manifest, ANALYSIS_SIGNATURE)
+  obj <- ua_refresh_checkpoint_metadata(obj, .section_manifest, ANALYSIS_SIGNATURE,source_path=path)
+  if (!inherits(obj,"Seurat") && is.list(obj)) obj <- obj$obj
+  if (!inherits(obj,"Seurat")) stop("インポート結果にSeurat objectがありません")
   # 保存済みの補正済みクラスタを独立PCAと誤認しない。
   if (identical(method, "PCA") && !isTRUE(obj@misc$independent_pca) &&
+      is.null(obj@misc$validated_legacy_import) &&
       !identical(filename, "DESI_Seurat_SingleSample.rds")) return(NULL)
   obj
 }
 
+# Method dispatch: imported reductions never require an absent PCA or original inputs.
+.imported_reductions <- ua_import_records()
+if (length(.imported_reductions)) {
+  ua_run_imported_reductions(.imported_reductions,od,function(obj,method,reduction) {
+    filename <- switch(method,pca="DESI_SeuratCombined_PCA_uncorrected.rds",harmony="DESI_SeuratCombined_harmony.rds",rpca="DESI_SeuratCombined_RPCA.rds")
+    resolution <- switch(method,pca=CLUSTER_RESOLUTION_SINGLE,harmony=CLUSTER_RESOLUTION_HARMONY,rpca=CLUSTER_RESOLUTION_RPCA)
+    .desi_finish_method(obj,method,reduction,resolution,file.path(rds_od,filename))
+  })
+} else {
 pca_filename <- if ((! .stage_downstream && length(seu_list) == 1L) || .has_single) {
   "DESI_Seurat_SingleSample.rds"
 } else "DESI_SeuratCombined_PCA_uncorrected.rds"
@@ -2389,8 +2433,8 @@ if (is.null(seu_pca)) {
 if (!("integration_unit_id" %in% names(seu_pca@meta.data))) {
   seu_pca$integration_unit_id <- as.character(seu_pca$sample)
 }
-seu_pca <- ua_prepare_reduction(seu_pca, "pca")
-seu_pca <- ua_stamp_checkpoint(seu_pca, ANALYSIS_SIGNATURE)
+if (!ua_can_reuse_clustering(seu_pca,"PCA","pca")) seu_pca <- ua_prepare_reduction(seu_pca, "pca")
+if (is.null(seu_pca@misc$validated_legacy_import)) seu_pca <- ua_stamp_checkpoint(seu_pca, ANALYSIS_SIGNATURE)
 seu_pca@misc$analysis_method <- "PCA"
 seu_pca@misc$independent_pca <- TRUE
 save_rds_compact(seu_pca, pca_path)
@@ -2425,7 +2469,10 @@ for (.method in c("Harmony", "RPCA")) {
     if (is.null(.obj)) {
       .obj <- ua_prepare_reduction(seu_pca, "pca")
       if (.method == "Harmony") {
+        set.seed(CORRECTION_SEED)
         .obj <- RunHarmony(object = .obj, group.by.vars = "integration_unit_id")
+        .obj@misc$correction_parameters <- list(method="Harmony",group_by="integration_unit_id",
+          seed=CORRECTION_SEED,pca_dims=ncol(Embeddings(.obj,"pca")))
       } else {
         # 生物学的な群ラベルやファイル数で分岐しない。
         .unit_list <- SplitObject(.obj, split.by = "integration_unit_id")
@@ -2434,11 +2481,15 @@ for (.method in c("Harmony", "RPCA")) {
         .unit_list <- lapply(.unit_list, function(x) .desi_run_pca(x, .features))
         .max_dims <- min(vapply(.unit_list, function(x) ncol(Embeddings(x, "pca")), integer(1)))
         .dims <- seq_len(min(30L, .max_dims))
+        set.seed(CORRECTION_SEED)
         .anchors <- FindIntegrationAnchors(object.list = .unit_list, anchor.features = .features,
                                            reduction = "rpca", dims = .dims)
         .obj <- IntegrateData(anchorset = .anchors, dims = .dims)
         DefaultAssay(.obj) <- "integrated"
         .obj <- .desi_run_pca(.obj)
+        .obj@misc$correction_parameters <- list(method="FindIntegrationAnchors/IntegrateData",
+          anchor_reduction="rpca",dims=.dims,feature_ids_hash=ua_digest(.features),
+          pca_seed=PCA_SEED,correction_seed=CORRECTION_SEED)
         rm(.unit_list, .anchors)
       }
     }
@@ -2455,6 +2506,8 @@ for (.method in c("Harmony", "RPCA")) {
                      stage = .method_stage, rds_path = .path)
     message("!! ", .method, ": ", conditionMessage(e), "（保存済みPCAは利用できます）")
   })
+}
+
 }
 
 # ---- Cleanup: 中間RDS（解析完了後は不要） ----

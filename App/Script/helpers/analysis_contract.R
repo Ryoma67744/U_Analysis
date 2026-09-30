@@ -221,14 +221,177 @@ ua_apply_sections <- function(obj,input_path,manifest=NULL,roi_col="annotation",
   obj@meta.data <- md[colnames(obj),,drop=FALSE]
   obj
 }
-ua_record_method <- function(outdir,method,status,reason="",stage="",rds_path="") {
+ua_stage_contract <- function() {
+  path <- ua_value(get0("STAGE_SIGNATURES_PATH", envir = .GlobalEnv, inherits = TRUE))
+  if (!nzchar(path)) return(list())
+  if (!file.exists(path)) stop("段階別実行条件がありません: ", path)
+  jsonlite::fromJSON(path, simplifyVector = FALSE)
+}
+ua_stage_request <- function(stage, method = "") {
+  contract <- ua_stage_contract()
+  key <- if (stage == "reduction") tolower(method) else stage
+  ua_value(contract$stage_signatures[[key]])
+}
+ua_digest <- function(value) digest::digest(value, algo = "sha256", serializeVersion = 2)
+ua_file_digest <- function(path) digest::digest(file = path, algo = "sha256", serialize = FALSE)
+ua_dependency_versions <- function() {
+  packages <- c("R", "Seurat", "SeuratObject", "Matrix", "harmony", "uwot", "igraph", "leidenbase")
+  setNames(lapply(packages, function(p) if (p == "R") as.character(getRversion()) else
+    if (requireNamespace(p, quietly = TRUE)) as.character(utils::packageVersion(p)) else NULL), packages)
+}
+ua_stage_facts <- function(obj, method, stage, reduction, effective = list()) {
+  contract <- ua_stage_contract()
+  old <- obj@misc$result_provenance
+  run_id <- ua_value(contract$run_id)
+  result_id <- if (identical(old$run_id, run_id) && identical(old$method,tolower(method)) &&
+    nzchar(ua_value(old$result_id))) old$result_id else
+    ua_digest(list(run_id, tolower(method), colnames(obj)))
+  result <- list(schema_version = 2L, run_id = run_id, result_id = result_id,
+    source_result_id = if (!is.null(old$result_id) && !identical(old$result_id, result_id)) old$result_id else
+      if (!is.null(old$source_result_id)) old$source_result_id else obj@misc$validated_legacy_import$source_result_id,
+    method = tolower(method), stage = stage, cell_ids_hash = ua_digest(colnames(obj)),
+    n_cells = ncol(obj), stages = if (identical(old$method,tolower(method))) old$stages else list())
+  facts <- list(request_signature = ua_stage_request(stage, method), effective = effective,
+    dependencies = ua_dependency_versions(), reduction = reduction,
+    cell_ids_hash = result$cell_ids_hash)
+  if (stage == "reduction" && !is.null(obj@misc$validated_legacy_import)) {
+    facts$origin <- "validated_legacy_import"
+    facts$import_record <- obj@misc$validated_legacy_import
+    facts$dependencies <- NULL # current reader versions are not original calculation versions
+  }
+  if (reduction %in% names(obj@reductions)) {
+    facts$source_assay <- tryCatch(SeuratObject::DefaultAssay(obj[[reduction]]), error=function(e) NA_character_)
+    facts$reduction_hash <- ua_digest(Seurat::Embeddings(obj, reduction))
+  }
+  if (stage == "reduction") {
+    facts$feature_ids_hash <- ua_digest(rownames(obj))
+    facts$variable_features_hash <- ua_digest(Seurat::VariableFeatures(obj))
+    facts$pca_parameters <- obj@misc$pca_parameters
+    if ("integration_unit_id" %in% names(obj@meta.data))
+      facts$integration_assignment_hash <- ua_digest(setNames(as.character(obj$integration_unit_id),colnames(obj)))
+    facts$correction_parameters <- obj@misc$correction_parameters
+    prior <- old$stages$reduction
+    if (identical(old$method,tolower(method)) && !is.null(prior) &&
+        identical(prior$request_signature,facts$request_signature) &&
+        identical(prior$reduction_hash,facts$reduction_hash) &&
+        identical(prior$cell_ids_hash,facts$cell_ids_hash) &&
+        identical(prior$feature_ids_hash,facts$feature_ids_hash) &&
+        identical(prior$variable_features_hash,facts$variable_features_hash)) {
+      # Republishing an unchanged reduction does not calculate it again. Keep
+      # the original effective arguments and dependency versions as evidence.
+      facts <- prior
+    }
+  }
+  if (stage == "umap") facts$embedding_hash <- ua_digest(Seurat::Embeddings(obj, "umap"))
+  if (stage %in% c("cluster","deg")) facts$assignment_hash <- ua_digest(setNames(as.character(Seurat::Idents(obj)), colnames(obj)))
+  if (is.null(facts$artifact_id)) facts$artifact_id <- ua_digest(facts)
+  result$stages[[stage]] <- facts
+  result$embedding_space <- if (!is.null(result$stages$umap)) reduction else NULL
+  result$cluster_space <- if (!is.null(result$stages$cluster)) reduction else NULL
+  result$cluster_kind <- if (!is.null(result$stages$cluster)) "computed" else "none"
+  obj@misc$result_provenance <- result
+  obj
+}
+ua_save_umap_stage <- function(obj,outdir,method,reduction,path) {
+  embedding <- Seurat::Embeddings(obj,"umap")
+  if(any(!is.finite(embedding)) || anyDuplicated(rownames(embedding))) stop("UMAP座標が不正です")
+  sidecar <- file.path(dirname(path),paste0("UMAP_",tolower(method),"_umap_embedding.rds"))
+  temp <- tempfile(".umap-",tmpdir=dirname(sidecar))
+  on.exit(unlink(temp),add=TRUE)
+  saveRDS(embedding,temp)
+  if (!identical(readRDS(temp),embedding)) stop("UMAP保存の検証に失敗しました")
+  .rds_io_publish(temp,sidecar)
+  ua_record_method(outdir,method,"complete",stage="umap",rds_path=sidecar,obj=obj)
+  invisible(sidecar)
+}
+ua_find_markers <- function(obj,outdir,method) {
+  dir.create(file.path(outdir,"RDS_Files"),recursive=TRUE,showWarnings=FALSE)
+  path <- file.path(outdir,"RDS_Files",paste0("deg_",tolower(method),"_v2.rds"))
+  assignment <- ua_digest(setNames(as.character(Seurat::Idents(obj)),colnames(obj)))
+  ua_record_method(outdir,method,"running",stage="deg",rds_path=path)
+  tryCatch({
+    if (!"Spatial" %in% names(obj@assays)) stop("DEGに必要な測定assayがありません")
+    Seurat::DefaultAssay(obj) <- "Spatial"
+    # Content binds the cache to measured values, not merely to the cluster count.
+    values <- Seurat::GetAssayData(obj,assay="Spatial",layer="data")
+    if (!nrow(values) || !ncol(values)) stop("DEGに必要な正規化済み測定値がありません")
+    key <- ua_digest(list(request=ua_stage_request("deg",method),assignment=assignment,
+      measurement=ua_digest(values),dependencies=ua_dependency_versions()))
+    rm(values)
+    candidates <- path
+    source <- ua_value(get0("RESUME_DIR_PATH",envir=.GlobalEnv,inherits=TRUE))
+    if (nzchar(source)) candidates <- c(candidates,file.path(source,basename(path)))
+    cached <- NULL
+    if (!identical(ua_stage_contract()$execution_mode,"downstream_new")) for (candidate in candidates) {
+      if (!file.exists(candidate)) next
+      got <- tryCatch(readRDS(candidate),error=function(e) NULL)
+      if (is.list(got) && identical(got$signature,key) && is.data.frame(got$data)) { cached<-got$data;break }
+    }
+    deg <- if (!is.null(cached)) cached else Seurat::FindAllMarkers(obj,
+      only.pos=FALSE,min.pct=0,logfc.threshold=0,return.thresh=1,test.use="wilcox")
+    if (is.null(deg)) deg <- data.frame()
+    if (nrow(deg)) deg$p_val_adj <- p.adjust(deg$p_val,method="BH")
+    temp <- tempfile(".deg-",tmpdir=dirname(path));on.exit(unlink(temp),add=TRUE)
+    saveRDS(list(signature=key,data=deg,assignment_hash=assignment),temp)
+    check <- readRDS(temp)
+    if (!identical(check$data,deg)) stop("DEG保存の検証に失敗しました")
+    .rds_io_publish(temp,path)
+    ua_record_method(outdir,method,"complete",stage="deg",rds_path=path,
+      effective=list(signature=key,assignment_hash=assignment,assay="Spatial",test="wilcox",
+        only_pos=FALSE,min_pct=0,logfc_threshold=0,return_thresh=1,adjust="BH"))
+    deg
+  },error=function(e) {
+    ua_record_method(outdir,method,"failed",conditionMessage(e),"deg",path)
+    stop(e)
+  })
+}
+ua_record_method <- function(outdir,method,status,reason="",stage="",rds_path="",obj=NULL,effective=list()) {
   dir.create(outdir,recursive=TRUE,showWarnings=FALSE)
   path <- file.path(outdir,"analysis_methods.json")
   state <- if(file.exists(path)) tryCatch(jsonlite::fromJSON(path,simplifyVector=FALSE),error=function(e)list()) else list()
-  state$schema_version <- 1L
+  state$schema_version <- 2L
+  contract <- ua_stage_contract()
+  state$run_id <- ua_value(contract$run_id)
+  state$parent_run_id <- contract$parent_run_id
+  state$intent <- if (nzchar(ua_value(contract$execution_mode))) contract$execution_mode else "resume_same"
   if(is.null(state$methods)) state$methods <- list()
-  state$methods[[tolower(method)]] <- list(status=status,stage=stage,reason=reason,rds_path=rds_path,
-    updated_at=format(Sys.time(),"%Y-%m-%dT%H:%M:%SZ",tz="UTC"))
+  key <- tolower(method)
+  stage <- if (stage == "downstream") "export" else stage
+  row <- state$methods[[key]]
+  if (is.null(row)) row <- list(stages=list())
+  now <- format(Sys.time(),"%Y-%m-%dT%H:%M:%SZ",tz="UTC")
+  relative <- rds_path
+  if (nzchar(rds_path)) {
+    base <- paste0(normalizePath(outdir,winslash="/",mustWork=TRUE),"/")
+    full <- normalizePath(rds_path,winslash="/",mustWork=FALSE)
+    if (!startsWith(full,base)) stop("成果物は結果フォルダ内へ保存してください: ",rds_path)
+    relative <- substring(full,nchar(base)+1L)
+  }
+  item <- list(status=status,reason=reason,rds_path=relative,updated_at=now,
+    signature=ua_stage_request(stage,method),effective=effective)
+  if (status == "complete") {
+    if (!nzchar(rds_path) || !file.exists(rds_path)) stop("未保存の段階をcompleteにできません: ",stage)
+    item$artifact_sha256 <- ua_file_digest(rds_path)
+    if (stage %in% c("reduction","cluster","export")) {
+      row$artifact_sha256 <- item$artifact_sha256
+      row$artifact_id <- item$artifact_sha256
+    }
+    # Same RDS gains another stage; earlier numerical facts remain unchanged.
+    for (name in names(row$stages)) if (identical(row$stages[[name]]$rds_path,relative))
+      row$stages[[name]]$artifact_sha256 <- item$artifact_sha256
+  }
+  if (inherits(obj,"Seurat")) {
+    prov <- obj@misc$result_provenance
+    row$result_id <- prov$result_id
+    row$source_result_id <- prov$source_result_id
+    row$provenance <- prov
+    if (!is.null(prov$stages[[stage]])) item$numerical <- prov$stages[[stage]]
+  }
+  row$stages[[stage]] <- item
+  row$status <- status; row$stage <- stage; row$reason <- reason
+  if(nzchar(relative) && stage %in% c("reduction","cluster","export")) row$rds_path <- relative
+  row$updated_at <- now; row$run_id <- state$run_id
+  state$methods[[key]] <- row
   tmp <- tempfile(".analysis_methods-",tmpdir=outdir)
   jsonlite::write_json(state,tmp,auto_unbox=TRUE,pretty=TRUE,null="null")
   if(!file.rename(tmp,path)) {
@@ -244,6 +407,14 @@ ua_stamp_checkpoint <- function(obj, signature,
     reduction_signature = ua_signature_setting("REDUCTION_SIGNATURE"),
     metadata_signature = ua_signature_setting("METADATA_SIGNATURE")) {
   if (inherits(obj, "Seurat")) {
+    contract <- ua_stage_contract()
+    if (identical(as.integer(contract$signature_schema_version), 2L)) {
+      if (is.null(obj@misc$legacy_signatures) && is.null(obj@misc$stage_contract) &&
+          nzchar(ua_value(obj@misc$analysis_signature)))
+        obj@misc$legacy_signatures <- list(analysis_signature=obj@misc$analysis_signature,
+          reduction_signature=obj@misc$reduction_signature)
+      obj@misc$stage_contract <- contract
+    }
     obj@misc$analysis_signature <- signature
     obj@misc$reduction_signature <- reduction_signature
     obj@misc$metadata_signature <- metadata_signature
@@ -255,8 +426,33 @@ ua_stamp_checkpoint <- function(obj, signature,
   obj
 }
 ua_checkpoint_matches <- function(obj, signature,
-    reduction_signature = ua_signature_setting("REDUCTION_SIGNATURE")) {
+    reduction_signature = ua_signature_setting("REDUCTION_SIGNATURE"), source_path="") {
+  if (nzchar(source_path) && ua_validated_legacy_import(obj, source_path)) return(TRUE)
+  if (nzchar(source_path) && identical(as.integer(ua_stage_contract()$signature_schema_version),2L)) {
+    root <- dirname(source_path)
+    if (tolower(basename(root))=="rds_files") root <- dirname(root)
+    manifest_path <- file.path(root,"analysis_methods.json")
+    if (!file.exists(manifest_path)) return(FALSE)
+    record <- jsonlite::fromJSON(manifest_path,simplifyVector=FALSE)
+    if (!identical(as.integer(record$schema_version),2L)) return(FALSE)
+    full <- ua_path(source_path)
+    hits <- Filter(function(row) {
+      p <- ua_value(row$rds_path)
+      if (!nzchar(p)) return(FALSE)
+      candidate <- if (grepl("^(/|[A-Za-z]:)",p)) p else file.path(root,p)
+      identical(ua_path(candidate),full)
+    },record$methods)
+    if (length(hits)!=1L || !identical(hits[[1L]]$artifact_sha256,ua_file_digest(source_path)))
+      return(FALSE)
+  }
   if (inherits(obj, "Seurat")) {
+    contract <- ua_stage_contract()
+    if (identical(as.integer(contract$signature_schema_version),2L)) {
+      stored <- obj@misc$stage_contract
+      return(identical(as.integer(stored$signature_schema_version),2L) &&
+        nzchar(ua_value(stored$stage_signatures$upstream)) &&
+        identical(stored$stage_signatures$upstream,contract$stage_signatures$upstream))
+    }
     if (nzchar(reduction_signature) && nzchar(ua_value(obj@misc$reduction_signature)))
       return(identical(obj@misc$reduction_signature, reduction_signature))
     if (is.null(signature) || !nzchar(signature)) return(!nzchar(reduction_signature))
@@ -269,8 +465,96 @@ ua_checkpoint_matches <- function(obj, signature,
   }
   FALSE
 }
+ua_validated_legacy_import <- function(obj, source_path) {
+  path <- ua_value(get0("LEGACY_IMPORT_MANIFEST_PATH", envir=.GlobalEnv,inherits=TRUE))
+  expected <- ua_value(get0("LEGACY_IMPORT_MANIFEST_SHA256", envir=.GlobalEnv,inherits=TRUE))
+  if (!nzchar(path) || !nzchar(expected)) return(FALSE)
+  if (!file.exists(path) || !identical(ua_file_digest(path),expected)) stop("旧結果インポートの検証記録が変更されています")
+  manifest <- jsonlite::fromJSON(path,simplifyVector=FALSE)
+  if (!identical(as.integer(manifest$schema_version),1L) ||
+      !identical(manifest$kind,"validated_reduction_import")) stop("旧結果インポートの形式が不正です")
+  base <- paste0(normalizePath(dirname(path),winslash="/",mustWork=TRUE),"/")
+  full <- normalizePath(source_path,winslash="/",mustWork=TRUE)
+  if (!startsWith(full,base)) return(FALSE)
+  hits <- Filter(function(x) identical(x$path,substring(full,nchar(base)+1L)),manifest$artifacts)
+  if (length(hits)!=1L) return(FALSE)
+  record <- hits[[1L]]
+  if (!identical(ua_file_digest(full),record$sha256)) stop("インポートRDSの内容が検証時と異なります")
+  s <- if(inherits(obj,"Seurat")) obj else obj$obj
+  if (!inherits(s,"Seurat") || !record$reduction %in% names(s@reductions) ||
+      ncol(s)!=as.integer(record$n_cells) ||
+      ncol(Seurat::Embeddings(s,record$reduction))!=as.integer(record$n_dims)) stop("インポートRDSの構造が検証記録と一致しません")
+  TRUE
+}
+ua_import_method_path <- function(method, fallback) {
+  path <- ua_value(get0("LEGACY_IMPORT_MANIFEST_PATH",envir=.GlobalEnv,inherits=TRUE))
+  expected <- ua_value(get0("LEGACY_IMPORT_MANIFEST_SHA256",envir=.GlobalEnv,inherits=TRUE))
+  if(!nzchar(path)) return(fallback)
+  if(!nzchar(expected) || !file.exists(path) || !identical(ua_file_digest(path),expected))
+    stop("旧結果インポートの検証記録が変更されています")
+  manifest <- jsonlite::fromJSON(path,simplifyVector=FALSE)
+  hits <- Filter(function(x) identical(tolower(x$method),tolower(method)),manifest$artifacts)
+  if(length(hits)>1L) stop("同一手法のインポートが複数あり一意に選択できません")
+  if(!length(hits)) return(fallback)
+  candidate <- normalizePath(file.path(dirname(path),hits[[1L]]$path),winslash="/",mustWork=TRUE)
+  root <- paste0(normalizePath(dirname(path),winslash="/",mustWork=TRUE),"/")
+  if(!startsWith(candidate,root)) stop("インポートが結果フォルダ外を参照しています")
+  candidate
+}
+ua_import_records <- function() {
+  path <- ua_value(get0("LEGACY_IMPORT_MANIFEST_PATH",envir=.GlobalEnv,inherits=TRUE))
+  if (!nzchar(path)) return(list())
+  expected <- ua_value(get0("LEGACY_IMPORT_MANIFEST_SHA256",envir=.GlobalEnv,inherits=TRUE))
+  if (!nzchar(expected) || !file.exists(path) || !identical(ua_file_digest(path),expected))
+    stop("旧結果インポートの検証記録が変更されています")
+  manifest <- jsonlite::fromJSON(path,simplifyVector=FALSE)
+  if (!identical(as.integer(manifest$schema_version),1L) ||
+      !identical(manifest$kind,"validated_reduction_import") || !length(manifest$artifacts))
+    stop("旧結果インポートの形式が不正です")
+  methods <- vapply(manifest$artifacts,function(x) tolower(ua_value(x$method)),character(1))
+  if (anyDuplicated(methods) || any(!methods %in% c("pca","harmony","rpca")))
+    stop("インポート手法が不正または重複しています")
+  setNames(manifest$artifacts,methods)
+}
+ua_run_imported_reductions <- function(records,outdir,finish) {
+  if (!identical(ua_value(get0("PIPELINE_STAGE",envir=.GlobalEnv,inherits=TRUE)),"downstream_from_reduction"))
+    stop("検証済みインポートは保存reductionから下流解析してください")
+  for (method in names(records)) {
+    record <- records[[method]]
+    tryCatch({
+      path <- ua_import_method_path(method,"")
+      obj <- load_rds_compact(path)
+      if (!ua_validated_legacy_import(obj,path)) stop("インポート検証に一致するreductionがありません")
+      obj <- ua_refresh_checkpoint_metadata(obj,NULL,ua_signature_setting("ANALYSIS_SIGNATURE"),source_path=path)
+      if (!inherits(obj,"Seurat")) obj <- obj$obj
+      finish(obj,method,record$reduction)
+    },error=function(e) {
+      # Finish functions record their precise UMAP/cluster/DEG failure themselves.
+      state_path <- file.path(outdir,"analysis_methods.json")
+      row <- if(file.exists(state_path)) jsonlite::fromJSON(state_path,simplifyVector=FALSE)$methods[[method]] else NULL
+      if (is.null(row) || !identical(row$status,"failed"))
+        ua_record_method(outdir,method,"failed",conditionMessage(e),"reduction")
+      message("!! ",method," インポート下流処理: ",conditionMessage(e))
+    })
+  }
+  invisible(NULL)
+}
 ua_refresh_checkpoint_metadata <- function(obj, manifest, signature,
-    metadata_signature = ua_signature_setting("METADATA_SIGNATURE")) {
+    metadata_signature = ua_signature_setting("METADATA_SIGNATURE"), source_path="") {
+  if (nzchar(source_path) && ua_validated_legacy_import(obj,source_path)) {
+    records <- ua_import_records()
+    imported_record <- Filter(function(record) identical(
+      ua_path(ua_import_method_path(record$method,"")),ua_path(source_path)),records)[[1L]]
+    mark <- function(s) {
+      if(inherits(s,"Seurat")) s@misc$validated_legacy_import <- list(
+        source_path=source_path,source_sha256=ua_file_digest(source_path),
+        source_result_id=imported_record$source_result_id,
+        manifest_sha256=ua_value(get0("LEGACY_IMPORT_MANIFEST_SHA256",envir=.GlobalEnv)),
+        original_signatures=list(analysis=s@misc$analysis_signature,reduction=s@misc$reduction_signature))
+      s
+    }
+    return(if(inherits(obj,"Seurat")) mark(obj) else lapply(obj,mark))
+  }
   if (is.list(obj) && !inherits(obj, "Seurat") && !is.data.frame(obj))
     return(lapply(obj, ua_refresh_checkpoint_metadata, manifest = manifest,
       signature = signature, metadata_signature = metadata_signature))
@@ -336,18 +620,60 @@ ua_prepare_reduction <- function(obj,reduction) {
   for(name in grep("_snn_res",names(obj@meta.data),value=TRUE)) obj@meta.data[[name]] <- NULL
   Seurat::Idents(obj) <- factor(rep("unclustered",ncol(obj)))
   obj@misc$cluster_reduction <- reduction
+  obj@misc$result_provenance$stages$umap <- NULL
+  obj@misc$result_provenance$stages$cluster <- NULL
+  obj@misc$result_provenance$stages$deg <- NULL
+  obj@misc$result_provenance$stages$export <- NULL
+  obj@misc$result_provenance$embedding_space <- NULL
+  obj@misc$result_provenance$cluster_space <- NULL
+  obj@misc$result_provenance$cluster_kind <- "none"
   obj
 }
-ua_cluster_reduction <- function(obj,reduction,umap_dims,cluster_dims,n_neighbors,min_dist,umap_metric,seed,k_param,cluster_metric,resolution,algorithm) {
-  obj <- ua_prepare_reduction(obj, reduction)
+ua_validate_dims <- function(obj,reduction,umap_dims,cluster_dims) {
+  if (!reduction %in% names(obj@reductions)) stop("必要なreductionがありません: ",reduction)
   available <- ncol(Seurat::Embeddings(obj,reduction))
+  requested <- c(umap_dims,cluster_dims)
+  if (length(requested)!=2L || any(!is.finite(requested)) || any(requested<1L) ||
+      any(requested!=as.integer(requested))) stop("使用次元数は正の整数で指定してください")
+  if (any(requested>available)) stop(sprintf(
+    "%s: 保存次元%dに対してUMAP%d/クラスタ%dを要求しました。使用次元を明示的に変更するかPCAから新規解析してください。",
+    reduction,available,umap_dims,cluster_dims))
   if(ncol(obj)<4L || available<2L) stop("UMAP/クラスタリングに必要な画素/主成分が不足しています")
-  obj <- Seurat::RunUMAP(obj,reduction=reduction,dims=seq_len(min(umap_dims,available)),
+  invisible(TRUE)
+}
+ua_can_reuse_clustering <- function(obj,method,reduction) {
+  if (identical(ua_stage_contract()$execution_mode,"downstream_new")) return(FALSE)
+  prov <- obj@misc$result_provenance
+  facts <- prov$stages
+  if (!identical(prov$method,tolower(method)) || !identical(prov$cluster_kind,"computed") ||
+      !all(c("umap",reduction)%in%names(obj@reductions)) ||
+      !"seurat_clusters" %in% names(obj@meta.data)) return(FALSE)
+  identical(facts$umap$request_signature,ua_stage_request("umap",method)) &&
+    identical(facts$cluster$request_signature,ua_stage_request("cluster",method)) &&
+    nzchar(ua_stage_request("cluster",method)) &&
+    identical(facts$cluster$reduction,reduction) &&
+    identical(facts$cluster$reduction_hash,ua_digest(Seurat::Embeddings(obj,reduction))) &&
+    identical(facts$umap$embedding_hash,ua_digest(Seurat::Embeddings(obj,"umap"))) &&
+    identical(facts$cluster$assignment_hash,ua_digest(setNames(as.character(Seurat::Idents(obj)),colnames(obj)))) &&
+    identical(as.character(Seurat::Idents(obj)),as.character(obj$seurat_clusters))
+}
+ua_cluster_reduction <- function(obj,reduction,umap_dims,cluster_dims,n_neighbors,min_dist,umap_metric,seed,k_param,cluster_metric,resolution,algorithm,
+                                 method=reduction,cluster_seed=seed,on_umap=NULL) {
+  ua_validate_dims(obj,reduction,umap_dims,cluster_dims)
+  obj <- ua_prepare_reduction(obj, reduction)
+  obj <- Seurat::RunUMAP(obj,reduction=reduction,dims=seq_len(umap_dims),
     n.neighbors=min(n_neighbors,ncol(obj)-1L),min.dist=min_dist,metric=umap_metric,seed.use=seed)
-  obj <- Seurat::FindNeighbors(obj, reduction = reduction,dims=seq_len(min(cluster_dims,available)),
+  obj <- ua_stage_facts(obj,method,"umap",reduction,list(dims=seq_len(umap_dims),
+    n_neighbors=min(n_neighbors,ncol(obj)-1L),min_dist=min_dist,metric=umap_metric,seed=seed))
+  if(is.function(on_umap)) on_umap(obj)
+  obj <- Seurat::FindNeighbors(obj, reduction = reduction,dims=seq_len(cluster_dims),
     k.param=min(k_param,ncol(obj)-1L),annoy.metric=cluster_metric)
-  obj <- Seurat::FindClusters(obj, resolution = resolution,algorithm=algorithm,random.seed=seed)
+  obj <- Seurat::FindClusters(obj, resolution = resolution,algorithm=algorithm,random.seed=cluster_seed)
   Seurat::Idents(obj) <- obj$seurat_clusters
   obj@misc$cluster_reduction <- reduction
+  obj <- ua_stage_facts(obj,method,"cluster",reduction,list(dims=seq_len(cluster_dims),
+    k_param=min(k_param,ncol(obj)-1L),metric=cluster_metric,resolution=resolution,
+    algorithm=algorithm,seed=cluster_seed))
+  obj <- ua_stamp_checkpoint(obj,ua_signature_setting("ANALYSIS_SIGNATURE"))
   obj
 }

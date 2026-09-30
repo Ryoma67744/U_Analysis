@@ -235,7 +235,8 @@ def set_interactive_folders_from_sub_project(sub_id, project_id, skip_reset,
     if not sub:
         return (no_update, no_update, "データを読み込んでください", no_update,
                 {"display": "none"}, False, {"display": "none"})
-    result_dir = sub.get("last_result_dir") or sub.get("output_dir", "")
+    from app.services.project_result_refs import resolve_result_dir
+    result_dir = resolve_result_dir(sub, "analysis")
     data_folder = sub.get("data_folder", "")
     ms_instrument = sub.get("ms_instrument", "TIMS")
     # 未設定フォルダの警告メッセージ

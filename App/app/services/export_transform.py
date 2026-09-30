@@ -43,6 +43,7 @@ def append_cluster_region_columns(
     match_sample_fn,
     stats: "dict | None" = None,
     extra_lookups: "dict | None" = None,
+    join_keys: "list | None" = None,
 ) -> "pd.DataFrame":
     """df に手法別 UMAP クラスタ列（＋領域名列）をベクトル辞書引きで付与して返す。
 
@@ -137,6 +138,8 @@ def append_cluster_region_columns(
                     keys[i] = (stem_match, round(float(xv), 4), round(float(yv), 4))
 
     keys_ser = pd.Series(keys, index=df.index, dtype=object)
+    if join_keys is not None:
+        join_keys.extend(keys)
 
     matched = 0
     best_hit = None

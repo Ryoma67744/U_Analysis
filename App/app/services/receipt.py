@@ -219,6 +219,9 @@ def build_receipt(params: dict,
     return {
         "receipt_version": RECEIPT_VERSION,
         "schema": "schema.org/CreateAction (Process Run Crate-aligned)",
+        "calculation_contract": {key: (params.get("runtime_parameters") or params).get(key) for key in (
+            "signature_schema_version", "stage_signatures", "run_id", "parent_run_id",
+            "execution_mode", "legacy_signatures", "validated_legacy_import", "legacy_import_consistency")},
         "startTime": started,
         "endTime": ended,
         "elapsed_seconds": elapsed,
@@ -408,6 +411,12 @@ def finalize_receipt(output_dir, app_version: Optional[str] = None,
         ended_at=ended_at,
         outputs_status=outputs_status,
     )
+    method_path = out / "analysis_methods.json"
+    if method_path.is_file():
+        try:
+            receipt["method_results"] = json.loads(method_path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            receipt["method_results_error"] = "手法別の保存状態を読み取れませんでした"
     write_receipt(output_dir, receipt)
     return receipt
 

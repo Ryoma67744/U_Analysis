@@ -1,5 +1,6 @@
 """★ ver75.1: 数値出力の対象がUI遷移で黙って広がらないことを検証する。"""
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -121,7 +122,7 @@ def test_removed_ids_are_not_replaced_with_all(monkeypatch, catalog):
 def test_loading_never_calls_catalog_loader(monkeypatch):
     result = callbacks.refresh_export_catalog("old.rds", {}, "Harmony", ["Harmony"],
                                               "/result/B", 0, {"display": "block"})
-    assert result["scope"] == "/result/B"
+    assert result["scope"] == str(Path("/result/B").resolve())
     assert result["signature"] is None and "読み込み中" in result["error"]
 
 

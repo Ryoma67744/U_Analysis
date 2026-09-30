@@ -35,6 +35,20 @@ from app.utils.cluster_label_placement import compute_label_anchors
 
 logger = logging.getLogger("msi.interactive.umap")
 
+
+def _label_embedding_axes(fig, df):
+    """★ ver77.0: 旧 RDS の PC1–PC2 代替表示を UMAP と呼ばない。"""
+    kind = df.attrs.get("result_descriptor", {}).get("embedding", {}).get("kind")
+    if kind == "pca2d":
+        title = fig.layout.title.text or ""
+        title = title.replace("UMAP", "PC1–PC2")
+        if "PC1" not in title:
+            title = (title + " / " if title else "") + "PC1–PC2"
+        meta = dict(fig.layout.meta or {})
+        meta["embedding_kind"] = kind
+        fig.update_layout(title_text=title, xaxis_title="PC1", yaxis_title="PC2", meta=meta)
+    return fig
+
 def _with_section_groups(df, rds_path, groups):
     from app.services.section_group_metadata import overlay_result_metadata, filter_groups, UNASSIGNED_GROUP
     df = overlay_result_metadata(df, rds_path)
@@ -266,6 +280,7 @@ def _build_umap_integrated_fig(df, color_by, highlight_clusters,
         showlegend=False, hoverinfo="skip", uid="umap_poly_draft",
     ), role="draft", delta=None)
     _tag_umap_label_scope(fig, label_scope)
+    _label_embedding_axes(fig, df)
     return fig
 
 
@@ -421,6 +436,7 @@ def _build_umap_per_sample_graphs(df, color_map, highlight_clusters,
         _meta["umap_style"] = _style
         fig.update_layout(meta=_meta)
         _tag_umap_label_scope(fig, label_scope, sample=str(s))
+        _label_embedding_axes(fig, df)
 
         # 出力(一括保存/サムネ)は各図に凡例を残す → 先にスナップショット。
         if collect_figures is not None:
@@ -508,6 +524,7 @@ def _build_umap_facet_graphs(df, facets, color_map, marker_size=2,
             yaxis=dict(scaleanchor="x", showgrid=False, showline=False,
                        zeroline=False, showticklabels=False, title="", range=yr),
             plot_bgcolor="white", showlegend=False)
+        _label_embedding_axes(fig, df)
         if collect_figures is not None:
             collect_figures.append((f"UMAP_facet_{label}", fig.to_dict()))
         cfg = dict(_UMAP_PER_SAMPLE_CONFIG)

@@ -468,21 +468,33 @@ def get_sub_project_settings(
 
 
 def save_sub_project_result_dir(
-    project_id: str, sub_id: str, result_dir: str
+    project_id: str, sub_id: str, result_dir: str, *, data_folder: str = ""
 ) -> bool:
-    """サブプロジェクトに最新の解析結果ディレクトリを保存"""
+    """検証済み段階に応じて参照を登録し、PreFlightで解析参照を消さない。"""
+    from app.services.project_result_refs import describe_result_reference, apply_result_reference
+    reference = describe_result_reference(result_dir)
     with _projects_lock:
         data = _load_all()
         for p in data["projects"]:
             if p["id"] == project_id:
                 for s in p.get("sub_projects", []):
                     if s["id"] == sub_id:
-                        s["last_result_dir"] = result_dir
+                        s.update(apply_result_reference(s, reference))
+                        # ★ ver77.0: The result pointer and its raw input are one
+                        # transaction. A late run must not overwrite the active
+                        # run's input, nor may PreFlight replace the viewer input.
+                        refs = s.get("result_refs") or {}
+                        active = refs.get("analysis") or refs.get("reduction") or {}
+                        active_path = active.get("path") or s.get("last_result_dir")
+                        if (data_folder and active_path and not active.get("unresolved") and
+                                Path(active_path).resolve() == Path(result_dir).resolve()):
+                            s["data_folder"] = data_folder
                         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
                         s["last_modified"] = now
                         p["last_modified"] = now
                         _save_all(data)
-                        _write_meta_to_folder(project_id, sub_id)
+                        _write_meta_to_folder(project_id, sub_id, result_dir=result_dir,
+                                              run_id=reference["run_id"])
                         return True
     return False
 
@@ -525,7 +537,7 @@ def delete_sub_project(
 # メタデータバックアップ・スキャン・復元
 # =========================================================================
 
-def _write_meta_to_folder(project_id: str, sub_id: str) -> None:
+def _write_meta_to_folder(project_id: str, sub_id: str, *, result_dir=None, run_id=None) -> None:
     """サブプロジェクトのメタデータを結果フォルダに自動保存する。
 
     last_result_dir が存在しない場合はスキップ（解析前など）。
@@ -535,7 +547,7 @@ def _write_meta_to_folder(project_id: str, sub_id: str) -> None:
     sub = get_sub_project(project_id, sub_id)
     if not project or not sub:
         return
-    result_dir = sub.get("last_result_dir", "")
+    result_dir = result_dir or sub.get("last_result_dir", "")
     if not result_dir or not Path(result_dir).is_dir():
         return
 
@@ -544,15 +556,20 @@ def _write_meta_to_folder(project_id: str, sub_id: str) -> None:
         k: v for k, v in project.items() if k != "sub_projects"
     }
     meta = {
-        "version": "1.0",
+        "version": "2.0" if sub.get("result_refs") else "1.0",
         "project": proj_info,
         "sub_project": dict(sub),
         "saved_at": datetime.now().isoformat(timespec="seconds"),
     }
+    if run_id is None:
+        run_id = next((r.get("run_id") for r in (sub.get("result_refs") or {}).values()
+                       if isinstance(r, dict) and r.get("path") == result_dir), None)
+    if run_id:
+        meta["this_run_id"] = run_id
     meta_path = Path(result_dir) / _META_FILENAME
     try:
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
+        from app.utils.file_locks import atomic_write_json
+        atomic_write_json(meta, meta_path)
     except Exception as exc:
         logger.error("メタデータ書き出し失敗: %s", exc)
 
@@ -633,7 +650,8 @@ def restore_projects_from_meta(
                 for key in ("last_analysis_settings", "last_result_dir"):
                     if key in sub_info:
                         extra[key] = sub_info[key]
-                extra["last_result_dir"] = found_dir
+                from app.services.project_result_refs import restored_result_patch
+                extra.update(restored_result_patch(meta, found_dir))
 
                 create_sub_project(
                     project_id=proj_id,
@@ -666,9 +684,10 @@ def restore_projects_from_meta(
             if existing_proj:
                 existing_sub = get_sub_project(proj_id, sub_id)
                 if existing_sub:
+                    from app.services.project_result_refs import restored_result_patch
                     update_sub_project(
                         proj_id, sub_id,
-                        {"last_result_dir": found_dir},
+                        restored_result_patch(meta, found_dir),
                     )
                     messages.append(
                         f"🔄 パス更新: {proj_info.get('name', '')} / "

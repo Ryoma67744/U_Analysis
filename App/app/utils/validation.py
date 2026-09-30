@@ -48,6 +48,10 @@ PARAM_BOUNDS = {
     "umap_min_dist_input": (0.0, 1.0, 0.3, "UMAP 最小距離"),
     "umap_n_neighbors_input": (2, 100, 30, "近傍数"),
     "umap_dims_input": (2, 50, 30, "次元数"),
+    "downstream_cluster_dims": (2, None, None, "クラスタ次元数"),
+    "downstream_cluster_k": (1, None, None, "クラスタ近傍数"),
+    "downstream_cluster_resolution": (0.001, None, None, "クラスタ解像度"),
+    "downstream_cluster_seed": (0, 2147483647, None, "クラスタ乱数seed"),
 
     # =====================================================================
     # ver52.3 ⑤: 画面の数値入力 28 個のうち **20 個が無検証**だった分を結線する。
@@ -201,3 +205,24 @@ def validate_param(param_id, value):
         return (True, "")
     lo, hi, _default, label = spec
     return check_range(value, lo, hi, allow_blank=param_id not in REQUIRED_NUMERIC_INPUTS, name=label)
+
+
+def validate_downstream_parameters(params):
+    """Validate effective cluster arguments; blank overrides retain saved values."""
+    import math
+    fields = {"cluster_dims_n": "downstream_cluster_dims", "cluster_k_param": "downstream_cluster_k",
+              "cluster_resolution": "downstream_cluster_resolution", "cluster_seed": "downstream_cluster_seed"}
+    for key, component in fields.items():
+        value = params.get(key)
+        if value is None or value == "":
+            continue
+        ok, reason = validate_param(component, value)
+        if not ok or isinstance(value, bool):
+            raise ValueError(reason or f"{key}: 数値を指定してください。")
+        number = float(value)
+        if not math.isfinite(number) or (key != "cluster_resolution" and not number.is_integer()):
+            raise ValueError(f"{key}: 有効な整数を指定してください。")
+    if params.get("cluster_algorithm") is not None and params["cluster_algorithm"] not in (1, 2, 3, 4):
+        raise ValueError("クラスタ法が不正です。")
+    if params.get("cluster_metric") is not None and params["cluster_metric"] not in ("euclidean", "cosine", "manhattan"):
+        raise ValueError("クラスタ距離が不正です。")

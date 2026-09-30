@@ -147,6 +147,8 @@ def _run(trigger, monkeypatch, *, has_results=True, pending=None):
     #   （入力チェック側は tests/test_preflight_blocks_execution.py が見る）。
     monkeypatch.setattr(ac, "_collect_preflight_errors",
                         lambda *a, **kw: ([], []))
+    monkeypatch.setattr(ac, "_collect_downstream_errors",
+                        lambda *a, **kw: ([], []))
     seen = {}
     monkeypatch.setattr(ac, "save_last_settings", lambda d: seen.update(d))
     kwargs = dict(_RUN_ARGS)
@@ -201,8 +203,9 @@ def test_run_stops_for_the_downstream_button(monkeypatch):
         "④ が確認を経ずに走り、前回の結果を上書きしている")
 
 
-def test_run_proceeds_without_existing_results(monkeypatch):
+def test_run_proceeds_without_existing_results(monkeypatch, tmp_path):
     """既存結果が無ければ ④ は従来どおり進むこと（止めすぎない）。"""
+    monkeypatch.setitem(_RUN_ARGS, "output_dir", str(tmp_path))
     (out, seen) = _run("btn_run_downstream", monkeypatch, has_results=False)
     assert out != (no_update,) * 10, "既存結果が無いのに止めている"
 

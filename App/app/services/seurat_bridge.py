@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import threading
 import time
+import tempfile
 from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
@@ -20,12 +21,17 @@ import numpy as np
 import pandas as pd
 
 from app.config import R_HELPERS_DIR, RSCRIPT_PATH, SEURAT_CACHE_DIR
+from app.services.result_catalog import (file_sha256, file_signature, find_embedding_sidecar,
+                                         method_record, remember_descriptor)
+from app.services.result_contract import build_result_descriptor, sequence_sha256, descriptor_method
 
 logger = logging.getLogger("msi.seurat_bridge")
 
 # 一時ファイル名をユニークにするための連番 (ver51.8)。
 # itertools.count はスレッドセーフ (next() は GIL 下の単一バイトコード)。
 _TMP_COUNTER = itertools.count()
+_SOURCE_HASHES = OrderedDict()
+_SOURCE_HASH_LOCK = threading.Lock()
 
 # =============================================================================
 # expression_matrix.parquet の読み出しキャッシュ (3 段)
@@ -327,20 +333,43 @@ class SeuratBridge:
 
     def __init__(self):
         self._cache_base = SEURAT_CACHE_DIR
+        # ★ ver77.0: 認可経路が作る短命 Bridge でも同じ巨大 RDS の検証を反復しない。
+        self._source_hashes = _SOURCE_HASHES
+        self._hash_lock = _SOURCE_HASH_LOCK
 
-    def _get_cache_key(self, rds_path: str) -> str:
-        """RDSファイルパス + 更新日時 + Rスクリプト更新日時からキャッシュキーを生成"""
-        p = Path(rds_path)
-        mtime = p.stat().st_mtime if p.exists() else 0
-        # Rスクリプト更新時にもキャッシュを再生成するため、スクリプトのmtimeも含める
-        r_script = R_HELPERS_DIR / "extract_seurat_data.R"
-        r_mtime = r_script.stat().st_mtime if r_script.exists() else 0
-        # ★ ver67.0: 旧抽出キャッシュには切片/個体/群 ID がなく、画面の群指定が無反応になる。
-        raw = f"{rds_path}|{mtime}|{r_mtime}|section_metadata_v1"
-        return hashlib.md5(raw.encode()).hexdigest()[:16]
+    def _source_digest(self, path, *, force=False, cancel_event=None):
+        before = file_signature(path)
+        with self._hash_lock:
+            hit = self._source_hashes.get(before)
+        if hit and not force:
+            return hit
+        try:
+            digest = file_sha256(path, cancel_event)
+        except InterruptedError as exc:
+            raise ExtractionCancelled(str(exc)) from exc
+        if file_signature(path) != before:
+            raise RuntimeError("検証中に RDS が変更されました。再度読み込んでください")
+        with self._hash_lock:
+            self._source_hashes[before] = digest
+            self._source_hashes.move_to_end(before)
+            while len(self._source_hashes) > 128:
+                self._source_hashes.popitem(last=False)
+        return digest
 
-    def _get_cache_dir(self, rds_path: str) -> Path:
-        key = self._get_cache_key(rds_path)
+    def _get_cache_key(self, rds_path: str, *, source_sha=None, sidecar_sha=None, embedding_sidecar=None) -> str:
+        # ★ ver77.0: mtime とサイズだけでは内容の差し替えを検知できない。
+        # 出力時は force_verify により必ず全内容を検証。通常の画面操作は stat でメモ化。
+        parts = [str(Path(rds_path).resolve()), source_sha or self._source_digest(rds_path), "result_descriptor_v1"]
+        sidecar = embedding_sidecar if source_sha is not None else find_embedding_sidecar(rds_path)
+        if sidecar:
+            parts.extend([sidecar, sidecar_sha or self._source_digest(sidecar)])
+        for name in ("extract_seurat_data.R", "rds_io.R", "analysis_contract.R"):
+            helper = R_HELPERS_DIR / name
+            parts.append(file_sha256(helper) if helper.exists() else "missing:" + name)
+        return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
+
+    def _get_cache_dir(self, rds_path: str, **verified) -> Path:
+        key = self._get_cache_key(rds_path, **verified)
         cache_dir = self._cache_base / key
         is_new = not cache_dir.exists()
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -358,13 +387,13 @@ class SeuratBridge:
 
     def _is_cached(self, cache_dir: Path) -> bool:
         """キャッシュ済みかチェック（必須ファイルが全て揃っているか）"""
-        required = ["extraction_meta.json", "cluster_stats.csv"]
+        required = ["extraction_meta.json", "cluster_stats.csv", "extraction_complete.json"]
         # plot_data は parquet or csv のどちらか
         has_plot = (cache_dir / "plot_data.parquet").exists() or (cache_dir / "plot_data.csv").exists()
         return has_plot and all((cache_dir / f).exists() for f in required)
 
     def extract_data(self, rds_path: str, with_expression: bool = False,
-                     cancel_event=None) -> dict:
+                     cancel_event=None, force_verify: bool = False) -> dict:
         """Seurat RDS からデータを抽出。キャッシュがあればそれを使用。
 
         Args:
@@ -388,17 +417,39 @@ class SeuratBridge:
             }
         """
         from app.utils.file_locks import get_or_create_lock
-        cache_dir = self._get_cache_dir(rds_path)
+        from app.utils.file_locks import atomic_write_json
+        source_sha = self._source_digest(rds_path, force=force_verify, cancel_event=cancel_event)
+        sidecar = find_embedding_sidecar(rds_path)
+        sidecar_sha = self._source_digest(sidecar, force=force_verify, cancel_event=cancel_event) if sidecar else None
+        cache_dir = self._get_cache_dir(rds_path, source_sha=source_sha, sidecar_sha=sidecar_sha,
+                                        embedding_sidecar=sidecar)
+
+        def extract_snapshot():
+            # ★ ver77.0: hash したファイルとは別内容を R が読む競合を避ける。
+            # 抽出中だけ不変なコピーを保持し、元データと巨大コピーを永続化しない。
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="ua-rds-") as temporary:
+                snapshot = Path(temporary) / "source.rds"
+                self._copy_verified(rds_path, snapshot, source_sha, cancel_event)
+                kwargs = {"with_expression": with_expression, "cancel_event": cancel_event}
+                if sidecar:
+                    embedding_snapshot = Path(temporary) / "embedding.rds"
+                    self._copy_verified(sidecar, embedding_snapshot, sidecar_sha, cancel_event)
+                    kwargs["embedding_sidecar"] = str(embedding_snapshot)
+                self._run_extraction(str(snapshot), cache_dir, **kwargs)
+            atomic_write_json({"schema_version": 1, "sha256": source_sha, "sidecar_sha256": sidecar_sha},
+                              cache_dir / "extraction_complete.json")
+
+        needs_expression = with_expression and not (cache_dir / "expression_matrix.parquet").exists()
 
         # ver4.4: 同一 RDS への同時初回アクセス (受信者オープン + 共有生成時の
         # プリウォーム等) で R 抽出が二重に走らないよう排他。ロック取得後に
         # 再チェックし、先行プロセスが既に抽出済みならスキップする。
-        if not self._is_cached(cache_dir):
+        if not self._is_cached(cache_dir) or needs_expression:
             lock = get_or_create_lock(cache_dir / "extract", timeout=600)
             with lock:
-                if not self._is_cached(cache_dir):
-                    self._run_extraction(rds_path, cache_dir, with_expression=with_expression,
-                                         cancel_event=cancel_event)
+                if not self._is_cached(cache_dir) or needs_expression:
+                    extract_snapshot()
 
         try:
             result = self._load_extracted_data(cache_dir)
@@ -406,15 +457,58 @@ class SeuratBridge:
             # キャッシュ破損の可能性 → 削除して再抽出
             shutil.rmtree(cache_dir, ignore_errors=True)
             cache_dir.mkdir(parents=True, exist_ok=True)
-            self._run_extraction(rds_path, cache_dir, with_expression=with_expression,
-                                 cancel_event=cancel_event)
+            extract_snapshot()
             result = self._load_extracted_data(cache_dir)
 
         result["cache_dir"] = cache_dir
         result["feature_annotations"] = self._load_feature_annotations(
             cache_dir, rds_path, result.get("features_list") or []
         )
+        plot = result["plot_data"]
+        ids = plot["CellID"].astype(str).tolist()
+        source = {"path": str(Path(rds_path).resolve()), "sha256": source_sha, "n_cells": len(ids),
+                  "cell_order_sha256": sequence_sha256(ids), "cell_set_sha256": sequence_sha256(sorted(ids))}
+        facts = dict(result.get("meta", {}).get("result_facts") or {})
+        facts["cell_ids_valid"] = bool(len(set(ids)) == len(ids) and plot["CellID"].notna().all())
+        if not facts["cell_ids_valid"]:
+            raise ValueError("RDS の CellID に重複または欠損があります")
+        facts.setdefault("clusters", {})["sha256"] = sequence_sha256(
+            value for pair in sorted(zip(ids, plot["Cluster"].astype(str))) for value in pair)
+        if {"UMAP_1", "UMAP_2"}.issubset(plot.columns) and facts.get("embedding", {}).get("kind") != "none":
+            order = np.argsort(np.asarray(ids, dtype=object), kind="stable")
+            coordinates = plot[["UMAP_1", "UMAP_2"]].to_numpy(dtype="<f8")[order]
+            digest = hashlib.sha256(source["cell_set_sha256"].encode())
+            digest.update(coordinates.tobytes())
+            facts.setdefault("embedding", {})["sha256"] = digest.hexdigest()
+        if sidecar and facts.get("embedding", {}).get("location") == "sidecar":
+            facts["embedding"].update({"source_path": sidecar, "source_sha256": sidecar_sha,
+                                      "validation": "cell_set_and_order"})
+        initial = build_result_descriptor(source, facts)
+        records = method_record(rds_path, descriptor_method(initial))
+        if sidecar and facts.get("embedding", {}).get("location") == "sidecar":
+            from app.services.result_catalog import verify_embedding_origin
+            facts["embedding"] = verify_embedding_origin(rds_path, sidecar, sidecar_sha, facts, records)
+        descriptor = build_result_descriptor(source, facts, records)
+        result["result_descriptor"] = descriptor
+        result["meta"]["result_descriptor"] = descriptor
+        result["plot_data"].attrs["result_descriptor"] = descriptor
+        remember_descriptor(rds_path, descriptor)
         return result
+
+    @staticmethod
+    def _copy_verified(source, destination, expected_sha, cancel_event=None):
+        digest = hashlib.sha256()
+        with Path(source).open("rb") as src, Path(destination).open("wb") as dst:
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise ExtractionCancelled("結果の検証をキャンセルしました")
+                block = src.read(8 * 1024 * 1024)
+                if not block:
+                    break
+                dst.write(block)
+                digest.update(block)
+        if digest.hexdigest() != expected_sha:
+            raise RuntimeError("抽出準備中に RDS が変更されました。再度読み込んでください")
 
     def ensure_expression_matrix(self, rds_path: str) -> Path:
         """expression_matrix.parquet を必要時に生成して Path を返す。
@@ -428,28 +522,10 @@ class SeuratBridge:
         複数ユーザーが同一 RDS の Feature plot を同時に初めて開いても、
         FileLock により R 抽出は 1 回のみ実行され、後発プロセスは生成完了を待つ。
         """
-        from app.utils.file_locks import get_or_create_lock
-        cache_dir = self._get_cache_dir(rds_path)
-        parquet_path = cache_dir / "expression_matrix.parquet"
-        if parquet_path.exists():
-            logger.debug("expression_matrix キャッシュヒット: %s", cache_dir.name)
-            return parquet_path
-        # 不在 → 排他取得して生成（R 抽出最大 10 分 → timeout=900）
-        logger.info(
-            "expression_matrix 不在のため生成します: %s (数分かかります)",
-            Path(rds_path).name,
-        )
-        lock = get_or_create_lock(parquet_path, timeout=900)
-        with lock:
-            # ロック取得後に再チェック（先行プロセスが既に生成完了している可能性）
-            if parquet_path.exists():
-                logger.info("他プロセスが生成を完了していました: %s", cache_dir.name)
-                return parquet_path
-            self._run_extraction(rds_path, cache_dir, with_expression=True)
+        result = self.extract_data(rds_path, with_expression=True)
+        parquet_path = Path(result["cache_dir"]) / "expression_matrix.parquet"
         if not parquet_path.exists():
-            raise RuntimeError(
-                f"expression_matrix.parquet の生成に失敗しました: {parquet_path}"
-            )
+            raise RuntimeError(f"expression_matrix.parquet の生成に失敗しました: {parquet_path}")
         return parquet_path
 
     def get_feature_expression(
@@ -689,7 +765,7 @@ class SeuratBridge:
             return None, []
 
     def _run_extraction(self, rds_path: str, output_dir: Path,
-                        with_expression: bool = False, cancel_event=None):
+                        with_expression: bool = False, cancel_event=None, embedding_sidecar=None):
         """R ヘルパースクリプトで Seurat データを抽出
 
         with_expression=True で expression_matrix.parquet も生成（重い処理）。
@@ -715,6 +791,8 @@ class SeuratBridge:
         ]
         if with_expression:
             cmd.append("--with-expression")
+        if embedding_sidecar:
+            cmd.append("--embedding-sidecar=" + str(embedding_sidecar))
         # ver3.7: subprocess.run は timeout 時に内部で kill するため zombie の
         # 心配は無いが、TimeoutExpired を捕まえてユーザー向けエラーに整形
         if cancel_event is None:
@@ -787,6 +865,13 @@ class SeuratBridge:
         結果フォルダを汚さない（読み取り専用/共有結果でも安全）。
         """
         out_path = Path(out_rds_path)
+        # ★ ver77.0: path/mtime だけの旧投影キャッシュは、元 RDS の差し替えで誤再利用する。
+        source_sha = self._source_digest(src_rds_path, force=True, cancel_event=cancel_event)
+        derive_script = R_HELPERS_DIR / "derive_uncorrected_pca.R"
+        io_script = R_HELPERS_DIR / "rds_io.R"
+        io_sha = file_sha256(io_script) if io_script.exists() else "missing"
+        derive_key = hashlib.sha256((source_sha + file_sha256(derive_script) + io_sha + "dims30_seed42_inherited_v2").encode()).hexdigest()[:16]
+        out_path = out_path.with_name(out_path.stem + "_" + derive_key + out_path.suffix)
         if out_path.exists():
             return str(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -811,7 +896,11 @@ class SeuratBridge:
         cmd = [rscript, "--vanilla", str(script), str(src_rds_path), str(tmp_path)]
 
         try:
-            self._invoke_derive_pca(cmd, tmp_path, src_rds_path, cancel_event)
+            with tempfile.TemporaryDirectory(prefix="ua-projection-") as temporary:
+                snapshot = Path(temporary) / "source.rds"
+                self._copy_verified(src_rds_path, snapshot, source_sha, cancel_event)
+                cmd[3] = str(snapshot)
+                self._invoke_derive_pca(cmd, tmp_path, src_rds_path, cancel_event)
             os.replace(str(tmp_path), str(out_path))
             return str(out_path)
         finally:
@@ -1073,7 +1162,9 @@ class SeuratBridge:
         if plot_parquet.exists():
             plot_data = pd.read_parquet(plot_parquet)
         elif plot_csv.exists():
-            plot_data = pd.read_csv(plot_csv)
+            # ★ ver77.0: 数字だけの CellID の先頭ゼロもデータ対応の一部なので保持する。
+            plot_data = pd.read_csv(plot_csv, dtype={"CellID": str, "Cluster": str, "Sample": str,
+                                                    "source_file_id": str, "source_pixel_id": str})
         else:
             raise FileNotFoundError(f"plot_data が見つかりません: {cache_dir}")
 

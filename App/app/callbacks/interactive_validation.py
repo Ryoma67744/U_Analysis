@@ -37,6 +37,10 @@ _VALIDATED_INPUTS = [
     "umap_n_neighbors_input",
     "umap_min_dist_input",
     "umap_dims_input",
+    "downstream_cluster_dims",
+    "downstream_cluster_k",
+    "downstream_cluster_resolution",
+    "downstream_cluster_seed",
     # --- ver52.3 ⑤ で新たに結線 ---
     "p_thresh",
     "logfc_thresh",
