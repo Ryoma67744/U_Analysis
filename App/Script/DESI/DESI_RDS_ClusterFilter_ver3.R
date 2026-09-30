@@ -679,23 +679,13 @@ if (.should_merge && nzchar(MERGE_SCRIPT_PATH) && file.exists(MERGE_SCRIPT_PATH)
 
   # rerun RDS を自動検索: v8 再解析出力から RDS を探す
   .find_rerun_rds <- function(output_dir, preferred_method = "") {
-    # V8_OUTPUT_DIR 以下の RDS_Files/ から Seurat RDS を探す
-    rds_dirs <- list.dirs(output_dir, recursive = TRUE)
-    rds_dirs <- rds_dirs[grepl("RDS_Files", rds_dirs)]
+    # The runtime writes directly into V8_OUTPUT_DIR. Do not select an older
+    # child run merely because it also contains an RDS_Files directory.
+    if (file.exists(file.path(output_dir,"analysis_methods.json")))
+      return(ua_completed_method_rds(output_dir,preferred_method))
+    rds_dirs <- file.path(output_dir,"RDS_Files")
+    rds_dirs <- rds_dirs[dir.exists(rds_dirs)]
     for (rd in rds_dirs) {
-      # ★ ver67.0: 失敗した手法の途中RDSを完成済みとして貼り戻さない。
-      .status_path <- file.path(dirname(rd), "analysis_methods.json")
-      if (file.exists(.status_path)) {
-        .state <- jsonlite::fromJSON(.status_path, simplifyVector = FALSE)$methods
-        .order <- unique(c(tolower(preferred_method), "rpca", "harmony", "pca"))
-        for (.name in .order) {
-          .item <- .state[[.name]]
-          if (!is.null(.item) && identical(.item$status, "complete") &&
-              identical(.item$stage, "downstream") && nzchar(ua_value(.item$rds_path)) &&
-              file.exists(.item$rds_path)) return(.item$rds_path)
-        }
-        next
-      }
       rds_files <- list.files(rd, pattern = "\\.rds$", full.names = TRUE, ignore.case = TRUE)
       # harmony / RPCA / SingleSample の RDS を優先
       prio <- rds_files[grepl("(harmony|RPCA|SingleSample)", rds_files, ignore.case = TRUE)]

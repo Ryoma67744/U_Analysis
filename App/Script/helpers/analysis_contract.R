@@ -400,6 +400,54 @@ ua_record_method <- function(outdir,method,status,reason="",stage="",rds_path=""
   }
   invisible(state)
 }
+# Resolve completed artifacts in one run. A later figure failure does not
+# invalidate its saved UMAP/cluster; names alone cannot establish v2 completion.
+ua_completed_method_rds <- function(outdir, preferred_method="") {
+  manifest_path <- file.path(outdir,"analysis_methods.json")
+  if (!file.exists(manifest_path)) return(NULL)
+  state <- tryCatch(jsonlite::fromJSON(manifest_path,simplifyVector=FALSE),error=function(e) NULL)
+  if (!is.list(state) || !is.list(state$methods)) return(NULL)
+  version <- if(is.null(state$schema_version)) 1L else as.integer(state$schema_version)
+  if (length(version)!=1L || is.na(version) || !version %in% c(1L,2L)) return(NULL)
+  root <- normalizePath(outdir,winslash="/",mustWork=TRUE)
+  resolve <- function(name) {
+    name <- ua_value(name)
+    if (!nzchar(name)) return(NULL)
+    name <- gsub(intToUtf8(92),"/",name,fixed=TRUE)
+    if (!grepl("^(/|[A-Za-z]:)",name)) name <- file.path(root,name)
+    if (!file.exists(name) || dir.exists(name)) return(NULL)
+    full <- normalizePath(name,winslash="/",mustWork=TRUE)
+    if (!startsWith(full,paste0(root,"/"))) return(NULL)
+    full
+  }
+  digests <- new.env(parent=emptyenv())
+  verified_stage <- function(stage) {
+    if (!is.list(stage) || !ua_value(stage$status) %in% c("complete","completed")) return(NULL)
+    path <- resolve(stage$rds_path)
+    expected <- ua_value(stage$artifact_sha256)
+    if (is.null(path) || !grepl("^[0-9a-f]{64}$",expected)) return(NULL)
+    if (!exists(path,envir=digests,inherits=FALSE)) assign(path,ua_file_digest(path),envir=digests)
+    if (!identical(get(path,envir=digests,inherits=FALSE),expected)) return(NULL)
+    path
+  }
+  for (method in unique(c(tolower(preferred_method),"rpca","harmony","pca"))) {
+    item <- state$methods[[method]]
+    if (!is.list(item)) next
+    if (version==1L) {
+      if (!identical(item$status,"complete") || !identical(item$stage,"downstream")) next
+      path <- resolve(item$rds_path)
+      if (!is.null(path)) return(path)
+    } else {
+      stages <- item$stages
+      if (!is.list(stages)) next
+      umap <- verified_stage(stages$umap)
+      clustered <- verified_stage(stages$cluster)
+      if (!is.null(umap) && !is.null(clustered)) return(clustered)
+    }
+  }
+  NULL
+}
+
 # ★ ver74.0: 数値処理の署名とmetadata来歴を別々に保存する。旧RDSを書換えず、
 # 新署名が無い旧checkpointは従来の完全署名が一致する場合だけ再利用する。
 ua_signature_setting <- function(name) ua_value(get0(name, envir = .GlobalEnv, inherits = TRUE))

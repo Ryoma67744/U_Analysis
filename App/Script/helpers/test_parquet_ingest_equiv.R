@@ -114,7 +114,12 @@ load_new_reader <- function(base_script) {
   # ★ ver74.0: 文字列の括弧数えはコメント/文字中の括弧で壊れるためRのASTで取り出す。
   exprs <- parse(base_script)
   env <- new.env(parent = globalenv())
-  source(file.path(dirname(base_script), "..", "helpers", "feature_naming_policy.R"), local = env)
+  # ★ ver77.0: 切り出したreaderには本体先頭のsourceが含まれないため、依存を同じ環境へ読む。
+  # 親プロセスのsourceや作業ディレクトリに依存すると、検証CLIの子Rだけで関数が欠落する。
+  helper_dir <- normalizePath(file.path(dirname(base_script), "..", "helpers"), mustWork = TRUE)
+  for (helper in c("feature_naming_policy.R", "parquet_column_roles.R")) {
+    source(file.path(helper_dir, helper), local = env)
+  }
   wanted <- c("read_desi_data", ".parse_feature_annotations", ".rss_gb", ".mem_note_base")
   found <- character()
   for (expr in exprs) {

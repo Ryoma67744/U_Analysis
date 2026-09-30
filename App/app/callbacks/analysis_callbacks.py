@@ -1966,6 +1966,7 @@ def detect_rds_files(folder, desi_method, tims_method, current_source=None):
     from app.callbacks.interactive_callbacks import _detect_integration_methods
     from app.utils.integration_methods import default_viewer_method, resolve_method_key
     from app.services.execution_policy import result_root
+    from app.services.result_catalog import method_record
     import json
 
     if not folder or not str(folder).strip():
@@ -1974,9 +1975,32 @@ def detect_rds_files(folder, desi_method, tims_method, current_source=None):
     status_file = result_root(folder) / "analysis_methods.json"
     if status_file.is_file():
         try:
-            states = json.loads(status_file.read_text(encoding="utf-8")).get("methods", {})
-            paths = {k: v for k, v in paths.items()
-                     if states.get("pca" if k.startswith("PCA") else k.lower(), {}).get("stage") == "downstream"}
+            manifest = json.loads(status_file.read_text(encoding="utf-8"))
+            verified_paths = {}
+            for key, path in paths.items():
+                record = method_record(path, "PCA" if key.startswith("PCA") else key)
+                if manifest.get("schema_version", 1) == 2:
+                    # ★ ver77.0: v2 は downstream という一括段階を使わない。
+                    # 作図失敗でも保存済み UMAP/クラスタを候補に残す。巨大 RDS の
+                    # 内容検証は実行時に行い、ここでは段階記録と実在パスだけを見る。
+                    stages = record.get("stages") or {}
+                    cluster = stages.get("cluster") or {}
+                    umap = stages.get("umap") or {}
+                    if any(stage.get("status") not in {"complete", "completed"}
+                           for stage in (cluster, umap)):
+                        continue
+                    cluster_path = Path(cluster.get("rds_path") or ".")
+                    umap_path = Path(umap.get("rds_path") or ".")
+                    base = result_root(folder).resolve()
+                    cluster_path = (base / cluster_path).resolve() if not cluster_path.is_absolute() else cluster_path.resolve()
+                    umap_path = (base / umap_path).resolve() if not umap_path.is_absolute() else umap_path.resolve()
+                    if (cluster_path != Path(path).resolve() or not umap_path.is_relative_to(base)
+                            or not umap_path.is_file()):
+                        continue
+                elif record.get("status") != "complete" or record.get("stage") != "downstream":
+                    continue
+                verified_paths[key] = path
+            paths = verified_paths
         except (OSError, ValueError, AttributeError):
             paths = {}
     if not paths:
