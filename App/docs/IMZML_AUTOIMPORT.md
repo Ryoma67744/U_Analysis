@@ -1,4 +1,7 @@
-# imzML 全切片登録・標準 Parquet 変換・UMAP 解析（ver74.0）
+# imzML 全切片登録・標準 Parquet 変換・UMAP 解析（ver78.0）
+
+ver78.0では[一括登録画面](IMZML_IO.md)から複数ファイルを選び、全切片の表を確認して変換できます。
+通常解析からの自動変換と一括登録は、同じ`prepare_imzml()`の検証・キャッシュ・登録revisionを使用します。
 
 ## 基本原則
 
@@ -9,7 +12,7 @@ imzML は解析時だけの一時入力ではなく、最初に **全切片・�
 ```text
 imzML + ibd
   → x-y 座標から全切片候補を検出
-  → float で全切片の登録情報を入力・確認
+  → 一括登録表またはfloatで全切片の登録情報を入力・確認
   → 全切片・全 pixel を標準 Parquet へ保存
   → 今回解析する切片だけを選択
   → 選択 pixel で正規化・PCA・UMAP
@@ -81,6 +84,25 @@ MSn term、precursor、product、selected ion、activation、fragmentation 情�
 centroid/profile、m/z+intensity 配列、単一 scan、極性一貫という full-scan MSI 構造を満たす場合は
 inferred MS1 として処理します。MS level >1、MSn、追加次元、複数 z 面等は停止します。
 
+## 順序補正と性能設定
+
+m/zに大小の逆転がある場合、m/zと強度を同じ安定ソートで並べ替えます。正常な昇順入力は並べ替えません。
+厳密重複、非有限値、非正m/z、負強度、配列長不一致、6桁列名衝突は別の不正として停止します。
+最終書込passだけで各source_indexを1回数え、`mz_order_policy=stable_ascending_v1`、
+`duplicate_mz_policy=reject`、並替え画素数・移動ピーク数・元順序保存の有無をsidecarへ記録します。
+元順序への逆置換は保存しないため、逆転入力を原本へ完全復元できるとは表示しません。
+
+辞書は完全一致のsorted uniqueを分割作成し、段階的にマージします。保持量が予算を超える場合だけ
+固定長ブロックで外部マージします。`IMZML_DICTIONARY_MB`の既定は128 MiBです。
+この値は作業用予算で、XML parserなどを含むプロセス全体の上限ではありません。
+辞書の予算を変えてもm/zと強度の計算結果を変えません。ppmは結果を変えるため、高速化目的で自動変更しません。
+
+保存profile `tims-f32-512-v1`は最大512行を使い、feature数・`IMZML_BLOCK_MB`（既定64 MiB）・
+Arrow用の余裕から決定論的にブロックを縮小します。検証・登録情報だけの書替えも同じ規則を使います。
+実行時の空きRAM不足では停止し、同じrevisionの保存形式を黙って変更しません。
+進捗の保存は原則1秒間隔とし、段階・ファイル変更と終了・エラー・停止は即時保存します。
+停止確認自体はこの間引きから独立しています。
+
 ## 変換のみと通常解析の統一
 
 手動の `imzML → Parquet` と通常 UMAP 解析時の自動変換は、同じ `checked_import()` と同じ
@@ -111,6 +133,10 @@ UI、worker、API/CLI、再解析のすべてで、Parquet 内の全切片 regis
 
 原本 imzML／ibd は読み取り専用で、移動・変更しません。source SHA-256、依存版、変換コード hash、
 alignment ppm、登録 hash、標準 schema、検証結果を conversion receipt に保存します。
+
+新しい変換契約は`v7`です。順序補正・辞書・ブロックhelperのコードhashと保存profileを含めます。
+旧解析に固定した検証済み完成品は再利用できますが、古い完成品が失われた場合、新しい変換実装で
+同じ旧revisionを復元したとは扱いません。新しいrevisionを作るか、保存時と一致する実行環境が必要です。
 
 新規 Parquet の schema metadata には次を含めます。
 

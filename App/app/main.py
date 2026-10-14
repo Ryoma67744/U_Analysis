@@ -408,6 +408,8 @@ from app.callbacks import interactive_batch_save  # noqa: E402, F401
 from app.callbacks import interactive_data_export  # noqa: E402, F401
 from app.callbacks import scils_converter_callbacks  # noqa: E402, F401
 from app.callbacks import imzml_io_callbacks  # noqa: E402, F401
+from app.services.imzml_registration_queue import ensure_dispatcher
+ensure_dispatcher()  # ★ ver78.0: ブラウザを閉じた受付も、アプリ再起動後に処理を再開する。
 from app.callbacks import imzml_spatial_callbacks  # noqa: E402, F401
 from app.callbacks import annotation_preview_callbacks  # noqa: E402, F401
 from app.callbacks import add_molinfo_callbacks  # noqa: E402, F401

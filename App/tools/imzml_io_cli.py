@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.services.imzml_io import export_imzml, inspect_imzml  # noqa: E402
 from app.services.imzml_validation import checked_import  # noqa: E402
 from app.services.input_preparation import PreparationCancelled, check_cancel, write_json  # noqa: E402
+from app.services.progress_reporting import ProgressReporter  # noqa: E402
 
 
 def main(argv=None):
@@ -34,10 +35,13 @@ def main(argv=None):
         check_cancel(lambda: cancelled)
         status({"state": "running", "done": done, "total": total})
 
-    def status(value):
+    def emit_status(value):
         if args.status:
             write_json(args.status, value)
         print(json.dumps(value, ensure_ascii=False), flush=True)
+    reporter = ProgressReporter(emit_status)
+    def status(value):
+        reporter.update(value)
 
     try:
         if args.action == "inspect":

@@ -260,3 +260,6 @@ def stop_imzml_job(clicks, job):
     terminate_tree(info["pid"], expected_start=info["process_started_at"], timeout=5)
     return dbc.Alert("処理を停止しました。未完成の出力は使用しないでください。",
                      color="warning"), True, True
+
+
+from app.callbacks import imzml_registration_callbacks  # noqa: E402, F401

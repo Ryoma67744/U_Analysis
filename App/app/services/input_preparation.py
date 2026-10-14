@@ -25,7 +25,7 @@ DESCRIPTOR_KEYS = (
 RECEIPT = "conversion_complete.json"
 CACHE_MARKER = ".ua_imzml_assets"
 # ★ ver71.0: component列と座標layoutを含まないver70 cacheを新規解析で再利用しない。
-CONTRACT_VERSION = "tims-standard-all-sections-v6"
+CONTRACT_VERSION = "tims-standard-all-sections-v7"
 
 
 class InputPreparationError(ValueError):
@@ -194,6 +194,7 @@ def _versions():
 
 def conversion_spec(*, processed_alignment_ppm=0.0, registration_hash=""):
     # 保存バイトへ影響するコード・登録情報と依存版を含める。解析切片選択は含めない。
+    from app.services.imzml_block_policy import BLOCK_PROFILE, DEFAULT_BLOCK_ROWS
     try:
         processed_alignment_ppm = float(processed_alignment_ppm)
     except (TypeError, ValueError) as exc:
@@ -205,6 +206,9 @@ def conversion_spec(*, processed_alignment_ppm=0.0, registration_hash=""):
         "contract": CONTRACT_VERSION, "schema": 4, "dependencies": _versions(),
         "converter_sha256": sha256_file(here / "imzml_io.py"),
         "processed_converter_sha256": sha256_file(here / "imzml_processed.py"),
+        "spectrum_normalizer_sha256": sha256_file(here / "imzml_spectrum.py"),
+        "mz_dictionary_sha256": sha256_file(here / "imzml_dictionary.py"),
+        "block_policy_sha256": sha256_file(here / "imzml_block_policy.py"),
         "validator_sha256": sha256_file(here / "imzml_validation.py"),
         "spatial_layout_sha256": sha256_file(here / "imzml_spatial_layout.py"),
         "registration_sha256": sha256_file(here / "imzml_registration.py"),
@@ -214,7 +218,11 @@ def conversion_spec(*, processed_alignment_ppm=0.0, registration_hash=""):
         "intensity_dtype": "float32",
         "mz_name_decimals": 6,
         "all_sections_preserved": True,
-        "block_size": 128,
+        "mz_order_policy": "stable_ascending_v1",
+        "duplicate_mz_policy": "reject",
+        "save_profile": BLOCK_PROFILE,
+        "compression": "zstd",
+        "block_size": DEFAULT_BLOCK_ROWS,
         "memory_budget_mb": int(os.environ.get("IMZML_BLOCK_MB", "64")),
         "processed_max_features": int(os.environ.get("IMZML_PROCESSED_MAX_FEATURES", "100000")),
     }
@@ -359,6 +367,12 @@ def prepare_imzml(entry, *, cache_root=None, project_id="", pinned=False,
     from app.services.imzml_registration import build_registration_spec
     registration = build_registration_spec(entry)
     source = {"xml": fingerprint(xml, cancel), "ibd": fingerprint(ibd, cancel)}
+    if progress:
+        progress({"stage": "source_verified", "sample": xml.name,
+                  "source_path": str(xml), "source_ibd": str(ibd),
+                  "source_xml_sha256": source["xml"]["sha256"],
+                  "source_ibd_sha256": source["ibd"]["sha256"],
+                  "dictionary_memory_budget_mb_setting": os.environ.get("IMZML_DICTIONARY_MB", "128")})
     current_spec = deepcopy(spec if spec is not None else conversion_spec(
         processed_alignment_ppm=alignment_ppm,
         registration_hash=registration["registration_hash"],
@@ -449,6 +463,9 @@ def prepare_imzml(entry, *, cache_root=None, project_id="", pinned=False,
                 check_cancel(cancel)
                 if progress:
                     progress({"stage": "convert", "sample": xml.name, "done": done, "total": total})
+                    if total > 0 and done >= total:
+                        # ★ ver78.0: writer完了後の全量検証を変換100%のまま表示しない。
+                        progress({"stage": "validate", "sample": xml.name})
             converter_kwargs = {
                 "registration": registration,
                 "alignment_ppm": expected_ppm,
@@ -480,6 +497,8 @@ def prepare_imzml(entry, *, cache_root=None, project_id="", pinned=False,
                     reusable_entry["runtime_path"],
                     reusable_entry["conversion_manifest_path"],
                     registration, output, progress=on_pixels, cancel=cancel,
+                    block_size=current_spec["block_size"],
+                    memory_budget_mb=current_spec["memory_budget_mb"],
                 )
                 result["derived_from_conversion_key"] = reusable_receipt.get("conversion_key")
             else:
@@ -512,6 +531,9 @@ def prepare_imzml(entry, *, cache_root=None, project_id="", pinned=False,
                                                        if isinstance(result, dict) else None),
                        "created_at": time.time(), "restored": expected is not None}
             write_json(stage / RECEIPT, receipt)
+            check_cancel(cancel)
+            if progress:
+                progress({"stage": "publish", "sample": xml.name})
             check_cancel(cancel)
             os.rename(stage, target)
             return _entry_from_receipt(entry, target, receipt)

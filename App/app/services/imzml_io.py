@@ -22,10 +22,14 @@ from pyimzml.ImzMLParser import ImzMLParser
 from pyimzml.ImzMLWriter import ImzMLWriter
 
 from app.services.imzml_spatial_layout import build_spatial_layout, strip_runtime_layout
-
-
-class ImzMLContractError(ValueError):
-    """The input cannot be represented without inventing or losing spectra."""
+from app.services.imzml_spectrum import (
+    ImzMLContractError, normalize_spectrum, new_order_qc, record_order_qc, order_metadata,
+    feature_collision_details,
+)
+from app.services.imzml_block_policy import (
+    DEFAULT_BLOCK_ROWS, deterministic_block_rows, block_working_bytes,
+    require_available_memory,
+)
 
 
 def _pair(path: str | Path) -> tuple[Path, Path]:
@@ -42,7 +46,9 @@ def _pair(path: str | Path) -> tuple[Path, Path]:
 def _axis_names(axis: np.ndarray) -> list[str]:
     names = [f"{mz:.6f}" for mz in axis]
     if len(set(names)) != len(names):
-        raise ImzMLContractError("m/z values collide at six decimal places")
+        raise ImzMLContractError("m/z values collide at six decimal places",
+                                reason="feature_name_collision",
+                                context=feature_collision_details(axis))
     return names
 
 
@@ -82,18 +88,30 @@ def _publish_pair(temp_parquet, temp_manifest, output):
 
 
 def _spectrum(parser: ImzMLParser, i: int, reference=None):
-    mz, intensity = parser.getspectrum(i)
-    if len(mz) != len(intensity) or not len(mz):
-        raise ImzMLContractError(f"Spectrum {i}: missing or mismatched arrays")
-    if not np.isfinite(mz).all() or not np.isfinite(intensity).all():
-        raise ImzMLContractError(f"Spectrum {i}: non-finite values")
-    if np.any(mz <= 0) or np.any(np.diff(mz) <= 0):
-        raise ImzMLContractError(f"Spectrum {i}: m/z must be positive and strictly increasing")
-    if np.any(intensity < 0):
-        raise ImzMLContractError(f"Spectrum {i}: negative intensities")
-    if reference is not None and not np.array_equal(mz, reference):
-        raise ImzMLContractError(f"Spectrum {i}: individual m/z axis is unsupported")
+    mz, intensity, _diagnostic = _spectrum_with_diagnostics(parser, i, reference)
     return mz, intensity
+
+
+def _spectrum_with_diagnostics(parser: ImzMLParser, i: int, reference=None):
+    mz, intensity = parser.getspectrum(i)
+    context = _spectrum_context(parser, i)
+    mz, intensity, diagnostic = normalize_spectrum(
+        mz, intensity, source_index=i, context=context,
+    )
+    if reference is not None and not np.array_equal(mz, reference):
+        raise ImzMLContractError(
+            f"Spectrum {i}: individual m/z axis is unsupported", reason="individual_mz_axis",
+            context={**context, "source_index": int(i), "mz_dtype": str(mz.dtype)},
+        )
+    return mz, intensity, diagnostic
+
+
+def _spectrum_context(parser, i):
+    context = {"source_file": Path(str(getattr(parser, "filename", "unknown"))).name}
+    coords = getattr(parser, "coordinates", ())
+    if 0 <= i < len(coords):
+        context["coordinate"] = [int(value) for value in coords[i]]
+    return context
 
 
 def _coordinates(parser):
@@ -129,13 +147,16 @@ def inspect_imzml(path: str | Path) -> dict:
 
 
 def import_imzml(path: str | Path, output: str | Path, *, registration: dict,
-                 block_size=128, progress=None) -> dict:
+                 block_size=DEFAULT_BLOCK_ROWS, memory_budget_mb=64, progress=None,
+                 cancel=None) -> dict:
     """共通軸imzMLの全pixelを標準TIMS Parquetへ登録する。"""
     from app.services.imzml_registration import section_for_component
     from app.services.tims_parquet_contract import standard_schema, feature_names
+    from app.services.input_preparation import check_cancel
 
     # ★ ver74.0: API直接呼出しではUI検査を通らないため、原本を開く前に登録不足を拒否する。
     _require_registration(registration)
+    check_cancel(cancel)
     xml, ibd = _pair(path)
     output = Path(output).resolve()
     if not re.fullmatch(r"[^/\\]+\.parquet", output.name, flags=re.I):
@@ -161,11 +182,32 @@ def import_imzml(path: str | Path, output: str | Path, *, registration: dict,
         try:
             names = feature_names(axis)
         except ValueError as exc:
-            raise ImzMLContractError(str(exc)) from exc
+            raise ImzMLContractError(
+                str(exc), reason="feature_name_collision",
+                context={**_spectrum_context(parser, 0), "source_index": 0,
+                         **feature_collision_details(axis)},
+            ) from exc
         source_dtype = np.dtype(first.dtype)
         if source_dtype not in (np.dtype("float32"), np.dtype("float64")):
             raise ImzMLContractError(f"Unsupported intensity precision: {source_dtype}")
         output_dtype = np.dtype("float32")
+        try:
+            actual_block = deterministic_block_rows(
+                len(axis), requested=block_size, memory_budget_mb=memory_budget_mb,
+                width=output_dtype.itemsize,
+            )
+            working_bytes = block_working_bytes(
+                len(axis), actual_block, memory_budget_mb=memory_budget_mb,
+                width=output_dtype.itemsize,
+            )
+            # Retained first/current source intensities, m/z, cast and float64
+            # QC temporaries are pixel-sized and must not decide row groups.
+            source_pixel_bytes = len(axis) * (
+                source_dtype.itemsize * 2 + axis.dtype.itemsize + 8 * 3 + 4
+            )
+            require_available_memory(working_bytes + source_pixel_bytes, "共通軸Parquet変換")
+        except ValueError as exc:
+            raise ImzMLContractError(str(exc)) from exc
         order = sorted(range(len(coords)), key=lambda i: (coords[i][1], coords[i][0]))
         persisted_layout = strip_runtime_layout(spatial_layout, strip_preview=True)
         schema = standard_schema(axis, registration, extra_metadata={
@@ -180,15 +222,17 @@ def import_imzml(path: str | Path, output: str | Path, *, registration: dict,
         mapping = []
         annotation_counts = {}
         source_sum = output_sum = float32_error = 0.0
+        order_qc = new_order_qc()
         with pq.ParquetWriter(
             temp_parquet, schema, compression="zstd", use_dictionary=["annotation"]
         ) as writer:
-            for start in range(0, len(order), block_size):
-                indices = order[start:start + block_size]
+            for start in range(0, len(order), actual_block):
+                indices = order[start:start + actual_block]
                 matrix = np.empty((len(indices), len(axis)), dtype=output_dtype)
                 annotations = []
                 for j, i in enumerate(indices):
-                    _mz, intensities = _spectrum(parser, i, axis)
+                    check_cancel(cancel)
+                    _mz, intensities, diagnostic = _spectrum_with_diagnostics(parser, i, axis)
                     if np.dtype(intensities.dtype) != source_dtype:
                         raise ImzMLContractError(f"Spectrum {i}: mixed intensity precision")
                     # ★ ver74.0: float64では有限でもfloat32化でInfになる値を公開しない。
@@ -197,6 +241,7 @@ def import_imzml(path: str | Path, output: str | Path, *, registration: dict,
                     if not np.isfinite(cast).all():
                         raise ImzMLContractError(f"Spectrum {i}: float32 intensity overflow")
                     matrix[j] = cast
+                    record_order_qc(order_qc, diagnostic, i)
                     source_sum += float(np.sum(intensities, dtype=np.float64))
                     output_sum += float(np.sum(cast, dtype=np.float64))
                     float32_error += float(np.sum(
@@ -233,6 +278,12 @@ def import_imzml(path: str | Path, output: str | Path, *, registration: dict,
         if abs(source_sum - output_sum) > tolerance:
             raise ImzMLContractError("float32変換後の総強度が許容誤差を超えて変化しました")
 
+        ordering = order_metadata(order_qc)
+        nonlossless_reasons = []
+        if source_dtype != output_dtype:
+            nonlossless_reasons.append("intensity_precision_changed")
+        if not ordering["source_peak_order_preserved"]:
+            nonlossless_reasons.append("mz_order_normalized")
         manifest = {
             "schema_version": 4,
             "source_xml": str(xml), "source_ibd": str(ibd),
@@ -252,8 +303,13 @@ def import_imzml(path: str | Path, output: str | Path, *, registration: dict,
                 "output_intensity_sum": output_sum,
                 "float32_absolute_error_sum": float32_error,
                 "annotation_pixel_counts": annotation_counts,
+                "mz_order": ordering,
+                "parquet_block_rows": actual_block,
             },
-            "lossless_to_source": source_dtype == output_dtype,
+            **ordering,
+            "lossless_to_source": (source_dtype == output_dtype
+                                   and ordering["source_peak_order_preserved"]),
+            "nonlossless_reasons": nonlossless_reasons,
         }
         temp_manifest = temp_dir / manifest_path.name
         temp_manifest.write_text(json.dumps(manifest, ensure_ascii=False,
@@ -350,11 +406,15 @@ def export_imzml(sample: str | Path, output_zip: str | Path, *, pixel_ids=None,
         source_dtype = manifest.get("source_intensity_dtype", manifest["intensity_dtype"])
         precision_changed = np.dtype(source_dtype) != np.dtype(manifest["intensity_dtype"])
         source_lossless = manifest.get("lossless_to_source", not processed) is True
+        order_changed = (manifest.get("source_peak_order_preserved") is False or
+                         int(manifest.get("reordered_spectrum_count", 0)) > 0)
         reasons = []
         if processed:
             reasons.append("aligned_zero_filled_common_axis")
         if precision_changed:
             reasons.append("intensity_precision_changed")
+        if order_changed:
+            reasons.append("mz_order_normalized")
         receipt = {
             "schema_version": 2, "source": str(sample),
             "pixels": count, "features": len(axis),
@@ -363,7 +423,8 @@ def export_imzml(sample: str | Path, output_zip: str | Path, *, pixel_ids=None,
             "source_representation": manifest.get("input_representation", "common_axis"),
             "export_representation": ("aligned_zero_filled_common_axis" if processed
                                       else "source_common_axis"),
-            "lossless_to_source": source_lossless and not processed and not precision_changed,
+            "lossless_to_source": (source_lossless and not processed
+                                   and not precision_changed and not order_changed),
             "losslessness_scope": "selected_pixel_spectra" if ids is not None else "all_pixel_spectra",
             "source_intensity_dtype": str(np.dtype(source_dtype)),
             "export_intensity_dtype": str(np.dtype(manifest["intensity_dtype"])),
@@ -371,6 +432,12 @@ def export_imzml(sample: str | Path, output_zip: str | Path, *, pixel_ids=None,
             "alignment_ppm": manifest.get("alignment_ppm"),
             "zero_semantics": manifest.get("zero_semantics"),
             "conversion_qc": manifest.get("conversion_qc", {}),
+            "mz_order_policy": manifest.get("mz_order_policy", "legacy_strict_ascending"),
+            "duplicate_mz_policy": manifest.get("duplicate_mz_policy", "reject"),
+            "source_peak_order_preserved": not order_changed,
+            "order_normalization_preserves_pairs": manifest.get(
+                "order_normalization_preserves_pairs", True),
+            "order_qc_scope": "all_imported_pixel_spectra",
             "ms_level": 1,
         }
         receipt_path = temp_dir / "export_manifest.json"

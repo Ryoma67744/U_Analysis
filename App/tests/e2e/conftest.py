@@ -228,7 +228,22 @@ def app_server(tmp_path_factory, app_server_logs):
     app_root = runtime_root / "App"
     app_root.mkdir()
     shutil.copy2(source / "run_app.py", app_root / "run_app.py")
-    for folder in ("app", "Script", "DB"):
+    # ★ ver78.0: 小さい登録fixtureも受付共通の10GB条件に阻まれるCIだけ明示代替する。
+    # worker自身のメモリ検査、変換処理、通常のローカル実行には適用しない。
+    if os.environ.get("E2E_ADMISSION_MEMORY_SHIM") == "1":
+        launcher = app_root / "run_app.py"
+        original = launcher.read_text(encoding="utf-8")
+        shim = ("import psutil\n"
+                "_e2e_original_virtual_memory = psutil.virtual_memory\n"
+                "def _e2e_admission_memory():\n"
+                "    actual = _e2e_original_virtual_memory()\n"
+                "    return actual._replace(available=max(actual.available, 11 * 1024 ** 3))\n"
+                "psutil.virtual_memory = _e2e_admission_memory\n")
+        # runpyなら元スクリプトのfuture import/shebang位置を変えずに起動できる。
+        (app_root / "run_app_original.py").write_text(original, encoding="utf-8")
+        launcher.write_text(shim + "import runpy\nrunpy.run_path('run_app_original.py', run_name='__main__')\n",
+                            encoding="utf-8")
+    for folder in ("app", "Script", "DB", "tools"):
         shutil.copytree(source / folder, app_root / folder,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     port = _free_port()
@@ -247,6 +262,9 @@ def app_server(tmp_path_factory, app_server_logs):
     env["SEURAT_CACHE_DIR"] = str(runtime_root / "Data" / "Other" / "seurat_cache")
     env["DATA_EXPORT_TMP_DIR"] = str(runtime_root / "Data" / "Other" / "exports")
     env["GPT_EXPORT_TMP_DIR"] = str(runtime_root / "Data" / "Other" / "gpt_exports")
+    # ★ ver78.0: 登録workerも実起動するため、変換資産を必ず隔離環境へ保存する。
+    # 入れ子の一時変換ディレクトリがWindowsのパス上限へ達しない短い隔離先。
+    env["IMZML_CACHE_DIR"] = str(tmp_path_factory.getbasetemp() / "a")
 
     proc = subprocess.Popen(
         [sys.executable, "run_app.py"], cwd=str(app_root), env=env,

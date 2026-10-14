@@ -35,6 +35,15 @@ jobs:
           PYTHONPATH: .
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
         run: python -m pytest tests/test_reanalysis_sample_selector_lifecycle.py tests/test_http_request_diagnostics.py tests/test_browser_diagnostics.py tests/test_api_failures_are_legible.py tests/test_reanalysis_exact_source.py tests/test_unchecking_everything_stops_the_run.py -q
+      - name: imzML対応ソート・高速化・一括登録の契約
+        working-directory: App
+        env:
+          PYTHONPATH: .
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          set -euo pipefail
+          python -m pytest tests/test_imzml_spectrum_order.py tests/test_imzml_dictionary.py tests/test_imzml_block_policy.py tests/test_imzml_processed_performance.py tests/test_imzml_grouping_bounds.py tests/test_imzml_common_memory.py tests/test_imzml_registration_block_v78.py tests/test_imzml_progress_v78.py tests/test_imzml_registration_queue.py tests/test_imzml_registration_worker.py tests/test_imzml_registration_ui.py tests/test_imzml_autoimport_core.py tests/test_imzml_autoimport_validation.py tests/test_imzml_autoimport_real_io.py -q --junitxml=imzml78.xml
+          python -c 'import xml.etree.ElementTree as E; r=E.parse("imzml78.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "imzML v78 tests must not skip"'
   # ★ ver75.1: 登録に加え、出力対象の選択からダウンロードまで実ブラウザで必須検証する。
   registration-browser:
     runs-on: ubuntu-latest
@@ -56,6 +65,19 @@ jobs:
           set -euo pipefail
           python -m pytest tests/e2e/test_section_registration_guidance.py tests/e2e/test_export_selection.py tests/e2e/test_result_scope.py tests/e2e/test_reanalysis_registration_lifecycle.py -q --junitxml=registration-browser.xml
           python -c 'import xml.etree.ElementTree as E; r=E.parse("registration-browser.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "registration browser test must not skip"'
+      - name: imzML一括登録から実worker変換・解析設定への引渡し
+        working-directory: App
+        env:
+          PYTHONPATH: .
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+          E2E_STRICT: '1'
+          # 4画素×2のfixtureに限り、7GB runner上の10GB受付条件を代替する。
+          # 実workerのメモリ検査・変換・検証は実行する。通常ローカル試験では未指定。
+          E2E_ADMISSION_MEMORY_SHIM: '1'
+        run: |
+          set -euo pipefail
+          python -m pytest tests/e2e/test_imzml_batch_registration.py -q --junitxml=imzml78-browser.xml
+          python -c 'import xml.etree.ElementTree as E; r=E.parse("imzml78-browser.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "imzML v78 browser test must not skip"'
       - name: Caddy検証用バイナリを取得
         run: |
           set -euo pipefail

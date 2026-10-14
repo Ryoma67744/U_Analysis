@@ -90,7 +90,8 @@ def test_cancel_header_inspection(tmp_path):
 
 
 def test_large_feature_block_budget():
-    assert _bounded_block(29127,8,128,64)==96
+    # The v78 profile reserves Arrow/per-column overhead in addition to 3 copies.
+    assert _bounded_block(29127,8,128,64)==84
     assert _bounded_block(100,4,128,64)==128
     with pytest.raises(InputPreparationError):_bounded_block(999999999,8,128,1)
     with pytest.raises(InputPreparationError):_bounded_block(10,4,0,1)

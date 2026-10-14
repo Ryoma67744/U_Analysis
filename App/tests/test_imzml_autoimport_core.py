@@ -63,11 +63,16 @@ def prep(p, cache, **kwargs):
         converter=kwargs.pop("converter", fake_convert), validator=fake_validate, **kwargs)
 
 
-def test_pair_case_and_ambiguity(tmp_path):
+def test_pair_case_and_ambiguity(tmp_path, monkeypatch):
     p = source(tmp_path)
     p.with_suffix(".ibd").rename(p.with_suffix(".IBD"))
     assert ip.pair_paths(p)[1].name.endswith(".IBD")
-    p.with_suffix(".ibd").write_bytes(b"duplicate")
+    # Windows cannot create two names differing only by extension case.
+    # Model the directory entries so the ambiguity guard is tested on every OS.
+    upper = p.with_suffix(".IBD")
+    real_iterdir = Path.iterdir
+    monkeypatch.setattr(Path, "iterdir", lambda path:
+                        iter([p, upper, upper]) if path == p.parent else real_iterdir(path))
     assert ip.candidate_info(p)["disabled"]
     with pytest.raises(ip.InputPreparationError):
         ip.pair_paths(p)
@@ -79,6 +84,19 @@ def test_missing_binary_visible_but_disabled(tmp_path):
     info = ip.candidate_info(p)
     assert info["disabled"] and "検出 0 件" in info["reason"]
     assert ip.default_candidates([p]) == []
+
+
+def test_cancel_during_publish_notification_does_not_publish(tmp_path):
+    p = source(tmp_path / "source")
+    stopped = False
+    def progress(update):
+        nonlocal stopped
+        if update["stage"] == "publish":
+            stopped = True
+    with pytest.raises(ip.PreparationCancelled):
+        prep(p, tmp_path / "cache", progress=progress, cancel=lambda: stopped)
+    assert not list((tmp_path / "cache").rglob(ip.RECEIPT))
+    assert not list((tmp_path / "cache").rglob("*.parquet"))
 
 
 def test_candidate_read_does_not_hash_or_parse(tmp_path, monkeypatch):

@@ -12,7 +12,7 @@ __all__ = ["check_range", "validate_param", "PARAM_BOUNDS",
            "coerce_count", "REQUIRED_NUMERIC_INPUTS"]
 
 # ★ ver74.0: 変換条件の空欄を既定と取り違えない。表示専用の任意範囲とは区別する。
-REQUIRED_NUMERIC_INPUTS = frozenset({"imzml_alignment_ppm"})
+REQUIRED_NUMERIC_INPUTS = frozenset({"imzml_alignment_ppm", "imzml_batch_ppm"})
 
 # param_id -> (lo, hi, default, label)。lo/hi が None は無制限。
 PARAM_BOUNDS = {
@@ -80,6 +80,8 @@ PARAM_BOUNDS = {
     # ★ ver74.0: 手動変換の既定5 ppmを維持し、backendと同じ有限・非負を検証。
     # 通常解析UIの上限500を根拠なく変換APIへ追加しない。空欄は実行せず入力を求める。
     "imzml_alignment_ppm": (0, None, 5.0, "変換時m/zアライメント (ppm)"),
+    # ★ ver78.0: 新規一括登録も空欄・非有限値を実行前と入力時の両方で拒否する。
+    "imzml_batch_ppm": (0, None, 0.0, "一括登録時m/zアライメント (ppm)"),
     # --- キャリブレーション。設定タブと対話タブは同じ次数クランプを通るので
     #     境界も揃える（従来は対話側だけ上限が無かった）---
     "calibration_search_window": (0.01, 2.0, 0.5, "検索ウィンドウ (Da)"),

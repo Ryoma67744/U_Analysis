@@ -216,17 +216,21 @@ def make_catalog(paths, is_tims, previous, overrides=None):
         p = str(Path(path).expanduser().resolve())
         if is_tims and Path(p).suffix.lower() == ".imzml":
             item = {"path": p, "available_rois": [], "input_format": "imzml"}
-            from app.services.imzml_spatial_layout import inspect_imzml_spatial_layout, SpatialLayoutError
-            from app.services.imzml_validation import inspect_spectral_preflight
+            from app.services.imzml_spatial_layout import SpatialLayoutError
+            from app.services.imzml_input_inspection import inspect_selected_input
             from app.services.input_preparation import InputPreparationError
             try:
-                item["spectral_preflight"] = inspect_spectral_preflight(p)
+                item.update(inspect_selected_input(p))
             except (OSError, InputPreparationError) as exc:
                 item["spectral_preflight"] = {
                     "schema_version": 1, "status": "invalid", "error": str(exc),
                 }
             try:
-                layout = inspect_imzml_spatial_layout(p)
+                if item.get("spatial_error"):
+                    raise SpatialLayoutError(item["spatial_error"])
+                layout = item.get("spatial_layout")
+                if not layout:
+                    raise SpatialLayoutError("imzMLの座標情報を読み込めませんでした。")
                 item["spatial_layout"] = layout
                 override = overrides.get(p) or {}
                 if override.get("coordinate_hash") == layout.get("coordinate_hash"):

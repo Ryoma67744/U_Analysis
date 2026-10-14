@@ -74,6 +74,21 @@ def test_any_input_failure_prevents_r(setup):
     assert not (root/'analysis_params.json').exists()
 
 
+def test_next_source_failure_does_not_retain_previous_identity(setup, monkeypatch):
+    _, root, params = setup
+    def preparing(params, *, progress, **kwargs):
+        progress({'stage': 'source_verified', 'sample': 'first.imzML',
+                  'source_path': '/first.imzML', 'source_ibd': '/first.ibd',
+                  'source_xml_sha256': 'first-xml', 'source_ibd_sha256': 'first-ibd'})
+        progress({'stage': 'hash', 'sample': 'second.imzML'})
+        raise ip.InputPreparationError('second source is missing')
+    monkeypatch.setattr(ap, 'prepare_inputs', preparing)
+    assert ap.run_pipeline(payload(root, params), runner=lambda *_: pytest.fail('no R')) == 2
+    state = ap.pipeline_state(root)
+    assert state['sample'] == 'second.imzML'
+    assert not {'source_path', 'source_ibd', 'source_xml_sha256', 'source_ibd_sha256'} & state.keys()
+
+
 @pytest.mark.parametrize('rc',[1,7,-15])
 def test_r_failure_propagates(setup,rc):
     _,root,params=setup
