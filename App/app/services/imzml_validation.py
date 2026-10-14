@@ -15,6 +15,9 @@ import xml.etree.ElementTree as ET
 
 from app.services.input_preparation import InputPreparationError, check_cancel, pair_paths
 from app.services.imzml_spatial_layout import build_spatial_layout, strip_runtime_layout
+from app.services.imzml_block_policy import (
+    DEFAULT_BLOCK_ROWS, deterministic_block_rows, block_working_bytes, require_available_memory,
+)
 
 
 _MSN_STRUCTURE_TAGS = {
@@ -299,13 +302,11 @@ def inspect_binary_contract(path, *, cancel=None):
 
 
 def _bounded_block(features, width, requested, budget_mb):
-    if int(requested) < 1 or int(budget_mb) < 1:
-        raise InputPreparationError("変換ブロック・メモリ予算は正数で指定してください。")
-    budget = int(budget_mb) * 1024 * 1024
-    per_pixel = int(features) * int(width) * 3
-    if per_pixel > budget:
-        raise InputPreparationError("1画素の変換メモリがIMZML_BLOCK_MBを超えます。")
-    return min(int(requested), max(1, budget // max(1, per_pixel)))
+    try:
+        return deterministic_block_rows(features, requested=requested,
+                                        memory_budget_mb=budget_mb, width=width)
+    except ValueError as exc:
+        raise InputPreparationError(f"変換ブロック・メモリ予算が不正です: {exc}") from exc
 
 
 def checked_import(
@@ -313,14 +314,13 @@ def checked_import(
     output,
     *,
     registration,
-    block_size=128,
+    block_size=DEFAULT_BLOCK_ROWS,
     memory_budget_mb=64,
     alignment_ppm=0.0,
     progress=None,
     cancel=None,
 ):
     """全切片登録済みimzMLを、標準Parquetへ変換・1回だけ全量検証する。"""
-    import psutil
     from filelock import FileLock
     from app.services.imzml_io import import_imzml, ImzMLContractError
     from app.services.imzml_processed import import_processed_imzml, ZERO_SEMANTICS
@@ -357,12 +357,16 @@ def checked_import(
     common_block = None
     if not processed_candidate:
         common_block = _bounded_block(
-            meta["features"], meta["intensity_bytes"], block_size, memory_budget_mb
+            meta["features"], 4, block_size, memory_budget_mb
         )
-        available = psutil.virtual_memory().available
-        required = int(meta["features"]) * int(meta["intensity_bytes"]) * common_block * 3
-        if required > available * 0.5:
-            raise InputPreparationError("変換ブロックを確保するメモリが不足しています。")
+        # ★ ver78.0: 行数は保存float32幅で固定し、原精度の作業領域は別に確認する。
+        required = block_working_bytes(meta["features"], common_block,
+                                       memory_budget_mb=memory_budget_mb, width=4)
+        required += int(meta["features"]) * (int(meta["intensity_bytes"]) + 8) * 3
+        try:
+            require_available_memory(required, "共通m/z軸の変換")
+        except ValueError as exc:
+            raise InputPreparationError(str(exc)) from exc
 
     def checked_progress(done, total):
         check_cancel(cancel)
@@ -391,7 +395,8 @@ def checked_import(
                 try:
                     result = import_imzml(
                         path, staged, registration=registration,
-                        block_size=common_block, progress=checked_progress,
+                        block_size=common_block, memory_budget_mb=memory_budget_mb,
+                        progress=checked_progress, cancel=cancel,
                     )
                 except ImzMLContractError as exc:
                     if ("individual m/z axis" not in str(exc)
@@ -508,19 +513,21 @@ def validate_converted_table(output, *, cancel=None, memory_budget_mb=None):
     annotations: list[str] = []
 
     with pq.ParquetFile(output) as parquet:
+        # ★ ver78.0: schema_arrowは全列のschemaを再構築する。列ごとの取得は列数の二乗になる。
+        schema = parquet.schema_arrow
         expected_names = (["id", "x", "y", *names, "annotation"] if is_standard else
                           ["id", "x", "y", "ua_coordinate_component", *names, "annotation"])
-        if parquet.metadata.num_rows != n or parquet.schema_arrow.names != expected_names:
+        if parquet.metadata.num_rows != n or schema.names != expected_names:
             raise InputPreparationError("Parquetの列順または行数が一致しません。")
         base_types = [
-            parquet.schema_arrow.field("id").type,
-            parquet.schema_arrow.field("x").type,
-            parquet.schema_arrow.field("y").type,
-            parquet.schema_arrow.field("annotation").type,
+            schema.field("id").type,
+            schema.field("x").type,
+            schema.field("y").type,
+            schema.field("annotation").type,
         ]
         if base_types != [pa.int64(), pa.float64(), pa.float64(), pa.string()]:
             raise InputPreparationError("id・座標・annotationの保存型が標準契約と一致しません。")
-        if any(parquet.schema_arrow.field(name).type != expected_type for name in names):
+        if any(schema.field(name).type != expected_type for name in names):
             raise InputPreparationError("強度dtypeが保存仕様と一致しません。")
 
         registry = None
@@ -533,7 +540,7 @@ def validate_converted_table(output, *, cancel=None, memory_budget_mb=None):
             manifest_registry = manifest.get("section_registry") or []
             if registry != manifest_registry:
                 raise InputPreparationError("Parquetとsidecarの全切片登録情報が一致しません。")
-            metadata = parquet.schema_arrow.metadata or {}
+            metadata = schema.metadata or {}
             if metadata.get(b"ua_dataset_schema") != b"tims-standard-parquet-v1"                     or metadata.get(b"ua_source_type") != b"imzml"                     or metadata.get(b"ua_annotation_role") != b"section"                     or metadata.get(b"ua_registration_complete") != b"1":
                 raise InputPreparationError("Parquetの標準TIMS登録メタデータが不正です。")
             try:
@@ -570,10 +577,18 @@ def validate_converted_table(output, *, cancel=None, memory_budget_mb=None):
                     raise InputPreparationError("元pixel対応と全切片registryの所属が一致しません。")
 
         batch_size = _bounded_block(
-            len(names), dtype.itemsize, 128,
+            len(names), dtype.itemsize, DEFAULT_BLOCK_ROWS,
             memory_budget_mb if memory_budget_mb is not None
             else int(os.environ.get("IMZML_BLOCK_MB", "64")),
         )
+        try:
+            require_available_memory(block_working_bytes(
+                len(names), batch_size, width=dtype.itemsize,
+                memory_budget_mb=(memory_budget_mb if memory_budget_mb is not None
+                                  else int(os.environ.get("IMZML_BLOCK_MB", "64"))),
+            ), "変換後Parquetの検証")
+        except ValueError as exc:
+            raise InputPreparationError(str(exc)) from exc
         for batch in parquet.iter_batches(batch_size=batch_size):
             check_cancel(cancel)
             ids = batch.column(batch.schema.get_field_index("id")).to_pylist()

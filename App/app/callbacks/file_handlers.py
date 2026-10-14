@@ -281,9 +281,11 @@ def _sample_group_block(folder: str, options: list[dict], values: list[str],
      Input("analysis_method_tims", "value"),
      Input("extra_data_folders_store", "data")],
     [State({"type": "sample_check", "index": ALL}, "value"),
-     State({"type": "sample_check", "index": ALL}, "id")],
+     State({"type": "sample_check", "index": ALL}, "id"),
+     State("imzml_registered_selection", "data"), State("selected_project", "data")],
 )
-def update_sample_selector(data_folder, desi_method, tims_method, extra_folders, current_values=None, current_ids=None):
+def update_sample_selector(data_folder, desi_method, tims_method, extra_folders, current_values=None,
+                           current_ids=None, registered_selection=None, project=None):
     """データフォルダ + 追加データフォルダのサンプル一覧を作る。
 
     ★ ver64.0: TIMS はフォルダごとに区切って並べ、チェックの値を
@@ -306,6 +308,24 @@ def update_sample_selector(data_folder, desi_method, tims_method, extra_folders,
         return html.Div("データフォルダを指定してください", className="text-muted")
 
     active = desi_method or tims_method or "desi_v8"
+
+    # ★ ver78.0: 完成資産は管理領域にあるため通常の候補探索では見えない。
+    # 引渡されたフルパスだけを表示し、原本・別revision・未選択入力を混ぜない。
+    registered = registered_selection or {}
+    folders = [str(Path(p).resolve()) for p in [data_folder, *(extra_folders or [])] if p]
+    if (active == "tims_v8" and registered.get("paths")
+            and registered.get("project_id", "") == str((project or {}).get("id") or "")
+            and folders == registered.get("folders")):
+        saved = {i["index"]: values for i, values in zip(current_ids or [], current_values or [])}
+        blocks = []
+        for folder in folders:
+            paths = [p for p in registered["paths"] if str(Path(p).parent) == folder]
+            values = saved.get(folder)
+            selected = paths if values is None else [p for p in values if p in paths]
+            blocks.append(_sample_group_block(folder,
+                [{"label": " " + Path(p).name, "value": p, "disabled": not Path(p).is_file()} for p in paths],
+                selected, len(folders) > 1))
+        return blocks
 
     if active in ("tims_v8", "tims_cluster_filter"):
         groups = list_tims_folder_groups([data_folder] + list(extra_folders or []))

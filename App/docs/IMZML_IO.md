@@ -1,7 +1,7 @@
-# imzML 入出力（ver69.0 の初期実装）
+# imzML 入出力（ver78.0）
 
 解析設定タブのサイドバー「🗂 プリセット・バックアップ」にある
-**「🧬 imzML 入出力」**から開きます。共通 m/z 軸の `.imzML` / `.ibd` ペアを
+**「🧬 imzML 入出力」**から開きます。共通 m/z 軸またはprocessed-centroidの `.imzML` / `.ibd` ペアを
 TIMS 互換の Parquet に登録し、登録したスペクトルを imzML / ibd の ZIP として出力する機能です。
 既存のインタラクティブ画面「データ出力」とは別の操作です。
 
@@ -9,20 +9,25 @@ TIMS 互換の Parquet に登録し、登録したスペクトルを imzML / ibd
 
 1. 同じ名前のペア（例: `sample.imzML` と `sample.ibd`）を同じフォルダに配置します。
    サーバー運用では SFTP 等で両方の転送を完了してください。`.d` フォルダの直接登録には対応していません。
-2. 「🧬 imzML 入出力」で操作 **「imzML + ibd → Parquet 登録」**を選びます。
-3. 入力に `.imzML`、出力に新しい `.parquet` ファイルの**絶対パス**を入力します。
-   ibd は同じフォルダから自動で探します。
-4. 「実行」を押し、完了表示を確認します。出力先に次の2ファイルが生成されます。
-5. TIMS の「データフォルダ」に登録先フォルダを指定し、対象ファイルと切片を選んで解析します。
-   登録だけでは UMAP・クラスタ解析は始まりません。
+2. 「🧬 imzML 入出力」の「サーバー上のimzMLを選択」でフォルダを開き、対象を複数選択して「選択したファイルを追加」を押します。別フォルダのファイルも追加できます。ibdは自動で対応付けます。
+3. 読込後の全切片の表で、切片名、個体／独立試料ID、群を確認します。選択行への一括設定、タブ区切り3列の全行貼付が使えます。切片の結合は「切片の検出を修正」から行います。
+4. 実効ppmと全切片を確認して「内容を確認してParquetを作成」を押します。保存先は自動管理され、1ファイルずつ変換・検証されます。新規登録は0 ppm（完全一致）が既定です。保存した値と従来の手動変換の5 ppmは維持します。
+5. 完成データを選び「選択した完成データで解析設定へ」を押すと、実際のParquetと登録情報が新しい解析設定へ入ります。今回使う切片と解析条件を確認してから解析を開始します。
+
+画面を閉じても変換workerは継続します。再度開くと同じ実行者・プロジェクトの状態を確認できます。
+1ファイルの失敗で他のファイルの成功を取り消しません。「停止」は現在の処理と後続の開始を止め、完成済みデータを保持します。
+「失敗・停止したファイルを再試行」は別の試行を記録します。原本や変換仕様が変わった場合は再選択・再登録してください。
+停止したworkerの未完了項目は中断として扱います。完成品を選ぶだけでR・UMAP解析が自動開始することはありません。
+
+任意の出力先への単独変換とimzML出力は「従来の手動変換・任意出力先・imzML再出力」に残しています。
 
 | ファイル | 内容 |
 |---|---|
-| `sample.parquet` | 1行＝1画素。`id`, `x`, `y`, m/z強度列, `annotation`（初期値 `Unannotated`） |
+| `sample.parquet` | 1行＝1画素。`id`, `x`, `y`, m/z強度列, `annotation`（登録した切片名） |
 | `sample.imzml.json` | 元の m/z 軸・数値精度・元座標・元スペクトル順との対応など。imzML 再出力に必要 |
 
-元の imzML / ibd は変更しません。登録先に同名の Parquet または JSON があれば停止するため、
-再登録には別名（例: `sample_v2.parquet`）を指定します。登録した Parquet と JSON は同じ名前・同じ場所で保管してください。
+元のimzML / ibdは変更しません。一括登録の完成品は`IMZML_CACHE_DIR`内に内容・条件別のrevisionとして保存します。
+手動変換では同名のParquetまたはJSONを上書きしません。登録したParquetとJSONは同じ名前・同じ場所で保管してください。
 
 入力するのは**アプリが動いている環境から見えるパス**です。標準の Docker マウント構成なら、
 SFTP の `/srv/msi/tims_data/sample/sample.imzML` はアプリでは
@@ -32,7 +37,7 @@ SFTP の `/srv/msi/tims_data/sample/sample.imzML` はアプリでは
 
 ## imzML として出力する手順
 
-1. 操作 **「登録済み Parquet → imzML + ibd ZIP」**を選びます。
+1. 「従来の手動変換・任意出力先・imzML再出力」を開き、操作 **「Parquet → imzML ZIP」**を選びます。
 2. 入力に上記の登録済み Parquet、出力に新しい `.zip` の絶対パスを入力します。
    CSV から変換した Parquet や解析結果表には、必要な `.imzml.json` がないため使えません。
 3. 「出力画素 ID」を空欄にすると全画素を出力します。絞る場合は、対象 Parquet の
@@ -59,20 +64,21 @@ ROI 名、クラスタ列、UMAP 座標はこの ZIP に追加しません。元
 
 ## 対応範囲と確認事項
 
-- 対象は、全画素で同一の m/z 軸、単一 z 面、float32 / float64 強度のスペクトルです。
-  画素ごとに異なる m/z 軸の補間・再標本化は行いません。
-- 不正なスペクトル（非有限値、負の強度、m/z が昇順でない等）、重複座標、
-  小数6桁の列名または R の小数5桁の特徴量名で区別できない m/z は、理由を示して停止します。
+- 対象は共通m/z軸、またはprocessed-centroidの疎なピークリスト、単一z面、float32 / float64強度です。
+  疎な入力は全画素のm/z辞書へ展開します。補間はせず、未記録featureは0です。詳細は[自動変換の契約](IMZML_AUTOIMPORT.md)を参照してください。
+- m/zの大小逆転は、強度と同じindexで安定ソートして取り込みます。元ファイルは変更しません。並替え数・移動ピーク数を記録します。
+- 非有限値、非正m/z、厳密重複m/z、負強度、配列長不一致、重複座標、
+  小数6桁の列名で区別できないm/zは、理由を示して停止します。
   出力時には profile / centroid の種別が認識できることも必要です。
 - 保存値の正規化状態は `unknown` と記録します。SCiLS 側の RMS 等の有無は自動判定しません。
   元データの出力条件を確認し、解析設定の正規化を選んでください。登録自体では強度を正規化しません。
 - 登録時は全スペクトルの読み込み・検査・Parquet 書き込みを行います。出力も強度表を読み、
   imzML / ibd を新規生成・再読込検査するため、単なる拡張子変更や座標の並べ替えではありません。
-  大容量データの所要時間は画素数・m/z数・環境に依存し、実データでの性能は未確認です。
+  大容量データの所要時間は画素数・m/z数・ストレージ・CPU・メモリに依存します。
 - 「停止」で中断した場合、未完成の出力は解析・再出力に使用しないでください。
 
-ver69.0 は初期実装です。ROI / クラスタ選択画面からの直接出力、GPT API での形式指定、
-既存データ出力への imzML 追加は未実装です。SCiLS 実データでの往復検証も未完了です。
+原順序の逆置換情報は保存しません。並べ替えたデータの出力はm/z昇順になります。
+float32への変換・ppm集約・疎な入力の0補完もあるため、原本を完全再現する形式とは扱いません。
 
 ## CLI とログ
 
@@ -80,7 +86,7 @@ ver69.0 は初期実装です。ROI / クラスタ選択画面からの直接出
 
 ```bash
 python -u tools/imzml_io_cli.py inspect /path/to/sample.imzML
-python -u tools/imzml_io_cli.py import /path/to/sample.imzML /path/to/sample.parquet
+python -u tools/imzml_io_cli.py import /path/to/sample.imzML /path/to/sample.parquet --registration-spec /path/to/all-sections.json --alignment-ppm 0
 python -u tools/imzml_io_cli.py export /path/to/sample.parquet /path/to/sample.zip
 ```
 
@@ -89,3 +95,5 @@ python -u tools/imzml_io_cli.py export /path/to/sample.parquet /path/to/sample.z
 `--status /path/to/status.json` を指定すると JSON にも記録します。
 GUI から実行した場合のログと status JSON は、アプリの `OTHER_DIR/logs/imzml_io`
 （通常 `Data/Other/logs/imzml_io`）に保存します。
+
+一括登録の受付・進捗・結果は`OTHER_DIR/imzml_registrations`へ保存します。ブラウザの表だけをworker入力として使わず、確定した入力と設定を保存して処理します。

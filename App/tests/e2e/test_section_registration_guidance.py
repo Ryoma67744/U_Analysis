@@ -80,7 +80,8 @@ def test_five_sections_missing_ids_to_confirmed_registration(tmp_path, monkeypat
         html.Button("登録を再表示", id={"type": "imzml_spatial_open", "scope": "initial", "index": source}, n_clicks=0),
         html.Pre(id="fixture_applied", style={"display": "none"}),
     ]
-    for scope, suffix in (("initial", ""), ("reanalysis", "_reanalysis"), ("conversion", "_conversion")):
+    for scope, suffix in (("initial", ""), ("reanalysis", "_reanalysis"), ("conversion", "_conversion"),
+                          ("registration", "_registration")):
         children.extend([
             dcc.Store(id="section_catalog_store" + suffix, data=[entry] if not suffix else []),
             dcc.Store(id="section_manifest_store" + suffix, data=manifest if not suffix else {"files": []}),

@@ -109,6 +109,8 @@ def rewrite_registered_parquet(
     *,
     progress=None,
     cancel=None,
+    block_size=512,
+    memory_budget_mb=64,
 ) -> dict:
     """既存の標準Parquetの強度行列を再利用し、全切片登録だけを更新する。
 
@@ -157,35 +159,45 @@ def rewrite_registered_parquet(
         section_ids.append(section["section_id"])
 
     axis = np.asarray(manifest.get("mz_axis") or [], dtype=np.float64)
+    from app.services.imzml_block_policy import (
+        deterministic_block_rows, block_working_bytes, require_available_memory,
+    )
+    rows = deterministic_block_rows(len(axis), requested=block_size,
+                                    memory_budget_mb=memory_budget_mb, width=4)
+    require_available_memory(block_working_bytes(len(axis), rows,
+                             memory_budget_mb=memory_budget_mb, width=4), "切片登録の更新")
     names = list(manifest.get("column_names") or [])
     if len(axis) != len(names):
         raise ImzMLContractError("再利用Parquetのm/z軸と列対応が不正です")
     old = pq.ParquetFile(source_parquet)
-    expected = ["id", "x", "y", *names, "annotation"]
-    if old.schema_arrow.names != expected or old.metadata.num_rows != n_pixels:
-        raise ImzMLContractError("再利用Parquetが標準列契約に適合しません")
-
-    extra = {}
-    for key, value in (old.schema_arrow.metadata or {}).items():
-        decoded = key.decode("utf-8", errors="strict")
-        if decoded in {"mz_sorted", "ua_dataset_schema", "ua_source_type",
-                       "ua_annotation_role", "ua_registration_complete",
-                       "ua_section_registry", "ua_section_registry_hash",
-                       "ua_registration_hash"}:
-            continue
-        extra[decoded] = value
-    schema = standard_schema(axis, registration, extra_metadata=extra)
-
-    output_parquet.parent.mkdir(parents=True, exist_ok=True)
-    temp_dir = Path(tempfile.mkdtemp(prefix=".registered-parquet-", dir=output_parquet.parent))
-    temp_parquet = temp_dir / output_parquet.name
-    temp_manifest = temp_dir / output_manifest.name
+    # ★ ver78.0: schema検査・一時dir作成の失敗でもWindowsの読取handleを残さない。
     try:
+        expected = ["id", "x", "y", *names, "annotation"]
+        if old.schema_arrow.names != expected or old.metadata.num_rows != n_pixels:
+            raise ImzMLContractError("再利用Parquetが標準列契約に適合しません")
+        extra = {}
+        for key, value in (old.schema_arrow.metadata or {}).items():
+            decoded = key.decode("utf-8", errors="strict")
+            if decoded in {"mz_sorted", "ua_dataset_schema", "ua_source_type",
+                           "ua_annotation_role", "ua_registration_complete",
+                           "ua_section_registry", "ua_section_registry_hash",
+                           "ua_registration_hash"}:
+                continue
+            extra[decoded] = value
+        schema = standard_schema(axis, registration, extra_metadata=extra)
+        output_parquet.parent.mkdir(parents=True, exist_ok=True)
+        temp_dir = Path(tempfile.mkdtemp(prefix=".registered-parquet-", dir=output_parquet.parent))
+    except BaseException:
+        old.close()
+        raise
+    try:
+        temp_parquet = temp_dir / output_parquet.name
+        temp_manifest = temp_dir / output_manifest.name
         seen = 0
         with pq.ParquetWriter(
             temp_parquet, schema, compression="zstd", use_dictionary=["annotation"]
         ) as writer:
-            for batch in old.iter_batches(batch_size=128):
+            for batch in old.iter_batches(batch_size=rows):
                 if cancel and cancel():
                     from app.services.input_preparation import PreparationCancelled
                     raise PreparationCancelled("入力準備を停止しました。")
@@ -221,6 +233,7 @@ def rewrite_registered_parquet(
         updated["registration_hash"] = registration["registration_hash"]
         updated["source_coordinates"] = updated_mapping
         updated.setdefault("conversion_qc", {})["annotation_pixel_counts"] = counts
+        updated["conversion_qc"]["parquet_block_rows"] = rows
         updated["registration_rewritten_from"] = str(source_parquet)
         temp_manifest.write_text(
             json.dumps(updated, ensure_ascii=False, separators=(",", ":")),
@@ -248,4 +261,5 @@ def rewrite_registered_parquet(
             "registration_rewrite": True,
         }
     finally:
+        old.close()
         shutil.rmtree(temp_dir, ignore_errors=True)

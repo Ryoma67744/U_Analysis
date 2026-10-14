@@ -16,6 +16,7 @@ from app.services.input_preparation import (
     PreparationCancelled, InputPreparationError, check_cancel, contains_imzml,
     prepare_inputs, write_json,
 )
+from app.services.progress_reporting import ProgressReporter
 
 
 class DeferredAnalysis(str):
@@ -89,11 +90,21 @@ def run_pipeline(payload, *, converter=None, validator=None, runner=None):
     def signal_stop(signum, frame):
         nonlocal cancelled
         cancelled = True
+    def emit_status(snapshot):
+        write_json(root / "log" / "input_pipeline.json", snapshot)
+        print("[INPUT] " + json.dumps(snapshot, ensure_ascii=False), flush=True)
+    reporter = ProgressReporter(emit_status)
     def status(update):
+        sample_changed = "sample" in update and update["sample"] != state.get("sample")
+        if sample_changed:
+            # ★ ver78.0: 次ファイルの失敗を前ファイルのpath/hashと誤認させない。
+            for key in ("source_path", "source_ibd", "source_xml_sha256", "source_ibd_sha256"):
+                state.pop(key, None)
+        if update.get("stage") != state.get("stage") or sample_changed:
+            state.pop("done", None)
+            state.pop("total", None)
         state.update(update)
-        write_json(root / "log" / "input_pipeline.json", state)
-        if update.get("stage"):
-            print("[INPUT] " + json.dumps(update, ensure_ascii=False), flush=True)
+        reporter.update(state)
     previous_handlers = {}
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:

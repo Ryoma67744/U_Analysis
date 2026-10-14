@@ -59,11 +59,13 @@ def test_complete_backup_uses_actual_mounts_and_bind(tmp_path, monkeypatch, imzm
     monkeypatch.setattr(backup, 'docker', docker)
     backup.backup(tmp_path, 30)
     assert len(list(tmp_path.glob('*.tar.gz'))) == len(backup.TARGETS)
-    assert any('src=lab_msi-projects' in str(call) for call in calls)
-    assert any(f'type=bind,src={tmp_path}/logs' in str(call) for call in calls)
-    expected_imzml = (f'type=bind,src={tmp_path}/imzml-assets' if imzml_bind
-                      else 'type=volume,src=lab_msi-imzml-assets')
-    assert any(expected_imzml in str(call) for call in calls)
+    assert any('type=volume,src=lab_msi-projects,dst=/data,readonly' in call
+               for call in calls)
+    assert any(f'type=bind,src={tmp_path / "logs"},dst=/data,readonly' in call
+               for call in calls)
+    expected_imzml = (f'type=bind,src={tmp_path / "imzml-assets"},dst=/data,readonly'
+                      if imzml_bind else 'type=volume,src=lab_msi-imzml-assets,dst=/data,readonly')
+    assert any(expected_imzml in call for call in calls)
     saved = json.loads(next(tmp_path.glob('backup-*.json')).read_text())['mounts']
     assert len(saved) == 8
     assert any(item['archive'].startswith('msi-imzml-assets-')
@@ -79,7 +81,11 @@ def test_restore_absolute_bind_prod_and_no_old_volume_delete(tmp_path, monkeypat
     monkeypatch.setattr(backup, 'docker', lambda *args: calls.append(args) or '')
     backup.restore('msi-projects', source.name, assume_yes=True)
     extract = next(call for call in calls if 'xzf' in call)
-    assert f'type=bind,src={tmp_path},dst=/backup,readonly' in extract
+    bind_mount = next(arg for arg in extract if arg.startswith('type=bind,src='))
+    suffix = ',dst=/backup,readonly'
+    assert bind_mount.endswith(suffix)
+    # Windows may remove an extended-path prefix when resolving a relative path.
+    assert Path(bind_mount[len('type=bind,src='):-len(suffix)]).samefile(tmp_path)
     stop = next(call for call in calls if 'stop' in call)
     start = next(call for call in calls if 'start' in call)
     assert str(tmp_path / 'docker-compose.prod.yml') in backup.compose_command(info)[0]

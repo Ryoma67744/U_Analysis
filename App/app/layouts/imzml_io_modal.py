@@ -3,6 +3,7 @@ from dash import dcc, html
 import dash_bootstrap_components as dbc
 
 from app.layouts.imzml_spatial_float import create_imzml_spatial_float
+from app.layouts.imzml_registration_panel import create_registration_panel
 from app.utils.validation import PARAM_BOUNDS, param_default
 
 
@@ -19,6 +20,8 @@ def create_imzml_io_modal():
             dcc.Interval(id="imzml_interval", interval=1000, disabled=True),
             dbc.ModalHeader(dbc.ModalTitle("imzML 登録／Parquet変換／再出力")),
             dbc.ModalBody([
+                create_registration_panel(),
+                html.Details([html.Summary("従来の手動変換・任意出力先・imzML再出力"),
                 dbc.Alert(
                     "importでは、imzML内の全切片・全pixelをParquetへ保存します。"
                     "解析対象外の切片を含め、全切片の切片名・個体ID・群・登録確認が必須です。",
@@ -61,12 +64,13 @@ def create_imzml_io_modal():
                 dbc.Progress(id="imzml_progress", value=0, striped=True, animated=True,
                              className="mb-2"),
                 html.Div(id="imzml_result", className="small"),
+                dbc.Button("停止", id="imzml_stop", color="danger", outline=True,
+                           disabled=True, className="me-2"),
+                dbc.Button("実行", id="imzml_run", color="primary"),
+                ], className="mt-4"),
                 create_imzml_spatial_float("conversion"),
             ]),
             dbc.ModalFooter([
-                dbc.Button("停止", id="imzml_stop", color="danger", outline=True,
-                           disabled=True),
-                dbc.Button("実行", id="imzml_run", color="primary"),
                 dbc.Button("閉じる", id="imzml_close", color="secondary"),
             ]),
         ],

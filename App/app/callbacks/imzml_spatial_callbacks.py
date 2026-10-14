@@ -209,7 +209,8 @@ def _editor_revision(file_entry, catalog_entry):
 
 
 def _register(scope):
-    suffix = {"initial": "", "reanalysis": "_reanalysis", "conversion": "_conversion"}.get(scope)
+    suffix = {"initial": "", "reanalysis": "_reanalysis", "conversion": "_conversion",
+              "registration": "_registration"}.get(scope)
     if suffix is None:
         raise ValueError(f"未知のimzML float scopeです: {scope}")
     panel = "imzml_spatial_float" + suffix
@@ -247,6 +248,7 @@ def _register(scope):
         # ★ ver74.0: 手動変換にはoverride→catalogの更新callbackがないため、
         # 再表示も実行specと同じ適用済み情報を読む。別座標の登録は使わない。
         override = (overrides or {}).get(path) or {}
+        # ★ ver78.0: 一括登録のcatalogは最新の一画面編集を含むため、過去のoverrideで戻さない。
         if (scope == "conversion" and override
                 and override.get("coordinate_hash") == layout.get("coordinate_hash")):
             source = override.get("registered_sections") or override.get("spatial_sections") or source
@@ -265,7 +267,7 @@ def _register(scope):
             message += " ／ " + " ／ ".join(warnings[:2])
         if scope == "reanalysis" and "source_selected_section_ids" in (file_entry or {}):
             message += " ／ 再解析は元RDSに含まれる切片だけを選択できます。切片の結合・分割は新規解析で行ってください。"
-        panel_title = ("imzML全切片登録" if scope == "conversion"
+        panel_title = ("imzML全切片登録" if scope in {"conversion", "registration"}
                        else "imzML全切片登録・解析選択")
         return ({"display": "block"}, "imzml-spatial-float", path, sections,
                 _figure(layout, sections), _table_rows(sections), [],
@@ -477,7 +479,7 @@ def _register(scope):
                         row["section_id"] for row in sections if row.get("selected", True)
                     ],
                 }
-                applied_message = ("全切片の登録情報を適用しました。" if scope == "conversion"
+                applied_message = ("全切片の登録情報を適用しました。" if scope in {"conversion", "registration"}
                                    else "全切片の登録情報と今回の解析選択を適用しました。")
                 return (sections, _figure(layout, sections), _table_rows(sections), [], overrides,
                         {"display": "none"}, "imzml-spatial-float", applied_message)
@@ -493,3 +495,5 @@ def _register(scope):
 _register("initial")
 _register("reanalysis")
 _register("conversion")
+# ★ ver78.0: 新登録表と従来変換のdraftを分離し、同じ原本でも編集状態を混ぜない。
+_register("registration")

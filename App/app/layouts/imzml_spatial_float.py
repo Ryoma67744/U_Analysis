@@ -4,11 +4,12 @@ import dash_bootstrap_components as dbc
 
 
 def create_imzml_spatial_float(scope="initial"):
-    suffix = {"initial": "", "reanalysis": "_reanalysis", "conversion": "_conversion"}.get(scope)
+    suffix = {"initial": "", "reanalysis": "_reanalysis", "conversion": "_conversion",
+              "registration": "_registration"}.get(scope)
     if suffix is None:
         raise ValueError(f"未知のimzML float scopeです: {scope}")
     panel_id = "imzml_spatial_float" + suffix
-    conversion_mode = scope == "conversion"
+    conversion_mode = scope in {"conversion", "registration"}
     title = ("imzML全切片登録" if conversion_mode
              else "imzML全切片登録・今回の解析選択")
     return html.Div([
