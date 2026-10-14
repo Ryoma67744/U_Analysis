@@ -39,8 +39,10 @@ class _BrowserDiagnostics:
         self.console_errors = []
         self.page_errors = []
         self.failed_requests = []
+        self.completed_204_cancellations = []
         self.server_errors = []
         self.callback_responses = []
+        self._responses_by_request = {}
         page.on("console", self._console)
         page.on("pageerror", lambda error: self.page_errors.append(str(error)))
         page.on("requestfailed", self._request_failed)
@@ -66,18 +68,41 @@ class _BrowserDiagnostics:
             "text": message.text, "arguments": arguments, "location": message.location,
         })
 
+    def _is_dash_callback(self, request):
+        return (request.method == "POST"
+                and request.url.split("?", 1)[0] == self.base_url + "/_dash-update-component")
+
+    @staticmethod
+    def _callback_output(request):
+        try:
+            return request.post_data_json.get("output")
+        except Exception:
+            return None
+
     def _request_failed(self, request):
-        self.failed_requests.append({"url": request.url, "failure": request.failure})
+        response = self._responses_by_request.get(request)
+        entry = {"url": request.url, "failure": request.failure,
+                 "method": request.method, "time": time.time(),
+                 "output": self._callback_output(request) if self._is_dash_callback(request) else None,
+                 "response_status": response["status"] if response else None,
+                 "response_time": response["time"] if response else None,
+                 "request_id": response["request_id"] if response else None}
+        # Dash 2.18.2 は 204 (PreventUpdate) を body を読まずに処理する。
+        # Chromium の ERR_ABORTED でも、この同一 request の 204 受信を確認済み
+        # の場合だけ別記録にする。未応答・200・5xx・別 request の成功では除外しない。
+        if (self._is_dash_callback(request) and request.failure == "net::ERR_ABORTED"
+                and response is not None and response["status"] == 204):
+            self.completed_204_cancellations.append(entry)
+        else:
+            self.failed_requests.append(entry)
 
     def _response(self, response):
         entry = {"url": response.url, "status": response.status, "time": time.time(),
                  "request_id": response.headers.get("x-request-id")}
-        if "/_dash-update-component" in response.url:
+        if self._is_dash_callback(response.request):
             # Input/State の内容やログイン情報を保存せず、callback の出力先だけ記録。
-            try:
-                entry["output"] = response.request.post_data_json.get("output")
-            except Exception:
-                entry["output"] = None
+            entry["output"] = self._callback_output(response.request)
+            self._responses_by_request[response.request] = entry
             self.callback_responses.append(entry)
         if response.status >= 500:
             # HTTP 502 は応答済みなので requestfailed だけでは捕まらない。
@@ -105,6 +130,7 @@ class _BrowserDiagnostics:
         (directory / "browser.json").write_text(json.dumps({
             "console_errors": self.console_errors, "page_errors": self.page_errors,
             "failed_requests": self.failed_requests, "server_errors": self.server_errors,
+            "completed_204_cancellations": self.completed_204_cancellations,
             "callback_responses": self.callback_responses,
         }, ensure_ascii=False, indent=2), encoding="utf-8")
         (directory / "server.log").write_text(server_logs, encoding="utf-8")

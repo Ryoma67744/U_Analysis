@@ -34,7 +34,7 @@ jobs:
         env:
           PYTHONPATH: .
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-        run: python -m pytest tests/test_reanalysis_sample_selector_lifecycle.py tests/test_http_request_diagnostics.py tests/test_api_failures_are_legible.py tests/test_reanalysis_exact_source.py tests/test_unchecking_everything_stops_the_run.py -q
+        run: python -m pytest tests/test_reanalysis_sample_selector_lifecycle.py tests/test_http_request_diagnostics.py tests/test_browser_diagnostics.py tests/test_api_failures_are_legible.py tests/test_reanalysis_exact_source.py tests/test_unchecking_everything_stops_the_run.py -q
   # ★ ver75.1: 登録に加え、出力対象の選択からダウンロードまで実ブラウザで必須検証する。
   registration-browser:
     runs-on: ubuntu-latest
