@@ -6,11 +6,14 @@
 Playwright/ブラウザが無い環境では通常 skip する。検証必須の実行は
 `E2E_STRICT=1` とし、起動不能をエラーとして記録する。
 `E2E_APP_ROOT=/path/to/baseline/App` で同じ隔離ハーネスから比較元を起動できる。
+`E2E_CADDY_BINARY=/path/to/caddy` でリポジトリの Caddyfile を使う loopback HTTP 経由にする。
 Dash ではコンポーネント `id` がそのまま安定セレクタ（`#id`）。data-testid は不要。
 """
 
 import collections
+import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -26,6 +29,91 @@ import pytest
 HOST = "127.0.0.1"
 APP_ROOT = Path(__file__).resolve().parents[2]  # .../App
 MASTER_PW = "e2e-master-pass"
+
+
+class _BrowserDiagnostics:
+    """初回 navigation 前から Dash の console と HTTP を別々に収集する。"""
+
+    def __init__(self, page, base_url):
+        self.base_url = base_url
+        self.console_errors = []
+        self.page_errors = []
+        self.failed_requests = []
+        self.server_errors = []
+        self.callback_responses = []
+        page.on("console", self._console)
+        page.on("pageerror", lambda error: self.page_errors.append(str(error)))
+        page.on("requestfailed", self._request_failed)
+        page.on("response", self._response)
+
+    def _console(self, message):
+        if message.type != "error":
+            return
+        arguments = []
+        for argument in message.args:
+            try:
+                # Error の message/stack は JSON.stringify 単独では {} になる。
+                arguments.append(argument.evaluate("""value => {
+                    if (value instanceof Error) {
+                        return {name: value.name, message: value.message, stack: value.stack};
+                    }
+                    try { return JSON.parse(JSON.stringify(value)); }
+                    catch (_) { return String(value); }
+                }"""))
+            except Exception:
+                arguments.append(str(argument))
+        self.console_errors.append({
+            "text": message.text, "arguments": arguments, "location": message.location,
+        })
+
+    def _request_failed(self, request):
+        self.failed_requests.append({"url": request.url, "failure": request.failure})
+
+    def _response(self, response):
+        entry = {"url": response.url, "status": response.status, "time": time.time(),
+                 "request_id": response.headers.get("x-request-id")}
+        if "/_dash-update-component" in response.url:
+            # Input/State の内容やログイン情報を保存せず、callback の出力先だけ記録。
+            try:
+                entry["output"] = response.request.post_data_json.get("output")
+            except Exception:
+                entry["output"] = None
+            self.callback_responses.append(entry)
+        if response.status >= 500:
+            # HTTP 502 は応答済みなので requestfailed だけでは捕まらない。
+            self.server_errors.append(entry)
+
+    def application_errors(self):
+        def same_origin(url):
+            return url == self.base_url or url.startswith(self.base_url + "/")
+
+        return {
+            "console": [item for item in self.console_errors
+                        if not item["location"].get("url")
+                        or same_origin(item["location"]["url"])],
+            "pageerror": self.page_errors,
+            "requestfailed": [item for item in self.failed_requests if same_origin(item["url"])],
+            "http_5xx": [item for item in self.server_errors if same_origin(item["url"])],
+        }
+
+    def assert_clean(self):
+        errors = {kind: items for kind, items in self.application_errors().items() if items}
+        assert not errors, json.dumps(errors, ensure_ascii=False, indent=2)
+
+    def save(self, directory, page, server_logs="", proxy_logs=""):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "browser.json").write_text(json.dumps({
+            "console_errors": self.console_errors, "page_errors": self.page_errors,
+            "failed_requests": self.failed_requests, "server_errors": self.server_errors,
+            "callback_responses": self.callback_responses,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        (directory / "server.log").write_text(server_logs, encoding="utf-8")
+        if proxy_logs:
+            (directory / "caddy.log").write_text(proxy_logs, encoding="utf-8")
+        try:
+            page.screenshot(path=str(directory / "page.png"), full_page=True, timeout=5000)
+        except Exception:
+            pass  # 元の失敗をスクリーンショットのタイムアウトで隠さない。
 
 
 def _unavailable(reason):
@@ -71,8 +159,38 @@ def _free_port() -> int:
     return port
 
 
+def _stop_process(proc):
+    if proc is None or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+def _local_caddy_config(source, app_port, proxy_port):
+    """本番 proxy の処理を残し、待受・upstream・TLS だけを試験環境へ置き換える。"""
+    config = (source.parent / "Caddyfile").read_text(encoding="utf-8")
+    config, sites = re.subn(r"(?m)^cciiumap\.duckdns\.org\s*\{",
+                           f"http://{HOST}:{proxy_port} {{", config)
+    config, upstreams = re.subn(r"reverse_proxy msi-app:3838\s*\{",
+                               f"reverse_proxy {HOST}:{app_port} {{", config)
+    assert sites == upstreams == 1, "Caddyfile の site/upstream 変更を fixture に反映してください"
+    config = config.replace("\tdefault_sni cciiumap.duckdns.org", "\tadmin off\n\tauto_https off", 1)
+    config = config.replace("header_up X-Forwarded-Proto https", "header_up X-Forwarded-Proto http")
+    assert "\tadmin off" in config and "\tauto_https off" in config
+    return config
+
+
 @pytest.fixture(scope="session")
-def app_server(tmp_path_factory):
+def app_server_logs():
+    return {}
+
+
+@pytest.fixture(scope="session")
+def app_server(tmp_path_factory, app_server_logs):
     """run_app.py を subprocess 起動して base URL と master password を返す。"""
     # ★ ver66.3: 以前は実リポジトリで起動し、前回設定の削除や認証・キャッシュの
     #   書込が利用者データに及び得た。コードと同梱資産だけを一時領域へ複製する。
@@ -109,6 +227,7 @@ def app_server(tmp_path_factory):
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     # パイプを読み続ける（詰まるとアプリが write でブロックして無応答になる）
     drain = _LogDrain(proc.stdout)
+    app_server_logs["drain"] = drain
     base = f"http://{HOST}:{port}"
 
     healthy = False
@@ -132,14 +251,45 @@ def app_server(tmp_path_factory):
             proc.wait(timeout=10)
         _unavailable(f"アプリが /healthz 緑になりませんでした:\n{drain.text()[-2500:]}")
 
-    yield base, MASTER_PW
-
-    proc.terminate()
+    proxy = None
     try:
-        proc.wait(timeout=10)
-    except Exception:
-        proc.kill()
-        proc.wait(timeout=10)
+        caddy_binary = os.environ.get("E2E_CADDY_BINARY")
+        if caddy_binary:
+            if not Path(caddy_binary).is_file():
+                _unavailable(f"Caddy が見つかりません: {caddy_binary}")
+            proxy_port = _free_port()
+            config_path = runtime_root / "Caddyfile.e2e"
+            config_path.write_text(_local_caddy_config(source, port, proxy_port), encoding="utf-8")
+            proxy_env = dict(os.environ)
+            proxy_env["XDG_CONFIG_HOME"] = str(runtime_root / "caddy-config")
+            proxy_env["XDG_DATA_HOME"] = str(runtime_root / "caddy-data")
+            proxy = subprocess.Popen(
+                [caddy_binary, "run", "--config", str(config_path), "--adapter", "caddyfile"],
+                cwd=str(runtime_root), env=proxy_env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            proxy_drain = _LogDrain(proxy.stdout)
+            app_server_logs["proxy"] = proxy_drain
+            base = f"http://{HOST}:{proxy_port}"
+            proxy_ready = False
+            for _ in range(30):
+                if proxy.poll() is not None:
+                    _unavailable(f"Caddy の起動に失敗:\n{proxy_drain.text()[-2500:]}")
+                try:
+                    with urllib.request.urlopen(base + "/healthz", timeout=2) as response:
+                        if response.status == 200:
+                            proxy_ready = True
+                            break
+                except Exception:
+                    pass
+                time.sleep(1)
+            if not proxy_ready:
+                _unavailable(f"Caddy 経由の /healthz が応答しません:\n{proxy_drain.text()[-2500:]}")
+
+        yield base, MASTER_PW
+    finally:
+        _stop_process(proxy)
+        _stop_process(proc)
 
 
 def _launch_chromium(p):
@@ -167,7 +317,7 @@ def _launch_chromium(p):
 
 
 @pytest.fixture
-def page(app_server):
+def page(app_server, app_server_logs, tmp_path):
     """ログイン済みの Playwright page を返す。"""
     base, password = app_server
     try:
@@ -182,18 +332,28 @@ def page(app_server):
             _unavailable(f"Chromium の起動に失敗: {e}")
         ctx = browser.new_context()
         pg = ctx.new_page()
-        pg.goto(base, wait_until="domcontentloaded", timeout=30000)
-        # 認証画面ならログイン（解析者名 + パスワードの2項目）
-        if pg.locator("#password").count() > 0:
-            if pg.locator("#analyst_name").count() > 0:
-                pg.fill("#analyst_name", "e2e-tester")
-            pg.fill("#password", password)
-            pg.click("button[type=submit]")
-            pg.wait_for_load_state("networkidle", timeout=30000)
-        pg.base_url = base
+        pg.diagnostics = _BrowserDiagnostics(pg, base)
+        ready = False
         try:
+            pg.goto(base, wait_until="domcontentloaded", timeout=30000)
+            # 認証画面ならログイン（解析者名 + パスワードの2項目）
+            if pg.locator("#password").count() > 0:
+                if pg.locator("#analyst_name").count() > 0:
+                    pg.fill("#analyst_name", "e2e-tester")
+                pg.fill("#password", password)
+                pg.click("button[type=submit]")
+            # Dash は定期 callback が続くため、networkidle は準備完了を表さない。
+            # 初回の大きな JS 配信を含む proxy 試験では余裕を持って実 layout を待つ。
+            pg.locator("#main_tabs").wait_for(
+                state="attached", timeout=90000 if "proxy" in app_server_logs else 30000)
+            pg.base_url = base
+            ready = True
             yield pg
         finally:
+            if not ready:
+                drain, proxy = app_server_logs.get("drain"), app_server_logs.get("proxy")
+                pg.diagnostics.save(tmp_path / "setup-diagnostics", pg,
+                                    drain.text() if drain else "", proxy.text() if proxy else "")
             ctx.close()
             browser.close()
 

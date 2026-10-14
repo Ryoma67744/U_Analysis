@@ -30,6 +30,12 @@ services:
       - R_HOME=/usr/lib/R
       - APP_HOST=0.0.0.0
       - APP_PORT=3838
+      # HTTP診断。成功した通常のDashポーリングは記録せず、遅延・失敗を追う。
+      - MSI_HTTP_SLOW_REQUEST_SEC=${MSI_HTTP_SLOW_REQUEST_SEC:-5}
+      - MSI_HTTP_TRACE_CALLBACKS=${MSI_HTTP_TRACE_CALLBACKS:-0}
+      - MSI_WSGI_THREADS=${MSI_WSGI_THREADS:-8}
+      - MSI_WSGI_TIMEOUT_SEC=${MSI_WSGI_TIMEOUT_SEC:-600}
+      - METRICS_LOG_INTERVAL_SEC=${METRICS_LOG_INTERVAL_SEC:-3600}
       # ver56.3: タイムゾーン。未設定だとコンテナは UTC で動き、出力フォルダ名・
       # 解析の開始時刻表示・ログ・projects.json の更新日時が全部 9 時間ずれる。
       # 日本以外で使うなら .env で TZ=... を指定する。

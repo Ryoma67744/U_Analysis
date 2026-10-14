@@ -144,6 +144,30 @@ def _iter_callback_targets():
 
 class TestCallbackTargetsExist:
 
+    def test_reanalysis_sample_input_is_present_once_before_callbacks(self, layout_ids):
+        """生成コードがあるだけでは不十分。フォルダ未指定の初期画面にも必要。"""
+        from app.layouts.main_layout import create_main_layout
+
+        matches = []
+
+        def collect(node):
+            if isinstance(node, (list, tuple)):
+                for child in node:
+                    collect(child)
+            elif hasattr(node, "to_plotly_json"):
+                props = node.to_plotly_json().get("props", {})
+                if props.get("id") == "selected_samples_reanalysis":
+                    matches.append(props)
+                for value in props.values():
+                    collect(value)
+
+        # known_ids は動的生成の全分岐を合成するため、今回の不具合を見逃す。
+        assert "selected_samples_reanalysis" in layout_ids
+        collect(create_main_layout())
+        assert len(matches) == 1, "再解析サンプル入力は初期 layout に一度だけ置く"
+        assert matches[0]["options"] == []
+        assert matches[0]["value"] == []
+
     def test_every_output_id_exists_in_the_layout(self, known_ids):
         """★ 本丸: 書き込み先 (Output) が実在すること。
 

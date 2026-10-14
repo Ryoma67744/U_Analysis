@@ -29,6 +29,10 @@
 # Site address にドメインを指定。スキームを省略すると Caddy が自動的に
 # HTTPS 化し、Let's Encrypt から証明書を取得する (tls ディレクティブ不要)。
 cciiumap.duckdns.org {
+	# 同じIDをブラウザ・Caddy・アプリの診断ログで追跡する。
+	# クライアント指定値を上書きし、アプリに届かない502にもIDを残す。
+	log_append request_id {http.request.uuid}
+	header X-Request-ID {http.request.uuid}
 	reverse_proxy msi-app:3838 {
 		transport http {
 			read_timeout 600s
@@ -37,6 +41,9 @@ cciiumap.duckdns.org {
 		}
 		# X-Forwarded-Proto を渡し、Flask 側で secure Cookie / HTTPS 判別を可能に
 		header_up X-Forwarded-Proto https
+		header_up X-Request-ID {http.request.uuid}
+		# アプリが返す同じヘッダーとの重複を避け、Caddyの値に統一する。
+		header_down -X-Request-ID
 	}
 
 	request_body {

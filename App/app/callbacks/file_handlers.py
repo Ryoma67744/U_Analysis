@@ -569,7 +569,10 @@ def sync_desi_roi_to_store(all_values):
 
 
 @callback(
-    Output("sample_selector_reanalysis", "children"),
+    Output("selected_samples_reanalysis", "options"),
+    Output("selected_samples_reanalysis", "value"),
+    Output("selected_samples_reanalysis", "style"),
+    Output("sample_selector_reanalysis_message", "children"),
     [Input("reanalysis_data_folder", "value"),
      Input("analysis_method", "value"),
      Input("analysis_method_tims", "value"),
@@ -578,20 +581,19 @@ def sync_desi_roi_to_store(all_values):
 )
 def update_reanalysis_sample_selector(data_folder, desi_method, tims_method,
                                       source=None, rds_path="", previous=None):
+    """常設Checklistの候補と選択を同時更新し、固定Inputを欠落させない。"""
     # ★ ver67.0: basenameだけの選択で別フォルダの元入力を落とさない。
     from app.callbacks.section_callbacks import reanalysis_source_manifest
     saved = reanalysis_source_manifest(source, data_folder, rds_path, previous)
     if saved:
         selected = [f for f in saved["files"] if f.get("selection_mode") != "none"]
         names = list(dict.fromkeys(Path(f["path"]).stem for f in selected))
-        return html.Div([
+        return ([{"label": n, "value": n} for n in names], names, {"display": "none"},
             html.Small(f"元解析の {len(selected)} ファイルを使用します。下の切片／ROIごとに選択できます。",
-                       className="text-muted"),
-            dbc.Checklist(id="selected_samples_reanalysis", options=[{"label": n, "value": n} for n in names],
-                          value=names, style={"display": "none"}),
-        ])
+                       className="text-muted"))
     if not data_folder or not Path(data_folder).is_dir():
-        return html.Div("データフォルダを指定してください", className="text-muted")
+        return ([], [], {"display": "none"},
+                html.Div("データフォルダを指定してください", className="text-muted"))
 
     active = desi_method or tims_method or "desi_v8"
     if active in ("tims_v8", "tims_cluster_filter"):
@@ -600,13 +602,10 @@ def update_reanalysis_sample_selector(data_folder, desi_method, tims_method,
         samples = list_msi_files(data_folder)
 
     if not samples:
-        return html.Div("対応ファイルが見つかりません", className="text-warning")
+        return ([], [], {"display": "none"},
+                html.Div("対応ファイルが見つかりません", className="text-warning"))
 
-    return dbc.Checklist(
-        id="selected_samples_reanalysis",
-        options=[{"label": s, "value": s} for s in samples],
-        value=samples,
-    )
+    return [{"label": s, "value": s} for s in samples], samples, {}, []
 
 
 # ---------------------------------------------------------------------------

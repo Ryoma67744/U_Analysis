@@ -688,7 +688,14 @@ def _create_analysis_settings_subtab():
                                 style={"color": "#6c757d", "fontSize": "0.75rem",
                                        "marginTop": "2px", "display": "block"},
                             ),
-                            html.Div(id="sample_selector_reanalysis"),
+                            # 固定Inputから参照する部品は、空フォルダでも常設する。
+                            html.Div(id="sample_selector_reanalysis", children=[
+                                html.Div(id="sample_selector_reanalysis_message"),
+                                dbc.Checklist(
+                                    id="selected_samples_reanalysis",
+                                    options=[], value=[], style={"display": "none"},
+                                ),
+                            ]),
                             dbc.FormText("チェックを入れたサンプルが再解析対象になります"),
                             html.Div(id="annotation_selector_reanalysis", style={"display": "none"}),
                             _section_controls(ls, "reanalysis"),
