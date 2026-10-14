@@ -104,12 +104,19 @@ def inspect_registration_selection(paths, project):
 
 
 @callback(Output("imzml_batch_inspection", "data"),
-          Input("imzml_batch_poll", "n_intervals"), State("imzml_batch_selection", "data"))
-def poll_registration_inspection(tick, selection):
+          Input("imzml_batch_poll", "n_intervals"), State("imzml_batch_selection", "data"),
+          State("imzml_batch_rendered", "data"))
+def poll_registration_inspection(tick, selection, rendered=None):
     if not (selection or {}).get("id"):
         return {}
     try:
-        return queue.get_draft(selection["id"], get_display_name())
+        draft = queue.get_draft(selection["id"], get_display_name())
+        # ★ ver79.1: table.data callback自体がloadingを立て、未確定の手入力を失わせる。
+        # render側でno_updateを返すだけでは遅いので、同じ表は上流で通知を止める。
+        if (draft.get("state") == "ready"
+                and {"id": draft["id"], "revision": draft["revision"]} == rendered):
+            return no_update
+        return draft
     except (OSError, ValueError, PermissionError):
         return no_update
 

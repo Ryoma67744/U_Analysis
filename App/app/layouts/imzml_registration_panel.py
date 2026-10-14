@@ -75,6 +75,8 @@ def create_registration_panel():
             dbc.Input(id="imzml_batch_ppm", type="number", value=ppm, min=0, step=0.1),
             html.Small("新規登録の既定は0（完全一致のみ）。従来の手動変換は5 ppmです。"
                        "既存の解析・登録値は変更しません。", className="text-muted"),
+            html.Small("近いm/zをまとめる設定です。既にピークを整理したデータをそのまま変換する場合は0を選びます。"
+                       "分子名による判定は行いません。", className="d-block text-muted"),
         ]),
         html.Div(id="imzml_batch_summary", className="small fw-semibold my-2"),
         dbc.Button("内容を確認してParquetを作成", id="imzml_batch_submit", color="primary"),
