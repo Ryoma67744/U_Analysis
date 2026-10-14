@@ -22,6 +22,8 @@ def create_file_browser_modal():
         id="file_browser_modal",
         size="xl",
         centered=True,
+        # 変換などのモーダルから開く場合も、その前面で操作できるようにする。
+        zindex=1070,
         children=[
             dbc.ModalHeader(dbc.ModalTitle("ファイル / フォルダ選択")),
             dbc.ModalBody([

@@ -37,7 +37,10 @@ def create_imzml_io_modal():
                     value="import", clearable=False, className="mb-2",
                 ),
                 dbc.Label("入力ファイル（サーバー上の絶対パス）"),
-                dbc.Input(id="imzml_source", type="text", className="mb-2"),
+                dbc.InputGroup([
+                    dbc.Input(id="imzml_source", type="text"),
+                    dbc.Button("参照…", id="browse_imzml_source", color="secondary", outline=True),
+                ], className="mb-2"),
                 dbc.Label("出力ファイル（.parquet または .zip）"),
                 dbc.Input(id="imzml_target", type="text", className="mb-2"),
                 dbc.Row([

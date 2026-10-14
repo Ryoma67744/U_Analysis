@@ -4,6 +4,7 @@
 # =============================================================================
 
 from pathlib import Path
+from uuid import uuid4
 
 from dash import Input, Output, State, callback, clientside_callback, ctx, no_update, html, ALL, MATCH
 import dash_bootstrap_components as dbc
@@ -1086,6 +1087,8 @@ _BROWSE_BUTTONS = {
     "browse_rds_maint_folder": ("folder", "rds_maint_folder"),
     # Parquet 再パックモーダル
     "browse_parquet_maint_folder": ("folder", "parquet_maint_folder"),
+    "browse_imzml_source": ("file", "imzml_source"),
+    "browse_imzml_batch_file": ("file", "imzml_batch_browse_selection"),
 }
 
 # 全対象入力フィールドIDの一覧（_BROWSE_BUTTONSのvalue[1]を収集）
@@ -1109,6 +1112,8 @@ _DEFAULT_START_DIR = {
     "dm_move_dest_path": OUTPUT_DATA_DIR,
     # ver3.9: サムネ用 PNG は output 配下にあることが多い
     "edit_project_thumbnail": OUTPUT_DATA_DIR,
+    "imzml_source": TIMS_DATA_DIR,
+    "imzml_batch_browse_selection": TIMS_DATA_DIR,
 }
 
 # dcc.Store は "data" プロパティ、dbc.Input/dcc.Input は "value" プロパティ
@@ -1116,7 +1121,28 @@ _DEFAULT_START_DIR = {
 #       レイアウト未生成のため削除済み（存在しない Input/Output は共有コールバック
 #       open_file_browser / apply_file_browser_selection を丸ごと停止させ、全参照ボタンを
 #       無反応にしていた）。
-_STORE_TARGETS = {"extra_folder_pending_store"}
+_STORE_TARGETS = {"extra_folder_pending_store", "imzml_batch_browse_selection"}
+
+
+def _imzml_browser_extensions(state):
+    """imzML変換の参照だけ、入力形式を限定する。他の参照には適用しない。"""
+    caller = (state or {}).get("caller_id")
+    if caller == "imzml_batch_browse_selection":
+        return (".imzml",)
+    if caller == "imzml_source":
+        return (".parquet",) if state.get("imzml_action") == "export" else (".imzml",)
+    return ()
+
+
+def _valid_imzml_browser_file(state):
+    extensions = _imzml_browser_extensions(state)
+    if not extensions:
+        return True
+    path = Path((state or {}).get("selected_path") or "")
+    try:
+        return path.suffix.lower() in extensions and path.is_file()
+    except OSError:
+        return False
 
 # ★ ver64.0: 追加データフォルダの行から開いたときの caller_id。
 #   `_ALL_TARGET_IDS` のどれとも一致しない番兵にしておくと、共有の
@@ -1158,16 +1184,17 @@ def _browser_start_dir(current_val, default_start):
     + [Input({"type": "btn_browse_extra_folder", "index": ALL}, "n_clicks")],
     [State("fb_state", "data")]
     + [State(tid, _target_property(tid)) for tid in _ALL_TARGET_IDS]
-    + [State("extra_data_folders_store", "data")],
+    + [State("extra_data_folders_store", "data"), State("imzml_batch_folder", "value"),
+       State("imzml_action", "value")],
     prevent_initial_call=True,
 )
 def open_file_browser(*args):
-    # args: [btn_clicks..., extra_browse_clicks, fb_state, target_values..., extra_folders]
+    # args: [btn_clicks..., extra_browse_clicks, fb_state, target_values..., extra_folders, batch_folder, action]
     n_buttons = len(_BROWSE_BUTTONS)
     extra_clicks = args[n_buttons]        # パターンマッチング分は 1 引数=リスト
     state = args[n_buttons + 1]           # fb_state
     target_values = args[n_buttons + 2:n_buttons + 2 + len(_ALL_TARGET_IDS)]
-    extra_folders = args[-1]              # 追加データフォルダの現在値
+    extra_folders, batch_folder, imzml_action = args[-3:]
 
     triggered = ctx.triggered_id
     if triggered is None:
@@ -1199,6 +1226,8 @@ def open_file_browser(*args):
             current_val = target_values[_ALL_TARGET_IDS.index(target_id)]
         except (ValueError, IndexError):
             current_val = ""
+        if target_id == "imzml_batch_browse_selection":
+            current_val = (current_val or {}).get("path") or batch_folder
         initial_dir = _browser_start_dir(
             current_val, _DEFAULT_START_DIR.get(target_id))
 
@@ -1208,6 +1237,8 @@ def open_file_browser(*args):
             "caller_id": target_id,
             "selected_path": "",
         }
+        if target_id == "imzml_source":
+            new_state["imzml_action"] = imzml_action
         return True, new_state, drives, ""
 
     return no_update, no_update, no_update, no_update
@@ -1247,6 +1278,9 @@ def update_file_browser(state, drive_val, go_clicks, path_input):
     mode = state.get("mode", "folder")
     show_files = (mode == "file")
     items = list_directory(current_dir, show_files=show_files)
+    extensions = _imzml_browser_extensions(state)
+    if extensions:
+        items = [item for item in items if item["is_dir"] or Path(item["path"]).suffix.lower() in extensions]
 
     # ファイルリスト構築
     file_items = []
@@ -1305,7 +1339,15 @@ def handle_fb_item_click(clicks, state):
         # folder モードの場合のみディレクトリを selected_path に設定
         if state.get("mode") == "folder":
             state["selected_path"] = str(path)
+        elif _imzml_browser_extensions(state):
+            state["selected_path"] = ""
     else:
+        extensions = _imzml_browser_extensions(state)
+        if extensions and (path.suffix.lower() not in extensions or not path.is_file()):
+            return no_update, no_update
+        if extensions:
+            # パス入力・ドライブ移動後も、選択したファイルのフォルダを表示する。
+            state["current_dir"] = str(path.parent)
         state["selected_path"] = str(path)
     return state, state.get("selected_path", "")
 
@@ -1325,6 +1367,8 @@ def handle_fb_item_click(clicks, state):
 def apply_file_browser_selection(n_clicks, state):
     if not n_clicks or not state or not state.get("selected_path"):
         return [no_update] * (len(_ALL_TARGET_IDS) + 1)
+    if not _valid_imzml_browser_file(state):
+        return [no_update] * (len(_ALL_TARGET_IDS) + 1)
 
     caller_id = state.get("caller_id", "")
     selected_path = state["selected_path"]
@@ -1332,11 +1376,18 @@ def apply_file_browser_selection(n_clicks, state):
     results = []
     for tid in _ALL_TARGET_IDS:
         if tid == caller_id:
-            results.append(selected_path)
+            # 同じ原本を解除して再追加した場合も、新しい選択として通知する。
+            results.append({"path": selected_path, "selection_id": uuid4().hex}
+                           if tid == "imzml_batch_browse_selection" else selected_path)
         else:
             results.append(no_update)
     results.append(False)  # close modal
     return results
+
+
+@callback(Output("fb_select_btn", "disabled"), Input("fb_state", "data"))
+def file_browser_selection_disabled(state):
+    return not _valid_imzml_browser_file(state)
 
 
 @callback(
@@ -1385,20 +1436,23 @@ def close_file_browser(n):
 # 既存の update_file_browser が fb_state を Input にしているため、
 # state を更新するだけで一覧が再描画される。
 @callback(
-    Output("fb_state", "data", allow_duplicate=True),
+    [Output("fb_state", "data", allow_duplicate=True),
+     Output("fb_selected_path", "children", allow_duplicate=True)],
     Input({"type": "fb_shortcut", "path": ALL}, "n_clicks"),
     State("fb_state", "data"),
     prevent_initial_call=True,
 )
 def handle_fb_shortcut(clicks, state):
     if not ctx.triggered_id or not any(c for c in clicks if c):
-        return no_update
+        return no_update, no_update
     target_path = ctx.triggered_id.get("path")
     if not target_path or not Path(target_path).is_dir():
-        return no_update
+        return no_update, no_update
     new_state = dict(state or {})
     new_state["current_dir"] = target_path
-    return new_state
+    if _imzml_browser_extensions(new_state):
+        new_state["selected_path"] = ""
+    return new_state, new_state.get("selected_path", "")
 
 
 # ---------------------------------------------------------------------------
