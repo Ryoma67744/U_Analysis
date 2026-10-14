@@ -730,14 +730,75 @@ docker exec msi-analysis-app python3 -c "import urllib.request;print(urllib.requ
 
 | 結果 | 意味 | 対処 |
 |---|---|---|
-| healthz が 200 なのに開けない | **アプリは生きている。遅いだけ** | 下記のメモリ確認へ |
-| healthz が無応答 | アプリのハング | `$DC restart msi-app` |
-| コンテナが無い | 誰かが `down` した | `$DC up -d` |
-| `OOMKilled=true` | メモリ超過で落ちた | `mem_limit` の見直し |
+| healthz が 200 なのに開けない | 生存確認は成功。画面処理・プロキシ・通信経路は未確認 | ready、Caddy経由、失敗callbackを分けて調べる |
+| healthz が無応答 | 停止・起動途中・処理待ち・ハングなどの候補 | ログ・コンテナ状態・実行中解析を確認してから対処する |
+| コンテナが無い | 配備先・起動状態の確認が必要 | Compose構成と配備履歴を確認する |
+| `OOMKilled=true` | コンテナがOOMで終了した記録 | 発生時刻と502を照合し、消費元・ホスト容量・同時実行を調べる |
 
 > **本番でホストから `curl http://127.0.0.1:3838/...` は届かない。**
 > `docker-compose.prod.yml` の `ports: !override []` で 3838 を公開せず
 > Caddy 経由のみにしているため。必ず `docker exec` でコンテナ内から叩く。
+
+#### 登録画面の502 / Dash callbackの通信失敗
+
+`/_dash-update-component` の502はCaddyからアプリへの接続失敗や応答異常を示す。
+ブラウザの `A nonexistent object ... selected_samples_reanalysis` は画面部品の参照エラーで、
+両者が同じ原因とは限らない。入力欄の修正だけで502も解消したと判断しない。
+
+1. ブラウザのNetworkで発生時刻、status、所要時間、Response Headersの `X-Request-ID`、
+   リクエストの `output`（callback識別子）を記録する。Consoleの `Object` は展開して確認する。
+   Cookie・認証情報・入力/State値を含むHAR全体をそのまま共有しない。
+2. 同時刻のCaddy JSONアクセスログ・エラーログ、アプリログ、コンテナ終了/再起動記録を照合する。
+   時刻はUTC/JSTをそろえる。Caddyがアプリに到達する前に返した502はアプリログには残らない。
+3. コンテナ内の `/healthz` と `/healthz/ready`、Caddy経由の応答を比較する。
+   ready成功はcallback登録とプロジェクト管理の準備確認であり、ブラウザ上の部品存在や
+   すべてのcallbackの成功を保証しない。
+
+```bash
+# 時刻は実際の発生時刻に置換する（例はJST）。既存ログを再起動前に確保する。
+$DC logs --since '2026-10-14T10:00:00+09:00' --timestamps caddy msi-app
+docker inspect msi-analysis-app --format 'image={{.Image}} started={{.State.StartedAt}} finished={{.State.FinishedAt}} status={{.State.Status}} OOMKilled={{.State.OOMKilled}} restarts={{.RestartCount}}'
+docker exec msi-analysis-app python3 -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:3838/healthz/ready',timeout=10).read().decode())"
+docker stats --no-stream msi-analysis-app
+docker exec msi-analysis-app python3 /app/App/tools/analysis_status_report.py
+```
+
+`/app/Data/Other/logs/access.log`・`msi_app.log` は既存の `msi-logs` volumeに保存される。
+通常の成功したDashポーリングは記録を省くが、HTTPエラーと遅いcallbackは記録する。
+今回追加した `request_id` はCaddyで生成してアプリへ渡し、ブラウザの応答ヘッダーにも返す。
+アクセスログの同じIDで照合する。アプリ直結ではアプリがIDを生成する。
+IDは診断用であり、解析ジョブのIDや再送の重複防止キーではない。
+
+必要な場合だけ、Composeが読む `.env` で以下を指定する。
+
+```dotenv
+MSI_HTTP_SLOW_REQUEST_SEC=5
+MSI_HTTP_TRACE_CALLBACKS=1
+```
+
+`MSI_HTTP_TRACE_CALLBACKS=1` でcallbackの開始・終了を記録し、応答を失った処理を追う。
+入力値・State値・データ本体は記録しない。調査後は `0` に戻す。
+環境変数の反映にはコンテナ再作成が必要なので、先に実行中解析を確認する。
+既存のログローテーション（10MB・5世代）を利用し、ログ量を監視する。
+Flask側の処理時間にはWaitressの受付待ちが含まれないため、Caddyの総所要時間とも比較する。
+
+| 証拠 | 次の対処 |
+|---|---|
+| 起動直後のconnection refused | アプリのready成功を待って利用開始。起動失敗ならアプリログを確認 |
+| OOM/再起動と502が一致 | Python/Rなど消費元を特定し、読み込み・キャッシュ・同時実行・容量を調整 |
+| Task queue depth増加や長時間callback | 該当処理のI/O・計算・ロック待ちを調べ、短縮または既存ジョブ方式へ移行 |
+| 直結は成功、Caddy経由のみ失敗 | Dockerのサービス名・ポート・network・Caddyの接続エラーを確認 |
+| 特定callbackの例外 | 同じ入力条件で検証環境に再現し、例外原因を修正 |
+
+Waitressの `MSI_WSGI_TIMEOUT_SEC` は無通信接続の期限で、callbackの実行上限ではない。
+タイムアウト延長やスレッド増加は計測結果に基づいて行う。プロセス内の解析状態を持つため、
+複数WSGIプロセスへ単純に増やさない。設定変更時はComposeからコンテナへ値が渡ったことも確認する。
+
+解析開始後に応答だけ失った可能性があるので、POSTを一律に自動再送しない。
+まずジョブ情報から受付・実行状態を確認する。再起動も下記の実行中解析確認後に判断する。
+修正後は検証環境でCaddy経由の同じ操作を試し、502原因と対処の対応を確認する。
+本番適用前には旧イメージと設定を控え、`caddy validate` とready確認を行う。
+再現や原因特定ができていない502は、画面修正の完了とは別に「原因未確定」と記録する。
 
 #### 遅い場合: メモリが上限に張り付いていないか
 
@@ -746,8 +807,8 @@ docker stats --no-stream msi-analysis-app
 $DC logs --tail=50 msi-app | grep -c "Task queue depth"
 ```
 
-`MEM %` が 99% 前後で、ログに `waitress.queue: Task queue depth` が並んでいれば
-**メモリ張り付き → スワップ → waitress のスレッド枯渇**が起きている。
+`MEM %` が 99% 前後で、ログに `waitress.queue: Task queue depth` が並ぶ場合は、
+メモリ逼迫・スワップ・処理待ちを疑い、CPU、swap、遅いcallback、ロック/I/O待ちを照合する。
 本番は waitress のスレッドプール既定 8 本なので、コールバック 1 本が 10 秒かかると
 8 本すぐに埋まり、画面は完全に無反応になる。
 

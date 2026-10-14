@@ -62,6 +62,9 @@ _background_manager = DiskcacheManager(
 # 認証ログイン画面のテンプレート用に Flask インスタンスを明示生成
 _templates_dir = Path(__file__).parent / "templates"
 _flask_server = Flask(__name__, template_folder=str(_templates_dir))
+# Run before Dash's first-request setup too, so startup errors get an ID.
+from app.services.access_logger import begin_request_diagnostics  # noqa: E402
+_flask_server.before_request(begin_request_diagnostics)
 app = dash.Dash(
     __name__,
     external_stylesheets=[dbc.themes.FLATLY],
@@ -191,12 +194,14 @@ def _healthz_bypass():
             if app.layout is None:
                 return ("NOT_READY: layout missing", 503,
                         {"Content-Type": "text/plain"})
-            # Dash 公式 API: 内部 _callback_list に登録された callback 数
-            # (起動完了後は数百規模になる)
-            try:
-                cb_count = len(getattr(app, "_callback_list", []) or [])
-            except Exception:
-                cb_count = -1
+            # Dash's own before_request setup runs before this hook and copies
+            # global @callback registrations into callback_map on first use.
+            # Do not call the setup routine again from a health request.
+            registry = getattr(app, "callback_map", {})
+            if not registry or not any(callable(item.get("callback")) for item in registry.values()):
+                return ("NOT_READY: callbacks missing", 503,
+                        {"Content-Type": "text/plain"})
+            cb_count = len(registry)
             # projects.json (PR-E のプロジェクト分離基盤) が機能するか
             from app.services.project_manager import list_projects
             _ = list_projects()
@@ -233,9 +238,15 @@ def _write_access_log(response):
       **成功しているときだけ**除外する。エラー (4xx/5xx) は常に残す
       ——「うるさいから消す」で異常まで消すのが、まさに今回の欠陥の形。
     """
-    from app.services.access_logger import log_access, should_log_request
-    if should_log_request(_flask_request.path, response.status_code):
-        log_access(response.status_code)
+    from flask import g
+    from app.services.access_logger import (
+        finish_request_diagnostics, log_access, should_log_request,
+    )
+    duration = finish_request_diagnostics(response)
+    if should_log_request(_flask_request.path, response.status_code,
+                          duration_seconds=duration,
+                          trace=getattr(g, "_msi_http_trace", False)):
+        log_access(response.status_code, duration_seconds=duration)
     return response
 
 
@@ -289,6 +300,13 @@ register_auth(server, dash_app=app)
 from app.services.gpt_api import register_gpt_api  # noqa: E402
 
 register_gpt_api(server)
+
+
+@server.before_request
+def _identify_http_callback():
+    # Authentication may return early; never parse/log its request body here.
+    from app.services.access_logger import identify_callback_request
+    identify_callback_request(app.callback_map)
 
 
 # ヘルプページ（取扱説明書）: 認証不要

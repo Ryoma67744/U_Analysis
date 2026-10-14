@@ -29,6 +29,12 @@ jobs:
           python -c 'import pyarrow, pyimzml, openapi_spec_validator'
           python -m pytest tests/test_imzml_io.py tests/test_imzml_processed_sparse.py tests/test_imzml_contract_repairs_v74.py tests/test_imzml_standard_parquet_v74.py tests/test_imzml_registration_v74.py tests/test_registration_lifecycle_v74.py tests/test_imzml_editor_callback_transitions_v74.py tests/test_section_completeness_v74.py tests/test_section_registration_guidance_v741.py tests/test_imzml_registration_guidance_v741.py tests/test_section_metadata_workflow.py tests/test_audit_io_guards.py tests/test_volume_backup.py tests/test_callback_authorization_v74.py tests/test_public_url_is_consistent.py tests/test_render_payload.py tests/test_tims_export_precision_v74.py tests/test_diag_umap_cluster_export_v74.py tests/test_services_audit_regressions.py tests/test_numeric_input_bounds.py tests/test_packaging.py tests/test_version_consistency.py tests/test_export_selection.py tests/test_export_selection_callbacks.py tests/test_export_selection_io.py tests/test_export_selection_jobs.py tests/test_imzml_asset_diagnostics_v752.py tests/test_restore_imzml_assets.py tests/test_result_descriptor.py tests/test_reanalysis_method_detection.py tests/test_deg_method_scope.py tests/test_result_snapshot_export.py tests/test_stage_signatures_v2.py tests/test_section_execution_policy.py tests/test_legacy_result_import.py tests/test_project_result_refs.py tests/test_downstream_new_ui.py tests/test_downstream_overwrite_is_confirmed.py tests/test_callback_targets_exist_in_layout.py -q --junitxml=contract.xml
           python -c 'import xml.etree.ElementTree as E; r=E.parse("contract.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "required contract tests must not skip"'
+      - name: 再解析入力とHTTP診断の回帰
+        working-directory: App
+        env:
+          PYTHONPATH: .
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: python -m pytest tests/test_reanalysis_sample_selector_lifecycle.py tests/test_http_request_diagnostics.py tests/test_browser_diagnostics.py tests/test_api_failures_are_legible.py tests/test_reanalysis_exact_source.py tests/test_unchecking_everything_stops_the_run.py -q
   # ★ ver75.1: 登録に加え、出力対象の選択からダウンロードまで実ブラウザで必須検証する。
   registration-browser:
     runs-on: ubuntu-latest
@@ -48,8 +54,33 @@ jobs:
           E2E_STRICT: '1'
         run: |
           set -euo pipefail
-          python -m pytest tests/e2e/test_section_registration_guidance.py tests/e2e/test_export_selection.py tests/e2e/test_result_scope.py -q --junitxml=registration-browser.xml
+          python -m pytest tests/e2e/test_section_registration_guidance.py tests/e2e/test_export_selection.py tests/e2e/test_result_scope.py tests/e2e/test_reanalysis_registration_lifecycle.py -q --junitxml=registration-browser.xml
           python -c 'import xml.etree.ElementTree as E; r=E.parse("registration-browser.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "registration browser test must not skip"'
+      - name: Caddy検証用バイナリを取得
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/caddy"
+          cd "$RUNNER_TEMP/caddy"
+          base=https://github.com/caddyserver/caddy/releases/download/v2.11.7
+          curl --fail --location "$base/caddy_2.11.7_linux_amd64.tar.gz" -o caddy.tar.gz
+          curl --fail --location "$base/caddy_2.11.7_checksums.txt" -o checksums.txt
+          expected=$(awk '$2 == "caddy_2.11.7_linux_amd64.tar.gz" {print $1}' checksums.txt)
+          test -n "$expected"
+          printf '%s  caddy.tar.gz\n' "$expected" | sha512sum --check -
+          tar -xzf caddy.tar.gz caddy
+      - name: Caddy経由の登録操作と通信失敗
+        working-directory: App
+        env:
+          PYTHONPATH: .
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+          E2E_STRICT: '1'
+          CADDY_STRICT: '1'
+          CADDY_BINARY: ${{ runner.temp }}/caddy/caddy
+          E2E_CADDY_BINARY: ${{ runner.temp }}/caddy/caddy
+        run: |
+          set -euo pipefail
+          python -m pytest tests/test_caddy_request_diagnostics.py tests/e2e/test_reanalysis_registration_lifecycle.py -q --junitxml=proxy-browser.xml
+          python -c 'import xml.etree.ElementTree as E; r=E.parse("proxy-browser.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "proxy tests must not skip"'
   r-contract:
     runs-on: ubuntu-latest
     timeout-minutes: 35

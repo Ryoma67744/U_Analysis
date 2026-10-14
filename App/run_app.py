@@ -145,8 +145,8 @@ def _serve():
             _waitress_serve(
                 app.server, host=APP_HOST, port=APP_PORT,
                 threads=_WSGI_THREADS,
-                # 解析ジョブの応答が長いので既定 (120s) では切れる。
-                # Caddy 側も read/write 600s に合わせてある。
+                # 無通信接続の期限。callbackの実行時間上限ではない。
+                # 遅延時はCaddy側の所要時間とアプリの処理時間を比較する。
                 channel_timeout=int(os.environ.get("MSI_WSGI_TIMEOUT_SEC", "600")),
                 # 大きな figure JSON を返すのでバッファを大きめに取る
                 outbuf_overflow=1 << 24,
