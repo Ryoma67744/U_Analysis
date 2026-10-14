@@ -73,11 +73,25 @@ def browse_registration_files(folder, clicks):
 
 
 @callback(Output("imzml_batch_paths", "options"), Output("imzml_batch_paths", "value"),
-          Input("imzml_batch_add", "n_clicks"), State("imzml_batch_files", "value"),
-          State("imzml_batch_paths", "value"), prevent_initial_call=True)
-def add_registration_files(clicks, selected, existing):
+          Input("imzml_batch_add", "n_clicks"), Input("imzml_batch_browse_selection", "data"),
+          State("imzml_batch_files", "value"), State("imzml_batch_paths", "value"),
+          prevent_initial_call=True)
+def add_registration_files(clicks, browse_selection, selected, existing):
+    if browse_selection is not None and ctx.triggered_id == "imzml_batch_browse_selection":
+        selected = [(browse_selection or {}).get("path")]
+        selected = [p for p in selected if isinstance(p, str) and Path(p).suffix.lower() == ".imzml"]
     paths = list(dict.fromkeys(str(Path(p).resolve()) for p in [*(existing or []), *(selected or [])]))
+    # 同じファイルを再選択しても調査をやり直さず、入力済みの登録表を保持する。
+    if paths == list(existing or []):
+        return no_update, no_update
     return [{"label": p, "value": p} for p in paths], paths
+
+
+@callback(Output("imzml_io_modal", "enforceFocus"),
+          Input("file_browser_modal", "is_open"))
+def focus_imzml_modal(browser_open):
+    # 元の変換画面を閉じないので、参照の取消でも表・ppm・進捗は保持される。
+    return not bool(browser_open)
 
 
 @callback(Output("imzml_batch_selection", "data"),

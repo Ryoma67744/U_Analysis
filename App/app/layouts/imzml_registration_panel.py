@@ -11,6 +11,7 @@ def create_registration_panel():
         dcc.Store(id="imzml_batch_selection", data={}),
         dcc.Store(id="imzml_batch_inspection", data={}),
         dcc.Store(id="imzml_batch_rendered", data={}),
+        dcc.Store(id="imzml_batch_browse_selection", data=None),
         dcc.Store(id="imzml_registered_selection", data=None),
         dcc.Store(id="section_catalog_store_registration", data=[]),
         dcc.Store(id="section_manifest_store_registration", data={}),
@@ -18,6 +19,8 @@ def create_registration_panel():
         html.H5("① サーバー上のimzMLを選択"),
         html.P("共有フォルダにあるファイルを複数選択できます。同名のibdは自動で対応付けます。"
                "この操作はPCからのアップロードではありません。", className="small text-muted"),
+        dbc.Button("参照…", id="browse_imzml_batch_file", color="secondary", className="mb-2"),
+        html.Small(" imzMLを選ぶと登録するファイルに追加されます。", className="text-muted"),
         dbc.InputGroup([
             dbc.Input(id="imzml_batch_folder", value=DEFAULT_TIMS_DATA_FOLDER,
                       placeholder="サーバー上のフォルダ"),

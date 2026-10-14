@@ -63,7 +63,7 @@ def test_browser_shows_server_files_and_disables_missing_pair(ui, tmp_path):
 
 def test_add_preserves_same_name_different_folder_and_deduplicates_exact(ui, tmp_path):
     a, b = [str(tmp_path / name / "same.imzML") for name in ("one", "two")]
-    options, paths = ui.add_registration_files(1, [a, b], [a])
+    options, paths = ui.add_registration_files(1, None, [a, b], [a])
     assert paths == [a, b]
     assert [o["label"] for o in options] == paths
 
@@ -77,6 +77,23 @@ def test_paste_keeps_identity_and_requires_all_rows(ui):
     assert "subject_id" not in rows[0]
     with pytest.raises(ValueError, match="2 切片"):
         ui.paste_registration(rows, "wrong\trow")
+
+
+def test_browse_adds_only_selected_file_and_duplicate_preserves_edited_table(ui, tmp_path, monkeypatch):
+    monkeypatch.setattr(ui, "ctx", SimpleNamespace(triggered_id="imzml_batch_browse_selection"))
+    a, b, stale = [str(tmp_path / name) for name in ("first.imzML", "second.imzML", "stale.imzML")]
+    options, paths = ui.add_registration_files(1, {"path": b, "selection_id": "one"}, [stale], [a])
+    assert paths == [a, b]
+    assert [option["value"] for option in options] == paths
+    assert ui.add_registration_files(1, {"path": b, "selection_id": "two"},
+                                     [stale], paths) == (no_update, no_update)
+
+
+def test_browse_cannot_append_the_binary_pair_or_empty_selection(ui, tmp_path, monkeypatch):
+    monkeypatch.setattr(ui, "ctx", SimpleNamespace(triggered_id="imzml_batch_browse_selection"))
+    existing = [str(tmp_path / "source.imzML")]
+    for selection in ({}, {"path": str(tmp_path / "source.ibd"), "selection_id": "invalid"}):
+        assert ui.add_registration_files(1, selection, [], existing) == (no_update, no_update)
 
 
 def test_stale_inspection_cannot_populate_new_selection(ui):
