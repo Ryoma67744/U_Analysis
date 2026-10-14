@@ -110,6 +110,29 @@ def test_poll_does_not_replace_edited_table_of_same_revision(ui, monkeypatch):
     assert all(value is no_update for value in result)
 
 
+def test_poll_does_not_trigger_table_loading_for_rendered_revision(ui, monkeypatch):
+    draft = {"id": "generation", "revision": "r1", "state": "ready"}
+    monkeypatch.setattr(ui.queue, "get_draft", lambda *args: deepcopy(draft))
+    assert ui.poll_registration_inspection(5, {"id": "generation"},
+        {"id": "generation", "revision": "r1"}) is no_update
+
+
+@pytest.mark.parametrize("rendered", [{}, {"id": "old", "revision": "r1"},
+                                     {"id": "generation", "revision": "old"}])
+def test_poll_still_publishes_new_or_revised_inspection(ui, monkeypatch, rendered):
+    draft = {"id": "generation", "revision": "r1", "state": "ready"}
+    monkeypatch.setattr(ui.queue, "get_draft", lambda *args: deepcopy(draft))
+    assert ui.poll_registration_inspection(5, {"id": "generation"}, rendered) == draft
+
+
+@pytest.mark.parametrize("state", ["inspecting", "invalid"])
+def test_poll_keeps_inspection_progress_and_errors_visible(ui, monkeypatch, state):
+    draft = {"id": "generation", "revision": "r1", "state": state}
+    monkeypatch.setattr(ui.queue, "get_draft", lambda *args: deepcopy(draft))
+    assert ui.poll_registration_inspection(5, {"id": "generation"},
+        {"id": "generation", "revision": "r1"}) == draft
+
+
 def test_spatial_edit_applies_only_active_file_and_preserves_table_edits(ui, monkeypatch):
     captured = []
     monkeypatch.setattr(ui.queue, "revise_draft", lambda *args, **kwargs: captured.append((args, kwargs)) or "updated")
