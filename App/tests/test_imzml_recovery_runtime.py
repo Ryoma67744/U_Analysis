@@ -240,8 +240,7 @@ def test_probe_rejects_current_dependency_environment():
 
 
 @pytest.mark.parametrize("change", ["source", "pyc", "extra_source"])
-def test_runtime_rejects_unsigned_or_changed_code(tmp_path, monkeypatch, change):
-    import importlib.util
+def test_runtime_rejects_unsigned_or_changed_code(tmp_path, legacy_python, change):
     import shutil
     profile = tmp_path / "profile"
     shutil.copytree(runtime.PROFILE_ROOT, profile)
@@ -252,12 +251,32 @@ def test_runtime_rejects_unsigned_or_changed_code(tmp_path, monkeypatch, change)
         source.with_suffix(".pyc").write_bytes(b"unsigned")
     else:
         source.with_name("unapproved.py").write_bytes(b"pass\n")
-    spec = importlib.util.spec_from_file_location("_recovery_generate_test", runtime.GENERATOR)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    monkeypatch.setattr(module, "PROFILE_ROOT", profile)
-    with pytest.raises(ValueError, match="コードSHA|未承認"):
-        module.load_runtime()
+    # ★ ver81.0: pytest本体がbase Pythonでも、実旧venvで前提を満たしてコード検査へ進む。
+    script = tmp_path / "check_runtime_code.py"
+    script.write_text('''import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("generator", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.PROFILE_ROOT = Path(sys.argv[2])
+module.load_runtime()
+''', encoding="utf-8")
+    result = subprocess.run([legacy_python, "-I", "-B", "-X", "utf8", str(script),
+                            str(runtime.GENERATOR), str(profile)], capture_output=True,
+                            text=True, encoding="utf-8", timeout=30)
+    assert result.returncode != 0
+    assert "コードSHA" in result.stderr or "未承認" in result.stderr
+
+
+def test_probe_rejects_base_python_before_dependency_checks():
+    if sys.version_info[:2] != (3, 12) or sys.implementation.name != "cpython":
+        pytest.skip("CPython 3.12 runtime test")
+    # 実base interpreterを使い、venv要件をテスト都合で緩めていないことも検証する。
+    result = subprocess.run([sys._base_executable, "-I", "-B", "-X", "utf8",
+                            str(runtime.GENERATOR), "--probe"], capture_output=True,
+                            text=True, encoding="utf-8", timeout=30)
+    assert result.returncode != 0
+    assert "独立venvから起動" in result.stderr
 
 
 def test_child_exits_when_supervisor_identity_disappears(tmp_path, legacy_python):
