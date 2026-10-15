@@ -153,7 +153,6 @@ jobs:
     env:
       PYTHONPATH: .
       PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      MSI_IMZML_RECOVERY_V6_PYTHON: ${{ runner.temp }}/recovery-v6/bin/python
       IMZML_RECOVERY_RUNTIME_STRICT: '1'
     steps:
       - uses: actions/checkout@v4
@@ -165,8 +164,10 @@ jobs:
         run: |
           set -euo pipefail
           python -m venv "$RUNNER_TEMP/recovery-v6"
-          "$MSI_IMZML_RECOVERY_V6_PYTHON" -m pip install -r App/recovery_profiles/v6/requirements.txt
-          "$MSI_IMZML_RECOVERY_V6_PYTHON" -I -B -X utf8 App/tools/imzml_recovery_generate.py --probe --runtime-info "$RUNNER_TEMP/recovery-v6/runtime-info.json"
+          recovery_python="$RUNNER_TEMP/recovery-v6/bin/python"
+          "$recovery_python" -m pip install -r App/recovery_profiles/v6/requirements.txt
+          "$recovery_python" -I -B -X utf8 App/tools/imzml_recovery_generate.py --probe --runtime-info "$RUNNER_TEMP/recovery-v6/runtime-info.json"
+          printf 'MSI_IMZML_RECOVERY_V6_PYTHON=%s\n' "$recovery_python" >> "$GITHUB_ENV"
       - name: 実旧版生成・原本照合・公開・ジョブ・権限の契約
         working-directory: App
         run: |
