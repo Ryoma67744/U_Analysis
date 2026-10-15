@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 from typing import Optional
 from urllib.parse import quote, urlparse
 
@@ -248,6 +249,8 @@ def _login_view():
         session["analyst_name"] = name
         session["access_tier"] = "A"
         session["pw_version"] = auth_service.get_password_version()
+        # ★ ver81.0: 初回の並列診断で別々のjob所有者Cookieを発行しない。
+        session["imzml_recovery_principal"] = secrets.token_urlsafe(32)
         logger.info("Login success: analyst=%s tier=A (master)", name)
         return redirect(next_url)
 
@@ -257,6 +260,7 @@ def _login_view():
         session["analyst_name"] = name
         session["access_tier"] = "B"
         session["pw_version"] = auth_service.get_password_version()
+        session["imzml_recovery_principal"] = secrets.token_urlsafe(32)
         logger.info("Login success: analyst=%s tier=B", name)
         if _is_share_path(next_url):
             return redirect(next_url)

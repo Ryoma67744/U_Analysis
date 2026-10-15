@@ -1,2 +1,4 @@
 *.bat text eol=crlf
 *.ps1 text eol=crlf
+# ★ ver81.0: 旧変換仕様はコードのバイトSHAを持つため、Windowsでも改行を変えない。
+App/recovery_profiles/** text eol=lf

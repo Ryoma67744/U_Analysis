@@ -1,0 +1,8 @@
+# ★ ver81.0: 旧結果の保存specにある依存版。現行アプリのrequirementsとは混ぜない。
+numpy==2.5.3
+pyarrow==25.0.1
+pyimzml==1.5.5
+# reader補助と実行制御。変換specに未記録の補助依存も配布環境では固定する。
+wheezy.template==3.2.5
+filelock==4.1.1
+psutil==7.2.2

@@ -14,6 +14,32 @@ from app.utils.validation import param_default
 from app.utils.display_helpers import fs_exclude_placeholders
 
 
+def create_imzml_recovery_panel():
+    """★ ver81.0: 画面表示用RDSだけが残る場合も、出力用変換資産の復元を案内する。"""
+    return html.Div([
+        dcc.Store(id="imzml_recovery_context"),
+        dcc.Store(id="imzml_recovery_report"),
+        dcc.Store(id="imzml_recovery_job"),
+        dcc.Interval(id="imzml_recovery_poll", interval=2000, disabled=True),
+        html.Div(id="imzml_recovery_panel", style={"display": "none"}, children=[
+            html.Strong("解析時の変換データ"),
+            html.Div(id="imzml_recovery_summary", className="small my-1", role="status"),
+            html.Div(id="imzml_recovery_details", className="small text-muted mb-2",
+                     style={"whiteSpace": "pre-wrap", "overflowWrap": "anywhere"}),
+            dbc.ButtonGroup([
+                dbc.Button("不足データを復元", id="imzml_recovery_start", color="warning", disabled=True),
+                dbc.Button("停止", id="imzml_recovery_cancel", color="secondary", outline=True, disabled=True),
+                dbc.Button("復元を再試行", id="imzml_recovery_retry", color="secondary", outline=True, disabled=True),
+                dbc.Button("再確認", id="imzml_recovery_check", color="secondary", outline=True),
+            ], size="sm"),
+            dbc.Progress(id="imzml_recovery_progress", value=0, max=100, className="mt-2", style={"height": "12px"}),
+            html.Div(id="imzml_recovery_progress_label", className="small mt-1"),
+            html.Small("選択した出力に必要な元ファイルを、登録済みの全切片を含めて復元します。"
+                       "完了後に通常のデータ出力を実行してください。", className="d-block text-muted mt-1"),
+        ], className="border rounded p-2 mt-2"),
+    ])
+
+
 def create_export_selection_panel():
     """★ ver75.1: 表示群と独立した出力対象を明示し、非表示の群を誤って含めない。"""
     return html.Div(className="border rounded p-2 mt-2", children=[
@@ -783,6 +809,7 @@ def create_interactive_tab():
                             ]),
                             # ★ ver75.1: DESIでも対象選択は必要なため、列設定のwrapperと分離する。
                             create_export_selection_panel(),
+                            create_imzml_recovery_panel(),
                             # ★ ver59.0: 解析に使っていない切片(annotation)を出力から外す。
                             #   OFF だと「クラスタ未割当」と「そもそも解析していない」が
                             #   出力を見ただけでは区別できない（仕様を知らないと読めない）。
