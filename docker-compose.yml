@@ -57,6 +57,14 @@ services:
       # ★ ver75.2: 結果が参照する変換済み入力を専用永続volumeと同じ場所へ保存する。
       # 旧構成ではコンテナ差し替えで消失し、結果表示後の数値出力が失敗した。
       - IMZML_CACHE_DIR=/app/Data/Other/imzml_assets
+      # ver80.0: UI 用のホスト表示名。内部パス・保存済み解析の参照先は変更しない。
+      - MSI_HOST_TIMS_DATA_DIR=${TIMS_DATA_HOST:-}
+      - MSI_HOST_DESI_DATA_DIR=${DESI_DATA_HOST:-}
+      - MSI_HOST_OUTPUT_DATA_DIR=${OUTPUT_DATA_HOST:-}
+      - MSI_HOST_IMZML_ASSETS_DIR=${IMZML_ASSETS_HOST:-}
+      # 共有 root を準備・全資産照合した後だけ 1。完成 revision は group read-only。
+      - MSI_IMZML_SHARED_READ=${MSI_IMZML_SHARED_READ:-0}
+      - MSI_SHARED_GID=${MSI_SHARED_GID:-1001}
       # ver4.4: Seurat 抽出キャッシュを永続ボリュームに置き、再デプロイで消えない
       # ようにする (共有を開いたときのコールド R 抽出を防ぐ)。専用ディレクトリ必須
       # (LRU 退避が配下サブディレクトリを削除するため diskcache と同居させない)。

@@ -18,8 +18,10 @@ from app.config import (
     TIMS_V8_TEMPLATE_PATH, TIMS_CLUSTER_FILTER_PATH,
 )
 from app.layouts.file_browser_modal import (
-    get_available_drives, list_directory, build_breadcrumb_parts,
+    get_available_drives, list_directory, build_breadcrumb_parts, browser_directory, browser_parent,
 )
+from app.services.public_paths import to_display_path, to_internal_path, virtual_children
+from app.layouts.public_path_inputs import wrap_path_input
 from app.services.data_manager import (
     list_msi_files, list_tims_files, list_tims_folder_groups,
     find_tims_file_path, read_parquet_annotations, read_desi_roi_list,
@@ -1162,7 +1164,9 @@ def _browser_start_dir(current_val, default_start):
     initial_dir = (str(default_start) if default_start and default_start.is_dir()
                    else str(APP_BASE_DIR))
     if current_val:
-        p = Path(current_val)
+        if virtual_children(str(current_val)) is not None:
+            return str(current_val)
+        p = Path(to_internal_path(current_val))
         if p.is_dir():
             return str(p)
         if p.parent.is_dir():
@@ -1268,16 +1272,15 @@ def update_file_browser(state, drive_val, go_clicks, path_input):
     else:
         current_dir = state.get("current_dir", "")
 
-    if not current_dir or not Path(current_dir).is_dir():
+    mode = state.get("mode", "folder")
+    try:
+        current_dir, items = browser_directory(current_dir, show_files=(mode == "file"))
+    except (OSError, ValueError):
         return (
             [html.Div("有効なパスを入力してください", style={"padding": "20px", "color": "#999"})],
             [],
-            current_dir,
+            to_display_path(current_dir),
         )
-
-    mode = state.get("mode", "folder")
-    show_files = (mode == "file")
-    items = list_directory(current_dir, show_files=show_files)
     extensions = _imzml_browser_extensions(state)
     if extensions:
         items = [item for item in items if item["is_dir"] or Path(item["path"]).suffix.lower() in extensions]
@@ -1285,7 +1288,7 @@ def update_file_browser(state, drive_val, go_clicks, path_input):
     # ファイルリスト構築
     file_items = []
     # 親ディレクトリへの「..」
-    parent = str(Path(current_dir).parent)
+    parent = browser_parent(current_dir)
     if parent != current_dir:
         file_items.append(
             html.Div(
@@ -1309,14 +1312,14 @@ def update_file_browser(state, drive_val, go_clicks, path_input):
         file_items = [html.Div("空のフォルダです", style={"padding": "20px", "color": "#999"})]
 
     # パンくず
-    parts = build_breadcrumb_parts(current_dir)
+    parts = build_breadcrumb_parts(to_display_path(current_dir))
     breadcrumb = []
     for i, part in enumerate(parts):
         if i > 0:
             breadcrumb.append(html.Span(" / "))
         breadcrumb.append(html.Span(part["name"]))
 
-    return file_items, breadcrumb, current_dir
+    return file_items, breadcrumb, to_display_path(current_dir)
 
 
 # ファイルブラウザ内のアイテムクリック
@@ -1332,7 +1335,11 @@ def handle_fb_item_click(clicks, state):
         return no_update, no_update
 
     clicked_path = ctx.triggered_id["path"]
-    path = Path(clicked_path)
+    state = dict(state or {})
+    if virtual_children(clicked_path) is not None:
+        state.update(current_dir=clicked_path, selected_path="")
+        return state, ""
+    path = Path(to_internal_path(clicked_path))
 
     if path.is_dir():
         state["current_dir"] = str(path)
@@ -1349,7 +1356,7 @@ def handle_fb_item_click(clicks, state):
             # パス入力・ドライブ移動後も、選択したファイルのフォルダを表示する。
             state["current_dir"] = str(path.parent)
         state["selected_path"] = str(path)
-    return state, state.get("selected_path", "")
+    return state, to_display_path(state.get("selected_path", ""))
 
 
 # モーダルの「選択」ボタン → 対応するInputに値を設定
@@ -1452,7 +1459,7 @@ def handle_fb_shortcut(clicks, state):
     new_state["current_dir"] = target_path
     if _imzml_browser_extensions(new_state):
         new_state["selected_path"] = ""
-    return new_state, new_state.get("selected_path", "")
+    return new_state, to_display_path(new_state.get("selected_path", ""))
 
 
 # ---------------------------------------------------------------------------
@@ -1543,7 +1550,7 @@ def render_extra_folders(folders):
                 html.Div(
                     style={"display": "flex", "gap": "5px"},
                     children=[
-                        dbc.Input(
+                        wrap_path_input(dbc.Input(
                             id={"type": "extra_folder_path", "index": i},
                             value=folder,
                             placeholder="データフォルダのパス",
@@ -1551,7 +1558,7 @@ def render_extra_folders(folders):
                             # 1 文字ごとに Store を書き換えると、その都度この行が
                             # 描き直されて入力欄のカーソルが飛ぶ。確定時だけ送る。
                             debounce=True,
-                        ),
+                        )),
                         dbc.Button(
                             "参照...", size="sm", color="secondary",
                             id={"type": "btn_browse_extra_folder", "index": i},

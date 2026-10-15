@@ -396,16 +396,41 @@ def prepare_imzml(entry, *, cache_root=None, project_id="", pinned=False,
     # 保存場所へ任意パスを注入させず、原本 file_id は manifest にそのまま保持。
     fid_dir = sha256(fid.encode()).hexdigest()[:24]
     project_dir = sha256(str(project_id or "default").encode()).hexdigest()[:20]
-    root = Path(cache_root).resolve() if cache_root is not None else default_cache_root()
-    root.mkdir(parents=True, exist_ok=True)
-    (root / CACHE_MARKER).touch(exist_ok=True)
+    from app.services.imzml_shared_permissions import shared_read_policy, SharedReadError
+    # Permission policy is operational only: stored canonical paths/spec/keys stay unchanged.
+    if cache_root is None:
+        if os.environ.get("MSI_IMZML_SHARED_READ", "0") == "1":
+            from app.config import IMZML_CACHE_DIR
+            raw_root = IMZML_CACHE_DIR
+        else:
+            raw_root = default_cache_root()
+    else:
+        raw_root = cache_root
+    try:
+        shared_policy = shared_read_policy(raw_root)
+        root = shared_policy.root if shared_policy else Path(raw_root).resolve()
+        if shared_policy:
+            shared_policy.ensure_marker(CACHE_MARKER)
+        else:
+            root.mkdir(parents=True, exist_ok=True)
+            (root / CACHE_MARKER).touch(exist_ok=True)
+    except (SharedReadError, OSError) as exc:
+        raise InputPreparationError(f"変換資産の保存先を準備できません: {exc}") from exc
     parent = root / project_dir / fid_dir
-    parent.mkdir(parents=True, exist_ok=True)
+    if not shared_policy:
+        parent.mkdir(parents=True, exist_ok=True)
     target = Path(entry["runtime_path"]).resolve().parent if pinned and entry.get("conversion_key") else parent / key
     # 旧 manifest が参照する場所を復元する場合も管理領域外には書かない。
     if not target.is_relative_to(root):
         raise InputPreparationError("変換資産の復元先が設定された管理領域外です。保存設定を確認してください。")
-    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if shared_policy:
+            shared_policy.ensure_parent(parent)
+            shared_policy.ensure_parent(target.parent)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+    except (SharedReadError, OSError) as exc:
+        raise InputPreparationError(f"共有保存先の権限を確認してください: {exc}") from exc
     lock = FileLock(str(target) + ".lock")
     while True:
         check_cancel(cancel)
@@ -532,6 +557,11 @@ def prepare_imzml(entry, *, cache_root=None, project_id="", pinned=False,
                        "created_at": time.time(), "restored": expected is not None}
             write_json(stage / RECEIPT, receipt)
             check_cancel(cancel)
+            if shared_policy:
+                try:
+                    shared_policy.prepare_stage(stage, cancel=lambda: check_cancel(cancel))
+                except (SharedReadError, OSError) as exc:
+                    raise InputPreparationError(f"変換資産を共有公開できません: {exc}") from exc
             if progress:
                 progress({"stage": "publish", "sample": xml.name})
             check_cancel(cancel)

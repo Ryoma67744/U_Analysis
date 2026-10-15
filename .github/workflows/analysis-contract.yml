@@ -44,6 +44,15 @@ jobs:
           set -euo pipefail
           python -m pytest tests/test_imzml_spectrum_order.py tests/test_imzml_dictionary.py tests/test_imzml_block_policy.py tests/test_imzml_processed_performance.py tests/test_imzml_grouping_bounds.py tests/test_imzml_common_memory.py tests/test_imzml_registration_block_v78.py tests/test_imzml_progress_v78.py tests/test_imzml_registration_queue.py tests/test_imzml_registration_worker.py tests/test_imzml_registration_ui.py tests/test_imzml_browse_files.py tests/test_imzml_autoimport_core.py tests/test_imzml_autoimport_validation.py tests/test_imzml_autoimport_real_io.py -q --junitxml=imzml78.xml
           python -c 'import xml.etree.ElementTree as E; r=E.parse("imzml78.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "imzML v78 tests must not skip"'
+      - name: WinSCPパス・共有権限・移行コピーの契約
+        working-directory: App
+        env:
+          PYTHONPATH: .
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          set -euo pipefail
+          python -m pytest tests/test_public_paths.py tests/test_winscp_browser.py tests/test_imzml_shared_permissions.py tests/test_verify_imzml_asset_copy.py -q --junitxml=winscp80.xml
+          python -c 'import xml.etree.ElementTree as E; r=E.parse("winscp80.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "WinSCP Linux contracts must not skip"'
   # ★ ver75.1: 登録に加え、出力対象の選択からダウンロードまで実ブラウザで必須検証する。
   registration-browser:
     runs-on: ubuntu-latest
@@ -78,6 +87,18 @@ jobs:
           set -euo pipefail
           python -m pytest tests/e2e/test_imzml_batch_registration.py -q --junitxml=imzml78-browser.xml
           python -c 'import xml.etree.ElementTree as E; r=E.parse("imzml78-browser.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "imzML v78 browser test must not skip"'
+      - name: WinSCPパス表示と固定入力の互換性
+        working-directory: App
+        env:
+          PYTHONPATH: .
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+          E2E_STRICT: '1'
+          E2E_WINSCP_PATHS: '1'
+          E2E_ADMISSION_MEMORY_SHIM: '1'
+        run: |
+          set -euo pipefail
+          python -m pytest tests/e2e/test_winscp_paths.py -q --junitxml=winscp80-browser.xml
+          python -c 'import xml.etree.ElementTree as E; r=E.parse("winscp80-browser.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "WinSCP browser tests must not skip"'
       - name: Caddy検証用バイナリを取得
         run: |
           set -euo pipefail
