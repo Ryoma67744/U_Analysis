@@ -89,6 +89,7 @@ def create_registration_panel():
             dbc.Button("失敗・停止したファイルを再試行", id="imzml_batch_retry", outline=True),
         ], size="sm"),
         dbc.Checklist(id="imzml_batch_completed", options=[], value=[], className="my-3"),
+        html.Div(id="imzml_batch_output_paths", className="small my-2"),
         dbc.Button("選択した完成データで解析設定へ", id="imzml_batch_handoff", color="success"),
         html.Div(id="imzml_batch_handoff_message", className="small my-2"),
         html.Small("登録だけで終了する場合は閉じてください。変換完了だけでは解析は始まりません。",

@@ -393,6 +393,8 @@ def _data_export_download(job_id):
 
 # レイアウト設定
 app.layout = create_main_layout()
+from app.callbacks.public_path_callbacks import register_public_path_callbacks  # noqa: E402
+register_public_path_callbacks(app.layout)
 
 # コールバック登録
 # 各コールバックモジュールの import で自動的に @app.callback が登録される

@@ -265,6 +265,22 @@ def app_server(tmp_path_factory, app_server_logs):
     # ★ ver78.0: 登録workerも実起動するため、変換資産を必ず隔離環境へ保存する。
     # 入れ子の一時変換ディレクトリがWindowsのパス上限へ達しない短い隔離先。
     env["IMZML_CACHE_DIR"] = str(tmp_path_factory.getbasetemp() / "a")
+    # ★ ver80.0: WinSCP表示の試験だけ共有rootを仮想化し、通常E2Eは従来DOMを検証する。
+    host_paths = {
+        "MSI_HOST_DESI_DATA_DIR": "/srv/msi/desi_data",
+        "MSI_HOST_TIMS_DATA_DIR": "/srv/msi/tims_data",
+        "MSI_HOST_OUTPUT_DATA_DIR": "/srv/msi/output",
+        "MSI_HOST_IMZML_ASSETS_DIR": "/srv/msi/imzml_assets",
+    }
+    for key in host_paths:
+        env.pop(key, None)
+    if os.environ.get("E2E_WINSCP_PATHS") == "1":
+        env.update(host_paths)
+    app_server_logs["paths"] = {
+        "runtime_root": runtime_root,
+        "tims_data": Path(env["TIMS_DATA_DIR"]),
+        "imzml_assets": Path(env["IMZML_CACHE_DIR"]),
+    }
 
     proc = subprocess.Popen(
         [sys.executable, "run_app.py"], cwd=str(app_root), env=env,

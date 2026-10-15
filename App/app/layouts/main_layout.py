@@ -29,6 +29,7 @@ from app.layouts.tooltips import (
     get_interactive_tooltips, get_results_tooltips,
 )
 from app.version import version_label
+from app.layouts.public_path_inputs import wrap_public_path_inputs
 
 
 def _create_change_password_modal():
@@ -159,7 +160,7 @@ def _create_preset_modal():
 
 
 def create_main_layout():
-    return html.Div([
+    layout = html.Div([
         # ========== グローバルバージョン表示 (全画面の右上に固定) ==========
         # ユーザーが今見ているページが最新の修正反映後の版か即座に
         # 判別できるよう、landing/action/analysis/shared/lite すべてで
@@ -459,3 +460,4 @@ def create_main_layout():
             ],
         ),
     ])
+    return wrap_public_path_inputs(layout)

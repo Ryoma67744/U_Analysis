@@ -8,12 +8,13 @@ import os
 import string
 
 logger = logging.getLogger(__name__)
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from dash import html, dcc
 import dash_bootstrap_components as dbc
 
 from app.config import BROWSER_SHORTCUTS
+from app.services.public_paths import get_path_mappings, to_display_path, to_internal_path, virtual_children
 
 
 def create_file_browser_modal():
@@ -84,6 +85,9 @@ def create_file_browser_modal():
 
 def get_available_drives() -> list[dict]:
     """利用可能なドライブ一覧を返す（Windows用）"""
+    mappings = get_path_mappings()
+    if mappings:
+        return [{"label": public, "value": public} for _, public in mappings]
     drives = []
     if os.name == "nt":
         for letter in string.ascii_uppercase:
@@ -93,6 +97,25 @@ def get_available_drives() -> list[dict]:
     else:
         drives.append({"label": "/", "value": "/"})
     return drives
+
+
+def browser_directory(dir_path, show_files=True):
+    """Public ancestors list configured mounts; physical I/O uses internal paths."""
+    virtual = virtual_children(str(dir_path or ""))
+    if virtual is not None:
+        return str(dir_path), virtual
+    internal = to_internal_path(str(dir_path or ""))
+    if not internal or not Path(internal).is_dir():
+        raise ValueError("サーバー上の有効なフォルダを指定してください。")
+    return internal, list_directory(internal, show_files=show_files)
+
+
+def browser_parent(dir_path):
+    public = to_display_path(str(dir_path))
+    if public.startswith("/") or public != str(dir_path) or virtual_children(public) is not None:
+        parent = str(PurePosixPath(public).parent) if public.startswith("/") else str(Path(public).parent)
+        return to_internal_path(parent)
+    return str(Path(dir_path).parent)
 
 
 def list_directory(dir_path: str, show_files: bool = True) -> list[dict]:
@@ -131,7 +154,7 @@ def list_directory(dir_path: str, show_files: bool = True) -> list[dict]:
 
 def build_breadcrumb_parts(dir_path: str) -> list[dict]:
     """パンくずナビ用のパーツを返す"""
-    path = Path(dir_path)
+    path = PurePosixPath(dir_path) if str(dir_path).startswith("/") else Path(dir_path)
     parts = []
     current = path
     while True:

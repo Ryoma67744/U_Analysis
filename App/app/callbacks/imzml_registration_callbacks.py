@@ -4,10 +4,11 @@ import csv
 import io
 from pathlib import Path
 
-from dash import Input, Output, State, callback, ctx, no_update, html
+from dash import Input, Output, State, callback, ctx, no_update, html, dcc
 import dash_bootstrap_components as dbc
 
-from app.layouts.file_browser_modal import list_directory
+from app.layouts.file_browser_modal import browser_directory, browser_parent
+from app.services.public_paths import to_display_path, to_internal_path
 from app.services import imzml_registration_queue as queue
 from app.services.session_id import get_display_name
 
@@ -48,8 +49,8 @@ def paste_registration(rows, text):
           State("imzml_batch_folder", "value"), prevent_initial_call=True)
 def navigate_registration_folder(up, subfolder, folder):
     if ctx.triggered_id == "imzml_batch_up":
-        return str(Path(folder or ".").expanduser().resolve().parent)
-    return subfolder or no_update
+        return browser_parent(folder or str(Path.cwd()))
+    return to_internal_path(subfolder) if subfolder else no_update
 
 
 @callback(Output("imzml_batch_subfolder", "options"), Output("imzml_batch_files", "options"),
@@ -57,17 +58,14 @@ def navigate_registration_folder(up, subfolder, folder):
           Input("imzml_batch_folder", "value"), Input("imzml_batch_go", "n_clicks"))
 def browse_registration_files(folder, clicks):
     try:
-        path = Path(folder or "").expanduser().resolve()
-        if not path.is_dir():
-            raise ValueError("サーバー上のフォルダを指定してください。")
-        items = list_directory(str(path))
+        path, items = browser_directory(to_internal_path(folder or ""))
         folders = [{"label": row["name"], "value": row["path"]} for row in items if row["is_dir"]]
         from app.services.input_preparation import candidate_info
         candidates = [candidate_info(row["path"]) for row in items
                       if not row["is_dir"] and Path(row["path"]).suffix.lower() == ".imzml"]
         options = [{"label": item["label"], "value": item["path"], "disabled": item["disabled"]}
                    for item in candidates]
-        return folders, options, [], f"{path} ／ imzML {len(options)} 件"
+        return folders, options, [], f"{to_display_path(path)} ／ imzML {len(options)} 件"
     except (OSError, ValueError) as exc:
         return [], [], [], _alert(exc)
 
@@ -84,7 +82,7 @@ def add_registration_files(clicks, browse_selection, selected, existing):
     # 同じファイルを再選択しても調査をやり直さず、入力済みの登録表を保持する。
     if paths == list(existing or []):
         return no_update, no_update
-    return [{"label": p, "value": p} for p in paths], paths
+    return [{"label": to_display_path(p), "value": p} for p in paths], paths
 
 
 @callback(Output("imzml_io_modal", "enforceFocus"),
@@ -136,7 +134,7 @@ def render_registration_inspection(inspection, selection, rendered):
     if draft["state"] == "inspecting":
         return no_update, no_update, "座標・入力形式を確認しています…", no_update
     if draft["state"] != "ready":
-        return [], {}, [html.Div(f"{e['path']}: {e['error']}") for e in draft["errors"]], []
+        return [], {}, [html.Div(f"{to_display_path(e['path'])}: {e['error']}") for e in draft["errors"]], []
     marker = {"id": draft["id"], "revision": draft["revision"]}
     if marker == rendered:
         return no_update, no_update, no_update, no_update
@@ -213,7 +211,8 @@ def apply_registration_spatial_edits(overrides, selection, rendered, active_path
           Input("imzml_batch_table", "data"), Input("imzml_batch_ppm", "value"))
 def registration_summary(rows, ppm):
     missing = sum(any(not str(row.get(key) or "").strip() for key in queue.METADATA) for row in rows or [])
-    return f"全 {len(rows or [])} 切片 ／ 未入力 {missing} 切片 ／ 実効ppm: {ppm if ppm is not None else '未設定'} ／ 保存先: 管理領域（既存資産は上書きしません）"
+    from app.services.input_preparation import default_cache_root
+    return f"全 {len(rows or [])} 切片 ／ 未入力 {missing} 切片 ／ 実効ppm: {ppm if ppm is not None else '未設定'} ／ 保存先: {to_display_path(str(default_cache_root()))}（既存資産は上書きしません）"
 
 
 @callback(Output("imzml_batch_action_message", "children"),
@@ -271,11 +270,29 @@ def registration_job_status(tick, project, selected):
         for item in job["files"]:
             progress = item.get("progress", {})
             suffix = f" {progress['done']}/{progress['total']}" if progress.get("total") else ""
-            children.append(html.Div(f"{item['path']} — {STATE_LABELS.get(item['state'], '処理中')}{suffix} {item.get('error', '')}"))
+            children.append(html.Div(f"{to_display_path(item['path'])} — {STATE_LABELS.get(item['state'], '処理中')}{suffix} {item.get('error', '')}"))
     assets = queue.completed_assets(owner, pid)
-    completed = [{"label": f"{a['source']} ／ {a['alignment_ppm']} ppm ／ revision {key[:8]}", "value": key}
+    completed = [{"label": f"{to_display_path(a['source'])} ／ {a['alignment_ppm']} ppm ／ revision {key[:8]}", "value": key}
                  for key, a in assets.items()]
     return options, selected, children, completed
+
+
+@callback(Output("imzml_batch_output_paths", "children"),
+          Input("imzml_batch_completed", "options"), Input("imzml_batch_completed", "value"),
+          State("selected_project", "data"))
+def registration_output_paths(options, selected, project):
+    assets = queue.completed_assets(get_display_name(), _project(project))
+    keys = selected or [option["value"] for option in options or []]
+    rows = []
+    for key in keys:
+        path = assets.get(key, {}).get("entry", {}).get("runtime_path")
+        if path:
+            public = to_display_path(path)
+            rows.append(html.Div([
+                html.Code(public, style={"overflowWrap": "anywhere"}),
+                dcc.Clipboard(content=public, title="保存先をコピー", className="ms-2"),
+            ], className="mb-2"))
+    return [html.Strong("Parquetの保存先"), *rows] if rows else []
 
 
 @callback(Output("imzml_registered_selection", "data"),
