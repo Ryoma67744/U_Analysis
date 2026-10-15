@@ -1,0 +1,27 @@
+{
+  "commit": "b34fc86b942d405f4b52d54f0a91f11e7a5f9542",
+  "dependencies": {
+    "numpy": "2.5.3",
+    "pyarrow": "25.0.1",
+    "pyimzml": "1.5.5"
+  },
+  "id": "legacy-v6",
+  "python_major_minor": [
+    3,
+    12
+  ],
+  "schema": 1,
+  "source_sha256": {
+    "app/__init__.py": "48b2287ec5ced8b941973c68d11ab94c788696574c575ff37a9b26b8e1b979db",
+    "app/services/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "app/services/imzml_io.py": "affe27bf9b0f3078fcdd1d472ffcdc13415f4716a48410d78208b585a9303cff",
+    "app/services/imzml_processed.py": "1c9f0f717ab58db2c605d2e501642d3aa502ef98d1468d9880b6190ddc9051e6",
+    "app/services/imzml_registration.py": "797aa2654f7fc8853413515695cc0c1b9e946feafdb705d44c25d687cef60440",
+    "app/services/imzml_spatial_layout.py": "fb5033391def416145dfa0ed698e65b42384d469d0618405065e11939bdd22e2",
+    "app/services/imzml_validation.py": "31780c22059a36bafe918d49b3bf9c624cdfe1eef0979547fe3fc602a8887b6a",
+    "app/services/input_preparation.py": "db334be9b02c5ed15e3ed3d778d88af9ea8b71c98e24490e26a1bfa9d9636c98",
+    "app/services/section_completeness.py": "f5947e4e0ad39e17f33b2389ca1c6c11e450e8105bae49fd6d2d4aa2469ccfed",
+    "app/services/section_metadata.py": "fbdc4084733c0546445294220619f5ef6c41a0523dbfb5bca513710848ea57c1",
+    "app/services/tims_parquet_contract.py": "35920199c7c453ce697903213c59f81bb83c045619ed1d1325c43d35f90d345e"
+  }
+}

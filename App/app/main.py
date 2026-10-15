@@ -412,6 +412,8 @@ from app.callbacks import scils_converter_callbacks  # noqa: E402, F401
 from app.callbacks import imzml_io_callbacks  # noqa: E402, F401
 from app.services.imzml_registration_queue import ensure_dispatcher
 ensure_dispatcher()  # ★ ver78.0: ブラウザを閉じた受付も、アプリ再起動後に処理を再開する。
+from app.services.imzml_recovery_queue import ensure_dispatcher as ensure_recovery_dispatcher
+ensure_recovery_dispatcher()  # ★ ver81.0: 旧資産の復元受付を永続logsから再開する。
 from app.callbacks import imzml_spatial_callbacks  # noqa: E402, F401
 from app.callbacks import annotation_preview_callbacks  # noqa: E402, F401
 from app.callbacks import add_molinfo_callbacks  # noqa: E402, F401
@@ -422,6 +424,7 @@ from app.callbacks import rds_maintenance_callbacks  # noqa: E402, F401
 from app.callbacks import export_options_callbacks  # noqa: E402, F401
 # ★ ver75.1: 数値出力の対象選択を表示フィルターと独立して登録する。
 from app.callbacks import export_selection_callbacks  # noqa: E402, F401
+from app.callbacks import imzml_recovery_callbacks  # noqa: E402, F401
 from app.callbacks import parquet_maintenance_callbacks  # noqa: E402, F401
 from app.callbacks import edit_lock_callbacks  # noqa: E402, F401
 from app.callbacks import auth_callbacks  # noqa: E402, F401

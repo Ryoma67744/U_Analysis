@@ -57,6 +57,8 @@ services:
       # ★ ver75.2: 結果が参照する変換済み入力を専用永続volumeと同じ場所へ保存する。
       # 旧構成ではコンテナ差し替えで消失し、結果表示後の数値出力が失敗した。
       - IMZML_CACHE_DIR=/app/Data/Other/imzml_assets
+      # ★ ver81.0: 復元ジョブを既存logs volumeへ保存し、コンテナ再作成後も中断・完了を確認する。
+      - IMZML_RECOVERY_STATE_DIR=/app/Data/Other/logs/imzml_recovery
       # ver80.0: UI 用のホスト表示名。内部パス・保存済み解析の参照先は変更しない。
       - MSI_HOST_TIMS_DATA_DIR=${TIMS_DATA_HOST:-}
       - MSI_HOST_DESI_DATA_DIR=${DESI_DATA_HOST:-}

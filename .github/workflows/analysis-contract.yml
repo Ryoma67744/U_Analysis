@@ -147,3 +147,38 @@ jobs:
           Rscript -e 'stopifnot(all(vapply(c("Seurat","arrow","jsonlite","digest","data.table"), requireNamespace, logical(1), quietly=TRUE))); invisible(lapply(list.files("Script", pattern="[.]R$", recursive=TRUE, full.names=TRUE), parse))'
           python -m pytest tests/test_r_safety_v74.py tests/test_tims_r_v74_contract.py tests/test_job_registry.py tests/test_imzml_autoimport_pipeline.py tests/test_stage_contract_r_v2.py tests/test_desi_section_execution_contract.py tests/test_result_facts_r.py tests/test_parquet_column_roles_r.py -q --junitxml=r-contract.xml
           python -c 'import xml.etree.ElementTree as E; r=E.parse("r-contract.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "R/Seurat contracts must not skip"'
+  imzml-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: .
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+      MSI_IMZML_RECOVERY_V6_PYTHON: ${{ runner.temp }}/recovery-v6/bin/python
+      IMZML_RECOVERY_RUNTIME_STRICT: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -c .github/ci/requirements-constraints.txt -r App/requirements.txt pytest playwright==1.63.0
+      - name: 保存仕様に固定した旧v6の独立環境を構築
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/recovery-v6"
+          "$MSI_IMZML_RECOVERY_V6_PYTHON" -m pip install -r App/recovery_profiles/v6/requirements.txt
+          "$MSI_IMZML_RECOVERY_V6_PYTHON" -I -B -X utf8 App/tools/imzml_recovery_generate.py --probe --runtime-info "$RUNNER_TEMP/recovery-v6/runtime-info.json"
+      - name: 実旧版生成・原本照合・公開・ジョブ・権限の契約
+        working-directory: App
+        run: |
+          set -euo pipefail
+          python -m pytest tests/test_imzml_recovery_runtime.py tests/test_imzml_asset_recovery.py tests/test_restore_imzml_assets.py tests/test_imzml_recovery_queue.py tests/test_imzml_recovery_callbacks.py -q --junitxml=recovery81.xml
+          python -c 'import xml.etree.ElementTree as E; r=E.parse("recovery81.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "recovery contracts must not skip"'
+      - run: python -m playwright install --with-deps chromium
+      - name: 不足検出から復元・通常出力までのブラウザ操作
+        working-directory: App
+        env:
+          E2E_STRICT: '1'
+        run: |
+          set -euo pipefail
+          python -m pytest tests/e2e/test_imzml_recovery.py -q --junitxml=recovery81-browser.xml
+          python -c 'import xml.etree.ElementTree as E; r=E.parse("recovery81-browser.xml"); assert len(r.findall(".//testcase"))>0; assert not r.findall(".//skipped"), "recovery browser tests must not skip"'

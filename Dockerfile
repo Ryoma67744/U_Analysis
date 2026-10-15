@@ -52,6 +52,14 @@ RUN pip3 install --no-cache-dir --break-system-packages -r /app/App/requirements
 # アプリケーション全体をコピー
 COPY . /app
 
+# ★ ver81.0: 旧結果の依存版を現行Python環境へ混ぜず、生成専用venvへ固定する。
+RUN python3 -m venv /opt/ua-recovery-v6 \
+    && /opt/ua-recovery-v6/bin/python -m pip install --no-cache-dir \
+       --only-binary=numpy,pyarrow,pyimzml,psutil,filelock \
+       -r /app/App/recovery_profiles/v6/requirements.txt \
+    && /opt/ua-recovery-v6/bin/python -I -B -X utf8 /app/App/tools/imzml_recovery_generate.py \
+       --probe --runtime-info /opt/ua-recovery-v6/runtime-info.json
+
 # 永続化ディレクトリを作成し権限を付与
 # ★ ver75.2: imzML専用volumeの初回作成でも非rootアプリが変換資産を保存できるようにする。
 RUN mkdir -p \
@@ -67,6 +75,11 @@ RUN mkdir -p \
     /app/Data/Other/logs \
     /app/Data/Other/output \
     && chown -R msiapp:msiapp /app
+
+# 変換仕様に固定した旧コードはアプリ利用者から変更しない。
+RUN chown -R root:root /app/App/recovery_profiles /opt/ua-recovery-v6 \
+    && chmod -R go-w /app/App/recovery_profiles /opt/ua-recovery-v6 \
+    && chmod a+r /opt/ua-recovery-v6/runtime-info.json
 
 WORKDIR /app/App
 

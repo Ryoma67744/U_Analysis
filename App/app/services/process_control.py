@@ -41,10 +41,13 @@ def active_lease():
         return None
     try:
         info = json.loads(path.read_text(encoding="utf-8"))
-        process = psutil.Process(int(info["pid"]))
-        if abs(process.create_time() - float(info["process_started_at"])) > 0.01 or process.status() == psutil.STATUS_ZOMBIE:
-            return None
-        return info
+        # ★ ver81.0: 監督workerだけを見ていると、その死亡後に旧版変換子が
+        # 生存していても次の重い処理を許可してしまう。記録した子も確認する。
+        processes = [info, *info.get("children", [])]
+        for item in processes:
+            if lease_process_alive(item["pid"], item["process_started_at"]):
+                return info
+        return None
     except psutil.NoSuchProcess:
         return None
     except Exception as exc:
@@ -60,6 +63,42 @@ def record_lease(process, output_dir, analyst=""):
         raise
     write_json(admission_path(), {"pid": process.pid,
         "process_started_at": started, "output_dir": str(output_dir), "analyst": analyst})
+
+
+def lease_process_alive(pid, expected_start):
+    """★ ver81.0: アクセス拒否を死亡と扱わず、受付側へ確認失敗を伝える。"""
+    try:
+        process = psutil.Process(int(pid))
+        return (abs(process.create_time() - float(expected_start)) <= 0.01
+                and process.status() != psutil.STATUS_ZOMBIE)
+    except psutil.NoSuchProcess:
+        return False
+
+
+def record_lease_child(supervisor_pid, supervisor_start, child_pid, child_start):
+    """★ ver81.0: 子の開始gateを開く前に共通受付へPIDと生成時刻を永続化する。"""
+    from filelock import FileLock
+    path = admission_path()
+    with FileLock(str(path.with_name("analysis_admission.lock")), timeout=30):
+        info = json.loads(path.read_text(encoding="utf-8"))
+        if not lease_has_process(info, supervisor_pid, supervisor_start):
+            raise InputPreparationError("復元workerの重い処理受付が一致しません。")
+        if not lease_process_alive(supervisor_pid, supervisor_start):
+            raise InputPreparationError("復元workerの生存を確認できません。")
+        if not lease_process_alive(child_pid, child_start):
+            raise InputPreparationError("旧版変換プロセスの生存を確認できません。")
+        child = {"pid": int(child_pid), "process_started_at": float(child_start)}
+        children = info.setdefault("children", [])
+        if child not in children:
+            children.append(child)
+        write_json(path, info)
+
+
+def lease_has_process(info, pid, started):
+    """★ ver81.0: Windowsのvenv launcherと実workerの両方を同じ受付として扱う。"""
+    return any(int(item["pid"]) == int(pid)
+               and abs(float(item["process_started_at"]) - float(started)) <= .01
+               for item in [info, *info.get("children", [])])
 
 
 def matching_process(pid, expected_start):

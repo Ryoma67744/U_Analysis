@@ -1,6 +1,7 @@
 """★ ver75.2: 既存解析を変えず、失われた固定変換資産だけを安全に復元する。"""
 from copy import deepcopy
 import json
+import platform
 from pathlib import Path
 import shutil
 import subprocess
@@ -49,6 +50,8 @@ def _assert_no_process(*args, **kwargs):
 
 @pytest.fixture
 def saved(tmp_path, monkeypatch):
+    # Windows の OS 照会を、変換の外部プロセス禁止検証に混ぜない。
+    platform.system()
     raw = tmp_path / "sample.imzML"
     raw.write_bytes(b"<test-double>not actual imzML</test-double>")
     raw.with_suffix(".ibd").write_bytes(b"original spectra")
