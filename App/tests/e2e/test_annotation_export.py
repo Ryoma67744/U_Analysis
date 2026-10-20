@@ -22,11 +22,11 @@ from .conftest import _BrowserDiagnostics, _launch_chromium, _unavailable
 pytestmark = pytest.mark.e2e
 
 
-def _write_annotations(path, names):
+def _write_annotations(path, names, mz=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame({
         "compound": names,
-        "mz": [100.0 + index / 1000 for index in range(len(names))],
+        "mz": mz if mz is not None else [100.0 + index / 1000 for index in range(len(names))],
         "display_name": [f"display-only-{index}" for index in range(len(names))],
         "adduct": ["[M+H]+"] * len(names),
         "formula": ["C10H20"] * len(names),
@@ -64,7 +64,13 @@ def annotation_browser(tmp_path, monkeypatch):
     repeated = names + [names[0], f"  {names[1]}  "]
     source_a = tmp_path / "a" / "A_feature_annotations.parquet"
     source_b = tmp_path / "b" / "B_feature_annotations.parquet"
-    _write_annotations(source_a, repeated + [None, "", "  ", "No DB hit", "123.456"])
+    all_names = repeated + [None, "", "  ", "No DB hit", "123.456"]
+    mz = [100.0 + index / 1000 for index in range(len(all_names))]
+    # Same compound at m/z values that collapse in the four-decimal preview.
+    mz[0], mz[len(names)] = 100.1234567890123, 100.1234567890124
+    # Include an exact duplicate row as well; mapping mode must retain it.
+    mz[len(names) + 1] = mz[1]
+    _write_annotations(source_a, all_names, mz)
     names_b = ["Only dataset B", "別データの化合物", "B_tail"]
     _write_annotations(source_b, names_b)
     entries = {
@@ -110,6 +116,7 @@ def annotation_browser(tmp_path, monkeypatch):
                 yield SimpleNamespace(
                     page=page, callbacks=callbacks, names=names, names_b=names_b,
                     repeated=[name.strip() for name in repeated], entries=entries,
+                    mz=mz, mapping_names=[name.strip() for name in repeated] + [""] * 5,
                     source_a=source_a, source_b=source_b, artifacts=artifact_root,
                     diagnostics=diagnostics,
                 )
@@ -130,6 +137,77 @@ def _download(page, destination):
     return event.value.suggested_filename, destination.read_bytes()
 
 
+def _select_names_txt(page):
+    """Exercise the real content/format controls; do not set Dash stores directly."""
+    from playwright.sync_api import expect
+
+    page.locator("#annotation_export_content").click()
+    page.get_by_text("化合物名のみ", exact=True).click()
+    expect(page.locator("#annotation_export_unique_section")).to_be_visible()
+    format_control = page.locator("#annotation_export_format")
+    expect(format_control).to_contain_text(re.compile(r"TXT（1行に1化合物名）|CSV（化合物名1列）"))
+    if "TXT（1行に1化合物名）" not in format_control.inner_text():
+        format_control.click()
+        page.get_by_text("TXT（1行に1化合物名）", exact=True).click()
+    expect(page.locator("#annotation_export_btn")).to_have_text("化合物名リストをダウンロード")
+
+
+def test_default_mapping_csv_and_tab_delimited_downloads(annotation_browser):
+    from playwright.sync_api import expect
+
+    fixture = annotation_browser
+    page = fixture.page
+    original = fixture.source_a.read_bytes()
+    page.get_by_role("button", name="Open dataset A", exact=True).click()
+    expect(page.locator("#annotation_export_btn")).to_be_enabled()
+    expect(page.locator("#annotation_export_btn")).to_have_text("m/z・化合物名をダウンロード")
+    expect(page.locator("#annotation_export_unique_section")).to_be_hidden()
+    expect(page.locator("#annotation_export_count")).to_contain_text(
+        re.compile(r"出力予定：\s*1,?397行"))
+    expect(page.locator("#annotation_preview_body")).to_contain_text("先頭 200 件")
+
+    filename, data = _download(page, fixture.artifacts / "mz_compounds.csv")
+    assert filename.endswith("_mz_compounds_all.csv")
+    assert data.startswith(b"\xef\xbb\xbf")
+    rows = list(csv.reader(io.StringIO(data.decode("utf-8-sig"))))
+    assert rows[0] == ["mz", "compound"]
+    assert len(rows) == 1398
+    assert all(len(row) == 2 for row in rows)
+    assert [float(row[0]) for row in rows[1:]] == fixture.mz
+    assert [row[1] for row in rows[1:]] == fixture.mapping_names
+    assert rows[1][1] == rows[1391][1] == "グルタミン酸"
+    assert rows[1][0] != rows[1391][0]
+    assert rows[2] == rows[1392]
+    page.screenshot(path=str(fixture.artifacts / "mapping_downloaded.png"), full_page=True)
+
+    page.locator("#annotation_export_format").click()
+    page.get_by_text("TXT（タブ区切り）", exact=True).click()
+    filename, tab_data = _download(page, fixture.artifacts / "mz_compounds.txt")
+    assert filename.endswith("_mz_compounds_all.txt")
+    assert not tab_data.startswith(b"\xef\xbb\xbf")
+    tab_rows = list(csv.reader(io.StringIO(tab_data.decode("utf-8")), delimiter="\t"))
+    assert tab_rows == rows
+    assert fixture.source_a.read_bytes() == original
+
+    # Deduplication preference is relevant only in names mode. Hiding it must
+    # never cause mapping rows to be removed when the user switches back.
+    _select_names_txt(page)
+    expect(page.locator('#annotation_export_unique input[type="checkbox"]')).to_be_checked()
+    expect(page.locator("#annotation_export_count")).to_contain_text(
+        re.compile(r"出力予定：\s*1,?390件"))
+    page.locator('#annotation_export_unique input[type="checkbox"]').uncheck()
+    page.locator("#annotation_export_content").click()
+    page.get_by_text("m/z・化合物名", exact=True).click()
+    expect(page.locator("#annotation_export_unique_section")).to_be_hidden()
+    expect(page.locator("#annotation_export_count")).to_contain_text(
+        re.compile(r"出力予定：\s*1,?397行"))
+    filename, data = _download(page, fixture.artifacts / "mapping_after_names.txt")
+    assert filename.endswith("_mz_compounds_all.txt")
+    assert list(csv.reader(io.StringIO(data.decode("utf-8")), delimiter="\t")) == rows
+    _select_names_txt(page)
+    expect(page.locator('#annotation_export_unique input[type="checkbox"]')).not_to_be_checked()
+
+
 def test_full_name_downloads_and_source_change(annotation_browser):
     from playwright.sync_api import expect
 
@@ -138,6 +216,7 @@ def test_full_name_downloads_and_source_change(annotation_browser):
     originals = {path: path.read_bytes() for path in (fixture.source_a, fixture.source_b)}
     page.get_by_role("button", name="Open dataset A", exact=True).click()
     expect(page.locator("#annotation_export_btn")).to_be_enabled()
+    _select_names_txt(page)
     expect(page.locator("#annotation_preview_body")).to_contain_text("先頭 200 件")
     expect(page.locator("#annotation_export_count")).to_contain_text(
         re.compile(r"出力予定：\s*1,?390件"))
@@ -220,6 +299,7 @@ def test_slow_previous_target_cannot_replace_current_export(annotation_browser, 
         page.get_by_role("button", name="Open dataset B", exact=True).click()
         expect(page.locator("#annotation_preview_body")).to_contain_text("Only dataset B")
         expect(page.locator("#annotation_export_btn")).to_be_enabled()
+        _select_names_txt(page)
         with page.expect_response(
                 lambda response: response.url.endswith("/_dash-update-component")
                 and response.request.post_data_json.get("output") == "annotation_preview_result.data"
@@ -265,6 +345,7 @@ def test_download_finishing_after_target_switch_is_not_delivered(annotation_brow
     try:
         page.get_by_role("button", name="Open dataset A", exact=True).click()
         expect(page.locator("#annotation_export_btn")).to_be_enabled()
+        _select_names_txt(page)
         page.locator("#annotation_export_btn").click()
         assert started.wait(timeout=10)
         page.locator("#annotation_preview_close_btn").click()
@@ -283,6 +364,55 @@ def test_download_finishing_after_target_switch_is_not_delivered(annotation_brow
         filename, data = _download(page, fixture.artifacts / "dataset_b_after_export_switch.txt")
         assert "Dataset_B" in filename
         assert data.decode("utf-8").splitlines() == fixture.names_b
+        assert downloads == [filename]
+    finally:
+        release.set()
+
+
+def test_pending_names_download_is_discarded_after_mapping_selected(annotation_browser, monkeypatch):
+    from playwright.sync_api import expect
+
+    fixture = annotation_browser
+    page = fixture.page
+    real_export = fixture.callbacks.export_compound_names
+    started = threading.Event()
+    release = threading.Event()
+
+    def delayed_names(sub, *args, **kwargs):
+        if kwargs.get("content") == "names":
+            started.set()
+            if not release.wait(timeout=15):
+                raise RuntimeError("browser did not release names export")
+        return real_export(sub, *args, **kwargs)
+
+    monkeypatch.setattr(fixture.callbacks, "export_compound_names", delayed_names)
+    downloads = []
+    page.on("download", lambda download: downloads.append(download.suggested_filename))
+    try:
+        page.get_by_role("button", name="Open dataset A", exact=True).click()
+        expect(page.locator("#annotation_export_btn")).to_be_enabled()
+        _select_names_txt(page)
+        page.locator("#annotation_export_btn").click()
+        assert started.wait(timeout=10)
+        page.locator("#annotation_export_content").click()
+        page.get_by_text("m/z・化合物名", exact=True).click()
+        expect(page.locator("#annotation_export_unique_section")).to_be_hidden()
+        with page.expect_response(
+                lambda response: response.url.endswith("/_dash-update-component")
+                and response.request.post_data_json.get("output") == "annotation_export_result.data",
+                timeout=15000) as delayed_response:
+            release.set()
+        delayed_response.value.finished()
+        expect(page.locator("#annotation_export_btn")).to_be_enabled()
+        page.evaluate("() => new Promise(resolve => requestAnimationFrame("
+                      "() => requestAnimationFrame(resolve)))")
+        assert downloads == []
+        filename, data = _download(page, fixture.artifacts / "mapping_after_pending_names.txt")
+        assert filename.endswith("_mz_compounds_all.txt")
+        rows = list(csv.reader(io.StringIO(data.decode("utf-8")), delimiter="\t"))
+        assert rows[0] == ["mz", "compound"]
+        assert [float(row[0]) for row in rows[1:]] == fixture.mz
+        assert [row[1] for row in rows[1:]] == fixture.mapping_names
         assert downloads == [filename]
     finally:
         release.set()

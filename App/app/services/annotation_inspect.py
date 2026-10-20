@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Optional
 
@@ -146,6 +147,35 @@ def compound_names(frame: pd.DataFrame, *, deduplicate: bool = False) -> list[st
         return []
     names = [value.strip() for value in frame["compound"] if _is_real_compound(value)]
     return list(dict.fromkeys(names)) if deduplicate else names
+
+
+def mz_compound_rows(frame: pd.DataFrame) -> list[tuple[str, str]]:
+    """全 feature の m/z と化合物名を検証する。精度・行順・重複を保持する。"""
+    for column in ("mz", "compound"):
+        if column not in frame.columns:
+            raise ValueError(f"参照元に {column} 列がないため、m/z と化合物名の一覧を出力できません。")
+        if list(frame.columns).count(column) != 1:
+            raise ValueError(f"参照元の {column} 列が重複しているため、一覧を出力できません。")
+    if frame.empty:
+        raise ValueError("参照元に feature がないため、m/z と化合物名の一覧を出力できません。")
+    rows = []
+    for row_number, (mass, name) in enumerate(zip(frame["mz"], frame["compound"]), start=1):
+        # 検証だけを Decimal で行い、出力文字列を float 化・丸めしない。
+        mass_text = str(mass).strip()
+        try:
+            if not re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?",
+                                mass_text):
+                raise ValueError
+            number = Decimal(mass_text)
+            if not number.is_finite() or number <= 0:
+                raise ValueError
+        except (InvalidOperation, ValueError):
+            raise ValueError(
+                f"参照元の {row_number} 行目の m/z が不正です。"
+                "すべての m/z が有限の正の数値であることを確認してください。"
+            ) from None
+        rows.append((mass_text, name.strip() if _is_real_compound(name) else ""))
+    return rows
 
 
 _PEAKLIST_SCAN_CAP = 50
@@ -316,6 +346,8 @@ def _empty_result() -> dict:
         "source_file": None,
         "source_kind": None,       # "sidecar" | "parquet_meta" | "desi_header"
         "export_source": None,     # クライアントは版の照合にのみ使用（パスではない）
+        "mz_export_available": False,
+        "mz_export_note": "m/z 対応一覧は、サイドカーのある TIMS/SCiLS データが対象です。",
         "note": "",
     }
 
@@ -326,6 +358,13 @@ def _summarize_sidecar(df: "pd.DataFrame", sidecar: Path, max_examples: int,
     result["source_file"] = str(sidecar)
     total = int(len(df))
     result["n_total"] = total
+    try:
+        mz_compound_rows(df)
+    except ValueError as exc:
+        result["mz_export_note"] = str(exc)
+    else:
+        result["mz_export_available"] = True
+        result["mz_export_note"] = ""
     if total == 0 or "compound" not in df.columns:
         result["status"] = "none"
         result["coverage_pct"] = 0.0 if total else None
@@ -431,7 +470,7 @@ def _inspect_annotations_uncached(sub: Optional[dict], max_examples: int = 200) 
             result["note"] = f"サイドカーの読取に失敗しました: {e}"
             return result
         result = _summarize_sidecar(df, sidecar, max_examples, result)
-        if result["n_annotated"]:
+        if result["n_annotated"] or result["mz_export_available"]:
             result["export_source"] = source
         return result
 

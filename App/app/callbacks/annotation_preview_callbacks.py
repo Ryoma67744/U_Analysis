@@ -119,7 +119,10 @@ def populate_annotation_preview(target):
     """読取結果に対象を添付し、遅れて到着した別対象の結果を表示させない。"""
     if not target:
         return no_update
-    result = {"target": target, "source": None, "n_annotated": 0, "n_unique": 0, "note": ""}
+    result = {
+        "target": target, "source": None, "n_total": 0, "n_annotated": 0,
+        "n_unique": 0, "mz_export_available": False, "mz_export_note": "", "note": "",
+    }
     try:
         sub = get_sub_project(target.get("project_id", ""), target.get("sub_id"))
         if not sub:
@@ -132,6 +135,9 @@ def populate_annotation_preview(target):
             body=_render(info), source=info.get("export_source"),
             n_annotated=int(info.get("n_annotated") or 0),
             n_unique=int(info.get("n_unique") or 0),
+            n_total=int(info.get("n_total") or 0),
+            mz_export_available=bool(info.get("mz_export_available")),
+            mz_export_note=info.get("mz_export_note") or "",
         )
         if not result["source"]:
             if info.get("source_kind") == "desi_header":
@@ -187,16 +193,20 @@ clientside_callback(
 # 出力処理の完了待ちが、新しい対象のプレビュー描画を止めないように分離する。
 clientside_callback(
     """
-    function(target, ready, unique, isOpen, busy) {
+    function(target, ready, unique, isOpen, busy, content) {
         if (!isOpen || !target || !ready || !ready.target ||
             !['project_id', 'sub_id', 'nonce'].every(k => target[k] === ready.target[k])) {
             return ['', true];
         }
-        const count = (unique || []).includes('unique') ? ready.n_unique : ready.n_annotated;
-        const available = !!ready.source && count > 0;
+        const mapping = content === 'mz_compound';
+        const count = mapping ? ready.n_total :
+            ((unique || []).includes('unique') ? ready.n_unique : ready.n_annotated);
+        const available = !!ready.source && count > 0 &&
+            (mapping ? ready.mz_export_available : content === 'names');
         const summary = available
             ? '化合物名あり：' + Number(ready.n_annotated).toLocaleString('ja-JP') +
-              ' feature ／ 出力予定：' + Number(count).toLocaleString('ja-JP') + '件'
+              ' feature ／ 出力予定：' + Number(count).toLocaleString('ja-JP') +
+              (mapping ? '行（全feature）' : '件')
             : '';
         return [summary, !available || !!busy];
     }
@@ -208,17 +218,25 @@ clientside_callback(
     Input("annotation_export_unique", "value"),
     Input("annotation_preview_modal", "is_open"),
     Input("annotation_export_busy", "data"),
+    Input("annotation_export_content", "value"),
 )
 
 
 clientside_callback(
     """
-    function(target, ready, exported, isOpen, busy) {
+    function(target, ready, exported, isOpen, busy, content) {
         const matches = value => target && value && value.target &&
             ['project_id', 'sub_id', 'nonce'].every(k => target[k] === value.target[k]);
         if (!isOpen || !matches(ready)) return '';
         if (busy) return 'ファイルを準備中…';
-        return matches(exported) ? exported.status : (ready.note || '');
+        if (content === 'mz_compound' && !ready.mz_export_available) {
+            return ready.mz_export_note || ready.note || 'm/zの対応表を出力できません。';
+        }
+        if (content === 'names' && !ready.n_annotated) {
+            return ready.note || '出力できる化合物名がありません。';
+        }
+        return matches(exported) && exported.content === content
+            ? exported.status : (ready.note || '');
     }
     """,
     Output("annotation_export_status", "children"),
@@ -227,6 +245,33 @@ clientside_callback(
     Input("annotation_export_result", "data"),
     Input("annotation_preview_modal", "is_open"),
     Input("annotation_export_busy", "data"),
+    Input("annotation_export_content", "value"),
+)
+
+
+clientside_callback(
+    """
+    function(content) {
+        const mapping = content === 'mz_compound';
+        return [
+            mapping
+                ? [{label: 'CSV（m/z・化合物名）', value: 'csv'},
+                   {label: 'TXT（タブ区切り）', value: 'txt'}]
+                : [{label: 'TXT（1行に1化合物名）', value: 'txt'},
+                   {label: 'CSV（化合物名1列）', value: 'csv'}],
+            mapping ? {display: 'none'} : {},
+            mapping ? 'm/z・化合物名をダウンロード' : '化合物名リストをダウンロード',
+            mapping
+                ? '1 featureにつき1行。化合物名の重複を残し、名称のない行は空欄で出力します。'
+                : '化合物名だけを出力します。m/zとの対応が必要な場合は「m/z・化合物名」を選択してください。'
+        ];
+    }
+    """,
+    Output("annotation_export_format", "options"),
+    Output("annotation_export_unique_section", "style"),
+    Output("annotation_export_btn", "children"),
+    Output("annotation_export_hint", "children"),
+    Input("annotation_export_content", "value"),
 )
 
 
@@ -246,14 +291,15 @@ def _same_target(target, ready):
     State("annotation_preview_ready", "data"),
     State("annotation_export_format", "value"),
     State("annotation_export_unique", "value"),
+    State("annotation_export_content", "value"),
     prevent_initial_call=True,
     running=[(Output("annotation_export_busy", "data"), True, False)],
 )
-def download_annotation_names(n_clicks, target, ready, fmt, unique):
-    """クリック時の対象を固定し、表示と同じ参照元の全名称を返す。"""
+def download_annotation_names(n_clicks, target, ready, fmt, unique, content="names"):
+    """クリック時の対象を固定し、同じ参照元の対応表または全名称を返す。"""
     if not n_clicks:
         raise PreventUpdate
-    result = {"target": target, "status": "", "download": None}
+    result = {"target": target, "content": content, "status": "", "download": None}
     if not _same_target(target, ready) or not ready.get("source"):
         result["status"] = "化合物名の読み込み完了を待ち、必要なら画面を閉じて再度開いてください。"
         return result
@@ -264,12 +310,16 @@ def download_annotation_names(n_clicks, target, ready, fmt, unique):
         if not isinstance(unique, list) or any(value != "unique" for value in unique):
             raise AnnotationExportError("重複の設定を選び直してください。")
         exported = export_compound_names(
-            sub, ready["source"], fmt=fmt, deduplicate="unique" in unique,
+            sub, ready["source"], fmt=fmt,
+            deduplicate=content == "names" and "unique" in unique, content=content,
         )
         result["download"] = dcc.send_bytes(
             exported.content, exported.filename, type=exported.mime_type,
         )
-        result["status"] = f"{exported.count:,}件の化合物名を出力しました。"
+        result["status"] = (
+            f"{exported.count:,}行のm/z・化合物名を出力しました。"
+            if content == "mz_compound" else f"{exported.count:,}件の化合物名を出力しました。"
+        )
     except AnnotationExportError as exc:
         result["status"] = str(exc)
     except Exception:
@@ -280,8 +330,9 @@ def download_annotation_names(n_clicks, target, ready, fmt, unique):
 
 clientside_callback(
     """
-    function(result, target, isOpen) {
+    function(result, target, isOpen, content) {
         if (!isOpen || !result || !result.download || !target || !result.target ||
+            result.content !== content ||
             !['project_id', 'sub_id', 'nonce'].every(k => target[k] === result.target[k])) {
             return window.dash_clientside.no_update;
         }
@@ -292,6 +343,7 @@ clientside_callback(
     Input("annotation_export_result", "data"),
     State("annotation_preview_target", "data"),
     State("annotation_preview_modal", "is_open"),
+    State("annotation_export_content", "value"),
     prevent_initial_call=True,
 )
 

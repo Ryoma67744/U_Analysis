@@ -38,21 +38,36 @@ def create_annotation_preview_modal():
             ),
             dbc.ModalFooter([
                 html.Div([
-                    html.Label("ファイル形式", htmlFor="annotation_export_format",
+                    html.Label("出力内容", htmlFor="annotation_export_content",
                                className="small me-2"),
+                    dcc.Dropdown(
+                        id="annotation_export_content",
+                        options=[
+                            {"label": "m/z・化合物名", "value": "mz_compound"},
+                            {"label": "化合物名のみ", "value": "names"},
+                        ],
+                        value="mz_compound", clearable=False, searchable=False,
+                        style={"minWidth": "230px"},
+                    ),
+                    html.Label("ファイル形式", htmlFor="annotation_export_format",
+                               className="small me-2 mt-2"),
                     dcc.Dropdown(
                         id="annotation_export_format",
                         options=[
-                            {"label": "TXT（1行に1化合物名）", "value": "txt"},
-                            {"label": "CSV（化合物名1列）", "value": "csv"},
+                            {"label": "CSV（m/z・化合物名）", "value": "csv"},
+                            {"label": "TXT（タブ区切り）", "value": "txt"},
                         ],
-                        value="txt", clearable=False, searchable=False,
+                        value="csv", clearable=False, searchable=False,
                         style={"minWidth": "230px"},
                     ),
-                    dcc.Checklist(
+                    html.Div(dcc.Checklist(
                         id="annotation_export_unique",
                         options=[{"label": " 同じ化合物名の重複を除く", "value": "unique"}],
                         value=["unique"], className="small mt-2",
+                    ), id="annotation_export_unique_section", style={"display": "none"}),
+                    html.Div(
+                        "1 featureにつき1行。化合物名の重複を残し、名称のない行は空欄で出力します。",
+                        id="annotation_export_hint", className="small text-muted mt-2",
                     ),
                     html.Div(id="annotation_export_count", className="small mt-2",
                              **{"aria-live": "polite"}),
@@ -60,7 +75,7 @@ def create_annotation_preview_modal():
                              role="status", **{"aria-live": "polite"}),
                 ], className="me-auto"),
                 dbc.Button(
-                    "化合物名リストをダウンロード", id="annotation_export_btn",
+                    "m/z・化合物名をダウンロード", id="annotation_export_btn",
                     color="primary", size="sm", disabled=True,
                 ),
                 dbc.Button("閉じる", id="annotation_preview_close_btn",

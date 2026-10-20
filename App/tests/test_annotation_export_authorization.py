@@ -1,7 +1,9 @@
 """化合物名の実ダウンロードを Flask/Dash 経由で認可し、応答内容まで確認する。"""
 
 import base64
+import csv
 from copy import deepcopy
+import io
 
 import dash
 from dash import Input, Output, State, html
@@ -10,6 +12,9 @@ import pandas as pd
 import pytest
 
 from app.services import auth_middleware as auth
+
+
+_FIRST_MZ = 100.12345678901234
 
 
 @pytest.fixture
@@ -36,7 +41,7 @@ def export_client(tmp_path, monkeypatch):
     ]
     pd.DataFrame({
         "compound": names + [" β-Alanine ", None, "", "No DB hit", "123.45"],
-        "mz": range(len(names) + 5),
+        "mz": [_FIRST_MZ + index for index in range(len(names) + 5)],
     }).to_parquet(source / "fixture_feature_annotations.parquet", index=False)
     sub = {
         "id": "s1", "name": "登録データ", "ms_instrument": "TIMS",
@@ -75,6 +80,7 @@ def export_client(tmp_path, monkeypatch):
         State("annotation_preview_ready", "data"),
         State("annotation_export_format", "value"),
         State("annotation_export_unique", "value"),
+        State("annotation_export_content", "value"),
         prevent_initial_call=True,
     )(annotations.download_annotation_names)
     auth.register(server, dash_app=application)
@@ -90,7 +96,9 @@ def export_client(tmp_path, monkeypatch):
         "inputs": [dict(declaration["inputs"][0], value=1)],
         "state": [
             dict(spec, value=value)
-            for spec, value in zip(declaration["state"], [target, ready, "txt", ["unique"]])
+            for spec, value in zip(
+                declaration["state"], [target, ready, "txt", ["unique"], "names"],
+            )
         ],
         "changedPropIds": ["annotation_export_btn.n_clicks"],
     }
@@ -98,8 +106,10 @@ def export_client(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("tier,version", [(None, None), ("B", 7), ("A", 6)])
-def test_export_denies_unauthenticated_tier_b_and_expired_sessions(export_client, tier, version):
+@pytest.mark.parametrize("content", ["names", "mz_compound"])
+def test_export_denies_unauthenticated_tier_b_and_expired_sessions(export_client, tier, version, content):
     client, body, calls, _ = export_client
+    body["state"][-1]["value"] = content
     if tier is not None:
         with client.session_transaction() as session:
             session.update(access_tier=tier, pw_version=version)
@@ -113,8 +123,10 @@ def test_export_denies_unauthenticated_tier_b_and_expired_sessions(export_client
 
 @pytest.mark.parametrize("kind,path", [("persistent", "/view/valid-token"), ("expiring", "/share/valid-token")])
 @pytest.mark.parametrize("tier", [None, "B"])
-def test_export_denies_valid_shared_read_scope(export_client, kind, path, tier):
+@pytest.mark.parametrize("content", ["names", "mz_compound"])
+def test_export_denies_valid_shared_read_scope(export_client, kind, path, tier, content):
     client, body, calls, _ = export_client
+    body["state"][-1]["value"] = content
     with client.session_transaction() as session:
         session["share_scope"] = {"kind": kind, "token": "valid-token"}
         if tier is not None:
@@ -149,4 +161,40 @@ def test_tier_a_gets_actual_all_names_and_expiry_stops_next_download(export_clie
     with client.session_transaction() as session:
         session["pw_version"] = 6
     assert client.post("/_dash-update-component", json=body).status_code == 403
+    assert calls == [("p1", "s1")]
+
+
+@pytest.mark.parametrize("fmt,delimiter", [("csv", ","), ("txt", "\t")])
+def test_tier_a_gets_every_feature_in_mapping_without_precision_loss(export_client, fmt, delimiter):
+    client, body, calls, names = export_client
+    with client.session_transaction() as session:
+        session.update(access_tier="A", pw_version=7)
+    body["state"][2]["value"] = fmt
+    body["state"][-1]["value"] = "mz_compound"
+    # 化合物名一覧で重複除去を選んだまま切り替えても、対応表の行は削らない。
+    assert body["state"][3]["value"] == ["unique"]
+
+    response = client.post("/_dash-update-component", json=body)
+
+    assert response.status_code == 200
+    result = response.get_json()["response"]["annotation_export_result"]["data"]
+    download = result["download"]
+    assert download is not None, result
+    assert download["base64"] is True
+    assert download["type"] == (
+        "text/csv;charset=utf-8" if fmt == "csv" else "text/plain;charset=utf-8"
+    )
+    assert download["filename"] == f"登録データ_mz_compounds_all.{fmt}"
+    data = base64.b64decode(download["content"])
+    assert data.startswith(b"\xef\xbb\xbf") is (fmt == "csv")
+    rows = list(csv.reader(io.StringIO(data.decode("utf-8-sig"), newline=""), delimiter=delimiter))
+    assert rows[0] == ["mz", "compound"]
+    expected_names = names + ["β-Alanine", "", "", "", ""]
+    assert len(rows) == len(expected_names) + 1
+    assert all(len(row) == 2 for row in rows[1:])
+    assert [row[1] for row in rows[1:]] == expected_names
+    expected_mz = [_FIRST_MZ + index for index in range(len(expected_names))]
+    assert [float(row[0]) for row in rows[1:]] == expected_mz
+    assert rows[1][0] != f"{_FIRST_MZ:.4f}", "画面表示の小数4桁を再利用しない"
+    assert str(len(expected_names)) in result["status"]
     assert calls == [("p1", "s1")]

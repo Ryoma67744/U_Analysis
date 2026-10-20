@@ -1,4 +1,4 @@
-"""登録済みサイドカーの化合物名だけを出力する（Dash 非依存）。"""
+"""登録済みサイドカーの化合物名リスト・m/z 対応一覧を出力する（Dash 非依存）。"""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from app.services.annotation_inspect import (
     annotation_sidecar_identity,
     compound_names,
     load_annotation_sidecar,
+    mz_compound_rows,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ class CompoundNameExport:
     mime_type: str
 
 
-def _filename(sub: dict, fmt: str, deduplicate: bool) -> str:
+def _filename(sub: dict, fmt: str, deduplicate: bool, content: str = "names") -> str:
     name = str(sub.get("name") or sub.get("id") or "subproject")
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', "_", name).strip(" .") or "subproject"
     # Windows は最初のドットより前を予約名と判定する（例: CON.txt）。
@@ -37,21 +38,25 @@ def _filename(sub: dict, fmt: str, deduplicate: bool) -> str:
                     name.split(".", 1)[0].rstrip(), flags=re.IGNORECASE):
         name = "_" + name
     mode = "unique" if deduplicate else "all"
-    suffix = f"_compound_names_{mode}.{fmt}"
+    suffix = (f"_mz_compounds_all.{fmt}" if content == "mz_compound"
+              else f"_compound_names_{mode}.{fmt}")
     # 文字数ではなく UTF-8 バイト数で制限し、日本語名も一般的な255-byte上限に収める。
     budget = 200 - len(suffix.encode("utf-8"))
     name = name.encode("utf-8")[:budget].decode("utf-8", errors="ignore").rstrip(" .")
     return f"{name or 'subproject'}{suffix}"
 
 
-def export_compound_names(sub, expected_source, fmt="txt", deduplicate=True) -> CompoundNameExport:
-    """プレビューと同じ参照元・版の全有効名を出力する。
+def export_compound_names(sub, expected_source, fmt="txt", deduplicate=True,
+                          content="names") -> CompoundNameExport:
+    """プレビューと同じ参照元・版から化合物名または全 feature の対応一覧を出力する。
 
     expected_source は比較にのみ用い、そこからファイルパスを取得しない。
     データの変化を検出した場合は、別のファイルへ自動的に切り替えない。
     """
     if fmt not in ("txt", "csv"):
         raise AnnotationExportError("出力形式は TXT または CSV を選択してください。")
+    if content not in ("names", "mz_compound"):
+        raise AnnotationExportError("出力内容は「化合物名のみ」または「m/z と化合物名」を選択してください。")
     if not isinstance(deduplicate, bool):
         raise AnnotationExportError("重複を除く設定を確認してください。")
     if not isinstance(sub, dict) or not isinstance(expected_source, dict) or not expected_source:
@@ -67,21 +72,34 @@ def export_compound_names(sub, expected_source, fmt="txt", deduplicate=True) -> 
         frame, _path, source = load_annotation_sidecar(sub)
         if source != expected_source:
             raise AnnotationExportError("参照元が更新されました。画面を閉じて再度開いてください。")
-        names = compound_names(frame, deduplicate=deduplicate)
-        if not names:
-            raise AnnotationExportError("出力できる化合物名がありません。")
-        if fmt == "txt":
+        if content == "mz_compound":
+            try:
+                rows = mz_compound_rows(frame)
+            except ValueError as exc:
+                raise AnnotationExportError(str(exc)) from exc
+            buffer = io.StringIO(newline="")
+            writer = csv.writer(buffer, delimiter="," if fmt == "csv" else "\t",
+                                lineterminator="\r\n")
+            writer.writerow(["mz", "compound"])
+            writer.writerows(rows)
+            payload = buffer.getvalue().encode("utf-8-sig" if fmt == "csv" else "utf-8")
+            count = len(rows)
+        else:
+            names = compound_names(frame, deduplicate=deduplicate)
+            if not names:
+                raise AnnotationExportError("出力できる化合物名がありません。")
+            count = len(names)
+        if content == "names" and fmt == "txt":
             if any("\r" in name or "\n" in name for name in names):
                 raise AnnotationExportError("改行を含む化合物名があります。CSV 形式を選択してください。")
-            content = ("\n".join(names) + "\n").encode("utf-8")
-            mime_type = "text/plain;charset=utf-8"
-        else:
+            payload = ("\n".join(names) + "\n").encode("utf-8")
+        elif content == "names":
             buffer = io.StringIO(newline="")
             writer = csv.writer(buffer, lineterminator="\r\n")
             writer.writerow(["compound"])
             writer.writerows((name,) for name in names)
-            content = buffer.getvalue().encode("utf-8-sig")
-            mime_type = "text/csv;charset=utf-8"
+            payload = buffer.getvalue().encode("utf-8-sig")
+        mime_type = "text/csv;charset=utf-8" if fmt == "csv" else "text/plain;charset=utf-8"
         if annotation_sidecar_identity(sub) != source:
             raise AnnotationExportError("参照元が更新されました。画面を閉じて再度開いてください。")
     except AnnotationExportError:
@@ -91,4 +109,4 @@ def export_compound_names(sub, expected_source, fmt="txt", deduplicate=True) -> 
         raise AnnotationExportError(
             "化合物名一覧を読み取れませんでした。参照元を確認し、画面を閉じて再度開いてください。"
         ) from exc
-    return CompoundNameExport(content, _filename(sub, fmt, deduplicate), len(names), mime_type)
+    return CompoundNameExport(payload, _filename(sub, fmt, deduplicate, content), count, mime_type)
