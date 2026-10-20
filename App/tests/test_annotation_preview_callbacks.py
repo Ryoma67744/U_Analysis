@@ -108,10 +108,11 @@ def test_download_uses_server_subproject_and_selected_options(monkeypatch, ready
     def lookup(project_id, sub_id):
         assert (project_id, sub_id) == ("p", "s")
         return sub
-    def export(actual_sub, source, fmt, deduplicate):
+    def export(actual_sub, source, fmt, deduplicate, content):
         assert actual_sub is sub
         assert source == ready["source"]
         assert fmt == "csv" and deduplicate is expected
+        assert content == "names"
         return SimpleNamespace(content=b"\xef\xbb\xbfcompound\r\nGSH\r\n",
                                filename="test.csv", count=1, mime_type="text/csv")
     monkeypatch.setattr(apc, "get_sub_project", lookup)
@@ -121,6 +122,55 @@ def test_download_uses_server_subproject_and_selected_options(monkeypatch, ready
     assert base64.b64decode(out["download"]["content"]).startswith(b"\xef\xbb\xbfcompound")
     assert out["download"]["filename"] == "test.csv"
     assert "1件" in out["status"]
+
+
+def test_mapping_disables_name_dedup_and_reports_feature_rows(monkeypatch, ready_target):
+    target, ready = ready_target
+    sub = {"id": "s", "name": "mapping"}
+    monkeypatch.setattr(apc, "get_sub_project", lambda *_: sub)
+    def export(actual_sub, source, fmt, deduplicate, content):
+        assert actual_sub is sub and source == ready["source"]
+        assert content == "mz_compound" and fmt == "csv"
+        assert deduplicate is False
+        return SimpleNamespace(
+            content=b"\xef\xbb\xbfmz,compound\r\n100.123456789,GSH\r\n101.123456789,GSH\r\n",
+            filename="mapping_mz_compounds_all.csv", count=2, mime_type="text/csv",
+        )
+    monkeypatch.setattr(apc, "export_compound_names", export)
+    out = apc.download_annotation_names(1, target, ready, "csv", ["unique"], "mz_compound")
+    assert out["content"] == "mz_compound"
+    assert "2行のm/z" in out["status"]
+    assert base64.b64decode(out["download"]["content"]).startswith(b"\xef\xbb\xbfmz,compound")
+
+
+def test_preview_exposes_mapping_counts_without_names(monkeypatch):
+    target = {"project_id": "p", "sub_id": "s", "nonce": "open"}
+    monkeypatch.setattr(apc, "get_sub_project", lambda *_: {"id": "s"})
+    monkeypatch.setattr(apc, "inspect_annotations", lambda sub: {
+        "status": "none", "source_kind": "sidecar", "n_total": 3,
+        "n_annotated": 0, "n_unique": 0, "export_source": {"digest": "v1"},
+        "mz_export_available": True, "mz_export_note": "",
+    })
+    out = apc.populate_annotation_preview(target)
+    assert out["source"] == {"digest": "v1"}
+    assert out["n_total"] == 3 and out["n_annotated"] == 0
+    assert out["mz_export_available"] is True
+
+
+def test_default_layout_offers_mz_compound_csv_and_hides_name_dedup():
+    from app.layouts.annotation_preview_modal import create_annotation_preview_modal
+    def components(node):
+        if isinstance(node, (list, tuple)):
+            for child in node:
+                yield from components(child)
+        elif hasattr(node, "to_plotly_json"):
+            yield node
+            yield from components(getattr(node, "children", None))
+    fields = {node.id: node for node in components(create_annotation_preview_modal())
+              if getattr(node, "id", None)}
+    assert fields["annotation_export_content"].value == "mz_compound"
+    assert fields["annotation_export_format"].value == "csv"
+    assert fields["annotation_export_unique_section"].style["display"] == "none"
 
 
 def test_download_missing_subproject_does_not_create_empty_file(monkeypatch, ready_target):

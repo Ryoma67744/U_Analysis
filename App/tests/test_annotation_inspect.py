@@ -93,7 +93,8 @@ class TestSidecar:
         assert r["status"] == "none"
         assert r["n_annotated"] == 0
         assert r["n_unique"] == 0
-        assert r["export_source"] is None
+        assert r["mz_export_available"] is True
+        assert r["export_source"] is not None
 
 
 # ---- フッタ b"peak_list" フォールバック ----
