@@ -35,6 +35,18 @@ def _write_sidecar(folder, base="SAMPLE"):
 # ---- TIMS/SCiLS サイドカー ----
 
 class TestSidecar:
+    def test_export_source_and_unique_count_include_all_rows(self, tmp_path):
+        names = [" Glucose ", "Glucose", "glucose"] + [f"Compound {i}" for i in range(240)]
+        pd.DataFrame({"compound": names}).to_parquet(
+            tmp_path / "SAMPLE_feature_annotations.parquet", index=False)
+        result = inspect_annotations({"data_folder": str(tmp_path), "ms_instrument": "TIMS"})
+        assert len(result["examples"]) == 200
+        assert result["n_annotated"] == 243
+        assert result["n_unique"] == 242
+        assert result["export_source"]["kind"] == "sidecar"
+        assert "path" not in result["export_source"]
+        assert isinstance(result["export_source"]["version"][-1], str)
+
     def test_annotated_status_and_coverage(self, tmp_path):
         _write_sidecar(tmp_path)
         r = inspect_annotations({"data_folder": str(tmp_path), "ms_instrument": "TIMS"})
@@ -80,6 +92,8 @@ class TestSidecar:
         r = inspect_annotations({"data_folder": str(tmp_path), "ms_instrument": "TIMS"})
         assert r["status"] == "none"
         assert r["n_annotated"] == 0
+        assert r["n_unique"] == 0
+        assert r["export_source"] is None
 
 
 # ---- フッタ b"peak_list" フォールバック ----
@@ -100,6 +114,7 @@ class TestParquetMetaFallback:
         assert r["status"] == "annotated"
         assert r["source_kind"] == "parquet_meta"
         assert r["source_file"] == "peaks.csv"
+        assert r["export_source"] is None
 
     def test_no_peaklist_meta_is_none(self, tmp_path):
         self._write_main_parquet(tmp_path, with_peaklist=False)
@@ -138,6 +153,7 @@ class TestDesi:
         r = inspect_annotations({"data_folder": str(tmp_path), "ms_instrument": "DESI"})
         assert r["status"] == "annotated"
         assert r["source_kind"] == "desi_header"
+        assert r["export_source"] is None
         names = [e["compound"] for e in r["examples"]]
         assert "Acetylcholine" in names and "Dopamine" in names
         assert has_compound_names({"data_folder": str(tmp_path), "ms_instrument": "DESI"}) is True
@@ -175,6 +191,36 @@ class TestEdge:
 # ---- 性能: xlsx 高速読取 & キャッシュ（ver44.1） ----
 
 class TestPerf:
+    def test_cache_invalidates_when_sidecar_is_rewritten_with_preserved_mtime(self, tmp_path):
+        import os
+        from app.services import annotation_inspect as ai
+        nested = tmp_path / "SAMPLE_Transform"
+        nested.mkdir()
+        sidecar = _write_sidecar(nested)
+        sub = {"data_folder": str(tmp_path), "ms_instrument": "TIMS"}
+        first = ai.inspect_annotations(sub)
+        file_stat, parent_stat, nested_stat = sidecar.stat(), tmp_path.stat(), nested.stat()
+        frame = pd.read_parquet(sidecar)
+        frame.loc[0, "compound"] = "Changed compound"
+        frame.to_parquet(sidecar, index=False)
+        os.utime(sidecar, ns=(file_stat.st_atime_ns, file_stat.st_mtime_ns))
+        os.utime(nested, ns=(nested_stat.st_atime_ns, nested_stat.st_mtime_ns))
+        os.utime(tmp_path, ns=(parent_stat.st_atime_ns, parent_stat.st_mtime_ns))
+        second = ai.inspect_annotations(sub)
+        assert second["examples"][0]["compound"] == "Changed compound"
+        assert second["export_source"]["sha256"] != first["export_source"]["sha256"]
+
+    def test_cached_result_cannot_be_changed_by_caller(self, tmp_path):
+        _write_sidecar(tmp_path)
+        sub = {"data_folder": str(tmp_path), "ms_instrument": "TIMS"}
+        first = inspect_annotations(sub)
+        original_source = dict(first["export_source"])
+        first["examples"][0]["compound"] = "Wrong name"
+        first["export_source"]["sha256"] = "wrong"
+        second = inspect_annotations(sub)
+        assert second["examples"][0]["compound"] == "PI 38:4"
+        assert second["export_source"] == original_source
+
     def test_xlsx_header_fast_matches_pandas(self, tmp_path):
         # 高速読取（openpyxl read_only 先頭1行）が pandas の read_excel と同じヘッダを返す
         from app.services.annotation_inspect import _xlsx_header_fast

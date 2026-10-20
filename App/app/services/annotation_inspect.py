@@ -12,7 +12,12 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import io
+import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -82,6 +87,65 @@ def find_annotation_sidecar(dirs) -> Optional[Path]:
         if sub_hits:
             return sub_hits[0]
     return None
+
+
+def _file_version(stat) -> tuple:
+    """変更・差し替えを検出する。ナノ秒等はブラウザで丸められない文字列にする。"""
+    return tuple(str(getattr(stat, field)) for field in (
+        "st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns",
+    ))
+
+
+def _read_sidecar_bytes(sidecar: Path) -> tuple[bytes, dict]:
+    """小さなサイドカーを一貫したバイト列として読み、その版を返す。"""
+    resolved = sidecar.resolve(strict=True)
+    before = _file_version(resolved.stat())
+    with resolved.open("rb") as stream:
+        opened = _file_version(os.fstat(stream.fileno()))
+        content = stream.read()
+        finished = _file_version(os.fstat(stream.fileno()))
+    after = _file_version(resolved.stat())
+    # Windows/Python 3.12 では stat と fstat の ctime がそれぞれ作成時刻/
+    # 変更時刻になる場合があるため、ctime は同じ API の前後だけで比較する。
+    if (before[:4] != opened[:4] or opened != finished or before != after
+            or sidecar.resolve(strict=True) != resolved
+            or len(content) != int(after[2])):
+        raise ValueError("参照元が更新されました。画面を閉じて再度開いてください。")
+    return content, {
+        "kind": "sidecar",
+        "path_id": hashlib.sha256(str(resolved).encode("utf-8")).hexdigest(),
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "version": list(after),
+    }
+
+
+def annotation_sidecar_identity(sub: Optional[dict]) -> Optional[dict]:
+    """登録情報から現在の参照元を解決する。クライアントのパスは受け取らない。"""
+    if _is_desi(sub):
+        return None
+    sidecar = find_annotation_sidecar(_candidate_dirs(sub))
+    return _read_sidecar_bytes(sidecar)[1] if sidecar is not None else None
+
+
+def load_annotation_sidecar(sub: Optional[dict]) -> tuple[pd.DataFrame, Path, dict]:
+    """プレビューと出力で共用する全件読取。強度データやDESI変換は実行しない。"""
+    sidecar = None if _is_desi(sub) else find_annotation_sidecar(_candidate_dirs(sub))
+    if sidecar is None:
+        raise ValueError("化合物名一覧の参照元がありません。画面を閉じて再度開いてください。")
+    content, identity = _read_sidecar_bytes(sidecar)
+    frame = pd.read_parquet(io.BytesIO(content))
+    # 読取・解釈中の更新、削除、探索順の変化を検出する。
+    if annotation_sidecar_identity(sub) != identity:
+        raise ValueError("参照元が更新されました。画面を閉じて再度開いてください。")
+    return frame, sidecar, identity
+
+
+def compound_names(frame: pd.DataFrame, *, deduplicate: bool = False) -> list[str]:
+    """表示と同じ有効名を、前後空白だけ除いて元の順序で返す。"""
+    if "compound" not in frame.columns:
+        return []
+    names = [value.strip() for value in frame["compound"] if _is_real_compound(value)]
+    return list(dict.fromkeys(names)) if deduplicate else names
 
 
 _PEAKLIST_SCAN_CAP = 50
@@ -245,11 +309,13 @@ def _empty_result() -> dict:
     return {
         "status": "none",          # "annotated" | "none" | "unknown"
         "n_annotated": 0,
+        "n_unique": 0,
         "n_total": 0,
         "coverage_pct": None,
         "examples": [],            # [{mz, display_name, compound, adduct, formula}]
         "source_file": None,
         "source_kind": None,       # "sidecar" | "parquet_meta" | "desi_header"
+        "export_source": None,     # クライアントは版の照合にのみ使用（パスではない）
         "note": "",
     }
 
@@ -268,6 +334,7 @@ def _summarize_sidecar(df: "pd.DataFrame", sidecar: Path, max_examples: int,
     mask = df["compound"].apply(_is_real_compound)
     n_ann = int(mask.sum())
     result["n_annotated"] = n_ann
+    result["n_unique"] = len(compound_names(df, deduplicate=True))
     result["coverage_pct"] = round(100.0 * n_ann / total, 1) if total else None
     result["status"] = "annotated" if n_ann > 0 else "none"
     cols = [c for c in _EXAMPLE_COLS if c in df.columns]
@@ -288,6 +355,7 @@ def _inspect_desi(dirs, max_examples: int, result: dict) -> dict:
     result["source_file"] = src
     result["n_total"] = len(toks)
     result["n_annotated"] = len(toks)
+    result["n_unique"] = len(dict.fromkeys(t.strip() for t in toks))
     result["coverage_pct"] = 100.0
     result["status"] = "annotated"
     result["examples"] = [{"compound": t} for t in toks[:max_examples]]
@@ -301,10 +369,8 @@ _INSPECT_CACHE: dict = {}
 _INSPECT_CACHE_MAX = 256
 
 
-def _cache_signature(sub: Optional[dict], max_examples: int) -> str:
-    """候補フォルダのパス＋mtime を元にした軽い署名。フォルダ内のファイル増減
-    （サイドカー生成/削除・変換のやり直し等）で mtime が変わりキャッシュが無効化される。
-    """
+def _cache_signature(sub: Optional[dict], max_examples: int) -> tuple:
+    """フォルダとサイドカー内容の署名。上書きや直下サブフォルダの変更も検出する。"""
     parts = [
         str((sub or {}).get("id", "")),
         str((sub or {}).get("ms_instrument", "")),
@@ -315,7 +381,12 @@ def _cache_signature(sub: Optional[dict], max_examples: int) -> str:
             parts.append(f"{d}:{d.stat().st_mtime_ns}")
         except OSError:
             parts.append(f"{d}:NA")
-    return "|".join(parts)
+    try:
+        source = annotation_sidecar_identity(sub)
+        source_key = json.dumps(source, sort_keys=True) if source else None
+    except (OSError, ValueError):
+        source_key = "unreadable"
+    return "|".join(parts), source_key
 
 
 def inspect_annotations(sub: Optional[dict], max_examples: int = 200) -> dict:
@@ -323,11 +394,18 @@ def inspect_annotations(sub: Optional[dict], max_examples: int = 200) -> dict:
     sig = _cache_signature(sub, max_examples)
     cached = _INSPECT_CACHE.get(sig)
     if cached is not None:
-        return dict(cached)  # 呼び出し側の変更から守るため浅いコピーを返す
+        return copy.deepcopy(cached)
     result = _inspect_annotations_uncached(sub, max_examples)
+    # 署名取得後に参照元が変わった結果や、一時的な読取失敗はキャッシュしない。
+    if result["status"] == "unknown":
+        return result
+    if result["source_kind"] == "sidecar":
+        source = result["export_source"]
+        if not source or json.dumps(source, sort_keys=True) != sig[1]:
+            return result
     if len(_INSPECT_CACHE) >= _INSPECT_CACHE_MAX:
         _INSPECT_CACHE.clear()  # 上限超過時は単純に一掃（LRU は不要）
-    _INSPECT_CACHE[sig] = dict(result)
+    _INSPECT_CACHE[sig] = copy.deepcopy(result)
     return result
 
 
@@ -346,13 +424,16 @@ def _inspect_annotations_uncached(sub: Optional[dict], max_examples: int = 200) 
     sidecar = find_annotation_sidecar(dirs)
     if sidecar is not None:
         try:
-            df = pd.read_parquet(sidecar)
+            df, sidecar, source = load_annotation_sidecar(sub)
         except Exception as e:
             result["status"] = "unknown"
             result["source_file"] = str(sidecar)
             result["note"] = f"サイドカーの読取に失敗しました: {e}"
             return result
-        return _summarize_sidecar(df, sidecar, max_examples, result)
+        result = _summarize_sidecar(df, sidecar, max_examples, result)
+        if result["n_annotated"]:
+            result["export_source"] = source
+        return result
 
     # フッタ b"peak_list" フォールバック（サイドカー欠如時）
     pl = _main_parquet_peaklist(dirs)
